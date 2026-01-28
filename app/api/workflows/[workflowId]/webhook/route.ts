@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { start } from "workflow/api";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
-import { executeWorkflow } from "@/lib/workflow-executor.workflow";
+import { daprClient } from "@/lib/dapr-client";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 // Validate API key and return the user ID if valid
@@ -68,41 +67,40 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-// biome-ignore lint/nursery/useMaxParams: Background execution requires all workflow context
-async function executeWorkflowBackground(
+async function executeDaprWorkflowBackground(
   executionId: string,
-  workflowId: string,
-  nodes: WorkflowNode[],
-  edges: WorkflowEdge[],
+  workflow: { id: string; userId: string; nodes: unknown; edges: unknown } & Record<string, unknown>,
   input: Record<string, unknown>
 ) {
   try {
-    console.log("[Webhook] Starting execution:", executionId);
+    const orchestratorUrl =
+      (workflow.daprOrchestratorUrl as string) ||
+      process.env.DAPR_ORCHESTRATOR_URL ||
+      "http://planner-orchestrator:8080";
 
-    console.log("[Webhook] Calling executeWorkflow with:", {
-      nodeCount: nodes.length,
-      edgeCount: edges.length,
-      hasExecutionId: !!executionId,
-      workflowId,
-    });
+    console.log("[Webhook] Starting Dapr execution:", executionId);
 
-    start(executeWorkflow, [
-      {
-        nodes,
-        edges,
-        triggerInput: input,
-        executionId,
-        workflowId,
-      },
-    ]);
+    // Extract feature_request and cwd from input for the orchestrator
+    const featureRequest =
+      (input.feature_request as string) ||
+      (input.featureRequest as string) ||
+      "";
+    const cwd = (input.cwd as string) || "";
 
-    console.log("[Webhook] Workflow started successfully");
-  } catch (error) {
-    console.error("[Webhook] Error during execution:", error);
-    console.error(
-      "[Webhook] Error stack:",
-      error instanceof Error ? error.stack : "N/A"
+    const daprResult = await daprClient.startWorkflow(
+      orchestratorUrl,
+      featureRequest,
+      cwd
     );
+
+    await db
+      .update(workflowExecutions)
+      .set({ daprInstanceId: daprResult.workflow_id })
+      .where(eq(workflowExecutions.id, executionId));
+
+    console.log("[Webhook] Dapr workflow started:", daprResult.workflow_id);
+  } catch (error) {
+    console.error("[Webhook] Error during Dapr execution:", error);
 
     await db
       .update(workflowExecutions)
@@ -194,13 +192,20 @@ export async function POST(
     console.log("[Webhook] Created execution:", execution.id);
 
     // Execute the workflow in the background (don't await)
-    executeWorkflowBackground(
-      execution.id,
-      workflowId,
-      workflow.nodes as WorkflowNode[],
-      workflow.edges as WorkflowEdge[],
-      body
-    );
+    const engineType = (workflow as Record<string, unknown>).engineType as string | undefined;
+    if (engineType === "dapr") {
+      executeDaprWorkflowBackground(execution.id, workflow as typeof workflow & Record<string, unknown>, body);
+    } else {
+      // Legacy workflows can no longer be executed
+      await db
+        .update(workflowExecutions)
+        .set({
+          status: "error",
+          error: "Legacy Vercel workflow execution is no longer supported. Please migrate to Dapr.",
+          completedAt: new Date(),
+        })
+        .where(eq(workflowExecutions.id, execution.id));
+    }
 
     // Return immediately with the execution ID
     return NextResponse.json(

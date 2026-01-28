@@ -3,7 +3,15 @@ import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { api } from "./api-client";
 
-export type WorkflowNodeType = "trigger" | "action" | "add";
+export type WorkflowNodeType =
+  | "trigger"
+  | "action"
+  | "add"
+  // Dapr workflow node types
+  | "activity"        // ctx.call_activity()
+  | "approval-gate"   // ctx.wait_for_external_event() + timer
+  | "timer"           // ctx.create_timer()
+  | "publish-event";  // publish to pub/sub
 
 export type WorkflowNodeData = {
   label: string;
@@ -578,3 +586,23 @@ export const clearNodeStatusesAtom = atom(null, (get, set) => {
   }));
   set(nodesAtom, newNodes);
 });
+
+// Dapr workflow execution state atoms
+export type DaprPhase =
+  | "planning"
+  | "persisting"
+  | "awaiting_approval"
+  | "executing"
+  | "completed"
+  | "failed"
+  | null;
+
+export const daprPhaseAtom = atom<DaprPhase>(null);
+export const daprProgressAtom = atom<number>(0); // 0-100
+export const daprMessageAtom = atom<string>(""); // Human-readable status message
+export const daprInstanceIdAtom = atom<string | null>(null);
+
+// Engine type for the current workflow
+export type WorkflowEngineType = "vercel" | "dapr";
+export const currentWorkflowEngineTypeAtom =
+  atom<WorkflowEngineType>("dapr");

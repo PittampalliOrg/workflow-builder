@@ -27,9 +27,11 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
+import { getDaprNodeCodeFiles, getDaprWorkflowCodeFiles } from "@/lib/dapr-codegen";
 import { generateWorkflowCode } from "@/lib/workflow-codegen";
 import {
   clearNodeStatusesAtom,
+  currentWorkflowEngineTypeAtom,
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   deleteEdgeAtom,
@@ -155,6 +157,7 @@ export const PanelInner = () => {
     currentWorkflowNameAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
+  const engineType = useAtomValue(currentWorkflowEngineTypeAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
   const deleteEdge = useSetAtom(deleteEdgeAtom);
@@ -263,6 +266,20 @@ export const PanelInner = () => {
 
   // Generate workflow code
   const workflowCode = useMemo(() => {
+    if (engineType === "dapr") {
+      // Generate Dapr Python workflow code
+      const snakeName =
+        currentWorkflowName
+          .replace(NON_ALPHANUMERIC_REGEX, " ")
+          .trim()
+          .split(WORD_SPLIT_REGEX)
+          .map((w) => w.toLowerCase())
+          .join("_") || "workflow";
+      const files = getDaprWorkflowCodeFiles(nodes, edges, snakeName);
+      // Return the main workflow file content
+      return files[0]?.content || "# No workflow definition";
+    }
+
     const baseName =
       currentWorkflowName
         .replace(NON_ALPHANUMERIC_REGEX, "")
@@ -279,7 +296,10 @@ export const PanelInner = () => {
 
     const { code } = generateWorkflowCode(nodes, edges, { functionName });
     return code;
-  }, [nodes, edges, currentWorkflowName]);
+  }, [nodes, edges, currentWorkflowName, engineType]);
+
+  // Get the code language for the workflow-level code view
+  const workflowCodeLanguage = engineType === "dapr" ? "python" : "typescript";
 
   const handleCopyCode = () => {
     if (selectedNode) {
@@ -684,12 +704,12 @@ export const PanelInner = () => {
               <div className="flex items-center gap-2">
                 <FileCode className="size-3.5 text-muted-foreground" />
                 <code className="text-muted-foreground text-xs">
-                  workflows/
+                  {engineType === "dapr" ? "workflow/" : "workflows/"}
                   {currentWorkflowName
                     .toLowerCase()
-                    .replace(/\s+/g, "-")
-                    .replace(/[^a-z0-9-]/g, "") || "workflow"}
-                  .ts
+                    .replace(/\s+/g, engineType === "dapr" ? "_" : "-")
+                    .replace(engineType === "dapr" ? /[^a-z0-9_]/g : /[^a-z0-9-]/g, "") || "workflow"}
+                  {engineType === "dapr" ? ".py" : ".ts"}
                 </code>
               </div>
               <Button
@@ -705,7 +725,7 @@ export const PanelInner = () => {
             <div className="flex-1 overflow-hidden">
               <CodeEditor
                 height="100%"
-                language="typescript"
+                language={workflowCodeLanguage}
                 options={{
                   readOnly: true,
                   minimap: { enabled: false },
@@ -762,9 +782,14 @@ export const PanelInner = () => {
           >
             Properties
           </TabsTrigger>
-          {(selectedNode.data.type !== "trigger" ||
-            (selectedNode.data.config?.triggerType as string) !== "Manual") &&
-          selectedNode.data.config?.actionType !== "Condition" ? (
+          {/* Show Code tab for Dapr nodes, and for legacy nodes with appropriate types */}
+          {(selectedNode.type === "activity" ||
+            selectedNode.type === "approval-gate" ||
+            selectedNode.type === "timer" ||
+            selectedNode.type === "publish-event" ||
+            ((selectedNode.data.type !== "trigger" ||
+              (selectedNode.data.config?.triggerType as string) !== "Manual") &&
+              selectedNode.data.config?.actionType !== "Condition")) ? (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
               value="code"
@@ -922,6 +947,61 @@ export const PanelInner = () => {
           value="code"
         >
           {(() => {
+            // Dapr node types use Python/YAML code generation
+            const isDaprNode =
+              selectedNode.type === "activity" ||
+              selectedNode.type === "approval-gate" ||
+              selectedNode.type === "timer" ||
+              selectedNode.type === "publish-event";
+
+            if (isDaprNode) {
+              const codeFiles = getDaprNodeCodeFiles(selectedNode);
+              const file = codeFiles[0];
+              if (!file) return null;
+
+              return (
+                <>
+                  <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 pb-2">
+                    <div className="flex items-center gap-2">
+                      <FileCode className="size-3.5 text-muted-foreground" />
+                      <code className="text-muted-foreground text-xs">
+                        {file.filename}
+                      </code>
+                    </div>
+                    <Button
+                      className="text-muted-foreground"
+                      onClick={() => {
+                        navigator.clipboard.writeText(file.content);
+                      }}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <Copy className="mr-2 size-4" />
+                      Copy
+                    </Button>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <CodeEditor
+                      height="100%"
+                      language={file.language}
+                      options={{
+                        readOnly: true,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        fontSize: 13,
+                        lineNumbers: "on",
+                        folding: false,
+                        wordWrap: "off",
+                        padding: { top: 16, bottom: 16 },
+                      }}
+                      value={file.content}
+                    />
+                  </div>
+                </>
+              );
+            }
+
+            // Legacy Vercel node types
             const triggerType = selectedNode.data.config?.triggerType as string;
             let filename = "";
             let language = "typescript";

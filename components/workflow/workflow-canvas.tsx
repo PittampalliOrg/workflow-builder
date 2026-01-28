@@ -45,7 +45,10 @@ import {
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
+import { ActivityNode } from "./nodes/activity-node";
 import { AddNode } from "./nodes/add-node";
+import { ApprovalGateNode } from "./nodes/approval-gate-node";
+import { TimerNode } from "./nodes/timer-node";
 import { TriggerNode } from "./nodes/trigger-node";
 import {
   type ContextMenuState,
@@ -224,6 +227,10 @@ export function WorkflowCanvas() {
       trigger: TriggerNode,
       action: ActionNode,
       add: AddNode,
+      // Dapr workflow node types
+      activity: ActivityNode,
+      "approval-gate": ApprovalGateNode,
+      timer: TimerNode,
     }),
     []
   );

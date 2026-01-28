@@ -1,0 +1,44 @@
+# Dependencies
+node_modules
+
+# Build output
+.next
+out
+
+# Testing
+tests
+playwright-report
+test-results
+*.test.ts
+*.test.tsx
+*.spec.ts
+*.spec.tsx
+playwright.config.ts
+
+# Development
+.git
+.gitignore
+.env*
+.devenv*
+devenv.nix
+devenv.yaml
+devenv.lock
+.direnv
+.devcontainer
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation
+docs
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Misc
+.DS_Store
+*.log

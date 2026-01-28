@@ -654,10 +654,90 @@ export const aiGatewayApi = {
     }),
 };
 
+// Dapr Workflow API
+export type DaprExecution = {
+  id: string;
+  workflowId: string;
+  daprInstanceId: string;
+  status: string;
+  phase: string | null;
+  progress: number | null;
+  startedAt: string;
+  completedAt: string | null;
+};
+
+export type DaprWorkflowStatusResponse = {
+  executionId: string;
+  daprInstanceId: string;
+  status: string;
+  daprStatus: string;
+  phase: string | null;
+  progress: number | null;
+  message: string | null;
+  currentActivity: string | null;
+  createdAt?: string;
+  lastUpdatedAt?: string;
+};
+
+export type DaprWorkflowTask = {
+  id: string;
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  created_at?: string;
+};
+
+export const daprApi = {
+  // List Dapr workflow executions
+  listExecutions: () => apiCall<DaprExecution[]>("/api/dapr/workflows"),
+
+  // Start a Dapr workflow
+  startWorkflow: (
+    workflowId: string,
+    input: Record<string, unknown> = {}
+  ) =>
+    apiCall<{
+      executionId: string;
+      daprInstanceId: string;
+      status: string;
+    }>("/api/dapr/workflows", {
+      method: "POST",
+      body: JSON.stringify({ workflowId, input }),
+    }),
+
+  // Get Dapr workflow status
+  getStatus: (executionId: string) =>
+    apiCall<DaprWorkflowStatusResponse>(
+      `/api/dapr/workflows/${executionId}/status`
+    ),
+
+  // Get tasks from Dapr statestore
+  getTasks: (executionId: string) =>
+    apiCall<DaprWorkflowTask[]>(
+      `/api/dapr/workflows/${executionId}/tasks`
+    ),
+
+  // Approve or reject a Dapr workflow
+  approve: (
+    executionId: string,
+    approved: boolean,
+    reason?: string
+  ) =>
+    apiCall<{ success: boolean; message?: string }>(
+      `/api/dapr/workflows/${executionId}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ approved, reason }),
+      }
+    ),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
   aiGateway: aiGatewayApi,
+  dapr: daprApi,
   integration: integrationApi,
   user: userApi,
   workflow: workflowApi,

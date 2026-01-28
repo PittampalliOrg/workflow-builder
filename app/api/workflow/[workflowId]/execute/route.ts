@@ -1,64 +1,11 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { start } from "workflow/api";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { executeWorkflow } from "@/lib/workflow-executor.workflow";
+import { daprClient } from "@/lib/dapr-client";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
-
-// biome-ignore lint/nursery/useMaxParams: Background execution requires all workflow context
-async function executeWorkflowBackground(
-  executionId: string,
-  workflowId: string,
-  nodes: WorkflowNode[],
-  edges: WorkflowEdge[],
-  input: Record<string, unknown>
-) {
-  try {
-    console.log("[Workflow Execute] Starting execution:", executionId);
-
-    // SECURITY: We pass only the workflowId as a reference
-    // Steps will fetch credentials internally using fetchWorkflowCredentials(workflowId)
-    // This prevents credentials from being logged in Vercel's observability
-    console.log("[Workflow Execute] Calling executeWorkflow with:", {
-      nodeCount: nodes.length,
-      edgeCount: edges.length,
-      hasExecutionId: !!executionId,
-      workflowId,
-    });
-
-    // Use start() from workflow/api to properly execute the workflow
-    start(executeWorkflow, [
-      {
-        nodes,
-        edges,
-        triggerInput: input,
-        executionId,
-        workflowId, // Pass workflow ID so steps can fetch credentials
-      },
-    ]);
-
-    console.log("[Workflow Execute] Workflow started successfully");
-  } catch (error) {
-    console.error("[Workflow Execute] Error during execution:", error);
-    console.error(
-      "[Workflow Execute] Error stack:",
-      error instanceof Error ? error.stack : "N/A"
-    );
-
-    // Update execution record with error
-    await db
-      .update(workflowExecutions)
-      .set({
-        status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
-        completedAt: new Date(),
-      })
-      .where(eq(workflowExecutions.id, executionId));
-  }
-}
 
 export async function POST(
   request: Request,
@@ -92,25 +39,96 @@ export async function POST(
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    // Validate that all integrationIds in workflow nodes belong to the current user
+    // Parse request body
+    const body = await request.json().catch(() => ({}));
+    const input = body.input || {};
+
+    // Route based on engine type
+    const engineType = (workflow as Record<string, unknown>).engineType as string | undefined;
+
+    if (engineType === "dapr") {
+      // Dapr workflow execution - proxy to orchestrator
+      const orchestratorUrl =
+        ((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
+        process.env.DAPR_ORCHESTRATOR_URL ||
+        "http://planner-orchestrator:8080";
+
+      // Create execution record
+      const [execution] = await db
+        .insert(workflowExecutions)
+        .values({
+          workflowId,
+          userId: session.user.id,
+          status: "running",
+          input,
+        })
+        .returning();
+
+      try {
+        // Extract feature_request and cwd from input for the orchestrator
+        const featureRequest =
+          (input.feature_request as string) ||
+          (input.featureRequest as string) ||
+          "";
+        const cwd = (input.cwd as string) || "";
+
+        const daprResult = await daprClient.startWorkflow(
+          orchestratorUrl,
+          featureRequest,
+          cwd
+        );
+
+        // Update execution with Dapr workflow ID
+        await db
+          .update(workflowExecutions)
+          .set({
+            daprInstanceId: daprResult.workflow_id,
+          })
+          .where(eq(workflowExecutions.id, execution.id));
+
+        return NextResponse.json({
+          executionId: execution.id,
+          daprInstanceId: daprResult.workflow_id,
+          status: "running",
+        });
+      } catch (daprError) {
+        // Update execution with error
+        await db
+          .update(workflowExecutions)
+          .set({
+            status: "error",
+            error:
+              daprError instanceof Error
+                ? daprError.message
+                : "Failed to start Dapr workflow",
+            completedAt: new Date(),
+          })
+          .where(eq(workflowExecutions.id, execution.id));
+
+        return NextResponse.json(
+          {
+            error:
+              daprError instanceof Error
+                ? daprError.message
+                : "Failed to start Dapr workflow",
+          },
+          { status: 502 }
+        );
+      }
+    }
+
+    // Legacy Vercel workflow execution path
+    // Validate integrations for legacy workflows
     const validation = await validateWorkflowIntegrations(
       workflow.nodes as WorkflowNode[],
       session.user.id
     );
     if (!validation.valid) {
-      console.error(
-        "[Workflow Execute] Invalid integration references:",
-        validation.invalidIds
-      );
       return NextResponse.json(
         { error: "Workflow contains invalid integration references" },
         { status: 403 }
       );
     }
-
-    // Parse request body
-    const body = await request.json().catch(() => ({}));
-    const input = body.input || {};
 
     // Create execution record
     const [execution] = await db
@@ -123,21 +141,23 @@ export async function POST(
       })
       .returning();
 
-    console.log("[API] Created execution:", execution.id);
+    // For legacy workflows, execution is no longer supported without the Vercel Workflow SDK
+    // Mark as error since the executor has been removed
+    await db
+      .update(workflowExecutions)
+      .set({
+        status: "error",
+        error:
+          "Legacy Vercel workflow execution is no longer supported. Please migrate this workflow to use Dapr.",
+        completedAt: new Date(),
+      })
+      .where(eq(workflowExecutions.id, execution.id));
 
-    // Execute the workflow in the background (don't await)
-    executeWorkflowBackground(
-      execution.id,
-      workflowId,
-      workflow.nodes as WorkflowNode[],
-      workflow.edges as WorkflowEdge[],
-      input
-    );
-
-    // Return immediately with the execution ID
     return NextResponse.json({
       executionId: execution.id,
-      status: "running",
+      status: "error",
+      error:
+        "Legacy Vercel workflow execution is no longer supported. Please migrate this workflow to use Dapr.",
     });
   } catch (error) {
     console.error("Failed to start workflow execution:", error);

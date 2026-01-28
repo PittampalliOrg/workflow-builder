@@ -1,5 +1,12 @@
 import { relations } from "drizzle-orm";
-import { boolean, jsonb, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 
@@ -77,6 +84,10 @@ export const workflows = pgTable("workflows", {
     .notNull()
     .default("private")
     .$type<WorkflowVisibility>(),
+  // Dapr workflow fields
+  engineType: text("engine_type").default("dapr").$type<"vercel" | "dapr">(),
+  daprWorkflowName: text("dapr_workflow_name"), // Registered Dapr workflow name
+  daprOrchestratorUrl: text("dapr_orchestrator_url"), // URL of the Dapr orchestrator service
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -118,6 +129,10 @@ export const workflowExecutions = pgTable("workflow_executions", {
   // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
   output: jsonb("output").$type<any>(),
   error: text("error"),
+  // Dapr execution fields
+  daprInstanceId: text("dapr_instance_id"), // Dapr workflow instance ID for correlation
+  phase: text("phase"), // Current phase from Dapr custom status
+  progress: integer("progress"), // 0-100 progress percentage
   startedAt: timestamp("started_at").notNull().defaultNow(),
   completedAt: timestamp("completed_at"),
   duration: text("duration"), // Duration in milliseconds
@@ -134,6 +149,7 @@ export const workflowExecutionLogs = pgTable("workflow_execution_logs", {
   nodeId: text("node_id").notNull(),
   nodeName: text("node_name").notNull(),
   nodeType: text("node_type").notNull(),
+  activityName: text("activity_name"), // Dapr activity function name
   status: text("status")
     .notNull()
     .$type<"pending" | "running" | "success" | "error">(),
