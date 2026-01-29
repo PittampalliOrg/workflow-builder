@@ -83,14 +83,26 @@ export async function GET(
               lastPhase = phase;
             }
 
-            // Update local DB
+            // Update local DB - check phase and output.success for internal failures
             let localStatus: "running" | "success" | "error" = "running";
-            if (status.runtime_status === "COMPLETED") localStatus = "success";
-            else if (
+            let errorMessage: string | null = null;
+
+            if (status.runtime_status === "COMPLETED") {
+              // Check if workflow actually succeeded or failed internally
+              const outputSuccess = (status.output as Record<string, unknown>)?.success;
+              if (phase === "failed" || outputSuccess === false) {
+                localStatus = "error";
+                errorMessage = message || (status.output as Record<string, unknown>)?.error as string || "Workflow failed";
+              } else {
+                localStatus = "success";
+              }
+            } else if (
               status.runtime_status === "FAILED" ||
               status.runtime_status === "TERMINATED"
-            )
+            ) {
               localStatus = "error";
+              errorMessage = message || "Workflow failed";
+            }
 
             await db
               .update(workflowExecutions)
@@ -98,6 +110,7 @@ export async function GET(
                 status: localStatus,
                 phase: phase || null,
                 progress: progress || null,
+                ...(errorMessage ? { error: errorMessage } : {}),
                 ...(localStatus !== "running"
                   ? { completedAt: new Date() }
                   : {}),

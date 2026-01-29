@@ -71,14 +71,26 @@ export async function GET(
     const message = daprStatus.message || null;
 
     // Map Dapr runtime_status to our execution status
+    // Also check phase and output.success since orchestrator may return
+    // COMPLETED even when workflow internally failed
     let localStatus = execution.status;
+    let errorMessage: string | null = null;
+
     if (daprStatus.runtime_status === "COMPLETED") {
-      localStatus = "success";
+      // Check if workflow actually succeeded or failed internally
+      const outputSuccess = (daprStatus.output as Record<string, unknown>)?.success;
+      if (phase === "failed" || outputSuccess === false) {
+        localStatus = "error";
+        errorMessage = message || (daprStatus.output as Record<string, unknown>)?.error as string || "Workflow failed";
+      } else {
+        localStatus = "success";
+      }
     } else if (
       daprStatus.runtime_status === "FAILED" ||
       daprStatus.runtime_status === "TERMINATED"
     ) {
       localStatus = "error";
+      errorMessage = message || "Workflow failed";
     } else if (daprStatus.runtime_status === "RUNNING") {
       localStatus = "running";
     }
@@ -89,6 +101,7 @@ export async function GET(
         status: localStatus,
         phase,
         progress,
+        ...(errorMessage ? { error: errorMessage } : {}),
         ...(localStatus === "success" || localStatus === "error"
           ? { completedAt: new Date() }
           : {}),

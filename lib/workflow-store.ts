@@ -606,3 +606,52 @@ export const daprInstanceIdAtom = atom<string | null>(null);
 export type WorkflowEngineType = "vercel" | "dapr";
 export const currentWorkflowEngineTypeAtom =
   atom<WorkflowEngineType>("dapr");
+
+// Morph node type atom - changes a node's type after creation (e.g., action -> activity)
+export const morphNodeTypeAtom = atom(
+  null,
+  (
+    get,
+    set,
+    {
+      id,
+      nodeType,
+      data,
+    }: {
+      id: string;
+      nodeType: WorkflowNodeType;
+      data: Partial<WorkflowNodeData>;
+    }
+  ) => {
+    // Save current state to history before making changes
+    const currentNodes = get(nodesAtom);
+    const currentEdges = get(edgesAtom);
+    const history = get(historyAtom);
+    set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
+    set(futureAtom, []);
+
+    // Update the node's type and data
+    const newNodes = currentNodes.map((node) => {
+      if (node.id === id) {
+        return {
+          ...node,
+          type: nodeType,
+          data: {
+            ...node.data,
+            ...data,
+            type: nodeType,
+          },
+        };
+      }
+      return node;
+    });
+
+    set(nodesAtom, newNodes);
+
+    // Mark as having unsaved changes
+    set(hasUnsavedChangesAtom, true);
+
+    // Trigger immediate autosave
+    set(autosaveAtom, { immediate: true });
+  }
+);

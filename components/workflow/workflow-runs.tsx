@@ -53,6 +53,11 @@ type WorkflowExecution = {
   completedAt: Date | null;
   duration: string | null;
   error: string | null;
+  // Dapr execution fields
+  daprInstanceId: string | null;
+  phase: string | null;
+  progress: number | null;
+  input?: Record<string, unknown>;
 };
 
 type WorkflowRunsProps = {
@@ -405,6 +410,111 @@ function OutputDisplay({
   );
 }
 
+// Phase display names for better UX
+const PHASE_LABELS: Record<string, string> = {
+  planning: "Planning",
+  persisting: "Persisting Tasks",
+  awaiting_approval: "Awaiting Approval",
+  executing: "Executing",
+  completed: "Completed",
+  failed: "Failed",
+  rejected: "Rejected",
+  timed_out: "Timed Out",
+};
+
+// Component for rendering Dapr workflow details
+function DaprExecutionDetails({
+  execution,
+}: {
+  execution: WorkflowExecution;
+}) {
+  const phase = execution.phase || "unknown";
+  const progress = execution.progress ?? 0;
+  const phaseLabel = PHASE_LABELS[phase] || phase;
+
+  // Determine status icon and color based on phase
+  const getPhaseStatus = () => {
+    if (phase === "completed") return "success";
+    if (phase === "failed" || phase === "rejected" || phase === "timed_out")
+      return "error";
+    return "running";
+  };
+
+  const status = getPhaseStatus();
+
+  return (
+    <div className="space-y-4">
+      {/* Phase indicator */}
+      <div className="flex items-center gap-3">
+        <div
+          className={cn(
+            "flex h-6 w-6 items-center justify-center rounded-full",
+            status === "success" && "bg-green-600",
+            status === "error" && "bg-red-600",
+            status === "running" && "bg-blue-600"
+          )}
+        >
+          {status === "success" && <Check className="h-3.5 w-3.5 text-white" />}
+          {status === "error" && <X className="h-3.5 w-3.5 text-white" />}
+          {status === "running" && (
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-white" />
+          )}
+        </div>
+        <div className="flex-1">
+          <div className="font-medium text-sm">{phaseLabel}</div>
+          <div className="text-muted-foreground text-xs">
+            Dapr Workflow Instance
+          </div>
+        </div>
+        {execution.status === "running" && (
+          <div className="text-muted-foreground text-xs tabular-nums">
+            {progress}%
+          </div>
+        )}
+      </div>
+
+      {/* Progress bar for running workflows */}
+      {execution.status === "running" && (
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full bg-blue-600 transition-all duration-300"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      )}
+
+      {/* Error message */}
+      {execution.error && (
+        <div className="space-y-2">
+          <div className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+            Error
+          </div>
+          <pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
+            {execution.error}
+          </pre>
+        </div>
+      )}
+
+      {/* Input data */}
+      {execution.input && Object.keys(execution.input).length > 0 && (
+        <CollapsibleSection copyData={execution.input} title="Input">
+          <pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
+            <JsonWithLinks data={execution.input} />
+          </pre>
+        </CollapsibleSection>
+      )}
+
+      {/* Instance ID for debugging */}
+      {execution.daprInstanceId && (
+        <div className="flex items-center justify-between rounded-lg border bg-muted/30 px-3 py-2">
+          <span className="text-muted-foreground text-xs">Instance ID</span>
+          <code className="font-mono text-xs">{execution.daprInstanceId}</code>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Component for rendering individual execution log entries
 function ExecutionLogEntry({
   log,
@@ -698,6 +808,21 @@ export function WorkflowRuns({
 
     const pollExecutions = async () => {
       try {
+        // First, poll Dapr status for any running executions to update their status
+        const runningExecutions = executions.filter(
+          (e) => e.status === "running"
+        );
+        for (const execution of runningExecutions) {
+          try {
+            // This calls the status API which updates the DB from Dapr orchestrator
+            await api.dapr.getStatus(execution.id);
+          } catch (error) {
+            // Ignore errors for individual status checks
+            console.debug(`Failed to poll Dapr status for ${execution.id}:`, error);
+          }
+        }
+
+        // Then fetch updated executions from the database
         const data = await api.workflow.getExecutions(currentWorkflowId);
         setExecutions(data as WorkflowExecution[]);
 
@@ -712,7 +837,7 @@ export function WorkflowRuns({
 
     const interval = setInterval(pollExecutions, 2000);
     return () => clearInterval(interval);
-  }, [isActive, currentWorkflowId, expandedRuns, refreshExecutionLogs]);
+  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs]);
 
   const toggleRun = async (executionId: string) => {
     const newExpanded = new Set(expandedRuns);
@@ -859,6 +984,14 @@ export function WorkflowRuns({
                       </span>
                     </>
                   )}
+                  {execution.daprInstanceId && execution.phase && (
+                    <>
+                      <span>•</span>
+                      <span className="capitalize">
+                        {PHASE_LABELS[execution.phase] || execution.phase}
+                      </span>
+                    </>
+                  )}
                   {executionLogs.length > 0 && (
                     <>
                       <span>•</span>
@@ -886,7 +1019,12 @@ export function WorkflowRuns({
 
             {isExpanded && (
               <div className="border-t bg-muted/20">
-                {executionLogs.length === 0 ? (
+                {executionLogs.length === 0 && execution.daprInstanceId ? (
+                  // Dapr workflow - show phase/progress details
+                  <div className="p-4">
+                    <DaprExecutionDetails execution={execution} />
+                  </div>
+                ) : executionLogs.length === 0 ? (
                   <div className="py-8 text-center text-muted-foreground text-xs">
                     No steps recorded
                   </div>

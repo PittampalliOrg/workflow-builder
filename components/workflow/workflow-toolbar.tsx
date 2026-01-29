@@ -43,6 +43,7 @@ import {
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   currentWorkflowVisibilityAtom,
+  currentWorkflowEngineTypeAtom,
   deleteEdgeAtom,
   deleteNodeAtom,
   edgesAtom,
@@ -74,6 +75,7 @@ import { DeployButton } from "../deploy-button";
 import { GitHubStarsButton } from "../github-stars-button";
 import { ConfigurationOverlay } from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
+import { DaprInputOverlay, type DaprWorkflowInput } from "../overlays/dapr-input-overlay";
 import { ExportWorkflowOverlay } from "../overlays/export-workflow-overlay";
 import { MakePublicOverlay } from "../overlays/make-public-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
@@ -387,6 +389,7 @@ type ExecuteTestWorkflowParams = {
   pollingIntervalRef: React.MutableRefObject<NodeJS.Timeout | null>;
   setIsExecuting: (value: boolean) => void;
   setSelectedExecutionId: (value: string | null) => void;
+  input?: Record<string, unknown>;
 };
 
 async function executeTestWorkflow({
@@ -396,6 +399,7 @@ async function executeTestWorkflow({
   pollingIntervalRef,
   setIsExecuting,
   setSelectedExecutionId,
+  input = {},
 }: ExecuteTestWorkflowParams) {
   // Set all nodes to idle first
   updateNodesStatus(nodes, updateNodeData, "idle");
@@ -414,7 +418,7 @@ async function executeTestWorkflow({
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ input: {} }),
+      body: JSON.stringify({ input }),
     });
 
     if (!response.ok) {
@@ -494,6 +498,7 @@ type WorkflowHandlerParams = {
   setSelectedNodeId: (id: string | null) => void;
   setSelectedExecutionId: (id: string | null) => void;
   userIntegrations: Array<{ id: string; type: IntegrationType }>;
+  engineType: "vercel" | "dapr";
 };
 
 function useWorkflowHandlers({
@@ -511,6 +516,7 @@ function useWorkflowHandlers({
   setSelectedNodeId,
   setSelectedExecutionId,
   userIntegrations,
+  engineType,
 }: WorkflowHandlerParams) {
   const { open: openOverlay } = useOverlay();
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -542,7 +548,7 @@ function useWorkflowHandlers({
     }
   };
 
-  const executeWorkflow = async () => {
+  const executeWorkflow = async (input: Record<string, unknown> = {}) => {
     if (!currentWorkflowId) {
       toast.error("Please save the workflow before executing");
       return;
@@ -564,6 +570,7 @@ function useWorkflowHandlers({
       pollingIntervalRef,
       setIsExecuting,
       setSelectedExecutionId,
+      input,
     });
     // Don't set executing to false here - let polling handle it
   };
@@ -581,6 +588,19 @@ function useWorkflowHandlers({
           element.scrollIntoView({ behavior: "smooth", block: "center" });
         }
       }, 100);
+    }
+  };
+
+  // Helper to show Dapr input overlay or execute directly
+  const promptAndExecute = () => {
+    if (engineType === "dapr") {
+      openOverlay(DaprInputOverlay, {
+        onRun: (input: DaprWorkflowInput) => {
+          executeWorkflow(input);
+        },
+      });
+    } else {
+      executeWorkflow();
     }
   };
 
@@ -608,12 +628,12 @@ function useWorkflowHandlers({
           missingIntegrations,
         },
         onGoToStep: handleGoToStep,
-        onRunAnyway: executeWorkflow,
+        onRunAnyway: promptAndExecute,
       });
       return;
     }
 
-    await executeWorkflow();
+    promptAndExecute();
   };
 
   return {
@@ -637,6 +657,7 @@ function useWorkflowState() {
   const [workflowVisibility, setWorkflowVisibility] = useAtom(
     currentWorkflowVisibilityAtom
   );
+  const engineType = useAtomValue(currentWorkflowEngineTypeAtom);
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
   const router = useRouter();
   const [isSaving, setIsSaving] = useAtom(isSavingAtom);
@@ -691,6 +712,7 @@ function useWorkflowState() {
     setCurrentWorkflowName,
     workflowVisibility,
     setWorkflowVisibility,
+    engineType,
     isOwner,
     router,
     isSaving,
@@ -744,6 +766,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     setSelectedNodeId,
     setSelectedExecutionId,
     userIntegrations,
+    engineType,
     triggerExecute,
     setTriggerExecute,
     router,
@@ -765,6 +788,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     setSelectedNodeId,
     setSelectedExecutionId,
     userIntegrations,
+    engineType,
   });
 
   // Listen for execute trigger from keyboard shortcut

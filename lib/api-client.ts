@@ -514,12 +514,16 @@ export const workflowApi = {
         workflowId: string;
         userId: string;
         status: string;
-        input: unknown;
+        input: Record<string, unknown> | null;
         output: unknown;
         error: string | null;
         startedAt: Date;
         completedAt: Date | null;
         duration: string | null;
+        // Dapr execution fields
+        daprInstanceId: string | null;
+        phase: string | null;
+        progress: number | null;
       }>
     >(`/api/workflows/${id}/executions`),
 

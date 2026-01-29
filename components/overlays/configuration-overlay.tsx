@@ -36,6 +36,7 @@ import {
   edgesAtom,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
+  morphNodeTypeAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   propertiesPanelActiveTabAtom,
@@ -45,7 +46,10 @@ import {
 } from "@/lib/workflow-store";
 import { findActionById } from "@/plugins";
 import { ActionConfig } from "../workflow/config/action-config";
-import { ActionGrid } from "../workflow/config/action-grid";
+import { ActionGrid, type ActionSelection } from "../workflow/config/action-grid";
+import { ActivityConfig } from "../workflow/config/activity-config";
+import { ApprovalGateConfig } from "../workflow/config/approval-gate-config";
+import { TimerConfig } from "../workflow/config/timer-config";
 import { TriggerConfig } from "../workflow/config/trigger-config";
 import { generateNodeCode } from "../workflow/utils/code-generators";
 import { WorkflowRuns } from "../workflow/workflow-runs";
@@ -99,6 +103,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   const deleteEdge = useSetAtom(deleteEdgeAtom);
   const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
   const clearWorkflow = useSetAtom(clearWorkflowAtom);
+  const morphNodeType = useSetAtom(morphNodeTypeAtom);
   const [newlyCreatedNodeId, setNewlyCreatedNodeId] = useAtom(
     newlyCreatedNodeIdAtom
   );
@@ -591,8 +596,29 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                 <ActionGrid
                   disabled={isGenerating}
                   isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
-                  onSelectAction={(actionType) => {
-                    handleUpdateConfig("actionType", actionType);
+                  onSelectAction={(selection: ActionSelection) => {
+                    // Handle Dapr activity selection - morph node type
+                    if (selection.isDaprActivity && selection.nodeType && selection.nodeType !== "action") {
+                      morphNodeType({
+                        id: selectedNode.id,
+                        nodeType: selection.nodeType,
+                        data: {
+                          label: selection.nodeType === "activity"
+                            ? (selection.activityName || "Activity")
+                            : selection.nodeType === "approval-gate"
+                            ? "Approval Gate"
+                            : selection.nodeType === "timer"
+                            ? "Timer"
+                            : "Step",
+                          config: {
+                            activityName: selection.activityName,
+                          },
+                        },
+                      });
+                    } else {
+                      // Regular action selection
+                      handleUpdateConfig("actionType", selection.actionType);
+                    }
                     if (selectedNode?.id === newlyCreatedNodeId) {
                       setNewlyCreatedNodeId(null);
                     }
@@ -618,6 +644,33 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   onUpdateConfig={handleUpdateConfig}
                 />
               )}
+
+            {/* Dapr Activity Config */}
+            {selectedNode.type === "activity" && (
+              <ActivityConfig
+                config={selectedNode.data.config || {}}
+                disabled={isGenerating || !isOwner}
+                onUpdateConfig={handleUpdateConfig}
+              />
+            )}
+
+            {/* Dapr Approval Gate Config */}
+            {selectedNode.type === "approval-gate" && (
+              <ApprovalGateConfig
+                config={selectedNode.data.config || {}}
+                disabled={isGenerating || !isOwner}
+                onUpdateConfig={handleUpdateConfig}
+              />
+            )}
+
+            {/* Dapr Timer Config */}
+            {selectedNode.type === "timer" && (
+              <TimerConfig
+                config={selectedNode.data.config || {}}
+                disabled={isGenerating || !isOwner}
+                onUpdateConfig={handleUpdateConfig}
+              />
+            )}
 
             {/* Label & Description */}
             {(selectedNode.data.type !== "action" ||

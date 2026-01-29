@@ -1,14 +1,22 @@
 "use client";
 
 import {
+  Bell,
+  Bot,
   ChevronRight,
+  Clock,
+  Database,
   Eye,
   EyeOff,
+  Globe,
   Grid3X3,
   List,
   MoreHorizontal,
+  Radio,
   Search,
   Settings,
+  ShieldCheck,
+  Sparkles,
   Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -29,6 +37,8 @@ import {
 } from "@/components/ui/tooltip";
 import { useIsTouch } from "@/hooks/use-touch";
 import { cn } from "@/lib/utils";
+import { getAllDaprActivities } from "@/lib/dapr-activity-registry";
+import type { WorkflowNodeType } from "@/lib/workflow-store";
 import { getAllActions } from "@/plugins";
 
 type ActionType = {
@@ -37,6 +47,10 @@ type ActionType = {
   description: string;
   category: string;
   integration?: string;
+  // Dapr-specific fields
+  isDaprActivity?: boolean;
+  nodeType?: WorkflowNodeType;
+  activityName?: string;
 };
 
 // System actions that don't have plugins
@@ -61,7 +75,27 @@ const SYSTEM_ACTIONS: ActionType[] = [
   },
 ];
 
-// Combine System actions with plugin actions
+// Dapr control flow actions (not regular activities)
+const DAPR_CONTROL_FLOW: ActionType[] = [
+  {
+    id: "dapr:approval-gate",
+    label: "Approval Gate",
+    description: "Wait for external approval with timeout",
+    category: "Control Flow",
+    isDaprActivity: true,
+    nodeType: "approval-gate",
+  },
+  {
+    id: "dapr:timer",
+    label: "Timer",
+    description: "Wait for a specified duration",
+    category: "Control Flow",
+    isDaprActivity: true,
+    nodeType: "timer",
+  },
+];
+
+// Combine System actions with plugin actions and Dapr activities
 function useAllActions(): ActionType[] {
   return useMemo(() => {
     const pluginActions = getAllActions();
@@ -75,14 +109,49 @@ function useAllActions(): ActionType[] {
       integration: action.integration,
     }));
 
-    return [...SYSTEM_ACTIONS, ...mappedPluginActions];
+    // Map Dapr activities to ActionType format
+    const daprActivities = getAllDaprActivities();
+    const mappedDaprActivities: ActionType[] = daprActivities.map((activity) => ({
+      id: `dapr:${activity.name}`,
+      label: activity.label,
+      description: activity.description,
+      category: activity.category,
+      isDaprActivity: true,
+      nodeType: "activity",
+      activityName: activity.name,
+    }));
+
+    return [
+      ...SYSTEM_ACTIONS,
+      ...DAPR_CONTROL_FLOW,
+      ...mappedDaprActivities,
+      ...mappedPluginActions,
+    ];
   }, []);
 }
 
+export type ActionSelection = {
+  actionType: string;
+  isDaprActivity?: boolean;
+  nodeType?: WorkflowNodeType;
+  activityName?: string;
+};
+
 type ActionGridProps = {
-  onSelectAction: (actionType: string) => void;
+  onSelectAction: (selection: ActionSelection) => void;
   disabled?: boolean;
   isNewlyCreated?: boolean;
+};
+
+// Category icons for Dapr activities
+const DAPR_CATEGORY_ICONS: Record<string, typeof Zap> = {
+  Agent: Bot,
+  State: Database,
+  Events: Radio,
+  "Control Flow": Clock,
+  AI: Sparkles,
+  Notifications: Bell,
+  Integration: Globe,
 };
 
 function GroupIcon({
@@ -104,6 +173,11 @@ function GroupIcon({
   if (group.category === "System") {
     return <Settings className="size-4" />;
   }
+  // For Dapr categories
+  const DaprIcon = DAPR_CATEGORY_ICONS[group.category];
+  if (DaprIcon) {
+    return <DaprIcon className="size-4" />;
+  }
   return <Zap className="size-4" />;
 }
 
@@ -121,6 +195,18 @@ function ActionIcon({
   }
   if (action.category === "System") {
     return <Settings className={cn(className, "text-muted-foreground")} />;
+  }
+  // For Dapr categories
+  const DaprIcon = DAPR_CATEGORY_ICONS[action.category];
+  if (DaprIcon) {
+    return <DaprIcon className={cn(className, "text-muted-foreground")} />;
+  }
+  // Special icons for specific Dapr nodes
+  if (action.nodeType === "approval-gate") {
+    return <ShieldCheck className={cn(className, "text-muted-foreground")} />;
+  }
+  if (action.nodeType === "timer") {
+    return <Clock className={cn(className, "text-muted-foreground")} />;
   }
   return <Zap className={cn(className, "text-muted-foreground")} />;
 }
@@ -351,7 +437,12 @@ export function ActionGrid({
                   data-testid={`action-option-${action.id.toLowerCase().replace(/\s+/g, "-")}`}
                   disabled={disabled}
                   key={action.id}
-                  onClick={() => onSelectAction(action.id)}
+                  onClick={() => onSelectAction({
+                    actionType: action.id,
+                    isDaprActivity: action.isDaprActivity,
+                    nodeType: action.nodeType,
+                    activityName: action.activityName,
+                  })}
                   type="button"
                 >
                   <ActionIcon action={action} className="size-6" />
@@ -430,7 +521,12 @@ export function ActionGrid({
                       data-testid={`action-option-${action.id.toLowerCase().replace(/\s+/g, "-")}`}
                       disabled={disabled}
                       key={action.id}
-                      onClick={() => onSelectAction(action.id)}
+                      onClick={() => onSelectAction({
+                        actionType: action.id,
+                        isDaprActivity: action.isDaprActivity,
+                        nodeType: action.nodeType,
+                        activityName: action.activityName,
+                      })}
                       type="button"
                     >
                       <span className="min-w-0 flex-1 truncate">

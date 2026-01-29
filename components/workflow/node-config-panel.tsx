@@ -40,6 +40,7 @@ import {
   edgesAtom,
   isGeneratingAtom,
   isWorkflowOwnerAtom,
+  morphNodeTypeAtom,
   newlyCreatedNodeIdAtom,
   nodesAtom,
   pendingIntegrationNodesAtom,
@@ -53,7 +54,10 @@ import {
 import { findActionById } from "@/plugins";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { ActionConfig } from "./config/action-config";
-import { ActionGrid } from "./config/action-grid";
+import { ActionGrid, type ActionSelection } from "./config/action-grid";
+import { ActivityConfig } from "./config/activity-config";
+import { ApprovalGateConfig } from "./config/approval-gate-config";
+import { TimerConfig } from "./config/timer-config";
 
 import { TriggerConfig } from "./config/trigger-config";
 import { generateNodeCode } from "./utils/code-generators";
@@ -166,6 +170,7 @@ export const PanelInner = () => {
   const setShowDeleteDialog = useSetAtom(showDeleteDialogAtom);
   const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
   const setPendingIntegrationNodes = useSetAtom(pendingIntegrationNodesAtom);
+  const morphNodeType = useSetAtom(morphNodeTypeAtom);
   const [newlyCreatedNodeId, setNewlyCreatedNodeId] = useAtom(
     newlyCreatedNodeIdAtom
   );
@@ -818,8 +823,29 @@ export const PanelInner = () => {
                 <ActionGrid
                   disabled={isGenerating}
                   isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
-                  onSelectAction={(actionType) => {
-                    handleUpdateConfig("actionType", actionType);
+                  onSelectAction={(selection: ActionSelection) => {
+                    // Handle Dapr activity selection - morph node type
+                    if (selection.isDaprActivity && selection.nodeType && selection.nodeType !== "action") {
+                      morphNodeType({
+                        id: selectedNode.id,
+                        nodeType: selection.nodeType,
+                        data: {
+                          label: selection.nodeType === "activity"
+                            ? (selection.activityName || "Activity")
+                            : selection.nodeType === "approval-gate"
+                            ? "Approval Gate"
+                            : selection.nodeType === "timer"
+                            ? "Timer"
+                            : "Step",
+                          config: {
+                            activityName: selection.activityName,
+                          },
+                        },
+                      });
+                    } else {
+                      // Regular action selection
+                      handleUpdateConfig("actionType", selection.actionType);
+                    }
                     // Clear newly created tracking once action is selected
                     if (selectedNode?.id === newlyCreatedNodeId) {
                       setNewlyCreatedNodeId(null);
@@ -864,6 +890,33 @@ export const PanelInner = () => {
                   onUpdateConfig={handleUpdateConfig}
                 />
               ) : null}
+
+              {/* Dapr Activity Config */}
+              {selectedNode.type === "activity" && (
+                <ActivityConfig
+                  config={selectedNode.data.config || {}}
+                  disabled={isGenerating || !isOwner}
+                  onUpdateConfig={handleUpdateConfig}
+                />
+              )}
+
+              {/* Dapr Approval Gate Config */}
+              {selectedNode.type === "approval-gate" && (
+                <ApprovalGateConfig
+                  config={selectedNode.data.config || {}}
+                  disabled={isGenerating || !isOwner}
+                  onUpdateConfig={handleUpdateConfig}
+                />
+              )}
+
+              {/* Dapr Timer Config */}
+              {selectedNode.type === "timer" && (
+                <TimerConfig
+                  config={selectedNode.data.config || {}}
+                  disabled={isGenerating || !isOwner}
+                  onUpdateConfig={handleUpdateConfig}
+                />
+              )}
 
               {selectedNode.data.type !== "action" ||
               selectedNode.data.config?.actionType ? (
