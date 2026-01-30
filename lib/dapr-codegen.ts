@@ -1,8 +1,15 @@
 /**
  * Dapr Code Generation
  *
- * Generates Python/YAML code views for Dapr workflow nodes.
- * Used when engineType === "dapr" instead of workflow-codegen.ts.
+ * Generates TypeScript code for Dapr workflow orchestration.
+ * Aligns with the Vercel Workflow DevKit pattern while using Dapr primitives.
+ *
+ * Uses the Dapr TypeScript SDK:
+ * - WorkflowContext for orchestration
+ * - callActivity() for service invocations
+ * - waitForExternalEvent() for human-in-the-loop gates
+ * - createTimer() for delays and timeouts
+ * - whenAny() for racing events
  */
 
 import { getDaprActivity } from "./dapr-activity-registry";
@@ -10,9 +17,19 @@ import type { WorkflowNode, WorkflowEdge } from "./workflow-store";
 
 export type DaprCodeFile = {
   filename: string;
-  language: string; // "python" | "yaml" | "json"
+  language: string; // "typescript" | "yaml" | "json"
   content: string;
 };
+
+/**
+ * Convert a string to camelCase for TypeScript function names
+ */
+function toCamelCase(str: string): string {
+  return str
+    .replace(/[^a-zA-Z0-9]+(.)/g, (_, chr) => chr.toUpperCase())
+    .replace(/^[A-Z]/, (chr) => chr.toLowerCase())
+    .replace(/[^a-zA-Z0-9]/g, "");
+}
 
 /**
  * Generate code for a single activity node
@@ -23,59 +40,77 @@ export function generateActivityCode(node: WorkflowNode): DaprCodeFile[] {
   const activity = getDaprActivity(activityName);
   const files: DaprCodeFile[] = [];
 
+  const functionName = toCamelCase(activityName);
+
   if (activity) {
-    // Generate Python activity function
+    // Generate TypeScript activity function
     const inputParams = activity.inputFields
-      .map((f) => `    ${f.key}: str`)
+      .map((f) => `  ${f.key}: ${f.type === "number" ? "number" : "string"};`)
       .join("\n");
 
     const outputFields = activity.outputFields
-      .map((f) => `    # ${f.description}`)
+      .map((f) => `  /** ${f.description} */\n  ${f.field}: unknown;`)
       .join("\n");
 
     files.push({
-      filename: activity.sourceFile || `activities/${activityName}.py`,
-      language: "python",
-      content: `"""
-${activity.label}
-${activity.description}
-"""
-import dapr.ext.workflow as wf
+      filename: `activities/${activityName}.ts`,
+      language: "typescript",
+      content: `/**
+ * ${activity.label}
+ * ${activity.description}
+ */
+import { WorkflowActivityContext } from "@dapr/dapr";
 
+export type ${functionName}Input = {
+${inputParams || "  // No input parameters"}
+};
 
-def ${activityName}(ctx: wf.ActivityContext, input: dict) -> dict:
-    """
-    Activity: ${activity.label}
-${activity.serviceName ? `    Service: ${activity.serviceName}` : ""}
-${activity.serviceMethod ? `    Method: ${activity.serviceMethod}` : ""}
-${activity.timeout ? `    Timeout: ${activity.timeout}s` : ""}
+export type ${functionName}Output = {
+${outputFields || "  status: string;"}
+};
 
-    Input:
-${inputParams || "    # No input parameters"}
+/**
+ * Activity: ${activity.label}
+${activity.serviceName ? ` * Service: ${activity.serviceName}` : ""}
+${activity.serviceMethod ? ` * Method: ${activity.serviceMethod}` : ""}
+${activity.timeout ? ` * Timeout: ${activity.timeout}s` : ""}
+ */
+export async function ${functionName}(
+  ctx: WorkflowActivityContext,
+  input: ${functionName}Input
+): Promise<${functionName}Output> {
+${
+  activity.serviceName
+    ? `  // Invoke target service via Dapr service invocation
+  // const client = new DaprClient();
+  // const result = await client.invoker.invoke(
+  //   "${activity.serviceName}",
+  //   "${activity.serviceMethod || "invoke"}",
+  //   HttpMethod.POST,
+  //   input
+  // );`
+    : `  // Process input and return result`
+}
 
-    Output:
-${outputFields || "    # Returns dict"}
-    """
-${activity.serviceName ? `    # Invoke target service via Dapr service invocation
-    # dapr_client.invoke_method(
-    #     app_id="${activity.serviceName}",
-    #     method_name="${activity.serviceMethod || "invoke"}",
-    #     data=json.dumps(input),
-    #     content_type="application/json",
-    # )` : `    # Process input and return result`}
-
-    return {"status": "completed"}
+  return { status: "completed" };
+}
 `,
     });
   } else {
     files.push({
-      filename: `activities/${activityName}.py`,
-      language: "python",
-      content: `# Activity: ${activityName}
-# No registry entry found for this activity
+      filename: `activities/${activityName}.ts`,
+      language: "typescript",
+      content: `// Activity: ${activityName}
+// No registry entry found for this activity
 
-def ${activityName}(ctx, input: dict) -> dict:
-    return {"status": "completed"}
+import { WorkflowActivityContext } from "@dapr/dapr";
+
+export async function ${functionName}(
+  ctx: WorkflowActivityContext,
+  input: Record<string, unknown>
+): Promise<{ status: string }> {
+  return { status: "completed" };
+}
 `,
     });
   }
@@ -93,35 +128,37 @@ export function generateApprovalGateCode(node: WorkflowNode): DaprCodeFile[] {
 
   return [
     {
-      filename: "workflow/approval_gate.py",
-      language: "python",
-      content: `"""
-Approval Gate: ${node.data.label || "Plan Review"}
-Waits for external approval event with timeout.
-"""
-from datetime import timedelta
-import dapr.ext.workflow as wf
+      filename: "workflow/approval-gate.ts",
+      language: "typescript",
+      content: `/**
+ * Approval Gate: ${node.data.label || "Plan Review"}
+ * Waits for external approval event with timeout.
+ *
+ * This code is embedded within the workflow generator function.
+ */
+import { WorkflowContext, whenAny } from "@dapr/dapr";
 
+// Inside the workflow generator function:
+async function* approvalGate(ctx: WorkflowContext) {
+  // Wait for approval event with timeout
+  const approvalEvent = ctx.waitForExternalEvent("${eventName}");
+  const timeoutEvent = ctx.createTimer(${timeoutHours} * 60 * 60); // ${timeoutHours} hours in seconds
 
-# Inside the workflow definition:
-def approval_gate(ctx: wf.DaprWorkflowContext):
-    # Wait for approval event with timeout
-    approval_event = ctx.wait_for_external_event("${eventName}")
-    timeout_event = ctx.create_timer(timedelta(hours=${timeoutHours}))
+  // Race between approval and timeout
+  const winner = yield whenAny([approvalEvent, timeoutEvent]);
 
-    # Race between approval and timeout
-    winner = yield wf.when_any([approval_event, timeout_event])
+  if (winner === timeoutEvent) {
+    // Timeout reached - auto-reject
+    return { approved: false, reason: "Timed out after ${timeoutHours} hours" };
+  }
 
-    if winner == timeout_event:
-        # Timeout reached - auto-reject
-        return {"approved": False, "reason": "Timed out after ${timeoutHours} hours"}
-
-    # Process approval result
-    result = approval_event.result
-    return {
-        "approved": result.get("approved", False),
-        "reason": result.get("reason", ""),
-    }
+  // Process approval result
+  const result = approvalEvent.getResult() as { approved?: boolean; reason?: string };
+  return {
+    approved: result?.approved ?? false,
+    reason: result?.reason ?? "",
+  };
+}
 `,
     },
   ];
@@ -136,42 +173,42 @@ export function generateTimerCode(node: WorkflowNode): DaprCodeFile[] {
 
   return [
     {
-      filename: "workflow/timer.py",
-      language: "python",
-      content: `"""
-Timer: ${node.data.label || "Delay"}
-Creates a timer delay in the workflow.
-"""
-from datetime import timedelta
-import dapr.ext.workflow as wf
+      filename: "workflow/timer.ts",
+      language: "typescript",
+      content: `/**
+ * Timer: ${node.data.label || "Delay"}
+ * Creates a timer delay in the workflow.
+ */
+import { WorkflowContext } from "@dapr/dapr";
 
-
-# Inside the workflow definition:
-def timer_step(ctx: wf.DaprWorkflowContext):
-    yield ctx.create_timer(timedelta(seconds=${durationSeconds}))
+// Inside the workflow generator function:
+async function* timerStep(ctx: WorkflowContext) {
+  yield ctx.createTimer(${durationSeconds}); // ${durationSeconds} seconds
+}
 `,
     },
   ];
 }
 
 /**
- * Generate the full workflow definition Python code
+ * Generate the full workflow definition TypeScript code
  */
 export function generateWorkflowDefinitionCode(
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
-  workflowName = "planner_workflow"
+  workflowName = "plannerWorkflow"
 ): DaprCodeFile {
   const activityNodes = nodes.filter((n) => n.type === "activity");
   const approvalNodes = nodes.filter((n) => n.type === "approval-gate");
-  const timerNodes = nodes.filter((n) => n.type === "timer");
+  const _timerNodes = nodes.filter((n) => n.type === "timer");
 
-  // Build imports
+  // Build imports for activities
   const activityImports = activityNodes
     .map((n) => {
       const name =
         (n.data.config?.activityName as string) || "unknown_activity";
-      return `from activities import ${name}`;
+      const fnName = toCamelCase(name);
+      return `import { ${fnName} } from "./activities/${name}";`;
     })
     .join("\n");
 
@@ -208,67 +245,202 @@ export function generateWorkflowDefinitionCode(
     visit(triggerNode.id);
   }
 
+  // Track variable names for template references
+  const nodeVarNames = new Map<string, string>();
+  let varCounter = 0;
+
   for (const node of orderedNodes) {
     if (node.type === "activity") {
       const actName =
         (node.data.config?.activityName as string) || "unknown_activity";
       const activity = getDaprActivity(actName);
-      const timeout = activity?.timeout || 300;
+      const fnName = toCamelCase(actName);
+      const varName = `result${varCounter++}`;
+      nodeVarNames.set(node.id, varName);
+
+      // Build input object from node config
+      const inputFields: string[] = [];
+      if (node.data.config) {
+        const config = node.data.config as Record<string, unknown>;
+        for (const [key, value] of Object.entries(config)) {
+          if (key === "activityName") continue;
+          if (value !== undefined && value !== null && value !== "") {
+            if (typeof value === "string") {
+              inputFields.push(`      ${key}: \`${value.replace(/`/g, "\\`")}\`,`);
+            } else if (typeof value === "number" || typeof value === "boolean") {
+              inputFields.push(`      ${key}: ${value},`);
+            } else {
+              inputFields.push(`      ${key}: ${JSON.stringify(value)},`);
+            }
+          }
+        }
+      }
+
+      const inputStr = inputFields.length > 0
+        ? `{\n${inputFields.join("\n")}\n    }`
+        : "{ ...input }";
+
       steps.push(
-        `    # ${node.data.label || activity?.label || actName}
-    result = yield ctx.call_activity(
-        ${actName},
-        input={"requirements": input_data.get("requirements", "")},
-    )`
+        `  // ${node.data.label || activity?.label || actName}
+  const ${varName} = yield ctx.callActivity(${fnName}, ${inputStr});`
       );
     } else if (node.type === "approval-gate") {
       const eventName =
         (node.data.config?.eventName as string) || "approval_event";
       const timeoutHours =
         (node.data.config?.timeoutHours as number) || 24;
+      const timeoutSeconds = timeoutHours * 60 * 60;
+
       steps.push(
-        `    # ${node.data.label || "Approval Gate"}
-    approval_event = ctx.wait_for_external_event("${eventName}")
-    timeout_event = ctx.create_timer(timedelta(hours=${timeoutHours}))
-    winner = yield wf.when_any([approval_event, timeout_event])
-    if winner == timeout_event:
-        raise Exception("Approval timed out")
-    approval = approval_event.result
-    if not approval.get("approved"):
-        raise Exception("Plan rejected: " + approval.get("reason", ""))`
+        `  // ${node.data.label || "Approval Gate"}
+  ctx.setCustomStatus({ phase: "awaiting_approval", progress: 50 });
+  const approvalEvent = ctx.waitForExternalEvent("${eventName}");
+  const timeoutEvent = ctx.createTimer(${timeoutSeconds}); // ${timeoutHours} hours
+  const winner = yield whenAny([approvalEvent, timeoutEvent]);
+
+  if (winner === timeoutEvent) {
+    throw new Error("Approval timed out after ${timeoutHours} hours");
+  }
+
+  const approval = approvalEvent.getResult() as { approved?: boolean; reason?: string };
+  if (!approval?.approved) {
+    throw new Error("Plan rejected: " + (approval?.reason ?? "No reason provided"));
+  }`
       );
     } else if (node.type === "timer") {
       const seconds =
         (node.data.config?.durationSeconds as number) || 60;
       steps.push(
-        `    # ${node.data.label || "Timer"}
-    yield ctx.create_timer(timedelta(seconds=${seconds}))`
+        `  // ${node.data.label || "Timer"}
+  yield ctx.createTimer(${seconds}); // ${seconds} seconds`
       );
     }
   }
 
   const body = steps.join("\n\n");
 
+  // Determine if we need whenAny import
+  const needsWhenAny = approvalNodes.length > 0;
+
   return {
-    filename: `workflow/${workflowName}.py`,
-    language: "python",
-    content: `"""
-Dapr Workflow: ${workflowName}
-Auto-generated from visual workflow builder.
-"""
-from datetime import timedelta
-import dapr.ext.workflow as wf
+    filename: `workflow/${workflowName}.ts`,
+    language: "typescript",
+    content: `/**
+ * Dapr Workflow: ${workflowName}
+ * Auto-generated from visual workflow builder.
+ *
+ * This workflow uses the Dapr TypeScript SDK for orchestration.
+ * It follows the same patterns as Vercel Workflow DevKit but with Dapr primitives.
+ */
+import {
+  WorkflowContext,
+  WorkflowRuntime,
+  DaprWorkflowClient,
+${needsWhenAny ? '  whenAny,\n' : ''}  TWorkflow,
+} from "@dapr/dapr";
 ${activityImports ? `\n${activityImports}` : ""}
 
+export type WorkflowInput = {
+  featureRequest?: string;
+  cwd?: string;
+  [key: string]: unknown;
+};
 
-def ${workflowName}(ctx: wf.DaprWorkflowContext, input_data: dict):
-    """Orchestrates the workflow pipeline."""
-    ctx.set_custom_status({"phase": "started", "progress": 0})
+export type WorkflowOutput = {
+  status: string;
+  [key: string]: unknown;
+};
 
-${body || "    pass"}
+/**
+ * ${workflowName}
+ *
+ * Orchestrates the workflow pipeline using Dapr's durable workflow engine.
+ * Each activity is called via ctx.callActivity() and executed by the Dapr sidecar.
+ */
+export const ${workflowName}: TWorkflow = async function* (
+  ctx: WorkflowContext,
+  input: WorkflowInput
+): AsyncGenerator<unknown, WorkflowOutput, unknown> {
+  "use workflow";
 
-    ctx.set_custom_status({"phase": "completed", "progress": 100})
-    return {"status": "completed"}
+  ctx.setCustomStatus({ phase: "started", progress: 0 });
+
+${body || "  // No workflow steps defined"}
+
+  ctx.setCustomStatus({ phase: "completed", progress: 100 });
+  return { status: "completed" };
+};
+
+// ─── Runtime Registration ─────────────────────────────────────────────────────
+
+/**
+ * Register and start the workflow runtime
+ */
+export async function startWorkflowRuntime(
+  daprHost = "localhost",
+  daprPort = "50001"
+): Promise<WorkflowRuntime> {
+  const workflowRuntime = new WorkflowRuntime({
+    daprHost,
+    daprPort,
+  });
+
+  // Register workflow
+  workflowRuntime.registerWorkflow(${workflowName});
+
+  // Register activities
+${activityNodes
+  .map((n) => {
+    const name = (n.data.config?.activityName as string) || "unknown_activity";
+    const fnName = toCamelCase(name);
+    return `  workflowRuntime.registerActivity(${fnName});`;
+  })
+  .join("\n") || "  // No activities to register"}
+
+  await workflowRuntime.start();
+  console.log("Workflow runtime started");
+
+  return workflowRuntime;
+}
+
+/**
+ * Schedule a new workflow instance
+ */
+export async function scheduleWorkflow(
+  input: WorkflowInput,
+  instanceId?: string,
+  daprHost = "localhost",
+  daprPort = "50001"
+): Promise<string> {
+  const client = new DaprWorkflowClient({
+    daprHost,
+    daprPort,
+  });
+
+  const id = await client.scheduleNewWorkflow(${workflowName}, input, instanceId);
+  console.log(\`Scheduled workflow instance: \${id}\`);
+
+  return id;
+}
+
+/**
+ * Raise an event to a running workflow (e.g., for approval gates)
+ */
+export async function raiseWorkflowEvent(
+  instanceId: string,
+  eventName: string,
+  eventPayload: unknown,
+  daprHost = "localhost",
+  daprPort = "50001"
+): Promise<void> {
+  const client = new DaprWorkflowClient({
+    daprHost,
+    daprPort,
+  });
+
+  await client.raiseEvent(instanceId, eventName, eventPayload);
+  console.log(\`Raised event "\${eventName}" for workflow \${instanceId}\`);
+}
 `,
   };
 }
@@ -318,6 +490,38 @@ spec:
 }
 
 /**
+ * Generate package.json for the workflow project
+ */
+export function generatePackageJson(workflowName: string): DaprCodeFile {
+  return {
+    filename: "package.json",
+    language: "json",
+    content: JSON.stringify(
+      {
+        name: workflowName,
+        version: "1.0.0",
+        description: `Dapr workflow: ${workflowName}`,
+        main: `workflow/${workflowName}.ts`,
+        scripts: {
+          start: `npx ts-node workflow/${workflowName}.ts`,
+          build: "npx tsc",
+        },
+        dependencies: {
+          "@dapr/dapr": "^3.0.0",
+        },
+        devDependencies: {
+          typescript: "^5.0.0",
+          "ts-node": "^10.9.0",
+          "@types/node": "^20.0.0",
+        },
+      },
+      null,
+      2
+    ),
+  };
+}
+
+/**
  * Get all code files for a Dapr workflow node
  */
 export function getDaprNodeCodeFiles(node: WorkflowNode): DaprCodeFile[] {
@@ -342,11 +546,10 @@ export function getDaprWorkflowCodeFiles(
   workflowName?: string
 ): DaprCodeFile[] {
   const files: DaprCodeFile[] = [];
+  const name = workflowName || "plannerWorkflow";
 
   // Full workflow definition
-  files.push(
-    generateWorkflowDefinitionCode(nodes, edges, workflowName)
-  );
+  files.push(generateWorkflowDefinitionCode(nodes, edges, name));
 
   // Individual activity files
   for (const node of nodes) {
@@ -354,6 +557,9 @@ export function getDaprWorkflowCodeFiles(
       files.push(...generateActivityCode(node));
     }
   }
+
+  // Package.json
+  files.push(generatePackageJson(name));
 
   // Dapr components
   files.push(...generateDaprComponentsCode());

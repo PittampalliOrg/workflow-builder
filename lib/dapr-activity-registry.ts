@@ -5,27 +5,39 @@
  * Each activity maps to a ctx.call_activity() invocation in the Dapr workflow.
  *
  * Activity definitions aligned with planner-orchestrator/activities/*.py.
+ *
+ * For plugin-based activities (slack/send-message, resend/send-email, etc.),
+ * the orchestrator calls the activity-executor service which dynamically
+ * loads and executes the appropriate step handler.
  */
 
 import type {
   ActionConfigFieldBase,
   OutputField,
 } from "@/plugins/registry";
+import {
+  getAllActions,
+  type ActionWithFullId,
+} from "@/plugins/registry";
 
 export type DaprActivityConfigField = ActionConfigFieldBase;
 
 export type DaprActivity = {
-  name: string; // "run_planning"
-  label: string; // "Run Planning Agent"
+  name: string; // "run_planning" or "plugin:slack/send-message"
+  label: string; // "Run Planning Agent" or "Send Slack Message"
   description: string;
-  category: string; // "Agent", "State", "Events"
+  category: string; // "Agent", "State", "Events", "Plugin"
   serviceName?: string; // Dapr app-id target
   serviceMethod?: string; // HTTP method/path on the target service
   timeout?: number; // seconds
   inputFields: DaprActivityConfigField[];
   outputFields: OutputField[];
   sourceFile?: string; // "activities/planning.py"
-  sourceLanguage?: string; // "python"
+  sourceLanguage?: string; // "python" or "typescript"
+  // Plugin-specific fields
+  isPluginActivity?: boolean; // true if this activity routes to activity-executor
+  pluginActionId?: string; // e.g., "slack/send-message"
+  pluginIntegration?: string; // e.g., "slack"
 };
 
 // Registry storage
@@ -68,6 +80,149 @@ export function getDaprActivitiesByCategory(): Record<string, DaprActivity[]> {
   return categories;
 }
 
+// ─── Plugin Activity Registration ─────────────────────────────────────────────
+// Auto-register all plugin actions as Dapr activities that route to activity-executor
+
+/**
+ * Convert a plugin action to a Dapr activity definition
+ */
+function pluginActionToDaprActivity(action: ActionWithFullId): DaprActivity {
+  return {
+    name: `plugin:${action.id}`,
+    label: action.label,
+    description: action.description,
+    category: action.category,
+    serviceName: "activity-executor",
+    serviceMethod: "POST /execute",
+    timeout: 300, // 5 minute default timeout for plugin activities
+    inputFields: action.configFields
+      .filter((field): field is DaprActivityConfigField => field.type !== "group")
+      .map((field) => ({
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        placeholder: field.placeholder,
+        defaultValue: field.defaultValue,
+        options: field.options,
+        rows: field.rows,
+        min: field.min,
+        required: field.required,
+      })),
+    outputFields: action.outputFields || [],
+    sourceLanguage: "typescript",
+    isPluginActivity: true,
+    pluginActionId: action.id,
+    pluginIntegration: action.integration,
+  };
+}
+
+/**
+ * Register all plugin actions as Dapr activities
+ * Call this after plugins are loaded to populate the registry
+ */
+export function registerPluginActivities(): void {
+  const actions = getAllActions();
+
+  for (const action of actions) {
+    const daprActivity = pluginActionToDaprActivity(action);
+    registerDaprActivity(daprActivity);
+  }
+
+  console.log(`[Dapr Activity Registry] Registered ${actions.length} plugin activities`);
+}
+
+/**
+ * Get all plugin-based Dapr activities
+ */
+export function getPluginActivities(): DaprActivity[] {
+  return Array.from(activityRegistry.values()).filter(
+    (activity) => activity.isPluginActivity
+  );
+}
+
+/**
+ * Find a plugin activity by its action ID (e.g., "slack/send-message")
+ */
+export function findPluginActivity(actionId: string): DaprActivity | undefined {
+  return activityRegistry.get(`plugin:${actionId}`);
+}
+
+// ─── Generic Plugin Step Executor Activity ────────────────────────────────────
+// This activity is called by the Python orchestrator to execute any plugin step
+
+registerDaprActivity({
+  name: "execute_plugin_step",
+  label: "Execute Plugin Step",
+  description:
+    "Generic activity that executes any plugin step handler via the activity-executor service. " +
+    "The orchestrator passes the action ID and the service dynamically loads and runs the appropriate handler.",
+  category: "Plugin",
+  serviceName: "activity-executor",
+  serviceMethod: "POST /execute",
+  timeout: 300,
+  inputFields: [
+    {
+      key: "activity_id",
+      label: "Activity ID",
+      type: "template-input",
+      placeholder: "e.g., slack/send-message, resend/send-email",
+      required: true,
+    },
+    {
+      key: "execution_id",
+      label: "Execution ID",
+      type: "template-input",
+      placeholder: "Workflow execution ID for logging correlation",
+    },
+    {
+      key: "workflow_id",
+      label: "Workflow ID",
+      type: "template-input",
+      placeholder: "Dapr workflow instance ID",
+    },
+    {
+      key: "node_id",
+      label: "Node ID",
+      type: "template-input",
+      placeholder: "Node ID in the workflow graph",
+    },
+    {
+      key: "node_name",
+      label: "Node Name",
+      type: "template-input",
+      placeholder: "Human-readable node name",
+    },
+    {
+      key: "input",
+      label: "Input Config",
+      type: "template-textarea",
+      placeholder: "JSON object with step configuration",
+      rows: 4,
+    },
+    {
+      key: "node_outputs",
+      label: "Node Outputs",
+      type: "template-textarea",
+      placeholder: "JSON object with outputs from previous nodes (for template resolution)",
+      rows: 4,
+    },
+    {
+      key: "integration_id",
+      label: "Integration ID",
+      type: "template-input",
+      placeholder: "ID of the integration to fetch credentials from",
+    },
+  ],
+  outputFields: [
+    { field: "success", description: "Whether the step execution succeeded" },
+    { field: "data", description: "Step result data" },
+    { field: "error", description: "Error message if failed" },
+    { field: "duration_ms", description: "Execution duration in milliseconds" },
+  ],
+  sourceLanguage: "typescript",
+  isPluginActivity: true,
+});
+
 // ─── Planner-Agent Activities ────────────────────────────────────────────────
 // Aligned with planner-orchestrator/activities/*.py
 
@@ -107,8 +262,8 @@ registerDaprActivity({
     { field: "task_count", description: "Number of tasks generated" },
     { field: "workflow_id", description: "Workflow instance ID" },
   ],
-  sourceFile: "activities/planning.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/run_planning.ts",
+  sourceLanguage: "typescript",
 });
 
 registerDaprActivity({
@@ -139,8 +294,8 @@ registerDaprActivity({
     { field: "tasks", description: "The persisted tasks array" },
     { field: "workflow_id", description: "Workflow instance ID" },
   ],
-  sourceFile: "activities/persist_tasks.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/persist_tasks.ts",
+  sourceLanguage: "typescript",
 });
 
 registerDaprActivity({
@@ -184,8 +339,8 @@ registerDaprActivity({
     { field: "success", description: "Whether execution succeeded" },
     { field: "workflow_id", description: "Workflow instance ID" },
   ],
-  sourceFile: "activities/execution.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/run_execution.ts",
+  sourceLanguage: "typescript",
 });
 
 registerDaprActivity({
@@ -232,8 +387,8 @@ registerDaprActivity({
     { field: "success", description: "Whether the event was published" },
     { field: "event_id", description: "Generated event ID" },
   ],
-  sourceFile: "activities/publish_event.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/publish_event.ts",
+  sourceLanguage: "typescript",
 });
 
 // ─── AI Activities ───────────────────────────────────────────────────────────
@@ -280,8 +435,8 @@ registerDaprActivity({
     { field: "usage", description: "Token usage statistics" },
     { field: "model", description: "Model used for generation" },
   ],
-  sourceFile: "activities/ai_generate.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/generate_text.ts",
+  sourceLanguage: "typescript",
 });
 
 registerDaprActivity({
@@ -335,8 +490,8 @@ registerDaprActivity({
     { field: "url", description: "URL of the generated image" },
     { field: "revised_prompt", description: "Revised prompt used" },
   ],
-  sourceFile: "activities/ai_generate.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/generate_image.ts",
+  sourceLanguage: "typescript",
 });
 
 // ─── Notification Activities ─────────────────────────────────────────────────
@@ -381,8 +536,8 @@ registerDaprActivity({
     { field: "success", description: "Whether the email was sent" },
     { field: "message_id", description: "Email message ID" },
   ],
-  sourceFile: "activities/notifications.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/send_email.ts",
+  sourceLanguage: "typescript",
 });
 
 registerDaprActivity({
@@ -420,8 +575,8 @@ registerDaprActivity({
     { field: "ts", description: "Message timestamp" },
     { field: "channel", description: "Channel ID where message was posted" },
   ],
-  sourceFile: "activities/notifications.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/send_slack_message.ts",
+  sourceLanguage: "typescript",
 });
 
 // ─── Integration Activities ──────────────────────────────────────────────────
@@ -473,6 +628,6 @@ registerDaprActivity({
     { field: "body", description: "Response body" },
     { field: "headers", description: "Response headers" },
   ],
-  sourceFile: "activities/http.py",
-  sourceLanguage: "python",
+  sourceFile: "activities/http_request.ts",
+  sourceLanguage: "typescript",
 });

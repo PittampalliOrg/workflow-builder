@@ -10,6 +10,7 @@ import {
   ExternalLink,
   Loader2,
   Play,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import Image from "next/image";
@@ -30,6 +31,7 @@ import {
 import { findActionById } from "@/plugins";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+import { toast } from "sonner";
 
 type ExecutionLog = {
   id: string;
@@ -425,12 +427,29 @@ const PHASE_LABELS: Record<string, string> = {
 // Component for rendering Dapr workflow details
 function DaprExecutionDetails({
   execution,
+  onRefresh,
 }: {
   execution: WorkflowExecution;
+  onRefresh?: () => void;
 }) {
+  const [isApproving, setIsApproving] = useState(false);
   const phase = execution.phase || "unknown";
   const progress = execution.progress ?? 0;
   const phaseLabel = PHASE_LABELS[phase] || phase;
+
+  const handleApprove = async (approved: boolean) => {
+    setIsApproving(true);
+    try {
+      await api.dapr.approve(execution.id, approved);
+      toast.success(approved ? "Plan approved" : "Plan rejected");
+      onRefresh?.();
+    } catch (error) {
+      console.error("Failed to submit approval:", error);
+      toast.error("Failed to submit approval");
+    } finally {
+      setIsApproving(false);
+    }
+  };
 
   // Determine status icon and color based on phase
   const getPhaseStatus = () => {
@@ -480,6 +499,33 @@ function DaprExecutionDetails({
             className="h-full bg-blue-600 transition-all duration-300"
             style={{ width: `${progress}%` }}
           />
+        </div>
+      )}
+
+      {/* Approval UI */}
+      {phase === "awaiting_approval" && (
+        <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+          <ShieldCheck className="size-5 text-amber-400" />
+          <span className="flex-1 text-sm font-medium">Plan review required</span>
+          <div className="flex gap-2">
+            <Button
+              disabled={isApproving}
+              onClick={() => handleApprove(false)}
+              size="sm"
+              variant="outline"
+            >
+              <X className="mr-1 size-3" />
+              Reject
+            </Button>
+            <Button
+              disabled={isApproving}
+              onClick={() => handleApprove(true)}
+              size="sm"
+            >
+              <Check className="mr-1 size-3" />
+              Approve
+            </Button>
+          </div>
         </div>
       )}
 
@@ -1022,7 +1068,10 @@ export function WorkflowRuns({
                 {executionLogs.length === 0 && execution.daprInstanceId ? (
                   // Dapr workflow - show phase/progress details
                   <div className="p-4">
-                    <DaprExecutionDetails execution={execution} />
+                    <DaprExecutionDetails
+                      execution={execution}
+                      onRefresh={() => loadExecutions(false)}
+                    />
                   </div>
                 ) : executionLogs.length === 0 ? (
                   <div className="py-8 text-center text-muted-foreground text-xs">

@@ -1,0 +1,184 @@
+# DevSpace Configuration for Workflow Builder
+# Enables Kubernetes-native development with hot-reload
+#
+# Architecture:
+#   - Replaces production container with devcontainer (full build tools)
+#   - Syncs local files to container in real-time
+#   - Runs Next.js dev server with hot module replacement
+#   - Integrates with existing OTEL observability stack
+#
+# Usage:
+#   devspace dev       # Start development mode
+#   devspace enter     # Shell into container
+#   devspace purge     # Clean up devspace resources
+
+version: v2beta1
+name: workflow-builder
+
+# Development configuration
+dev:
+  app:
+    # Target the deployment by image selector (more reliable for workload identification)
+    namespace: workflow-builder
+    imageSelector: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder
+    container: workflow-builder
+
+    # Replace production image with devcontainer
+    devImage: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder-devspace:latest
+    workingDir: /app
+
+    # Resource requirements for development
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "2Gi"
+      limits:
+        cpu: "4"
+        memory: "8Gi"
+
+    # Command to run in the container
+    # Runs pnpm install (with caching), migrations, then starts dev server
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container ==="
+
+        # Always enable corepack and pnpm (required even if node_modules cached)
+        echo "Enabling corepack and pnpm..."
+        corepack enable
+        corepack prepare pnpm@9.12.3 --activate
+
+        echo "Checking dependencies..."
+        # Only install if node_modules is missing or package.json changed
+        if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
+           [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
+          echo "Installing dependencies..."
+          pnpm install --frozen-lockfile
+          md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
+        else
+          echo "Dependencies up to date (cached)"
+        fi
+
+        # Run database migrations (idempotent - only applies pending migrations)
+        echo "Running database migrations..."
+        pnpm db:migrate || echo "Migrations skipped (database may not be ready)"
+
+        # Add node_modules/.bin to PATH
+        export PATH="/app/node_modules/.bin:$PATH"
+
+        # Run plugin discovery (generate plugins/index.ts only, skip README update)
+        echo "Discovering plugins..."
+        (tsx scripts/discover-plugins.ts 2>&1 | grep -v "README" || true)
+
+        echo "Starting Next.js development server with Turbo..."
+        exec next dev --turbo
+
+    # File synchronization
+    # Sync only essential source code to container
+    # Uses emptyDir volume for /app to ensure proper write permissions
+    sync:
+      - path: ./:/app
+        initialSync: mirrorLocal
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false  # Hot-reload handles changes
+        excludePaths:
+          # === NEVER SYNC (large/binary/generated) ===
+          - node_modules/
+          - .pnpm-store/
+          - .next/
+          - dist/
+          - out/
+          - coverage/
+          - next-env.d.ts
+          # === DEV TOOLING (not needed in container) ===
+          - .devenv/
+          - .devspace/
+          - .direnv/
+          - .git
+          - .git/
+          - .github/
+          - .idea/
+          - .vscode/
+          - .cursor/
+          # === TEST FILES (not needed for dev server) ===
+          - tests/
+          - playwright-report/
+          - test-results/
+          - playwright.config.ts
+          - vitest.config.ts
+          # === DOCS (not needed at runtime) ===
+          - docs/
+          - "*.md"
+          - "*.log"
+          - LICENSE
+          - Dockerfile
+          - Dockerfile.devspace
+          - devenv.*
+          - devenv.lock
+          - .devenv*
+          - .devenv.flake.nix
+          - biome.jsonc
+          - .dockerignore
+          - .gitignore
+          - .env.local
+          - .env.example
+          # === SERVICE SUBPROJECTS ===
+          - services/
+
+    # Note: persistPaths disabled to avoid PVC issues
+    # If you need faster restarts, uncomment and ensure PVC cleanup works
+    # persistPaths:
+    #   - path: /tmp
+    #     skipPopulate: true
+    #   - path: /app/node_modules
+
+    # Patches to configure the pod for development
+    patches:
+      # Remove health checks (dev server startup is slower)
+      - op: remove
+        path: spec.containers.name=workflow-builder.livenessProbe
+      - op: remove
+        path: spec.containers.name=workflow-builder.readinessProbe
+      # Run workflow-builder container as root for development to avoid permission issues
+      # Keep pod-level securityContext compatible with Dapr sidecar (non-root)
+      - op: replace
+        path: spec.containers.name=workflow-builder.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      # Keep pod fsGroup for volume permissions, but allow non-root override per container
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+
+    # Port forwarding for development
+    # Use 3002 locally to avoid conflicts with other devspace instances
+    ports:
+      - port: "3002:3000"  # Local 3002 -> Container 3000
+
+    # SSH access for debugging
+    ssh:
+      enabled: true
+      localPort: 2223  # Different from ai-chatbot to avoid conflicts
+
+    # Environment variables for development
+    # Only override values that differ from production deployment
+    # All other env vars come from ConfigMaps and the base Deployment
+    env:
+      - name: NODE_ENV
+        value: development
+      - name: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      # Override OTEL service name and environment for dev
+      - name: OTEL_SERVICE_NAME
+        value: "workflow-builder-dev"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=development,service.namespace=workflow-builder-dev,service.version=dev"

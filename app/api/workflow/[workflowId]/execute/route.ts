@@ -3,8 +3,9 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
-import { workflowExecutions, workflows } from "@/lib/db/schema";
+import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient } from "@/lib/dapr-client";
+import { executeWorkflow } from "@/lib/workflow-executor";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 export async function POST(
@@ -46,8 +47,38 @@ export async function POST(
     // Route based on engine type
     const engineType = (workflow as Record<string, unknown>).engineType as string | undefined;
 
-    if (engineType === "dapr") {
-      // Dapr workflow execution - proxy to orchestrator
+    // Check if this is a planning workflow (has feature_request) or direct execution
+    // First check request body input, then check activity node configs
+    let featureRequest =
+      (input.feature_request as string) ||
+      (input.featureRequest as string) ||
+      "";
+    let cwd = (input.cwd as string) || "";
+
+    // For Dapr workflows, extract feature_request and cwd from activity node config if not in input
+    if (engineType === "dapr" && !featureRequest) {
+      const nodes = workflow.nodes as WorkflowNode[];
+      for (const node of nodes) {
+        if (node.type === "activity") {
+          const data = node.data as Record<string, unknown>;
+          const config = (data.config as Record<string, unknown>) || {};
+          // Check for prompt/feature_request in activity config
+          if (config.prompt && typeof config.prompt === "string") {
+            featureRequest = config.prompt;
+          } else if (config.feature_request && typeof config.feature_request === "string") {
+            featureRequest = config.feature_request;
+          }
+          // Check for cwd in activity config
+          if (!cwd && config.cwd && typeof config.cwd === "string") {
+            cwd = config.cwd;
+          }
+          if (featureRequest) break; // Found what we need
+        }
+      }
+    }
+
+    if (engineType === "dapr" && featureRequest) {
+      // Dapr planning workflow - proxy to planner-orchestrator
       const orchestratorUrl =
         ((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
         process.env.DAPR_ORCHESTRATOR_URL ||
@@ -65,13 +96,6 @@ export async function POST(
         .returning();
 
       try {
-        // Extract feature_request and cwd from input for the orchestrator
-        const featureRequest =
-          (input.feature_request as string) ||
-          (input.featureRequest as string) ||
-          "";
-        const cwd = (input.cwd as string) || "";
-
         const daprResult = await daprClient.startWorkflow(
           orchestratorUrl,
           featureRequest,
@@ -117,8 +141,10 @@ export async function POST(
       }
     }
 
-    // Legacy Vercel workflow execution path
-    // Validate integrations for legacy workflows
+    // Direct workflow execution using activity-executor
+    // This executes the visual workflow nodes directly
+
+    // Validate integrations
     const validation = await validateWorkflowIntegrations(
       workflow.nodes as WorkflowNode[],
       session.user.id
@@ -141,23 +167,19 @@ export async function POST(
       })
       .returning();
 
-    // For legacy workflows, execution is no longer supported without the Vercel Workflow SDK
-    // Mark as error since the executor has been removed
-    await db
-      .update(workflowExecutions)
-      .set({
-        status: "error",
-        error:
-          "Legacy Vercel workflow execution is no longer supported. Please migrate this workflow to use Dapr.",
-        completedAt: new Date(),
-      })
-      .where(eq(workflowExecutions.id, execution.id));
+    // Execute workflow asynchronously
+    // We return immediately and the execution continues in the background
+    executeWorkflowAsync(
+      execution.id,
+      workflowId,
+      workflow.nodes as WorkflowNode[],
+      workflow.edges as WorkflowEdge[],
+      session.user.id
+    );
 
     return NextResponse.json({
       executionId: execution.id,
-      status: "error",
-      error:
-        "Legacy Vercel workflow execution is no longer supported. Please migrate this workflow to use Dapr.",
+      status: "running",
     });
   } catch (error) {
     console.error("Failed to start workflow execution:", error);
@@ -168,5 +190,62 @@ export async function POST(
       },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * Execute workflow asynchronously and update database with results
+ */
+async function executeWorkflowAsync(
+  executionId: string,
+  workflowId: string,
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+  userId: string
+) {
+  try {
+    // Execute the workflow
+    const result = await executeWorkflow(
+      nodes,
+      edges,
+      executionId,
+      workflowId,
+      async (nodeId, status, output) => {
+        // Log each node execution
+        if (output) {
+          await db.insert(workflowExecutionLogs).values({
+            executionId,
+            nodeId,
+            nodeName: output.label,
+            nodeType: "action",
+            status: output.success ? "success" : "error",
+            input: {},
+            output: output.data as Record<string, unknown> | null,
+            error: output.error,
+          });
+        }
+      }
+    );
+
+    // Update execution with final result
+    await db
+      .update(workflowExecutions)
+      .set({
+        status: result.success ? "success" : "error",
+        output: result.outputs as Record<string, unknown>,
+        error: result.error,
+        completedAt: new Date(),
+      })
+      .where(eq(workflowExecutions.id, executionId));
+  } catch (error) {
+    // Update execution with error
+    await db
+      .update(workflowExecutions)
+      .set({
+        status: "error",
+        error: error instanceof Error ? error.message : "Workflow execution failed",
+        completedAt: new Date(),
+      })
+      .where(eq(workflowExecutions.id, executionId));
   }
 }

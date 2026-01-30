@@ -593,13 +593,22 @@ function useWorkflowHandlers({
 
   // Helper to show Dapr input overlay or execute directly
   const promptAndExecute = () => {
-    if (engineType === "dapr") {
+    // Check if this workflow has any planning/agent nodes that require feature_request
+    const hasPlanningNodes = nodes.some((node) => {
+      const actionType = node.data.config?.actionType as string | undefined;
+      return actionType === "Run Planning Agent" || actionType === "Run Execution Agent";
+    });
+
+    // For Dapr workflows with planning nodes, show the input overlay
+    // For all other workflows (including Dapr with regular action nodes), execute directly
+    if (engineType === "dapr" && hasPlanningNodes) {
       openOverlay(DaprInputOverlay, {
         onRun: (input: DaprWorkflowInput) => {
           executeWorkflow(input);
         },
       });
     } else {
+      // Direct execution - no feature_request needed
       executeWorkflow();
     }
   };
