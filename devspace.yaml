@@ -15,43 +15,59 @@
 version: v2beta1
 name: workflow-builder
 
+# Import shared variable definitions from templates
+imports:
+  - path: ../../stacks/main/devspace-templates/base.yaml
+  - path: ../../stacks/main/devspace-templates/snippets/nextjs.yaml
+
+# App-specific variable values
+vars:
+  APP_NAME: workflow-builder
+  # Use different local port to avoid conflicts with ai-chatbot
+  LOCAL_PORT: "3002"
+  CONTAINER_PORT: "3000"
+  SSH_PORT: "2223"
+  RUN_MIGRATIONS: "true"
+  MIGRATION_COMMAND: "pnpm db:migrate"
+
 # Development configuration
 dev:
   app:
-    # Target the deployment by image selector (more reliable for workload identification)
-    namespace: workflow-builder
-    imageSelector: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder
-    container: workflow-builder
+    # Target the deployment by image selector
+    namespace: ${APP_NAME}
+    imageSelector: ${GITEA_HOST}/${GITEA_USER}/${APP_NAME}
+    container: ${APP_NAME}
 
-    # Replace production image with devcontainer
-    devImage: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder-devspace:latest
+    # Use shared devcontainer (instead of per-app image)
+    devImage: ${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace:latest
     workingDir: /app
 
     # Resource requirements for development
     resources:
       requests:
-        cpu: "500m"
-        memory: "2Gi"
+        cpu: ${CPU_REQUEST}
+        memory: ${MEMORY_REQUEST}
       limits:
-        cpu: "4"
-        memory: "8Gi"
+        cpu: ${CPU_LIMIT}
+        memory: ${MEMORY_LIMIT}
 
-    # Command to run in the container
-    # Runs pnpm install (with caching), migrations, then starts dev server
+    # Command to run in the container with plugin discovery
     command:
       - /bin/sh
       - -c
       - |
         set -e
-        echo "=== DevSpace Development Container ==="
+        echo "=== DevSpace Development Container (Workflow Builder) ==="
+        echo "Replacing production image: ${CURRENT_PRODUCTION_IMAGE}"
+        echo "Using shared devcontainer: nodejs-22-devspace"
+        echo ""
 
         # Always enable corepack and pnpm (required even if node_modules cached)
         echo "Enabling corepack and pnpm..."
         corepack enable
-        corepack prepare pnpm@9.12.3 --activate
+        corepack prepare pnpm@${PNPM_VERSION} --activate
 
         echo "Checking dependencies..."
-        # Only install if node_modules is missing or package.json changed
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
@@ -76,17 +92,15 @@ dev:
         exec next dev --turbo
 
     # File synchronization
-    # Sync only essential source code to container
-    # Uses emptyDir volume for /app to ensure proper write permissions
     sync:
       - path: ./:/app
         initialSync: mirrorLocal
         startContainer: true
         waitInitialSync: true
         onUpload:
-          restartContainer: false  # Hot-reload handles changes
+          restartContainer: false
         excludePaths:
-          # === NEVER SYNC (large/binary/generated) ===
+          # Node.js / Next.js artifacts
           - node_modules/
           - .pnpm-store/
           - .next/
@@ -94,7 +108,7 @@ dev:
           - out/
           - coverage/
           - next-env.d.ts
-          # === DEV TOOLING (not needed in container) ===
+          # Dev tooling
           - .devenv/
           - .devspace/
           - .direnv/
@@ -104,13 +118,13 @@ dev:
           - .idea/
           - .vscode/
           - .cursor/
-          # === TEST FILES (not needed for dev server) ===
+          # Test files
           - tests/
           - playwright-report/
           - test-results/
           - playwright.config.ts
           - vitest.config.ts
-          # === DOCS (not needed at runtime) ===
+          # Docs & config
           - docs/
           - "*.md"
           - "*.log"
@@ -126,11 +140,11 @@ dev:
           - .gitignore
           - .env.local
           - .env.example
-          # === SERVICE SUBPROJECTS ===
+          # Service subprojects (separate deployments)
           - services/
 
     # Note: persistPaths disabled to avoid PVC issues
-    # If you need faster restarts, uncomment and ensure PVC cleanup works
+    # If you need faster restarts, uncomment:
     # persistPaths:
     #   - path: /tmp
     #     skipPopulate: true
@@ -138,21 +152,17 @@ dev:
 
     # Patches to configure the pod for development
     patches:
-      # Remove health checks (dev server startup is slower)
       - op: remove
-        path: spec.containers.name=workflow-builder.livenessProbe
+        path: spec.containers.name=${APP_NAME}.livenessProbe
       - op: remove
-        path: spec.containers.name=workflow-builder.readinessProbe
-      # Run workflow-builder container as root for development to avoid permission issues
-      # Keep pod-level securityContext compatible with Dapr sidecar (non-root)
+        path: spec.containers.name=${APP_NAME}.readinessProbe
       - op: replace
-        path: spec.containers.name=workflow-builder.securityContext
+        path: spec.containers.name=${APP_NAME}.securityContext
         value:
           runAsUser: 0
           runAsGroup: 0
           runAsNonRoot: false
           allowPrivilegeEscalation: false
-      # Keep pod fsGroup for volume permissions, but allow non-root override per container
       - op: replace
         path: spec.securityContext
         value:
@@ -160,25 +170,21 @@ dev:
           runAsNonRoot: false
 
     # Port forwarding for development
-    # Use 3002 locally to avoid conflicts with other devspace instances
     ports:
-      - port: "3002:3000"  # Local 3002 -> Container 3000
+      - port: "${LOCAL_PORT}:${CONTAINER_PORT}"
 
     # SSH access for debugging
     ssh:
       enabled: true
-      localPort: 2223  # Different from ai-chatbot to avoid conflicts
+      localPort: 2223
 
     # Environment variables for development
-    # Only override values that differ from production deployment
-    # All other env vars come from ConfigMaps and the base Deployment
     env:
       - name: NODE_ENV
         value: development
       - name: NEXT_TELEMETRY_DISABLED
         value: "1"
-      # Override OTEL service name and environment for dev
       - name: OTEL_SERVICE_NAME
-        value: "workflow-builder-dev"
+        value: ${OTEL_SERVICE_NAME}
       - name: OTEL_RESOURCE_ATTRIBUTES
-        value: "deployment.environment=development,service.namespace=workflow-builder-dev,service.version=dev"
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME}-dev,service.version=dev"
