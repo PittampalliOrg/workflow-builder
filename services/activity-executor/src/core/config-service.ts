@@ -15,6 +15,51 @@ const CONFIG_STORE = process.env.DAPR_CONFIG_STORE || "azureappconfig";
 const configCache = new Map<string, { value: string; fetchedAt: number }>();
 const CACHE_TTL_MS = 60_000; // 1 minute cache
 
+// Label to filter configuration values (must match Component spec)
+const CONFIG_LABEL = process.env.CONFIG_LABEL || "activity-executor";
+
+// All configurations cache (fetched once, filtered by label)
+let allConfigsCache: { data: Record<string, string>; fetchedAt: number } | null = null;
+
+/**
+ * Fetch all configurations from Dapr configuration store
+ * Filters by label metadata since the Dapr API doesn't filter server-side
+ */
+async function fetchAllConfigs(): Promise<Record<string, string>> {
+  // Check cache
+  if (allConfigsCache && Date.now() - allConfigsCache.fetchedAt < CACHE_TTL_MS) {
+    return allConfigsCache.data;
+  }
+
+  try {
+    const url = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${CONFIG_STORE}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      console.warn(`[Config Service] Failed to fetch all configs: ${response.status}`);
+      return allConfigsCache?.data || {};
+    }
+
+    const data = await response.json() as Record<string, { value: string; metadata?: { label?: string } }>;
+
+    // Filter by label and extract values
+    const filtered: Record<string, string> = {};
+    for (const [key, config] of Object.entries(data)) {
+      if (config.metadata?.label === CONFIG_LABEL) {
+        filtered[key] = config.value;
+        configCache.set(key, { value: config.value, fetchedAt: Date.now() });
+      }
+    }
+
+    allConfigsCache = { data: filtered, fetchedAt: Date.now() };
+    console.log(`[Config Service] Loaded ${Object.keys(filtered).length} configs with label '${CONFIG_LABEL}'`);
+    return filtered;
+  } catch (error) {
+    console.warn(`[Config Service] Dapr config store not available: ${error instanceof Error ? error.message : error}`);
+    return allConfigsCache?.data || {};
+  }
+}
+
 /**
  * Fetch a single configuration value from Dapr configuration store
  */
@@ -25,78 +70,20 @@ export async function getConfig(key: string, defaultValue?: string): Promise<str
     return cached.value;
   }
 
-  try {
-    const url = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${CONFIG_STORE}?key=${encodeURIComponent(key)}`;
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        console.log(`[Config Service] Key not found: ${key}, using default`);
-        return defaultValue;
-      }
-      console.warn(`[Config Service] Failed to fetch config ${key}: ${response.status}`);
-      return defaultValue;
-    }
-
-    const data = await response.json() as Record<string, { value: string }>;
-
-    if (data[key]?.value) {
-      const value = data[key].value;
-      configCache.set(key, { value, fetchedAt: Date.now() });
-      console.log(`[Config Service] Loaded config: ${key}`);
-      return value;
-    }
-
-    return defaultValue;
-  } catch (error) {
-    console.warn(`[Config Service] Dapr config store not available: ${error instanceof Error ? error.message : error}`);
-    return defaultValue;
-  }
+  // Fetch all configs (cached) and return the specific key
+  const allConfigs = await fetchAllConfigs();
+  return allConfigs[key] ?? defaultValue;
 }
 
 /**
  * Fetch multiple configuration values at once
  */
 export async function getConfigs(keys: string[]): Promise<Record<string, string | undefined>> {
+  const allConfigs = await fetchAllConfigs();
   const result: Record<string, string | undefined> = {};
 
-  // Check which keys need fetching
-  const keysToFetch: string[] = [];
   for (const key of keys) {
-    const cached = configCache.get(key);
-    if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-      result[key] = cached.value;
-    } else {
-      keysToFetch.push(key);
-    }
-  }
-
-  if (keysToFetch.length === 0) {
-    return result;
-  }
-
-  try {
-    const keysParam = keysToFetch.map(k => `key=${encodeURIComponent(k)}`).join("&");
-    const url = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${CONFIG_STORE}?${keysParam}`;
-    const response = await fetch(url);
-
-    if (!response.ok) {
-      console.warn(`[Config Service] Failed to fetch configs: ${response.status}`);
-      return result;
-    }
-
-    const data = await response.json() as Record<string, { value: string }>;
-
-    for (const [key, config] of Object.entries(data)) {
-      if (config?.value) {
-        result[key] = config.value;
-        configCache.set(key, { value: config.value, fetchedAt: Date.now() });
-      }
-    }
-
-    console.log(`[Config Service] Loaded ${Object.keys(data).length} configs`);
-  } catch (error) {
-    console.warn(`[Config Service] Dapr config store not available: ${error instanceof Error ? error.message : error}`);
+    result[key] = allConfigs[key];
   }
 
   return result;
