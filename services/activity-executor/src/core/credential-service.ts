@@ -1,8 +1,11 @@
 /**
  * Credential Service
  *
- * Fetches and decrypts integration credentials from the database.
- * Adapted from lib/db/integrations.ts and lib/credential-fetcher.ts
+ * Fetches integration credentials from multiple sources:
+ * 1. Dapr Secret Store (Azure Key Vault) - auto-injection without UI config
+ * 2. Database (encrypted) - user-configured integrations
+ *
+ * Priority: Dapr secrets take precedence, with database fallback.
  *
  * Uses raw SQL to avoid Drizzle type mismatches between monorepo packages.
  */
@@ -137,52 +140,237 @@ export async function getIntegrationById(
  */
 export type WorkflowCredentials = Record<string, string | undefined>;
 
+// ─── Dapr Secrets Integration ────────────────────────────────────────────────
+
 /**
- * Get credential mapping for a plugin based on its form fields
- * This dynamically imports the plugin registry to get the credential mapping
+ * Configuration for Dapr secrets store
+ */
+const DAPR_SECRETS_STORE = process.env.DAPR_SECRETS_STORE || "azure-keyvault";
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
+const DAPR_HOST = process.env.DAPR_HOST || "localhost";
+
+/**
+ * Get feature flags from app config (lazy import to avoid circular deps)
+ */
+async function getFeatureFlags(): Promise<{ daprSecretsEnabled: boolean; databaseFallback: boolean }> {
+  try {
+    const { getAppConfig } = await import("../index.js");
+    const config = getAppConfig();
+    return {
+      daprSecretsEnabled: config?.features?.daprSecretsEnabled ?? true,
+      databaseFallback: config?.features?.databaseFallback ?? true,
+    };
+  } catch {
+    // Config not loaded yet, use env vars
+    return {
+      daprSecretsEnabled: process.env.DAPR_SECRETS_ENABLED !== "false",
+      databaseFallback: process.env.SECRETS_FALLBACK_DB !== "false",
+    };
+  }
+}
+
+/**
+ * Mapping of integration types to their secret keys in the Dapr secret store.
+ * Format: { integrationType: { ENV_VAR: "secret-key-in-vault" } }
+ *
+ * This enables auto-injection of API keys without requiring UI configuration.
+ * Secret names use UPPERCASE-WITH-HYPHENS to match Azure Key Vault convention.
+ */
+const SECRET_MAPPINGS: Record<string, Record<string, string>> = {
+  // AI providers
+  "ai-gateway": {
+    AI_GATEWAY_API_KEY: "AI-GATEWAY-API-KEY",  // Unified AI Gateway key
+    OPENAI_API_KEY: "OPENAI-API-KEY",
+    ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY",
+    GOOGLE_AI_API_KEY: "GEMINI-API-KEY",
+  },
+  openai: { OPENAI_API_KEY: "OPENAI-API-KEY" },
+  anthropic: { ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY" },
+
+  // Communication
+  slack: { SLACK_BOT_TOKEN: "SLACK-BOT-TOKEN" },
+  resend: { RESEND_API_KEY: "RESEND-API-KEY" },
+
+  // Developer tools
+  github: { GITHUB_TOKEN: "GITHUB-TOKEN" },
+  linear: { LINEAR_API_KEY: "LINEAR-API-KEY" },
+
+  // Payment
+  stripe: { STRIPE_SECRET_KEY: "STRIPE-SECRET-KEY" },
+
+  // Web scraping / search
+  firecrawl: { FIRECRAWL_API_KEY: "FIRECRAWL-API-KEY" },
+  perplexity: { PERPLEXITY_API_KEY: "PERPLEXITY-API-KEY" },
+
+  // Auth providers
+  clerk: { CLERK_SECRET_KEY: "CLERK-SECRET-KEY" },
+
+  // Media / AI
+  fal: { FAL_KEY: "FAL-API-KEY" },
+
+  // CMS
+  webflow: { WEBFLOW_API_TOKEN: "WEBFLOW-API-TOKEN" },
+
+  // AI guardrails
+  superagent: { SUPERAGENT_API_KEY: "SUPERAGENT-API-KEY" },
+};
+
+/**
+ * Fetch a single secret from Dapr secret store
+ */
+async function fetchDaprSecret(secretKey: string): Promise<string | undefined> {
+  try {
+    const url = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/secrets/${DAPR_SECRETS_STORE}/${secretKey}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      // Secret not found is common and not an error
+      if (response.status === 404) {
+        return undefined;
+      }
+      console.warn(`[Credential Service] Dapr secret fetch failed for ${secretKey}: ${response.status}`);
+      return undefined;
+    }
+
+    const data = await response.json() as Record<string, string>;
+    return data[secretKey];
+  } catch (error) {
+    // Dapr sidecar might not be available (local dev without Dapr)
+    console.warn(`[Credential Service] Dapr secret store not available: ${error instanceof Error ? error.message : error}`);
+    return undefined;
+  }
+}
+
+/**
+ * Fetch credentials from Dapr secret store based on integration type
+ */
+async function fetchDaprCredentials(
+  integrationType: string
+): Promise<WorkflowCredentials> {
+  const mapping = SECRET_MAPPINGS[integrationType];
+  if (!mapping) {
+    return {};
+  }
+
+  const credentials: WorkflowCredentials = {};
+
+  console.log(`[Credential Service] Fetching Dapr secrets for ${integrationType}`);
+
+  for (const [envVar, secretKey] of Object.entries(mapping)) {
+    const value = await fetchDaprSecret(secretKey);
+    if (value) {
+      credentials[envVar] = value;
+      console.log(`[Credential Service] Found Dapr secret: ${secretKey}`);
+    }
+  }
+
+  return credentials;
+}
+
+// ─── Main Credential Fetching ────────────────────────────────────────────────
+
+/**
+ * Fetch credentials for an integration.
+ *
+ * Priority:
+ * 1. Dapr secret store (auto-injection from Azure Key Vault)
+ * 2. Database integration (user-configured)
+ *
+ * Feature flags (from Dapr Config):
+ * - daprSecretsEnabled: Whether to fetch from Dapr secret store
+ * - databaseFallback: Whether to fall back to database if secrets not found
+ *
+ * @param integrationId - Optional ID of user-configured integration
+ * @param integrationType - Type of integration (e.g., "slack", "github")
  */
 export async function fetchCredentials(
+  integrationId?: string,
+  integrationType?: string
+): Promise<WorkflowCredentials> {
+  const credentials: WorkflowCredentials = {};
+  const { daprSecretsEnabled, databaseFallback } = await getFeatureFlags();
+
+  // Step 1: Try Dapr secrets (auto-injection) if enabled
+  if (integrationType && daprSecretsEnabled) {
+    const daprCreds = await fetchDaprCredentials(integrationType);
+    Object.assign(credentials, daprCreds);
+
+    if (Object.keys(daprCreds).length > 0) {
+      console.log(`[Credential Service] Using Dapr secrets for ${integrationType}`);
+      // If we got Dapr secrets, we can skip database lookup
+      // unless databaseFallback is enabled and some credentials are missing
+      if (!databaseFallback) {
+        return credentials;
+      }
+    }
+  }
+
+  // Step 2: Fallback to database (user-configured integration)
+  if (integrationId && (databaseFallback || Object.keys(credentials).length === 0)) {
+    console.log(`[Credential Service] Fetching database integration: ${integrationId}`);
+
+    const integration = await getIntegrationById(integrationId);
+
+    if (integration) {
+      console.log(`[Credential Service] Found integration: ${integration.type}`);
+
+      // Dynamically import the plugin registry to get credential mapping
+      const { getIntegration, getCredentialMapping } = await import("@/plugins/registry.js");
+
+      // Cast to any to avoid IntegrationType version mismatch
+      const plugin = getIntegration(integration.type as never);
+      if (plugin) {
+        const dbCreds = getCredentialMapping(plugin, integration.config);
+        // Only add credentials that weren't already set by Dapr
+        for (const [key, value] of Object.entries(dbCreds)) {
+          if (!credentials[key] && value) {
+            credentials[key] = value;
+          }
+        }
+        console.log(`[Credential Service] Merged database credentials for: ${integration.type}`);
+      }
+    }
+  }
+
+  // Fallback for system integrations (like database)
+  if (integrationId && Object.keys(credentials).length === 0) {
+    const integration = await getIntegrationById(integrationId);
+    if (integration) {
+      const systemMappers: Record<string, (config: IntegrationConfig) => WorkflowCredentials> = {
+        database: (config) => {
+          const creds: WorkflowCredentials = {};
+          if (config.url) {
+            creds.DATABASE_URL = config.url;
+          }
+          return creds;
+        },
+      };
+
+      const mapper = systemMappers[integration.type];
+      if (mapper) {
+        Object.assign(credentials, mapper(integration.config));
+      }
+    }
+  }
+
+  if (Object.keys(credentials).length === 0) {
+    console.log("[Credential Service] No credentials found");
+  }
+
+  return credentials;
+}
+
+/**
+ * Fetch credentials for a specific integration by ID (legacy support)
+ * @deprecated Use fetchCredentials(integrationId, integrationType) instead
+ */
+export async function fetchCredentialsByIntegrationId(
   integrationId: string
 ): Promise<WorkflowCredentials> {
   console.log("[Credential Service] Fetching integration:", integrationId);
 
   const integration = await getIntegrationById(integrationId);
+  const integrationType = integration?.type;
 
-  if (!integration) {
-    console.log("[Credential Service] Integration not found");
-    return {};
-  }
-
-  console.log("[Credential Service] Found integration:", integration.type);
-
-  // Dynamically import the plugin registry to get credential mapping
-  // This allows us to reuse the plugin definitions without duplicating the mapping logic
-  const { getIntegration, getCredentialMapping } = await import("@/plugins/registry.js");
-
-  // Cast to any to avoid IntegrationType version mismatch
-  const plugin = getIntegration(integration.type as never);
-  if (plugin) {
-    const credentials = getCredentialMapping(plugin, integration.config);
-    console.log("[Credential Service] Returning credentials for type:", integration.type);
-    return credentials;
-  }
-
-  // Fallback for system integrations (like database)
-  const systemMappers: Record<string, (config: IntegrationConfig) => WorkflowCredentials> = {
-    database: (config) => {
-      const creds: WorkflowCredentials = {};
-      if (config.url) {
-        creds.DATABASE_URL = config.url;
-      }
-      return creds;
-    },
-  };
-
-  const mapper = systemMappers[integration.type];
-  if (mapper) {
-    return mapper(integration.config);
-  }
-
-  console.log("[Credential Service] No mapping found for type:", integration.type);
-  return {};
+  return fetchCredentials(integrationId, integrationType);
 }

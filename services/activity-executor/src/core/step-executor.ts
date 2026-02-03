@@ -3,6 +3,10 @@
  *
  * Executes plugin step handlers using a static registry.
  * This is the core of the activity executor service.
+ *
+ * Credentials are fetched from:
+ * 1. Dapr secret store (auto-injection from Azure Key Vault)
+ * 2. Database (user-configured integrations)
  */
 import { findActionById } from "@/plugins/registry.js";
 import { fetchCredentials, type WorkflowCredentials } from "./credential-service.js";
@@ -36,9 +40,15 @@ export async function executeStep(
   const startTime = Date.now();
 
   try {
-    // 1. Find the action definition
+    // 1. Find the action definition (optional for system actions)
     const action = findActionById(input.activity_id);
-    if (!action) {
+
+    // 2. Check if step function exists in registry
+    // This allows system actions (like HTTP Request) that don't have plugin definitions
+    const stepFn = getStepFunction(input.activity_id);
+
+    // If neither action definition nor step function exists, it's truly unknown
+    if (!action && !stepFn) {
       return {
         success: false,
         error: `Unknown activity: ${input.activity_id}`,
@@ -46,20 +56,20 @@ export async function executeStep(
       };
     }
 
-    // 2. Fetch credentials if integration_id is provided
+    // 3. Fetch credentials (Dapr secrets + database fallback)
+    // Extract integration type from activity ID (e.g., "slack/send-message" -> "slack")
+    const integrationType = input.activity_id.split("/")[0];
     let credentials: WorkflowCredentials = {};
-    if (input.integration_id) {
-      credentials = await fetchCredentials(input.integration_id);
-    }
 
-    // 3. Resolve template variables in the input config
+    // Fetch credentials: Dapr secrets take precedence, with DB fallback
+    credentials = await fetchCredentials(input.integration_id, integrationType);
+
+    // 4. Resolve template variables in the input config
     const resolvedInput = input.node_outputs
       ? resolveTemplates(input.input, input.node_outputs)
       : input.input;
 
-    // 4. Get step function from static registry
-    const stepFn = getStepFunction(input.activity_id);
-
+    // 5. Ensure step function exists (should always be true after check above)
     if (!stepFn) {
       return {
         success: false,
@@ -68,10 +78,13 @@ export async function executeStep(
       };
     }
 
-    // 5. Prepare step input (merge config with context and integration ID)
+    // 6. Prepare step input (merge config with context, credentials, and integration ID)
+    // Credentials are injected directly so plugins don't need to fetch them again
     const stepInput = {
       ...resolvedInput,
+      ...credentials,  // Inject credentials directly (e.g., OPENAI_API_KEY, AI_GATEWAY_API_KEY)
       integrationId: input.integration_id,
+      _credentials: credentials,  // Also provide as separate object for plugins that need it
       _context: {
         executionId: input.execution_id,
         nodeId: input.node_id,
@@ -80,11 +93,11 @@ export async function executeStep(
       },
     };
 
-    // 6. Execute the step
+    // 7. Execute the step
     console.log(`[Step Executor] Executing ${input.activity_id} for node ${input.node_name}`);
     const result = await stepFn(stepInput);
 
-    // 7. Normalize the result
+    // 8. Normalize the result
     const duration_ms = Date.now() - startTime;
 
     if (result && typeof result === "object" && "success" in result) {
