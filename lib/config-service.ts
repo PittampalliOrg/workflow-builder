@@ -23,12 +23,12 @@ const CONFIG_KEYS = {
 } as const;
 
 // Default values (fallback when config not available)
-// All services are now in the workflow-builder namespace
+// All workflow services are in the workflow-builder namespace
 const DEFAULTS: Record<string, string> = {
-  [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
-  [CONFIG_KEYS.DAPR_ORCHESTRATOR_URL]: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
-  [CONFIG_KEYS.ACTIVITY_EXECUTOR_URL]: "http://function-runner.workflow-builder.svc.cluster.local:8080",
-  [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080",
+  [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
+  [CONFIG_KEYS.DAPR_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
+  [CONFIG_KEYS.ACTIVITY_EXECUTOR_URL]: "http://activity-executor:8080",
+  [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
 };
 
 // Environment variable mappings
