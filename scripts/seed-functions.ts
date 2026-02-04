@@ -28,6 +28,7 @@ import {
   type ActionWithFullId,
   type IntegrationPlugin,
 } from "../plugins/registry.js";
+import { generateId } from "../lib/utils/id.js";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -168,14 +169,16 @@ async function seedFunctions() {
         console.log(`  ✓ Updated: ${slug}`);
       } else {
         // Insert new record
+        const id = generateId();
         await db.execute(sql`
           INSERT INTO functions (
-            name, slug, description, plugin_id, version,
+            id, name, slug, description, plugin_id, version,
             execution_type, input_schema, output_schema,
             timeout_seconds, integration_type,
             is_builtin, is_enabled, is_deprecated,
             created_at, updated_at
           ) VALUES (
+            ${id},
             ${action.label},
             ${slug},
             ${action.description},
@@ -251,14 +254,16 @@ async function seedFunctions() {
       updated++;
       console.log(`  ✓ Updated: ${httpRequestSlug}`);
     } else {
+      const httpId = generateId();
       await db.execute(sql`
         INSERT INTO functions (
-          name, slug, description, plugin_id, version,
+          id, name, slug, description, plugin_id, version,
           execution_type, input_schema, output_schema,
           timeout_seconds, integration_type,
           is_builtin, is_enabled, is_deprecated,
           created_at, updated_at
         ) VALUES (
+          ${httpId},
           'HTTP Request',
           ${httpRequestSlug},
           'Make an HTTP request to any URL',

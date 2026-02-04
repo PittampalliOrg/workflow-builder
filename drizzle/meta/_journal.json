@@ -43,6 +43,13 @@
       "when": 1769636303617,
       "tag": "0005_slippery_tombstone",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1770245605039,
+      "tag": "0006_talented_exiles",
+      "breakpoints": true
     }
   ]
 }
