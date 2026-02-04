@@ -4,6 +4,7 @@
  * Fetches integration credentials from multiple sources:
  * 1. Dapr Secret Store (Azure Key Vault) - auto-injection without UI config
  * 2. Database (encrypted) - user-configured integrations
+ * 3. ActivePieces credential mapping (for AP pieces)
  *
  * Priority: Dapr secrets take precedence, with database fallback.
  *
@@ -13,6 +14,7 @@ import { createDecipheriv } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db.js";
 import type { WorkflowCredentials } from "./types.js";
+import type { ActivePiecesAuth } from "./activepieces-credentials.js";
 
 // Type aliases (avoid importing from root to prevent Drizzle version conflicts)
 type IntegrationType = string;
@@ -250,23 +252,97 @@ async function fetchDaprCredentials(
 // ─── Main Credential Fetching ────────────────────────────────────────────────
 
 /**
+ * Mapping of integration config keys to environment variable names
+ * Used when extracting credentials from passed integrations
+ */
+const INTEGRATION_CONFIG_TO_ENV: Record<string, Record<string, string>> = {
+  openai: { apiKey: "OPENAI_API_KEY" },
+  anthropic: { apiKey: "ANTHROPIC_API_KEY" },
+  slack: { botToken: "SLACK_BOT_TOKEN" },
+  resend: { apiKey: "RESEND_API_KEY" },
+  github: { token: "GITHUB_TOKEN", accessToken: "GITHUB_TOKEN" },
+  linear: { apiKey: "LINEAR_API_KEY" },
+  stripe: { secretKey: "STRIPE_SECRET_KEY" },
+  firecrawl: { apiKey: "FIRECRAWL_API_KEY" },
+  perplexity: { apiKey: "PERPLEXITY_API_KEY" },
+  clerk: { secretKey: "CLERK_SECRET_KEY" },
+  fal: { key: "FAL_KEY", apiKey: "FAL_KEY" },
+  webflow: { apiToken: "WEBFLOW_API_TOKEN" },
+  superagent: { apiKey: "SUPERAGENT_API_KEY" },
+};
+
+/**
+ * Extract credentials from passed integrations object
+ * @param integrations - User integrations passed from orchestrator { "openai": { "apiKey": "..." } }
+ * @param integrationType - Type of integration to extract
+ */
+function extractPassedCredentials(
+  integrations: Record<string, Record<string, string>>,
+  integrationType: string
+): WorkflowCredentials {
+  const credentials: WorkflowCredentials = {};
+
+  // Check for exact type match
+  const integrationConfig = integrations[integrationType];
+  if (!integrationConfig) {
+    return credentials;
+  }
+
+  // Get the mapping for this integration type
+  const mapping = INTEGRATION_CONFIG_TO_ENV[integrationType] || {};
+
+  for (const [configKey, value] of Object.entries(integrationConfig)) {
+    if (!value) continue;
+
+    // First check if there's a specific mapping for this config key
+    const envVar = mapping[configKey];
+    if (envVar) {
+      credentials[envVar] = value;
+    } else {
+      // Fallback: convert camelCase to SCREAMING_SNAKE_CASE
+      // e.g., apiKey -> API_KEY
+      const envName = configKey
+        .replace(/([a-z])([A-Z])/g, "$1_$2")
+        .toUpperCase();
+      credentials[envName] = value;
+    }
+  }
+
+  return credentials;
+}
+
+/**
  * Fetch credentials for an integration.
  *
  * Priority:
- * 1. Dapr secret store (auto-injection from Azure Key Vault)
- * 2. Database integration (user-configured)
+ * 1. Passed integrations (from orchestrator)
+ * 2. Dapr secret store (auto-injection from Azure Key Vault)
+ * 3. Database integration (user-configured)
  *
  * @param integrationId - Optional ID of user-configured integration
  * @param integrationType - Type of integration (e.g., "slack", "github")
+ * @param passedIntegrations - User integrations passed from orchestrator
  */
 export async function fetchCredentials(
   integrationId?: string,
-  integrationType?: string
+  integrationType?: string,
+  passedIntegrations?: Record<string, Record<string, string>>
 ): Promise<WorkflowCredentials> {
   const credentials: WorkflowCredentials = {};
   const { daprSecretsEnabled, databaseFallback } = getFeatureFlags();
 
-  // Step 1: Try Dapr secrets (auto-injection) if enabled
+  // Step 1: Try passed integrations first (highest priority)
+  if (integrationType && passedIntegrations) {
+    const passedCreds = extractPassedCredentials(passedIntegrations, integrationType);
+    if (Object.keys(passedCreds).length > 0) {
+      console.log(`[Credential Service] Using passed integrations for ${integrationType}:`, Object.keys(passedCreds));
+      Object.assign(credentials, passedCreds);
+      // If we got passed credentials, return them immediately
+      return credentials;
+    }
+  }
+
+  // Step 2: Try Dapr secrets (auto-injection) if enabled
   if (integrationType && daprSecretsEnabled) {
     const daprCreds = await fetchDaprCredentials(integrationType);
     Object.assign(credentials, daprCreds);
@@ -281,7 +357,7 @@ export async function fetchCredentials(
     }
   }
 
-  // Step 2: Fallback to database (user-configured integration)
+  // Step 3: Fallback to database (user-configured integration)
   if (integrationId && (databaseFallback || Object.keys(credentials).length === 0)) {
     console.log(`[Credential Service] Fetching database integration: ${integrationId}`);
 
@@ -335,3 +411,15 @@ export async function fetchCredentials(
 
   return credentials;
 }
+
+// ─── ActivePieces Credential Mapping ─────────────────────────────────────────
+
+/**
+ * Map workflow-builder credentials to ActivePieces auth format.
+ * This is used when calling AP pieces via HTTP.
+ *
+ * @param pieceName - Name of the AP piece (e.g., "slack", "github")
+ * @param credentials - Credentials in our format (env var names)
+ * @returns ActivePieces auth payload
+ */
+export { mapCredentialsToActivePieces, type ActivePiecesAuth } from "./activepieces-credentials.js";

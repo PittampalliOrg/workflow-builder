@@ -65,6 +65,8 @@ pnpm db:generate      # Generate Drizzle migrations
 pnpm db:push          # Push schema to DB
 pnpm db:migrate       # Run migrations
 pnpm discover-plugins # Generate plugin manifest
+pnpm seed-functions   # Seed builtin functions to DB
+pnpm seed-activepieces # Seed ActivePieces actions to DB
 ```
 
 ## Project Structure
@@ -416,3 +418,89 @@ export const dynamicWorkflow: TWorkflow = async function* (
 ```
 
 This approach allows workflows to be updated without redeploying the orchestrator.
+
+## ActivePieces Integration
+
+The workflow-builder integrates with ActivePieces to provide access to 280+ pre-built integrations.
+
+### Architecture
+
+```
+┌─────────────────────┐     ┌──────────────────────┐
+│  workflow-builder   │────▶│  workflow-orchestrator│
+└─────────────────────┘     └──────────┬───────────┘
+                                       │
+                                       ▼
+                            ┌──────────────────────┐
+                            │   function-runner    │
+                            │  builtin│oci│ http  │
+                            └──────────┬───────────┘
+                                       │ HTTP POST
+                                       ▼
+                            ┌──────────────────────┐
+                            │    ActivePieces      │
+                            │  /api/v1/pieces/...  │
+                            │  280+ pieces         │
+                            └──────────────────────┘
+```
+
+### How It Works
+
+1. **Seeding**: Run `pnpm seed-activepieces` to discover AP pieces and seed them to the `functions` table as HTTP execution type
+2. **UI**: AP pieces appear in the action selector under "ActivePieces" group
+3. **Execution**: When a workflow runs an AP action, function-runner calls the AP execution endpoint
+4. **Credentials**: Credentials are mapped from our format to AP format automatically
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `lib/activepieces/types.ts` | Type definitions for AP pieces and actions |
+| `lib/activepieces/client.ts` | HTTP client for AP API |
+| `lib/activepieces/credential-mapper.ts` | Maps credentials to AP format |
+| `scripts/seed-activepieces-functions.ts` | Seeds AP pieces to functions table |
+| `services/function-runner/src/handlers/activepieces.ts` | HTTP handler for AP execution |
+| `app/api/activepieces/pieces/route.ts` | API endpoint for listing AP pieces |
+| `lib/hooks/use-activepieces.ts` | React hook for fetching AP data in UI |
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `ACTIVEPIECES_URL` | Base URL of ActivePieces instance | `https://activepieces.cnoe.localtest.me:8443` |
+| `ACTIVEPIECES_API_KEY` | API key for AP authentication | (optional) |
+
+### Seeding Commands
+
+```bash
+# Seed popular pieces (default)
+pnpm seed-activepieces
+
+# Seed specific pieces
+pnpm seed-activepieces --pieces=slack,github,notion
+
+# Seed all available pieces
+pnpm seed-activepieces --all
+```
+
+### Function Slug Format
+
+AP functions use the format: `ap-{pieceName}/{actionName}`
+
+Examples:
+- `ap-slack/send_message`
+- `ap-github/create_issue`
+- `ap-google-sheets/append_row`
+
+### Credential Mapping
+
+Credentials are automatically mapped from workflow-builder format to AP format:
+
+| Our Format | AP Format | Piece |
+|------------|-----------|-------|
+| `SLACK_BOT_TOKEN` | `access_token` | slack |
+| `GITHUB_TOKEN` | `access_token` | github |
+| `OPENAI_API_KEY` | `api_key` | openai |
+| `GOOGLE_ACCESS_TOKEN` | `access_token` | gmail, google-sheets |
+
+See `lib/activepieces/credential-mapper.ts` for the full mapping table.
