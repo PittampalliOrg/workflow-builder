@@ -1,9 +1,10 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows/[id]/status - Get Dapr workflow status
@@ -51,48 +52,59 @@ export async function GET(
     }
 
     // Get the orchestrator URL from the workflow
+    // Use config service (Azure App Config via Dapr) with fallback to defaults
     const workflow = await db.query.workflows.findFirst({
       where: eq(workflows.id, execution.workflowId),
     });
+    const defaultOrchestratorUrl = await getGenericOrchestratorUrl();
     const orchestratorUrl =
-      workflow?.daprOrchestratorUrl ||
-      process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-orchestrator:8080";
+      workflow?.daprOrchestratorUrl || defaultOrchestratorUrl;
 
-    // Fetch status from Dapr orchestrator (flat response)
-    const daprStatus = await daprClient.getWorkflowStatus(
+    // Fetch status from generic orchestrator (v2 API)
+    const orchestratorStatus = await genericOrchestratorClient.getWorkflowStatus(
       orchestratorUrl,
       execution.daprInstanceId
     );
 
-    // Extract flat fields from orchestrator response
-    const phase = daprStatus.phase || null;
-    const progress = daprStatus.progress ?? null;
-    const message = daprStatus.message || null;
+    // Extract fields from orchestrator response
+    const phase = orchestratorStatus.phase || null;
+    const progress = orchestratorStatus.progress ?? null;
+    const message = orchestratorStatus.message || null;
 
-    // Map Dapr runtime_status to our execution status
-    // Also check phase and output.success since orchestrator may return
+    // Map orchestrator runtimeStatus to our execution status
+    // Also check phase and outputs.success since orchestrator may return
     // COMPLETED even when workflow internally failed
     let localStatus = execution.status;
-    let errorMessage: string | null = null;
+    let errorMessage: string | null = orchestratorStatus.error || null;
+    const outputs = orchestratorStatus.outputs as Record<string, unknown> | undefined;
+    const outputSuccess = outputs?.success;
 
-    if (daprStatus.runtime_status === "COMPLETED") {
+    if (orchestratorStatus.runtimeStatus === "COMPLETED") {
       // Check if workflow actually succeeded or failed internally
-      const outputSuccess = (daprStatus.output as Record<string, unknown>)?.success;
       if (phase === "failed" || outputSuccess === false) {
         localStatus = "error";
-        errorMessage = message || (daprStatus.output as Record<string, unknown>)?.error as string || "Workflow failed";
+        errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
       } else {
         localStatus = "success";
       }
     } else if (
-      daprStatus.runtime_status === "FAILED" ||
-      daprStatus.runtime_status === "TERMINATED"
+      orchestratorStatus.runtimeStatus === "FAILED" ||
+      orchestratorStatus.runtimeStatus === "TERMINATED"
     ) {
       localStatus = "error";
-      errorMessage = message || "Workflow failed";
-    } else if (daprStatus.runtime_status === "RUNNING") {
+      errorMessage = errorMessage || message || "Workflow failed";
+    } else if (orchestratorStatus.runtimeStatus === "RUNNING") {
       localStatus = "running";
+    } else if (orchestratorStatus.runtimeStatus === "UNKNOWN") {
+      // UNKNOWN typically means workflow completed and was purged from runtime
+      // Check phase and outputs to determine actual status
+      if (phase === "completed" || outputSuccess === true) {
+        localStatus = "success";
+      } else if (phase === "failed" || outputSuccess === false) {
+        localStatus = "error";
+        errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+      }
+      // If phase/outputs don't indicate completion, keep current status
     }
 
     await db
@@ -112,22 +124,41 @@ export async function GET(
       executionId: id,
       daprInstanceId: execution.daprInstanceId,
       status: localStatus,
-      daprStatus: daprStatus.runtime_status,
+      daprStatus: orchestratorStatus.runtimeStatus,
       phase,
       progress,
       message,
-      output: daprStatus.output,
+      output: orchestratorStatus.outputs,
     });
   } catch (error) {
     console.error("[Dapr API] Failed to get workflow status:", error);
+
+    // If the Dapr orchestrator can't find the workflow, mark the execution as error
+    // to stop the infinite polling loop
+    const errorMessage = error instanceof Error ? error.message : "Failed to get workflow status";
+    const isNotFound = errorMessage.includes("404") || errorMessage.toLowerCase().includes("not found");
+
+    if (isNotFound) {
+      const { id } = await context.params;
+      try {
+        await db
+          .update(workflowExecutions)
+          .set({
+            status: "error",
+            error: "Workflow instance not found in orchestrator",
+            completedAt: new Date(),
+          })
+          .where(eq(workflowExecutions.id, id));
+      } catch (dbError) {
+        console.error("[Dapr API] Failed to update execution status:", dbError);
+      }
+    }
+
     return NextResponse.json(
       {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to get workflow status",
+        error: errorMessage,
       },
-      { status: 500 }
+      { status: isNotFound ? 404 : 500 }
     );
   }
 }

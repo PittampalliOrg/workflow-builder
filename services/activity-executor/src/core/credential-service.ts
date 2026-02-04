@@ -178,12 +178,6 @@ async function getFeatureFlags(): Promise<{ daprSecretsEnabled: boolean; databas
  */
 const SECRET_MAPPINGS: Record<string, Record<string, string>> = {
   // AI providers
-  "ai-gateway": {
-    AI_GATEWAY_API_KEY: "AI-GATEWAY-API-KEY",  // Unified AI Gateway key
-    OPENAI_API_KEY: "OPENAI-API-KEY",
-    ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY",
-    GOOGLE_AI_API_KEY: "GEMINI-API-KEY",
-  },
   openai: { OPENAI_API_KEY: "OPENAI-API-KEY" },
   anthropic: { ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY" },
 

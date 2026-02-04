@@ -13,9 +13,12 @@ export const LEGACY_ACTION_MAPPINGS: Record<string, string> = {
   Scrape: "firecrawl/scrape",
   Search: "firecrawl/search",
 
-  // AI Gateway
-  "Generate Text": "ai-gateway/generate-text",
-  "Generate Image": "ai-gateway/generate-image",
+  // OpenAI (formerly AI Gateway)
+  "Generate Text": "openai/generate-text",
+  "Generate Image": "openai/generate-image",
+  // Legacy ai-gateway mappings for old workflows
+  "ai-gateway/generate-text": "openai/generate-text",
+  "ai-gateway/generate-image": "openai/generate-image",
 
   // Resend
   "Send Email": "resend/send-email",

@@ -1,0 +1,40 @@
+# Kustomization for Knative/Dapr Workflow Services
+#
+# This kustomization includes all the manifests needed for the
+# self-hosted workflow execution infrastructure.
+#
+# Usage:
+#   kubectl apply -k k8s/knative/
+#
+# Prerequisites:
+# - Knative Serving installed (for activity-executor scale-to-zero)
+# - Dapr installed with workflow support
+# - Redis deployed in the cluster
+# - workflow-builder namespace exists
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: workflow-builder
+
+resources:
+  # activity-executor.yaml excluded - using existing deployment in activity-executor namespace
+  # - activity-executor.yaml
+  - workflow-orchestrator.yaml
+  - dapr-secrets-component.yaml
+
+# Common labels applied to all resources (using 'labels' to avoid selector injection)
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: workflow-builder
+      app.kubernetes.io/managed-by: kustomize
+    includeSelectors: false
+
+# Image overrides for Gitea registry
+images:
+  - name: activity-executor
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/activity-executor
+    newTag: latest
+  - name: workflow-orchestrator
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator
+    newTag: latest

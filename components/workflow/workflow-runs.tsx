@@ -854,27 +854,79 @@ export function WorkflowRuns({
 
     const pollExecutions = async () => {
       try {
-        // First, poll Dapr status for any running executions to update their status
-        const runningExecutions = executions.filter(
+        // First, fetch updated executions from the database
+        const data = await api.workflow.getExecutions(currentWorkflowId);
+        let newExecutions = data as WorkflowExecution[];
+
+        // Create a set of valid execution IDs for quick lookup
+        const validExecutionIds = new Set(newExecutions.map((e) => e.id));
+
+        // Clean up expanded runs that no longer exist in the database
+        setExpandedRuns((prev) => {
+          const cleaned = new Set<string>();
+          for (const id of prev) {
+            if (validExecutionIds.has(id)) {
+              cleaned.add(id);
+            }
+          }
+          return cleaned.size !== prev.size ? cleaned : prev;
+        });
+
+        // Poll Dapr status for any running executions to update their status
+        const runningExecutions = newExecutions.filter(
           (e) => e.status === "running"
         );
+
+        // Track status updates to merge with fetched data
+        const statusUpdates: Record<string, { status: string; phase: string | null; progress: number | null }> = {};
+
         for (const execution of runningExecutions) {
           try {
             // This calls the status API which updates the DB from Dapr orchestrator
-            await api.dapr.getStatus(execution.id);
+            const statusResponse = await api.dapr.getStatus(execution.id);
+
+            // Collect status updates to merge
+            if (statusResponse.status !== execution.status ||
+                statusResponse.phase !== execution.phase ||
+                statusResponse.progress !== execution.progress) {
+              statusUpdates[execution.id] = {
+                status: statusResponse.status,
+                phase: statusResponse.phase,
+                progress: statusResponse.progress,
+              };
+            }
           } catch (error) {
-            // Ignore errors for individual status checks
-            console.debug(`Failed to poll Dapr status for ${execution.id}:`, error);
+            // Log error and mark as error to stop the spinner
+            // Any error polling status means we should stop the spinner
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.warn(`Failed to poll status for ${execution.id}, marking as error:`, errorMessage);
+
+            // Mark as error locally to stop the spinner
+            statusUpdates[execution.id] = {
+              status: "error",
+              phase: "failed",
+              progress: 0,
+            };
           }
         }
 
-        // Then fetch updated executions from the database
-        const data = await api.workflow.getExecutions(currentWorkflowId);
-        setExecutions(data as WorkflowExecution[]);
+        // Merge status updates into fetched executions before setting state
+        if (Object.keys(statusUpdates).length > 0) {
+          newExecutions = newExecutions.map((e) =>
+            statusUpdates[e.id]
+              ? { ...e, ...statusUpdates[e.id] } as WorkflowExecution
+              : e
+          );
+        }
 
-        // Also refresh logs for expanded runs
+        // Set state once with merged data
+        setExecutions(newExecutions);
+
+        // Refresh logs only for expanded runs that still exist
         for (const executionId of expandedRuns) {
-          await refreshExecutionLogs(executionId);
+          if (validExecutionIds.has(executionId)) {
+            await refreshExecutionLogs(executionId);
+          }
         }
       } catch (error) {
         console.error("Failed to poll executions:", error);

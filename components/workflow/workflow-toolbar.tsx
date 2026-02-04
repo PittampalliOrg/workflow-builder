@@ -422,7 +422,8 @@ async function executeTestWorkflow({
     });
 
     if (!response.ok) {
-      throw new Error("Failed to execute workflow");
+      const errorData = await response.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to execute workflow (${response.status})`);
     }
 
     const result = await response.json();
@@ -499,6 +500,7 @@ type WorkflowHandlerParams = {
   setSelectedExecutionId: (id: string | null) => void;
   userIntegrations: Array<{ id: string; type: IntegrationType }>;
   engineType: "vercel" | "dapr";
+  session: { user: { id: string } } | null;
 };
 
 function useWorkflowHandlers({
@@ -517,6 +519,7 @@ function useWorkflowHandlers({
   setSelectedExecutionId,
   userIntegrations,
   engineType,
+  session,
 }: WorkflowHandlerParams) {
   const { open: openOverlay } = useOverlay();
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -552,6 +555,19 @@ function useWorkflowHandlers({
     if (!currentWorkflowId) {
       toast.error("Please save the workflow before executing");
       return;
+    }
+
+    // Auto-sign in as anonymous if user has no session
+    if (!session?.user) {
+      try {
+        await authClient.signIn.anonymous();
+        // Wait for session to be established
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } catch (error) {
+        console.error("Failed to create anonymous session:", error);
+        toast.error("Failed to authenticate. Please try signing in.");
+        return;
+      }
     }
 
     // Switch to Runs tab when starting a test run
@@ -798,6 +814,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
     setSelectedExecutionId,
     userIntegrations,
     engineType,
+    session,
   });
 
   // Listen for execute trigger from keyboard shortcut

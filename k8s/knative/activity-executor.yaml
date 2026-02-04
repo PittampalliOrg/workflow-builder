@@ -1,0 +1,219 @@
+# Knative Service for Activity Executor
+# Enables scale-to-zero serverless execution for workflow activities
+#
+# This service is invoked by the workflow-orchestrator via Dapr service invocation.
+# Knative handles autoscaling based on incoming requests.
+#
+# Prerequisites:
+# - Knative Serving installed in the cluster
+# - Dapr injector configured for Knative services
+---
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: activity-executor
+  namespace: workflow-builder
+  labels:
+    app.kubernetes.io/name: activity-executor
+    app.kubernetes.io/component: activities
+    app.kubernetes.io/part-of: workflow-builder
+  annotations:
+    # Enable Dapr sidecar injection
+    dapr.io/enabled: "true"
+    dapr.io/app-id: "activity-executor"
+    dapr.io/app-port: "8080"
+    dapr.io/app-protocol: "http"
+    dapr.io/enable-api-logging: "true"
+spec:
+  template:
+    metadata:
+      annotations:
+        # Knative autoscaling configuration
+        autoscaling.knative.dev/class: "kpa.autoscaling.knative.dev"
+        autoscaling.knative.dev/metric: "concurrency"
+        autoscaling.knative.dev/target: "10"
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "10"
+        # Scale down delay for cost optimization
+        autoscaling.knative.dev/scale-down-delay: "30s"
+        # Dapr sidecar configuration
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "activity-executor"
+        dapr.io/app-port: "8080"
+        dapr.io/app-protocol: "http"
+        dapr.io/log-level: "info"
+        dapr.io/enable-metrics: "true"
+        # Allow traffic before sidecar is ready (for faster cold starts)
+        dapr.io/sidecar-listen-addresses: "0.0.0.0"
+        # Dapr sidecar resource settings (production best practices)
+        dapr.io/sidecar-cpu-request: "100m"
+        dapr.io/sidecar-cpu-limit: "300m"
+        dapr.io/sidecar-memory-request: "250Mi"
+        dapr.io/sidecar-memory-limit: "1000Mi"
+        # Enable graceful shutdown
+        dapr.io/graceful-shutdown-seconds: "30"
+        # Component scoping - only allow access to needed components
+        dapr.io/config: "activity-executor-config"
+    spec:
+      containerConcurrency: 10
+      timeoutSeconds: 300
+      containers:
+        - name: activity-executor
+          image: activity-executor:latest
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: NODE_ENV
+              value: "production"
+            # NOTE: PORT is reserved by Knative - the container will receive PORT=8080 automatically
+            - name: LOG_LEVEL
+              value: "info"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: workflow-builder-secrets
+                  key: database-url
+            - name: INTEGRATION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: workflow-builder-secrets
+                  key: integration-encryption-key
+                  optional: true
+            # Dapr configuration for secrets store
+            - name: DAPR_SECRETS_STORE
+              value: "azure-keyvault"
+            - name: SECRETS_FALLBACK_DB
+              value: "true"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          # Security context for container
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # Node.js may need write access
+            capabilities:
+              drop:
+                - ALL
+---
+# Dapr Configuration for activity-executor
+# Defines component scoping, tracing, and security settings
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: activity-executor-config
+  namespace: workflow-builder
+spec:
+  # Enable distributed tracing
+  tracing:
+    samplingRate: "1"
+    zipkin:
+      endpointAddress: "http://jaeger-collector.observability.svc.cluster.local:9411/api/v2/spans"
+  # Enable mTLS
+  mtls:
+    enabled: true
+    workloadCertTTL: "24h"
+    allowedClockSkew: "15m"
+  # API access control - allow workflow-orchestrator to invoke
+  accessControl:
+    defaultAction: deny
+    trustDomain: "public"
+    policies:
+      - appId: workflow-orchestrator
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "workflow-builder"
+        operations:
+          - name: /execute
+            httpVerb: ["POST"]
+            action: allow
+          - name: /status
+            httpVerb: ["GET"]
+            action: allow
+          - name: /health
+            httpVerb: ["GET"]
+            action: allow
+          - name: /healthz
+            httpVerb: ["GET"]
+            action: allow
+---
+# Alternative: Standard Kubernetes Deployment (non-Knative)
+# Use this if Knative is not available in your cluster
+#
+# To use this instead:
+# 1. Comment out the Knative Service above
+# 2. Uncomment the Deployment and Service below
+#
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: activity-executor
+#   namespace: workflow-builder
+#   labels:
+#     app.kubernetes.io/name: activity-executor
+# spec:
+#   replicas: 1
+#   selector:
+#     matchLabels:
+#       app.kubernetes.io/name: activity-executor
+#   template:
+#     metadata:
+#       labels:
+#         app.kubernetes.io/name: activity-executor
+#       annotations:
+#         dapr.io/enabled: "true"
+#         dapr.io/app-id: "activity-executor"
+#         dapr.io/app-port: "8080"
+#     spec:
+#       containers:
+#         - name: activity-executor
+#           image: activity-executor:latest
+#           ports:
+#             - containerPort: 8080
+#           env:
+#             - name: NODE_ENV
+#               value: "production"
+#             - name: DATABASE_URL
+#               valueFrom:
+#                 secretKeyRef:
+#                   name: workflow-builder-secrets
+#                   key: database-url
+#           resources:
+#             requests:
+#               cpu: "100m"
+#               memory: "256Mi"
+#             limits:
+#               cpu: "500m"
+#               memory: "512Mi"
+# ---
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: activity-executor
+#   namespace: workflow-builder
+# spec:
+#   selector:
+#     app.kubernetes.io/name: activity-executor
+#   ports:
+#     - port: 80
+#       targetPort: 8080
+#   type: ClusterIP

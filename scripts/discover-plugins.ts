@@ -180,7 +180,11 @@ async function updateReadme(): Promise<void> {
     })
     .join("\n");
 
-  // Read current README
+  // Read current README (skip if file doesn't exist, e.g., in DevSpace containers)
+  if (!existsSync(README_FILE)) {
+    console.log("README.md not found, skipping README update");
+    return;
+  }
   const readme = readFileSync(README_FILE, "utf-8");
 
   // Check if markers exist

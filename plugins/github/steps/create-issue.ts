@@ -38,6 +38,9 @@ export type CreateIssueCoreInput = {
 export type CreateIssueInput = StepInput &
   CreateIssueCoreInput & {
     integrationId?: string;
+    // Credentials injected by activity-executor
+    GITHUB_TOKEN?: string;
+    _credentials?: GitHubCredentials;
   };
 
 function parseCommaSeparated(value?: string): string[] {
@@ -126,9 +129,19 @@ export async function createIssueStep(
 ): Promise<CreateIssueResult> {
   "use step";
 
-  const credentials = input.integrationId
-    ? await fetchCredentials(input.integrationId)
-    : {};
+  // Use credentials injected by activity-executor first (from Dapr secrets)
+  // Fall back to fetching from database if not available
+  let credentials: GitHubCredentials = {};
+
+  if (input.GITHUB_TOKEN || input._credentials?.GITHUB_TOKEN) {
+    // Use injected credentials from activity-executor
+    credentials = {
+      GITHUB_TOKEN: input.GITHUB_TOKEN || input._credentials?.GITHUB_TOKEN,
+    };
+  } else if (input.integrationId) {
+    // Fall back to database lookup (for Next.js context)
+    credentials = await fetchCredentials(input.integrationId);
+  }
 
   return withStepLogging(input, () => stepHandler(input, credentials));
 }

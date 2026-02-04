@@ -117,9 +117,8 @@ export interface ActivityExecutorConfig {
   activityTimeoutSeconds: number;
   retryMaxAttempts: number;
   retryDelaySeconds: number;
-  aiGateway: {
+  openai: {
     defaultModel: string;
-    defaultProvider: string;
     maxTokens: number;
   };
   features: {
@@ -139,9 +138,8 @@ export async function loadActivityExecutorConfig(): Promise<ActivityExecutorConf
     "activity-timeout-seconds",
     "retry-max-attempts",
     "retry-delay-seconds",
-    "ai-gateway/default-model",
-    "ai-gateway/default-provider",
-    "ai-gateway/max-tokens",
+    "openai/default-model",
+    "openai/max-tokens",
     "features/dapr-secrets-enabled",
     "features/database-fallback",
     "features/otel-tracing",
@@ -155,10 +153,9 @@ export async function loadActivityExecutorConfig(): Promise<ActivityExecutorConf
     activityTimeoutSeconds: Number.parseInt(configs["activity-timeout-seconds"] || "300", 10),
     retryMaxAttempts: Number.parseInt(configs["retry-max-attempts"] || "3", 10),
     retryDelaySeconds: Number.parseInt(configs["retry-delay-seconds"] || "5", 10),
-    aiGateway: {
-      defaultModel: configs["ai-gateway/default-model"] || "gpt-4o",
-      defaultProvider: configs["ai-gateway/default-provider"] || "openai",
-      maxTokens: Number.parseInt(configs["ai-gateway/max-tokens"] || "4096", 10),
+    openai: {
+      defaultModel: configs["openai/default-model"] || "gpt-4o",
+      maxTokens: Number.parseInt(configs["openai/max-tokens"] || "4096", 10),
     },
     features: {
       daprSecretsEnabled: (configs["features/dapr-secrets-enabled"] || "true").toLowerCase() === "true",

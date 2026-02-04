@@ -27,6 +27,7 @@ export type DaprActivity = {
   label: string; // "Run Planning Agent" or "Send Slack Message"
   description: string;
   category: string; // "Agent", "State", "Events", "Plugin"
+  icon?: string; // Lucide icon name (e.g., "Lightbulb", "GitBranch")
   serviceName?: string; // Dapr app-id target
   serviceMethod?: string; // HTTP method/path on the target service
   timeout?: number; // seconds
@@ -232,6 +233,7 @@ registerDaprActivity({
   description:
     "Invokes the planning agent via Dapr service invocation to analyze a feature request and generate a structured plan with tasks.",
   category: "Agent",
+  icon: "Lightbulb",
   serviceName: "planner-agent-plan",
   serviceMethod: "POST /plan",
   timeout: 600,
@@ -272,6 +274,7 @@ registerDaprActivity({
   description:
     "Saves the planned tasks to the Dapr Redis statestore under key tasks:{workflow_id} for persistence and later retrieval.",
   category: "State",
+  icon: "Database",
   timeout: 30,
   inputFields: [
     {
@@ -304,6 +307,7 @@ registerDaprActivity({
   description:
     "Executes the approved plan by invoking the execution agent via Dapr service invocation to run each task.",
   category: "Agent",
+  icon: "Rocket",
   serviceName: "planner-agent-exec",
   serviceMethod: "POST /execute",
   timeout: 1800,
@@ -349,6 +353,7 @@ registerDaprActivity({
   description:
     "Publishes a workflow stream event to the Dapr pub/sub system (topic: workflow.stream) for real-time SSE updates.",
   category: "Events",
+  icon: "Send",
   timeout: 10,
   inputFields: [
     {
@@ -399,6 +404,7 @@ registerDaprActivity({
   description:
     "Generates text using an AI model via Dapr service invocation.",
   category: "AI",
+  icon: "Brain",
   serviceName: "ai-service",
   serviceMethod: "POST /generate/text",
   timeout: 120,
@@ -445,6 +451,7 @@ registerDaprActivity({
   description:
     "Generates an image using an AI model via Dapr service invocation.",
   category: "AI",
+  icon: "ImagePlus",
   serviceName: "ai-service",
   serviceMethod: "POST /generate/image",
   timeout: 180,
@@ -502,6 +509,7 @@ registerDaprActivity({
   description:
     "Sends an email notification via Dapr service invocation.",
   category: "Notifications",
+  icon: "Mail",
   serviceName: "notification-service",
   serviceMethod: "POST /email",
   timeout: 30,
@@ -546,6 +554,7 @@ registerDaprActivity({
   description:
     "Sends a message to a Slack channel via Dapr service invocation.",
   category: "Notifications",
+  icon: "MessageSquare",
   serviceName: "notification-service",
   serviceMethod: "POST /slack",
   timeout: 30,
@@ -587,6 +596,7 @@ registerDaprActivity({
   description:
     "Makes an HTTP request to an external API.",
   category: "Integration",
+  icon: "Zap",
   timeout: 60,
   inputFields: [
     {
@@ -630,4 +640,189 @@ registerDaprActivity({
   ],
   sourceFile: "activities/http_request.ts",
   sourceLanguage: "typescript",
+});
+
+// ─── Multi-Step Workflow Activities ───────────────────────────────────────────
+// Activities from dapr_multi_step_workflow.py
+
+registerDaprActivity({
+  name: "clone_repository",
+  label: "Clone Repository",
+  description:
+    "Clones a GitHub repository with optional token authentication for the workflow workspace.",
+  category: "Agent",
+  icon: "GitBranch",
+  serviceName: "planner-dapr-agent",
+  serviceMethod: "POST /activity/clone",
+  timeout: 300,
+  inputFields: [
+    {
+      key: "owner",
+      label: "Repository Owner",
+      type: "template-input",
+      placeholder: "e.g., PittampalliOrg",
+    },
+    {
+      key: "repo",
+      label: "Repository Name",
+      type: "template-input",
+      placeholder: "e.g., my-repo",
+    },
+    {
+      key: "branch",
+      label: "Branch",
+      type: "template-input",
+      placeholder: "main",
+      defaultValue: "main",
+    },
+    {
+      key: "token",
+      label: "GitHub Token",
+      type: "template-input",
+      placeholder: "Optional: GitHub PAT for private repos",
+    },
+    {
+      key: "workspace_dir",
+      label: "Workspace Directory",
+      type: "template-input",
+      placeholder: "/app/workspace",
+    },
+    {
+      key: "workflow_id",
+      label: "Workflow ID",
+      type: "template-input",
+      placeholder: "Auto-assigned",
+    },
+  ],
+  outputFields: [
+    { field: "success", description: "Whether cloning succeeded" },
+    { field: "path", description: "Path to cloned repository" },
+    { field: "file_count", description: "Number of files in repository" },
+    { field: "error", description: "Error message if failed" },
+  ],
+  sourceFile: "dapr_multi_step_workflow.py",
+  sourceLanguage: "python",
+});
+
+registerDaprActivity({
+  name: "testing",
+  label: "Run Testing Agent",
+  description:
+    "Runs the testing phase using OpenAI agents to verify the implementation against planned test cases.",
+  category: "Agent",
+  icon: "TestTube2",
+  serviceName: "planner-dapr-agent",
+  serviceMethod: "POST /activity/testing",
+  timeout: 600,
+  inputFields: [
+    {
+      key: "plan",
+      label: "Plan",
+      type: "template-textarea",
+      placeholder: "Plan JSON with test cases",
+      rows: 4,
+    },
+    {
+      key: "execution",
+      label: "Execution Result",
+      type: "template-textarea",
+      placeholder: "Execution result from previous phase",
+      rows: 4,
+    },
+    {
+      key: "model",
+      label: "Model",
+      type: "template-input",
+      placeholder: "gpt-5.2-codex",
+    },
+    {
+      key: "max_turns",
+      label: "Max Turns",
+      type: "number",
+      placeholder: "20",
+    },
+    {
+      key: "max_test_retries",
+      label: "Max Test Retries",
+      type: "number",
+      placeholder: "3",
+    },
+    {
+      key: "workflow_id",
+      label: "Workflow ID",
+      type: "template-input",
+      placeholder: "Auto-assigned",
+    },
+  ],
+  outputFields: [
+    { field: "success", description: "Whether testing phase succeeded" },
+    { field: "testing", description: "Test results object" },
+    { field: "passed", description: "Whether all tests passed" },
+    { field: "tests_run", description: "Number of tests run" },
+    { field: "tests_passed", description: "Number of tests passed" },
+    { field: "tests_failed", description: "Number of tests failed" },
+    { field: "failures", description: "Array of failure details" },
+  ],
+  sourceFile: "dapr_multi_step_workflow.py",
+  sourceLanguage: "python",
+});
+
+registerDaprActivity({
+  name: "sandboxed_execution_and_testing",
+  label: "Sandboxed Execution & Testing",
+  description:
+    "Runs both execution and testing phases in a single isolated Agent Sandbox pod with gVisor/Kata containers.",
+  category: "Agent",
+  icon: "Container",
+  serviceName: "planner-dapr-agent",
+  serviceMethod: "POST /activity/sandbox",
+  timeout: 3600,
+  inputFields: [
+    {
+      key: "plan",
+      label: "Plan",
+      type: "template-textarea",
+      placeholder: "Plan JSON with tasks and tests",
+      rows: 4,
+    },
+    {
+      key: "model",
+      label: "Model",
+      type: "template-input",
+      placeholder: "gpt-5.2-codex",
+    },
+    {
+      key: "max_turns",
+      label: "Max Turns",
+      type: "number",
+      placeholder: "50",
+    },
+    {
+      key: "max_test_retries",
+      label: "Max Test Retries",
+      type: "number",
+      placeholder: "3",
+    },
+    {
+      key: "workspace_path",
+      label: "Workspace Path",
+      type: "template-input",
+      placeholder: "/app/workspace",
+    },
+    {
+      key: "workflow_id",
+      label: "Workflow ID",
+      type: "template-input",
+      placeholder: "Auto-assigned",
+    },
+  ],
+  outputFields: [
+    { field: "success", description: "Whether both phases succeeded" },
+    { field: "execution", description: "Execution result object" },
+    { field: "testing", description: "Testing result object" },
+    { field: "phase", description: "Phase where failure occurred (if any)" },
+    { field: "error", description: "Error message if failed" },
+  ],
+  sourceFile: "dapr_multi_step_workflow.py",
+  sourceLanguage: "python",
 });

@@ -4,7 +4,6 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { HelpCircle, Plus, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
-import { AiGatewayConsentOverlay } from "@/components/overlays/ai-gateway-consent-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/code-editor";
@@ -26,7 +25,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { aiGatewayStatusAtom } from "@/lib/ai-gateway/state";
 import {
   integrationsAtom,
   integrationsVersionAtom,
@@ -347,9 +345,6 @@ export function ActionConfig({
   const globalIntegrations = useAtomValue(integrationsAtom);
   const { push } = useOverlay();
 
-  // AI Gateway managed keys state
-  const aiGatewayStatus = useAtomValue(aiGatewayStatusAtom);
-
   // Sync category state when actionType changes (e.g., when switching nodes)
   useEffect(() => {
     const newCategory = actionType ? getCategoryForAction(actionType) : null;
@@ -393,12 +388,6 @@ export function ActionConfig({
     return action?.integration as IntegrationType | undefined;
   }, [actionType]);
 
-  // Check if AI Gateway managed keys should be offered (user can have multiple for different teams)
-  const shouldUseManagedKeys =
-    integrationType === "ai-gateway" &&
-    aiGatewayStatus?.enabled &&
-    aiGatewayStatus?.isVercelUser;
-
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
     if (!integrationType) return false;
@@ -423,14 +412,7 @@ export function ActionConfig({
   };
 
   const handleAddSecondaryConnection = () => {
-    if (shouldUseManagedKeys) {
-      push(AiGatewayConsentOverlay, {
-        onConsent: handleConsentSuccess,
-        onManualEntry: openConnectionOverlay,
-      });
-    } else {
-      openConnectionOverlay();
-    }
+    openConnectionOverlay();
   };
 
   return (

@@ -2,7 +2,6 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { anonymous, genericOAuth } from "better-auth/plugins";
 import { eq } from "drizzle-orm";
-import { isAiGatewayManagedKeysEnabled } from "./ai-gateway/config";
 import { db } from "./db";
 import {
   accounts,
@@ -106,11 +105,7 @@ const plugins = [
               authorizationUrl: "https://vercel.com/oauth/authorize",
               tokenUrl: "https://api.vercel.com/login/oauth/token",
               userInfoUrl: "https://api.vercel.com/login/oauth/userinfo",
-              // Include read-write:team scope when AI Gateway User Keys is enabled
-              // This grants APIKey and APIKeyAiGateway permissions for creating user keys
-              scopes: isAiGatewayManagedKeysEnabled()
-                ? ["openid", "email", "profile", "read-write:team"]
-                : ["openid", "email", "profile"],
+              scopes: ["openid", "email", "profile"],
               discoveryUrl: undefined,
               pkce: true,
               getUserInfo: async (tokens) => {
@@ -141,6 +136,13 @@ const plugins = [
 
 export const auth = betterAuth({
   baseURL: getBaseURL(),
+  trustedOrigins: [
+    "http://localhost:3000",
+    "http://localhost:3002", // DevSpace port forwarding
+    "https://workflow-builder.cnoe.localtest.me:8443", // Kind cluster ingress
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.BETTER_AUTH_URL,
+  ].filter(Boolean) as string[],
   database: drizzleAdapter(db, {
     provider: "pg",
     schema,

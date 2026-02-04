@@ -14,6 +14,11 @@
 
 import { getDaprActivity } from "./dapr-activity-registry";
 import type { WorkflowNode, WorkflowEdge } from "./workflow-store";
+import type {
+  WorkflowDefinition,
+  SerializedNode,
+  SerializedEdge,
+} from "./workflow-definition";
 
 export type DaprCodeFile = {
   filename: string;
@@ -565,4 +570,156 @@ export function getDaprWorkflowCodeFiles(
   files.push(...generateDaprComponentsCode());
 
   return files;
+}
+
+// ─── Workflow Definition Generation ─────────────────────────────────────────────
+
+/**
+ * Topologically sort nodes based on edge dependencies
+ * Returns an array of node IDs in execution order
+ */
+export function topologicalSort(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[]
+): string[] {
+  // Build adjacency list
+  const edgesBySource = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+
+  // Initialize all nodes with 0 in-degree
+  for (const node of nodes) {
+    inDegree.set(node.id, 0);
+    edgesBySource.set(node.id, []);
+  }
+
+  // Build graph
+  for (const edge of edges) {
+    const targets = edgesBySource.get(edge.source) || [];
+    targets.push(edge.target);
+    edgesBySource.set(edge.source, targets);
+    inDegree.set(edge.target, (inDegree.get(edge.target) || 0) + 1);
+  }
+
+  // Find all nodes with 0 in-degree (start with trigger nodes)
+  const queue: string[] = [];
+  for (const [nodeId, degree] of inDegree) {
+    if (degree === 0) {
+      queue.push(nodeId);
+    }
+  }
+
+  const result: string[] = [];
+
+  while (queue.length > 0) {
+    const nodeId = queue.shift()!;
+    const node = nodes.find((n) => n.id === nodeId);
+
+    // Skip trigger and add nodes in execution order
+    if (node && node.type !== "trigger" && node.type !== "add") {
+      result.push(nodeId);
+    }
+
+    // Process neighbors
+    const neighbors = edgesBySource.get(nodeId) || [];
+    for (const neighbor of neighbors) {
+      const newDegree = (inDegree.get(neighbor) || 1) - 1;
+      inDegree.set(neighbor, newDegree);
+      if (newDegree === 0) {
+        queue.push(neighbor);
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Serialize a WorkflowNode to SerializedNode format
+ */
+function serializeNode(node: WorkflowNode): SerializedNode {
+  return {
+    id: node.id,
+    type: node.data.type,
+    label: node.data.label,
+    description: node.data.description,
+    enabled: node.data.enabled !== false, // Default to true
+    position: node.position,
+    config: node.data.config || {},
+  };
+}
+
+/**
+ * Serialize a WorkflowEdge to SerializedEdge format
+ */
+function serializeEdge(edge: WorkflowEdge): SerializedEdge {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    sourceHandle: edge.sourceHandle,
+    targetHandle: edge.targetHandle,
+  };
+}
+
+/**
+ * Generate a complete WorkflowDefinition from nodes and edges
+ * This is the JSON format used by the TypeScript orchestrator
+ */
+export function generateWorkflowDefinition(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+  workflowId: string,
+  workflowName?: string,
+  metadata?: WorkflowDefinition["metadata"]
+): WorkflowDefinition {
+  const now = new Date().toISOString();
+
+  // Filter out 'add' nodes (UI placeholder nodes)
+  const executableNodes = nodes.filter((n) => n.type !== "add");
+
+  // Serialize nodes and edges
+  const serializedNodes = executableNodes.map(serializeNode);
+  const serializedEdges = edges.filter(
+    (e) =>
+      executableNodes.some((n) => n.id === e.source) &&
+      executableNodes.some((n) => n.id === e.target)
+  ).map(serializeEdge);
+
+  // Get execution order
+  const executionOrder = topologicalSort(executableNodes, edges);
+
+  return {
+    id: workflowId,
+    name: workflowName || `workflow-${workflowId}`,
+    version: "1.0.0",
+    createdAt: now,
+    updatedAt: now,
+    nodes: serializedNodes,
+    edges: serializedEdges,
+    executionOrder,
+    metadata,
+  };
+}
+
+/**
+ * Generate workflow definition as a JSON code file
+ */
+export function generateWorkflowDefinitionJson(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+  workflowId: string,
+  workflowName?: string
+): DaprCodeFile {
+  const definition = generateWorkflowDefinition(
+    nodes,
+    edges,
+    workflowId,
+    workflowName
+  );
+
+  return {
+    filename: `definitions/${workflowId}.json`,
+    language: "json",
+    content: JSON.stringify(definition, null, 2),
+  };
 }

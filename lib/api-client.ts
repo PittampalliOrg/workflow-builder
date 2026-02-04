@@ -329,34 +329,6 @@ export type IntegrationWithConfig = Integration & {
   config: IntegrationConfig;
 };
 
-// AI Gateway types
-export type AiGatewayStatusResponse = {
-  enabled: boolean;
-  signedIn: boolean;
-  isVercelUser: boolean;
-  hasManagedKey: boolean;
-  managedIntegrationId?: string;
-};
-
-export type AiGatewayConsentResponse = {
-  success: boolean;
-  hasManagedKey: boolean;
-  managedIntegrationId?: string;
-  error?: string;
-};
-
-export type VercelTeam = {
-  id: string;
-  name: string;
-  slug: string;
-  avatar?: string;
-  isPersonal: boolean;
-};
-
-export type AiGatewayTeamsResponse = {
-  teams: VercelTeam[];
-};
-
 // Integration API
 export const integrationApi = {
   // List all integrations
@@ -636,28 +608,6 @@ export const workflowApi = {
   })(),
 };
 
-// AI Gateway API (User Keys feature)
-export const aiGatewayApi = {
-  // Get status (whether feature is enabled, user has managed key, etc.)
-  getStatus: () => apiCall<AiGatewayStatusResponse>("/api/ai-gateway/status"),
-
-  // Get available Vercel teams
-  getTeams: () => apiCall<AiGatewayTeamsResponse>("/api/ai-gateway/teams"),
-
-  // Grant consent and create managed API key
-  consent: (teamId: string, teamName: string) =>
-    apiCall<AiGatewayConsentResponse>("/api/ai-gateway/consent", {
-      method: "POST",
-      body: JSON.stringify({ teamId, teamName }),
-    }),
-
-  // Revoke consent and delete managed API key
-  revokeConsent: () =>
-    apiCall<AiGatewayConsentResponse>("/api/ai-gateway/consent", {
-      method: "DELETE",
-    }),
-};
-
 // Dapr Workflow API
 export type DaprExecution = {
   id: string;
@@ -737,12 +687,34 @@ export const daprApi = {
     ),
 };
 
+// Infrastructure Secrets types
+export type InfrastructureSecret = {
+  key: string;
+  integrationType: string;
+  label: string;
+  envVar: string;
+  source: "azure-keyvault";
+};
+
+export type InfrastructureSecretsResponse = {
+  available: boolean;
+  secretStoreConnected: boolean;
+  secrets: InfrastructureSecret[];
+};
+
+// Secrets API
+export const secretsApi = {
+  // Get available infrastructure secrets from Dapr/Azure Key Vault
+  getAvailable: () =>
+    apiCall<InfrastructureSecretsResponse>("/api/secrets/available"),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
-  aiGateway: aiGatewayApi,
   dapr: daprApi,
   integration: integrationApi,
+  secrets: secretsApi,
   user: userApi,
   workflow: workflowApi,
 };

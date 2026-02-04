@@ -1,10 +1,12 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
+import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
+import { generateWorkflowDefinition } from "@/lib/dapr-codegen";
 import { executeWorkflow } from "@/lib/workflow-executor";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
@@ -77,12 +79,14 @@ export async function POST(
       }
     }
 
-    if (engineType === "dapr" && featureRequest) {
-      // Dapr planning workflow - proxy to planner-orchestrator
+    if (engineType === "dapr") {
+      // Dapr workflow execution - choose between legacy planner or generic orchestrator
+      // Get URLs from config service (Azure App Config via Dapr) with fallback to defaults
+      const genericUrl = await getGenericOrchestratorUrl();
+      const daprUrl = await getDaprOrchestratorUrl();
       const orchestratorUrl =
         ((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
-        process.env.DAPR_ORCHESTRATOR_URL ||
-        "http://planner-orchestrator:8080";
+        (featureRequest ? daprUrl : genericUrl);
 
       // Create execution record
       const [execution] = await db
@@ -96,23 +100,67 @@ export async function POST(
         .returning();
 
       try {
-        const daprResult = await daprClient.startWorkflow(
-          orchestratorUrl,
-          featureRequest,
-          cwd
+        // If we have a feature_request, use the legacy planner-orchestrator
+        if (featureRequest) {
+          const daprResult = await daprClient.startWorkflow(
+            orchestratorUrl,
+            featureRequest,
+            cwd
+          );
+
+          // Update execution with Dapr workflow ID
+          await db
+            .update(workflowExecutions)
+            .set({
+              daprInstanceId: daprResult.workflow_id,
+            })
+            .where(eq(workflowExecutions.id, execution.id));
+
+          return NextResponse.json({
+            executionId: execution.id,
+            daprInstanceId: daprResult.workflow_id,
+            status: "running",
+          });
+        }
+
+        // Otherwise, use the generic TypeScript orchestrator
+        const nodes = workflow.nodes as WorkflowNode[];
+        const edges = workflow.edges as WorkflowEdge[];
+
+        // Generate workflow definition from the visual graph
+        const definition = generateWorkflowDefinition(
+          nodes,
+          edges,
+          workflowId,
+          workflow.name,
+          {
+            description: workflow.description || undefined,
+            author: session.user.email || session.user.id,
+          }
         );
 
-        // Update execution with Dapr workflow ID
+        // Start workflow via generic orchestrator
+        const genericResult = await genericOrchestratorClient.startWorkflow(
+          orchestratorUrl,
+          definition,
+          input,
+          {} // integrations - could be populated from user's integrations
+        );
+
+        // Update execution with Dapr instance ID
         await db
           .update(workflowExecutions)
           .set({
-            daprInstanceId: daprResult.workflow_id,
+            daprInstanceId: genericResult.instanceId,
+            phase: "running",
+            progress: 0,
           })
           .where(eq(workflowExecutions.id, execution.id));
 
         return NextResponse.json({
           executionId: execution.id,
-          daprInstanceId: daprResult.workflow_id,
+          instanceId: genericResult.instanceId,
+          daprInstanceId: genericResult.instanceId,
           status: "running",
         });
       } catch (daprError) {
