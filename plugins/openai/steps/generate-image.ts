@@ -83,13 +83,22 @@ async function stepHandler(
  * App entry point - fetches credentials and wraps with logging
  */
 export async function generateImageStep(
-  input: GenerateImageInput
+  input: GenerateImageInput & { _credentials?: OpenAICredentials; OPENAI_API_KEY?: string }
 ): Promise<GenerateImageResult> {
   "use step";
 
-  const credentials = input.integrationId
-    ? await fetchCredentials(input.integrationId)
-    : {};
+  // Priority: injected credentials (from Dapr) > fetched credentials (from DB)
+  let credentials: OpenAICredentials = {};
+
+  // Check for Dapr-injected credentials first (activity-executor injects these)
+  if (input._credentials?.OPENAI_API_KEY || input.OPENAI_API_KEY) {
+    credentials = {
+      OPENAI_API_KEY: input._credentials?.OPENAI_API_KEY || input.OPENAI_API_KEY,
+    };
+  } else if (input.integrationId) {
+    // Fallback to database credentials
+    credentials = await fetchCredentials(input.integrationId);
+  }
 
   return withStepLogging(input, () => stepHandler(input, credentials));
 }

@@ -58,16 +58,16 @@ export async function POST(
     let cwd = (input.cwd as string) || "";
 
     // For Dapr workflows, extract feature_request and cwd from activity node config if not in input
+    // Only look for explicit feature_request field, NOT generic prompts (those go to the generic orchestrator)
     if (engineType === "dapr" && !featureRequest) {
       const nodes = workflow.nodes as WorkflowNode[];
       for (const node of nodes) {
         if (node.type === "activity") {
           const data = node.data as Record<string, unknown>;
           const config = (data.config as Record<string, unknown>) || {};
-          // Check for prompt/feature_request in activity config
-          if (config.prompt && typeof config.prompt === "string") {
-            featureRequest = config.prompt;
-          } else if (config.feature_request && typeof config.feature_request === "string") {
+          // Only check for explicit feature_request field (used by planner-agent workflows)
+          // Do NOT treat generic AI prompts as feature_request
+          if (config.feature_request && typeof config.feature_request === "string") {
             featureRequest = config.feature_request;
           }
           // Check for cwd in activity config

@@ -22,6 +22,10 @@ resources:
   # - activity-executor.yaml
   - workflow-orchestrator.yaml
   - dapr-secrets-component.yaml
+  # Function runner - new service replacing activity-executor
+  - function-runner.yaml
+  # KEDA scalers (optional - most sections commented out by default)
+  - keda-scalers.yaml
 
 # Common labels applied to all resources (using 'labels' to avoid selector injection)
 labels:
@@ -37,4 +41,7 @@ images:
     newTag: latest
   - name: workflow-orchestrator
     newName: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator
+    newTag: latest
+  - name: function-runner
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/function-runner
     newTag: latest

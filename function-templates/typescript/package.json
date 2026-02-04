@@ -1,0 +1,21 @@
+{
+  "name": "custom-function",
+  "version": "1.0.0",
+  "description": "Custom TypeScript function for workflow execution",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "test": "INPUT='{\"name\":\"World\"}' tsx src/index.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
