@@ -1,7 +1,7 @@
 "use client";
 
 import { useAtomValue, useSetAtom } from "jotai";
-import { HelpCircle, Puzzle, Plus, Settings } from "lucide-react";
+import { HelpCircle, Plus, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
@@ -13,9 +13,7 @@ import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectSeparator,
   SelectTrigger,
   SelectValue,
@@ -32,13 +30,6 @@ import {
   integrationsVersionAtom,
 } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
-import {
-  useActivePieces,
-  buildActivePiecesCategories,
-  isActivePiecesAction,
-  extractPieceFromActionId,
-  getActivePiecesIntegrationType,
-} from "@/lib/hooks/use-activepieces";
 import {
   findActionById,
   getActionsByCategory,
@@ -283,11 +274,8 @@ const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
   "Database Query": "database",
 };
 
-// Build category mapping dynamically from plugins + System + ActivePieces
+// Build category mapping dynamically from plugins + System
 function useCategoryData() {
-  // Fetch ActivePieces data
-  const { pieces: apPieces, loading: apLoading } = useActivePieces();
-
   return useMemo(() => {
     const pluginCategories = getActionsByCategory();
 
@@ -299,7 +287,6 @@ function useCategoryData() {
       System: SYSTEM_ACTIONS,
     };
 
-    // Add plugin categories
     for (const [category, actions] of Object.entries(pluginCategories)) {
       allCategories[category] = actions.map((a) => ({
         id: a.id,
@@ -307,33 +294,15 @@ function useCategoryData() {
       }));
     }
 
-    // Add ActivePieces categories (prefixed with "AP: ")
-    if (!apLoading && apPieces.length > 0) {
-      const apCategories = buildActivePiecesCategories(apPieces);
-      Object.assign(allCategories, apCategories);
-    }
-
     return allCategories;
-  }, [apPieces, apLoading]);
+  }, []);
 }
 
 // Get category for an action type (supports both new IDs, labels, and legacy labels)
-function getCategoryForAction(actionType: string, apPieces: Array<{ name: string; displayName: string; actions: Array<{ slug: string }> }>): string | null {
+function getCategoryForAction(actionType: string): string | null {
   // Check system actions first
   if (SYSTEM_ACTION_IDS.includes(actionType)) {
     return "System";
-  }
-
-  // Check ActivePieces actions (slug starts with "ap-")
-  if (isActivePiecesAction(actionType)) {
-    const pieceName = extractPieceFromActionId(actionType);
-    if (pieceName) {
-      const piece = apPieces.find((p) => p.name === pieceName);
-      if (piece) {
-        return `AP: ${piece.displayName}`;
-      }
-    }
-    return null;
   }
 
   // Use findActionById which handles legacy labels from plugin registry
@@ -370,11 +339,6 @@ function getSlugForAction(actionType: string): string | null {
     return systemAction.slug;
   }
 
-  // For ActivePieces actions, the action id IS the slug (e.g., "ap-slack/send_message")
-  if (isActivePiecesAction(actionType)) {
-    return actionType;
-  }
-
   // For plugin actions, the action id IS the slug (e.g., "openai/generate-text")
   const action = findActionById(actionType);
   if (action) {
@@ -394,10 +358,7 @@ export function ActionConfig({
   const categories = useCategoryData();
   const integrations = useMemo(() => getAllIntegrations(), []);
 
-  // Fetch ActivePieces for category lookup
-  const { pieces: apPieces } = useActivePieces();
-
-  const selectedCategory = actionType ? getCategoryForAction(actionType, apPieces) : null;
+  const selectedCategory = actionType ? getCategoryForAction(actionType) : null;
   const [category, setCategory] = useState<string>(selectedCategory || "");
   const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
   const globalIntegrations = useAtomValue(integrationsAtom);
@@ -405,9 +366,9 @@ export function ActionConfig({
 
   // Sync category state when actionType changes (e.g., when switching nodes)
   useEffect(() => {
-    const newCategory = actionType ? getCategoryForAction(actionType, apPieces) : null;
+    const newCategory = actionType ? getCategoryForAction(actionType) : null;
     setCategory(newCategory || "");
-  }, [actionType, apPieces]);
+  }, [actionType]);
 
   const handleCategoryChange = (newCategory: string) => {
     setCategory(newCategory);
@@ -451,14 +412,6 @@ export function ActionConfig({
     // Check system actions first
     if (SYSTEM_ACTION_INTEGRATIONS[actionType]) {
       return SYSTEM_ACTION_INTEGRATIONS[actionType];
-    }
-
-    // Check ActivePieces actions
-    if (isActivePiecesAction(actionType)) {
-      const pieceName = extractPieceFromActionId(actionType);
-      if (pieceName) {
-        return getActivePiecesIntegrationType(pieceName) as IntegrationType;
-      }
     }
 
     // Check plugin actions
@@ -509,51 +462,24 @@ export function ActionConfig({
               <SelectValue placeholder="Select category" />
             </SelectTrigger>
             <SelectContent>
-              <SelectGroup>
-                <SelectLabel>System</SelectLabel>
-                <SelectItem value="System">
+              <SelectItem value="System">
+                <div className="flex items-center gap-2">
+                  <Settings className="size-4" />
+                  <span>System</span>
+                </div>
+              </SelectItem>
+              <SelectSeparator />
+              {integrations.map((integration) => (
+                <SelectItem key={integration.type} value={integration.label}>
                   <div className="flex items-center gap-2">
-                    <Settings className="size-4" />
-                    <span>System</span>
+                    <IntegrationIcon
+                      className="size-4"
+                      integration={integration.type}
+                    />
+                    <span>{integration.label}</span>
                   </div>
                 </SelectItem>
-              </SelectGroup>
-              <SelectSeparator />
-              <SelectGroup>
-                <SelectLabel>Built-in Integrations</SelectLabel>
-                {integrations.map((integration) => (
-                  <SelectItem key={integration.type} value={integration.label}>
-                    <div className="flex items-center gap-2">
-                      <IntegrationIcon
-                        className="size-4"
-                        integration={integration.type}
-                      />
-                      <span>{integration.label}</span>
-                    </div>
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-              {apPieces.length > 0 && (
-                <>
-                  <SelectSeparator />
-                  <SelectGroup>
-                    <SelectLabel>
-                      <div className="flex items-center gap-1">
-                        <Puzzle className="size-3" />
-                        <span>ActivePieces ({apPieces.length})</span>
-                      </div>
-                    </SelectLabel>
-                    {apPieces.map((piece) => (
-                      <SelectItem key={piece.name} value={`AP: ${piece.displayName}`}>
-                        <div className="flex items-center gap-2">
-                          <Puzzle className="size-4 text-purple-500" />
-                          <span>{piece.displayName}</span>
-                        </div>
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </>
-              )}
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -628,26 +554,13 @@ export function ActionConfig({
       />
 
       {/* Plugin actions - declarative config fields */}
-      {pluginAction && !SYSTEM_ACTION_IDS.includes(actionType) && !isActivePiecesAction(actionType) && (
+      {pluginAction && !SYSTEM_ACTION_IDS.includes(actionType) && (
         <ActionConfigRenderer
           config={config}
           disabled={disabled}
           fields={pluginAction.configFields}
           onUpdateConfig={handlePluginUpdateConfig}
         />
-      )}
-
-      {/* ActivePieces actions - show info about the action */}
-      {isActivePiecesAction(actionType) && (
-        <div className="rounded-md border border-purple-200 bg-purple-50 p-3 dark:border-purple-800 dark:bg-purple-950">
-          <div className="flex items-center gap-2 text-sm text-purple-700 dark:text-purple-300">
-            <Puzzle className="size-4" />
-            <span>This action is powered by ActivePieces</span>
-          </div>
-          <p className="mt-1 text-xs text-purple-600 dark:text-purple-400">
-            Configure input fields in the JSON editor below. The action will be executed via the ActivePieces integration.
-          </p>
-        </div>
       )}
     </>
   );

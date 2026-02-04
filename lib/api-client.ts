@@ -687,6 +687,129 @@ export const daprApi = {
     ),
 };
 
+// Functions API types
+export type FunctionSummary = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  pluginId: string;
+  version: string;
+  executionType: "builtin" | "oci" | "http";
+  integrationType: string | null;
+  isBuiltin: boolean | null;
+  isEnabled: boolean | null;
+  isDeprecated: boolean | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type FunctionDefinition = FunctionSummary & {
+  imageRef: string | null;
+  command: string | null;
+  workingDir: string | null;
+  containerEnv: Record<string, string> | null;
+  webhookUrl: string | null;
+  webhookMethod: string | null;
+  webhookHeaders: Record<string, string> | null;
+  webhookTimeoutSeconds: number | null;
+  inputSchema: unknown;
+  outputSchema: unknown;
+  timeoutSeconds: number | null;
+  retryPolicy: unknown;
+  maxConcurrency: number | null;
+  createdBy: string | null;
+};
+
+export const functionsApi = {
+  // List all functions
+  getAll: (options?: {
+    pluginId?: string;
+    executionType?: "builtin" | "oci" | "http";
+    integrationType?: string;
+    search?: string;
+    includeDisabled?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (options?.pluginId) params.set("pluginId", options.pluginId);
+    if (options?.executionType) params.set("executionType", options.executionType);
+    if (options?.integrationType) params.set("integrationType", options.integrationType);
+    if (options?.search) params.set("search", options.search);
+    if (options?.includeDisabled) params.set("includeDisabled", "true");
+    const queryString = params.toString();
+    return apiCall<{ functions: FunctionSummary[] }>(
+      `/api/functions${queryString ? `?${queryString}` : ""}`
+    );
+  },
+
+  // Get a function by ID
+  getById: (id: string) =>
+    apiCall<FunctionDefinition>(`/api/functions/${id}`),
+
+  // Create a new function
+  create: (data: {
+    name: string;
+    slug: string;
+    description?: string;
+    pluginId: string;
+    version?: string;
+    executionType: "builtin" | "oci" | "http";
+    imageRef?: string;
+    command?: string;
+    workingDir?: string;
+    containerEnv?: Record<string, string>;
+    webhookUrl?: string;
+    webhookMethod?: string;
+    webhookHeaders?: Record<string, string>;
+    webhookTimeoutSeconds?: number;
+    inputSchema?: unknown;
+    outputSchema?: unknown;
+    timeoutSeconds?: number;
+    maxConcurrency?: number;
+    integrationType?: string;
+  }) =>
+    apiCall<FunctionSummary>("/api/functions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Update a function
+  update: (
+    id: string,
+    data: Partial<{
+      name: string;
+      description: string;
+      pluginId: string;
+      version: string;
+      executionType: "builtin" | "oci" | "http";
+      imageRef: string;
+      command: string;
+      workingDir: string;
+      containerEnv: Record<string, string>;
+      webhookUrl: string;
+      webhookMethod: string;
+      webhookHeaders: Record<string, string>;
+      webhookTimeoutSeconds: number;
+      inputSchema: unknown;
+      outputSchema: unknown;
+      timeoutSeconds: number;
+      maxConcurrency: number;
+      integrationType: string;
+      isEnabled: boolean;
+    }>
+  ) =>
+    apiCall<FunctionDefinition>(`/api/functions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  // Delete (disable) a function
+  delete: (id: string) =>
+    apiCall<{ success: boolean; error?: string }>(`/api/functions/${id}`, {
+      method: "DELETE",
+    }),
+};
+
 // Infrastructure Secrets types
 export type InfrastructureSecret = {
   key: string;
@@ -713,6 +836,7 @@ export const secretsApi = {
 export const api = {
   ai: aiApi,
   dapr: daprApi,
+  functions: functionsApi,
   integration: integrationApi,
   secrets: secretsApi,
   user: userApi,

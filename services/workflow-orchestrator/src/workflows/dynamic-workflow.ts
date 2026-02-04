@@ -100,7 +100,8 @@ async function* processActionNode(
   nodeOutputs: NodeOutputs,
   executionId: string,
   workflowId: string,
-  integrations?: Record<string, Record<string, string>>
+  integrations?: Record<string, Record<string, string>>,
+  dbExecutionId?: string
 ): AsyncGenerator<unknown, ActivityExecutionResult, unknown> {
   const input: ExecuteActionInput = {
     node,
@@ -108,6 +109,7 @@ async function* processActionNode(
     executionId,
     workflowId,
     integrations,
+    dbExecutionId, // Database execution ID for logging
   };
 
   console.log(`[Dynamic Workflow] Executing action node: ${node.label}`);
@@ -227,7 +229,7 @@ export const dynamicWorkflow: TWorkflow = async function* (
   ctx: WorkflowContext,
   input: DynamicWorkflowInput
 ): AsyncGenerator<unknown, DynamicWorkflowOutput, unknown> {
-  const { definition, triggerData, integrations } = input;
+  const { definition, triggerData, integrations, dbExecutionId } = input;
   const startTime = Date.now();
   const executionId = ctx.getWorkflowInstanceId();
   const workflowId = definition.id;
@@ -292,7 +294,8 @@ export const dynamicWorkflow: TWorkflow = async function* (
             nodeOutputs,
             executionId,
             workflowId,
-            integrations
+            integrations,
+            dbExecutionId
           );
           nodeResult = result;
 

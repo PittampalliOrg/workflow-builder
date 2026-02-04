@@ -37,6 +37,8 @@ const StartWorkflowSchema = z.object({
   }),
   triggerData: z.record(z.string(), z.unknown()),
   integrations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
+  // Database execution ID for logging (links to workflow_executions.id)
+  dbExecutionId: z.string().optional(),
 });
 
 const RaiseEventSchema = z.object({
@@ -94,7 +96,7 @@ export const workflowRoutes: FastifyPluginAsync = async (
   fastify.post("/api/v2/workflows", async (request, reply) => {
     try {
       const body = StartWorkflowSchema.parse(request.body);
-      const { definition, triggerData, integrations } = body;
+      const { definition, triggerData, integrations, dbExecutionId } = body;
 
       const client = getWorkflowClient();
 
@@ -103,6 +105,7 @@ export const workflowRoutes: FastifyPluginAsync = async (
         definition: definition as WorkflowDefinition,
         triggerData,
         integrations,
+        dbExecutionId, // Pass database execution ID for logging
       };
 
       // Generate a unique instance ID

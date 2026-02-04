@@ -14,7 +14,6 @@ import { resolveTemplates, type NodeOutputs } from "../core/template-resolver.js
 import { executeBuiltin, builtinExists } from "../handlers/builtin.js";
 import { executeOci } from "../handlers/oci.js";
 import { executeHttp } from "../handlers/http.js";
-import { executeActivePieces, shouldUseActivePiecesHandler } from "../handlers/activepieces.js";
 import type { ExecuteFunctionResult, FunctionDefinition } from "../core/types.js";
 import { logExecutionStart, logExecutionComplete } from "../core/execution-logger.js";
 
@@ -200,22 +199,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         break;
 
       case "http":
-        // Check if this is an ActivePieces function and route accordingly
-        if (shouldUseActivePiecesHandler(fn)) {
-          result = await executeActivePieces({
-            fn,
-            input: resolvedInput as Record<string, unknown>,
-            credentials,
-            context,
-          });
-        } else {
-          result = await executeHttp({
-            fn,
-            input: resolvedInput as Record<string, unknown>,
-            credentials,
-            context,
-          });
-        }
+        result = await executeHttp({
+          fn,
+          input: resolvedInput as Record<string, unknown>,
+          credentials,
+          context,
+        });
         break;
 
       default:

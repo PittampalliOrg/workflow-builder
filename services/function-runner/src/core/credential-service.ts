@@ -4,7 +4,6 @@
  * Fetches integration credentials from multiple sources:
  * 1. Dapr Secret Store (Azure Key Vault) - auto-injection without UI config
  * 2. Database (encrypted) - user-configured integrations
- * 3. ActivePieces credential mapping (for AP pieces)
  *
  * Priority: Dapr secrets take precedence, with database fallback.
  *
@@ -14,7 +13,6 @@ import { createDecipheriv } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { getDb } from "./db.js";
 import type { WorkflowCredentials } from "./types.js";
-import type { ActivePiecesAuth } from "./activepieces-credentials.js";
 
 // Type aliases (avoid importing from root to prevent Drizzle version conflicts)
 type IntegrationType = string;
@@ -411,15 +409,3 @@ export async function fetchCredentials(
 
   return credentials;
 }
-
-// ─── ActivePieces Credential Mapping ─────────────────────────────────────────
-
-/**
- * Map workflow-builder credentials to ActivePieces auth format.
- * This is used when calling AP pieces via HTTP.
- *
- * @param pieceName - Name of the AP piece (e.g., "slack", "github")
- * @param credentials - Credentials in our format (env var names)
- * @returns ActivePieces auth payload
- */
-export { mapCredentialsToActivePieces, type ActivePiecesAuth } from "./activepieces-credentials.js";

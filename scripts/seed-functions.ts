@@ -16,9 +16,13 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import { sql } from "drizzle-orm";
 import postgres from "postgres";
+import { customAlphabet } from "nanoid";
 
 // Import plugin index to register all plugins
 import "../plugins/index.js";
+
+// Generate IDs matching the schema's generateId function
+const nanoid = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 21);
 
 // Import registry functions
 import {
@@ -168,14 +172,16 @@ async function seedFunctions() {
         console.log(`  ✓ Updated: ${slug}`);
       } else {
         // Insert new record
+        const newId = nanoid();
         await db.execute(sql`
           INSERT INTO functions (
-            name, slug, description, plugin_id, version,
+            id, name, slug, description, plugin_id, version,
             execution_type, input_schema, output_schema,
             timeout_seconds, integration_type,
             is_builtin, is_enabled, is_deprecated,
             created_at, updated_at
           ) VALUES (
+            ${newId},
             ${action.label},
             ${slug},
             ${action.description},
@@ -251,14 +257,16 @@ async function seedFunctions() {
       updated++;
       console.log(`  ✓ Updated: ${httpRequestSlug}`);
     } else {
+      const httpId = nanoid();
       await db.execute(sql`
         INSERT INTO functions (
-          name, slug, description, plugin_id, version,
+          id, name, slug, description, plugin_id, version,
           execution_type, input_schema, output_schema,
           timeout_seconds, integration_type,
           is_builtin, is_enabled, is_deprecated,
           created_at, updated_at
         ) VALUES (
+          ${httpId},
           'HTTP Request',
           ${httpRequestSlug},
           'Make an HTTP request to any URL',
@@ -278,6 +286,159 @@ async function seedFunctions() {
       `);
       inserted++;
       console.log(`  + Inserted: ${httpRequestSlug}`);
+    }
+
+    // Add system/database-query function
+    const dbQuerySlug = "system/database-query";
+    const dbQueryExisting = await db.execute<{ id: string }>(sql`
+      SELECT id FROM functions WHERE slug = ${dbQuerySlug}
+    `);
+
+    const dbQueryInputSchema = {
+      type: "object",
+      properties: {
+        dbQuery: { type: "string", description: "SQL query to execute" },
+        dbSchema: { type: "string", description: "JSON Schema for typed results (optional)" },
+      },
+      required: ["dbQuery"],
+    };
+
+    const dbQueryOutputSchema = {
+      type: "object",
+      properties: {
+        success: { type: "boolean" },
+        rows: { type: "array", description: "Query result rows" },
+        rowCount: { type: "number", description: "Number of rows returned" },
+        error: { type: "string", description: "Error message if failed" },
+      },
+    };
+
+    if (dbQueryExisting.length > 0) {
+      await db.execute(sql`
+        UPDATE functions
+        SET
+          name = 'Database Query',
+          description = 'Execute a SQL query against the database',
+          plugin_id = 'system',
+          version = '1.0.0',
+          execution_type = 'builtin',
+          input_schema = ${JSON.stringify(dbQueryInputSchema)}::jsonb,
+          output_schema = ${JSON.stringify(dbQueryOutputSchema)}::jsonb,
+          timeout_seconds = 60,
+          integration_type = 'database',
+          is_builtin = true,
+          is_enabled = true,
+          is_deprecated = false,
+          updated_at = NOW()
+        WHERE slug = ${dbQuerySlug}
+      `);
+      updated++;
+      console.log(`  ✓ Updated: ${dbQuerySlug}`);
+    } else {
+      const dbQueryId = nanoid();
+      await db.execute(sql`
+        INSERT INTO functions (
+          id, name, slug, description, plugin_id, version,
+          execution_type, input_schema, output_schema,
+          timeout_seconds, integration_type,
+          is_builtin, is_enabled, is_deprecated,
+          created_at, updated_at
+        ) VALUES (
+          ${dbQueryId},
+          'Database Query',
+          ${dbQuerySlug},
+          'Execute a SQL query against the database',
+          'system',
+          '1.0.0',
+          'builtin',
+          ${JSON.stringify(dbQueryInputSchema)}::jsonb,
+          ${JSON.stringify(dbQueryOutputSchema)}::jsonb,
+          60,
+          'database',
+          true,
+          true,
+          false,
+          NOW(),
+          NOW()
+        )
+      `);
+      inserted++;
+      console.log(`  + Inserted: ${dbQuerySlug}`);
+    }
+
+    // Add system/condition function
+    const conditionSlug = "system/condition";
+    const conditionExisting = await db.execute<{ id: string }>(sql`
+      SELECT id FROM functions WHERE slug = ${conditionSlug}
+    `);
+
+    const conditionInputSchema = {
+      type: "object",
+      properties: {
+        condition: { type: "string", description: "JavaScript expression that evaluates to boolean" },
+      },
+      required: ["condition"],
+    };
+
+    const conditionOutputSchema = {
+      type: "object",
+      properties: {
+        result: { type: "boolean", description: "Result of condition evaluation" },
+        expression: { type: "string", description: "The evaluated expression" },
+      },
+    };
+
+    if (conditionExisting.length > 0) {
+      await db.execute(sql`
+        UPDATE functions
+        SET
+          name = 'Condition',
+          description = 'Evaluate a conditional expression',
+          plugin_id = 'system',
+          version = '1.0.0',
+          execution_type = 'builtin',
+          input_schema = ${JSON.stringify(conditionInputSchema)}::jsonb,
+          output_schema = ${JSON.stringify(conditionOutputSchema)}::jsonb,
+          timeout_seconds = 10,
+          integration_type = null,
+          is_builtin = true,
+          is_enabled = true,
+          is_deprecated = false,
+          updated_at = NOW()
+        WHERE slug = ${conditionSlug}
+      `);
+      updated++;
+      console.log(`  ✓ Updated: ${conditionSlug}`);
+    } else {
+      const conditionId = nanoid();
+      await db.execute(sql`
+        INSERT INTO functions (
+          id, name, slug, description, plugin_id, version,
+          execution_type, input_schema, output_schema,
+          timeout_seconds, integration_type,
+          is_builtin, is_enabled, is_deprecated,
+          created_at, updated_at
+        ) VALUES (
+          ${conditionId},
+          'Condition',
+          ${conditionSlug},
+          'Evaluate a conditional expression',
+          'system',
+          '1.0.0',
+          'builtin',
+          ${JSON.stringify(conditionInputSchema)}::jsonb,
+          ${JSON.stringify(conditionOutputSchema)}::jsonb,
+          10,
+          null,
+          true,
+          true,
+          false,
+          NOW(),
+          NOW()
+        )
+      `);
+      inserted++;
+      console.log(`  + Inserted: ${conditionSlug}`);
     }
 
     console.log("\n✅ Seed completed!");

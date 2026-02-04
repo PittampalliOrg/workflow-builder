@@ -12,9 +12,7 @@ import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
-
-const DEFAULT_ORCHESTRATOR_URL =
-  process.env.WORKFLOW_ORCHESTRATOR_URL || "http://workflow-orchestrator:8080";
+import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 
 export async function GET(
   _request: Request,
@@ -72,8 +70,8 @@ export async function GET(
         .where(eq(workflows.id, execution.workflowId))
         .limit(1);
 
-      const orchestratorUrl =
-        workflow?.daprOrchestratorUrl || DEFAULT_ORCHESTRATOR_URL;
+      const defaultUrl = await getOrchestratorUrlAsync();
+      const orchestratorUrl = workflow?.daprOrchestratorUrl || defaultUrl;
 
       try {
         const status = await genericOrchestratorClient.getWorkflowStatus(

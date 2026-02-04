@@ -83,6 +83,8 @@ export interface DynamicWorkflowInput {
   definition: WorkflowDefinition;
   triggerData: Record<string, unknown>;
   integrations?: Record<string, Record<string, string>>;
+  /** Database execution ID for logging (links to workflow_executions.id) */
+  dbExecutionId?: string;
 }
 
 /**

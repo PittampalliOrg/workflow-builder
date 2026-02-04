@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
-import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { getIntegrations, validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
 import { generateWorkflowDefinition } from "@/lib/dapr-codegen";
@@ -139,12 +139,43 @@ export async function POST(
           }
         );
 
+        // Fetch user's integrations and format for the orchestrator
+        // Format: { "openai": { "apiKey": "..." }, "slack": { "botToken": "..." } }
+        const userIntegrations = await getIntegrations(session.user.id);
+        const formattedIntegrations: Record<string, Record<string, string>> = {};
+
+        for (const integration of userIntegrations) {
+          // Use integration type as the key (e.g., "openai", "slack", "github")
+          const integrationType = integration.type;
+
+          // Convert config values to strings for the orchestrator
+          const configEntries: Record<string, string> = {};
+          for (const [key, value] of Object.entries(integration.config || {})) {
+            if (value !== null && value !== undefined) {
+              configEntries[key] = String(value);
+            }
+          }
+
+          // If there's already an integration of this type, merge configs
+          // (user might have multiple openai integrations, use the first one)
+          if (!formattedIntegrations[integrationType]) {
+            formattedIntegrations[integrationType] = configEntries;
+          }
+        }
+
+        console.log(
+          `[Execute] Passing ${Object.keys(formattedIntegrations).length} integration types to orchestrator:`,
+          Object.keys(formattedIntegrations)
+        );
+
         // Start workflow via generic orchestrator
+        // Pass the database execution ID so function-runner can log to the correct record
         const genericResult = await genericOrchestratorClient.startWorkflow(
           orchestratorUrl,
           definition,
           input,
-          {} // integrations - could be populated from user's integrations
+          formattedIntegrations,
+          execution.id // Database execution ID for logging
         );
 
         // Update execution with Dapr instance ID

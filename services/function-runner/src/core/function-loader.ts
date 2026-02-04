@@ -170,17 +170,45 @@ export async function loadFunctionBySlug(
 }
 
 /**
- * Load a function by either ID or slug
+ * Load a function by either ID or slug (strict mode)
+ *
+ * IMPORTANT: This function uses strict slug lookup only.
+ * Fuzzy matching has been removed to ensure consistent behavior.
+ *
+ * Workflow nodes should use the canonical function slug (e.g., "openai/generate-text")
+ * stored in config.functionSlug. The migration script can be used to update
+ * existing workflows that use legacy actionType values.
+ *
+ * @param idOrSlug - Either a function ID (nanoid) or canonical slug (plugin/function-name)
+ * @returns Function definition or null if not found
  */
 export async function loadFunction(
   idOrSlug: string
 ): Promise<FunctionDefinition | null> {
-  // Try slug first (more common)
+  // Try exact slug first (most common case: "openai/generate-text")
   const bySlug = await loadFunctionBySlug(idOrSlug);
-  if (bySlug) return bySlug;
+  if (bySlug) {
+    console.log(`[Function Loader] Found function by slug: ${idOrSlug}`);
+    return bySlug;
+  }
 
-  // Try ID
-  return loadFunctionById(idOrSlug);
+  // Try ID (nanoid format)
+  const byId = await loadFunctionById(idOrSlug);
+  if (byId) {
+    console.log(`[Function Loader] Found function by ID: ${idOrSlug} (slug: ${byId.slug})`);
+    return byId;
+  }
+
+  // Strict mode: no fuzzy matching
+  // Log helpful error message for debugging
+  console.error(
+    `[Function Loader] Function not found: "${idOrSlug}". ` +
+      `Ensure the workflow node config has a valid functionSlug. ` +
+      `Run the migration script if this is a legacy workflow: ` +
+      `pnpm tsx scripts/migrate-workflow-nodes.ts`
+  );
+
+  return null;
 }
 
 /**

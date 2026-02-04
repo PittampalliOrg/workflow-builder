@@ -7,6 +7,50 @@
 import { getStepFunction, isActivityRegistered } from "../registry/step-registry.js";
 import type { FunctionDefinition, WorkflowCredentials, ExecuteFunctionResult } from "../core/types.js";
 
+/**
+ * Input field normalization mappings
+ * Maps legacy/alternative field names to the canonical field names expected by handlers
+ * Format: { canonicalName: [alternatives...] }
+ */
+const INPUT_FIELD_MAPPINGS: Record<string, string[]> = {
+  // OpenAI generate-text
+  aiPrompt: ["prompt", "message", "text", "content"],
+  aiModel: ["model"],
+  aiFormat: ["format", "outputFormat"],
+  aiSchema: ["schema"],
+  // OpenAI generate-image
+  imagePrompt: ["prompt", "description"],
+  imageModel: ["model"],
+  imageSize: ["size"],
+  // Generic
+  apiKey: ["api_key", "key"],
+};
+
+/**
+ * Normalize input fields by mapping alternative names to canonical names
+ */
+function normalizeInput(input: Record<string, unknown>): Record<string, unknown> {
+  const normalized = { ...input };
+
+  for (const [canonical, alternatives] of Object.entries(INPUT_FIELD_MAPPINGS)) {
+    // If canonical field already exists, skip
+    if (normalized[canonical] !== undefined) {
+      continue;
+    }
+
+    // Check if any alternative field exists
+    for (const alt of alternatives) {
+      if (normalized[alt] !== undefined) {
+        normalized[canonical] = normalized[alt];
+        console.log(`[Builtin Handler] Normalized input field: ${alt} -> ${canonical}`);
+        break;
+      }
+    }
+  }
+
+  return normalized;
+}
+
 export interface BuiltinExecuteInput {
   fn: FunctionDefinition;
   input: Record<string, unknown>;
@@ -46,10 +90,13 @@ export async function executeBuiltin(
   try {
     console.log(`[Builtin Handler] Executing ${fn.slug} for node ${context.nodeName}`);
 
+    // Normalize input fields (map legacy field names to canonical names)
+    const normalizedInput = normalizeInput(input);
+
     // Prepare step input (merge config with context, credentials, and integration ID)
     // Credentials are injected directly so plugins don't need to fetch them again
     const stepInput = {
-      ...input,
+      ...normalizedInput,
       ...credentials, // Inject credentials directly (e.g., OPENAI_API_KEY)
       _credentials: credentials, // Also provide as separate object for plugins that need it
       _context: {
