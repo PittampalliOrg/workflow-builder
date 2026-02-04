@@ -1,127 +1,10 @@
-# Knative Service for Function Runner
-# Enables scale-to-zero serverless execution for workflow functions
+# Function Runner Service
 #
 # This service is invoked by the workflow-orchestrator via Dapr service invocation.
-# Knative handles autoscaling based on incoming requests.
 # Supports three execution types: builtin, OCI (container jobs), and HTTP webhooks.
 #
-# Prerequisites:
-# - Knative Serving installed in the cluster
-# - Dapr injector configured for Knative services
-# - KEDA (optional) for event-driven autoscaling
----
-apiVersion: serving.knative.dev/v1
-kind: Service
-metadata:
-  name: function-runner
-  namespace: workflow-builder
-  labels:
-    app.kubernetes.io/name: function-runner
-    app.kubernetes.io/component: functions
-    app.kubernetes.io/part-of: workflow-builder
-  annotations:
-    # Enable Dapr sidecar injection
-    dapr.io/enabled: "true"
-    dapr.io/app-id: "function-runner"
-    dapr.io/app-port: "8080"
-    dapr.io/app-protocol: "http"
-    dapr.io/enable-api-logging: "true"
-spec:
-  template:
-    metadata:
-      annotations:
-        # Knative autoscaling configuration
-        autoscaling.knative.dev/class: "kpa.autoscaling.knative.dev"
-        autoscaling.knative.dev/metric: "concurrency"
-        autoscaling.knative.dev/target: "10"
-        autoscaling.knative.dev/minScale: "0"
-        autoscaling.knative.dev/maxScale: "20"
-        # Scale down delay for cost optimization
-        autoscaling.knative.dev/scale-down-delay: "30s"
-        # Dapr sidecar configuration
-        dapr.io/enabled: "true"
-        dapr.io/app-id: "function-runner"
-        dapr.io/app-port: "8080"
-        dapr.io/app-protocol: "http"
-        dapr.io/log-level: "info"
-        dapr.io/enable-metrics: "true"
-        # Allow traffic before sidecar is ready (for faster cold starts)
-        dapr.io/sidecar-listen-addresses: "0.0.0.0"
-        # Dapr sidecar resource settings (production best practices)
-        dapr.io/sidecar-cpu-request: "100m"
-        dapr.io/sidecar-cpu-limit: "300m"
-        dapr.io/sidecar-memory-request: "250Mi"
-        dapr.io/sidecar-memory-limit: "1000Mi"
-        # Enable graceful shutdown
-        dapr.io/graceful-shutdown-seconds: "30"
-        # Component scoping - only allow access to needed components
-        dapr.io/config: "function-runner-config"
-    spec:
-      containerConcurrency: 10
-      timeoutSeconds: 600
-      containers:
-        - name: function-runner
-          image: function-runner:latest
-          ports:
-            - containerPort: 8080
-              protocol: TCP
-          env:
-            - name: NODE_ENV
-              value: "production"
-            # NOTE: PORT is reserved by Knative - the container will receive PORT=8080 automatically
-            - name: LOG_LEVEL
-              value: "info"
-            - name: K8S_NAMESPACE
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.namespace
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: workflow-builder-secrets
-                  key: database-url
-            - name: INTEGRATION_ENCRYPTION_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: workflow-builder-secrets
-                  key: integration-encryption-key
-                  optional: true
-            # Dapr configuration for secrets store
-            - name: DAPR_SECRETS_STORE
-              value: "azure-keyvault"
-            - name: SECRETS_FALLBACK_DB
-              value: "true"
-          resources:
-            requests:
-              cpu: "100m"
-              memory: "256Mi"
-            limits:
-              cpu: "1000m"
-              memory: "1Gi"
-          readinessProbe:
-            httpGet:
-              path: /readyz
-              port: 8080
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: 8080
-            initialDelaySeconds: 10
-            periodSeconds: 30
-          # Security context for container
-          securityContext:
-            runAsNonRoot: true
-            runAsUser: 65532
-            runAsGroup: 65532
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: false  # Node.js may need write access
-            capabilities:
-              drop:
-                - ALL
-      # Service account for K8s API access (for OCI job creation)
-      serviceAccountName: function-runner
+# NOTE: Knative Service is disabled due to self-signed certificate issues with Gitea registry.
+# Using standard Kubernetes Deployment instead (see bottom of file).
 ---
 # Dapr Configuration for function-runner
 # Defines component scoping, tracing, and security settings
@@ -212,69 +95,106 @@ roleRef:
   name: function-runner-job-manager
   apiGroup: rbac.authorization.k8s.io
 ---
-# Alternative: Standard Kubernetes Deployment (non-Knative)
-# Use this if Knative is not available in your cluster
-#
-# To use this instead:
-# 1. Comment out the Knative Service above
-# 2. Uncomment the Deployment and Service below
-#
-# apiVersion: apps/v1
-# kind: Deployment
-# metadata:
-#   name: function-runner
-#   namespace: workflow-builder
-#   labels:
-#     app.kubernetes.io/name: function-runner
-# spec:
-#   replicas: 1
-#   selector:
-#     matchLabels:
-#       app.kubernetes.io/name: function-runner
-#   template:
-#     metadata:
-#       labels:
-#         app.kubernetes.io/name: function-runner
-#       annotations:
-#         dapr.io/enabled: "true"
-#         dapr.io/app-id: "function-runner"
-#         dapr.io/app-port: "8080"
-#     spec:
-#       serviceAccountName: function-runner
-#       containers:
-#         - name: function-runner
-#           image: function-runner:latest
-#           ports:
-#             - containerPort: 8080
-#           env:
-#             - name: NODE_ENV
-#               value: "production"
-#             - name: K8S_NAMESPACE
-#               valueFrom:
-#                 fieldRef:
-#                   fieldPath: metadata.namespace
-#             - name: DATABASE_URL
-#               valueFrom:
-#                 secretKeyRef:
-#                   name: workflow-builder-secrets
-#                   key: database-url
-#           resources:
-#             requests:
-#               cpu: "100m"
-#               memory: "256Mi"
-#             limits:
-#               cpu: "500m"
-#               memory: "512Mi"
-# ---
-# apiVersion: v1
-# kind: Service
-# metadata:
-#   name: function-runner
-#   namespace: workflow-builder
-# spec:
-#   selector:
-#     app.kubernetes.io/name: function-runner
-#   ports:
-#     - port: 80
-#       targetPort: 8080
-#   type: ClusterIP
+# Standard Kubernetes Deployment (used instead of Knative due to self-signed registry certificate)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: function-runner
+  namespace: workflow-builder
+  labels:
+    app.kubernetes.io/name: function-runner
+    app.kubernetes.io/component: functions
+    app.kubernetes.io/part-of: workflow-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: function-runner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: function-runner
+      annotations:
+        dapr.io/enabled: "true"
+        dapr.io/app-id: "function-runner"
+        dapr.io/app-port: "8080"
+        dapr.io/app-protocol: "http"
+        dapr.io/log-level: "info"
+        dapr.io/enable-metrics: "true"
+        dapr.io/config: "function-runner-config"
+        dapr.io/sidecar-cpu-request: "100m"
+        dapr.io/sidecar-cpu-limit: "300m"
+        dapr.io/sidecar-memory-request: "250Mi"
+        dapr.io/sidecar-memory-limit: "1000Mi"
+    spec:
+      serviceAccountName: function-runner
+      containers:
+        - name: function-runner
+          image: gitea.cnoe.localtest.me:8443/giteaadmin/function-runner:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "8080"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: K8S_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: workflow-builder-secrets
+                  key: DATABASE_URL
+            - name: INTEGRATION_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: workflow-builder-secrets
+                  key: INTEGRATION_ENCRYPTION_KEY
+                  optional: true
+            - name: DAPR_SECRETS_STORE
+              value: "azure-keyvault"
+            - name: SECRETS_FALLBACK_DB
+              value: "true"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: function-runner
+  namespace: workflow-builder
+  labels:
+    app.kubernetes.io/name: function-runner
+spec:
+  selector:
+    app.kubernetes.io/name: function-runner
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

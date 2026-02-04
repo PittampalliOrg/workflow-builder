@@ -260,10 +260,11 @@ function SystemActionFields({
 }
 
 // System actions that don't have plugins
-const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
-  { id: "HTTP Request", label: "HTTP Request" },
-  { id: "Database Query", label: "Database Query" },
-  { id: "Condition", label: "Condition" },
+// id is the legacy actionType, slug is the canonical functionSlug
+const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
+  { id: "HTTP Request", label: "HTTP Request", slug: "system/http-request" },
+  { id: "Database Query", label: "Database Query", slug: "system/database-query" },
+  { id: "Condition", label: "Condition", slug: "system/condition" },
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
@@ -329,6 +330,24 @@ function normalizeActionType(actionType: string): string {
   return actionType;
 }
 
+// Get the canonical function slug for an action
+// This is the identifier used by the orchestrator and function-runner
+function getSlugForAction(actionType: string): string | null {
+  // Check system actions first
+  const systemAction = SYSTEM_ACTIONS.find((a) => a.id === actionType);
+  if (systemAction) {
+    return systemAction.slug;
+  }
+
+  // For plugin actions, the action id IS the slug (e.g., "openai/generate-text")
+  const action = findActionById(actionType);
+  if (action) {
+    return action.id; // Plugin action IDs are already in slug format
+  }
+
+  return null;
+}
+
 export function ActionConfig({
   config,
   onUpdateConfig,
@@ -356,11 +375,23 @@ export function ActionConfig({
     // Auto-select the first action in the new category
     const firstAction = categories[newCategory]?.[0];
     if (firstAction) {
+      // Set the canonical functionSlug first (used by orchestrator/function-runner)
+      const functionSlug = getSlugForAction(firstAction.id);
+      if (functionSlug) {
+        onUpdateConfig("functionSlug", functionSlug);
+      }
+      // Also set actionType for backwards compatibility
       onUpdateConfig("actionType", firstAction.id);
     }
   };
 
   const handleActionTypeChange = (value: string) => {
+    // Set the canonical functionSlug first (used by orchestrator/function-runner)
+    const functionSlug = getSlugForAction(value);
+    if (functionSlug) {
+      onUpdateConfig("functionSlug", functionSlug);
+    }
+    // Also set actionType for backwards compatibility
     onUpdateConfig("actionType", value);
   };
 

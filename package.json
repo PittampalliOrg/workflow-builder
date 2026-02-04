@@ -17,6 +17,7 @@
     "db:studio": "drizzle-kit studio",
     "discover-plugins": "tsx scripts/discover-plugins.ts",
     "create-plugin": "tsx scripts/create-plugin.ts",
+    "seed-functions": "tsx scripts/seed-functions.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },

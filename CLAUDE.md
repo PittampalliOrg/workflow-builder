@@ -65,6 +65,7 @@ pnpm db:generate      # Generate Drizzle migrations
 pnpm db:push          # Push schema to DB
 pnpm db:migrate       # Run migrations
 pnpm discover-plugins # Generate plugin manifest
+pnpm seed-functions   # Seed builtin functions to DB
 ```
 
 ## Project Structure

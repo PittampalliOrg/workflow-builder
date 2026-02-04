@@ -15,6 +15,7 @@ import { executeBuiltin, builtinExists } from "../handlers/builtin.js";
 import { executeOci } from "../handlers/oci.js";
 import { executeHttp } from "../handlers/http.js";
 import type { ExecuteFunctionResult, FunctionDefinition } from "../core/types.js";
+import { logExecutionStart, logExecutionComplete } from "../core/execution-logger.js";
 
 // Request body schema using Zod
 const ExecuteRequestSchema = z.object({
@@ -35,6 +36,12 @@ const ExecuteRequestSchema = z.object({
     )
     .optional(),
   integration_id: z.string().optional(),
+  // User's integrations passed from the orchestrator
+  // Format: { "openai": { "apiKey": "..." }, "slack": { "botToken": "..." } }
+  integrations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
+  // Database execution ID for logging (links to workflow_executions.id)
+  // This is different from execution_id which is the Dapr instance ID
+  db_execution_id: z.string().optional(),
 });
 
 type ExecuteRequest = z.infer<typeof ExecuteRequestSchema>;
@@ -135,16 +142,40 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       : body.input;
 
     // Step 3: Fetch credentials
+    // Priority: 1) Passed integrations, 2) Dapr secrets, 3) Database lookup
     const integrationType = fn.integrationType || fn.pluginId;
-    const credentials = await fetchCredentials(body.integration_id, integrationType);
+    const credentials = await fetchCredentials(
+      body.integration_id,
+      integrationType,
+      body.integrations
+    );
 
     // Step 4: Execute based on execution type
+    // Use db_execution_id for logging to workflow_execution_logs (FK to workflow_executions.id)
+    // Fall back to execution_id (Dapr instance ID) if not provided
     const context = {
-      executionId: body.execution_id,
+      executionId: body.db_execution_id || body.execution_id,
       workflowId: body.workflow_id,
       nodeId: body.node_id,
       nodeName: body.node_name,
     };
+
+    // Log execution start (only if we have a valid database execution ID)
+    let logId: string | undefined;
+    if (body.db_execution_id) {
+      try {
+        logId = await logExecutionStart({
+          executionId: body.db_execution_id,
+          nodeId: body.node_id,
+          nodeName: body.node_name,
+          nodeType: "action",
+          activityName: fn.slug,
+          input: resolvedInput,
+        });
+      } catch (logError) {
+        console.error(`[Execute Route] Failed to log execution start:`, logError);
+      }
+    }
 
     let result: ExecuteFunctionResult;
 
@@ -187,6 +218,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     console.log(
       `[Execute Route] Function ${fn.slug} completed: success=${result.success}, duration=${result.duration_ms}ms`
     );
+
+    // Log execution completion (only if we started logging)
+    if (logId && body.db_execution_id) {
+      try {
+        await logExecutionComplete(logId, {
+          success: result.success,
+          output: result.data,
+          error: result.error,
+          durationMs: result.duration_ms,
+        });
+      } catch (logError) {
+        console.error(`[Execute Route] Failed to log execution completion:`, logError);
+      }
+    }
 
     // Return result with appropriate status code
     const statusCode = result.success ? 200 : 500;

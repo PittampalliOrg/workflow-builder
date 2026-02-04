@@ -225,17 +225,26 @@ dev:
         value: ${OTEL_SERVICE_NAME}
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME}-dev,service.version=dev"
-      # Override orchestrator URLs to use correct namespace
+      # Dapr sidecar configuration (for SDK access to config/secrets)
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+      # Fallback URLs (Dapr SDK will override if available)
       - name: DAPR_ORCHESTRATOR_URL
-        value: "http://workflow-orchestrator.workflow-orchestrator.svc.cluster.local:8080"
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: GENERIC_ORCHESTRATOR_URL
-        value: "http://workflow-orchestrator.workflow-orchestrator.svc.cluster.local:8080"
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
-        value: "http://workflow-orchestrator.workflow-orchestrator.svc.cluster.local:8080"
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: ACTIVITY_EXECUTOR_URL
-        value: "http://activity-executor.activity-executor.svc.cluster.local:8080"
+        value: "http://activity-executor.workflow-builder.svc.cluster.local:8080"
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
       - name: BETTER_AUTH_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
+
+    # Add Dapr sidecar annotations for config/secret access
+    # Note: DevSpace patches are applied to pod spec, not metadata
+    # Dapr annotations must be added via kubectl after devspace starts

@@ -14,12 +14,8 @@ import { workflows, workflowExecutions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
 import { generateWorkflowDefinition } from "@/lib/dapr-codegen";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
+import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 import type { WorkflowNode, WorkflowEdge } from "@/lib/workflow-store";
-
-const DEFAULT_ORCHESTRATOR_URL =
-  process.env.GENERIC_ORCHESTRATOR_URL ||
-  process.env.WORKFLOW_ORCHESTRATOR_URL ||
-  "http://workflow-orchestrator:8080";
 
 export async function POST(request: Request) {
   try {
@@ -88,9 +84,9 @@ export async function POST(request: Request) {
       }
     );
 
-    // Get orchestrator URL
-    const orchestratorUrl =
-      workflow.daprOrchestratorUrl || DEFAULT_ORCHESTRATOR_URL;
+    // Get orchestrator URL from Dapr config (falls back to env vars)
+    const defaultUrl = await getOrchestratorUrlAsync();
+    const orchestratorUrl = workflow.daprOrchestratorUrl || defaultUrl;
 
     // Start the workflow
     const result = await genericOrchestratorClient.startWorkflow(

@@ -4,7 +4,7 @@
  * Provides health check endpoints for Kubernetes liveness and readiness probes.
  */
 import type { FastifyInstance } from "fastify";
-import { getDb } from "../core/db.js";
+import { getSql } from "../core/db.js";
 
 let isReady = false;
 
@@ -31,9 +31,9 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
    */
   app.get("/readyz", async (_request, reply) => {
     try {
-      // Check database connection
-      const db = getDb();
-      await db.execute`SELECT 1`;
+      // Check database connection using raw SQL client
+      const sql = getSql();
+      await sql`SELECT 1`;
 
       isReady = true;
       return reply.status(200).send({

@@ -41,6 +41,8 @@ export interface ExecuteActionInput {
   executionId: string;
   workflowId: string;
   integrations?: Record<string, Record<string, string>>;
+  /** Database execution ID for logging (links to workflow_executions.id) */
+  dbExecutionId?: string;
 }
 
 /**
@@ -52,24 +54,24 @@ export async function executeAction(
   _ctx: unknown,
   input: ExecuteActionInput
 ): Promise<ActivityExecutionResult> {
-  const { node, nodeOutputs, executionId, workflowId, integrations } = input;
-  const config = node.config as Record<string, unknown>;
+  const { node, nodeOutputs, executionId, workflowId, integrations, dbExecutionId } = input;
+  // Ensure config is never undefined to prevent runtime errors
+  const config = (node.config || {}) as Record<string, unknown>;
 
-  // Determine the activity ID
-  // Check multiple config fields for backwards compatibility
-  const activityId =
-    (config.actionId as string) ||
-    (config.activityName as string) ||
-    (config.actionType as string) ||
-    node.label;
+  // Get function slug - this is the ONLY way to identify functions
+  // functionSlug is the canonical identifier: e.g., "openai/generate-text"
+  const functionSlug = config.functionSlug as string | undefined;
 
-  if (!activityId) {
+  if (!functionSlug) {
     return {
       success: false,
-      error: `No actionId, activityName, or actionType specified for node ${node.id}`,
+      error: `No functionSlug specified for node ${node.id}. All action/activity nodes must have a functionSlug configured.`,
       duration_ms: 0,
     };
   }
+
+  // Use functionSlug as the activity ID for function-runner
+  const activityId = functionSlug;
 
   // Resolve template variables in the node config
   const resolvedConfig = resolveTemplates(config, nodeOutputs) as Record<
@@ -94,6 +96,8 @@ export async function executeAction(
     input: resolvedConfig,
     node_outputs: nodeOutputs,
     integration_id: integrationId,
+    integrations: integrations, // Pass user's integrations for credential resolution
+    db_execution_id: dbExecutionId, // Database execution ID for logging
   };
 
   // Legacy activity-executor request format (for fallback)

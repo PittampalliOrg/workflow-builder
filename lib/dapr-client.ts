@@ -201,12 +201,14 @@ export const genericOrchestratorClient = {
    * @param definition - The workflow definition to execute
    * @param triggerData - Input data that triggered the workflow
    * @param integrations - Optional map of integration credentials
+   * @param dbExecutionId - Database execution ID for logging (links to workflow_executions.id)
    */
   startWorkflow: (
     orchestratorUrl: string,
     definition: WorkflowDefinition,
     triggerData: Record<string, unknown>,
-    integrations?: Record<string, Record<string, string>>
+    integrations?: Record<string, Record<string, string>>,
+    dbExecutionId?: string
   ): Promise<GenericStartWorkflowResult> =>
     daprFetch(`${orchestratorUrl}/api/v2/workflows`, {
       method: "POST",
@@ -214,6 +216,7 @@ export const genericOrchestratorClient = {
         definition,
         triggerData,
         integrations,
+        dbExecutionId,
       }),
     }),
 

@@ -26,6 +26,17 @@ export function getDb(): PostgresJsDatabase {
   return db;
 }
 
+/**
+ * Get raw SQL client for direct queries (e.g., health checks)
+ */
+export function getSql(): ReturnType<typeof postgres> {
+  if (!queryClient) {
+    queryClient = postgres(connectionString, { max: 10 });
+    db = drizzle(queryClient);
+  }
+  return queryClient;
+}
+
 export async function closeDb(): Promise<void> {
   if (queryClient) {
     await queryClient.end();
