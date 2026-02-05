@@ -1,63 +1,41 @@
-# Workflow Orchestrator Service Dockerfile
+# Workflow Orchestrator - Python/FastAPI with Dapr Workflow
 # Multi-stage build for optimal image size
 
-# Stage 1: Dependencies
-FROM node:22-alpine AS deps
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
+FROM python:3.12-slim
 
-# Install pnpm
-RUN npm install -g pnpm
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# Copy package files
-COPY services/workflow-orchestrator/package.json ./
+# Create virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies
-RUN pnpm install
-
-# Stage 2: Builder
-FROM node:22-alpine AS builder
-WORKDIR /app
-
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy deps from previous stage
-COPY --from=deps /app/node_modules ./node_modules
-
-# Copy source code
-COPY services/workflow-orchestrator/ ./
-
-# Copy shared logger utility
-COPY services/shared/ ./shared/
-
-# Set build-time environment variables
-ENV NODE_ENV=production
-
-# Build the service using esbuild
-RUN pnpm build
-
-# Stage 3: Runner (minimal image)
-FROM node:22-alpine AS runner
-WORKDIR /app
-
-ENV NODE_ENV=production
-ENV PORT=8080
-ENV HOST="0.0.0.0"
+# Install Python dependencies
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Create non-root user for security
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 orchestrator
+RUN groupadd --gid 1001 orchestrator && \
+    useradd --uid 1001 --gid orchestrator --shell /bin/bash --create-home orchestrator
 
-# Copy only the bundled output
-COPY --from=builder --chown=orchestrator:nodejs /app/dist ./dist
+WORKDIR /app
+
+# Copy application code
+COPY --chown=orchestrator:orchestrator . .
 
 USER orchestrator
+
+# Environment configuration
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8080
 
 EXPOSE 8080
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8080/healthz || exit 1
 
-CMD ["node", "dist/index.js"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
