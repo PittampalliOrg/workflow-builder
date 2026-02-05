@@ -162,6 +162,84 @@ export const workflowExecutionLogs = pgTable("workflow_execution_logs", {
   completedAt: timestamp("completed_at"),
   duration: text("duration"), // Duration in milliseconds
   timestamp: timestamp("timestamp").notNull().defaultNow(),
+  // Timing breakdown columns (Phase 5 enhancement)
+  credentialFetchMs: integer("credential_fetch_ms"),
+  routingMs: integer("routing_ms"),
+  coldStartMs: integer("cold_start_ms"),
+  executionMs: integer("execution_ms"),
+  routedTo: text("routed_to"), // Service that handled execution (e.g., "fn-openai")
+  wasColdStart: boolean("was_cold_start"),
+});
+
+// ============================================================================
+// Credential Access Logs (Compliance/Debugging)
+// ============================================================================
+
+/**
+ * Credential source types
+ */
+export type CredentialSource =
+  | "dapr_secret"
+  | "database"
+  | "request_body"
+  | "not_found";
+
+/**
+ * Credential access audit logs
+ * Tracks which credential source was used for each function execution
+ */
+export const credentialAccessLogs = pgTable("credential_access_logs", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
+  executionId: text("execution_id")
+    .notNull()
+    .references(() => workflowExecutions.id),
+  nodeId: text("node_id").notNull(),
+  integrationType: text("integration_type").notNull(), // e.g., "openai", "slack"
+  credentialKeys: jsonb("credential_keys").notNull().$type<string[]>(), // Keys that were resolved
+  source: text("source").notNull().$type<CredentialSource>(),
+  fallbackAttempted: boolean("fallback_attempted").default(false),
+  fallbackReason: text("fallback_reason"),
+  accessedAt: timestamp("accessed_at").notNull().defaultNow(),
+});
+
+// ============================================================================
+// Workflow External Events (Approval Audit Trail)
+// ============================================================================
+
+/**
+ * External event types
+ */
+export type ExternalEventType =
+  | "approval_request"
+  | "approval_response"
+  | "timeout";
+
+/**
+ * Workflow external events history
+ * Tracks approval gate events for audit trail
+ */
+export const workflowExternalEvents = pgTable("workflow_external_events", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
+  executionId: text("execution_id")
+    .notNull()
+    .references(() => workflowExecutions.id),
+  nodeId: text("node_id").notNull(),
+  eventName: text("event_name").notNull(), // e.g., "plan-approval"
+  eventType: text("event_type").notNull().$type<ExternalEventType>(),
+  requestedAt: timestamp("requested_at"),
+  timeoutSeconds: integer("timeout_seconds"),
+  expiresAt: timestamp("expires_at"),
+  respondedAt: timestamp("responded_at"),
+  approved: boolean("approved"),
+  reason: text("reason"),
+  respondedBy: text("responded_by"), // User ID or identifier who responded
+  // biome-ignore lint/suspicious/noExplicitAny: JSONB type - event payload
+  payload: jsonb("payload").$type<any>(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
 // API Keys table for webhook authentication
@@ -374,3 +452,9 @@ export type Function = typeof functions.$inferSelect;
 export type NewFunction = typeof functions.$inferInsert;
 export type FunctionExecution = typeof functionExecutions.$inferSelect;
 export type NewFunctionExecution = typeof functionExecutions.$inferInsert;
+
+// Export types for observability tables
+export type CredentialAccessLog = typeof credentialAccessLogs.$inferSelect;
+export type NewCredentialAccessLog = typeof credentialAccessLogs.$inferInsert;
+export type WorkflowExternalEvent = typeof workflowExternalEvents.$inferSelect;
+export type NewWorkflowExternalEvent = typeof workflowExternalEvents.$inferInsert;

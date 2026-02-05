@@ -15,6 +15,11 @@ import { readFileSync, existsSync } from "fs";
 const urlCache = new Map<string, { url: string; expiresAt: number }>();
 const CACHE_TTL_MS = 60_000;
 
+// Response time tracking for cold start detection
+// Stores a rolling window of recent response times per function
+const responseTimeHistory = new Map<string, number[]>();
+const MAX_HISTORY_SIZE = 10; // Keep last 10 response times
+
 const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
 
 // In-cluster Kubernetes API configuration
@@ -208,4 +213,56 @@ export async function warmCache(appIds: string[]): Promise<void> {
   console.log(
     `[OpenFunction Resolver] Cache warm-up: ${successful} resolved, ${failed} failed`
   );
+}
+
+/**
+ * Record a response time for a function (for cold start detection)
+ */
+export function recordResponseTime(appId: string, responseTimeMs: number): void {
+  let history = responseTimeHistory.get(appId);
+  if (!history) {
+    history = [];
+    responseTimeHistory.set(appId, history);
+  }
+
+  history.push(responseTimeMs);
+
+  // Keep only the last N entries
+  if (history.length > MAX_HISTORY_SIZE) {
+    history.shift();
+  }
+}
+
+/**
+ * Get the average response time for a function (for cold start detection)
+ *
+ * Returns 0 if not enough data is available (need at least 3 data points)
+ */
+export function getResponseTimeAverage(appId: string): number {
+  const history = responseTimeHistory.get(appId);
+  if (!history || history.length < 3) {
+    return 0; // Not enough data for meaningful average
+  }
+
+  // Calculate average of response times (excluding outliers > 2x median)
+  const sorted = [...history].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+
+  // Filter out outliers (likely cold starts we already recorded)
+  const filtered = sorted.filter(t => t <= median * 2);
+
+  if (filtered.length < 2) {
+    return 0; // All data points are outliers
+  }
+
+  const sum = filtered.reduce((acc, t) => acc + t, 0);
+  return Math.round(sum / filtered.length);
+}
+
+/**
+ * Clear response time history (useful for testing)
+ */
+export function clearResponseTimeHistory(): void {
+  responseTimeHistory.clear();
+  console.log("[OpenFunction Resolver] Response time history cleared");
 }

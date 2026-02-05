@@ -4,12 +4,42 @@
  * Pre-fetches credentials from Dapr secret store before routing to OpenFunctions.
  * This centralizes credential management and avoids each OpenFunction needing
  * direct access to the secret store.
+ *
+ * Includes audit logging for compliance and debugging.
  */
 import { SECRET_MAPPINGS } from "./types.js";
+import { getSql } from "./db.js";
 
 const DAPR_SECRETS_STORE = process.env.DAPR_SECRETS_STORE || "azure-keyvault";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
+
+/**
+ * Credential source types for audit logging
+ */
+export type CredentialSource =
+  | "dapr_secret"
+  | "request_body"
+  | "not_found";
+
+/**
+ * Audit context for credential resolution
+ */
+export interface CredentialAuditContext {
+  executionId?: string;
+  nodeId?: string;
+}
+
+/**
+ * Result of credential fetch with audit information
+ */
+export interface CredentialFetchResult {
+  credentials: Record<string, string>;
+  source: CredentialSource;
+  keys: string[];
+  fallbackAttempted: boolean;
+  fallbackReason?: string;
+}
 
 /**
  * Fetch a single secret from Dapr secret store
@@ -145,4 +175,153 @@ export async function fetchCredentials(
 
   console.log(`[Credential Service] No credentials found for ${integrationType}`);
   return {};
+}
+
+/**
+ * Generate a random ID for audit log entries
+ */
+function generateAuditId(): string {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let result = "";
+  for (let i = 0; i < 24; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
+
+/**
+ * Log credential access to the audit table
+ */
+async function logCredentialAccess(
+  executionId: string,
+  nodeId: string,
+  integrationType: string,
+  result: CredentialFetchResult
+): Promise<void> {
+  const sql = getSql();
+  const id = generateAuditId();
+
+  try {
+    await sql`
+      INSERT INTO credential_access_logs (
+        id, execution_id, node_id, integration_type, credential_keys,
+        source, fallback_attempted, fallback_reason, accessed_at
+      ) VALUES (
+        ${id},
+        ${executionId},
+        ${nodeId},
+        ${integrationType},
+        ${JSON.stringify(result.keys)},
+        ${result.source},
+        ${result.fallbackAttempted},
+        ${result.fallbackReason || null},
+        NOW()
+      )
+    `;
+    console.log(`[Credential Service] Logged credential access: ${id} (source: ${result.source})`);
+  } catch (error) {
+    console.error(`[Credential Service] Failed to log credential access:`, error);
+    // Don't throw - audit logging failure shouldn't break execution
+  }
+}
+
+/**
+ * Fetch credentials for a function execution with audit logging
+ *
+ * Priority:
+ * 1. Passed integrations (from orchestrator)
+ * 2. Dapr secret store (auto-injection from Azure Key Vault)
+ *
+ * @param integrationType - The integration type (e.g., "openai", "slack")
+ * @param passedIntegrations - Credentials passed from the orchestrator
+ * @param auditContext - Optional context for audit logging
+ * @returns Credentials and audit information
+ */
+export async function fetchCredentialsWithAudit(
+  integrationType: string,
+  passedIntegrations?: Record<string, Record<string, string>>,
+  auditContext?: CredentialAuditContext
+): Promise<CredentialFetchResult> {
+  let result: CredentialFetchResult = {
+    credentials: {},
+    source: "not_found",
+    keys: [],
+    fallbackAttempted: false,
+  };
+
+  // Step 1: Try passed integrations first (highest priority)
+  if (passedIntegrations) {
+    const passedCreds = extractPassedCredentials(passedIntegrations, integrationType);
+    if (Object.keys(passedCreds).length > 0) {
+      console.log(`[Credential Service] Using passed integrations for ${integrationType}:`, Object.keys(passedCreds));
+      result = {
+        credentials: passedCreds,
+        source: "request_body",
+        keys: Object.keys(passedCreds),
+        fallbackAttempted: false,
+      };
+
+      // Log to audit table if context provided
+      if (auditContext?.executionId && auditContext?.nodeId) {
+        await logCredentialAccess(
+          auditContext.executionId,
+          auditContext.nodeId,
+          integrationType,
+          result
+        );
+      }
+
+      return result;
+    }
+  }
+
+  // Step 2: Try Dapr secrets (auto-injection) - this is a fallback from request_body
+  result.fallbackAttempted = true;
+  result.fallbackReason = "No credentials in request body";
+
+  const daprCreds = await fetchDaprCredentials(integrationType);
+  if (Object.keys(daprCreds).length > 0) {
+    console.log(`[Credential Service] Using Dapr secrets for ${integrationType}`);
+    result = {
+      credentials: daprCreds,
+      source: "dapr_secret",
+      keys: Object.keys(daprCreds),
+      fallbackAttempted: true,
+      fallbackReason: "No credentials in request body, used Dapr secret store",
+    };
+
+    // Log to audit table if context provided
+    if (auditContext?.executionId && auditContext?.nodeId) {
+      await logCredentialAccess(
+        auditContext.executionId,
+        auditContext.nodeId,
+        integrationType,
+        result
+      );
+    }
+
+    return result;
+  }
+
+  // Step 3: No credentials found
+  console.log(`[Credential Service] No credentials found for ${integrationType}`);
+  result = {
+    credentials: {},
+    source: "not_found",
+    keys: [],
+    fallbackAttempted: true,
+    fallbackReason: "No credentials in request body, Dapr secret store returned empty",
+  };
+
+  // Log to audit table if context provided
+  if (auditContext?.executionId && auditContext?.nodeId) {
+    await logCredentialAccess(
+      auditContext.executionId,
+      auditContext.nodeId,
+      integrationType,
+      result
+    );
+  }
+
+  return result;
 }

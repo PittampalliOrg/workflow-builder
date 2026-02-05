@@ -37,6 +37,11 @@ import {
   publishPhaseChanged,
   type PhaseChangedInput,
 } from "../activities/publish-event.js";
+import {
+  logApprovalRequest,
+  logApprovalResponse,
+  logApprovalTimeout,
+} from "../activities/log-external-event.js";
 
 /**
  * Current status storage (since Dapr doesn't have getCustomStatus)
@@ -130,8 +135,9 @@ async function* processApprovalGateNode(
   ctx: WorkflowContext,
   node: SerializedNode,
   executionId: string,
-  workflowId: string
-): AsyncGenerator<unknown, { approved: boolean; reason?: string }, unknown> {
+  workflowId: string,
+  dbExecutionId?: string
+): AsyncGenerator<unknown, { approved: boolean; reason?: string; respondedBy?: string }, unknown> {
   const config = node.config as unknown as ApprovalGateConfig;
   const eventName = config.eventName || `approval_${node.id}`;
   const timeoutSeconds = getTimeoutSeconds(config);
@@ -139,6 +145,16 @@ async function* processApprovalGateNode(
   console.log(
     `[Dynamic Workflow] Waiting for approval event: ${eventName} (timeout: ${timeoutSeconds}s)`
   );
+
+  // Log approval request to database for audit trail
+  if (dbExecutionId) {
+    yield ctx.callActivity(logApprovalRequest, {
+      executionId: dbExecutionId,
+      nodeId: node.id,
+      eventName,
+      timeoutSeconds,
+    });
+  }
 
   // Publish that we're waiting for approval
   yield ctx.callActivity(publishPhaseChanged, {
@@ -157,6 +173,17 @@ async function* processApprovalGateNode(
 
   if (winner === timeoutPromise) {
     console.log(`[Dynamic Workflow] Approval timed out: ${eventName}`);
+
+    // Log timeout event to database for audit trail
+    if (dbExecutionId) {
+      yield ctx.callActivity(logApprovalTimeout, {
+        executionId: dbExecutionId,
+        nodeId: node.id,
+        eventName,
+        timeoutSeconds,
+      });
+    }
+
     return {
       approved: false,
       reason: `Timed out after ${timeoutSeconds} seconds`,
@@ -167,6 +194,7 @@ async function* processApprovalGateNode(
   const approvalResult = approvalPromise.getResult() as {
     approved?: boolean;
     reason?: string;
+    respondedBy?: string;
   };
 
   console.log(
@@ -174,9 +202,23 @@ async function* processApprovalGateNode(
     approvalResult
   );
 
+  // Log approval response to database for audit trail
+  if (dbExecutionId) {
+    yield ctx.callActivity(logApprovalResponse, {
+      executionId: dbExecutionId,
+      nodeId: node.id,
+      eventName,
+      approved: approvalResult?.approved ?? false,
+      reason: approvalResult?.reason,
+      respondedBy: approvalResult?.respondedBy,
+      payload: approvalResult as Record<string, unknown>,
+    });
+  }
+
   return {
     approved: approvalResult?.approved ?? false,
     reason: approvalResult?.reason,
+    respondedBy: approvalResult?.respondedBy,
   };
 }
 
@@ -319,7 +361,8 @@ export const dynamicWorkflow: TWorkflow = async function* (
             ctx,
             node,
             executionId,
-            workflowId
+            workflowId,
+            dbExecutionId
           );
           nodeResult = result;
 

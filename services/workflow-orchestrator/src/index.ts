@@ -29,6 +29,10 @@ import {
   publishWorkflowCompleted,
   publishWorkflowFailed,
   publishApprovalRequested,
+  logExternalEvent,
+  logApprovalRequest,
+  logApprovalResponse,
+  logApprovalTimeout,
 } from "./activities/index.js";
 
 // Configuration from environment
@@ -69,6 +73,10 @@ async function startWorkflowRuntime(): Promise<WorkflowRuntime> {
   runtime.registerActivity(publishWorkflowCompleted);
   runtime.registerActivity(publishWorkflowFailed);
   runtime.registerActivity(publishApprovalRequested);
+  runtime.registerActivity(logExternalEvent);
+  runtime.registerActivity(logApprovalRequest);
+  runtime.registerActivity(logApprovalResponse);
+  runtime.registerActivity(logApprovalTimeout);
   console.log("[Workflow Orchestrator] Registered all activities");
 
   // Start the runtime

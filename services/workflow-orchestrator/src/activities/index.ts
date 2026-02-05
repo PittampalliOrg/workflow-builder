@@ -31,3 +31,12 @@ export {
   type PhaseChangedInput,
   type ApprovalRequestedInput,
 } from "./publish-event.js";
+export {
+  logExternalEvent,
+  logApprovalRequest,
+  logApprovalResponse,
+  logApprovalTimeout,
+  type LogExternalEventInput,
+  type LogExternalEventOutput,
+  type ExternalEventType,
+} from "./log-external-event.js";

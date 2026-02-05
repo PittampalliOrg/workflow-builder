@@ -12,6 +12,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { healthRoutes } from "./routes/health.js";
 import { executeRoutes } from "./routes/execute.js";
+import { externalEventRoutes } from "./routes/external-event.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
@@ -33,6 +34,7 @@ async function main() {
   // Register routes
   await app.register(healthRoutes);
   await app.register(executeRoutes);
+  await app.register(externalEventRoutes);
 
   // Start server
   try {

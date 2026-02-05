@@ -22,6 +22,18 @@ export interface ExecutionLogEntry {
 }
 
 /**
+ * Timing breakdown for detailed performance analysis
+ */
+export interface TimingBreakdown {
+  credentialFetchMs?: number;
+  routingMs?: number;
+  coldStartMs?: number;
+  executionMs?: number;
+  routedTo?: string;
+  wasColdStart?: boolean;
+}
+
+/**
  * Generate a random ID (similar to the app's generateId)
  */
 function generateId(): string {
@@ -78,11 +90,13 @@ export async function logExecutionComplete(
     output?: unknown;
     error?: string;
     durationMs: number;
+    timing?: TimingBreakdown;
   }
 ): Promise<void> {
   const sql = getSql();
   const completedAt = new Date().toISOString();
   const status = result.success ? "success" : "error";
+  const timing = result.timing || {};
 
   try {
     await sql`
@@ -92,10 +106,16 @@ export async function logExecutionComplete(
         output = ${result.output ? JSON.stringify(result.output) : null},
         error = ${result.error || null},
         completed_at = ${completedAt},
-        duration = ${String(result.durationMs)}
+        duration = ${String(result.durationMs)},
+        credential_fetch_ms = ${timing.credentialFetchMs ?? null},
+        routing_ms = ${timing.routingMs ?? null},
+        cold_start_ms = ${timing.coldStartMs ?? null},
+        execution_ms = ${timing.executionMs ?? null},
+        routed_to = ${timing.routedTo ?? null},
+        was_cold_start = ${timing.wasColdStart ?? null}
       WHERE id = ${logId}
     `;
-    console.log(`[Execution Logger] Completed log ${logId}: ${status}`);
+    console.log(`[Execution Logger] Completed log ${logId}: ${status}${timing.wasColdStart ? ' (cold start)' : ''}`);
   } catch (error) {
     console.error(`[Execution Logger] Failed to log completion:`, error);
     // Don't throw - logging failure shouldn't break execution

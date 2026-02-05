@@ -387,6 +387,41 @@ app.post("/execute", async (request, reply) => {
 
 **Key field**: `config.actionType` - This is the canonical function slug used by the orchestrator and function-runner to identify functions.
 
+### Observability Tables
+
+**workflow_execution_logs** (extended with timing breakdown):
+- `id` - Log entry ID
+- `execution_id` - FK to workflow_executions
+- `node_id`, `node_name`, `node_type` - Node identification
+- `activity_name` - Function slug (actionType)
+- `status` - pending, running, success, error
+- `input`, `output`, `error` - JSONB data
+- `credential_fetch_ms` - Time to resolve credentials
+- `routing_ms` - Time to resolve OpenFunction URL
+- `execution_ms` - Actual function execution time
+- `routed_to` - Service that handled execution (e.g., "fn-openai")
+- `was_cold_start` - Boolean flag for cold start detection
+
+**credential_access_logs** (compliance/debugging):
+- `id` - Log entry ID
+- `execution_id` - FK to workflow_executions
+- `node_id` - Node that requested credentials
+- `integration_type` - e.g., "openai", "slack"
+- `credential_keys` - JSONB array of resolved keys
+- `source` - `dapr_secret`, `request_body`, or `not_found`
+- `fallback_attempted` - Boolean
+- `fallback_reason` - Why fallback was needed
+
+**workflow_external_events** (approval audit trail):
+- `id` - Event ID
+- `execution_id` - FK to workflow_executions
+- `node_id` - Approval gate node ID
+- `event_name` - e.g., "plan-approval"
+- `event_type` - `approval_request`, `approval_response`, `timeout`
+- `timeout_seconds`, `expires_at` - Timeout configuration
+- `approved`, `reason`, `responded_by` - Response details
+- `payload` - JSONB event payload
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -416,10 +451,10 @@ Images are pushed to the Gitea registry at `gitea.cnoe.localtest.me:8443/giteaad
 ### Build Images
 
 ```bash
-# Build core images
+# Build core images (all use project root as context)
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder:latest .
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile services/function-router
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
 
 # Build OpenFunction images (8 total)
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-openai:latest -f services/fn-openai/Dockerfile services/fn-openai
@@ -478,10 +513,14 @@ devspace dev  # Starts dev mode with file sync
 
 **For backend changes**:
 ```bash
-# Rebuild and restart services
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator
+# Rebuild and restart services (use project root as context)
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile .
 docker push gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest
 kubectl rollout restart deployment/workflow-orchestrator -n workflow-builder
+
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
+docker push gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest
+kubectl rollout restart deployment/function-router -n workflow-builder
 ```
 
 ### Testing Workflows
@@ -560,6 +599,7 @@ Legacy Dapr activity registrations removed from `dapr-activity-registry.ts`:
 **Remaining Dapr activities** are for workflow control flow only:
 - Planner-agent: `run_planning`, `persist_tasks`, `run_execution`, `publish_event`
 - Control flow: `approval-gate`, `timer`
+- Observability: `logExternalEvent`, `logApprovalRequest`, `logApprovalResponse`, `logApprovalTimeout`
 
 ## Related Documentation
 
@@ -571,5 +611,5 @@ Legacy Dapr activity registrations removed from `dapr-activity-registry.ts`:
 ---
 
 **Last Updated**: 2026-02-05
-**Architecture**: Clean actionType-only system
-**Status**: Production-ready
+**Architecture**: Clean actionType-only system with full observability
+**Status**: Production-ready with credential audit, timing breakdown, and external event logging

@@ -3,57 +3,61 @@
 
 # Stage 1: Dependencies
 FROM node:22-alpine AS deps
+RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN npm install -g pnpm
 
 # Copy package files
-COPY package.json pnpm-lock.yaml* ./
+COPY services/workflow-orchestrator/package.json ./
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+RUN pnpm install
 
-# Stage 2: Build
+# Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
 
 # Install pnpm
-RUN corepack enable && corepack prepare pnpm@9 --activate
+RUN npm install -g pnpm
 
-# Copy dependencies
+# Copy deps from previous stage
 COPY --from=deps /app/node_modules ./node_modules
-COPY . .
 
-# Build the service
+# Copy source code
+COPY services/workflow-orchestrator/ ./
+
+# Copy shared logger utility
+COPY services/shared/ ./shared/
+
+# Set build-time environment variables
+ENV NODE_ENV=production
+
+# Build the service using esbuild
 RUN pnpm build
 
-# Stage 3: Production
+# Stage 3: Runner (minimal image)
 FROM node:22-alpine AS runner
 WORKDIR /app
 
-# Create non-root user
+ENV NODE_ENV=production
+ENV PORT=8080
+ENV HOST="0.0.0.0"
+
+# Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 orchestrator
 
-# Copy built artifacts
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./
+# Copy only the bundled output
+COPY --from=builder --chown=orchestrator:nodejs /app/dist ./dist
 
-# Set environment variables
-ENV NODE_ENV=production
-ENV PORT=8080
-ENV HOST=0.0.0.0
-
-# Use non-root user
 USER orchestrator
 
-# Expose port
 EXPOSE 8080
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/healthz || exit 1
 
-# Start the service
 CMD ["node", "dist/index.js"]
