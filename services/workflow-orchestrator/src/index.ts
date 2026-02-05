@@ -7,7 +7,7 @@
  * Architecture:
  * - Fastify HTTP server for REST API endpoints
  * - Dapr Workflow Runtime for durable workflow execution
- * - Dapr service invocation to call activity-executor
+ * - Dapr service invocation to call function-router for OpenFunction execution
  * - Dapr state store for workflow state persistence
  * - Dapr pub/sub for event publishing
  */

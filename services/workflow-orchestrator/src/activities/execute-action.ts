@@ -1,13 +1,12 @@
 /**
  * Execute Action Activity
  *
- * This activity invokes the function-runner service via Dapr service invocation
- * to execute plugin step handlers (Slack, GitHub, AI, etc.).
+ * This activity invokes the function-router service via Dapr service invocation
+ * to route function execution to OpenFunctions (Knative serverless).
  *
- * The function-runner supports three execution types:
- * - builtin: Statically compiled TypeScript handlers
- * - oci: Container images executed as Kubernetes Jobs
- * - http: External HTTP webhooks
+ * The function-router supports:
+ * - OpenFunctions: Scale-to-zero Knative services (fn-openai, fn-slack, etc.)
+ * - Registry-based routing with wildcard and default fallback support
  */
 import { DaprClient, HttpMethod } from "@dapr/dapr";
 import type {
@@ -17,17 +16,10 @@ import type {
 } from "../core/types.js";
 import { resolveTemplates, type NodeOutputs } from "../core/template-resolver.js";
 
-// Function runner is the new service that replaces activity-executor
-// It supports builtin, OCI, and HTTP function execution
-const FUNCTION_RUNNER_APP_ID =
-  process.env.FUNCTION_RUNNER_APP_ID || "function-runner";
-
-// Legacy activity-executor support (fallback)
-const ACTIVITY_EXECUTOR_APP_ID =
-  process.env.ACTIVITY_EXECUTOR_APP_ID || "activity-executor";
-
-// Determine which service to use (default to function-runner)
-const USE_FUNCTION_RUNNER = process.env.USE_FUNCTION_RUNNER !== "false";
+// Function router dispatches to OpenFunctions (Knative serverless)
+// All function execution routes through function-router exclusively
+const FUNCTION_ROUTER_APP_ID =
+  process.env.FUNCTION_RUNNER_APP_ID || "function-router";
 
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
@@ -46,7 +38,7 @@ export interface ExecuteActionInput {
 }
 
 /**
- * Execute an action node by calling the activity-executor service
+ * Execute an action node by calling the function-router service
  *
  * Note: Dapr activities receive (ctx, input) but we don't need the ctx here
  */
@@ -82,12 +74,12 @@ export async function executeAction(
   // Determine integration ID if available
   const integrationId = config.integrationId as string | undefined;
 
-  // Build the request for function-runner (or activity-executor for legacy)
+  // Build the request for function-router
   // Use node.label with fallback to functionSlug or node.id if empty
   const nodeName = node.label || functionSlug || node.id;
 
-  // Function runner request format
-  const functionRunnerRequest = {
+  // Function router accepts the same format as function-runner
+  const request = {
     function_slug: functionSlug,
     execution_id: executionId,
     workflow_id: workflowId,
@@ -100,28 +92,11 @@ export async function executeAction(
     db_execution_id: dbExecutionId, // Database execution ID for logging
   };
 
-  // Legacy activity-executor request format (for fallback)
-  const activityExecutorRequest: ActivityExecutionRequest = {
-    activity_id: functionSlug,
-    execution_id: executionId,
-    workflow_id: workflowId,
-    node_id: node.id,
-    node_name: nodeName,
-    input: resolvedConfig,
-    node_outputs: nodeOutputs,
-    integration_id: integrationId,
-  };
-
-  const targetService = USE_FUNCTION_RUNNER
-    ? FUNCTION_RUNNER_APP_ID
-    : ACTIVITY_EXECUTOR_APP_ID;
-  const request = USE_FUNCTION_RUNNER
-    ? functionRunnerRequest
-    : activityExecutorRequest;
+  const targetService = FUNCTION_ROUTER_APP_ID;
 
   console.log(
-    `[Execute Action] Invoking ${targetService} for ${functionSlug}`,
-    { nodeId: node.id, nodeName, useFunctionRunner: USE_FUNCTION_RUNNER }
+    `[Execute Action] Invoking function-router for ${functionSlug}`,
+    { nodeId: node.id, nodeName }
   );
 
   const startTime = Date.now();
@@ -133,7 +108,8 @@ export async function executeAction(
       daprPort: DAPR_HTTP_PORT,
     });
 
-    // Invoke function-runner (or activity-executor) via Dapr service invocation
+    // Invoke function-router via Dapr service invocation
+    // Router dispatches to OpenFunctions or builtin handlers
     const response = await client.invoker.invoke(
       targetService,
       "execute",

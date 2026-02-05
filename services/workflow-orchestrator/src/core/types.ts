@@ -111,6 +111,8 @@ export interface WorkflowCustomStatus {
 
 /**
  * Activity execution request sent to the activity-executor service
+ * @deprecated Use function-router format instead (same as ExecuteRequest)
+ * This interface is kept for backwards compatibility only.
  */
 export interface ActivityExecutionRequest {
   activity_id: string; // e.g., "slack/send-message"
