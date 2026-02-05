@@ -149,7 +149,7 @@ export const workflowExecutionLogs = pgTable("workflow_execution_logs", {
   nodeId: text("node_id").notNull(),
   nodeName: text("node_name").notNull(),
   nodeType: text("node_type").notNull(),
-  activityName: text("activity_name"), // Dapr activity function name
+  activityName: text("activity_name"), // Function slug (actionType) like "openai/generate-text"
   status: text("status")
     .notNull()
     .$type<"pending" | "running" | "success" | "error">(),

@@ -58,20 +58,20 @@ export async function executeAction(
   // Ensure config is never undefined to prevent runtime errors
   const config = (node.config || {}) as Record<string, unknown>;
 
-  // Get function slug - this is the ONLY way to identify functions
-  // functionSlug is the canonical identifier: e.g., "openai/generate-text"
-  const functionSlug = config.functionSlug as string | undefined;
+  // Get actionType - the canonical identifier for functions
+  // e.g., "openai/generate-text", "slack/send-message"
+  const actionType = config.actionType as string | undefined;
 
-  if (!functionSlug) {
+  if (!actionType) {
     return {
       success: false,
-      error: `No functionSlug specified for node ${node.id}. All action/activity nodes must have a functionSlug configured.`,
+      error: `No actionType specified for node ${node.id}. All action nodes must have an actionType configured.`,
       duration_ms: 0,
     };
   }
 
-  // Use functionSlug as the activity ID for function-runner
-  const activityId = functionSlug;
+  // Use actionType as the function identifier
+  const functionSlug = actionType;
 
   // Resolve template variables in the node config
   const resolvedConfig = resolveTemplates(config, nodeOutputs) as Record<
@@ -83,12 +83,12 @@ export async function executeAction(
   const integrationId = config.integrationId as string | undefined;
 
   // Build the request for function-runner (or activity-executor for legacy)
-  // Use node.label with fallback to activityId or node.id if empty
-  const nodeName = node.label || activityId || node.id;
+  // Use node.label with fallback to functionSlug or node.id if empty
+  const nodeName = node.label || functionSlug || node.id;
 
   // Function runner request format
   const functionRunnerRequest = {
-    function_slug: activityId,
+    function_slug: functionSlug,
     execution_id: executionId,
     workflow_id: workflowId,
     node_id: node.id,
@@ -102,7 +102,7 @@ export async function executeAction(
 
   // Legacy activity-executor request format (for fallback)
   const activityExecutorRequest: ActivityExecutionRequest = {
-    activity_id: activityId,
+    activity_id: functionSlug,
     execution_id: executionId,
     workflow_id: workflowId,
     node_id: node.id,
@@ -120,7 +120,7 @@ export async function executeAction(
     : activityExecutorRequest;
 
   console.log(
-    `[Execute Action] Invoking ${targetService} for ${activityId}`,
+    `[Execute Action] Invoking ${targetService} for ${functionSlug}`,
     { nodeId: node.id, nodeName, useFunctionRunner: USE_FUNCTION_RUNNER }
   );
 
@@ -147,7 +147,7 @@ export async function executeAction(
     const result = response as ActivityExecutionResult;
 
     console.log(
-      `[Execute Action] Activity ${activityId} completed`,
+      `[Execute Action] Function ${functionSlug} completed`,
       { success: result.success, duration_ms }
     );
 
@@ -163,13 +163,13 @@ export async function executeAction(
       error instanceof Error ? error.message : String(error);
 
     console.error(
-      `[Execute Action] Failed to invoke ${targetService} for ${activityId}:`,
+      `[Execute Action] Failed to invoke ${targetService} for ${functionSlug}:`,
       error
     );
 
     return {
       success: false,
-      error: `Activity execution failed: ${errorMessage}`,
+      error: `Function execution failed: ${errorMessage}`,
       duration_ms,
     };
   }

@@ -97,6 +97,7 @@ function normalizeToSlug(actionType: string): string | null {
 
 interface WorkflowNode {
   id: string;
+  type?: string; // React Flow node type
   data: {
     type?: string;
     label?: string;
@@ -119,44 +120,105 @@ function migrateWorkflowNodes(
   let changes = 0;
 
   const migratedNodes = nodes.map((node) => {
-    // Handle both 'action' and 'activity' node types
-    if (node.data?.type !== "action" && node.data?.type !== "activity") {
+    // Handle both 'action' and 'activity' node types for function execution
+    // Check BOTH node.type (React Flow) and node.data.type
+    const isActivityOrAction =
+      node.type === "activity" || node.type === "action" ||
+      node.data?.type === "activity" || node.data?.type === "action";
+
+    if (!isActivityOrAction) {
       return node;
     }
 
     const config = node.data.config || {};
-    // Check activityName (for activity nodes) and actionType (for action nodes)
+    // Check activityName (legacy field) and actionType (for action nodes)
     const actionType = (config.activityName || config.actionType || node.data.label) as string | undefined;
     const existingSlug = config.functionSlug as string | undefined;
 
-    // Skip if functionSlug already exists
-    if (existingSlug) {
-      return node;
-    }
-
-    // Skip if no actionType/activityName
-    if (!actionType) {
-      return node;
-    }
-
-    // Normalize to slug
-    const functionSlug = normalizeToSlug(actionType);
-    if (!functionSlug) {
-      return node;
-    }
-
-    // Add functionSlug to config
-    changes++;
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        config: {
-          ...config,
-          functionSlug,
+    // If this is an activity node with a functionSlug, convert it to an action node
+    if ((node.type === "activity" || node.data?.type === "activity") && existingSlug) {
+      changes++;
+      return {
+        ...node,
+        type: "action", // Update React Flow node type
+        data: {
+          ...node.data,
+          type: "action",
+          config: {
+            ...config,
+            actionType: existingSlug,
+            // Remove legacy fields
+            activityName: undefined,
+            functionSlug: undefined,
+          },
         },
-      },
-    };
+      };
+    }
+
+    // If this is an activity node with activityName but no functionSlug, migrate it
+    if ((node.type === "activity" || node.data?.type === "activity") && actionType && !existingSlug) {
+      const functionSlug = normalizeToSlug(actionType);
+      if (!functionSlug) {
+        return node;
+      }
+      changes++;
+      return {
+        ...node,
+        type: "action", // Update React Flow node type
+        data: {
+          ...node.data,
+          type: "action",
+          config: {
+            ...config,
+            actionType: functionSlug,
+            // Remove legacy fields
+            activityName: undefined,
+            functionSlug: undefined,
+          },
+        },
+      };
+    }
+
+    // For action nodes with functionSlug, convert functionSlug to actionType
+    if ((node.type === "action" || node.data?.type === "action") && existingSlug) {
+      changes++;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          config: {
+            ...config,
+            actionType: existingSlug,
+            // Remove legacy field
+            functionSlug: undefined,
+          },
+        },
+      };
+    }
+
+    // For action nodes without functionSlug, normalize actionType
+    if ((node.type === "action" || node.data?.type === "action") && actionType && !existingSlug) {
+      const functionSlug = normalizeToSlug(actionType);
+      if (!functionSlug) {
+        return node;
+      }
+      changes++;
+      return {
+        ...node,
+        data: {
+          ...node.data,
+          config: {
+            ...config,
+            actionType: functionSlug,
+            // Remove legacy fields
+            activityName: undefined,
+            functionSlug: undefined,
+          },
+        },
+      };
+    }
+
+    return node;
   });
 
   return { nodes: migratedNodes, changes };
@@ -211,17 +273,30 @@ async function migrateWorkflows() {
       console.log(`   ${changes} node(s) to update`);
 
       // Log the changes
-      for (const node of migratedNodes) {
-        if (node.data?.type === "action" && node.data.config?.functionSlug) {
-          const config = node.data.config;
-          if (
-            config.actionType &&
-            config.functionSlug !== config.actionType
-          ) {
-            console.log(
-              `   - "${config.actionType}" → "${config.functionSlug}"`
-            );
-          }
+      for (let i = 0; i < migratedNodes.length; i++) {
+        const originalNode = nodes[i];
+        const migratedNode = migratedNodes[i];
+
+        // Log type changes
+        if (originalNode.data?.type === "activity" && migratedNode.data?.type === "action") {
+          const actionType = migratedNode.data.config?.actionType;
+          console.log(
+            `   - Activity node "${originalNode.data.label}" → Action node "${actionType}"`
+          );
+        }
+
+        // Log field migrations
+        const oldConfig = originalNode.data?.config || {};
+        const newConfig = migratedNode.data?.config || {};
+        if (oldConfig.functionSlug && newConfig.actionType) {
+          console.log(
+            `   - functionSlug "${oldConfig.functionSlug}" → actionType "${newConfig.actionType}"`
+          );
+        }
+        if (oldConfig.activityName && newConfig.actionType) {
+          console.log(
+            `   - activityName "${oldConfig.activityName}" → actionType "${newConfig.actionType}"`
+          );
         }
       }
 

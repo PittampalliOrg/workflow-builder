@@ -38,6 +38,7 @@ type ExecutionLog = {
   nodeId: string;
   nodeName: string;
   nodeType: string;
+  actionType?: string | null; // Function slug like "openai/generate-text"
   status: "pending" | "running" | "success" | "error";
   startedAt: Date;
   completedAt: Date | null;
@@ -106,6 +107,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
     nodeId: string;
     nodeName: string;
     nodeType: string;
+    actionType?: string | null;
     status: "pending" | "running" | "success" | "error";
     output?: unknown;
   }
@@ -116,6 +118,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
       nodeId: string;
       nodeName: string;
       nodeType: string;
+      actionType?: string | null;
       status: "pending" | "running" | "success" | "error";
       output?: unknown;
     }
@@ -125,6 +128,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
       nodeId: log.nodeId,
       nodeName: log.nodeName,
       nodeType: log.nodeType,
+      actionType: log.actionType,
       status: log.status,
       output: log.output,
     };
@@ -642,7 +646,7 @@ function ExecutionLogEntry({
             )}
             {log.output !== null && log.output !== undefined && (
               <OutputDisplay
-                actionType={log.nodeType}
+                actionType={log.actionType || log.nodeType}
                 input={log.input}
                 output={log.output}
               />
@@ -735,6 +739,7 @@ export function WorkflowRuns({
         nodeId: string;
         nodeName: string;
         nodeType: string;
+        actionType?: string | null; // Function slug like "openai/generate-text"
         status: "pending" | "running" | "success" | "error";
         input: unknown;
         output: unknown;
@@ -752,6 +757,7 @@ export function WorkflowRuns({
         nodeId: log.nodeId,
         nodeName: log.nodeName,
         nodeType: log.nodeType,
+        actionType: log.actionType, // Include function slug for output display config lookup
         status: log.status,
         startedAt: new Date(log.startedAt),
         completedAt: log.completedAt ? new Date(log.completedAt) : null,

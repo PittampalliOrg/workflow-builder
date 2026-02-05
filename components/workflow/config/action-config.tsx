@@ -375,24 +375,20 @@ export function ActionConfig({
     // Auto-select the first action in the new category
     const firstAction = categories[newCategory]?.[0];
     if (firstAction) {
-      // Set the canonical functionSlug first (used by orchestrator/function-runner)
-      const functionSlug = getSlugForAction(firstAction.id);
-      if (functionSlug) {
-        onUpdateConfig("functionSlug", functionSlug);
+      // Set actionType to the canonical slug (used by orchestrator/function-runner)
+      const actionType = getSlugForAction(firstAction.id);
+      if (actionType) {
+        onUpdateConfig("actionType", actionType);
       }
-      // Also set actionType for backwards compatibility
-      onUpdateConfig("actionType", firstAction.id);
     }
   };
 
   const handleActionTypeChange = (value: string) => {
-    // Set the canonical functionSlug first (used by orchestrator/function-runner)
-    const functionSlug = getSlugForAction(value);
-    if (functionSlug) {
-      onUpdateConfig("functionSlug", functionSlug);
+    // Set actionType to the canonical slug (used by orchestrator/function-runner)
+    const actionType = getSlugForAction(value);
+    if (actionType) {
+      onUpdateConfig("actionType", actionType);
     }
-    // Also set actionType for backwards compatibility
-    onUpdateConfig("actionType", value);
   };
 
   // Adapter for plugin config components that expect (key, value: unknown)

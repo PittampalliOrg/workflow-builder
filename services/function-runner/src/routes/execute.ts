@@ -169,7 +169,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           nodeId: body.node_id,
           nodeName: body.node_name,
           nodeType: "action",
-          activityName: fn.slug,
+          actionType: fn.slug,
           input: resolvedInput,
         });
       } catch (logError) {

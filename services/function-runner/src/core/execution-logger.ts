@@ -11,7 +11,7 @@ export interface ExecutionLogEntry {
   nodeId: string;
   nodeName: string;
   nodeType: string;
-  activityName?: string;
+  actionType?: string; // Function slug like "openai/generate-text"
   status: "pending" | "running" | "success" | "error";
   input?: unknown;
   output?: unknown;
@@ -52,7 +52,7 @@ export async function logExecutionStart(entry: Omit<ExecutionLogEntry, "status">
         ${entry.nodeId},
         ${entry.nodeName},
         ${entry.nodeType},
-        ${entry.activityName || null},
+        ${entry.actionType || null},
         'running',
         ${JSON.stringify(entry.input) || null},
         ${startedAt},
@@ -121,7 +121,7 @@ export async function logExecution(entry: ExecutionLogEntry): Promise<string> {
         ${entry.nodeId},
         ${entry.nodeName},
         ${entry.nodeType},
-        ${entry.activityName || null},
+        ${entry.actionType || null},
         ${entry.status},
         ${entry.input ? JSON.stringify(entry.input) : null},
         ${entry.output ? JSON.stringify(entry.output) : null},

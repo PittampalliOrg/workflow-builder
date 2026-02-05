@@ -1,0 +1,90 @@
+/**
+ * Type definitions for Function Router
+ */
+
+/**
+ * Function registry entry - maps function slugs to target services
+ */
+export interface FunctionRegistryEntry {
+  /** Dapr app-id of the target service */
+  appId: string;
+  /** Type of service: "openfunction" for scale-to-zero, "builtin" for function-runner fallback */
+  type: "openfunction" | "builtin";
+}
+
+/**
+ * Function registry - loaded from ConfigMap
+ */
+export interface FunctionRegistry {
+  [slug: string]: FunctionRegistryEntry;
+}
+
+/**
+ * Execute request from workflow-orchestrator
+ */
+export interface ExecuteRequest {
+  function_id?: string;
+  function_slug?: string;
+  execution_id: string;
+  workflow_id: string;
+  node_id: string;
+  node_name: string;
+  input: Record<string, unknown>;
+  node_outputs?: NodeOutputs;
+  integration_id?: string;
+  integrations?: Record<string, Record<string, string>>;
+  db_execution_id?: string;
+}
+
+/**
+ * Node outputs from upstream nodes
+ */
+export interface NodeOutput {
+  label: string;
+  data: unknown;
+}
+
+export type NodeOutputs = Record<string, NodeOutput>;
+
+/**
+ * Execute response
+ */
+export interface ExecuteResponse {
+  success: boolean;
+  data?: unknown;
+  error?: string;
+  duration_ms: number;
+  routed_to?: string;
+}
+
+/**
+ * OpenFunction request format (simpler than function-runner)
+ */
+export interface OpenFunctionRequest {
+  step: string;
+  execution_id: string;
+  workflow_id: string;
+  node_id: string;
+  input: Record<string, unknown>;
+  node_outputs?: NodeOutputs;
+  credentials?: Record<string, string>;
+}
+
+/**
+ * Credential mappings for integration types
+ */
+export const SECRET_MAPPINGS: Record<string, Record<string, string>> = {
+  openai: { OPENAI_API_KEY: "OPENAI-API-KEY" },
+  anthropic: { ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY" },
+  slack: { SLACK_BOT_TOKEN: "SLACK-BOT-TOKEN" },
+  resend: { RESEND_API_KEY: "RESEND-API-KEY" },
+  github: { GITHUB_TOKEN: "GITHUB-TOKEN" },
+  linear: { LINEAR_API_KEY: "LINEAR-API-KEY" },
+  stripe: { STRIPE_SECRET_KEY: "STRIPE-SECRET-KEY" },
+  firecrawl: { FIRECRAWL_API_KEY: "FIRECRAWL-API-KEY" },
+  perplexity: { PERPLEXITY_API_KEY: "PERPLEXITY-API-KEY" },
+  clerk: { CLERK_SECRET_KEY: "CLERK-SECRET-KEY" },
+  fal: { FAL_KEY: "FAL-API-KEY" },
+  webflow: { WEBFLOW_API_TOKEN: "WEBFLOW-API-TOKEN" },
+  superagent: { SUPERAGENT_API_KEY: "SUPERAGENT-API-KEY" },
+};

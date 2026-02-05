@@ -70,6 +70,7 @@ export type ExecutionLogEntry = {
   nodeId: string;
   nodeName: string;
   nodeType: string;
+  actionType?: string | null; // Function slug like "openai/generate-text"
   status: "pending" | "running" | "success" | "error";
   output?: unknown;
 };
