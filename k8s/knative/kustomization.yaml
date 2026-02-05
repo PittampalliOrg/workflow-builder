@@ -7,10 +7,10 @@
 #   kubectl apply -k k8s/knative/
 #
 # Prerequisites:
-# - Knative Serving installed (for activity-executor scale-to-zero)
 # - Dapr installed with workflow support
 # - Redis deployed in the cluster
 # - workflow-builder namespace exists
+# - OpenFunctions deployed for serverless function execution
 ---
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
@@ -18,12 +18,8 @@ kind: Kustomization
 namespace: workflow-builder
 
 resources:
-  # activity-executor.yaml excluded - using existing deployment in activity-executor namespace
-  # - activity-executor.yaml
   - workflow-orchestrator.yaml
   - dapr-secrets-component.yaml
-  # Function runner - new service replacing activity-executor
-  - function-runner.yaml
   # KEDA scalers (optional - most sections commented out by default)
   - keda-scalers.yaml
 
@@ -36,12 +32,6 @@ labels:
 
 # Image overrides for Gitea registry
 images:
-  - name: activity-executor
-    newName: gitea.cnoe.localtest.me:8443/giteaadmin/activity-executor
-    newTag: latest
   - name: workflow-orchestrator
     newName: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator
-    newTag: latest
-  - name: function-runner
-    newName: gitea.cnoe.localtest.me:8443/giteaadmin/function-runner
     newTag: latest

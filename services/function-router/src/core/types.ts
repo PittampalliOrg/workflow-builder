@@ -8,8 +8,8 @@
 export interface FunctionRegistryEntry {
   /** Dapr app-id of the target service */
   appId: string;
-  /** Type of service: "openfunction" for scale-to-zero, "builtin" for function-runner fallback */
-  type: "openfunction" | "builtin";
+  /** Type of service: "openfunction" for scale-to-zero Knative services */
+  type: "openfunction";
 }
 
 /**
@@ -58,7 +58,7 @@ export interface ExecuteResponse {
 }
 
 /**
- * OpenFunction request format (simpler than function-runner)
+ * OpenFunction request format
  */
 export interface OpenFunctionRequest {
   step: string;

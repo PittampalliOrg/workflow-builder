@@ -237,8 +237,6 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      - name: ACTIVITY_EXECUTOR_URL
-        value: "http://activity-executor.workflow-builder.svc.cluster.local:8080"
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"

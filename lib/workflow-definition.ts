@@ -113,7 +113,7 @@ export interface WorkflowStatusUpdate {
 }
 
 /**
- * Activity execution request sent to the activity-executor service
+ * Activity execution request sent to the function-router service
  */
 export interface ActivityExecutionRequest {
   activityId: string; // e.g., "slack/send-message"
@@ -127,7 +127,7 @@ export interface ActivityExecutionRequest {
 }
 
 /**
- * Activity execution result from the activity-executor service
+ * Activity execution result from the function-router service
  */
 export interface ActivityExecutionResult {
   success: boolean;

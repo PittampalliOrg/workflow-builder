@@ -97,18 +97,15 @@ services/
       core/types.ts              # Shared type definitions
       core/template-resolver.ts  # {{node.field}} variable resolution
       workflows/dynamic-workflow.ts  # Single interpreter workflow
-      activities/execute-action.ts   # Calls function-runner for execution
+      activities/execute-action.ts   # Calls function-router for execution
       routes/workflows.ts        # /api/v2/workflows/* endpoints
-  function-runner/               # Executes serverless functions
+  function-router/               # Routes function execution to OpenFunctions
     src/
       index.ts                   # Fastify server
       routes/execute.ts          # POST /execute endpoint
-      core/function-loader.ts    # Loads functions from database
+      core/registry.ts           # Function slug → OpenFunction mapping
       core/credential-service.ts # Dapr secrets + DB credential lookup
-      handlers/
-        builtin.ts               # Builtin function handlers
-        oci.ts                   # OCI container execution (future)
-        http.ts                  # HTTP webhook execution (future)
+      core/openfunction-resolver.ts  # Knative service URL resolution
 
 components/workflow/
   workflow-canvas.tsx            # React Flow canvas with node types
@@ -149,9 +146,9 @@ The workflow builder supports two node types:
 
 **Execution Flow**:
 1. Orchestrator calls `executeAction` activity
-2. Activity invokes function-runner via Dapr
-3. Function-runner loads function by `actionType` slug
-4. Executes builtin handler from plugin
+2. Activity invokes function-router via Dapr
+3. Function-router looks up OpenFunction by `actionType` slug
+4. Routes to Knative service (e.g., fn-openai, fn-slack)
 5. Returns result to orchestrator
 
 **Examples**:
@@ -385,7 +382,7 @@ app.post("/execute", async (request, reply) => {
 }
 ```
 
-**Key field**: `config.actionType` - This is the canonical function slug used by the orchestrator and function-runner to identify functions.
+**Key field**: `config.actionType` - This is the canonical function slug used by the orchestrator and function-router to identify functions.
 
 ### Observability Tables
 
@@ -546,9 +543,9 @@ curl -X POST https://workflow-builder.cnoe.localtest.me:8443/api/workflows/{work
 kubectl logs -n workflow-builder -l app=workflow-orchestrator -c workflow-orchestrator --tail=50
 ```
 
-**Check function-runner logs**:
+**Check function-router logs**:
 ```bash
-kubectl logs -n workflow-builder -l app=function-runner -c function-runner --tail=50
+kubectl logs -n workflow-builder -l app=function-router -c function-router --tail=50
 ```
 
 **Common issues**:

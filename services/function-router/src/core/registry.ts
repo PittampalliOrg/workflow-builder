@@ -11,14 +11,19 @@ import type { FunctionRegistry, FunctionRegistryEntry } from "./types.js";
 // Path to ConfigMap-mounted registry file
 const REGISTRY_FILE_PATH = process.env.REGISTRY_FILE_PATH || "/config/functions.json";
 
-// Fallback default registry
+// Fallback default registry (OpenFunctions only)
 const DEFAULT_REGISTRY: FunctionRegistry = {
-  // OpenFunctions (scale-to-zero)
+  // OpenFunctions (scale-to-zero Knative services)
   "openai/generate-text": { appId: "fn-openai", type: "openfunction" },
   "openai/generate-image": { appId: "fn-openai", type: "openfunction" },
-
-  // Default fallback to function-runner (builtin)
-  "_default": { appId: "function-runner", type: "builtin" },
+  "openai/*": { appId: "fn-openai", type: "openfunction" },
+  "slack/*": { appId: "fn-slack", type: "openfunction" },
+  "github/*": { appId: "fn-github", type: "openfunction" },
+  "resend/*": { appId: "fn-resend", type: "openfunction" },
+  "stripe/*": { appId: "fn-stripe", type: "openfunction" },
+  "linear/*": { appId: "fn-linear", type: "openfunction" },
+  "firecrawl/*": { appId: "fn-firecrawl", type: "openfunction" },
+  "perplexity/*": { appId: "fn-perplexity", type: "openfunction" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;
@@ -75,7 +80,9 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
  * Supports:
  * - Exact match: "openai/generate-text"
  * - Wildcard match: "openai/*" matches any openai function
- * - Default fallback: "_default"
+ * - Default fallback: "_default" (if configured in registry file)
+ *
+ * Throws an error if no matching OpenFunction is found.
  */
 export async function lookupFunction(slug: string): Promise<FunctionRegistryEntry> {
   const registry = await loadRegistry();
@@ -92,13 +99,16 @@ export async function lookupFunction(slug: string): Promise<FunctionRegistryEntr
     return registry[wildcardKey];
   }
 
-  // Fallback to default
+  // Fallback to default (if configured)
   if (registry["_default"]) {
     return registry["_default"];
   }
 
-  // Hard fallback
-  return { appId: "function-runner", type: "builtin" };
+  // No OpenFunction found for this slug
+  throw new Error(
+    `No OpenFunction registered for function slug "${slug}". ` +
+    `Available patterns: ${Object.keys(registry).join(", ")}`
+  );
 }
 
 /**

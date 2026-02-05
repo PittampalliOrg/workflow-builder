@@ -78,7 +78,7 @@ export async function executeAction(
   // Use node.label with fallback to functionSlug or node.id if empty
   const nodeName = node.label || functionSlug || node.id;
 
-  // Function router accepts the same format as function-runner
+  // Build the request for function-router (routes to OpenFunctions)
   const request = {
     function_slug: functionSlug,
     execution_id: executionId,

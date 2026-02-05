@@ -6,9 +6,12 @@
  *
  * Activity definitions aligned with planner-orchestrator/activities/*.py.
  *
- * For plugin-based activities (slack/send-message, resend/send-email, etc.),
- * the orchestrator calls the activity-executor service which dynamically
- * loads and executes the appropriate step handler.
+ * NOTE: Plugin-based function execution (slack/send-message, openai/generate-text, etc.)
+ * now goes through the action node type which routes to:
+ *   workflow-orchestrator → function-router → OpenFunctions (Knative)
+ *
+ * This registry is for workflow control flow activities (approval gates, timers)
+ * and planner-agent specific activities.
  */
 
 import type {
@@ -35,8 +38,8 @@ export type DaprActivity = {
   outputFields: OutputField[];
   sourceFile?: string; // "activities/planning.py"
   sourceLanguage?: string; // "python" or "typescript"
-  // Plugin-specific fields
-  isPluginActivity?: boolean; // true if this activity routes to activity-executor
+  // Plugin-specific fields (legacy - kept for backwards compatibility)
+  isPluginActivity?: boolean; // true if this activity is from a plugin
   pluginActionId?: string; // e.g., "slack/send-message"
   pluginIntegration?: string; // e.g., "slack"
 };
@@ -82,7 +85,8 @@ export function getDaprActivitiesByCategory(): Record<string, DaprActivity[]> {
 }
 
 // ─── Plugin Activity Registration ─────────────────────────────────────────────
-// Auto-register all plugin actions as Dapr activities that route to activity-executor
+// Auto-register all plugin actions as Dapr activities (metadata only - execution
+// now goes through action nodes → function-router → OpenFunctions)
 
 /**
  * Convert a plugin action to a Dapr activity definition
@@ -93,7 +97,7 @@ function pluginActionToDaprActivity(action: ActionWithFullId): DaprActivity {
     label: action.label,
     description: action.description,
     category: action.category,
-    serviceName: "activity-executor",
+    serviceName: "function-router",
     serviceMethod: "POST /execute",
     timeout: 300, // 5 minute default timeout for plugin activities
     inputFields: action.configFields
@@ -155,10 +159,10 @@ registerDaprActivity({
   name: "execute_plugin_step",
   label: "Execute Plugin Step",
   description:
-    "Generic activity that executes any plugin step handler via the activity-executor service. " +
-    "The orchestrator passes the action ID and the service dynamically loads and runs the appropriate handler.",
+    "Generic activity that executes any plugin step handler via the function-router service. " +
+    "The orchestrator passes the action ID and the service routes to the appropriate OpenFunction.",
   category: "Plugin",
-  serviceName: "activity-executor",
+  serviceName: "function-router",
   serviceMethod: "POST /execute",
   timeout: 300,
   inputFields: [
@@ -404,7 +408,8 @@ registerDaprActivity({
 // - send_slack_message (use plugin: slack/send-message)
 // - http_request (use system action: system/http-request)
 //
-// All function execution now goes through the plugin registry and function-runner.
+// All function execution now goes through action nodes:
+//   workflow-orchestrator → function-router → OpenFunctions (Knative)
 // Dapr activities are reserved for workflow control flow only (approval gates, timers).
 
 // ─── Multi-Step Workflow Activities ───────────────────────────────────────────
