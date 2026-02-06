@@ -1,7 +1,11 @@
 import "server-only";
 
 import { and, eq, inArray, like } from "drizzle-orm";
-import { decryptJson, encryptJson } from "@/lib/security/encryption";
+import {
+  decryptObject,
+  encryptObject,
+  type EncryptedObject,
+} from "@/lib/security/encryption";
 import {
   AppConnectionScope,
   AppConnectionStatus,
@@ -40,7 +44,7 @@ function decryptConnection(
   return {
     ...row,
     metadata: (row.metadata ?? null) as Record<string, unknown> | null,
-    value: decryptJson(row.value) as AppConnectionValue,
+    value: decryptObject(row.value as EncryptedObject) as AppConnectionValue,
   };
 }
 
@@ -61,7 +65,7 @@ export async function upsertAppConnection(
     ),
   });
 
-  const encryptedValue = encryptJson(coerceConnectionValue(body));
+  const encryptedValue = encryptObject(coerceConnectionValue(body));
   const now = new Date();
 
   if (existing) {
@@ -173,6 +177,24 @@ export async function getAppConnectionByExternalId(
   return decryptConnection(row);
 }
 
+/**
+ * Get connection by externalId without user check (for internal/system use).
+ * Used by the internal decrypt API called by function-router.
+ */
+export async function getAppConnectionByExternalIdInternal(
+  externalId: string
+): Promise<DecryptedAppConnection | null> {
+  const row = await db.query.appConnections.findFirst({
+    where: eq(appConnections.externalId, externalId),
+  });
+
+  if (!row) {
+    return null;
+  }
+
+  return decryptConnection(row);
+}
+
 export async function updateAppConnection(
   id: string,
   ownerId: string,
@@ -204,7 +226,7 @@ export async function updateAppConnectionSecretValue(params: {
   const [row] = await db
     .update(appConnections)
     .set({
-      value: encryptJson(params.value),
+      value: encryptObject(params.value),
       ...(params.displayName ? { displayName: params.displayName } : {}),
       status: AppConnectionStatus.ACTIVE,
       updatedAt: new Date(),

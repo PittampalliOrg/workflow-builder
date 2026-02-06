@@ -1,28 +1,41 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
-const ALGORITHM = "aes-256-gcm";
+/**
+ * AES-256-CBC encryption aligned with Activepieces upstream.
+ *
+ * Reference:
+ *   activepieces/packages/server/api/src/app/helper/encryption.ts
+ *
+ * Format: EncryptedObject = { iv: string (hex), data: string (hex) }
+ * Key: 32-char hex string interpreted as 'binary' (32 bytes for AES-256).
+ *      Upstream generates 16 random bytes → 32 hex chars, then uses
+ *      Buffer.from(secret, 'binary') which treats each char as one byte.
+ */
+
+const ALGORITHM = "aes-256-cbc";
 const IV_LENGTH = 16;
-const ENCRYPTION_KEY_ENV = "INTEGRATION_ENCRYPTION_KEY";
+const ENCRYPTION_KEY_ENV = "AP_ENCRYPTION_KEY";
+
+export type EncryptedObject = {
+  iv: string;
+  data: string;
+};
 
 function getEncryptionKey(): Buffer {
-  const keyHex = process.env[ENCRYPTION_KEY_ENV];
+  const secret = process.env[ENCRYPTION_KEY_ENV];
 
-  if (!keyHex) {
+  if (!secret) {
     throw new Error(
       `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting connection credentials`
     );
   }
 
-  if (keyHex.length !== 64) {
-    throw new Error(
-      `${ENCRYPTION_KEY_ENV} must be a 64-character hex string (32 bytes)`
-    );
-  }
-
-  return Buffer.from(keyHex, "hex");
+  // Match upstream: Buffer.from(secret, 'binary') — each char = 1 byte
+  // A 32-char hex string becomes a 32-byte key (AES-256)
+  return Buffer.from(secret, "binary");
 }
 
-export function encrypt(plaintext: string): string {
+export function encryptString(plaintext: string): EncryptedObject {
   const key = getEncryptionKey();
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
@@ -30,41 +43,32 @@ export function encrypt(plaintext: string): string {
   let encrypted = cipher.update(plaintext, "utf8", "hex");
   encrypted += cipher.final("hex");
 
-  const authTag = cipher.getAuthTag();
-
-  return `${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted}`;
+  return {
+    iv: iv.toString("hex"),
+    data: encrypted,
+  };
 }
 
-export function decrypt(ciphertext: string): string {
+export function decryptString(encryptedObject: EncryptedObject): string {
   const key = getEncryptionKey();
-  const parts = ciphertext.split(":");
-
-  if (parts.length !== 3) {
-    throw new Error("Invalid encrypted data format");
-  }
-
-  const iv = Buffer.from(parts[0], "hex");
-  const authTag = Buffer.from(parts[1], "hex");
-  const encrypted = parts[2];
-
+  const iv = Buffer.from(encryptedObject.iv, "hex");
   const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
 
-  let decrypted = decipher.update(encrypted, "hex", "utf8");
+  let decrypted = decipher.update(encryptedObject.data, "hex", "utf8");
   decrypted += decipher.final("utf8");
 
   return decrypted;
 }
 
-export function encryptJson(config: Record<string, unknown>): string {
-  return encrypt(JSON.stringify(config));
+export function encryptObject(
+  obj: Record<string, unknown>
+): EncryptedObject {
+  return encryptString(JSON.stringify(obj));
 }
 
-export function decryptJson(ciphertext: string): Record<string, unknown> {
-  try {
-    const decrypted = decrypt(ciphertext);
-    return JSON.parse(decrypted) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+export function decryptObject<
+  T extends Record<string, unknown> = Record<string, unknown>,
+>(encryptedObject: EncryptedObject): T {
+  const decrypted = decryptString(encryptedObject);
+  return JSON.parse(decrypted) as T;
 }

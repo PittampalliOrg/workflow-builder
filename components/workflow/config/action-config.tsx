@@ -26,10 +26,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  integrationsAtom,
-  integrationsVersionAtom,
-} from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+  connectionsAtom,
+  connectionsVersionAtom,
+} from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   findActionById,
   getActionsByCategory,
@@ -274,7 +274,7 @@ const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
 
@@ -356,6 +356,14 @@ function buildConnectionAuthTemplate(externalId: string): string {
   return `{{connections['${externalId}']}}`;
 }
 
+function getExternalIdFromAuthTemplate(
+  auth: string | undefined
+): string | undefined {
+  if (!auth) return undefined;
+  const match = auth.match(/\{\{connections\['([^']+)'\]\}\}/);
+  return match?.[1];
+}
+
 export function ActionConfig({
   config,
   onUpdateConfig,
@@ -368,8 +376,8 @@ export function ActionConfig({
 
   const selectedCategory = actionType ? getCategoryForAction(actionType) : null;
   const [category, setCategory] = useState<string>(selectedCategory || "");
-  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
-  const globalIntegrations = useAtomValue(integrationsAtom);
+  const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
+  const globalIntegrations = useAtomValue(connectionsAtom);
   const { push } = useOverlay();
 
   // Sync category state when actionType changes (e.g., when switching nodes)
@@ -408,7 +416,7 @@ export function ActionConfig({
   const pluginAction = actionType ? findActionById(actionType) : null;
 
   // Determine the integration type for the current action
-  const integrationType: IntegrationType | undefined = useMemo(() => {
+  const integrationType: PluginType | undefined = useMemo(() => {
     if (!actionType) {
       return;
     }
@@ -420,20 +428,28 @@ export function ActionConfig({
 
     // Check plugin actions
     const action = findActionById(actionType);
-    return action?.integration as IntegrationType | undefined;
+    return action?.integration as PluginType | undefined;
   }, [actionType]);
 
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
     if (!integrationType) return false;
-    return globalIntegrations.some((i) => i.type === integrationType);
+    return globalIntegrations.some((i) => i.pieceName === integrationType);
   }, [integrationType, globalIntegrations]);
 
-  const applySelectedIntegration = (integrationId: string) => {
+  // Derive the selected connection ID from the auth template
+  const selectedConnectionId = useMemo(() => {
+    const authTemplate = config?.auth as string | undefined;
+    const externalId = getExternalIdFromAuthTemplate(authTemplate);
+    if (!externalId) return "";
+    const conn = globalIntegrations.find((i) => i.externalId === externalId);
+    return conn?.id || "";
+  }, [config?.auth, globalIntegrations]);
+
+  const applySelectedConnection = (connectionId: string) => {
     const selectedConnection = globalIntegrations.find(
-      (i) => i.id === integrationId
+      (i) => i.id === connectionId
     );
-    onUpdateConfig("integrationId", integrationId);
     if (selectedConnection?.externalId) {
       onUpdateConfig(
         "auth",
@@ -448,7 +464,7 @@ export function ActionConfig({
         type: integrationType,
         onSuccess: (integrationId: string) => {
           setIntegrationsVersion((v) => v + 1);
-          applySelectedIntegration(integrationId);
+          applySelectedConnection(integrationId);
         },
       });
     }
@@ -551,8 +567,8 @@ export function ActionConfig({
           <IntegrationSelector
             disabled={disabled}
             integrationType={integrationType}
-            onChange={(id) => applySelectedIntegration(id)}
-            value={(config?.integrationId as string) || ""}
+            onChange={(id) => applySelectedConnection(id)}
+            value={selectedConnectionId}
           />
         </div>
       )}

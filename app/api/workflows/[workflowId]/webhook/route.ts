@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
 import { daprClient } from "@/lib/dapr-client";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
@@ -159,18 +159,18 @@ export async function POST(
       );
     }
 
-    // Validate that all integrationIds in workflow nodes belong to the workflow owner
-    const validation = await validateWorkflowIntegrations(
+    // Validate that all connection references in workflow nodes belong to the workflow owner
+    const validation = await validateWorkflowAppConnections(
       workflow.nodes as WorkflowNode[],
       workflow.userId
     );
     if (!validation.valid) {
       console.error(
-        "[Webhook] Invalid integration references:",
-        validation.invalidIds
+        "[Webhook] Invalid connection references:",
+        validation.invalidExternalIds
       );
       return NextResponse.json(
-        { error: "Workflow contains invalid integration references" },
+        { error: "Workflow contains invalid connection references" },
         { status: 403, headers: corsHeaders }
       );
     }

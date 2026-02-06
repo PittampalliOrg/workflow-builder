@@ -11,13 +11,7 @@ import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type Integration } from "@/lib/api-client";
-import { getIntegrationLabels } from "@/plugins";
-
-// System integrations that don't have plugins
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
+import { api, type AppConnection } from "@/lib/api-client";
 
 type IntegrationsManagerProps = {
   onIntegrationChange?: () => void;
@@ -29,76 +23,60 @@ export function IntegrationsManager({
   filter = "",
 }: IntegrationsManagerProps) {
   const { push } = useOverlay();
-  const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [connections, setConnections] = useState<AppConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [testingId, setTestingId] = useState<string | null>(null);
 
-  const loadIntegrations = useCallback(async () => {
+  const loadConnections = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api.integration.getAll();
-      setIntegrations(data);
+      const result = await api.appConnection.list();
+      setConnections(result.data);
     } catch (error) {
-      console.error("Failed to load integrations:", error);
-      toast.error("Failed to load integrations");
+      console.error("Failed to load connections:", error);
+      toast.error("Failed to load connections");
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadIntegrations();
-  }, [loadIntegrations]);
+    loadConnections();
+  }, [loadConnections]);
 
-  // Get integrations with their labels, sorted by label then name
-  const integrationsWithLabels = useMemo(() => {
-    const labels = getIntegrationLabels() as Record<string, string>;
+  const filteredConnections = useMemo(() => {
     const filterLower = filter.toLowerCase();
 
-    return integrations
-      .map((integration) => ({
-        ...integration,
-        label:
-          labels[integration.type] ||
-          SYSTEM_INTEGRATION_LABELS[integration.type] ||
-          integration.type,
-      }))
-      .filter((integration) => {
+    return connections
+      .filter((conn) => {
         if (!filter) return true;
         return (
-          integration.label.toLowerCase().includes(filterLower) ||
-          integration.name.toLowerCase().includes(filterLower) ||
-          integration.type.toLowerCase().includes(filterLower)
+          conn.displayName.toLowerCase().includes(filterLower) ||
+          conn.pieceName.toLowerCase().includes(filterLower)
         );
       })
-      .sort((a, b) => {
-        const labelCompare = a.label.localeCompare(b.label);
-        if (labelCompare !== 0) {
-          return labelCompare;
-        }
-        return a.name.localeCompare(b.name);
-      });
-  }, [integrations, filter]);
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [connections, filter]);
 
-  const handleEdit = (integration: Integration) => {
+  const handleEdit = (connection: AppConnection) => {
     push(EditConnectionOverlay, {
-      integration,
+      connection,
       onSuccess: () => {
-        loadIntegrations();
+        loadConnections();
         onIntegrationChange?.();
       },
       onDelete: () => {
-        loadIntegrations();
+        loadConnections();
         onIntegrationChange?.();
       },
     });
   };
 
-  const handleDelete = (integration: Integration) => {
+  const handleDelete = (connection: AppConnection) => {
     push(DeleteConnectionOverlay, {
-      integration,
+      connection,
       onSuccess: () => {
-        loadIntegrations();
+        loadConnections();
         onIntegrationChange?.();
       },
     });
@@ -107,7 +85,7 @@ export function IntegrationsManager({
   const handleTest = async (id: string) => {
     try {
       setTestingId(id);
-      const result = await api.integration.testConnection(id);
+      const result = await api.appConnection.testExisting(id);
 
       if (result.status === "success") {
         toast.success(result.message || "Connection successful");
@@ -132,8 +110,8 @@ export function IntegrationsManager({
     );
   }
 
-  const renderIntegrationsList = () => {
-    if (integrations.length === 0) {
+  const renderConnectionsList = () => {
+    if (connections.length === 0) {
       return (
         <div className="py-8 text-center">
           <p className="text-muted-foreground text-sm">
@@ -143,7 +121,7 @@ export function IntegrationsManager({
       );
     }
 
-    if (integrationsWithLabels.length === 0) {
+    if (filteredConnections.length === 0) {
       return (
         <div className="py-8 text-center">
           <p className="text-muted-foreground text-sm">
@@ -155,30 +133,32 @@ export function IntegrationsManager({
 
     return (
       <div className="space-y-1">
-        {integrationsWithLabels.map((integration) => (
+        {filteredConnections.map((connection) => (
           <div
             className="flex items-center justify-between rounded-md px-2 py-1.5"
-            key={integration.id}
+            key={connection.id}
           >
             <div className="flex items-center gap-2">
               <IntegrationIcon
                 className="size-4"
-                integration={integration.type}
+                integration={connection.pieceName}
               />
-              <span className="font-medium text-sm">{integration.label}</span>
+              <span className="font-medium text-sm">
+                {connection.displayName}
+              </span>
               <span className="text-muted-foreground text-sm">
-                {integration.name}
+                {connection.pieceName}
               </span>
             </div>
             <div className="flex items-center gap-1">
               <Button
                 className="h-7 px-2"
-                disabled={testingId === integration.id}
-                onClick={() => handleTest(integration.id)}
+                disabled={testingId === connection.id}
+                onClick={() => handleTest(connection.id)}
                 size="sm"
                 variant="outline"
               >
-                {testingId === integration.id ? (
+                {testingId === connection.id ? (
                   <Spinner className="size-3" />
                 ) : (
                   <span className="text-xs">Test</span>
@@ -186,7 +166,7 @@ export function IntegrationsManager({
               </Button>
               <Button
                 className="size-7"
-                onClick={() => handleEdit(integration)}
+                onClick={() => handleEdit(connection)}
                 size="icon"
                 variant="outline"
               >
@@ -194,7 +174,7 @@ export function IntegrationsManager({
               </Button>
               <Button
                 className="size-7"
-                onClick={() => handleDelete(integration)}
+                onClick={() => handleDelete(connection)}
                 size="icon"
                 variant="outline"
               >
@@ -207,5 +187,5 @@ export function IntegrationsManager({
     );
   };
 
-  return <div className="space-y-1">{renderIntegrationsList()}</div>;
+  return <div className="space-y-1">{renderConnectionsList()}</div>;
 }

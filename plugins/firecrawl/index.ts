@@ -4,6 +4,7 @@ import { FirecrawlIcon } from "./icon";
 
 const firecrawlPlugin: IntegrationPlugin = {
   type: "firecrawl",
+  pieceName: "firecrawl",
   label: "Firecrawl",
   description: "Scrape, search, and crawl the web",
 

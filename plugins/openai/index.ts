@@ -4,6 +4,7 @@ import { OpenAIIcon } from "./icon";
 
 const openaiPlugin: IntegrationPlugin = {
   type: "openai",
+  pieceName: "openai",
   label: "OpenAI",
   description: "Generate text and images using OpenAI models",
 

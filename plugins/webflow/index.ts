@@ -4,6 +4,7 @@ import { WebflowIcon } from "./icon";
 
 const webflowPlugin: IntegrationPlugin = {
   type: "webflow",
+  pieceName: "webflow",
   label: "Webflow",
   description: "Publish and manage Webflow sites",
 

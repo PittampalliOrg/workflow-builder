@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
-import { getIntegrations, validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { listAppConnections, validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
@@ -139,32 +139,32 @@ export async function POST(
           }
         );
 
-        // Fetch user's integrations and format for the orchestrator
-        // Format: { "openai": { "apiKey": "..." }, "slack": { "botToken": "..." } }
-        const userIntegrations = await getIntegrations(session.user.id);
+        // Fetch user's app connections and format for the orchestrator
+        // Format: { "openai": { "secret_text": "..." }, "slack": { "access_token": "..." } }
+        const userConnections = await listAppConnections({
+          ownerId: session.user.id,
+          query: { projectId: "default", limit: 1000 },
+        });
         const formattedIntegrations: Record<string, Record<string, string>> = {};
 
-        for (const integration of userIntegrations) {
-          // Use integration type as the key (e.g., "openai", "slack", "github")
-          const integrationType = integration.type;
-
-          // Convert config values to strings for the orchestrator
-          const configEntries: Record<string, string> = {};
-          for (const [key, value] of Object.entries(integration.config || {})) {
-            if (value !== null && value !== undefined) {
-              configEntries[key] = String(value);
+        for (const connection of userConnections) {
+          const pieceName = connection.pieceName;
+          if (!formattedIntegrations[pieceName]) {
+            const configEntries: Record<string, string> = {};
+            const value = connection.value;
+            if (value && typeof value === "object") {
+              for (const [key, val] of Object.entries(value)) {
+                if (val !== null && val !== undefined && key !== "type") {
+                  configEntries[key] = String(val);
+                }
+              }
             }
-          }
-
-          // If there's already an integration of this type, merge configs
-          // (user might have multiple openai integrations, use the first one)
-          if (!formattedIntegrations[integrationType]) {
-            formattedIntegrations[integrationType] = configEntries;
+            formattedIntegrations[pieceName] = configEntries;
           }
         }
 
         console.log(
-          `[Execute] Passing ${Object.keys(formattedIntegrations).length} integration types to orchestrator:`,
+          `[Execute] Passing ${Object.keys(formattedIntegrations).length} connection types to orchestrator:`,
           Object.keys(formattedIntegrations)
         );
 
@@ -223,14 +223,14 @@ export async function POST(
     // Direct workflow execution using activity-executor
     // This executes the visual workflow nodes directly
 
-    // Validate integrations
-    const validation = await validateWorkflowIntegrations(
+    // Validate connection references
+    const validation = await validateWorkflowAppConnections(
       workflow.nodes as WorkflowNode[],
       session.user.id
     );
     if (!validation.valid) {
       return NextResponse.json(
-        { error: "Workflow contains invalid integration references" },
+        { error: "Workflow contains invalid connection references" },
         { status: 403 }
       );
     }

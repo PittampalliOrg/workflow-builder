@@ -4,6 +4,7 @@ import { FalIcon } from "./icon";
 
 const falPlugin: IntegrationPlugin = {
   type: "fal",
+  pieceName: "fal-ai",
   label: "fal.ai",
   description: "Fast AI inference for image, video, and audio generation",
 

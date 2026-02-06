@@ -4,6 +4,7 @@ import { GitHubIcon } from "./icon";
 
 const githubPlugin: IntegrationPlugin = {
   type: "github",
+  pieceName: "github",
   label: "GitHub",
   description: "Create and manage issues in GitHub repositories",
 

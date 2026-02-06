@@ -21,9 +21,9 @@ import {
 } from "@/components/ai-elements/node";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
-  integrationIdsAtom,
-  integrationsLoadedAtom,
-} from "@/lib/integrations-store";
+  connectionIdsAtom,
+  connectionsLoadedAtom,
+} from "@/lib/connections-store";
 import { cn } from "@/lib/utils";
 import {
   executionLogsAtom,
@@ -245,8 +245,8 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
   const selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
   const executionLogs = useAtomValue(executionLogsAtom);
   const pendingIntegrationNodes = useAtomValue(pendingIntegrationNodesAtom);
-  const availableIntegrationIds = useAtomValue(integrationIdsAtom);
-  const integrationsLoaded = useAtomValue(integrationsLoadedAtom);
+  const availableIntegrationIds = useAtomValue(connectionIdsAtom);
+  const integrationsLoaded = useAtomValue(connectionsLoadedAtom);
 
   if (!data) {
     return null;

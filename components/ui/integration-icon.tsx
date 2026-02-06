@@ -1,7 +1,7 @@
 "use client";
 
 import { Database, HelpCircle } from "lucide-react";
-import type { IntegrationType } from "@/lib/types/integration";
+import type { PluginType } from "@/plugins/registry";
 import { cn } from "@/lib/utils";
 import { getIntegration } from "@/plugins";
 
@@ -46,7 +46,7 @@ export function IntegrationIcon({
   }
 
   // Look up plugin from registry
-  const plugin = getIntegration(integration as IntegrationType);
+  const plugin = getIntegration(integration as PluginType);
 
   if (plugin?.icon) {
     const PluginIcon = plugin.icon;

@@ -6,13 +6,11 @@
 import {
   type AppConnectionScope,
   type AppConnectionStatus,
-  AppConnectionType,
   type AppConnectionValue,
   type AppConnectionWithoutSensitiveData,
   type UpdateConnectionValueRequestBody,
   type UpsertAppConnectionRequestBody,
 } from "./types/app-connection";
-import type { IntegrationConfig, IntegrationType } from "./types/integration";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -325,148 +323,6 @@ export const aiApi = {
   },
 };
 
-export type Integration = {
-  id: string;
-  externalId?: string;
-  name: string;
-  type: IntegrationType;
-  isManaged?: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type IntegrationWithConfig = Integration & {
-  config: IntegrationConfig;
-};
-
-function mapConnectionValueToConfig(
-  value: AppConnectionValue
-): IntegrationConfig {
-  switch (value.type) {
-    case AppConnectionType.CUSTOM_AUTH:
-      return Object.fromEntries(
-        Object.entries(value.props ?? {}).map(([key, val]) => [
-          key,
-          val === undefined || val === null ? undefined : String(val),
-        ])
-      );
-    case AppConnectionType.SECRET_TEXT:
-      return { secret_text: value.secret_text };
-    case AppConnectionType.BASIC_AUTH:
-      return { username: value.username, password: value.password };
-    case AppConnectionType.OAUTH2:
-      return {
-        client_id: value.client_id,
-        client_secret: value.client_secret,
-        redirect_url: value.redirect_url,
-        scope: value.scope,
-      };
-    default:
-      return {};
-  }
-}
-
-function createExternalId(type: string): string {
-  return `${type}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function mapAppConnectionToIntegration(connection: AppConnection): Integration {
-  return {
-    id: connection.id,
-    externalId: connection.externalId,
-    name: connection.displayName,
-    type: connection.pieceName as IntegrationType,
-    isManaged: false,
-    createdAt: connection.createdAt,
-    updatedAt: connection.updatedAt,
-  };
-}
-
-// Compatibility Integration API backed by Activepieces-style app connections
-export const integrationApi = {
-  // List all integrations
-  getAll: async (type?: IntegrationType) => {
-    const response = await appConnectionApi.list({
-      pieceName: type,
-      projectId: "default",
-      limit: 1000,
-    });
-    return response.data.map(mapAppConnectionToIntegration);
-  },
-
-  // Get single integration with config
-  get: async (id: string) => {
-    const connection = await appConnectionApi.get(id);
-    return {
-      ...mapAppConnectionToIntegration(connection),
-      config: mapConnectionValueToConfig(connection.value),
-    } satisfies IntegrationWithConfig;
-  },
-
-  // Create integration
-  create: async (data: {
-    name: string;
-    type: IntegrationType;
-    config: IntegrationConfig;
-  }) => {
-    const connection = await appConnectionApi.upsert({
-      externalId: createExternalId(data.type),
-      displayName: data.name || data.type,
-      pieceName: data.type,
-      projectId: "default",
-      type: AppConnectionType.CUSTOM_AUTH,
-      value: {
-        type: AppConnectionType.CUSTOM_AUTH,
-        props: data.config,
-      },
-    });
-
-    return mapAppConnectionToIntegration(connection);
-  },
-
-  // Update integration
-  update: async (
-    id: string,
-    data: { name?: string; config?: IntegrationConfig }
-  ) => {
-    const updated = await apiCall<AppConnection>(`/api/app-connections/${id}`, {
-      method: "POST",
-      body: JSON.stringify({
-        displayName: data.name ?? "",
-        config: data.config,
-      }),
-    });
-
-    return {
-      ...mapAppConnectionToIntegration(updated),
-      config: data.config ?? {},
-    } satisfies IntegrationWithConfig;
-  },
-
-  // Delete integration
-  delete: (id: string) => appConnectionApi.delete(id),
-
-  // Test existing integration connection
-  testConnection: (integrationId: string) =>
-    appConnectionApi.testExisting(integrationId),
-
-  // Test credentials without saving
-  testCredentials: (data: {
-    type: IntegrationType;
-    config: IntegrationConfig;
-  }) =>
-    appConnectionApi.test({
-      externalId: createExternalId(data.type),
-      displayName: data.type,
-      pieceName: data.type,
-      projectId: "default",
-      type: AppConnectionType.CUSTOM_AUTH,
-      value: {
-        type: AppConnectionType.CUSTOM_AUTH,
-        props: data.config,
-      },
-    }),
-};
 // User API
 export const userApi = {
   get: () =>
@@ -1062,7 +918,6 @@ export const api = {
   appConnection: appConnectionApi,
   dapr: daprApi,
   functions: functionsApi,
-  integration: integrationApi,
   piece: pieceApi,
   secrets: secretsApi,
   user: userApi,

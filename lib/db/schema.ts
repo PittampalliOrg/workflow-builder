@@ -13,7 +13,7 @@ import {
   AppConnectionStatus,
   type AppConnectionType,
 } from "../types/app-connection";
-import type { IntegrationType } from "../types/integration";
+
 import { generateId } from "../utils/id";
 
 // Better Auth tables
@@ -98,24 +98,6 @@ export const workflows = pgTable("workflows", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-// Integrations table for storing user credentials
-export const integrations = pgTable("integrations", {
-  id: text("id")
-    .primaryKey()
-    .$defaultFn(() => generateId()),
-  userId: text("user_id")
-    .notNull()
-    .references(() => users.id),
-  name: text("name").notNull(),
-  type: text("type").notNull().$type<IntegrationType>(),
-  // biome-ignore lint/suspicious/noExplicitAny: JSONB type - encrypted credentials stored as JSON
-  config: jsonb("config").notNull().$type<any>(),
-  // Whether this integration was created via OAuth (managed by app) vs manual entry
-  isManaged: boolean("is_managed").default(false),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
-});
-
 // Piece metadata cache imported from Activepieces
 export const pieceMetadata = pgTable(
   "piece_metadata",
@@ -173,7 +155,7 @@ export const appConnections = pgTable(
       .notNull()
       .default(AppConnectionScope.PROJECT)
       .$type<AppConnectionScope>(),
-    value: text("value").notNull(),
+    value: jsonb("value").notNull().$type<{ iv: string; data: string }>(),
     metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
     pieceVersion: text("piece_version").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -376,8 +358,6 @@ export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Workflow = typeof workflows.$inferSelect;
 export type NewWorkflow = typeof workflows.$inferInsert;
-export type Integration = typeof integrations.$inferSelect;
-export type NewIntegration = typeof integrations.$inferInsert;
 export type PieceMetadata = typeof pieceMetadata.$inferSelect;
 export type NewPieceMetadata = typeof pieceMetadata.$inferInsert;
 export type AppConnectionRecord = typeof appConnections.$inferSelect;

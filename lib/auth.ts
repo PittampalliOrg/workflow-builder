@@ -6,7 +6,6 @@ import { db } from "./db";
 import {
   accounts,
   appConnections,
-  integrations,
   sessions,
   users,
   verifications,
@@ -77,13 +76,7 @@ const plugins = [
           .set({ userId: toUserId })
           .where(eq(workflowExecutions.userId, fromUserId));
 
-        // Migrate integrations
-        await db
-          .update(integrations)
-          .set({ userId: toUserId })
-          .where(eq(integrations.userId, fromUserId));
-
-        // Migrate Activepieces-style app connections
+        // Migrate app connections
         await db
           .update(appConnections)
           .set({ ownerId: toUserId })

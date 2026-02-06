@@ -1,6 +1,7 @@
 import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
+import { type PieceAuthConfig, parsePieceAuth } from "@/lib/types/piece-auth";
 import { generateId } from "@/lib/utils/id";
 
 const ACTIVEPIECES_PACKAGE_PREFIX = "@activepieces/piece-";
@@ -179,4 +180,18 @@ export async function countPieceMetadata(): Promise<number> {
     .from(pieceMetadata);
 
   return result?.count ?? 0;
+}
+
+/**
+ * Get the typed auth configuration for a piece.
+ * Returns null if the piece doesn't exist or has no auth config.
+ */
+export async function getPieceAuthConfig(
+  pieceName: string
+): Promise<PieceAuthConfig> {
+  const piece = await getPieceMetadataByName(pieceName);
+  if (!piece) {
+    return null;
+  }
+  return parsePieceAuth(piece.auth);
 }

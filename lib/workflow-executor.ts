@@ -143,7 +143,7 @@ function getNodeInput(node: WorkflowNode): Record<string, unknown> {
 
   // Clone config and exclude metadata fields
   const input: Record<string, unknown> = {};
-  const excludedFields = new Set(["actionType", "integrationId", "auth"]);
+  const excludedFields = new Set(["actionType", "auth"]);
 
   for (const [key, value] of Object.entries(config)) {
     if (!excludedFields.has(key)) {
@@ -199,9 +199,6 @@ async function executeNode(
 
   const input = getNodeInput(node);
   const config = (data.config as Record<string, unknown>) || {};
-  const integrationId =
-    (config.integrationId as string) ||
-    (data.integrationId as string | undefined);
   const connectionExternalId =
     parseConnectionExternalIdFromAuth(config.auth) ||
     parseConnectionExternalIdFromAuth(data.auth);
@@ -214,7 +211,6 @@ async function executeNode(
     node_name: label,
     input,
     node_outputs: nodeOutputs,
-    integration_id: integrationId,
     connection_external_id: connectionExternalId,
   };
 

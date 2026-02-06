@@ -33,8 +33,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api-client";
 import { authClient, useSession } from "@/lib/auth-client";
-import { integrationsAtom } from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+import { connectionsAtom } from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   addNodeAtom,
   canRedoAtom,
@@ -103,13 +103,13 @@ function updateNodesStatus(
 }
 
 type MissingIntegrationInfo = {
-  integrationType: IntegrationType;
+  integrationType: PluginType;
   integrationLabel: string;
   nodeNames: string[];
 };
 
 // Built-in actions that require integrations but aren't in the plugin registry
-const BUILTIN_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const BUILTIN_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
 
@@ -318,11 +318,11 @@ function getMissingRequiredFields(
 // Also handles built-in actions that aren't in the plugin registry
 function getMissingIntegrations(
   nodes: WorkflowNode[],
-  userIntegrations: Array<{ id: string; type: IntegrationType }>
+  userIntegrations: Array<{ id: string; type: PluginType }>
 ): MissingIntegrationInfo[] {
-  const userIntegrationTypes = new Set(userIntegrations.map((i) => i.type));
+  const userPluginTypes = new Set(userIntegrations.map((i) => i.type));
   const userIntegrationIds = new Set(userIntegrations.map((i) => i.id));
-  const missingByType = new Map<IntegrationType, string[]>();
+  const missingByType = new Map<PluginType, string[]>();
   const integrationLabels = getIntegrationLabels();
 
   for (const node of nodes) {
@@ -339,10 +339,10 @@ function getMissingIntegrations(
     // Look up the integration type from the plugin registry first
     const action = findActionById(actionType);
     // Fall back to built-in action integrations for actions not in the registry
-    const requiredIntegrationType =
+    const requiredPluginType =
       action?.integration || BUILTIN_ACTION_INTEGRATIONS[actionType];
 
-    if (!requiredIntegrationType) {
+    if (!requiredPluginType) {
       continue;
     }
 
@@ -359,12 +359,12 @@ function getMissingIntegrations(
     }
 
     // Check if user has any integration of this type
-    if (!userIntegrationTypes.has(requiredIntegrationType)) {
-      const existing = missingByType.get(requiredIntegrationType) || [];
+    if (!userPluginTypes.has(requiredPluginType)) {
+      const existing = missingByType.get(requiredPluginType) || [];
       // Use human-readable label from registry if no custom label
       const actionInfo = findActionById(actionType);
       existing.push(node.data.label || actionInfo?.label || actionType);
-      missingByType.set(requiredIntegrationType, existing);
+      missingByType.set(requiredPluginType, existing);
     }
   }
 
@@ -481,7 +481,7 @@ type WorkflowHandlerParams = {
   setEdges: (edges: WorkflowEdge[]) => void;
   setSelectedNodeId: (id: string | null) => void;
   setSelectedExecutionId: (id: string | null) => void;
-  userIntegrations: Array<{ id: string; type: IntegrationType }>;
+  userIntegrations: Array<{ id: string; type: PluginType }>;
   engineType: "vercel" | "dapr";
   session: { user: { id: string } } | null;
 };
@@ -681,7 +681,7 @@ function useWorkflowState() {
   const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
   const setSelectedNodeId = useSetAtom(selectedNodeAtom);
   const setSelectedExecutionId = useSetAtom(selectedExecutionIdAtom);
-  const userIntegrations = useAtomValue(integrationsAtom);
+  const userIntegrations = useAtomValue(connectionsAtom);
   const [triggerExecute, setTriggerExecute] = useAtom(triggerExecuteAtom);
 
   const [isDownloading, setIsDownloading] = useState(false);

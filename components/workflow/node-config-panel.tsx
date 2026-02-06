@@ -26,8 +26,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import { generateNodeCode, getDaprNodeCodeFiles } from "@/lib/code-generation";
-import { integrationsAtom } from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+import { connectionsAtom } from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   clearNodeStatusesAtom,
   currentWorkflowIdAtom,
@@ -60,7 +60,7 @@ import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
 
@@ -227,7 +227,7 @@ export const PanelInner = () => {
   }, [selectedNode, activeTab, setActiveTab]);
 
   // Auto-fix invalid integration references when a node is selected
-  const globalIntegrations = useAtomValue(integrationsAtom);
+  const globalIntegrations = useAtomValue(connectionsAtom);
   useEffect(() => {
     if (!(selectedNode && isOwner)) {
       return;
@@ -247,8 +247,8 @@ export const PanelInner = () => {
 
     // Get the required integration type for this action
     const action = findActionById(actionType);
-    const integrationType: IntegrationType | undefined =
-      (action?.integration as IntegrationType | undefined) ||
+    const integrationType: PluginType | undefined =
+      (action?.integration as PluginType | undefined) ||
       SYSTEM_ACTION_INTEGRATIONS[actionType];
 
     if (!integrationType) {
@@ -266,7 +266,7 @@ export const PanelInner = () => {
 
     // Current integration was deleted - find a replacement
     const availableIntegrations = globalIntegrations.filter(
-      (i) => i.type === integrationType
+      (i) => i.pieceName === integrationType
     );
 
     if (availableIntegrations.length === 1) {
@@ -345,8 +345,8 @@ export const PanelInner = () => {
     ) => {
       // Get integration type - check plugin registry first, then system actions
       const action = findActionById(actionType);
-      const integrationType: IntegrationType | undefined =
-        (action?.integration as IntegrationType | undefined) ||
+      const integrationType: PluginType | undefined =
+        (action?.integration as PluginType | undefined) ||
         SYSTEM_ACTION_INTEGRATIONS[actionType];
 
       if (!integrationType) {
@@ -360,14 +360,14 @@ export const PanelInner = () => {
       }
 
       try {
-        const all = await api.integration.getAll();
+        const all = await api.appConnection.list({ projectId: "default", limit: 1000 }).then(r => r.data);
 
         // Check if this operation was aborted (actionType changed)
         if (abortSignal.aborted) {
           return;
         }
 
-        const filtered = all.filter((i) => i.type === integrationType);
+        const filtered = all.filter((i) => i.pieceName === integrationType);
 
         // Auto-select if only one integration exists
         if (filtered.length === 1 && !abortSignal.aborted) {

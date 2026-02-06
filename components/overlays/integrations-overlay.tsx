@@ -7,7 +7,7 @@ import { InfrastructureSecretsSection } from "@/components/settings/infrastructu
 import { IntegrationsManager } from "@/components/settings/integrations-manager";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
-import { integrationsVersionAtom } from "@/lib/integrations-store";
+import { connectionsVersionAtom } from "@/lib/connections-store";
 import { AddConnectionOverlay } from "./add-connection-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
@@ -20,7 +20,7 @@ export function IntegrationsOverlay({ overlayId }: IntegrationsOverlayProps) {
   const { push, closeAll } = useOverlay();
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
-  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
+  const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
   const hasChangesRef = useRef(false);
 
   const loadAll = useCallback(async () => {
