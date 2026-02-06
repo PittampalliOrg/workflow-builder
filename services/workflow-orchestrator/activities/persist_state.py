@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Any
 
 from dapr.clients import DaprClient
 
+from core.config import config
+
 logger = logging.getLogger(__name__)
 
-STATE_STORE_NAME = os.environ.get("STATE_STORE_NAME", "workflowstatestore")
+STATE_STORE_NAME = config.STATE_STORE_NAME
 
 
 def persist_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:

@@ -6,11 +6,11 @@
  * DAPR_ORCHESTRATOR_URL environment variable.
  *
  * Supports two orchestrator types:
- * 1. Legacy Python planner-orchestrator (feature_request + cwd input)
+ * 1. Python planner-dapr-agent (feature_request + cwd input)
  * 2. Generic TypeScript orchestrator (WorkflowDefinition + triggerData input)
  *
- * Contract aligned with planner-orchestrator/app.py (Pydantic models)
- * and the new workflow-orchestrator service.
+ * Contract aligned with planner-dapr-agent/app.py (Pydantic models)
+ * and the workflow-orchestrator service.
  */
 
 import type { WorkflowDefinition } from "./workflow-definition";

@@ -61,7 +61,7 @@ export async function POST(
     const orchestratorUrl =
       workflow?.daprOrchestratorUrl ||
       process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-orchestrator:8080";
+      "http://planner-dapr-agent:8000";
 
     const result = await daprClient.approveWorkflow(
       orchestratorUrl,

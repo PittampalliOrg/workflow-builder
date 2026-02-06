@@ -249,6 +249,234 @@ def publish_agent_message(
 
 
 # ============================================================================
+# Reusable Streaming Runner Helper
+# ============================================================================
+
+async def run_agent_streamed(
+    agent,
+    input_text: str,
+    workflow_id: str,
+    agent_name: str = "Agent",
+    max_turns: int = 50,
+    task_id: Optional[str] = None,
+    publish_fn=None,
+):
+    """Run an agent with streaming and publish tool/LLM events.
+
+    This is a reusable helper that wraps Runner.run_streamed() and publishes
+    tool_call, tool_result, llm_chunk, thinking, and message events to the
+    workflow event stream for ai-chatbot UI rendering.
+
+    Args:
+        agent: The OpenAI Agents SDK Agent instance
+        input_text: The input prompt for the agent
+        workflow_id: Workflow ID for event publishing
+        agent_name: Display name for the agent (e.g., "Planner", "Executor")
+        max_turns: Maximum agent turns
+        task_id: Optional task ID for event correlation
+        publish_fn: Optional custom publish function with signature
+            (workflow_id, event_type, data, task_id=None) -> bool.
+            If None, uses this module's publish_workflow_event.
+
+    Returns:
+        The agent's final_output (typed based on agent.output_type)
+    """
+    from agents.run import RunResultStreaming
+    from agents.stream_events import (
+        RawResponsesStreamEvent,
+        RunItemStreamEvent,
+    )
+    from agents.items import (
+        ToolCallItem,
+        ToolCallOutputItem,
+        MessageOutputItem,
+        ReasoningItem,
+    )
+
+    # Use custom publisher or default to this module's
+    _publish = publish_fn or publish_workflow_event
+
+    def _publish_tool_call(wf_id, tool_name, tool_input, call_id, tid=None):
+        input_str = str(tool_input)
+        if len(input_str) > 500:
+            input_str = input_str[:500] + "..."
+        return _publish(wf_id, "tool_call", {
+            "toolName": tool_name,
+            "toolInput": tool_input if isinstance(tool_input, dict) else {"input": input_str},
+            "callId": call_id,
+            "status": "running",
+        }, tid)
+
+    def _publish_tool_result(wf_id, tool_name, result, call_id, is_error=False, tid=None):
+        result_str = str(result) if result else ""
+        if len(result_str) > 1000:
+            result_str = result_str[:1000] + f"... (truncated, {len(str(result))} chars total)"
+        return _publish(wf_id, "tool_result", {
+            "toolName": tool_name,
+            "toolOutput": result_str,
+            "callId": call_id,
+            "isError": is_error,
+            "status": "error" if is_error else "success",
+        }, tid)
+
+    def _publish_llm_chunk(wf_id, content, name, tid=None):
+        return _publish(wf_id, "llm_chunk", {"content": content, "agentName": name}, tid)
+
+    def _publish_thinking(wf_id, content, tid=None):
+        return _publish(wf_id, "thinking_delta", {"content": content}, tid)
+
+    def _publish_agent_message(wf_id, message, name, tid=None):
+        return _publish(wf_id, "message_start", {"content": message, "agentName": name}, tid)
+
+    result: RunResultStreaming = Runner.run_streamed(
+        agent,
+        input=input_text,
+        max_turns=max_turns,
+    )
+
+    accumulated_text = ""
+    tool_call_count = 0
+    tool_call_map = {}  # Maps call_id -> tool_name for result lookup
+
+    async for event in result.stream_events():
+        try:
+            # Handle raw LLM response chunks
+            if isinstance(event, RawResponsesStreamEvent):
+                response = event.data
+                if hasattr(response, 'choices') and response.choices:
+                    for choice in response.choices:
+                        if hasattr(choice, 'delta') and choice.delta:
+                            delta = choice.delta
+                            if hasattr(delta, 'content') and delta.content:
+                                accumulated_text += delta.content
+                                if len(accumulated_text) >= 100:
+                                    _publish_llm_chunk(workflow_id, accumulated_text, agent_name, task_id)
+                                    accumulated_text = ""
+
+            # Handle run items (tool calls, messages, reasoning)
+            elif isinstance(event, RunItemStreamEvent):
+                item = event.item
+
+                # Tool call started
+                if isinstance(item, ToolCallItem):
+                    tool_call_count += 1
+                    tool_name = None
+                    if hasattr(item, 'name') and item.name:
+                        tool_name = item.name
+                    elif hasattr(item, 'tool_name') and item.tool_name:
+                        tool_name = item.tool_name
+                    elif hasattr(item, 'raw_item') and item.raw_item:
+                        raw = item.raw_item
+                        if hasattr(raw, 'function') and hasattr(raw.function, 'name'):
+                            tool_name = raw.function.name
+                        elif hasattr(raw, 'name'):
+                            tool_name = raw.name
+                    if not tool_name:
+                        tool_name = f"tool_{tool_call_count}"
+
+                    # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                    # with both call_id (required str) and id (Optional[str]).
+                    # Prefer call_id as it's the function call identifier.
+                    call_id = None
+                    raw = item.raw_item if hasattr(item, 'raw_item') else None
+                    if raw:
+                        if hasattr(raw, 'call_id') and raw.call_id:
+                            call_id = raw.call_id
+                        elif isinstance(raw, dict) and raw.get('call_id'):
+                            call_id = raw['call_id']
+                        elif hasattr(raw, 'id') and raw.id:
+                            call_id = raw.id
+                    if not call_id:
+                        call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
+
+                    tool_args = {}
+                    if hasattr(item, 'arguments') and item.arguments:
+                        tool_args = item.arguments
+                    elif raw:
+                        if hasattr(raw, 'arguments') and raw.arguments:
+                            try:
+                                args_str = raw.arguments
+                                if isinstance(args_str, str):
+                                    tool_args = json.loads(args_str)
+                                elif isinstance(args_str, dict):
+                                    tool_args = args_str
+                            except (json.JSONDecodeError, TypeError):
+                                tool_args = {"raw": str(raw.arguments)[:500]}
+
+                    logger.info(f"{agent_name} tool call: {tool_name} (call_id={call_id})")
+                    _publish_tool_call(workflow_id, tool_name, tool_args, call_id, task_id)
+                    tool_call_map[call_id] = tool_name
+
+                # Tool call result
+                elif isinstance(item, ToolCallOutputItem):
+                    tool_name = None
+                    if hasattr(item, 'tool_name') and item.tool_name:
+                        tool_name = item.tool_name
+                    elif hasattr(item, 'name') and item.name:
+                        tool_name = item.name
+
+                    # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                    # not a Pydantic model, so use dict-style access.
+                    call_id = None
+                    raw = item.raw_item if hasattr(item, 'raw_item') else None
+                    if raw:
+                        if isinstance(raw, dict) and raw.get('call_id'):
+                            call_id = raw['call_id']
+                        elif hasattr(raw, 'call_id') and raw.call_id:
+                            call_id = raw.call_id
+
+                    if not tool_name and call_id and call_id in tool_call_map:
+                        tool_name = tool_call_map[call_id]
+                    if not tool_name:
+                        tool_name = f"tool_{tool_call_count}"
+                    if not call_id:
+                        call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
+
+                    output = item.output if hasattr(item, 'output') else str(item)
+                    is_error = hasattr(item, 'is_error') and item.is_error
+
+                    logger.info(f"{agent_name} tool result: {tool_name} (call_id={call_id}, error={is_error})")
+                    _publish_tool_result(workflow_id, tool_name, output, call_id, is_error, task_id)
+
+                # Reasoning/thinking
+                elif isinstance(item, ReasoningItem):
+                    if hasattr(item, 'text') and item.text:
+                        _publish_thinking(workflow_id, item.text[:500], task_id)
+                    elif hasattr(item, 'raw_item') and item.raw_item:
+                        reasoning = ""
+                        raw = item.raw_item
+                        if hasattr(raw, 'summary') and raw.summary:
+                            for part in raw.summary:
+                                if hasattr(part, 'text'):
+                                    reasoning += part.text
+                        if reasoning:
+                            _publish_thinking(workflow_id, reasoning[:500], task_id)
+
+                # Message output
+                elif isinstance(item, MessageOutputItem):
+                    content = ""
+                    if hasattr(item, 'raw_item') and item.raw_item:
+                        raw = item.raw_item
+                        if hasattr(raw, 'content') and raw.content:
+                            for part in raw.content:
+                                if hasattr(part, 'text'):
+                                    content += part.text
+                    if not content and hasattr(item, 'text') and item.text:
+                        content = item.text
+                    if content:
+                        _publish_agent_message(workflow_id, content[:500], agent_name, task_id)
+
+        except Exception as e:
+            logger.debug(f"Error processing {agent_name} stream event: {e}")
+
+    # Flush any remaining accumulated text
+    if accumulated_text:
+        _publish_llm_chunk(workflow_id, accumulated_text, agent_name, task_id)
+
+    return result.final_output
+
+
+# ============================================================================
 # Clone Activity Models
 # ============================================================================
 
@@ -478,13 +706,18 @@ def planning_activity(ctx: wf.WorkflowActivityContext, input_data: Dict[str, Any
                         if not tool_name:
                             tool_name = f"tool_{tool_call_count}"
 
+                        # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                        # with both call_id (required str) and id (Optional[str]).
+                        # Prefer call_id as it's the function call identifier.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'id') and item.id:
-                            call_id = item.id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'id'):
-                            call_id = item.raw_item.id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
+                            elif isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'id') and raw.id:
+                                call_id = raw.id
                         if not call_id:
                             call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
 
@@ -515,11 +748,15 @@ def planning_activity(ctx: wf.WorkflowActivityContext, input_data: Dict[str, Any
                         elif hasattr(item, 'name') and item.name:
                             tool_name = item.name
 
+                        # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                        # not a Pydantic model, so use dict-style access.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'call_id'):
-                            call_id = item.raw_item.call_id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
 
                         if not tool_name and call_id and call_id in tool_call_map:
                             tool_name = tool_call_map[call_id]
@@ -705,14 +942,18 @@ Reasoning: {plan.get('reasoning', '')}"""
                         if not tool_name:
                             tool_name = f"tool_{tool_call_count}"
 
-                        # Extract call_id from item or generate one
+                        # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                        # with both call_id (required str) and id (Optional[str]).
+                        # Prefer call_id as it's the function call identifier.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'id') and item.id:
-                            call_id = item.id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'id'):
-                            call_id = item.raw_item.id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
+                            elif isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'id') and raw.id:
+                                call_id = raw.id
                         if not call_id:
                             call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
 
@@ -767,12 +1008,15 @@ Reasoning: {plan.get('reasoning', '')}"""
                         elif hasattr(item, 'name') and item.name:
                             tool_name = item.name
 
-                        # Extract call_id
+                        # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                        # not a Pydantic model, so use dict-style access.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'call_id'):
-                            call_id = item.raw_item.call_id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
 
                         # Fallback to stored mapping
                         if not tool_name and call_id and call_id in tool_call_map:
@@ -982,13 +1226,18 @@ Completed Tasks: {execution.get('completed_tasks', [])}"""
                             if not tool_name:
                                 tool_name = f"tool_{tool_call_count}"
 
+                            # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                            # with both call_id (required str) and id (Optional[str]).
+                            # Prefer call_id as it's the function call identifier.
                             call_id = None
-                            if hasattr(item, 'call_id') and item.call_id:
-                                call_id = item.call_id
-                            elif hasattr(item, 'id') and item.id:
-                                call_id = item.id
-                            elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'id'):
-                                call_id = item.raw_item.id
+                            raw = item.raw_item if hasattr(item, 'raw_item') else None
+                            if raw:
+                                if hasattr(raw, 'call_id') and raw.call_id:
+                                    call_id = raw.call_id
+                                elif isinstance(raw, dict) and raw.get('call_id'):
+                                    call_id = raw['call_id']
+                                elif hasattr(raw, 'id') and raw.id:
+                                    call_id = raw.id
                             if not call_id:
                                 call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
 
@@ -1019,11 +1268,15 @@ Completed Tasks: {execution.get('completed_tasks', [])}"""
                             elif hasattr(item, 'name') and item.name:
                                 tool_name = item.name
 
+                            # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                            # not a Pydantic model, so use dict-style access.
                             call_id = None
-                            if hasattr(item, 'call_id') and item.call_id:
-                                call_id = item.call_id
-                            elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'call_id'):
-                                call_id = item.raw_item.call_id
+                            raw = item.raw_item if hasattr(item, 'raw_item') else None
+                            if raw:
+                                if isinstance(raw, dict) and raw.get('call_id'):
+                                    call_id = raw['call_id']
+                                elif hasattr(raw, 'call_id') and raw.call_id:
+                                    call_id = raw.call_id
 
                             if not tool_name and call_id and call_id in tool_call_map:
                                 tool_name = tool_call_map[call_id]
@@ -1218,13 +1471,18 @@ Reasoning: {plan_data.get('reasoning', '')}"""
                         if not tool_name:
                             tool_name = f"tool_{tool_call_count}"
 
+                        # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                        # with both call_id (required str) and id (Optional[str]).
+                        # Prefer call_id as it's the function call identifier.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'id') and item.id:
-                            call_id = item.id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'id'):
-                            call_id = item.raw_item.id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
+                            elif isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'id') and raw.id:
+                                call_id = raw.id
                         if not call_id:
                             call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
 
@@ -1254,11 +1512,15 @@ Reasoning: {plan_data.get('reasoning', '')}"""
                         elif hasattr(item, 'name') and item.name:
                             tool_name = item.name
 
+                        # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                        # not a Pydantic model, so use dict-style access.
                         call_id = None
-                        if hasattr(item, 'call_id') and item.call_id:
-                            call_id = item.call_id
-                        elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'call_id'):
-                            call_id = item.raw_item.call_id
+                        raw = item.raw_item if hasattr(item, 'raw_item') else None
+                        if raw:
+                            if isinstance(raw, dict) and raw.get('call_id'):
+                                call_id = raw['call_id']
+                            elif hasattr(raw, 'call_id') and raw.call_id:
+                                call_id = raw.call_id
 
                         if not tool_name and call_id and call_id in tool_call_map:
                             tool_name = tool_call_map[call_id]
@@ -1379,13 +1641,18 @@ Completed Tasks: {execution_data.get('completed_tasks', [])}"""
                             if not tool_name:
                                 tool_name = f"tool_{tool_call_count}"
 
+                            # Extract call_id: ResponseFunctionToolCall is a Pydantic model
+                            # with both call_id (required str) and id (Optional[str]).
+                            # Prefer call_id as it's the function call identifier.
                             call_id = None
-                            if hasattr(item, 'call_id') and item.call_id:
-                                call_id = item.call_id
-                            elif hasattr(item, 'id') and item.id:
-                                call_id = item.id
-                            elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'id'):
-                                call_id = item.raw_item.id
+                            raw = item.raw_item if hasattr(item, 'raw_item') else None
+                            if raw:
+                                if hasattr(raw, 'call_id') and raw.call_id:
+                                    call_id = raw.call_id
+                                elif isinstance(raw, dict) and raw.get('call_id'):
+                                    call_id = raw['call_id']
+                                elif hasattr(raw, 'id') and raw.id:
+                                    call_id = raw.id
                             if not call_id:
                                 call_id = f"call-{tool_call_count}-{uuid.uuid4().hex[:8]}"
 
@@ -1415,11 +1682,15 @@ Completed Tasks: {execution_data.get('completed_tasks', [])}"""
                             elif hasattr(item, 'name') and item.name:
                                 tool_name = item.name
 
+                            # Extract call_id: FunctionCallOutput is a TypedDict (dict),
+                            # not a Pydantic model, so use dict-style access.
                             call_id = None
-                            if hasattr(item, 'call_id') and item.call_id:
-                                call_id = item.call_id
-                            elif hasattr(item, 'raw_item') and item.raw_item and hasattr(item.raw_item, 'call_id'):
-                                call_id = item.raw_item.call_id
+                            raw = item.raw_item if hasattr(item, 'raw_item') else None
+                            if raw:
+                                if isinstance(raw, dict) and raw.get('call_id'):
+                                    call_id = raw['call_id']
+                                elif hasattr(raw, 'call_id') and raw.call_id:
+                                    call_id = raw.call_id
 
                             if not tool_name and call_id and call_id in tool_call_map:
                                 tool_name = tool_call_map[call_id]

@@ -12,21 +12,21 @@ The function-router supports:
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any
 
 import requests
 from pydantic import BaseModel
 
+from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
 
 logger = logging.getLogger(__name__)
 
 # Function router dispatches to OpenFunctions (Knative serverless)
-FUNCTION_ROUTER_APP_ID = os.environ.get("FUNCTION_RUNNER_APP_ID", "function-router")
-DAPR_HOST = os.environ.get("DAPR_HOST", "localhost")
-DAPR_HTTP_PORT = os.environ.get("DAPR_HTTP_PORT", "3500")
+FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
+DAPR_HOST = config.DAPR_HOST
+DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 
 
 class ExecuteActionInput(BaseModel):

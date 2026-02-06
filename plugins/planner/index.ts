@@ -5,15 +5,15 @@ import { PlannerIcon } from "./icon";
 /**
  * AI Planner Agent Plugin
  *
- * This plugin provides actions for invoking the planner-orchestrator workflow
- * as a native Dapr child workflow. This enables:
+ * This plugin provides actions for invoking the planner-dapr-agent workflow
+ * via Dapr service invocation. This enables:
  *
  * - planner/run-workflow: Full planning → approval → execution workflow
  * - planner/plan: Just the planning phase (create tasks)
  * - planner/execute: Just the execution phase (implement tasks)
  *
- * When used in the workflow-builder, these actions invoke the planner-orchestrator
- * service running in the same namespace as a multi-app child workflow.
+ * When used in the workflow-builder, these actions invoke the planner-dapr-agent
+ * service running in the same namespace via Dapr service invocation.
  */
 const plannerPlugin: IntegrationPlugin = {
   type: "planner" as const,

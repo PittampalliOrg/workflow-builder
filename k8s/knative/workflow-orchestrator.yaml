@@ -5,13 +5,13 @@
 # The workflow runtime holds workflow state and processes activities.
 #
 # KEY FEATURE: Native multi-app child workflow support for planner/* actions.
-# When a node's actionType starts with "planner/", the workflow invokes the
-# planner-orchestrator's workflow as a true child workflow.
+# When a node's actionType starts with "planner/", the workflow invokes
+# planner-dapr-agent via Dapr service invocation.
 #
 # Prerequisites:
 # - Dapr installed in the cluster
 # - Redis for Dapr workflow state store
-# - planner-orchestrator deployed (for child workflows)
+# - planner-dapr-agent deployed (for planner actions)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -205,23 +205,23 @@ spec:
         defaultAction: allow
         trustDomain: "public"
         namespace: "workflow-builder"
-      - appId: planner-orchestrator
+      - appId: planner-dapr-agent
         defaultAction: allow
         trustDomain: "public"
         namespace: "workflow-builder"
 ---
 # Dapr Component: Workflow State Store
 # Uses Redis to persist workflow state durably
-# Shared between workflow-orchestrator and planner-orchestrator for child workflows
+# Shared between workflow-orchestrator and planner-dapr-agent
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
   name: workflowstatestore
   namespace: workflow-builder
-# Component scoping - orchestrators share state store for child workflows
+# Component scoping - orchestrators share state store
 scopes:
   - workflow-orchestrator
-  - planner-orchestrator
+  - planner-dapr-agent
 spec:
   type: state.redis
   version: v1
@@ -246,7 +246,7 @@ metadata:
 # Component scoping - orchestrators and function-router can publish/subscribe
 scopes:
   - workflow-orchestrator
-  - planner-orchestrator
+  - planner-dapr-agent
   - function-router
 spec:
   type: pubsub.redis
@@ -268,7 +268,7 @@ metadata:
 # Component scoping - orchestrators can access
 scopes:
   - workflow-orchestrator
-  - planner-orchestrator
+  - planner-dapr-agent
 spec:
   type: configuration.azure.appconfig
   version: v1

@@ -76,7 +76,7 @@ async function executeDaprWorkflowBackground(
     const orchestratorUrl =
       (workflow.daprOrchestratorUrl as string) ||
       process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-orchestrator:8080";
+      "http://planner-dapr-agent:8000";
 
     console.log("[Webhook] Starting Dapr execution:", executionId);
 

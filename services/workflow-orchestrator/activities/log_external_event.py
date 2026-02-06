@@ -10,16 +10,17 @@ Uses Dapr service invocation to call function-router which has database access.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Literal
 
 import requests
 
+from core.config import config
+
 logger = logging.getLogger(__name__)
 
-DAPR_HOST = os.environ.get("DAPR_HOST", "localhost")
-DAPR_HTTP_PORT = os.environ.get("DAPR_HTTP_PORT", "3500")
-FUNCTION_ROUTER_APP_ID = os.environ.get("FUNCTION_ROUTER_APP_ID", "function-router")
+DAPR_HOST = config.DAPR_HOST
+DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
+FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
 
 ExternalEventType = Literal["approval_request", "approval_response", "timeout"]
 

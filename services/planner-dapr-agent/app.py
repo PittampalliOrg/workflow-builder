@@ -113,8 +113,12 @@ PUBSUB_NAME = "pubsub"
 PUBSUB_TOPIC = "workflow.stream"
 AGENT_ID = "planner-dapr-agent"
 
-# Direct HTTP webhook URL for ai-chatbot (cross-namespace event delivery)
-# ai-chatbot has no Dapr sidecar, so we POST events directly to its webhook
+# ai-chatbot Dapr service invocation config (cross-namespace)
+# ai-chatbot has a Dapr sidecar with app-id "ai-chatbot" in the "ai-chatbot" namespace.
+# We use Dapr service invocation (app-id.namespace) for mTLS, retries, and tracing.
+AI_CHATBOT_DAPR_APP_ID = os.getenv("AI_CHATBOT_DAPR_APP_ID", "ai-chatbot.ai-chatbot")
+AI_CHATBOT_WEBHOOK_METHOD = "api/webhooks/dapr/workflow-stream"
+# Fallback direct HTTP URL (used only if Dapr service invocation fails)
 AI_CHATBOT_WEBHOOK_URL = os.getenv(
     "AI_CHATBOT_WEBHOOK_URL",
     "http://ai-chatbot.ai-chatbot.svc.cluster.local:3000/api/webhooks/dapr/workflow-stream"
@@ -216,7 +220,7 @@ def track_activity(
         update_workflow_activities(ctx.workflow_id, ctx.activities)
 
         # Publish completion event for real-time streaming
-        _publish_activity_event(ctx.workflow_id, name, status, input_data, output_data, existing.get("durationMs"))
+        _publish_activity_event(ctx.workflow_id, name, status, input_data, output_data, existing.get("durationMs"), call_id=existing.get("call_id"))
     else:
         # Create new activity
         activity = {
@@ -242,6 +246,7 @@ def _publish_activity_event(
     input_data: Optional[dict] = None,
     output_data: Optional[dict] = None,
     duration_ms: Optional[int] = None,
+    call_id: Optional[str] = None,
 ) -> None:
     """Publish activity event to pub/sub for real-time SSE streaming."""
     # Determine event type based on activity name and status
@@ -256,10 +261,10 @@ def _publish_activity_event(
         tool_name = name.replace("tool:", "") if name.startswith("tool:") else name
         if status == "running":
             event_type = "tool_call"
-            data = {"toolName": tool_name, "toolInput": input_data}
+            data = {"toolName": tool_name, "toolInput": input_data, "callId": call_id}
         else:
             event_type = "tool_result"
-            data = {"toolName": tool_name, "toolOutput": output_data, "status": status, "durationMs": duration_ms}
+            data = {"toolName": tool_name, "toolOutput": output_data, "status": status, "durationMs": duration_ms, "callId": call_id}
     elif name.startswith("agent:"):
         if status == "running":
             event_type = "agent_started"
@@ -309,7 +314,17 @@ def reset_workflow_context(workflow_id: str) -> None:
 
 # Global interceptor instance using the new framework (can be configured/replaced)
 # ActivityTrackingInterceptor is imported from durable_runner.py
-_tool_interceptor = ActivityTrackingInterceptor(update_callback=None)
+def _interceptor_event_publisher(workflow_id: str, event_type: str, data: dict) -> None:
+    """Bridge from interceptor to pub/sub event publishing."""
+    try:
+        publish_workflow_event(workflow_id, event_type, data)
+    except Exception as e:
+        logger.debug(f"Could not publish interceptor event: {e}")
+
+_tool_interceptor = ActivityTrackingInterceptor(
+    update_callback=None,
+    event_publisher=_interceptor_event_publisher,
+)
 
 
 def _serialize_arg(arg: Any, max_length: int = 500) -> Any:
@@ -1188,23 +1203,41 @@ def publish_workflow_event(
     except Exception as e:
         logger.debug(f"Dapr pub/sub not available for {event_type}: {e}")
 
-    # Also forward directly to ai-chatbot webhook via HTTP
-    # This is the primary cross-namespace delivery path since ai-chatbot has no Dapr sidecar
+    # Forward to ai-chatbot via Dapr service invocation (cross-namespace)
+    # Calls go through the local Dapr sidecar HTTP API for mTLS, retries, and tracing.
+    # URL: http://localhost:{DAPR_HTTP_PORT}/v1.0/invoke/{app-id}/method/{method}
     try:
         import httpx
+        dapr_port = os.environ.get("DAPR_HTTP_PORT", "3500")
+        dapr_invoke_url = f"http://localhost:{dapr_port}/v1.0/invoke/{AI_CHATBOT_DAPR_APP_ID}/method/{AI_CHATBOT_WEBHOOK_METHOD}"
         with httpx.Client(timeout=5.0) as http_client:
             resp = http_client.post(
-                AI_CHATBOT_WEBHOOK_URL,
+                dapr_invoke_url,
                 json=event,
                 headers={"Content-Type": "application/json"},
             )
             if resp.status_code == 200:
-                logger.info(f"Forwarded {event_type} event for workflow {workflow_id} to ai-chatbot")
+                logger.info(f"Forwarded {event_type} event for workflow {workflow_id} to ai-chatbot via Dapr")
                 published = True
             else:
-                logger.warning(f"ai-chatbot webhook returned {resp.status_code} for {event_type}")
+                logger.warning(f"Dapr invocation to ai-chatbot returned {resp.status_code} for {event_type}")
     except Exception as e:
-        logger.debug(f"Failed to forward {event_type} to ai-chatbot: {e}")
+        logger.debug(f"Dapr service invocation to ai-chatbot failed for {event_type}: {e}")
+        # Fallback to direct HTTP if Dapr invocation fails
+        try:
+            with httpx.Client(timeout=5.0) as http_client:
+                resp = http_client.post(
+                    AI_CHATBOT_WEBHOOK_URL,
+                    json=event,
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    logger.info(f"Forwarded {event_type} event for workflow {workflow_id} to ai-chatbot via HTTP fallback")
+                    published = True
+                else:
+                    logger.warning(f"ai-chatbot webhook returned {resp.status_code} for {event_type}")
+        except Exception as fallback_err:
+            logger.debug(f"HTTP fallback to ai-chatbot also failed: {fallback_err}")
 
     if not published:
         logger.warning(f"Failed to publish {event_type} event via any channel for {workflow_id}")
@@ -3600,17 +3633,19 @@ async def standalone_plan(request: StandalonePlanRequest):
 
     try:
         from workflow_agent import create_planning_agent, Plan
+        from dapr_multi_step_workflow import run_agent_streamed
 
         planning_agent = create_planning_agent(model)
 
-        # Run planning synchronously
-        result = await Runner.run(
+        # Run planning with streaming to publish tool/LLM events
+        plan: Plan = await run_agent_streamed(
             planning_agent,
-            input=request.task,
+            input_text=request.task,
+            workflow_id=workflow_id,
+            agent_name="Planner",
             max_turns=max_turns,
+            publish_fn=publish_workflow_event,
         )
-
-        plan: Plan = result.final_output
 
         # Auto-populate blocks based on blockedBy
         task_map = {t.id: t for t in plan.tasks}
@@ -3731,21 +3766,25 @@ Tasks:
 
 Reasoning: {plan_data.get('reasoning', '')}"""
 
-            # Run execution agent
+            from dapr_multi_step_workflow import run_agent_streamed
+
+            # Run execution agent with streaming
             publish_workflow_event(workflow_id, "task_progress", {
                 "phase": "executing",
                 "message": "Running execution agent...",
                 "status": "Running execution agent...",
             })
             execution_agent = create_execution_agent_sandboxed(sandbox, model)
-            exec_result = await Runner.run(
+            execution_output = await run_agent_streamed(
                 execution_agent,
-                input=exec_prompt,
+                input_text=exec_prompt,
+                workflow_id=workflow_id,
+                agent_name="Executor (Sandbox)",
                 max_turns=max_turns,
+                publish_fn=publish_workflow_event,
             )
-            execution_output = exec_result.final_output
 
-            # Run testing agent
+            # Run testing agent with streaming
             publish_workflow_event(workflow_id, "task_progress", {
                 "phase": "testing",
                 "message": "Running testing agent...",
@@ -3761,12 +3800,14 @@ Tests to run:
 {chr(10).join(f"- {t.get('name', 'test')}: {t.get('description', '')}" for t in tests) if tests else "Run appropriate tests for the implementation."}"""
 
             testing_agent = create_testing_agent_sandboxed(sandbox, model)
-            test_result = await Runner.run(
+            testing_output = await run_agent_streamed(
                 testing_agent,
-                input=test_prompt,
+                input_text=test_prompt,
+                workflow_id=workflow_id,
+                agent_name="Tester (Sandbox)",
                 max_turns=max_turns,
+                publish_fn=publish_workflow_event,
             )
-            testing_output = test_result.final_output
 
         exec_data = execution_output.model_dump() if hasattr(execution_output, 'model_dump') else {"raw": str(execution_output)}
         test_data = testing_output.model_dump() if hasattr(testing_output, 'model_dump') else {"raw": str(testing_output)}

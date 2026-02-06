@@ -14,19 +14,18 @@ Endpoints:
 
 import json
 import logging
-import os
 import time
 
 import httpx
 
+from core.config import config
+
 logger = logging.getLogger(__name__)
 
-DAPR_HOST = os.getenv("DAPR_HOST", "localhost")
-DAPR_HTTP_PORT = os.getenv("DAPR_HTTP_PORT", "3500")
-PLANNER_APP_ID = os.getenv("PLANNER_APP_ID", "planner-dapr-agent")
-
-
-DAPR_SECRETS_STORE = os.getenv("DAPR_SECRETS_STORE", "azure-keyvault")
+DAPR_HOST = config.DAPR_HOST
+DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
+PLANNER_APP_ID = config.PLANNER_APP_ID
+DAPR_SECRETS_STORE = config.DAPR_SECRETS_STORE
 
 
 def _fetch_github_token_from_dapr() -> str:
@@ -240,10 +239,10 @@ def _call_planner_plan_via_run(client: httpx.Client, feature_request: str, paren
 
 def call_planner_workflow(ctx, input_data: dict) -> dict:
     """
-    Call planner-orchestrator /api/workflows endpoint for full multi-step workflow.
+    Call planner-dapr-agent /api/workflows endpoint for full multi-step workflow.
 
     This runs the complete workflow: plan → persist → approve → execute
-    When parent_execution_id is provided, the planner-orchestrator will publish
+    When parent_execution_id is provided, the planner-dapr-agent will publish
     completion events that are routed back to the parent workflow.
 
     Args:

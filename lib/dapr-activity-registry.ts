@@ -4,7 +4,7 @@
  * Follows the same pattern as plugins/registry.ts but for Dapr activities.
  * Each activity maps to a ctx.call_activity() invocation in the Dapr workflow.
  *
- * Activity definitions aligned with planner-orchestrator/activities/*.py.
+ * Activity definitions aligned with planner-dapr-agent activities.
  *
  * NOTE: Plugin-based function execution (slack/send-message, openai/generate-text, etc.)
  * now goes through the action node type which routes to:
@@ -229,7 +229,7 @@ registerDaprActivity({
 });
 
 // ─── Planner-Agent Activities ────────────────────────────────────────────────
-// Aligned with planner-orchestrator/activities/*.py
+// Aligned with planner-dapr-agent/activities/*.py
 
 registerDaprActivity({
   name: "run_planning",

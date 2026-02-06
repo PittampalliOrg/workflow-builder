@@ -8,15 +8,16 @@ and inter-service communication.
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timezone
 from typing import Any
 
 from dapr.clients import DaprClient
 
+from core.config import config
+
 logger = logging.getLogger(__name__)
 
-PUBSUB_NAME = os.environ.get("PUBSUB_NAME", "workflowpubsub")
+PUBSUB_NAME = config.PUBSUB_NAME
 WORKFLOW_EVENTS_TOPIC = "workflow.events"
 
 

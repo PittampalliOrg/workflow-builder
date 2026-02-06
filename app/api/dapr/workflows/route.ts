@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     const orchestratorUrl =
       workflow.daprOrchestratorUrl ||
       process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-orchestrator:8080";
+      "http://planner-dapr-agent:8000";
 
     // Create execution record
     const [execution] = await db
