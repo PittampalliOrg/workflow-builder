@@ -1,10 +1,12 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
-import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { getIntegrations, validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
+import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
+import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import { executeWorkflow } from "@/lib/workflow-executor";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
@@ -56,16 +58,16 @@ export async function POST(
     let cwd = (input.cwd as string) || "";
 
     // For Dapr workflows, extract feature_request and cwd from activity node config if not in input
+    // Only look for explicit feature_request field, NOT generic prompts (those go to the generic orchestrator)
     if (engineType === "dapr" && !featureRequest) {
       const nodes = workflow.nodes as WorkflowNode[];
       for (const node of nodes) {
         if (node.type === "activity") {
           const data = node.data as Record<string, unknown>;
           const config = (data.config as Record<string, unknown>) || {};
-          // Check for prompt/feature_request in activity config
-          if (config.prompt && typeof config.prompt === "string") {
-            featureRequest = config.prompt;
-          } else if (config.feature_request && typeof config.feature_request === "string") {
+          // Only check for explicit feature_request field (used by planner-agent workflows)
+          // Do NOT treat generic AI prompts as feature_request
+          if (config.feature_request && typeof config.feature_request === "string") {
             featureRequest = config.feature_request;
           }
           // Check for cwd in activity config
@@ -77,12 +79,14 @@ export async function POST(
       }
     }
 
-    if (engineType === "dapr" && featureRequest) {
-      // Dapr planning workflow - proxy to planner-orchestrator
+    if (engineType === "dapr") {
+      // Dapr workflow execution - choose between legacy planner or generic orchestrator
+      // Get URLs from config service (Azure App Config via Dapr) with fallback to defaults
+      const genericUrl = await getGenericOrchestratorUrl();
+      const daprUrl = await getDaprOrchestratorUrl();
       const orchestratorUrl =
         ((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
-        process.env.DAPR_ORCHESTRATOR_URL ||
-        "http://planner-orchestrator:8080";
+        (featureRequest ? daprUrl : genericUrl);
 
       // Create execution record
       const [execution] = await db
@@ -96,23 +100,98 @@ export async function POST(
         .returning();
 
       try {
-        const daprResult = await daprClient.startWorkflow(
-          orchestratorUrl,
-          featureRequest,
-          cwd
+        // If we have a feature_request, use the legacy planner-orchestrator
+        if (featureRequest) {
+          const daprResult = await daprClient.startWorkflow(
+            orchestratorUrl,
+            featureRequest,
+            cwd
+          );
+
+          // Update execution with Dapr workflow ID
+          await db
+            .update(workflowExecutions)
+            .set({
+              daprInstanceId: daprResult.workflow_id,
+            })
+            .where(eq(workflowExecutions.id, execution.id));
+
+          return NextResponse.json({
+            executionId: execution.id,
+            daprInstanceId: daprResult.workflow_id,
+            status: "running",
+          });
+        }
+
+        // Otherwise, use the generic TypeScript orchestrator
+        const nodes = workflow.nodes as WorkflowNode[];
+        const edges = workflow.edges as WorkflowEdge[];
+
+        // Generate workflow definition from the visual graph
+        const definition = generateWorkflowDefinition(
+          nodes,
+          edges,
+          workflowId,
+          workflow.name,
+          {
+            description: workflow.description || undefined,
+            author: session.user.email || session.user.id,
+          }
         );
 
-        // Update execution with Dapr workflow ID
+        // Fetch user's integrations and format for the orchestrator
+        // Format: { "openai": { "apiKey": "..." }, "slack": { "botToken": "..." } }
+        const userIntegrations = await getIntegrations(session.user.id);
+        const formattedIntegrations: Record<string, Record<string, string>> = {};
+
+        for (const integration of userIntegrations) {
+          // Use integration type as the key (e.g., "openai", "slack", "github")
+          const integrationType = integration.type;
+
+          // Convert config values to strings for the orchestrator
+          const configEntries: Record<string, string> = {};
+          for (const [key, value] of Object.entries(integration.config || {})) {
+            if (value !== null && value !== undefined) {
+              configEntries[key] = String(value);
+            }
+          }
+
+          // If there's already an integration of this type, merge configs
+          // (user might have multiple openai integrations, use the first one)
+          if (!formattedIntegrations[integrationType]) {
+            formattedIntegrations[integrationType] = configEntries;
+          }
+        }
+
+        console.log(
+          `[Execute] Passing ${Object.keys(formattedIntegrations).length} integration types to orchestrator:`,
+          Object.keys(formattedIntegrations)
+        );
+
+        // Start workflow via generic orchestrator
+        // Pass the database execution ID so function-runner can log to the correct record
+        const genericResult = await genericOrchestratorClient.startWorkflow(
+          orchestratorUrl,
+          definition,
+          input,
+          formattedIntegrations,
+          execution.id // Database execution ID for logging
+        );
+
+        // Update execution with Dapr instance ID
         await db
           .update(workflowExecutions)
           .set({
-            daprInstanceId: daprResult.workflow_id,
+            daprInstanceId: genericResult.instanceId,
+            phase: "running",
+            progress: 0,
           })
           .where(eq(workflowExecutions.id, execution.id));
 
         return NextResponse.json({
           executionId: execution.id,
-          daprInstanceId: daprResult.workflow_id,
+          instanceId: genericResult.instanceId,
+          daprInstanceId: genericResult.instanceId,
           status: "running",
         });
       } catch (daprError) {

@@ -24,6 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
+  currentRunningNodeIdAtom,
   currentWorkflowIdAtom,
   executionLogsAtom,
   selectedExecutionIdAtom,
@@ -38,6 +39,7 @@ type ExecutionLog = {
   nodeId: string;
   nodeName: string;
   nodeType: string;
+  actionType?: string | null; // Function slug like "openai/generate-text"
   status: "pending" | "running" | "success" | "error";
   startedAt: Date;
   completedAt: Date | null;
@@ -59,6 +61,8 @@ type WorkflowExecution = {
   daprInstanceId: string | null;
   phase: string | null;
   progress: number | null;
+  currentNodeId?: string | null;
+  currentNodeName?: string | null;
   input?: Record<string, unknown>;
 };
 
@@ -106,6 +110,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
     nodeId: string;
     nodeName: string;
     nodeType: string;
+    actionType?: string | null;
     status: "pending" | "running" | "success" | "error";
     output?: unknown;
   }
@@ -116,6 +121,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
       nodeId: string;
       nodeName: string;
       nodeType: string;
+      actionType?: string | null;
       status: "pending" | "running" | "success" | "error";
       output?: unknown;
     }
@@ -125,6 +131,7 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
       nodeId: log.nodeId,
       nodeName: log.nodeName,
       nodeType: log.nodeType,
+      actionType: log.actionType,
       status: log.status,
       output: log.output,
     };
@@ -642,7 +649,7 @@ function ExecutionLogEntry({
             )}
             {log.output !== null && log.output !== undefined && (
               <OutputDisplay
-                actionType={log.nodeType}
+                actionType={log.actionType || log.nodeType}
                 input={log.input}
                 output={log.output}
               />
@@ -681,6 +688,7 @@ export function WorkflowRuns({
     selectedExecutionIdAtom
   );
   const [, setExecutionLogs] = useAtom(executionLogsAtom);
+  const [, setCurrentRunningNodeId] = useAtom(currentRunningNodeIdAtom);
   const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
   const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
@@ -735,6 +743,7 @@ export function WorkflowRuns({
         nodeId: string;
         nodeName: string;
         nodeType: string;
+        actionType?: string | null; // Function slug like "openai/generate-text"
         status: "pending" | "running" | "success" | "error";
         input: unknown;
         output: unknown;
@@ -752,6 +761,7 @@ export function WorkflowRuns({
         nodeId: log.nodeId,
         nodeName: log.nodeName,
         nodeType: log.nodeType,
+        actionType: log.actionType, // Include function slug for output display config lookup
         status: log.status,
         startedAt: new Date(log.startedAt),
         completedAt: log.completedAt ? new Date(log.completedAt) : null,
@@ -854,27 +864,94 @@ export function WorkflowRuns({
 
     const pollExecutions = async () => {
       try {
-        // First, poll Dapr status for any running executions to update their status
-        const runningExecutions = executions.filter(
+        // First, fetch updated executions from the database
+        const data = await api.workflow.getExecutions(currentWorkflowId);
+        let newExecutions = data as WorkflowExecution[];
+
+        // Create a set of valid execution IDs for quick lookup
+        const validExecutionIds = new Set(newExecutions.map((e) => e.id));
+
+        // Clean up expanded runs that no longer exist in the database
+        setExpandedRuns((prev) => {
+          const cleaned = new Set<string>();
+          for (const id of prev) {
+            if (validExecutionIds.has(id)) {
+              cleaned.add(id);
+            }
+          }
+          return cleaned.size !== prev.size ? cleaned : prev;
+        });
+
+        // Poll Dapr status for any running executions to update their status
+        const runningExecutions = newExecutions.filter(
           (e) => e.status === "running"
         );
+
+        // Track status updates to merge with fetched data
+        const statusUpdates: Record<string, { status: string; phase: string | null; progress: number | null; currentNodeId?: string | null; currentNodeName?: string | null }> = {};
+
         for (const execution of runningExecutions) {
           try {
             // This calls the status API which updates the DB from Dapr orchestrator
-            await api.dapr.getStatus(execution.id);
+            const statusResponse = await api.dapr.getStatus(execution.id);
+
+            // Collect status updates to merge
+            if (statusResponse.status !== execution.status ||
+                statusResponse.phase !== execution.phase ||
+                statusResponse.progress !== execution.progress ||
+                statusResponse.currentNodeId !== execution.currentNodeId) {
+              statusUpdates[execution.id] = {
+                status: statusResponse.status,
+                phase: statusResponse.phase,
+                progress: statusResponse.progress,
+                currentNodeId: statusResponse.currentNodeId,
+                currentNodeName: statusResponse.currentNodeName,
+              };
+            }
+
+            // Update the running node ID atom if this is the selected execution
+            if (execution.id === selectedExecutionId) {
+              setCurrentRunningNodeId(statusResponse.currentNodeId || null);
+            }
           } catch (error) {
-            // Ignore errors for individual status checks
-            console.debug(`Failed to poll Dapr status for ${execution.id}:`, error);
+            // Log error and mark as error to stop the spinner
+            // Any error polling status means we should stop the spinner
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            console.warn(`Failed to poll status for ${execution.id}, marking as error:`, errorMessage);
+
+            // Mark as error locally to stop the spinner
+            statusUpdates[execution.id] = {
+              status: "error",
+              phase: "failed",
+              progress: 0,
+              currentNodeId: null,
+              currentNodeName: null,
+            };
+
+            // Clear running node if this was the selected execution
+            if (execution.id === selectedExecutionId) {
+              setCurrentRunningNodeId(null);
+            }
           }
         }
 
-        // Then fetch updated executions from the database
-        const data = await api.workflow.getExecutions(currentWorkflowId);
-        setExecutions(data as WorkflowExecution[]);
+        // Merge status updates into fetched executions before setting state
+        if (Object.keys(statusUpdates).length > 0) {
+          newExecutions = newExecutions.map((e) =>
+            statusUpdates[e.id]
+              ? { ...e, ...statusUpdates[e.id] } as WorkflowExecution
+              : e
+          );
+        }
 
-        // Also refresh logs for expanded runs
+        // Set state once with merged data
+        setExecutions(newExecutions);
+
+        // Refresh logs only for expanded runs that still exist
         for (const executionId of expandedRuns) {
-          await refreshExecutionLogs(executionId);
+          if (validExecutionIds.has(executionId)) {
+            await refreshExecutionLogs(executionId);
+          }
         }
       } catch (error) {
         console.error("Failed to poll executions:", error);
@@ -883,7 +960,7 @@ export function WorkflowRuns({
 
     const interval = setInterval(pollExecutions, 2000);
     return () => clearInterval(interval);
-  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs]);
+  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs, selectedExecutionId, setCurrentRunningNodeId]);
 
   const toggleRun = async (executionId: string) => {
     const newExpanded = new Set(expandedRuns);
@@ -902,11 +979,15 @@ export function WorkflowRuns({
     if (selectedExecutionId === executionId) {
       setSelectedExecutionId(null);
       setExecutionLogs({});
+      setCurrentRunningNodeId(null);
       return;
     }
 
     // Select the run without toggling expansion
     setSelectedExecutionId(executionId);
+
+    // Clear running node until next poll refreshes it
+    setCurrentRunningNodeId(null);
 
     // Update global execution logs atom with logs for this execution
     const executionLogEntries = logs[executionId] || [];
@@ -1035,6 +1116,14 @@ export function WorkflowRuns({
                       <span>•</span>
                       <span className="capitalize">
                         {PHASE_LABELS[execution.phase] || execution.phase}
+                      </span>
+                    </>
+                  )}
+                  {execution.status === "running" && execution.currentNodeName && (
+                    <>
+                      <span>•</span>
+                      <span className="truncate max-w-[140px]">
+                        {execution.currentNodeName}
                       </span>
                     </>
                   )}

@@ -25,6 +25,7 @@ import { nanoid } from "nanoid";
 import {
   addNodeAtom,
   autosaveAtom,
+  currentRunningNodeIdAtom,
   currentWorkflowIdAtom,
   edgesAtom,
   hasUnsavedChangesAtom,
@@ -89,6 +90,7 @@ export function WorkflowCanvas() {
   const [showMinimap] = useAtom(showMinimapAtom);
   const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
   const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
+  const currentRunningNodeId = useAtomValue(currentRunningNodeIdAtom);
   const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
     isTransitioningFromHomepageAtom
   );
@@ -221,6 +223,28 @@ export function WorkflowCanvas() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [fitView]);
+
+  // Auto-focus on the currently running node during execution
+  const prevRunningNodeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (
+      currentRunningNodeId &&
+      currentRunningNodeId !== prevRunningNodeIdRef.current
+    ) {
+      prevRunningNodeIdRef.current = currentRunningNodeId;
+      const targetNode = nodes.find((n) => n.id === currentRunningNodeId);
+      if (targetNode) {
+        fitView({
+          nodes: [targetNode],
+          padding: 0.5,
+          duration: 400,
+          maxZoom: 1,
+        });
+      }
+    } else if (!currentRunningNodeId) {
+      prevRunningNodeIdRef.current = null;
+    }
+  }, [currentRunningNodeId, nodes, fitView]);
 
   const nodeTypes = useMemo(
     () => ({

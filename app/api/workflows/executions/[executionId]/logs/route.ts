@@ -47,10 +47,13 @@ export async function GET(
 
     // Apply an additional layer of redaction to ensure no sensitive data is exposed
     // Even though data should already be redacted when stored, this provides defense in depth
+    // Also map activityName -> actionType for frontend compatibility
     const redactedLogs = logs.map((log) => ({
       ...log,
       input: redactSensitiveData(log.input),
       output: redactSensitiveData(log.output),
+      // Map database field name to frontend expected field name
+      actionType: log.activityName,
     }));
 
     return NextResponse.json({

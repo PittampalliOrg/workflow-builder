@@ -1,0 +1,150 @@
+# KEDA Autoscaler Configuration for Function Runner
+#
+# KEDA provides event-driven autoscaling for the function-runner service.
+# This is complementary to Knative's built-in autoscaling, providing more
+# sophisticated scaling based on external metrics.
+#
+# Prerequisites:
+# - KEDA installed in the cluster (https://keda.sh)
+# - Prometheus for metrics (optional but recommended)
+#
+# Note: This configuration is optional. Knative's built-in KPA autoscaler
+# handles most use cases. Use KEDA for advanced scenarios like:
+# - Scaling based on queue depth
+# - Scaling based on custom metrics
+# - Cron-based scaling
+---
+# ScaledObject for function-runner
+# This replaces Knative's KPA with KEDA's more flexible scaling
+#
+# Uncomment this section if you want to use KEDA instead of Knative KPA.
+# First, disable Knative autoscaling by setting:
+#   autoscaling.knative.dev/class: "hpa.autoscaling.knative.dev"
+#
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledObject
+# metadata:
+#   name: function-runner-scaler
+#   namespace: workflow-builder
+# spec:
+#   scaleTargetRef:
+#     # Target the Knative Serving revision deployment
+#     # Note: The exact name depends on your Knative revision naming
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: function-runner-00001-deployment
+#   pollingInterval: 15
+#   cooldownPeriod: 30
+#   minReplicaCount: 0
+#   maxReplicaCount: 20
+#   triggers:
+#     # HTTP trigger - scale based on incoming requests
+#     - type: prometheus
+#       metadata:
+#         serverAddress: http://prometheus.observability:9090
+#         metricName: http_requests_total
+#         query: |
+#           sum(rate(http_requests_total{app="function-runner"}[1m]))
+#         threshold: "10"
+#     # Redis trigger - scale based on queue depth (if using Redis for job queuing)
+#     - type: redis
+#       metadata:
+#         address: redis.workflow-builder:6379
+#         listName: function-queue
+#         listLength: "5"
+---
+# ScaledJob for OCI function execution
+# When function-runner creates K8s Jobs for OCI functions,
+# this ScaledJob ensures there's capacity to handle them.
+#
+# This is useful if you have many OCI functions and want KEDA
+# to manage the job execution capacity.
+#
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledJob
+# metadata:
+#   name: oci-function-scaler
+#   namespace: workflow-builder
+# spec:
+#   jobTargetRef:
+#     parallelism: 1
+#     completions: 1
+#     activeDeadlineSeconds: 600
+#     template:
+#       spec:
+#         containers:
+#           - name: placeholder
+#             image: busybox
+#             command: ["sh", "-c", "echo 'Managed by function-runner'"]
+#         restartPolicy: Never
+#   pollingInterval: 30
+#   minReplicaCount: 0
+#   maxReplicaCount: 50
+#   triggers:
+#     - type: prometheus
+#       metadata:
+#         serverAddress: http://prometheus.observability:9090
+#         metricName: oci_jobs_pending
+#         query: |
+#           count(kube_job_status_active{namespace="workflow-builder",job=~"fn-.*"})
+#         threshold: "5"
+---
+# PodDisruptionBudget for function-runner
+# Ensures minimum availability during node drains and updates
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: function-runner-pdb
+  namespace: workflow-builder
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: function-runner
+---
+# HorizontalPodAutoscaler (alternative to KEDA)
+# Use this if you don't have KEDA but want HPA-based scaling
+# Works with the standard K8s Deployment (not Knative Service)
+#
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: function-runner-hpa
+#   namespace: workflow-builder
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: function-runner
+#   minReplicas: 1
+#   maxReplicas: 20
+#   metrics:
+#     - type: Resource
+#       resource:
+#         name: cpu
+#         target:
+#           type: Utilization
+#           averageUtilization: 70
+#     - type: Resource
+#       resource:
+#         name: memory
+#         target:
+#           type: Utilization
+#           averageUtilization: 80
+#   behavior:
+#     scaleDown:
+#       stabilizationWindowSeconds: 300
+#       policies:
+#         - type: Percent
+#           value: 10
+#           periodSeconds: 60
+#     scaleUp:
+#       stabilizationWindowSeconds: 0
+#       policies:
+#         - type: Percent
+#           value: 100
+#           periodSeconds: 15
+#         - type: Pods
+#           value: 4
+#           periodSeconds: 15
+#       selectPolicy: Max

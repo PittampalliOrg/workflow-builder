@@ -1,5 +1,5 @@
 # DevSpace Configuration for Workflow Builder
-# Enables Kubernetes-native development with hot-reload
+# Self-contained configuration for Kubernetes-native development with hot-reload
 #
 # Architecture:
 #   - Replaces production container with devcontainer (full build tools)
@@ -15,22 +15,64 @@
 version: v2beta1
 name: workflow-builder
 
-# Import shared variable definitions from templates
-imports:
-  - path: ../../stacks/main/devspace-templates/base.yaml
-  - path: ../../stacks/main/devspace-templates/snippets/nextjs.yaml
-
-# App-specific variable values
+# ============================================================================
+# Variables
+# ============================================================================
 vars:
+  # Application configuration
   APP_NAME: workflow-builder
-  # Use different local port to avoid conflicts with ai-chatbot
   LOCAL_PORT: "3002"
   CONTAINER_PORT: "3000"
-  SSH_PORT: "2223"
-  RUN_MIGRATIONS: "true"
-  MIGRATION_COMMAND: "pnpm db:migrate"
+  SSH_PORT: 2223
 
-# Development configuration
+  # Registry configuration
+  GITEA_HOST:
+    default: "gitea.cnoe.localtest.me:8443"
+  GITEA_USER:
+    default: "giteaadmin"
+
+  # Resource configuration
+  CPU_REQUEST:
+    default: "500m"
+  CPU_LIMIT:
+    default: "4"
+  MEMORY_REQUEST:
+    default: "2Gi"
+  MEMORY_LIMIT:
+    default: "8Gi"
+
+  # Observability
+  OTEL_SERVICE_NAME:
+    default: "${APP_NAME}-dev"
+  OTEL_ENVIRONMENT:
+    default: "development"
+
+  # Next.js / pnpm configuration
+  PNPM_VERSION:
+    default: "9.12.3"
+
+  # Database migrations
+  RUN_MIGRATIONS:
+    default: "true"
+  MIGRATION_COMMAND:
+    default: "pnpm db:migrate"
+
+  # Query currently deployed image tag from Kubernetes
+  CURRENT_IMAGE_TAG:
+    command: |
+      kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null |
+      sed 's/.*://' || echo "latest"
+    default: "latest"
+
+  CURRENT_PRODUCTION_IMAGE:
+    command: |
+      kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null ||
+      echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest"
+    default: "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest"
+
+# ============================================================================
+# Development Configuration
+# ============================================================================
 dev:
   app:
     # Target the deployment by image selector
@@ -51,7 +93,7 @@ dev:
         cpu: ${CPU_LIMIT}
         memory: ${MEMORY_LIMIT}
 
-    # Command to run in the container with plugin discovery
+    # Command to run in the container
     command:
       - /bin/sh
       - -c
@@ -78,8 +120,10 @@ dev:
         fi
 
         # Run database migrations (idempotent - only applies pending migrations)
-        echo "Running database migrations..."
-        pnpm db:migrate || echo "Migrations skipped (database may not be ready)"
+        if [ "${RUN_MIGRATIONS}" = "true" ]; then
+          echo "Running database migrations..."
+          ${MIGRATION_COMMAND} || echo "Migrations skipped (database may not be ready)"
+        fi
 
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
@@ -143,13 +187,6 @@ dev:
           # Service subprojects (separate deployments)
           - services/
 
-    # Note: persistPaths disabled to avoid PVC issues
-    # If you need faster restarts, uncomment:
-    # persistPaths:
-    #   - path: /tmp
-    #     skipPopulate: true
-    #   - path: /app/node_modules
-
     # Patches to configure the pod for development
     patches:
       - op: remove
@@ -188,3 +225,24 @@ dev:
         value: ${OTEL_SERVICE_NAME}
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME}-dev,service.version=dev"
+      # Dapr sidecar configuration (for SDK access to config/secrets)
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+      # Fallback URLs (Dapr SDK will override if available)
+      - name: DAPR_ORCHESTRATOR_URL
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
+      - name: GENERIC_ORCHESTRATOR_URL
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
+      - name: WORKFLOW_ORCHESTRATOR_URL
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
+      # Auth configuration for ingress access
+      - name: NEXT_PUBLIC_APP_URL
+        value: "https://workflow-builder.cnoe.localtest.me:8443"
+      - name: BETTER_AUTH_URL
+        value: "https://workflow-builder.cnoe.localtest.me:8443"
+
+    # Add Dapr sidecar annotations for config/secret access
+    # Note: DevSpace patches are applied to pod spec, not metadata
+    # Dapr annotations must be added via kubectl after devspace starts

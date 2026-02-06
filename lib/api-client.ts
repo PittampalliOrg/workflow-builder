@@ -329,34 +329,6 @@ export type IntegrationWithConfig = Integration & {
   config: IntegrationConfig;
 };
 
-// AI Gateway types
-export type AiGatewayStatusResponse = {
-  enabled: boolean;
-  signedIn: boolean;
-  isVercelUser: boolean;
-  hasManagedKey: boolean;
-  managedIntegrationId?: string;
-};
-
-export type AiGatewayConsentResponse = {
-  success: boolean;
-  hasManagedKey: boolean;
-  managedIntegrationId?: string;
-  error?: string;
-};
-
-export type VercelTeam = {
-  id: string;
-  name: string;
-  slug: string;
-  avatar?: string;
-  isPersonal: boolean;
-};
-
-export type AiGatewayTeamsResponse = {
-  teams: VercelTeam[];
-};
-
 // Integration API
 export const integrationApi = {
   // List all integrations
@@ -563,6 +535,7 @@ export const workflowApi = {
         nodeId: string;
         nodeName: string;
         nodeType: string;
+        actionType?: string | null; // Function slug like "openai/generate-text"
         status: "pending" | "running" | "success" | "error";
         input: unknown;
         output: unknown;
@@ -636,28 +609,6 @@ export const workflowApi = {
   })(),
 };
 
-// AI Gateway API (User Keys feature)
-export const aiGatewayApi = {
-  // Get status (whether feature is enabled, user has managed key, etc.)
-  getStatus: () => apiCall<AiGatewayStatusResponse>("/api/ai-gateway/status"),
-
-  // Get available Vercel teams
-  getTeams: () => apiCall<AiGatewayTeamsResponse>("/api/ai-gateway/teams"),
-
-  // Grant consent and create managed API key
-  consent: (teamId: string, teamName: string) =>
-    apiCall<AiGatewayConsentResponse>("/api/ai-gateway/consent", {
-      method: "POST",
-      body: JSON.stringify({ teamId, teamName }),
-    }),
-
-  // Revoke consent and delete managed API key
-  revokeConsent: () =>
-    apiCall<AiGatewayConsentResponse>("/api/ai-gateway/consent", {
-      method: "DELETE",
-    }),
-};
-
 // Dapr Workflow API
 export type DaprExecution = {
   id: string;
@@ -679,6 +630,8 @@ export type DaprWorkflowStatusResponse = {
   progress: number | null;
   message: string | null;
   currentActivity: string | null;
+  currentNodeId: string | null;
+  currentNodeName: string | null;
   createdAt?: string;
   lastUpdatedAt?: string;
 };
@@ -737,12 +690,158 @@ export const daprApi = {
     ),
 };
 
+// Functions API types
+export type FunctionSummary = {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  pluginId: string;
+  version: string;
+  executionType: "builtin" | "oci" | "http";
+  integrationType: string | null;
+  isBuiltin: boolean | null;
+  isEnabled: boolean | null;
+  isDeprecated: boolean | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+export type FunctionDefinition = FunctionSummary & {
+  imageRef: string | null;
+  command: string | null;
+  workingDir: string | null;
+  containerEnv: Record<string, string> | null;
+  webhookUrl: string | null;
+  webhookMethod: string | null;
+  webhookHeaders: Record<string, string> | null;
+  webhookTimeoutSeconds: number | null;
+  inputSchema: unknown;
+  outputSchema: unknown;
+  timeoutSeconds: number | null;
+  retryPolicy: unknown;
+  maxConcurrency: number | null;
+  createdBy: string | null;
+};
+
+export const functionsApi = {
+  // List all functions
+  getAll: (options?: {
+    pluginId?: string;
+    executionType?: "builtin" | "oci" | "http";
+    integrationType?: string;
+    search?: string;
+    includeDisabled?: boolean;
+  }) => {
+    const params = new URLSearchParams();
+    if (options?.pluginId) params.set("pluginId", options.pluginId);
+    if (options?.executionType) params.set("executionType", options.executionType);
+    if (options?.integrationType) params.set("integrationType", options.integrationType);
+    if (options?.search) params.set("search", options.search);
+    if (options?.includeDisabled) params.set("includeDisabled", "true");
+    const queryString = params.toString();
+    return apiCall<{ functions: FunctionSummary[] }>(
+      `/api/functions${queryString ? `?${queryString}` : ""}`
+    );
+  },
+
+  // Get a function by ID
+  getById: (id: string) =>
+    apiCall<FunctionDefinition>(`/api/functions/${id}`),
+
+  // Create a new function
+  create: (data: {
+    name: string;
+    slug: string;
+    description?: string;
+    pluginId: string;
+    version?: string;
+    executionType: "builtin" | "oci" | "http";
+    imageRef?: string;
+    command?: string;
+    workingDir?: string;
+    containerEnv?: Record<string, string>;
+    webhookUrl?: string;
+    webhookMethod?: string;
+    webhookHeaders?: Record<string, string>;
+    webhookTimeoutSeconds?: number;
+    inputSchema?: unknown;
+    outputSchema?: unknown;
+    timeoutSeconds?: number;
+    maxConcurrency?: number;
+    integrationType?: string;
+  }) =>
+    apiCall<FunctionSummary>("/api/functions", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+
+  // Update a function
+  update: (
+    id: string,
+    data: Partial<{
+      name: string;
+      description: string;
+      pluginId: string;
+      version: string;
+      executionType: "builtin" | "oci" | "http";
+      imageRef: string;
+      command: string;
+      workingDir: string;
+      containerEnv: Record<string, string>;
+      webhookUrl: string;
+      webhookMethod: string;
+      webhookHeaders: Record<string, string>;
+      webhookTimeoutSeconds: number;
+      inputSchema: unknown;
+      outputSchema: unknown;
+      timeoutSeconds: number;
+      maxConcurrency: number;
+      integrationType: string;
+      isEnabled: boolean;
+    }>
+  ) =>
+    apiCall<FunctionDefinition>(`/api/functions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+
+  // Delete (disable) a function
+  delete: (id: string) =>
+    apiCall<{ success: boolean; error?: string }>(`/api/functions/${id}`, {
+      method: "DELETE",
+    }),
+};
+
+// Infrastructure Secrets types
+export type InfrastructureSecret = {
+  key: string;
+  integrationType: string;
+  label: string;
+  envVar: string;
+  source: "azure-keyvault";
+};
+
+export type InfrastructureSecretsResponse = {
+  available: boolean;
+  secretStoreConnected: boolean;
+  secrets: InfrastructureSecret[];
+};
+
+// Secrets API
+export const secretsApi = {
+  // Get available infrastructure secrets from Dapr/Azure Key Vault
+  getAvailable: () =>
+    apiCall<InfrastructureSecretsResponse>("/api/secrets/available"),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
-  aiGateway: aiGatewayApi,
   dapr: daprApi,
+  functions: functionsApi,
   integration: integrationApi,
+  secrets: secretsApi,
   user: userApi,
   workflow: workflowApi,
 };

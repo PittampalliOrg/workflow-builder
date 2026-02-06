@@ -1,0 +1,4 @@
+# Python function dependencies
+# Add your dependencies here
+
+pydantic>=2.0.0

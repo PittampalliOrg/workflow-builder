@@ -137,8 +137,8 @@ const getCommonFields = (node: WorkflowNode) => {
     ];
   }
 
-  // AI Gateway generate-text has dynamic output based on format/schema
-  if (isActionType(actionType, "Generate Text", "ai-gateway/generate-text")) {
+  // OpenAI generate-text has dynamic output based on format/schema
+  if (isActionType(actionType, "Generate Text", "openai/generate-text")) {
     const aiFormat = node.data.config?.aiFormat as string | undefined;
     const aiSchema = node.data.config?.aiSchema as string | undefined;
 

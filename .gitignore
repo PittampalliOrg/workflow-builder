@@ -48,8 +48,12 @@ next-env.d.ts
 
 tmp/
 
+# python
+__pycache__/
+
+# devspace
+.devspace/
+
 # generated files
 lib/types/integration.ts
-lib/codegen-registry.ts
-lib/step-registry.ts
 lib/output-display-configs.ts

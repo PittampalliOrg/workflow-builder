@@ -70,6 +70,7 @@ export type ExecutionLogEntry = {
   nodeId: string;
   nodeName: string;
   nodeType: string;
+  actionType?: string | null; // Function slug like "openai/generate-text"
   status: "pending" | "running" | "success" | "error";
   output?: unknown;
 };
@@ -286,6 +287,34 @@ export const updateNodeDataAtom = atom(
       set(hasUnsavedChangesAtom, true);
       // Trigger debounced autosave (for typing)
       set(autosaveAtom);
+    }
+  }
+);
+
+// Batch update node statuses in a single atomic write.
+// This avoids stale-ref issues when polling: the atom setter
+// always reads the latest nodes via get(nodesAtom).
+export const batchSetNodeStatusesAtom = atom(
+  null,
+  (
+    get,
+    set,
+    statusMap: Map<string, "idle" | "running" | "success" | "error">
+  ) => {
+    const currentNodes = get(nodesAtom);
+    let hasChanges = false;
+
+    const newNodes = currentNodes.map((node) => {
+      const status = statusMap.get(node.id) || "idle";
+      if (node.data.status !== status) {
+        hasChanges = true;
+        return { ...node, data: { ...node.data, status } };
+      }
+      return node;
+    });
+
+    if (hasChanges) {
+      set(nodesAtom, newNodes);
     }
   }
 );
@@ -586,6 +615,9 @@ export const clearNodeStatusesAtom = atom(null, (get, set) => {
   }));
   set(nodesAtom, newNodes);
 });
+
+// Currently running node ID (set from orchestrator status polling)
+export const currentRunningNodeIdAtom = atom<string | null>(null);
 
 // Dapr workflow execution state atoms
 export type DaprPhase =

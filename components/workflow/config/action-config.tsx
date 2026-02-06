@@ -4,7 +4,6 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { HelpCircle, Plus, Settings } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
-import { AiGatewayConsentOverlay } from "@/components/overlays/ai-gateway-consent-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { CodeEditor } from "@/components/ui/code-editor";
@@ -26,7 +25,6 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { aiGatewayStatusAtom } from "@/lib/ai-gateway/state";
 import {
   integrationsAtom,
   integrationsVersionAtom,
@@ -262,10 +260,11 @@ function SystemActionFields({
 }
 
 // System actions that don't have plugins
-const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
-  { id: "HTTP Request", label: "HTTP Request" },
-  { id: "Database Query", label: "Database Query" },
-  { id: "Condition", label: "Condition" },
+// id is the legacy actionType, slug is the canonical functionSlug
+const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
+  { id: "HTTP Request", label: "HTTP Request", slug: "system/http-request" },
+  { id: "Database Query", label: "Database Query", slug: "system/database-query" },
+  { id: "Condition", label: "Condition", slug: "system/condition" },
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
@@ -331,6 +330,24 @@ function normalizeActionType(actionType: string): string {
   return actionType;
 }
 
+// Get the canonical function slug for an action
+// This is the identifier used by the orchestrator and function-runner
+function getSlugForAction(actionType: string): string | null {
+  // Check system actions first
+  const systemAction = SYSTEM_ACTIONS.find((a) => a.id === actionType);
+  if (systemAction) {
+    return systemAction.slug;
+  }
+
+  // For plugin actions, the action id IS the slug (e.g., "openai/generate-text")
+  const action = findActionById(actionType);
+  if (action) {
+    return action.id; // Plugin action IDs are already in slug format
+  }
+
+  return null;
+}
+
 export function ActionConfig({
   config,
   onUpdateConfig,
@@ -347,9 +364,6 @@ export function ActionConfig({
   const globalIntegrations = useAtomValue(integrationsAtom);
   const { push } = useOverlay();
 
-  // AI Gateway managed keys state
-  const aiGatewayStatus = useAtomValue(aiGatewayStatusAtom);
-
   // Sync category state when actionType changes (e.g., when switching nodes)
   useEffect(() => {
     const newCategory = actionType ? getCategoryForAction(actionType) : null;
@@ -361,12 +375,20 @@ export function ActionConfig({
     // Auto-select the first action in the new category
     const firstAction = categories[newCategory]?.[0];
     if (firstAction) {
-      onUpdateConfig("actionType", firstAction.id);
+      // Set actionType to the canonical slug (used by orchestrator/function-runner)
+      const actionType = getSlugForAction(firstAction.id);
+      if (actionType) {
+        onUpdateConfig("actionType", actionType);
+      }
     }
   };
 
   const handleActionTypeChange = (value: string) => {
-    onUpdateConfig("actionType", value);
+    // Set actionType to the canonical slug (used by orchestrator/function-runner)
+    const actionType = getSlugForAction(value);
+    if (actionType) {
+      onUpdateConfig("actionType", actionType);
+    }
   };
 
   // Adapter for plugin config components that expect (key, value: unknown)
@@ -393,12 +415,6 @@ export function ActionConfig({
     return action?.integration as IntegrationType | undefined;
   }, [actionType]);
 
-  // Check if AI Gateway managed keys should be offered (user can have multiple for different teams)
-  const shouldUseManagedKeys =
-    integrationType === "ai-gateway" &&
-    aiGatewayStatus?.enabled &&
-    aiGatewayStatus?.isVercelUser;
-
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
     if (!integrationType) return false;
@@ -423,14 +439,7 @@ export function ActionConfig({
   };
 
   const handleAddSecondaryConnection = () => {
-    if (shouldUseManagedKeys) {
-      push(AiGatewayConsentOverlay, {
-        onConsent: handleConsentSuccess,
-        onManualEntry: openConnectionOverlay,
-      });
-    } else {
-      openConnectionOverlay();
-    }
+    openConnectionOverlay();
   };
 
   return (

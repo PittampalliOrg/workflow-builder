@@ -1,0 +1,11 @@
+__pycache__
+*.pyc
+.venv
+venv
+.git
+.devspace
+workspace/
+*.egg-info
+.env
+.env.*
+kubectl

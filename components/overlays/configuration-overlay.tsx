@@ -25,7 +25,6 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
-import { generateWorkflowCode } from "@/lib/workflow-codegen";
 import {
   clearNodeStatusesAtom,
   clearWorkflowAtom,
@@ -51,37 +50,18 @@ import { ActivityConfig } from "../workflow/config/activity-config";
 import { ApprovalGateConfig } from "../workflow/config/approval-gate-config";
 import { TimerConfig } from "../workflow/config/timer-config";
 import { TriggerConfig } from "../workflow/config/trigger-config";
-import { generateNodeCode } from "../workflow/utils/code-generators";
 import { WorkflowRuns } from "../workflow/workflow-runs";
 import type { OverlayComponentProps } from "./types";
+import {
+  generateNodeCode,
+  generateWorkflowCode,
+  getDaprNodeCodeFiles,
+} from "@/lib/code-generation";
 
 // System actions that need integrations (not in plugin registry)
 const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
   "Database Query": "database",
 };
-
-// Regex constants
-const NON_ALPHANUMERIC_REGEX = /[^a-zA-Z0-9\s]/g;
-const WORD_SPLIT_REGEX = /\s+/;
-
-// Helper to generate code filename based on node type
-function getCodeFilename(node: {
-  data: { type: string; config?: Record<string, unknown> };
-}): string {
-  if (node.data.type === "trigger") {
-    const triggerType = node.data.config?.triggerType as string;
-    if (triggerType === "Schedule") {
-      return "vercel.json";
-    }
-    const webhookPath = (node.data.config?.webhookPath as string) || "/webhook";
-    return `app/api${webhookPath}/route.ts`;
-  }
-  const actionType = (node.data.config?.actionType as string) || "action";
-  return `steps/${actionType
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")}-step.ts`;
-}
 
 type ConfigurationOverlayProps = OverlayComponentProps;
 
@@ -208,12 +188,6 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     });
   }, [selectedNode, deleteNode, closeAll, push]);
 
-  const handleCopyCode = useCallback(() => {
-    if (!selectedNode) return;
-    navigator.clipboard.writeText(generateNodeCode(selectedNode));
-    toast.success("Code copied to clipboard");
-  }, [selectedNode]);
-
   const handleRefreshRuns = async () => {
     if (refreshRunsRef.current) {
       setIsRefreshing(true);
@@ -286,6 +260,25 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     }
   };
 
+  // Generate full workflow code
+  const { code: workflowCode } = generateWorkflowCode(nodes, edges, {
+    workflowId: currentWorkflowId || "workflow",
+    functionName: currentWorkflowName,
+  });
+
+  // Handle copy workflow code
+  const handleCopyWorkflowCode = () => {
+    navigator.clipboard.writeText(workflowCode);
+    toast.success("Code copied to clipboard");
+  };
+
+  // Handle copy node code
+  const handleCopyCode = useCallback(() => {
+    if (!selectedNode) return;
+    navigator.clipboard.writeText(generateNodeCode(selectedNode));
+    toast.success("Code copied to clipboard");
+  }, [selectedNode]);
+
   // Handle updating workflow name
   const handleUpdateWorkflowName = async (newName: string) => {
     setCurrentWorkflowName(newName);
@@ -335,28 +328,6 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
         }
       },
     });
-  };
-
-  // Generate full workflow code
-  const workflowCode = (() => {
-    const baseName = currentWorkflowName
-      .replace(NON_ALPHANUMERIC_REGEX, "")
-      .split(WORD_SPLIT_REGEX)
-      .map((word, index) =>
-        index === 0
-          ? word.toLowerCase()
-          : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()
-      )
-      .join("");
-    const functionName = `${baseName}Workflow`;
-    const { code } = generateWorkflowCode(nodes, edges, { functionName });
-    return code;
-  })();
-
-  // Handle copy workflow code
-  const handleCopyWorkflowCode = () => {
-    navigator.clipboard.writeText(workflowCode);
-    toast.success("Code copied to clipboard");
   };
 
   // Handle delete edge
@@ -471,7 +442,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                 <div className="flex items-center gap-2">
                   <FileCode className="size-3.5 text-muted-foreground" />
                   <code className="text-muted-foreground text-xs">
-                    workflow.ts
+                    workflow.json
                   </code>
                 </div>
                 <Button
@@ -486,7 +457,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
               </div>
               <div className="h-[400px]">
                 <CodeEditor
-                  defaultLanguage="typescript"
+                  defaultLanguage="json"
                   height="100%"
                   options={{
                     readOnly: true,
@@ -740,46 +711,126 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
           <div
             className={`flex flex-col ${activeTab === "code" ? "" : "invisible absolute -z-10"}`}
           >
-            <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
-              <div className="flex items-center gap-2">
-                <FileCode className="size-3.5 text-muted-foreground" />
-                <code className="text-muted-foreground text-xs">
-                  {getCodeFilename(selectedNode)}
-                </code>
-              </div>
-              <Button
-                className="text-muted-foreground"
-                onClick={handleCopyCode}
-                size="sm"
-                variant="ghost"
-              >
-                <Copy className="mr-2 size-4" />
-                Copy
-              </Button>
-            </div>
-            <div className="h-[400px]">
-              <CodeEditor
-                height="100%"
-                language={
-                  selectedNode.data.type === "trigger" &&
-                  (selectedNode.data.config?.triggerType as string) ===
-                    "Schedule"
-                    ? "json"
-                    : "typescript"
+            {(() => {
+              // Dapr node types
+              const isDaprNode =
+                selectedNode.type === "activity" ||
+                selectedNode.type === "approval-gate" ||
+                selectedNode.type === "timer" ||
+                selectedNode.type === "publish-event";
+
+              if (isDaprNode) {
+                const codeFiles = getDaprNodeCodeFiles(selectedNode);
+                const file = codeFiles[0];
+                if (!file) return null;
+
+                return (
+                  <>
+                    <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
+                      <div className="flex items-center gap-2">
+                        <FileCode className="size-3.5 text-muted-foreground" />
+                        <code className="text-muted-foreground text-xs">
+                          {file.filename}
+                        </code>
+                      </div>
+                      <Button
+                        className="text-muted-foreground"
+                        onClick={() => {
+                          navigator.clipboard.writeText(file.content);
+                          toast.success("Code copied to clipboard");
+                        }}
+                        size="sm"
+                        variant="ghost"
+                      >
+                        <Copy className="mr-2 size-4" />
+                        Copy
+                      </Button>
+                    </div>
+                    <div className="h-[400px]">
+                      <CodeEditor
+                        height="100%"
+                        language={file.language}
+                        options={{
+                          readOnly: true,
+                          minimap: { enabled: false },
+                          scrollBeyondLastLine: false,
+                          fontSize: 13,
+                          lineNumbers: "on",
+                          folding: false,
+                          wordWrap: "off",
+                          padding: { top: 16, bottom: 16 },
+                        }}
+                        value={file.content}
+                      />
+                    </div>
+                  </>
+                );
+              }
+
+              // Action and trigger nodes
+              const nodeCode = generateNodeCode(selectedNode);
+              const triggerType = selectedNode.data.config?.triggerType as string;
+              let filename = "";
+              let language = "typescript";
+
+              if (selectedNode.data.type === "trigger") {
+                if (triggerType === "Schedule") {
+                  filename = "vercel.json";
+                  language = "json";
+                } else if (triggerType === "Webhook") {
+                  const webhookPath =
+                    (selectedNode.data.config?.webhookPath as string) ||
+                    "/webhook";
+                  filename = `webhook${webhookPath}.ts`;
+                } else {
+                  filename = "trigger.ts";
                 }
-                options={{
-                  readOnly: true,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  fontSize: 13,
-                  lineNumbers: "on",
-                  folding: false,
-                  wordWrap: "off",
-                  padding: { top: 16, bottom: 16 },
-                }}
-                value={generateNodeCode(selectedNode)}
-              />
-            </div>
+              } else {
+                const actionType = selectedNode.data.config?.actionType as string;
+                filename = actionType
+                  ? `${actionType.replace(/\//g, "-")}.ts`
+                  : "action.ts";
+              }
+
+              return (
+                <>
+                  <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <FileCode className="size-3.5 text-muted-foreground" />
+                      <code className="text-muted-foreground text-xs">
+                        {filename}
+                      </code>
+                    </div>
+                    <Button
+                      className="text-muted-foreground"
+                      onClick={handleCopyCode}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      <Copy className="mr-2 size-4" />
+                      Copy
+                    </Button>
+                  </div>
+                  <div className="h-[400px]">
+                    <CodeEditor
+                      height="100%"
+                      language={language}
+                      options={{
+                        readOnly: true,
+                        minimap: { enabled: false },
+                        scrollBeyondLastLine: false,
+                        fontSize: 13,
+                        lineNumbers: "on",
+                        folding: false,
+                        wordWrap: "off",
+                        padding: { top: 16, bottom: 16 },
+                      }}
+                      value={nodeCode}
+                    />
+                  </div>
+                </>
+              );
+            })()}
           </div>
         )}
 

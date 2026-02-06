@@ -3,6 +3,7 @@
 import { useSetAtom } from "jotai";
 import { Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { InfrastructureSecretsSection } from "@/components/settings/infrastructure-secrets";
 import { IntegrationsManager } from "@/components/settings/integrations-manager";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
@@ -86,11 +87,18 @@ export function IntegrationsOverlay({ overlayId }: IntegrationsOverlayProps) {
               value={filter}
             />
           </div>
-          <div className="max-h-[300px] overflow-y-auto">
-            <IntegrationsManager
-              filter={filter}
-              onIntegrationChange={handleIntegrationChange}
-            />
+          <div className="max-h-[400px] space-y-4 overflow-y-auto">
+            {/* Infrastructure Secrets Section */}
+            <InfrastructureSecretsSection defaultCollapsed={false} />
+
+            {/* User Connections Section */}
+            <div>
+              <div className="mb-2 px-2 font-medium text-sm">Your Connections</div>
+              <IntegrationsManager
+                filter={filter}
+                onIntegrationChange={handleIntegrationChange}
+              />
+            </div>
           </div>
         </div>
       )}

@@ -6,7 +6,7 @@
  *
  * To add a new integration:
  * 1. Create a new directory in plugins/ (e.g., plugins/my-integration/)
- * 2. Add your plugin files (index.tsx, steps/, codegen/, etc.)
+ * 2. Add your plugin files (index.tsx, etc.)
  * 3. Run: pnpm discover-plugins (or it runs automatically on build)
  *
  * To remove an integration:
@@ -14,14 +14,15 @@
  * 2. Run: pnpm discover-plugins (or it runs automatically on build)
  */
 
-import "./ai-gateway";
 import "./blob";
 import "./clerk";
 import "./fal";
 import "./firecrawl";
 import "./github";
 import "./linear";
+import "./openai";
 import "./perplexity";
+import "./planner";
 import "./resend";
 import "./slack";
 import "./stripe";

@@ -6,9 +6,12 @@
  *
  * Activity definitions aligned with planner-orchestrator/activities/*.py.
  *
- * For plugin-based activities (slack/send-message, resend/send-email, etc.),
- * the orchestrator calls the activity-executor service which dynamically
- * loads and executes the appropriate step handler.
+ * NOTE: Plugin-based function execution (slack/send-message, openai/generate-text, etc.)
+ * now goes through the action node type which routes to:
+ *   workflow-orchestrator → function-router → OpenFunctions (Knative)
+ *
+ * This registry is for workflow control flow activities (approval gates, timers)
+ * and planner-agent specific activities.
  */
 
 import type {
@@ -35,8 +38,8 @@ export type DaprActivity = {
   outputFields: OutputField[];
   sourceFile?: string; // "activities/planning.py"
   sourceLanguage?: string; // "python" or "typescript"
-  // Plugin-specific fields
-  isPluginActivity?: boolean; // true if this activity routes to activity-executor
+  // Plugin-specific fields (legacy - kept for backwards compatibility)
+  isPluginActivity?: boolean; // true if this activity is from a plugin
   pluginActionId?: string; // e.g., "slack/send-message"
   pluginIntegration?: string; // e.g., "slack"
 };
@@ -82,7 +85,8 @@ export function getDaprActivitiesByCategory(): Record<string, DaprActivity[]> {
 }
 
 // ─── Plugin Activity Registration ─────────────────────────────────────────────
-// Auto-register all plugin actions as Dapr activities that route to activity-executor
+// Auto-register all plugin actions as Dapr activities (metadata only - execution
+// now goes through action nodes → function-router → OpenFunctions)
 
 /**
  * Convert a plugin action to a Dapr activity definition
@@ -93,7 +97,7 @@ function pluginActionToDaprActivity(action: ActionWithFullId): DaprActivity {
     label: action.label,
     description: action.description,
     category: action.category,
-    serviceName: "activity-executor",
+    serviceName: "function-router",
     serviceMethod: "POST /execute",
     timeout: 300, // 5 minute default timeout for plugin activities
     inputFields: action.configFields
@@ -155,10 +159,10 @@ registerDaprActivity({
   name: "execute_plugin_step",
   label: "Execute Plugin Step",
   description:
-    "Generic activity that executes any plugin step handler via the activity-executor service. " +
-    "The orchestrator passes the action ID and the service dynamically loads and runs the appropriate handler.",
+    "Generic activity that executes any plugin step handler via the function-router service. " +
+    "The orchestrator passes the action ID and the service routes to the appropriate OpenFunction.",
   category: "Plugin",
-  serviceName: "activity-executor",
+  serviceName: "function-router",
   serviceMethod: "POST /execute",
   timeout: 300,
   inputFields: [
@@ -396,251 +400,17 @@ registerDaprActivity({
   sourceLanguage: "typescript",
 });
 
-// ─── AI Activities ───────────────────────────────────────────────────────────
-
-registerDaprActivity({
-  name: "generate_text",
-  label: "Generate Text",
-  description:
-    "Generates text using an AI model via Dapr service invocation.",
-  category: "AI",
-  icon: "Brain",
-  serviceName: "ai-service",
-  serviceMethod: "POST /generate/text",
-  timeout: 120,
-  inputFields: [
-    {
-      key: "prompt",
-      label: "Prompt",
-      type: "template-textarea",
-      placeholder: "Enter the prompt for text generation...",
-      rows: 4,
-    },
-    {
-      key: "model",
-      label: "Model",
-      type: "template-input",
-      placeholder: "e.g., gpt-4, claude-3-sonnet",
-    },
-    {
-      key: "max_tokens",
-      label: "Max Tokens",
-      type: "number",
-      placeholder: "1024",
-    },
-    {
-      key: "temperature",
-      label: "Temperature",
-      type: "number",
-      placeholder: "0.7",
-      min: 0,
-    },
-  ],
-  outputFields: [
-    { field: "text", description: "Generated text content" },
-    { field: "usage", description: "Token usage statistics" },
-    { field: "model", description: "Model used for generation" },
-  ],
-  sourceFile: "activities/generate_text.ts",
-  sourceLanguage: "typescript",
-});
-
-registerDaprActivity({
-  name: "generate_image",
-  label: "Generate Image",
-  description:
-    "Generates an image using an AI model via Dapr service invocation.",
-  category: "AI",
-  icon: "ImagePlus",
-  serviceName: "ai-service",
-  serviceMethod: "POST /generate/image",
-  timeout: 180,
-  inputFields: [
-    {
-      key: "prompt",
-      label: "Prompt",
-      type: "template-textarea",
-      placeholder: "Describe the image you want to generate...",
-      rows: 3,
-    },
-    {
-      key: "model",
-      label: "Model",
-      type: "template-input",
-      placeholder: "e.g., dall-e-3, stable-diffusion",
-    },
-    {
-      key: "size",
-      label: "Size",
-      type: "select",
-      placeholder: "Select image size",
-      options: [
-        { value: "256x256", label: "256x256" },
-        { value: "512x512", label: "512x512" },
-        { value: "1024x1024", label: "1024x1024" },
-        { value: "1792x1024", label: "1792x1024 (Wide)" },
-        { value: "1024x1792", label: "1024x1792 (Tall)" },
-      ],
-    },
-    {
-      key: "quality",
-      label: "Quality",
-      type: "select",
-      placeholder: "Select quality",
-      options: [
-        { value: "standard", label: "Standard" },
-        { value: "hd", label: "HD" },
-      ],
-    },
-  ],
-  outputFields: [
-    { field: "url", description: "URL of the generated image" },
-    { field: "revised_prompt", description: "Revised prompt used" },
-  ],
-  sourceFile: "activities/generate_image.ts",
-  sourceLanguage: "typescript",
-});
-
-// ─── Notification Activities ─────────────────────────────────────────────────
-
-registerDaprActivity({
-  name: "send_email",
-  label: "Send Email",
-  description:
-    "Sends an email notification via Dapr service invocation.",
-  category: "Notifications",
-  icon: "Mail",
-  serviceName: "notification-service",
-  serviceMethod: "POST /email",
-  timeout: 30,
-  inputFields: [
-    {
-      key: "to",
-      label: "To",
-      type: "template-input",
-      placeholder: "recipient@example.com",
-    },
-    {
-      key: "subject",
-      label: "Subject",
-      type: "template-input",
-      placeholder: "Email subject line",
-    },
-    {
-      key: "body",
-      label: "Body",
-      type: "template-textarea",
-      placeholder: "Email body content (supports HTML)",
-      rows: 6,
-    },
-    {
-      key: "cc",
-      label: "CC",
-      type: "template-input",
-      placeholder: "Optional CC recipients (comma-separated)",
-    },
-  ],
-  outputFields: [
-    { field: "success", description: "Whether the email was sent" },
-    { field: "message_id", description: "Email message ID" },
-  ],
-  sourceFile: "activities/send_email.ts",
-  sourceLanguage: "typescript",
-});
-
-registerDaprActivity({
-  name: "send_slack_message",
-  label: "Send Slack Message",
-  description:
-    "Sends a message to a Slack channel via Dapr service invocation.",
-  category: "Notifications",
-  icon: "MessageSquare",
-  serviceName: "notification-service",
-  serviceMethod: "POST /slack",
-  timeout: 30,
-  inputFields: [
-    {
-      key: "channel",
-      label: "Channel",
-      type: "template-input",
-      placeholder: "#general or @username",
-    },
-    {
-      key: "message",
-      label: "Message",
-      type: "template-textarea",
-      placeholder: "Message content (supports Slack markdown)",
-      rows: 4,
-    },
-    {
-      key: "thread_ts",
-      label: "Thread Timestamp",
-      type: "template-input",
-      placeholder: "Optional: reply to a specific thread",
-    },
-  ],
-  outputFields: [
-    { field: "success", description: "Whether the message was sent" },
-    { field: "ts", description: "Message timestamp" },
-    { field: "channel", description: "Channel ID where message was posted" },
-  ],
-  sourceFile: "activities/send_slack_message.ts",
-  sourceLanguage: "typescript",
-});
-
-// ─── Integration Activities ──────────────────────────────────────────────────
-
-registerDaprActivity({
-  name: "http_request",
-  label: "HTTP Request",
-  description:
-    "Makes an HTTP request to an external API.",
-  category: "Integration",
-  icon: "Zap",
-  timeout: 60,
-  inputFields: [
-    {
-      key: "method",
-      label: "Method",
-      type: "select",
-      placeholder: "Select HTTP method",
-      options: [
-        { value: "GET", label: "GET" },
-        { value: "POST", label: "POST" },
-        { value: "PUT", label: "PUT" },
-        { value: "PATCH", label: "PATCH" },
-        { value: "DELETE", label: "DELETE" },
-      ],
-    },
-    {
-      key: "url",
-      label: "URL",
-      type: "template-input",
-      placeholder: "https://api.example.com/endpoint",
-    },
-    {
-      key: "headers",
-      label: "Headers (JSON)",
-      type: "template-textarea",
-      placeholder: '{"Authorization": "Bearer {{token}}"}',
-      rows: 3,
-    },
-    {
-      key: "body",
-      label: "Body (JSON)",
-      type: "template-textarea",
-      placeholder: '{"key": "value"}',
-      rows: 4,
-    },
-  ],
-  outputFields: [
-    { field: "status", description: "HTTP status code" },
-    { field: "body", description: "Response body" },
-    { field: "headers", description: "Response headers" },
-  ],
-  sourceFile: "activities/http_request.ts",
-  sourceLanguage: "typescript",
-});
+// ─── Legacy Activities Removed ────────────────────────────────────────────────
+// The following legacy Dapr activities have been removed to prevent duplicates:
+// - generate_text (use plugin: openai/generate-text)
+// - generate_image (use plugin: openai/generate-image)
+// - send_email (use plugin: resend/send-email)
+// - send_slack_message (use plugin: slack/send-message)
+// - http_request (use system action: system/http-request)
+//
+// All function execution now goes through action nodes:
+//   workflow-orchestrator → function-router → OpenFunctions (Knative)
+// Dapr activities are reserved for workflow control flow only (approval gates, timers).
 
 // ─── Multi-Step Workflow Activities ───────────────────────────────────────────
 // Activities from dapr_multi_step_workflow.py

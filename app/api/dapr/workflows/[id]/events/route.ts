@@ -1,8 +1,9 @@
 import { eq } from "drizzle-orm";
 import { auth } from "@/lib/auth";
+import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows/[id]/events - SSE event stream for Dapr workflow status
@@ -40,10 +41,9 @@ export async function GET(
   const workflow = await db.query.workflows.findFirst({
     where: eq(workflows.id, execution.workflowId),
   });
+  const defaultOrchestratorUrl = await getGenericOrchestratorUrl();
   const orchestratorUrl =
-    workflow?.daprOrchestratorUrl ||
-    process.env.DAPR_ORCHESTRATOR_URL ||
-    "http://planner-orchestrator:8080";
+    workflow?.daprOrchestratorUrl || defaultOrchestratorUrl;
   const instanceId = execution.daprInstanceId;
 
   const encoder = new TextEncoder();
@@ -61,8 +61,8 @@ export async function GET(
       const poll = async () => {
         while (!terminated) {
           try {
-            // Orchestrator returns flat: { workflow_id, runtime_status, phase, progress, message, output }
-            const status = await daprClient.getWorkflowStatus(
+            // Generic orchestrator v2 API: { instanceId, runtimeStatus, phase, progress, message, outputs }
+            const status = await genericOrchestratorClient.getWorkflowStatus(
               orchestratorUrl,
               instanceId
             );
@@ -72,10 +72,10 @@ export async function GET(
             const message = status.message || "";
 
             // Send update if phase changed or always send for running workflows
-            if (phase !== lastPhase || status.runtime_status === "RUNNING") {
+            if (phase !== lastPhase || status.runtimeStatus === "RUNNING") {
               sendEvent({
                 type: "status",
-                daprStatus: status.runtime_status,
+                daprStatus: status.runtimeStatus,
                 phase,
                 progress,
                 message,
@@ -83,25 +83,36 @@ export async function GET(
               lastPhase = phase;
             }
 
-            // Update local DB - check phase and output.success for internal failures
+            // Update local DB - check phase and outputs.success for internal failures
             let localStatus: "running" | "success" | "error" = "running";
-            let errorMessage: string | null = null;
+            let errorMessage: string | null = status.error || null;
+            const outputs = status.outputs as Record<string, unknown> | undefined;
+            const outputSuccess = outputs?.success;
 
-            if (status.runtime_status === "COMPLETED") {
+            if (status.runtimeStatus === "COMPLETED") {
               // Check if workflow actually succeeded or failed internally
-              const outputSuccess = (status.output as Record<string, unknown>)?.success;
               if (phase === "failed" || outputSuccess === false) {
                 localStatus = "error";
-                errorMessage = message || (status.output as Record<string, unknown>)?.error as string || "Workflow failed";
+                errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
               } else {
                 localStatus = "success";
               }
             } else if (
-              status.runtime_status === "FAILED" ||
-              status.runtime_status === "TERMINATED"
+              status.runtimeStatus === "FAILED" ||
+              status.runtimeStatus === "TERMINATED"
             ) {
               localStatus = "error";
-              errorMessage = message || "Workflow failed";
+              errorMessage = errorMessage || message || "Workflow failed";
+            } else if (status.runtimeStatus === "UNKNOWN") {
+              // UNKNOWN typically means workflow completed and was purged from runtime
+              // Check phase and outputs to determine actual status
+              if (phase === "completed" || outputSuccess === true) {
+                localStatus = "success";
+              } else if (phase === "failed" || outputSuccess === false) {
+                localStatus = "error";
+                errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+              }
+              // If phase/outputs don't indicate completion, keep as running
             }
 
             await db
@@ -119,18 +130,18 @@ export async function GET(
 
             // Stop polling if workflow is done
             if (
-              status.runtime_status === "COMPLETED" ||
-              status.runtime_status === "FAILED" ||
-              status.runtime_status === "TERMINATED"
+              status.runtimeStatus === "COMPLETED" ||
+              status.runtimeStatus === "FAILED" ||
+              status.runtimeStatus === "TERMINATED"
             ) {
               sendEvent({
                 type: "complete",
-                daprStatus: status.runtime_status,
+                daprStatus: status.runtimeStatus,
                 phase,
                 progress:
-                  status.runtime_status === "COMPLETED" ? 100 : progress,
+                  status.runtimeStatus === "COMPLETED" ? 100 : progress,
                 message,
-                output: status.output,
+                output: status.outputs,
               });
               terminated = true;
               controller.close();

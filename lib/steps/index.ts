@@ -4,8 +4,8 @@
  * without code generation or eval()
  */
 
-import type { generateImageStep } from "../../plugins/ai-gateway/steps/generate-image";
-import type { generateTextStep } from "../../plugins/ai-gateway/steps/generate-text";
+import type { generateImageStep } from "../../plugins/openai/steps/generate-image";
+import type { generateTextStep } from "../../plugins/openai/steps/generate-text";
 import type { firecrawlScrapeStep } from "../../plugins/firecrawl/steps/scrape";
 import type { firecrawlSearchStep } from "../../plugins/firecrawl/steps/search";
 import type { createTicketStep } from "../../plugins/linear/steps/create-ticket";
@@ -50,11 +50,11 @@ export const stepRegistry: Record<string, StepFunction> = {
     ), // TODO: Implement separate findIssuesStep
   "Generate Text": async (input) =>
     (
-      await import("../../plugins/ai-gateway/steps/generate-text")
+      await import("../../plugins/openai/steps/generate-text")
     ).generateTextStep(input as Parameters<typeof generateTextStep>[0]),
   "Generate Image": async (input) =>
     (
-      await import("../../plugins/ai-gateway/steps/generate-image")
+      await import("../../plugins/openai/steps/generate-image")
     ).generateImageStep(input as Parameters<typeof generateImageStep>[0]),
   Scrape: async (input) =>
     (await import("../../plugins/firecrawl/steps/scrape")).firecrawlScrapeStep(
