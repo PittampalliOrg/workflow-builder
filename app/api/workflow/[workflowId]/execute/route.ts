@@ -6,7 +6,7 @@ import { db } from "@/lib/db";
 import { getIntegrations, validateWorkflowIntegrations } from "@/lib/db/integrations";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
-import { generateWorkflowDefinition } from "@/lib/dapr-codegen";
+import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import { executeWorkflow } from "@/lib/workflow-executor";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 

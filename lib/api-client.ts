@@ -535,6 +535,7 @@ export const workflowApi = {
         nodeId: string;
         nodeName: string;
         nodeType: string;
+        actionType?: string | null; // Function slug like "openai/generate-text"
         status: "pending" | "running" | "success" | "error";
         input: unknown;
         output: unknown;
@@ -629,6 +630,8 @@ export type DaprWorkflowStatusResponse = {
   progress: number | null;
   message: string | null;
   currentActivity: string | null;
+  currentNodeId: string | null;
+  currentNodeName: string | null;
   createdAt?: string;
   lastUpdatedAt?: string;
 };

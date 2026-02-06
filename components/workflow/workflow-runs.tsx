@@ -24,6 +24,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
+  currentRunningNodeIdAtom,
   currentWorkflowIdAtom,
   executionLogsAtom,
   selectedExecutionIdAtom,
@@ -60,6 +61,8 @@ type WorkflowExecution = {
   daprInstanceId: string | null;
   phase: string | null;
   progress: number | null;
+  currentNodeId?: string | null;
+  currentNodeName?: string | null;
   input?: Record<string, unknown>;
 };
 
@@ -685,6 +688,7 @@ export function WorkflowRuns({
     selectedExecutionIdAtom
   );
   const [, setExecutionLogs] = useAtom(executionLogsAtom);
+  const [, setCurrentRunningNodeId] = useAtom(currentRunningNodeIdAtom);
   const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
   const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
   const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
@@ -884,7 +888,7 @@ export function WorkflowRuns({
         );
 
         // Track status updates to merge with fetched data
-        const statusUpdates: Record<string, { status: string; phase: string | null; progress: number | null }> = {};
+        const statusUpdates: Record<string, { status: string; phase: string | null; progress: number | null; currentNodeId?: string | null; currentNodeName?: string | null }> = {};
 
         for (const execution of runningExecutions) {
           try {
@@ -894,12 +898,20 @@ export function WorkflowRuns({
             // Collect status updates to merge
             if (statusResponse.status !== execution.status ||
                 statusResponse.phase !== execution.phase ||
-                statusResponse.progress !== execution.progress) {
+                statusResponse.progress !== execution.progress ||
+                statusResponse.currentNodeId !== execution.currentNodeId) {
               statusUpdates[execution.id] = {
                 status: statusResponse.status,
                 phase: statusResponse.phase,
                 progress: statusResponse.progress,
+                currentNodeId: statusResponse.currentNodeId,
+                currentNodeName: statusResponse.currentNodeName,
               };
+            }
+
+            // Update the running node ID atom if this is the selected execution
+            if (execution.id === selectedExecutionId) {
+              setCurrentRunningNodeId(statusResponse.currentNodeId || null);
             }
           } catch (error) {
             // Log error and mark as error to stop the spinner
@@ -912,7 +924,14 @@ export function WorkflowRuns({
               status: "error",
               phase: "failed",
               progress: 0,
+              currentNodeId: null,
+              currentNodeName: null,
             };
+
+            // Clear running node if this was the selected execution
+            if (execution.id === selectedExecutionId) {
+              setCurrentRunningNodeId(null);
+            }
           }
         }
 
@@ -941,7 +960,7 @@ export function WorkflowRuns({
 
     const interval = setInterval(pollExecutions, 2000);
     return () => clearInterval(interval);
-  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs]);
+  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs, selectedExecutionId, setCurrentRunningNodeId]);
 
   const toggleRun = async (executionId: string) => {
     const newExpanded = new Set(expandedRuns);
@@ -960,11 +979,15 @@ export function WorkflowRuns({
     if (selectedExecutionId === executionId) {
       setSelectedExecutionId(null);
       setExecutionLogs({});
+      setCurrentRunningNodeId(null);
       return;
     }
 
     // Select the run without toggling expansion
     setSelectedExecutionId(executionId);
+
+    // Clear running node until next poll refreshes it
+    setCurrentRunningNodeId(null);
 
     // Update global execution logs atom with logs for this execution
     const executionLogEntries = logs[executionId] || [];
@@ -1093,6 +1116,14 @@ export function WorkflowRuns({
                       <span>•</span>
                       <span className="capitalize">
                         {PHASE_LABELS[execution.phase] || execution.phase}
+                      </span>
+                    </>
+                  )}
+                  {execution.status === "running" && execution.currentNodeName && (
+                    <>
+                      <span>•</span>
+                      <span className="truncate max-w-[140px]">
+                        {execution.currentNodeName}
                       </span>
                     </>
                   )}

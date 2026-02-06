@@ -5,5 +5,5 @@ export default function MonitorLayout({
 }: {
   children: React.ReactNode;
 }) {
-  return <div className="pointer-events-auto h-full">{children}</div>;
+  return <div className="pointer-events-auto h-full overflow-y-auto">{children}</div>;
 }

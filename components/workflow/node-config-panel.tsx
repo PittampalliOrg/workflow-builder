@@ -1,14 +1,6 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import {
-  Copy,
-  Eraser,
-  Eye,
-  EyeOff,
-  FileCode,
-  RefreshCw,
-  Trash2,
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Copy, Eraser, Eye, EyeOff, FileCode, RefreshCw, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -27,11 +19,8 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import { integrationsAtom } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
-import { getDaprNodeCodeFiles, getDaprWorkflowCodeFiles } from "@/lib/dapr-codegen";
-import { generateWorkflowCode } from "@/lib/workflow-codegen";
 import {
   clearNodeStatusesAtom,
-  currentWorkflowEngineTypeAtom,
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   deleteEdgeAtom,
@@ -60,12 +49,11 @@ import { ApprovalGateConfig } from "./config/approval-gate-config";
 import { TimerConfig } from "./config/timer-config";
 
 import { TriggerConfig } from "./config/trigger-config";
-import { generateNodeCode } from "./utils/code-generators";
 import { WorkflowRuns } from "./workflow-runs";
-
-// Regex constants
-const NON_ALPHANUMERIC_REGEX = /[^a-zA-Z0-9\s]/g;
-const WORD_SPLIT_REGEX = /\s+/;
+import {
+  generateNodeCode,
+  getDaprNodeCodeFiles,
+} from "@/lib/code-generation";
 
 // System actions that need integrations (not in plugin registry)
 const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
@@ -161,7 +149,6 @@ export const PanelInner = () => {
     currentWorkflowNameAtom
   );
   const isOwner = useAtomValue(isWorkflowOwnerAtom);
-  const engineType = useAtomValue(currentWorkflowEngineTypeAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const deleteNode = useSetAtom(deleteNodeAtom);
   const deleteEdge = useSetAtom(deleteEdgeAtom);
@@ -268,54 +255,6 @@ export const PanelInner = () => {
     }
     // If multiple integrations exist, let the user choose manually
   }, [selectedNode, globalIntegrations, isOwner, updateNodeData]);
-
-  // Generate workflow code
-  const workflowCode = useMemo(() => {
-    if (engineType === "dapr") {
-      // Generate Dapr Python workflow code
-      const snakeName =
-        currentWorkflowName
-          .replace(NON_ALPHANUMERIC_REGEX, " ")
-          .trim()
-          .split(WORD_SPLIT_REGEX)
-          .map((w) => w.toLowerCase())
-          .join("_") || "workflow";
-      const files = getDaprWorkflowCodeFiles(nodes, edges, snakeName);
-      // Return the main workflow file content
-      return files[0]?.content || "# No workflow definition";
-    }
-
-    const baseName =
-      currentWorkflowName
-        .replace(NON_ALPHANUMERIC_REGEX, "")
-        .split(WORD_SPLIT_REGEX)
-        .map((word, i) => {
-          if (i === 0) {
-            return word.toLowerCase();
-          }
-          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-        })
-        .join("") || "execute";
-
-    const functionName = `${baseName}Workflow`;
-
-    const { code } = generateWorkflowCode(nodes, edges, { functionName });
-    return code;
-  }, [nodes, edges, currentWorkflowName, engineType]);
-
-  // Get the code language for the workflow-level code view
-  const workflowCodeLanguage = engineType === "dapr" ? "python" : "typescript";
-
-  const handleCopyCode = () => {
-    if (selectedNode) {
-      navigator.clipboard.writeText(generateNodeCode(selectedNode));
-    }
-  };
-
-  const handleCopyWorkflowCode = () => {
-    navigator.clipboard.writeText(workflowCode);
-    toast.success("Code copied to clipboard");
-  };
 
   const handleDelete = () => {
     if (selectedNodeId) {
@@ -593,12 +532,6 @@ export const PanelInner = () => {
             >
               Properties
             </TabsTrigger>
-            <TabsTrigger
-              className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
-              value="code"
-            >
-              Code
-            </TabsTrigger>
             {isOwner && (
               <TabsTrigger
                 className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
@@ -700,51 +633,6 @@ export const PanelInner = () => {
               </div>
             </TabsContent>
           )}
-          <TabsContent
-            className="flex flex-col overflow-hidden data-[state=inactive]:hidden"
-            forceMount
-            value="code"
-          >
-            <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 pb-2">
-              <div className="flex items-center gap-2">
-                <FileCode className="size-3.5 text-muted-foreground" />
-                <code className="text-muted-foreground text-xs">
-                  {engineType === "dapr" ? "workflow/" : "workflows/"}
-                  {currentWorkflowName
-                    .toLowerCase()
-                    .replace(/\s+/g, engineType === "dapr" ? "_" : "-")
-                    .replace(engineType === "dapr" ? /[^a-z0-9_]/g : /[^a-z0-9-]/g, "") || "workflow"}
-                  {engineType === "dapr" ? ".py" : ".ts"}
-                </code>
-              </div>
-              <Button
-                className="text-muted-foreground"
-                onClick={handleCopyWorkflowCode}
-                size="sm"
-                variant="ghost"
-              >
-                <Copy className="mr-2 size-4" />
-                Copy
-              </Button>
-            </div>
-            <div className="flex-1 overflow-hidden">
-              <CodeEditor
-                height="100%"
-                language={workflowCodeLanguage}
-                options={{
-                  readOnly: true,
-                  minimap: { enabled: false },
-                  scrollBeyondLastLine: false,
-                  fontSize: 13,
-                  lineNumbers: "on",
-                  folding: true,
-                  wordWrap: "off",
-                  padding: { top: 16, bottom: 16 },
-                }}
-                value={workflowCode}
-              />
-            </div>
-          </TabsContent>
         </Tabs>
 
         <AlertDialog
@@ -787,21 +675,12 @@ export const PanelInner = () => {
           >
             Properties
           </TabsTrigger>
-          {/* Show Code tab for Dapr nodes, and for legacy nodes with appropriate types */}
-          {(selectedNode.type === "activity" ||
-            selectedNode.type === "approval-gate" ||
-            selectedNode.type === "timer" ||
-            selectedNode.type === "publish-event" ||
-            ((selectedNode.data.type !== "trigger" ||
-              (selectedNode.data.config?.triggerType as string) !== "Manual") &&
-              selectedNode.data.config?.actionType !== "Condition")) ? (
-            <TabsTrigger
-              className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
-              value="code"
-            >
-              Code
-            </TabsTrigger>
-          ) : null}
+          <TabsTrigger
+            className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
+            value="code"
+          >
+            Code
+          </TabsTrigger>
           {isOwner && (
             <TabsTrigger
               className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
@@ -1025,6 +904,7 @@ export const PanelInner = () => {
                       className="text-muted-foreground"
                       onClick={() => {
                         navigator.clipboard.writeText(file.content);
+                        toast.success("Code copied to clipboard");
                       }}
                       size="sm"
                       variant="ghost"
@@ -1054,7 +934,8 @@ export const PanelInner = () => {
               );
             }
 
-            // Legacy Vercel node types
+            // Action and trigger nodes
+            const nodeCode = generateNodeCode(selectedNode);
             const triggerType = selectedNode.data.config?.triggerType as string;
             let filename = "";
             let language = "typescript";
@@ -1067,16 +948,16 @@ export const PanelInner = () => {
                 const webhookPath =
                   (selectedNode.data.config?.webhookPath as string) ||
                   "/webhook";
-                filename = `app/api${webhookPath}/route.ts`;
+                filename = `webhook${webhookPath}.ts`;
                 language = "typescript";
+              } else {
+                filename = "trigger.ts";
               }
             } else {
-              filename = `steps/${
-                (selectedNode.data.config?.actionType as string)
-                  ?.toLowerCase()
-                  .replace(/\s+/g, "-")
-                  .replace(/[^a-z0-9-]/g, "") || "action"
-              }-step.ts`;
+              const actionType = selectedNode.data.config?.actionType as string;
+              filename = actionType
+                ? `${actionType.replace(/\//g, "-")}.ts`
+                : "action.ts";
             }
 
             return (
@@ -1091,7 +972,10 @@ export const PanelInner = () => {
                     </div>
                     <Button
                       className="text-muted-foreground"
-                      onClick={handleCopyCode}
+                      onClick={() => {
+                        navigator.clipboard.writeText(nodeCode);
+                        toast.success("Code copied to clipboard");
+                      }}
                       size="sm"
                       variant="ghost"
                     >
@@ -1114,7 +998,7 @@ export const PanelInner = () => {
                       wordWrap: "off",
                       padding: { top: 16, bottom: 16 },
                     }}
-                    value={generateNodeCode(selectedNode)}
+                    value={nodeCode}
                   />
                 </div>
               </>

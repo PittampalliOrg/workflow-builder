@@ -45,12 +45,17 @@ from activities.log_external_event import (
     log_approval_timeout,
 )
 from activities.call_planner_service import (
+    call_planner_clone,
     call_planner_plan,
     call_planner_execute,
+    call_planner_execute_standalone,
     call_planner_workflow,
     call_planner_approve,
     call_planner_status,
+    call_planner_multi_step,
 )
+from activities.log_node_execution import log_node_start, log_node_complete
+from subscriptions.planner_events import handle_planner_event
 
 # Configuration from environment
 PORT = int(os.environ.get("PORT", 8080))
@@ -92,12 +97,18 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_approval_request)
     wfr.register_activity(log_approval_response)
     wfr.register_activity(log_approval_timeout)
+    # Node execution logging (planner/* nodes that bypass function-router)
+    wfr.register_activity(log_node_start)
+    wfr.register_activity(log_node_complete)
     # Planner service activities (planner-dapr-agent)
+    wfr.register_activity(call_planner_clone)
     wfr.register_activity(call_planner_plan)
     wfr.register_activity(call_planner_execute)
+    wfr.register_activity(call_planner_execute_standalone)
     wfr.register_activity(call_planner_workflow)
     wfr.register_activity(call_planner_approve)
     wfr.register_activity(call_planner_status)
+    wfr.register_activity(call_planner_multi_step)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 
@@ -174,6 +185,17 @@ class TerminateRequest(BaseModel):
     reason: str | None = None
 
 
+class CloudEvent(BaseModel):
+    """CloudEvent schema for pub/sub messages."""
+    type: str
+    source: str
+    specversion: str = "1.0"
+    data: dict[str, Any] = Field(default_factory=dict)
+    id: str | None = None
+    time: str | None = None
+    datacontenttype: str = "application/json"
+
+
 class WorkflowStatusResponse(BaseModel):
     """Workflow status response."""
     instanceId: str
@@ -184,6 +206,7 @@ class WorkflowStatusResponse(BaseModel):
     message: str | None = None
     currentNodeId: str | None = None
     currentNodeName: str | None = None
+    approvalEventName: str | None = None
     outputs: dict[str, Any] | None = None
     error: str | None = None
     startedAt: str | None = None
@@ -272,6 +295,19 @@ def start_workflow(request: StartWorkflowRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/workflows/{instance_id}")
+def get_workflow_detail(instance_id: str):
+    """
+    Get workflow detail (delegates to status endpoint).
+
+    GET /api/workflows/:instanceId
+    """
+    status = get_workflow_status(instance_id)
+    data = status.model_dump() if hasattr(status, "model_dump") else status.dict()
+    data["status"] = data.get("runtimeStatus", "UNKNOWN")
+    return data
+
+
 @app.get("/api/v2/workflows/{instance_id}/status", response_model=WorkflowStatusResponse)
 def get_workflow_status(instance_id: str):
     """
@@ -303,6 +339,7 @@ def get_workflow_status(instance_id: str):
         message = None
         current_node_id = None
         current_node_name = None
+        approval_event_name = None
         outputs = None
         error = None
         started_at = None
@@ -324,6 +361,7 @@ def get_workflow_status(instance_id: str):
                             message = parsed.get("message")
                             current_node_id = parsed.get("currentNodeId")
                             current_node_name = parsed.get("currentNodeName")
+                            approval_event_name = parsed.get("approvalEventName")
                     except (json.JSONDecodeError, TypeError):
                         pass
 
@@ -368,6 +406,7 @@ def get_workflow_status(instance_id: str):
             message=message,
             currentNodeId=current_node_id,
             currentNodeName=current_node_name,
+            approvalEventName=approval_event_name,
             outputs=outputs,
             error=error,
             startedAt=started_at,
@@ -509,6 +548,73 @@ def resume_workflow(instance_id: str):
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to resume workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Pub/Sub Subscription Routes ---
+
+@app.post("/subscriptions/planner-events")
+def planner_events_subscription(event: CloudEvent):
+    """
+    Handle planner completion events from pub/sub.
+
+    This endpoint receives CloudEvents from Dapr pub/sub when planner-orchestrator
+    publishes completion events. It forwards the events as external events to
+    waiting parent workflows.
+
+    Subscribed topics (configured via Dapr Subscription resource):
+    - workflow.events (filtered by event type: planner_planning_completed, planner_execution_completed)
+    """
+    logger.info(f"[Subscription] Received planner event: {event.type}")
+
+    result = handle_planner_event(event.type, event.data)
+
+    # Return success even on logical failures to acknowledge the message
+    # (prevents Dapr from retrying indefinitely)
+    return {"status": "SUCCESS", "result": result}
+
+
+@app.options("/subscriptions/planner-events")
+def planner_events_subscription_options():
+    """CORS preflight handler for Dapr subscription endpoint."""
+    return {}
+
+
+# Programmatic subscription declaration (alternative to Subscription YAML)
+# Note: This is a fallback - we prefer declarative Subscription CRD in stacks/main
+# Dapr will call this endpoint to discover subscriptions
+PUBSUB_NAME = os.environ.get("PUBSUB_NAME", "pubsub")
+
+@app.get("/dapr/subscribe")
+def subscribe():
+    """
+    Declare pub/sub subscriptions for Dapr.
+
+    This endpoint tells Dapr which topics this service subscribes to.
+    Alternative to declarative Subscription CRD.
+
+    Note: The declarative Subscription-planner-events.yaml is preferred
+    and should take precedence when deployed to Kubernetes.
+    """
+    return [
+        {
+            "pubsubname": PUBSUB_NAME,
+            "topic": "workflow.events",
+            "route": "/subscriptions/planner-events",
+            "routes": {
+                "rules": [
+                    {
+                        "match": "event.type == \"planner_planning_completed\"",
+                        "path": "/subscriptions/planner-events"
+                    },
+                    {
+                        "match": "event.type == \"planner_execution_completed\"",
+                        "path": "/subscriptions/planner-events"
+                    },
+                ],
+                "default": "/subscriptions/planner-events"
+            }
+        }
+    ]
 
 
 # --- Health Routes ---

@@ -35,9 +35,19 @@ def get_nested_value(obj: Any, path: str) -> Any:
     return current
 
 
+def _normalize_key(s: str) -> str:
+    """Normalize a string for fuzzy matching: lowercase, strip non-alnum to underscores."""
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
 def resolve_template(template: str, node_outputs: NodeOutputs) -> Any:
     """
     Resolve a single template variable.
+
+    Lookup order:
+    1. Exact node ID match
+    2. Label match (case-insensitive, spaces/special chars → underscores)
+    3. ActionType match (e.g., "planner/plan" matches "planner_plan" or "PlannerPlan")
 
     Args:
         template: The full template string (e.g., "{{node1.output.message}}")
@@ -56,19 +66,28 @@ def resolve_template(template: str, node_outputs: NodeOutputs) -> Any:
     node_id = parts[0]
     field_path = ".".join(parts[1:])
 
+    # 1. Exact node ID match
     node_output = node_outputs.get(node_id)
-    if not node_output:
-        # Try to find by label (case-insensitive, spaces replaced with underscores)
-        normalized_id = node_id.lower()
-        for output in node_outputs.values():
-            label = output.get("label", "")
-            if label.lower().replace(" ", "_") == normalized_id:
-                value = get_nested_value(output.get("data"), field_path)
-                return value if value is not None else template
-        return template  # Node not found, return original template
+    if node_output:
+        value = get_nested_value(node_output.get("data"), field_path)
+        return value if value is not None else template
 
-    value = get_nested_value(node_output.get("data"), field_path)
-    return value if value is not None else template
+    # 2. Label match (case-insensitive, spaces/special chars → underscores)
+    normalized_id = _normalize_key(node_id)
+    for output in node_outputs.values():
+        label = output.get("label", "")
+        if label and _normalize_key(label) == normalized_id:
+            value = get_nested_value(output.get("data"), field_path)
+            return value if value is not None else template
+
+    # 3. ActionType match - normalize "planner/plan" → "planner_plan" and compare
+    for output in node_outputs.values():
+        action_type = output.get("actionType", "")
+        if action_type and _normalize_key(action_type) == normalized_id:
+            value = get_nested_value(output.get("data"), field_path)
+            return value if value is not None else template
+
+    return template  # Node not found, return original template
 
 
 def resolve_string_templates(s: str, node_outputs: NodeOutputs) -> str:

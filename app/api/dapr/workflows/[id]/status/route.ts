@@ -128,6 +128,8 @@ export async function GET(
       phase,
       progress,
       message,
+      currentNodeId: orchestratorStatus.currentNodeId || null,
+      currentNodeName: orchestratorStatus.currentNodeName || null,
       output: orchestratorStatus.outputs,
     });
   } catch (error) {

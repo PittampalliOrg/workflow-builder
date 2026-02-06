@@ -17,6 +17,8 @@ import {
 } from "@/lib/integrations-store";
 import type { IntegrationType } from "@/lib/types/integration";
 import {
+  batchSetNodeStatusesAtom,
+  currentRunningNodeIdAtom,
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   currentWorkflowVisibilityAtom,
@@ -117,9 +119,11 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
   const setCurrentWorkflowId = useSetAtom(currentWorkflowIdAtom);
   const setCurrentWorkflowName = useSetAtom(currentWorkflowNameAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
+  const batchSetNodeStatuses = useSetAtom(batchSetNodeStatusesAtom);
   const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
   const [workflowNotFound, setWorkflowNotFound] = useAtom(workflowNotFoundAtom);
   const setTriggerExecute = useSetAtom(triggerExecuteAtom);
+  const currentRunningNodeId = useAtomValue(currentRunningNodeIdAtom);
   const setRightPanelWidth = useSetAtom(rightPanelWidthAtom);
   const setIsPanelAnimating = useSetAtom(isPanelAnimatingAtom);
   const [hasSidebarBeenShown, setHasSidebarBeenShown] = useAtom(
@@ -279,19 +283,17 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
     document.body.style.userSelect = "none";
   }, []);
 
-  // Ref to track polling interval
-  const executionPollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   // Ref to track polling interval for selected execution
   const selectedExecutionPollingIntervalRef = useRef<NodeJS.Timeout | null>(
     null
   );
-  // Ref to access current nodes without triggering effect re-runs
-  const nodesRef = useRef(nodes);
+  // Ref to access currentRunningNodeId inside polling without triggering re-runs
+  const currentRunningNodeIdRef = useRef(currentRunningNodeId);
 
-  // Keep nodes ref in sync
+  // Keep currentRunningNodeId ref in sync
   useEffect(() => {
-    nodesRef.current = nodes;
-  }, [nodes]);
+    currentRunningNodeIdRef.current = currentRunningNodeId;
+  }, [currentRunningNodeId]);
 
   // Helper function to generate workflow from AI
   const generateWorkflowFromAI = useCallback(
@@ -585,9 +587,6 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
   // Cleanup polling interval on unmount
   useEffect(
     () => () => {
-      if (executionPollingIntervalRef.current) {
-        clearInterval(executionPollingIntervalRef.current);
-      }
       if (selectedExecutionPollingIntervalRef.current) {
         clearInterval(selectedExecutionPollingIntervalRef.current);
       }
@@ -603,12 +602,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
       selectedExecutionPollingIntervalRef.current = null;
     }
 
-    // If no execution is selected or it's the currently running one, don't poll
+    // If no execution is selected, reset all node statuses
     if (!selectedExecutionId) {
-      // Reset all node statuses when no execution is selected
-      for (const node of nodesRef.current) {
-        updateNodeData({ id: node.id, data: { status: "idle" } });
-      }
+      batchSetNodeStatuses(new Map());
       return;
     }
 
@@ -618,19 +614,25 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
         const statusData =
           await api.workflow.getExecutionStatus(selectedExecutionId);
 
-        // Update node statuses based on the execution logs
+        // Build a complete status map: log-based statuses + currentRunningNodeId
+        // Nodes NOT in this map get reset to "idle" by batchSetNodeStatuses
+        const statusMap = new Map<string, "idle" | "running" | "success" | "error">();
         for (const nodeStatus of statusData.nodeStatuses) {
-          updateNodeData({
-            id: nodeStatus.nodeId,
-            data: {
-              status: nodeStatus.status as
-                | "idle"
-                | "running"
-                | "success"
-                | "error",
-            },
-          });
+          const mappedStatus = nodeStatus.status === "pending" ? "idle" : nodeStatus.status;
+          statusMap.set(nodeStatus.nodeId, mappedStatus as "idle" | "running" | "success" | "error");
         }
+
+        // Add the currently executing node from orchestrator status,
+        // but only if logs haven't already recorded a terminal status.
+        const runningNodeId = currentRunningNodeIdRef.current;
+        const existingStatus = runningNodeId ? statusMap.get(runningNodeId) : undefined;
+        if (runningNodeId && existingStatus !== "success" && existingStatus !== "error") {
+          statusMap.set(runningNodeId, "running");
+        }
+
+        // Single atomic write: updates all nodes at once via Jotai atom
+        // (reads latest state internally, no stale ref issues)
+        batchSetNodeStatuses(statusMap);
 
         // Stop polling if execution is complete
         if (
@@ -640,19 +642,14 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
           clearInterval(selectedExecutionPollingIntervalRef.current);
           selectedExecutionPollingIntervalRef.current = null;
         }
-      } catch (error) {
-        console.error("Failed to poll selected execution status:", error);
-        // Clear polling on error
-        if (selectedExecutionPollingIntervalRef.current) {
-          clearInterval(selectedExecutionPollingIntervalRef.current);
-          selectedExecutionPollingIntervalRef.current = null;
-        }
+      } catch {
+        // Transient fetch failures are expected during long-running execution
       }
     };
 
-    // Poll immediately and then every 500ms
+    // Poll immediately and then every 1s
     pollSelectedExecution();
-    const pollInterval = setInterval(pollSelectedExecution, 500);
+    const pollInterval = setInterval(pollSelectedExecution, 1000);
     selectedExecutionPollingIntervalRef.current = pollInterval;
 
     return () => {
@@ -661,7 +658,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
         selectedExecutionPollingIntervalRef.current = null;
       }
     };
-  }, [selectedExecutionId, updateNodeData]);
+  }, [selectedExecutionId, batchSetNodeStatuses]);
 
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden">

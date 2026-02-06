@@ -432,26 +432,12 @@ async function executeTestWorkflow({
     // Select the new execution
     setSelectedExecutionId(result.executionId);
 
-    // Poll for execution status updates
+    // Poll only for execution completion (node statuses are handled by page.tsx effect)
     const pollInterval = setInterval(async () => {
       try {
         const statusData = await api.workflow.getExecutionStatus(
           result.executionId
         );
-
-        // Update node statuses based on the execution logs
-        for (const nodeStatus of statusData.nodeStatuses) {
-          updateNodeData({
-            id: nodeStatus.nodeId,
-            data: {
-              status: nodeStatus.status as
-                | "idle"
-                | "running"
-                | "success"
-                | "error",
-            },
-          });
-        }
 
         // Stop polling if execution is complete
         if (statusData.status !== "running") {
@@ -459,16 +445,12 @@ async function executeTestWorkflow({
             clearInterval(pollingIntervalRef.current);
             pollingIntervalRef.current = null;
           }
-
           setIsExecuting(false);
-
-          // Don't reset node statuses - let them show the final state
-          // The user can click another run or deselect to reset
         }
-      } catch (error) {
-        console.error("Failed to poll execution status:", error);
+      } catch {
+        // Transient fetch failures during long-running execution are expected
       }
-    }, 500); // Poll every 500ms
+    }, 2000);
 
     pollingIntervalRef.current = pollInterval;
   } catch (error) {

@@ -1,12 +1,17 @@
-# Kubernetes Deployment for Workflow Orchestrator
+# Kubernetes Deployment for Workflow Orchestrator (Python)
 #
 # The orchestrator runs as a standard Kubernetes Deployment (not Knative)
 # because it needs to maintain the Dapr workflow runtime continuously.
 # The workflow runtime holds workflow state and processes activities.
 #
+# KEY FEATURE: Native multi-app child workflow support for planner/* actions.
+# When a node's actionType starts with "planner/", the workflow invokes the
+# planner-orchestrator's workflow as a true child workflow.
+#
 # Prerequisites:
 # - Dapr installed in the cluster
 # - Redis for Dapr workflow state store
+# - planner-orchestrator deployed (for child workflows)
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -17,6 +22,7 @@ metadata:
     app.kubernetes.io/name: workflow-orchestrator
     app.kubernetes.io/component: orchestrator
     app.kubernetes.io/part-of: workflow-builder
+    app.kubernetes.io/runtime: python
 spec:
   replicas: 1
   selector:
@@ -52,7 +58,7 @@ spec:
     spec:
       # Pod security context
       securityContext:
-        fsGroup: 65532
+        fsGroup: 1001
         seccompProfile:
           type: RuntimeDefault
       # Service account with minimal permissions
@@ -61,21 +67,20 @@ spec:
       automountServiceAccountToken: true
       containers:
         - name: workflow-orchestrator
-          image: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest
+          # Python-based orchestrator with native child workflow support
+          image: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator-py:latest
           imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8080
               protocol: TCP
           env:
-            - name: NODE_ENV
-              value: "production"
             - name: PORT
               value: "8080"
             - name: HOST
               value: "0.0.0.0"
             - name: LOG_LEVEL
-              value: "info"
+              value: "INFO"
             # Dapr configuration
             - name: DAPR_HOST
               value: "localhost"
@@ -83,17 +88,21 @@ spec:
               value: "3500"
             - name: DAPR_GRPC_PORT
               value: "50001"
-            # Activity executor app ID for Dapr service invocation
-            # Format: {app-id}.{namespace} for cross-namespace invocation
-            - name: ACTIVITY_EXECUTOR_APP_ID
-              value: "activity-executor.activity-executor"
-            # Dapr Configuration Store settings
-            - name: DAPR_CONFIG_STORE
-              value: "azureappconfig"
-            - name: CONFIG_LABEL
-              value: "workflow-builder"
+            # Function router app ID for Dapr service invocation
+            - name: FUNCTION_RUNNER_APP_ID
+              value: "function-router"
+            # State store name
+            - name: STATE_STORE_NAME
+              value: "workflowstatestore"
+            # Pub/sub name
+            - name: PUBSUB_NAME
+              value: "workflowpubsub"
+            # Python settings
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
             # GOMEMLIMIT for Dapr sidecar - set to 90% of memory limit
-            # This helps prevent OOM by triggering GC earlier
             - name: GOMEMLIMIT
               value: "900MiB"
           resources:
@@ -105,8 +114,8 @@ spec:
               memory: "1Gi"
           securityContext:
             runAsNonRoot: true
-            runAsUser: 65532
-            runAsGroup: 65532
+            runAsUser: 1001
+            runAsGroup: 1001
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             capabilities:
@@ -192,21 +201,27 @@ spec:
         defaultAction: allow
         trustDomain: "public"
         namespace: "workflow-builder"
-      - appId: activity-executor
+      - appId: function-router
+        defaultAction: allow
+        trustDomain: "public"
+        namespace: "workflow-builder"
+      - appId: planner-orchestrator
         defaultAction: allow
         trustDomain: "public"
         namespace: "workflow-builder"
 ---
 # Dapr Component: Workflow State Store
 # Uses Redis to persist workflow state durably
+# Shared between workflow-orchestrator and planner-orchestrator for child workflows
 apiVersion: dapr.io/v1alpha1
 kind: Component
 metadata:
   name: workflowstatestore
   namespace: workflow-builder
-# Component scoping - only workflow-orchestrator can access
+# Component scoping - orchestrators share state store for child workflows
 scopes:
   - workflow-orchestrator
+  - planner-orchestrator
 spec:
   type: state.redis
   version: v1
@@ -228,10 +243,11 @@ kind: Component
 metadata:
   name: workflowpubsub
   namespace: workflow-builder
-# Component scoping - both orchestrator and activity-executor can publish/subscribe
+# Component scoping - orchestrators and function-router can publish/subscribe
 scopes:
   - workflow-orchestrator
-  - activity-executor
+  - planner-orchestrator
+  - function-router
 spec:
   type: pubsub.redis
   version: v1
@@ -249,9 +265,10 @@ kind: Component
 metadata:
   name: azureappconfig
   namespace: workflow-builder
-# Component scoping - only workflow-orchestrator can access
+# Component scoping - orchestrators can access
 scopes:
   - workflow-orchestrator
+  - planner-orchestrator
 spec:
   type: configuration.azure.appconfig
   version: v1

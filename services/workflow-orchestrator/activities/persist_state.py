@@ -7,6 +7,7 @@ Used for checkpointing and storing intermediate results.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any
@@ -36,6 +37,10 @@ def persist_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     logger.info(f"[Persist State] Saving state with key: {key}")
 
     try:
+        # Dapr state store requires string values - JSON-serialize dicts/lists
+        if not isinstance(value, str):
+            value = json.dumps(value)
+
         with DaprClient() as client:
             client.save_state(
                 store_name=STATE_STORE_NAME,

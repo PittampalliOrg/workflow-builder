@@ -12,7 +12,7 @@ import { headers } from "next/headers";
 import { db } from "@/lib/db";
 import { workflows, workflowExecutions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
-import { generateWorkflowDefinition } from "@/lib/dapr-codegen";
+import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 import type { WorkflowNode, WorkflowEdge } from "@/lib/workflow-store";

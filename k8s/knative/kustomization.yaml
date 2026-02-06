@@ -19,6 +19,7 @@ namespace: workflow-builder
 
 resources:
   - workflow-orchestrator.yaml
+  - planner-dapr-agent.yaml
   - dapr-secrets-component.yaml
   # KEDA scalers (optional - most sections commented out by default)
   - keda-scalers.yaml
@@ -34,4 +35,7 @@ labels:
 images:
   - name: workflow-orchestrator
     newName: gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator
+    newTag: latest
+  - name: planner-dapr-agent
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent
     newTag: latest

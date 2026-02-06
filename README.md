@@ -87,6 +87,7 @@ Visit [http://localhost:3000](http://localhost:3000) to get started.
 - **Linear**: Create Ticket, Find Issues
 - **OpenAI**: Generate Text, Generate Image
 - **Perplexity**: Search Web, Ask Question, Research Topic
+- **AI Planner Agent**: Run Planner Workflow, Plan Tasks Only, Execute Tasks Only, Clone, Plan & Execute in Sandbox, Approve Plan, Check Plan Status
 - **Resend**: Send Email
 - **Slack**: Send Slack Message
 - **Stripe**: Create Customer, Get Customer, Create Invoice
