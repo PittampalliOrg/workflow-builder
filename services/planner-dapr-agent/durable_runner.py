@@ -511,6 +511,7 @@ class ActivityTrackingInterceptor(BaseToolInterceptor):
         update_callback: Optional[Callable[[str, List[Dict]], None]] = None,
         capture_full_data: bool = False,
         parent_span_id: Optional[str] = None,
+        event_publisher: Optional[Callable[[str, str, Dict], None]] = None,
     ):
         """Initialize with optional callback for persisting activities.
 
@@ -518,10 +519,12 @@ class ActivityTrackingInterceptor(BaseToolInterceptor):
             update_callback: Function(workflow_id, activities) to persist activities
             capture_full_data: If True, don't truncate input/output in function_span
             parent_span_id: Optional parent span ID for hierarchy
+            event_publisher: Optional callback(workflow_id, event_type, data) for pub/sub events
         """
         self.update_callback = update_callback
         self.capture_full_data = capture_full_data
         self.parent_span_id = parent_span_id
+        self.event_publisher = event_publisher
 
     def execute_tool(
         self,
@@ -580,6 +583,17 @@ class ActivityTrackingInterceptor(BaseToolInterceptor):
 
         ctx.activities.append(activity)
 
+        # Publish tool_call event for real-time streaming
+        if self.event_publisher and input.call_id:
+            try:
+                self.event_publisher(ctx.workflow_id, "tool_call", {
+                    "toolName": input.tool_name,
+                    "toolInput": self._serialize_input(clean_input),
+                    "callId": input.call_id,
+                })
+            except Exception as pub_err:
+                logger.debug(f"Could not publish tool_call event: {pub_err}")
+
         # Helper to complete the activity
         def complete_activity(result: Any, error: Optional[str] = None):
             activity["endTime"] = datetime.now(timezone.utc).isoformat()
@@ -603,6 +617,21 @@ class ActivityTrackingInterceptor(BaseToolInterceptor):
 
             if self.update_callback:
                 self.update_callback(ctx.workflow_id, ctx.activities)
+
+            # Publish tool_result event for real-time streaming
+            if self.event_publisher and input.call_id:
+                try:
+                    status = "failed" if error else "completed"
+                    self.event_publisher(ctx.workflow_id, "tool_result", {
+                        "toolName": input.tool_name,
+                        "toolOutput": activity.get("output"),
+                        "status": status,
+                        "durationMs": activity.get("durationMs"),
+                        "callId": input.call_id,
+                        "isError": bool(error),
+                    })
+                except Exception as pub_err:
+                    logger.debug(f"Could not publish tool_result event: {pub_err}")
 
         try:
             result = next(input)

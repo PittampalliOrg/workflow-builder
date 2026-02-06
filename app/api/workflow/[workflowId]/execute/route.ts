@@ -100,7 +100,7 @@ export async function POST(
         .returning();
 
       try {
-        // If we have a feature_request, use the legacy planner-orchestrator
+        // If we have a feature_request, use the legacy planner-dapr-agent
         if (featureRequest) {
           const daprResult = await daprClient.startWorkflow(
             orchestratorUrl,

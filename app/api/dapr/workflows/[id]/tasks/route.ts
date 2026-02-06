@@ -54,7 +54,7 @@ export async function GET(
     const orchestratorUrl =
       workflow?.daprOrchestratorUrl ||
       process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-orchestrator:8080";
+      "http://planner-dapr-agent:8000";
 
     // Orchestrator returns { workflow_id, tasks, count }
     const response = await daprClient.getWorkflowTasks(

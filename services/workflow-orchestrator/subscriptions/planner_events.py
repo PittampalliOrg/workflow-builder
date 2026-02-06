@@ -1,11 +1,11 @@
 """
 Planner Events Subscription Handler
 
-Handles pub/sub events from planner-orchestrator and forwards them as
+Handles pub/sub events from planner-dapr-agent and forwards them as
 external events to waiting parent workflows.
 
 Event flow:
-1. planner-orchestrator publishes planner_planning_completed or planner_execution_completed
+1. planner-dapr-agent publishes planner_planning_completed or planner_execution_completed
 2. Dapr routes event to this handler via subscription
 3. Handler raises external event on parent workflow using parent_execution_id
 4. Parent workflow's wait_for_external_event unblocks and receives the data
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerCompletionEvent(BaseModel):
-    """CloudEvent payload from planner-orchestrator completion events."""
+    """CloudEvent payload from planner-dapr-agent completion events."""
     workflow_id: str = Field(..., description="Planner workflow instance ID")
     parent_execution_id: str | None = Field(default=None, description="Parent workflow instance ID")
     phase: str = Field(..., description="Completed phase (planning or execution)")
@@ -103,7 +103,7 @@ def handle_planner_event(event_type: str, event_data: dict[str, Any]) -> dict[st
             "execution_completed": f"planner_execution_{event.workflow_id}",
             "planning_completed": f"planner_planning_{event.workflow_id}",
             "phase_completed": f"planner_phase_{event.workflow_id}",
-            # planner-orchestrator uses these event types
+            # planner-dapr-agent uses these event types
             "planner_planning_completed": f"planner_planning_{event.workflow_id}",
             "planner_execution_completed": f"planner_execution_{event.workflow_id}",
         }

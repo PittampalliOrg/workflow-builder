@@ -7,7 +7,7 @@ walks through the definition's execution order and handles each node type dynami
 
 KEY FEATURE: Native multi-app child workflow support for planner/* actions.
 When a node's actionType starts with "planner/", the workflow invokes the
-planner-orchestrator's workflow as a true child workflow using Dapr's
+planner-dapr-agent's workflow as a true child workflow using Dapr's
 call_child_workflow with app_id parameter.
 
 This approach offers several advantages:
@@ -93,7 +93,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
     Supports:
     - Action nodes: Regular function execution via function-router
-    - Planner child workflows: planner/* actions invoke planner-orchestrator
+    - Planner child workflows: planner/* actions invoke planner-dapr-agent
       as a native Dapr child workflow
     - Approval gates: Wait for external events with timeout
     - Timers: Delay execution for specified duration
@@ -440,9 +440,9 @@ def process_planner_child_workflow(
     db_execution_id: str | None,
 ):
     """
-    Invoke planner-orchestrator workflow via Dapr service invocation with event-based completion.
+    Invoke planner-dapr-agent workflow via Dapr service invocation with event-based completion.
 
-    The planner-orchestrator service orchestrates Claude Agent SDK for planning
+    The planner-dapr-agent service orchestrates Claude Agent SDK for planning
     and execution with features like:
     - AI-powered planning with task creation
     - Human approval gates
@@ -469,7 +469,7 @@ def process_planner_child_workflow(
         db_execution_id: Database execution ID (used as parent_execution_id for event routing)
 
     Yields:
-        Activity calls to planner-orchestrator and event waits
+        Activity calls to planner-dapr-agent and event waits
 
     Returns:
         Result from planner workflow
@@ -481,7 +481,7 @@ def process_planner_child_workflow(
     planning_timeout_minutes = int(resolved_config.get("planningTimeoutMinutes", 30))
     execution_timeout_minutes = int(resolved_config.get("executionTimeoutMinutes", 120))
 
-    logger.info(f"[Planner Workflow] Invoking {action_type} on planner-orchestrator")
+    logger.info(f"[Planner Workflow] Invoking {action_type} on planner-dapr-agent")
 
     if action_type == "planner/clone":
         # Standalone clone: clone a repository to workspace
@@ -512,10 +512,10 @@ def process_planner_child_workflow(
 
     elif action_type == "planner/run-workflow":
         # Full multi-step workflow: plan → approve → execute
-        # Uses planner-orchestrator /api/workflows endpoint
+        # Uses planner-dapr-agent /api/workflows endpoint
         from activities.call_planner_service import call_planner_workflow
 
-        logger.info(f"[Planner Workflow] Starting full workflow via planner-orchestrator")
+        logger.info(f"[Planner Workflow] Starting full workflow via planner-dapr-agent")
 
         # Start the workflow, passing ctx.instance_id for event routing back to this workflow
         result = yield ctx.call_activity(
@@ -543,7 +543,7 @@ def process_planner_child_workflow(
         # Planning phase - the activity polls to completion (standard mode runs full workflow)
         from activities.call_planner_service import call_planner_plan
 
-        logger.info(f"[Planner Workflow] Starting planning via planner-orchestrator")
+        logger.info(f"[Planner Workflow] Starting planning via planner-dapr-agent")
 
         # Start the planning workflow - activity polls until planner-dapr-agent finishes
         result = yield ctx.call_activity(

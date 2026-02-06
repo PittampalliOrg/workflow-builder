@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -21,10 +20,12 @@ from typing import Any
 import psycopg2
 import requests
 
+from core.config import config
+
 logger = logging.getLogger(__name__)
 
-DAPR_HOST = os.environ.get("DAPR_HOST", "localhost")
-DAPR_HTTP_PORT = os.environ.get("DAPR_HTTP_PORT", "3500")
+DAPR_HOST = config.DAPR_HOST
+DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 SECRET_STORE_NAME = "kubernetes-secrets"
 SECRET_NAME = "workflow-builder-secrets"
 

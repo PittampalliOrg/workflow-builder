@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -27,6 +26,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from core.config import config
 from workflows.dynamic_workflow import wfr, dynamic_workflow
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state, get_state, delete_state
@@ -57,10 +57,10 @@ from activities.call_planner_service import (
 from activities.log_node_execution import log_node_start, log_node_complete
 from subscriptions.planner_events import handle_planner_event
 
-# Configuration from environment
-PORT = int(os.environ.get("PORT", 8080))
-HOST = os.environ.get("HOST", "0.0.0.0")
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+# Configuration from centralized config module
+PORT = config.PORT
+HOST = config.HOST
+LOG_LEVEL = config.LOG_LEVEL
 
 # Configure logging
 logging.basicConfig(
@@ -557,7 +557,7 @@ def planner_events_subscription(event: CloudEvent):
     """
     Handle planner completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when planner-orchestrator
+    This endpoint receives CloudEvents from Dapr pub/sub when planner-dapr-agent
     publishes completion events. It forwards the events as external events to
     waiting parent workflows.
 
@@ -582,7 +582,7 @@ def planner_events_subscription_options():
 # Programmatic subscription declaration (alternative to Subscription YAML)
 # Note: This is a fallback - we prefer declarative Subscription CRD in stacks/main
 # Dapr will call this endpoint to discover subscriptions
-PUBSUB_NAME = os.environ.get("PUBSUB_NAME", "pubsub")
+PUBSUB_NAME = config.PUBSUB_NAME
 
 @app.get("/dapr/subscribe")
 def subscribe():

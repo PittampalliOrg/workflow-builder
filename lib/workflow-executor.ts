@@ -3,7 +3,7 @@
  *
  * Executes workflow nodes by calling the activity-executor service.
  * This provides a direct execution path for visual workflows without
- * requiring the planner-orchestrator.
+ * requiring the planner-dapr-agent.
  */
 
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";

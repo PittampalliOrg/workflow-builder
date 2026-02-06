@@ -1,6 +1,5 @@
 # Kubernetes Deployment for Planner Dapr Agent
 #
-# Replaces both planner-sdk-agent and planner-orchestrator.
 # This service uses OpenAI Agents SDK for planning and execution
 # with Dapr workflow orchestration and Agent Sandbox isolation.
 #
