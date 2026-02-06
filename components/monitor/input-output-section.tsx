@@ -92,6 +92,7 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
   const parsed = useMemo(() => parseDaprAgentOutput(output), [output]);
   const tasks = parsed?.tasks ?? [];
   const usage = parsed?.usage;
+  const traceId = parsed?.trace_id;
   const trace = parsed?.trace_metadata;
   const planText = parsed?.plan_text;
 
@@ -150,7 +151,7 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
               planText={planText}
               taskCount={tasks.length}
               totalTokens={usage?.total_tokens}
-              traceId={trace?.trace_id}
+              traceId={traceId}
             />
           </TabsContent>
 
