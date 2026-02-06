@@ -22,7 +22,7 @@ export interface NodeHandles {
 /**
  * Data payload for execution event nodes
  */
-export interface ExecutionNodeData {
+export interface ExecutionNodeData extends Record<string, unknown> {
   eventId: number | null;
   eventType: DaprExecutionEventType;
   name: string | null;
