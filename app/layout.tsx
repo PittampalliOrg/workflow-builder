@@ -49,7 +49,7 @@ async function SidebarWrapper({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>
-      <AppSidebar user={session?.user} />
+      <AppSidebar user={session?.user as Parameters<typeof AppSidebar>[0]["user"]} />
       <SidebarInset className="bg-transparent relative">
         <ReactFlowProvider>
           {/* Canvas renders behind everything in the content area */}
