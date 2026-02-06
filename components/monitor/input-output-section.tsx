@@ -89,10 +89,11 @@ interface DaprAgentOutputSectionProps {
 }
 
 function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
-  const { tasks, usage, trace, planText } = useMemo(
-    () => parseDaprAgentOutput(output),
-    [output]
-  );
+  const parsed = useMemo(() => parseDaprAgentOutput(output), [output]);
+  const tasks = parsed?.tasks ?? [];
+  const usage = parsed?.usage;
+  const trace = parsed?.trace_metadata;
+  const planText = parsed?.plan_text;
 
   const hasTasks = tasks.length > 0;
   const hasUsage = usage !== undefined;
