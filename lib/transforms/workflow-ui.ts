@@ -10,6 +10,9 @@ import type {
   WorkflowDetail,
   DaprExecutionEvent,
   DaprExecutionEventType,
+  DaprAgentTask,
+  TokenUsage,
+  TraceMetadata,
 } from "@/lib/types/workflow-ui";
 import type {
   WorkflowExecution,
@@ -204,20 +207,10 @@ export function calculateElapsed(
  */
 export interface DaprAgentOutput {
   plan_text?: string;
-  tasks?: Array<{
-    id: string;
-    title: string;
-    description?: string;
-    status: string;
-    parentId?: string | null;
-  }>;
-  usage?: {
-    input_tokens: number;
-    output_tokens: number;
-    total_tokens: number;
-  };
+  tasks?: DaprAgentTask[];
+  usage?: TokenUsage;
   trace_id?: string;
-  trace_metadata?: Record<string, unknown>;
+  trace_metadata?: TraceMetadata;
 }
 
 /**

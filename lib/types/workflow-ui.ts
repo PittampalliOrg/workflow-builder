@@ -148,6 +148,20 @@ export function getTaskStatusBgColor(status: DaprAgentTaskStatus): string {
 }
 
 // ============================================================================
+// Trace Metadata Types
+// ============================================================================
+
+/**
+ * Trace metadata for observability
+ */
+export interface TraceMetadata {
+  trace_id?: string;
+  agent_span_id?: string;
+  workflow_name?: string;
+  metadata?: Record<string, unknown>;
+}
+
+// ============================================================================
 // Custom Status Types (for workflow phases)
 // ============================================================================
 
