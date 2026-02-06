@@ -53,7 +53,7 @@ interface TaskNodeData extends Record<string, unknown> {
   id: string;
   subject: string;
   status: DaprAgentTaskStatus;
-  description: string;
+  description?: string;
   blockedBy: string[];
   blocks: string[];
 }

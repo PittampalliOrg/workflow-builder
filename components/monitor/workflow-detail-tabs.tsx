@@ -126,7 +126,7 @@ export function WorkflowDetailTabs({
   const tasks = useMemo(() => {
     const effectiveOutput = daprAgentOutput ?? output;
     if (isDaprAgentOutput(effectiveOutput)) {
-      return parseDaprAgentOutput(effectiveOutput).tasks;
+      return parseDaprAgentOutput(effectiveOutput)?.tasks ?? [];
     }
     return [];
   }, [daprAgentOutput, output]);

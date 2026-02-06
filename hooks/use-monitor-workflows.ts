@@ -54,7 +54,8 @@ export function useMonitorWorkflows(options: UseMonitorWorkflowsOptions = {}) {
     workflows: data?.workflows || [],
     total: data?.total || 0,
     isLoading,
-    isError: error,
+    isError: !!error,
+    error,
     mutate,
   };
 }
