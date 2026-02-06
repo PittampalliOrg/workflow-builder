@@ -7,10 +7,9 @@
  */
 
 import type {
-  WorkflowNodeType,
-  WorkflowNodeData,
-  WorkflowNode,
   WorkflowEdge,
+  WorkflowNode,
+  WorkflowNodeType,
 } from "./workflow-store";
 
 /**
@@ -129,6 +128,7 @@ export interface ActivityExecutionRequest {
   input: Record<string, unknown>;
   nodeOutputs?: Record<string, { label: string; data: unknown }>;
   integrationId?: string;
+  connectionExternalId?: string;
 }
 
 /**

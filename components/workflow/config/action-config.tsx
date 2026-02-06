@@ -263,7 +263,11 @@ function SystemActionFields({
 // id is the legacy actionType, slug is the canonical functionSlug
 const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
   { id: "HTTP Request", label: "HTTP Request", slug: "system/http-request" },
-  { id: "Database Query", label: "Database Query", slug: "system/database-query" },
+  {
+    id: "Database Query",
+    label: "Database Query",
+    slug: "system/database-query",
+  },
   { id: "Condition", label: "Condition", slug: "system/condition" },
 ];
 
@@ -348,6 +352,10 @@ function getSlugForAction(actionType: string): string | null {
   return null;
 }
 
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
+}
+
 export function ActionConfig({
   config,
   onUpdateConfig,
@@ -421,9 +429,17 @@ export function ActionConfig({
     return globalIntegrations.some((i) => i.type === integrationType);
   }, [integrationType, globalIntegrations]);
 
-  const handleConsentSuccess = (integrationId: string) => {
+  const applySelectedIntegration = (integrationId: string) => {
+    const selectedConnection = globalIntegrations.find(
+      (i) => i.id === integrationId
+    );
     onUpdateConfig("integrationId", integrationId);
-    setIntegrationsVersion((v) => v + 1);
+    if (selectedConnection?.externalId) {
+      onUpdateConfig(
+        "auth",
+        buildConnectionAuthTemplate(selectedConnection.externalId)
+      );
+    }
   };
 
   const openConnectionOverlay = () => {
@@ -432,7 +448,7 @@ export function ActionConfig({
         type: integrationType,
         onSuccess: (integrationId: string) => {
           setIntegrationsVersion((v) => v + 1);
-          onUpdateConfig("integrationId", integrationId);
+          applySelectedIntegration(integrationId);
         },
       });
     }
@@ -535,7 +551,7 @@ export function ActionConfig({
           <IntegrationSelector
             disabled={disabled}
             integrationType={integrationType}
-            onChange={(id) => onUpdateConfig("integrationId", id)}
+            onChange={(id) => applySelectedIntegration(id)}
             value={(config?.integrationId as string) || ""}
           />
         </div>

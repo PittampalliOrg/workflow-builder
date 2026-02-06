@@ -1,12 +1,18 @@
 import { relations } from "drizzle-orm";
 import {
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+import {
+  AppConnectionScope,
+  AppConnectionStatus,
+  type AppConnectionType,
+} from "../types/app-connection";
 import type { IntegrationType } from "../types/integration";
 import { generateId } from "../utils/id";
 
@@ -109,6 +115,104 @@ export const integrations = pgTable("integrations", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Piece metadata cache imported from Activepieces
+export const pieceMetadata = pgTable(
+  "piece_metadata",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    name: text("name").notNull(),
+    authors: text("authors").array().notNull().default([]),
+    displayName: text("display_name").notNull(),
+    logoUrl: text("logo_url").notNull(),
+    description: text("description"),
+    platformId: text("platform_id"),
+    version: text("version").notNull(),
+    minimumSupportedRelease: text("minimum_supported_release").notNull(),
+    maximumSupportedRelease: text("maximum_supported_release").notNull(),
+    auth: jsonb("auth"),
+    actions: jsonb("actions").notNull(),
+    triggers: jsonb("triggers").notNull(),
+    pieceType: text("piece_type").notNull(),
+    categories: text("categories").array().notNull().default([]),
+    packageType: text("package_type").notNull(),
+    i18n: jsonb("i18n"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    nameVersionPlatformIdx: index(
+      "idx_piece_metadata_name_platform_id_version"
+    ).on(table.name, table.version, table.platformId),
+  })
+);
+
+// Activepieces-style user app connections
+export const appConnections = pgTable(
+  "app_connection",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    displayName: text("display_name").notNull(),
+    externalId: text("external_id").notNull(),
+    type: text("type").notNull().$type<AppConnectionType>(),
+    status: text("status")
+      .notNull()
+      .default(AppConnectionStatus.ACTIVE)
+      .$type<AppConnectionStatus>(),
+    platformId: text("platform_id"),
+    pieceName: text("piece_name").notNull(),
+    ownerId: text("owner_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    projectIds: jsonb("project_ids").notNull().$type<string[]>().default([]),
+    scope: text("scope")
+      .notNull()
+      .default(AppConnectionScope.PROJECT)
+      .$type<AppConnectionScope>(),
+    value: text("value").notNull(),
+    metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
+    pieceVersion: text("piece_version").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    platformExternalIdIdx: index(
+      "idx_app_connection_platform_id_and_external_id"
+    ).on(table.platformId, table.externalId),
+    ownerIdIdx: index("idx_app_connection_owner_id").on(table.ownerId),
+  })
+);
+
+// Denormalized workflow to connection references for quick checks and status
+export const workflowConnectionRefs = pgTable(
+  "workflow_connection_ref",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    nodeId: text("node_id").notNull(),
+    connectionExternalId: text("connection_external_id").notNull(),
+    pieceName: text("piece_name").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    workflowNodeIdx: index("idx_workflow_connection_ref_workflow_node").on(
+      table.workflowId,
+      table.nodeId
+    ),
+    workflowExternalIdIdx: index(
+      "idx_workflow_connection_ref_workflow_external_id"
+    ).on(table.workflowId, table.connectionExternalId),
+  })
+);
 
 // Workflow executions table to track workflow runs
 export const workflowExecutions = pgTable("workflow_executions", {
@@ -274,6 +378,13 @@ export type Workflow = typeof workflows.$inferSelect;
 export type NewWorkflow = typeof workflows.$inferInsert;
 export type Integration = typeof integrations.$inferSelect;
 export type NewIntegration = typeof integrations.$inferInsert;
+export type PieceMetadata = typeof pieceMetadata.$inferSelect;
+export type NewPieceMetadata = typeof pieceMetadata.$inferInsert;
+export type AppConnectionRecord = typeof appConnections.$inferSelect;
+export type NewAppConnectionRecord = typeof appConnections.$inferInsert;
+export type WorkflowConnectionRef = typeof workflowConnectionRefs.$inferSelect;
+export type NewWorkflowConnectionRef =
+  typeof workflowConnectionRefs.$inferInsert;
 export type WorkflowExecution = typeof workflowExecutions.$inferSelect;
 export type NewWorkflowExecution = typeof workflowExecutions.$inferInsert;
 export type WorkflowExecutionLog = typeof workflowExecutionLogs.$inferSelect;
@@ -457,4 +568,5 @@ export type NewFunctionExecution = typeof functionExecutions.$inferInsert;
 export type CredentialAccessLog = typeof credentialAccessLogs.$inferSelect;
 export type NewCredentialAccessLog = typeof credentialAccessLogs.$inferInsert;
 export type WorkflowExternalEvent = typeof workflowExternalEvents.$inferSelect;
-export type NewWorkflowExternalEvent = typeof workflowExternalEvents.$inferInsert;
+export type NewWorkflowExternalEvent =
+  typeof workflowExternalEvents.$inferInsert;

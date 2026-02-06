@@ -1,79 +1,11 @@
 import "server-only";
 
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
+import { decrypt, encrypt } from "../security/encryption";
 import type { IntegrationConfig, IntegrationType } from "../types/integration";
+import { extractConnectionExternalIdsFromNodes } from "./app-connections";
 import { db } from "./index";
-import { integrations, type NewIntegration } from "./schema";
-
-// Encryption configuration
-const ALGORITHM = "aes-256-gcm";
-const IV_LENGTH = 16;
-const ENCRYPTION_KEY_ENV = "INTEGRATION_ENCRYPTION_KEY";
-
-/**
- * Get or generate encryption key from environment
- * Key should be a 32-byte hex string (64 characters)
- */
-function getEncryptionKey(): Buffer {
-  const keyHex = process.env[ENCRYPTION_KEY_ENV];
-
-  if (!keyHex) {
-    throw new Error(
-      `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting integration credentials`
-    );
-  }
-
-  if (keyHex.length !== 64) {
-    throw new Error(
-      `${ENCRYPTION_KEY_ENV} must be a 64-character hex string (32 bytes)`
-    );
-  }
-
-  return Buffer.from(keyHex, "hex");
-}
-
-/**
- * Encrypt sensitive data
- * Returns a string in format: iv:authTag:encryptedData (all hex-encoded)
- */
-export function encrypt(plaintext: string): string {
-  const key = getEncryptionKey();
-  const iv = randomBytes(IV_LENGTH);
-  const cipher = createCipheriv(ALGORITHM, key, iv);
-
-  let encrypted = cipher.update(plaintext, "utf8", "hex");
-  encrypted += cipher.final("hex");
-
-  const authTag = cipher.getAuthTag();
-
-  // Return format: iv:authTag:ciphertext (all hex)
-  return `${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted}`;
-}
-
-/**
- * Decrypt encrypted data
- */
-export function decrypt(ciphertext: string): string {
-  const key = getEncryptionKey();
-  const parts = ciphertext.split(":");
-
-  if (parts.length !== 3) {
-    throw new Error("Invalid encrypted data format");
-  }
-
-  const iv = Buffer.from(parts[0], "hex");
-  const authTag = Buffer.from(parts[1], "hex");
-  const encrypted = parts[2];
-
-  const decipher = createDecipheriv(ALGORITHM, key, iv);
-  decipher.setAuthTag(authTag);
-
-  let decrypted = decipher.update(encrypted, "hex", "utf8");
-  decrypted += decipher.final("utf8");
-
-  return decrypted;
-}
+import { appConnections, integrations, type NewIntegration } from "./schema";
 
 /**
  * Encrypt integration config object
@@ -88,9 +20,8 @@ function encryptConfig(config: Record<string, unknown>): string {
 function decryptConfig(encryptedConfig: string): Record<string, unknown> {
   try {
     const decrypted = decrypt(encryptedConfig);
-    return JSON.parse(decrypted);
-  } catch (error) {
-    console.error("Failed to decrypt integration config:", error);
+    return JSON.parse(decrypted) as Record<string, unknown>;
+  } catch {
     return {};
   }
 }
@@ -269,6 +200,7 @@ type WorkflowNodeForValidation = {
   data?: {
     config?: {
       integrationId?: string;
+      auth?: string;
     };
   };
 };
@@ -292,15 +224,11 @@ export function extractIntegrationIds(
 }
 
 /**
- * Validate that all integration IDs in workflow nodes either:
- * 1. Belong to the specified user, or
- * 2. Don't exist (deleted integrations - stale references are allowed)
+ * Validate that integration references in workflow nodes do not point to other users.
  *
- * This prevents users from accessing other users' credentials by embedding
- * foreign integration IDs in their workflows, while allowing workflows
- * with references to deleted integrations to still be saved.
- *
- * @returns Object with `valid` boolean and optional `invalidIds` array
+ * Rules:
+ * 1. Legacy integration IDs must belong to user (or be missing/deleted)
+ * 2. Activepieces external connection IDs in `auth` templates must belong to user
  */
 export async function validateWorkflowIntegrations(
   nodes: WorkflowNodeForValidation[],
@@ -308,22 +236,37 @@ export async function validateWorkflowIntegrations(
 ): Promise<{ valid: boolean; invalidIds?: string[] }> {
   const integrationIds = extractIntegrationIds(nodes);
 
-  if (integrationIds.length === 0) {
-    return { valid: true };
+  const invalidIds: string[] = [];
+
+  if (integrationIds.length > 0) {
+    const existingIntegrations = await db
+      .select({ id: integrations.id, userId: integrations.userId })
+      .from(integrations)
+      .where(inArray(integrations.id, integrationIds));
+
+    invalidIds.push(
+      ...existingIntegrations
+        .filter((integration) => integration.userId !== userId)
+        .map((integration) => integration.id)
+    );
   }
 
-  // Query for ALL integrations with these IDs (regardless of user)
-  // to check if any belong to other users
-  const existingIntegrations = await db
-    .select({ id: integrations.id, userId: integrations.userId })
-    .from(integrations)
-    .where(inArray(integrations.id, integrationIds));
+  const connectionExternalIds = extractConnectionExternalIdsFromNodes(nodes);
+  if (connectionExternalIds.length > 0) {
+    const existingConnections = await db
+      .select({
+        externalId: appConnections.externalId,
+        ownerId: appConnections.ownerId,
+      })
+      .from(appConnections)
+      .where(inArray(appConnections.externalId, connectionExternalIds));
 
-  // Find integrations that exist but belong to a different user
-  // (deleted integrations won't appear here, which is fine)
-  const invalidIds = existingIntegrations
-    .filter((i) => i.userId !== userId)
-    .map((i) => i.id);
+    invalidIds.push(
+      ...existingConnections
+        .filter((connection) => connection.ownerId !== userId)
+        .map((connection) => connection.externalId)
+    );
+  }
 
   if (invalidIds.length > 0) {
     return { valid: false, invalidIds };

@@ -5,8 +5,8 @@
  * Used by the Code tab in the properties panel.
  */
 
-import type { WorkflowNode, WorkflowEdge } from "./workflow-store";
 import { generateWorkflowDefinition } from "./workflow-definition";
+import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 export interface CodeFile {
   filename: string;
@@ -143,6 +143,7 @@ function generateActionCode(node: WorkflowNode): string {
   // Remove internal fields from input
   delete invocation.input.actionType;
   delete invocation.input.integrationId;
+  delete invocation.input.auth;
 
   return `// Action: ${actionType}
 //
@@ -177,7 +178,7 @@ activity_config = ${JSON.stringify(config, null, 2)}
 function generateApprovalGateCode(node: WorkflowNode): string {
   const config = node.data.config || {};
   const eventName = (config.eventName as string) || "approval";
-  const timeoutSeconds = (config.timeoutSeconds as number) || 86400;
+  const timeoutSeconds = (config.timeoutSeconds as number) || 86_400;
 
   return `# Approval Gate: ${eventName}
 #

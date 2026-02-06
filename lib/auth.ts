@@ -5,6 +5,7 @@ import { eq } from "drizzle-orm";
 import { db } from "./db";
 import {
   accounts,
+  appConnections,
   integrations,
   sessions,
   users,
@@ -81,6 +82,12 @@ const plugins = [
           .update(integrations)
           .set({ userId: toUserId })
           .where(eq(integrations.userId, fromUserId));
+
+        // Migrate Activepieces-style app connections
+        await db
+          .update(appConnections)
+          .set({ ownerId: toUserId })
+          .where(eq(appConnections.ownerId, fromUserId));
 
         console.log(
           `[Anonymous Migration] Successfully migrated data from ${fromUserId} to ${toUserId}`

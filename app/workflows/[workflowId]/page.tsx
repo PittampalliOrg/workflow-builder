@@ -65,11 +65,16 @@ function getRequiredIntegrationType(
 type IntegrationFixResult = {
   nodeId: string;
   newIntegrationId: string | undefined;
+  newIntegrationExternalId?: string;
 };
+
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
+}
 
 function checkNodeIntegration(
   node: WorkflowNode,
-  allIntegrations: { id: string; type: string }[],
+  allIntegrations: { id: string; type: string; externalId?: string }[],
   validIntegrationIds: Set<string>
 ): IntegrationFixResult | null {
   const actionType = node.data.config?.actionType as string | undefined;
@@ -96,7 +101,11 @@ function checkNodeIntegration(
   const available = allIntegrations.filter((i) => i.type === integrationType);
 
   if (available.length === 1) {
-    return { nodeId: node.id, newIntegrationId: available[0].id };
+    return {
+      nodeId: node.id,
+      newIntegrationId: available[0].id,
+      newIntegrationExternalId: available[0].externalId,
+    };
   }
   if (available.length === 0 && currentIntegrationId) {
     return { nodeId: node.id, newIntegrationId: undefined };
@@ -464,6 +473,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
                 config: {
                   ...node.data.config,
                   integrationId: fix.newIntegrationId,
+                  auth: fix.newIntegrationExternalId
+                    ? buildConnectionAuthTemplate(fix.newIntegrationExternalId)
+                    : undefined,
                 },
               },
             });
@@ -616,17 +628,30 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
         // Build a complete status map: log-based statuses + currentRunningNodeId
         // Nodes NOT in this map get reset to "idle" by batchSetNodeStatuses
-        const statusMap = new Map<string, "idle" | "running" | "success" | "error">();
+        const statusMap = new Map<
+          string,
+          "idle" | "running" | "success" | "error"
+        >();
         for (const nodeStatus of statusData.nodeStatuses) {
-          const mappedStatus = nodeStatus.status === "pending" ? "idle" : nodeStatus.status;
-          statusMap.set(nodeStatus.nodeId, mappedStatus as "idle" | "running" | "success" | "error");
+          const mappedStatus =
+            nodeStatus.status === "pending" ? "idle" : nodeStatus.status;
+          statusMap.set(
+            nodeStatus.nodeId,
+            mappedStatus as "idle" | "running" | "success" | "error"
+          );
         }
 
         // Add the currently executing node from orchestrator status,
         // but only if logs haven't already recorded a terminal status.
         const runningNodeId = currentRunningNodeIdRef.current;
-        const existingStatus = runningNodeId ? statusMap.get(runningNodeId) : undefined;
-        if (runningNodeId && existingStatus !== "success" && existingStatus !== "error") {
+        const existingStatus = runningNodeId
+          ? statusMap.get(runningNodeId)
+          : undefined;
+        if (
+          runningNodeId &&
+          existingStatus !== "success" &&
+          existingStatus !== "error"
+        ) {
           statusMap.set(runningNodeId, "running");
         }
 

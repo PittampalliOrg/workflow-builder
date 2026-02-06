@@ -23,8 +23,11 @@ function sanitizeNodesForPublicView(
         typeof data.config === "object" &&
         data.config !== null
       ) {
-        const { integrationId: _, ...configWithoutIntegration } =
-          data.config as Record<string, unknown>;
+        const {
+          integrationId: _,
+          auth: _auth,
+          ...configWithoutIntegration
+        } = data.config as Record<string, unknown>;
         data.config = configWithoutIntegration;
       }
       sanitizedNode.data = data;
