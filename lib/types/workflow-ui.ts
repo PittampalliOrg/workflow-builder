@@ -102,10 +102,13 @@ export type DaprAgentTaskStatus = "pending" | "in_progress" | "completed" | "fai
 export interface DaprAgentTask {
   id: string;
   title: string;
+  subject: string;
   description?: string;
   status: DaprAgentTaskStatus;
   parentId?: string | null;
   children?: DaprAgentTask[];
+  blockedBy: string[];
+  blocks: string[];
   startedAt?: string;
   completedAt?: string;
   error?: string;
