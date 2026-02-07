@@ -237,17 +237,14 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      # Activepieces-aligned encryption key (16 bytes / 32 hex chars, AES-256-CBC)
-      - name: AP_ENCRYPTION_KEY
-        valueFrom:
-          secretKeyRef:
-            name: workflow-builder-secrets
-            key: AP_ENCRYPTION_KEY
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
       - name: BETTER_AUTH_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
+      # fn-activepieces internal URL (dev override for dynamic dropdown options)
+      - name: FN_ACTIVEPIECES_URL
+        value: "http://fn-activepieces-standalone.workflow-builder.svc.cluster.local"
 
     # Add Dapr sidecar annotations for config/secret access
     # Note: DevSpace patches are applied to pod spec, not metadata

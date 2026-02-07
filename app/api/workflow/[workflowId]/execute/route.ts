@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
-import { listAppConnections, validateWorkflowAppConnections } from "@/lib/db/app-connections";
+import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
@@ -139,43 +139,34 @@ export async function POST(
           }
         );
 
-        // Fetch user's app connections and format for the orchestrator
-        // Format: { "openai": { "secret_text": "..." }, "slack": { "access_token": "..." } }
-        const userConnections = await listAppConnections({
-          ownerId: session.user.id,
-          query: { projectId: "default", limit: 1000 },
-        });
-        const formattedIntegrations: Record<string, Record<string, string>> = {};
-
-        for (const connection of userConnections) {
-          const pieceName = connection.pieceName;
-          if (!formattedIntegrations[pieceName]) {
-            const configEntries: Record<string, string> = {};
-            const value = connection.value;
-            if (value && typeof value === "object") {
-              for (const [key, val] of Object.entries(value)) {
-                if (val !== null && val !== undefined && key !== "type") {
-                  configEntries[key] = String(val);
-                }
-              }
-            }
-            formattedIntegrations[pieceName] = configEntries;
+        // Build per-node connection map from auth templates in node configs
+        // Instead of decrypting all connections upfront, we pass connection external IDs
+        // per node. The function-router calls the internal decrypt API at execution time
+        // to get fresh credentials (with OAuth2 token refresh).
+        const nodeConnectionMap: Record<string, string> = {};
+        for (const node of nodes) {
+          const config = ((node.data as Record<string, unknown>)?.config as Record<string, unknown>) || {};
+          const authTemplate = config.auth as string | undefined;
+          if (authTemplate) {
+            const match = authTemplate.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
+            if (match?.[1]) nodeConnectionMap[node.id] = match[1];
           }
         }
 
         console.log(
-          `[Execute] Passing ${Object.keys(formattedIntegrations).length} connection types to orchestrator:`,
-          Object.keys(formattedIntegrations)
+          `[Execute] Built per-node connection map for ${Object.keys(nodeConnectionMap).length} nodes:`,
+          Object.keys(nodeConnectionMap)
         );
 
         // Start workflow via generic orchestrator
-        // Pass the database execution ID so function-runner can log to the correct record
+        // Credentials are resolved at execution time by function-router via internal decrypt API
         const genericResult = await genericOrchestratorClient.startWorkflow(
           orchestratorUrl,
           definition,
           input,
-          formattedIntegrations,
-          execution.id // Database execution ID for logging
+          {}, // integrations — empty, credentials resolved at function-router
+          execution.id, // Database execution ID for logging
+          nodeConnectionMap, // Per-node connection external IDs
         );
 
         // Update execution with Dapr instance ID

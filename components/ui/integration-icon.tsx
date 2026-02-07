@@ -8,6 +8,7 @@ import { getIntegration } from "@/plugins";
 interface IntegrationIconProps {
   integration: string;
   className?: string;
+  logoUrl?: string;
 }
 
 // Inline SVG for Vercel icon (special case - no plugin)
@@ -38,6 +39,7 @@ const SPECIAL_ICONS: Record<
 export function IntegrationIcon({
   integration,
   className = "h-3 w-3",
+  logoUrl,
 }: IntegrationIconProps) {
   // Check for special icons first (integrations without plugins)
   const SpecialIcon = SPECIAL_ICONS[integration];
@@ -51,6 +53,18 @@ export function IntegrationIcon({
   if (plugin?.icon) {
     const PluginIcon = plugin.icon;
     return <PluginIcon className={cn("text-foreground", className)} />;
+  }
+
+  // Fallback to logoUrl for Activepieces pieces
+  if (logoUrl) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        alt={integration}
+        className={cn("object-contain", className)}
+        src={logoUrl}
+      />
+    );
   }
 
   // Fallback for unknown integrations

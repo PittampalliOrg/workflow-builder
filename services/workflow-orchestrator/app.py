@@ -165,6 +165,10 @@ class StartWorkflowRequest(BaseModel):
         default=None,
         description="Database execution ID for logging"
     )
+    nodeConnectionMap: dict[str, str] | None = Field(
+        default=None,
+        description="Per-node connection external IDs for credential resolution"
+    )
 
 
 class StartWorkflowResponse(BaseModel):
@@ -264,6 +268,7 @@ def start_workflow(request: StartWorkflowRequest):
             "triggerData": trigger_data,
             "integrations": integrations,
             "dbExecutionId": db_execution_id,
+            "nodeConnectionMap": request.nodeConnectionMap,
         }
 
         # Generate a unique instance ID

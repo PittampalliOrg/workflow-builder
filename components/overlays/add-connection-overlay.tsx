@@ -55,9 +55,77 @@ const getDescription = (type: PluginType): string =>
   SYSTEM_INTEGRATION_DESCRIPTIONS[type] ||
   "";
 
+/**
+ * Renders piece auth setup instructions from markdown description.
+ * Safely parses basic markdown (bold, links, numbered lists) into React elements.
+ */
+function AuthSetupInstructions({ description }: { description: string }) {
+  const lines = description.split("\n").filter((l) => l.trim());
+
+  return (
+    <details className="rounded-md border bg-muted/30 text-sm">
+      <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground hover:text-foreground">
+        Setup instructions
+      </summary>
+      <div className="border-t px-3 py-2 space-y-1">
+        {lines.map((line, i) => (
+          <MarkdownLine key={i} text={line.trim()} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+/** Parse a single line of simple markdown into React elements */
+function MarkdownLine({ text }: { text: string }) {
+  // Split text into segments: plain text, **bold**, and [link](url)
+  const parts: React.ReactNode[] = [];
+  const regex = /\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)]+)\)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    // Text before this match
+    if (match.index > lastIndex) {
+      parts.push(text.slice(lastIndex, match.index));
+    }
+    if (match[1]) {
+      // Bold
+      parts.push(
+        <strong key={match.index} className="font-semibold text-foreground">
+          {match[1]}
+        </strong>
+      );
+    } else if (match[2] && match[3]) {
+      // Link
+      parts.push(
+        <a
+          key={match.index}
+          href={match[3]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary underline"
+        >
+          {match[2]}
+        </a>
+      );
+    }
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+
+  return (
+    <p className="my-0.5 text-muted-foreground text-xs leading-relaxed">
+      {parts}
+    </p>
+  );
+}
+
 type AddConnectionOverlayProps = {
   overlayId: string;
-  onSuccess?: (connectionId: string) => void;
+  onSuccess?: (connectionId: string, externalId?: string) => void;
 };
 
 /**
@@ -145,7 +213,7 @@ export function AddConnectionOverlay({
 type ConfigureConnectionOverlayProps = {
   overlayId: string;
   type: PluginType;
-  onSuccess?: (connectionId: string) => void;
+  onSuccess?: (connectionId: string, externalId?: string) => void;
 };
 
 /**
@@ -277,7 +345,7 @@ export function ConfigureConnectionOverlay({
         type: AppConnectionType.SECRET_TEXT,
       });
       toast.success("Connection created");
-      onSuccess?.(newConnection.id);
+      onSuccess?.(newConnection.id, newConnection.externalId);
       closeAll();
     } catch (error) {
       console.error("Failed to save connection:", error);
@@ -372,28 +440,56 @@ export function ConfigureConnectionOverlay({
     }
   };
 
-  // --- OAuth2 flow ---
+  // --- OAuth2 flow (postMessage approach, matching Activepieces) ---
+  // AP stores popup ref at module level; we use ref since overlay unmounts on close
   const popupRef = useRef<Window | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const messageHandlerRef = useRef<((e: MessageEvent) => void) | null>(null);
+  const popupCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const processingRef = useRef(false);
+  // Store OAuth state across popup lifecycle (AP uses React Hook Form for this)
+  const oauthStateRef = useRef<{
+    clientId: string;
+    clientSecret: string;
+    redirectUrl: string;
+    codeVerifier: string;
+    scope: string;
+  } | null>(null);
 
-  const cleanupOAuthPopup = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    if (popupRef.current && !popupRef.current.closed) {
-      popupRef.current.close();
+  const storageHandlerRef = useRef<((e: StorageEvent) => void) | null>(null);
+
+  const closeOAuthPopup = useCallback(() => {
+    try {
+      if (popupRef.current && !popupRef.current.closed) {
+        popupRef.current.close();
+      }
+    } catch {
+      // COOP may block access to popup.closed
     }
     popupRef.current = null;
   }, []);
 
+  const cleanupOAuthListeners = useCallback(() => {
+    if (messageHandlerRef.current) {
+      window.removeEventListener("message", messageHandlerRef.current);
+      messageHandlerRef.current = null;
+    }
+    if (storageHandlerRef.current) {
+      window.removeEventListener("storage", storageHandlerRef.current);
+      storageHandlerRef.current = null;
+    }
+    if (popupCheckRef.current) {
+      clearInterval(popupCheckRef.current);
+      popupCheckRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
-      cleanupOAuthPopup();
+      cleanupOAuthListeners();
+      closeOAuthPopup();
       processingRef.current = false;
     };
-  }, [cleanupOAuthPopup]);
+  }, [cleanupOAuthListeners, closeOAuthPopup]);
 
   const handleOAuth2Connect = async () => {
     const clientId = config.clientId?.trim();
@@ -415,11 +511,23 @@ export function ConfigureConnectionOverlay({
         redirectUrl,
       });
 
-      // Open popup for authorization
+      // Store OAuth state in ref so it survives across the async popup flow
+      oauthStateRef.current = {
+        clientId,
+        clientSecret,
+        redirectUrl,
+        codeVerifier: startResult.codeVerifier,
+        scope: authConfig?.scope?.join(" ") ?? "",
+      };
+
+      // Close any existing popup first (matches AP: closeOAuth2Popup() before open)
+      closeOAuthPopup();
+
+      // Open popup for authorization (AP uses '_blank' target with similar features)
       const popup = window.open(
         startResult.authorizationUrl,
-        "oauth2-popup",
-        "width=600,height=700,menubar=no,toolbar=no,location=yes,status=no"
+        "_blank",
+        "resizable=no,toolbar=no,left=100,top=100,scrollbars=no,menubar=no,status=no,directories=no,location=no,width=600,height=800"
       );
 
       if (!popup) {
@@ -430,56 +538,43 @@ export function ConfigureConnectionOverlay({
 
       popupRef.current = popup;
 
-      // Poll for the popup to complete (callback page sets the code)
-      pollRef.current = setInterval(async () => {
-        // Guard against re-entry while async save is in progress
+      // Clear any stale localStorage result from a previous attempt
+      try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
+
+      // Shared handler: processes the OAuth callback result from either channel
+      const processCallbackResult = async (data: Record<string, unknown>) => {
         if (processingRef.current) return;
 
-        try {
-          if (!popup || popup.closed) {
-            cleanupOAuthPopup();
-            setOauthConnecting(false);
-            return;
-          }
-
-          // Try to read the popup URL (same-origin callback)
-          let callbackUrl: URL;
-          try {
-            callbackUrl = new URL(popup.location.href);
-          } catch {
-            // Cross-origin — still on the provider's page
-            return;
-          }
-
-          // Check if we're back on our callback URL
-          if (!callbackUrl.pathname.includes("/oauth2/callback")) {
-            return;
-          }
-
-          // Prevent re-entry and stop polling immediately
+        if (data.error) {
           processingRef.current = true;
-          cleanupOAuthPopup();
+          cleanupOAuthListeners();
+          closeOAuthPopup();
+          const desc = (data.errorDescription || data.error || "Unknown error") as string;
+          toast.error(`OAuth2 failed: ${desc}`);
+          setOauthConnecting(false);
+          processingRef.current = false;
+          return;
+        }
 
-          const code = callbackUrl.searchParams.get("code");
-          const error = callbackUrl.searchParams.get("error");
+        if (!data.code) return;
 
-          if (error) {
-            const desc =
-              callbackUrl.searchParams.get("error_description") || error;
-            toast.error(`OAuth2 failed: ${desc}`);
-            setOauthConnecting(false);
-            processingRef.current = false;
-            return;
-          }
+        processingRef.current = true;
+        cleanupOAuthListeners();
+        closeOAuthPopup();
 
-          if (!code) {
-            toast.error("No authorization code received");
-            setOauthConnecting(false);
-            processingRef.current = false;
-            return;
-          }
+        // Clean up localStorage fallback key
+        try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
 
-          // Save the connection with the OAuth2 code
+        const code = decodeURIComponent(data.code as string);
+        const oauthState = oauthStateRef.current;
+        if (!oauthState) {
+          toast.error("OAuth state lost — please try again");
+          setOauthConnecting(false);
+          processingRef.current = false;
+          return;
+        }
+
+        try {
           const name = displayName.trim() || getLabel(type);
           const newConnection = await api.appConnection.upsert({
             externalId: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
@@ -489,22 +584,78 @@ export function ConfigureConnectionOverlay({
             type: AppConnectionType.OAUTH2,
             value: {
               type: AppConnectionType.OAUTH2,
-              client_id: clientId,
-              client_secret: clientSecret,
-              redirect_url: redirectUrl,
+              client_id: oauthState.clientId,
+              client_secret: oauthState.clientSecret,
+              redirect_url: oauthState.redirectUrl,
               code,
-              scope: authConfig?.scope?.join(" ") ?? "",
-              code_challenge: startResult.codeChallenge,
+              scope: oauthState.scope,
+              code_verifier: oauthState.codeVerifier,
             },
           });
 
           toast.success("Connection created via OAuth2");
-          onSuccess?.(newConnection.id);
+          onSuccess?.(newConnection.id, newConnection.externalId);
           closeAll();
-        } catch {
-          // polling error — ignore until popup closes
+        } catch (err) {
+          console.error("Failed to save OAuth2 connection:", err);
+          toast.error(
+            err instanceof Error ? err.message : "Failed to save connection"
+          );
+          setOauthConnecting(false);
+          processingRef.current = false;
         }
-      }, 500);
+      };
+
+      // Channel 1: postMessage (works when COOP doesn't block window.opener)
+      const messageHandler = (event: MessageEvent) => {
+        if (!redirectUrl || !redirectUrl.startsWith(event.origin)) return;
+        const data = event.data;
+        if (!data || typeof data !== "object") return;
+        if (!data.code && !data.error) return;
+        processCallbackResult(data);
+      };
+      messageHandlerRef.current = messageHandler;
+      window.addEventListener("message", messageHandler);
+
+      // Channel 2: localStorage (fallback for COOP — Google OAuth sets
+      // Cross-Origin-Opener-Policy: same-origin which severs window.opener)
+      const storageHandler = (event: StorageEvent) => {
+        if (event.key !== "oauth2_callback_result" || !event.newValue) return;
+        try {
+          const data = JSON.parse(event.newValue);
+          processCallbackResult(data);
+        } catch {
+          // ignore malformed data
+        }
+      };
+      storageHandlerRef.current = storageHandler;
+      window.addEventListener("storage", storageHandler);
+
+      // Poll for popup close (COOP may block popup.closed, so wrap in try/catch)
+      popupCheckRef.current = setInterval(() => {
+        try {
+          if (popup.closed && !processingRef.current) {
+            // Also check localStorage one final time (storage event may have
+            // fired before our listener was ready, or in same-tab scenario)
+            try {
+              const stored = localStorage.getItem("oauth2_callback_result");
+              if (stored) {
+                const data = JSON.parse(stored);
+                processCallbackResult(data);
+                return;
+              }
+            } catch { /* ok */ }
+
+            cleanupOAuthListeners();
+            toast.error(
+              "Authorization window was closed. If Google showed an error, ensure your app has the correct redirect URI and your account is listed as a test user."
+            );
+            setOauthConnecting(false);
+          }
+        } catch {
+          // COOP blocks popup.closed — can't detect close, just keep waiting
+        }
+      }, 1000);
     } catch (error) {
       console.error("OAuth2 start failed:", error);
       toast.error(
@@ -644,6 +795,9 @@ export function ConfigureConnectionOverlay({
           Connect via OAuth2
         </p>
         <div className="space-y-4">
+          {authConfig?.description && (
+            <AuthSetupInstructions description={authConfig.description} />
+          )}
           {renderOAuth2Fields()}
           <div className="space-y-2">
             <Label htmlFor="name">Label (Optional)</Label>

@@ -164,7 +164,7 @@ export async function POST(request: Request) {
         authorizationMethod:
           oauthRequest.value.authorization_method ??
           oauthAuth.authorizationMethod,
-        codeVerifier: oauthRequest.value.code_challenge,
+        codeVerifier: oauthRequest.value.code_verifier,
         grantType: oauthRequest.value.grant_type,
       });
 

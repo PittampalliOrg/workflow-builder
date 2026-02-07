@@ -134,6 +134,38 @@ async function fetchPieces(
   return (payload as ActivepiecesPieceResponse[]).slice(0, options.limit);
 }
 
+/**
+ * Fetch a single piece's full detail (with actions/triggers as objects, not counts).
+ * The listing API returns actions as a count (number), but the detail API returns
+ * the full action definitions with props.
+ */
+async function fetchPieceDetail(
+  options: CliOptions,
+  pieceName: string
+): Promise<ActivepiecesPieceResponse | null> {
+  const baseUrl = options.baseUrl.replace(/\/$/, "");
+  const url = `${baseUrl}/pieces/${encodeURIComponent(pieceName)}`;
+
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+
+  if (options.apiKey) {
+    headers["api-key"] = options.apiKey;
+  }
+
+  const response = await fetch(url, { headers });
+
+  if (!response.ok) {
+    console.warn(
+      `[Sync Pieces] Failed to fetch detail for ${pieceName}: ${response.status}`
+    );
+    return null;
+  }
+
+  return (await response.json()) as ActivepiecesPieceResponse;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
@@ -165,39 +197,60 @@ async function main() {
     }
 
     const normalizedName = normalizePieceName(rawName);
-    const version = String(piece.version ?? "0.0.0").trim();
+
+    // The listing API returns actions/triggers as counts (numbers), not objects.
+    // Fetch full detail for each piece to get actual action definitions with props.
+    const needsDetail =
+      typeof piece.actions === "number" || typeof piece.triggers === "number";
+    let detailPiece = piece;
+
+    if (needsDetail) {
+      console.log(
+        `[Sync Pieces] Fetching detail for ${normalizedName} (listing had actions=${piece.actions})...`
+      );
+      const detail = await fetchPieceDetail(options, rawName);
+      if (detail) {
+        detailPiece = detail;
+      } else {
+        console.warn(
+          `[Sync Pieces] Could not fetch detail for ${normalizedName}, using listing data`
+        );
+      }
+    }
+
+    const version = String(detailPiece.version ?? "0.0.0").trim();
 
     const record = {
       name: normalizedName,
-      authors: toStringArray(piece.authors),
-      displayName: String(piece.displayName ?? normalizedName),
-      logoUrl: String(piece.logoUrl ?? ""),
-      description: piece.description ?? null,
-      platformId: piece.platformId ?? null,
+      authors: toStringArray(detailPiece.authors),
+      displayName: String(detailPiece.displayName ?? normalizedName),
+      logoUrl: String(detailPiece.logoUrl ?? ""),
+      description: detailPiece.description ?? null,
+      platformId: detailPiece.platformId ?? null,
       version,
-      minimumSupportedRelease: String(piece.minimumSupportedRelease ?? "0.0.0"),
+      minimumSupportedRelease: String(detailPiece.minimumSupportedRelease ?? "0.0.0"),
       maximumSupportedRelease: String(
-        piece.maximumSupportedRelease ?? "9999.9999.9999"
+        detailPiece.maximumSupportedRelease ?? "9999.9999.9999"
       ),
-      auth: piece.auth ?? null,
-      actions: toObjectRecord(piece.actions),
-      triggers: toObjectRecord(piece.triggers),
-      pieceType: String(piece.pieceType ?? "OFFICIAL"),
-      categories: toStringArray(piece.categories),
-      packageType: String(piece.packageType ?? "REGISTRY"),
-      i18n: piece.i18n ?? null,
-      createdAt: piece.created ? new Date(piece.created) : new Date(),
-      updatedAt: piece.updated ? new Date(piece.updated) : new Date(),
+      auth: detailPiece.auth ?? null,
+      actions: toObjectRecord(detailPiece.actions),
+      triggers: toObjectRecord(detailPiece.triggers),
+      pieceType: String(detailPiece.pieceType ?? "OFFICIAL"),
+      categories: toStringArray(detailPiece.categories),
+      packageType: String(detailPiece.packageType ?? "REGISTRY"),
+      i18n: detailPiece.i18n ?? null,
+      createdAt: detailPiece.created ? new Date(detailPiece.created) : new Date(),
+      updatedAt: detailPiece.updated ? new Date(detailPiece.updated) : new Date(),
     };
 
     if (options.dryRun) {
-      console.log(`[Sync Pieces] Would upsert ${normalizedName}@${version}`);
+      console.log(`[Sync Pieces] Would upsert ${normalizedName}@${version} (${Object.keys(record.actions).length} actions)`);
       syncedCount += 1;
       continue;
     }
 
     await upsertPieceMetadata(record);
-    console.log(`[Sync Pieces] Synced ${normalizedName}@${version}`);
+    console.log(`[Sync Pieces] Synced ${normalizedName}@${version} (${Object.keys(record.actions).length} actions)`);
     syncedCount += 1;
   }
 

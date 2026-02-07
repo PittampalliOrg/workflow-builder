@@ -114,6 +114,7 @@ export {
   getSortedPluginTypes,
   isFieldGroup,
   parseActionId,
+  registerApActions,
   registerIntegration,
 } from "./registry";
 `;

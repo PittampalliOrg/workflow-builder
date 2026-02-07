@@ -29,6 +29,8 @@ export type ActionConfigFieldBase = {
     | "text" // Regular text input
     | "number" // Number input
     | "select" // Dropdown select
+    | "dynamic-select" // Async dropdown loaded from external API
+    | "dynamic-multi-select" // Async multi-select dropdown
     | "schema-builder"; // Schema builder for structured output
 
   // Placeholder text
@@ -56,6 +58,14 @@ export type ActionConfigFieldBase = {
   showWhen?: {
     field: string;
     equals: string;
+  };
+
+  // For dynamic-select / dynamic-multi-select: async options metadata
+  dynamicOptions?: {
+    pieceName: string;
+    actionName: string;
+    propName: string;
+    refreshers: string[]; // other prop keys that trigger re-fetch
   };
 };
 
@@ -220,6 +230,33 @@ export type ActionWithFullId = PluginAction & {
 const integrationRegistry = new Map<PluginType, IntegrationPlugin>();
 
 /**
+ * Activepieces action cache
+ * Populated by the UI when AP pieces are fetched from /api/pieces/actions
+ */
+let apActionsCache: Map<string, ActionWithFullId> | null = null;
+
+/**
+ * Register Activepieces actions for findActionById fallback.
+ * Called by the UI after fetching AP pieces from the API.
+ */
+export function registerApActions(
+  actions: Array<PluginAction & { integration: string }>
+): void {
+  apActionsCache = new Map();
+  for (const action of actions) {
+    const id = `${action.integration}/${action.slug}`;
+    apActionsCache.set(id, { ...action, id });
+  }
+}
+
+/**
+ * Clear AP actions cache (for testing)
+ */
+export function clearApActionsCache(): void {
+  apActionsCache = null;
+}
+
+/**
  * Compute full action ID from integration type and action slug
  */
 export function computeActionId(
@@ -360,6 +397,14 @@ export function findActionById(
         id: computeActionId(plugin.type, action.slug),
         integration: plugin.type,
       };
+    }
+  }
+
+  // Check Activepieces actions cache (populated from /api/pieces/actions)
+  if (apActionsCache) {
+    const apAction = apActionsCache.get(actionId);
+    if (apAction) {
+      return apAction;
     }
   }
 

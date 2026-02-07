@@ -12,6 +12,7 @@ type PieceAuth = {
   tokenUrl?: string;
   scope?: string[];
   authorizationMethod?: OAuth2AuthorizationMethod;
+  prompt?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -40,6 +41,7 @@ function toPieceAuth(value: unknown): PieceAuth | null {
     tokenUrl: typeof value.tokenUrl === "string" ? value.tokenUrl : undefined,
     scope,
     authorizationMethod,
+    prompt: typeof value.prompt === "string" ? value.prompt : undefined,
   };
 }
 
@@ -102,14 +104,23 @@ export function buildOAuth2AuthorizationUrl(params: {
   scope: string[];
   state: string;
   codeChallenge?: string;
+  prompt?: string;
   extraParams?: Record<string, string>;
 }): string {
   const url = new URL(params.authUrl);
   url.searchParams.set("client_id", params.clientId);
   url.searchParams.set("redirect_uri", params.redirectUrl);
   url.searchParams.set("response_type", "code");
+  url.searchParams.set("access_type", "offline");
   url.searchParams.set("scope", params.scope.join(" "));
   url.searchParams.set("state", params.state);
+
+  // AP uses prompt=consent by default; 'omit' means don't set it
+  if (params.prompt && params.prompt !== "omit") {
+    url.searchParams.set("prompt", params.prompt);
+  } else if (!params.prompt) {
+    url.searchParams.set("prompt", "consent");
+  }
 
   if (params.codeChallenge) {
     url.searchParams.set("code_challenge", params.codeChallenge);

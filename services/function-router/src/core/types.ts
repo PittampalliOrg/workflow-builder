@@ -34,6 +34,7 @@ export interface ExecuteRequest {
   integration_id?: string;
   integrations?: Record<string, Record<string, string>>;
   db_execution_id?: string;
+  connection_external_id?: string;
 }
 
 /**
@@ -68,6 +69,10 @@ export interface OpenFunctionRequest {
   input: Record<string, unknown>;
   node_outputs?: NodeOutputs;
   credentials?: Record<string, string>;
+  /** Raw AP connection value for fn-activepieces (OAuth2/SecretText/etc.) */
+  credentials_raw?: unknown;
+  /** Piece metadata for fn-activepieces routing */
+  metadata?: { pieceName: string; actionName: string };
 }
 
 /**

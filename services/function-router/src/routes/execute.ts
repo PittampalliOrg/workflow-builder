@@ -18,7 +18,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { DaprClient, HttpMethod } from "@dapr/dapr";
 import { lookupFunction } from "../core/registry.js";
-import { fetchCredentialsWithAudit } from "../core/credential-service.js";
+import { fetchCredentialsWithAudit, fetchRawConnectionValue } from "../core/credential-service.js";
 import { resolveOpenFunctionUrl, getResponseTimeAverage, recordResponseTime } from "../core/openfunction-resolver.js";
 import { logExecutionStart, logExecutionComplete, type TimingBreakdown } from "../core/execution-logger.js";
 import type { ExecuteRequest, ExecuteResponse, OpenFunctionRequest } from "../core/types.js";
@@ -48,9 +48,10 @@ const ExecuteRequestSchema = z.object({
       })
     )
     .optional(),
-  integration_id: z.string().optional(),
-  integrations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
-  db_execution_id: z.string().optional(),
+  integration_id: z.string().nullable().optional(),
+  integrations: z.record(z.string(), z.record(z.string(), z.string())).nullable().optional(),
+  db_execution_id: z.string().nullable().optional(),
+  connection_external_id: z.string().nullable().optional(),
 });
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
@@ -126,28 +127,43 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const stepName = functionSlug.split("/")[1] || functionSlug;
         const pluginId = functionSlug.split("/")[0];
 
-        // Pre-fetch credentials from Dapr secret store (with timing and audit logging)
+        const isApRoute = target.appId === "fn-activepieces";
+
+        // Pre-fetch credentials
         const credentialStartTime = Date.now();
+        let credentialsRaw: unknown | undefined;
+
+        if (isApRoute && body.connection_external_id) {
+          // For AP actions: fetch raw connection value (passes directly to context.auth)
+          credentialsRaw = await fetchRawConnectionValue(body.connection_external_id);
+        }
+
+        // Always fetch env-var-mapped credentials too (for native services and as fallback)
         const credentialResult = await fetchCredentialsWithAudit(
           pluginId,
           body.integrations,
           body.db_execution_id ? {
             executionId: body.db_execution_id,
             nodeId: body.node_id,
-          } : undefined
+          } : undefined,
+          body.connection_external_id
         );
         timing.credentialFetchMs = Date.now() - credentialStartTime;
 
         console.log(`[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`);
 
         const openFunctionRequest: OpenFunctionRequest = {
-          step: stepName,
+          step: isApRoute ? functionSlug : stepName,
           execution_id: body.execution_id,
           workflow_id: body.workflow_id,
           node_id: body.node_id,
           input: body.input as Record<string, unknown>,
           node_outputs: body.node_outputs,
           credentials: credentialResult.credentials,
+          ...(isApRoute && {
+            credentials_raw: credentialsRaw,
+            metadata: { pieceName: pluginId, actionName: stepName },
+          }),
         };
 
         // Resolve the OpenFunction URL dynamically (queries K8s API, cached for 30s)

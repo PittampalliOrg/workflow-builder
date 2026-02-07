@@ -72,7 +72,7 @@ export type OAuth2ConnectionValueWithCode = {
   scope: string;
   props?: Record<string, unknown>;
   authorization_method?: OAuth2AuthorizationMethod;
-  code_challenge?: string;
+  code_verifier?: string;
   grant_type?: OAuth2GrantType;
 };
 
@@ -169,7 +169,7 @@ export type UpsertCloudOAuth2Request = CommonConnectionRequestFields & {
         scope: string;
         props?: Record<string, unknown>;
         authorization_method?: OAuth2AuthorizationMethod;
-        code_challenge?: string;
+        code_verifier?: string;
       }
     | CloudOAuth2ConnectionValue;
 };
@@ -185,7 +185,7 @@ export type UpsertPlatformOAuth2Request = CommonConnectionRequestFields & {
         scope: string;
         props?: Record<string, unknown>;
         authorization_method?: OAuth2AuthorizationMethod;
-        code_challenge?: string;
+        code_verifier?: string;
       }
     | PlatformOAuth2ConnectionValue;
 };

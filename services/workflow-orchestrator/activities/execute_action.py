@@ -37,6 +37,7 @@ class ExecuteActionInput(BaseModel):
     workflowId: str
     integrations: dict[str, dict[str, str]] | None = None
     dbExecutionId: str | None = None
+    connectionExternalId: str | None = None
 
 
 class ActivityExecutionResult(BaseModel):
@@ -70,6 +71,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     workflow_id = input_data.get("workflowId", "")
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
+    connection_external_id = input_data.get("connectionExternalId")
 
     # Ensure config is never None
     config = node.get("config") or {}
@@ -102,6 +104,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "integration_id": config.get("integrationId"),
         "integrations": integrations,
         "db_execution_id": db_execution_id,
+        "connection_external_id": connection_external_id,
     }
 
     logger.info(

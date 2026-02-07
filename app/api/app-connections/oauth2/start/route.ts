@@ -58,6 +58,7 @@ export async function POST(request: Request) {
       scope: oauthAuth.scope ?? [],
       state,
       codeChallenge: challenge,
+      prompt: oauthAuth.prompt,
     });
 
     return NextResponse.json({
