@@ -110,7 +110,6 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "node_id": node.get("id"),
         "node_name": node_name,
         "input": resolved_config,
-        "node_outputs": node_outputs,
         "integration_id": config.get("integrationId"),
         "integrations": integrations,
         "db_execution_id": db_execution_id,
@@ -118,6 +117,13 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "ap_project_id": ap_project_id,
         "ap_platform_id": ap_platform_id,
     }
+
+    # Only include node_outputs for WB workflows (not AP flows).
+    # AP workflows resolve variables before calling this activity,
+    # and AP step_outputs use a different format ({output, type, status})
+    # that doesn't match function-router's Zod schema ({label, data}).
+    if workflow_id != "ap-flow":
+        request_payload["node_outputs"] = node_outputs
 
     logger.info(
         f"[Execute Action] Invoking function-router for {action_type} "

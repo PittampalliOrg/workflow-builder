@@ -114,9 +114,11 @@ async function executeCodeStep(
 
   try {
     // Wrap the AP code: it exports `code` as an async function
-    // We use dynamic Function constructor to evaluate it in a contained scope
+    // Strip `export` keywords — AsyncFunction body is not an ES module
+    const strippedCode = sourceCode.code.replace(/\bexport\s+/g, '');
+
     const wrappedCode = `
-      ${sourceCode.code}
+      ${strippedCode}
       ;return typeof code === 'function' ? code(inputs) : undefined;
     `;
 

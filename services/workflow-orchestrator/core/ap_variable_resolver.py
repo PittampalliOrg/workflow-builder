@@ -82,8 +82,15 @@ def _resolve_path(path: str, step_outputs: dict[str, Any]) -> Any:
     """
     parts = path.split('.')
 
-    if len(parts) < 2:
+    if len(parts) < 1:
         return None
+
+    # Handle single-part path: {{trigger}} or {{step_1}}
+    if len(parts) == 1:
+        step_data = step_outputs.get(parts[0])
+        if isinstance(step_data, dict) and 'output' in step_data:
+            return step_data['output']
+        return step_data
 
     # Handle "steps.step_name.rest..." format
     if parts[0] == 'steps' and len(parts) >= 2:
@@ -102,8 +109,18 @@ def _resolve_path(path: str, step_outputs: dict[str, Any]) -> Any:
         logger.debug(f"[APResolver] Step '{step_name}' not found in outputs")
         return None
 
-    # Traverse remaining path
-    current = step_data
+    # Our step_outputs store the full step envelope: {output, type, status}.
+    # AP variables reference the output data directly (e.g., {{trigger.field}}
+    # means step_outputs['trigger']['output']['field']).
+    # If step_data has an 'output' key AND remaining path doesn't start with
+    # 'output'/'type'/'status', auto-traverse into output.
+    if (isinstance(step_data, dict) and 'output' in step_data
+            and remaining and remaining[0] not in ('output', 'type', 'status', 'input', 'errorMessage')):
+        current = step_data.get('output')
+        if current is None:
+            return None
+    else:
+        current = step_data
     for part in remaining:
         if isinstance(current, dict):
             # Handle bracket notation: field['key']
