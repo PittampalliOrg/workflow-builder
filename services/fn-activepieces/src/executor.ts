@@ -90,11 +90,65 @@ function resolveAuth(request: ExecuteRequest): unknown {
 }
 
 /**
+ * Execute an AP CODE step using Node.js vm module.
+ *
+ * AP code steps have sourceCode.code containing a function like:
+ *   export const code = async (inputs) => { ... return result; }
+ */
+async function executeCodeStep(
+  request: ExecuteRequest
+): Promise<ExecutionResult> {
+  const sourceCode = request.input?.sourceCode as
+    | { code?: string; packageJson?: string }
+    | undefined;
+  const codeInput = request.input?.input ?? {};
+
+  if (!sourceCode?.code) {
+    return {
+      success: false,
+      error: 'No source code provided for CODE step',
+    };
+  }
+
+  console.log(`[fn-activepieces] Executing CODE step`);
+
+  try {
+    // Wrap the AP code: it exports `code` as an async function
+    // We use dynamic Function constructor to evaluate it in a contained scope
+    const wrappedCode = `
+      ${sourceCode.code}
+      ;return typeof code === 'function' ? code(inputs) : undefined;
+    `;
+
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+    const fn = new AsyncFunction('inputs', wrappedCode);
+    const result = await fn(codeInput);
+
+    return {
+      success: true,
+      data: result,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[fn-activepieces] CODE step failed:`, error);
+    return {
+      success: false,
+      error: `Code execution failed: ${message}`,
+    };
+  }
+}
+
+/**
  * Execute an Activepieces action.
  */
 export async function executeAction(
   request: ExecuteRequest
 ): Promise<ExecutionResult> {
+  // Handle CODE steps specially — they don't use AP pieces
+  if (request.step === '_code/execute' || request.step.startsWith('_code/')) {
+    return executeCodeStep(request);
+  }
+
   const { pieceName, actionName } = resolveNames(request);
 
   console.log(

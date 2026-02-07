@@ -56,6 +56,7 @@ from activities.call_planner_service import (
     call_planner_multi_step,
 )
 from activities.log_node_execution import log_node_start, log_node_complete
+from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
 
 # Configuration from centralized config module
@@ -110,6 +111,9 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_planner_approve)
     wfr.register_activity(call_planner_status)
     wfr.register_activity(call_planner_multi_step)
+    # AP workflow callback activities
+    wfr.register_activity(send_ap_callback)
+    wfr.register_activity(send_ap_step_update)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 

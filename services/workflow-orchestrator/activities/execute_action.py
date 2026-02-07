@@ -78,7 +78,10 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     ap_platform_id = input_data.get("apPlatformId")
 
     # Ensure config is never None
+    # Support both flat (node.config) and nested (node.data.config) formats
     config = node.get("config") or {}
+    if not config and isinstance(node.get("data"), dict):
+        config = node["data"].get("config") or {}
 
     # Get actionType - the canonical identifier for functions
     action_type = config.get("actionType")
@@ -93,8 +96,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     # Resolve template variables in the node config
     resolved_config = resolve_templates(config, node_outputs)
 
-    # Use node.label with fallback to action_type or node.id if empty
-    node_name = node.get("label") or action_type or node.get("id", "unknown")
+    # Use node.label (flat or nested) with fallback to action_type or node.id
+    node_label = node.get("label") or ""
+    if not node_label and isinstance(node.get("data"), dict):
+        node_label = node["data"].get("label", "")
+    node_name = node_label or action_type or node.get("id", "unknown")
 
     # Build the request for function-router
     request_payload = {

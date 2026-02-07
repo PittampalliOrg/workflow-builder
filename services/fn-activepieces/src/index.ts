@@ -146,12 +146,17 @@ async function main() {
     const result = await executeAction(body);
 
     const duration_ms = Date.now() - startTime;
-    const response: ExecuteResponse = {
+    const response: ExecuteResponse & { pause?: unknown } = {
       success: result.success,
       data: result.data,
       error: result.error,
       duration_ms,
     };
+
+    // Forward pause metadata (DELAY/WEBHOOK) for Dapr workflow handling
+    if (result.pause) {
+      response.pause = result.pause;
+    }
 
     console.log(
       `[fn-activepieces] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`

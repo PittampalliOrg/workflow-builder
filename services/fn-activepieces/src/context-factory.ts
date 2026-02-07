@@ -17,6 +17,8 @@ interface ContextOptions {
 export interface PauseCaptured {
   type: 'DELAY' | 'WEBHOOK';
   resumeDateTime?: string;
+  /** Pre-computed delay in seconds (for DELAY type). Avoids datetime.now() in Dapr workflow. */
+  delaySeconds?: number;
   requestId?: string;
   response?: unknown;
 }
@@ -63,12 +65,26 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
       id: executionId,
       stop: noop as unknown as ActionContext['run']['stop'],
       pause: ((req: { pauseMetadata: { type: string; resumeDateTime?: string; requestId?: string; response?: unknown } }) => {
-        pauseRef.value = {
+        const captured: PauseCaptured = {
           type: req.pauseMetadata.type as 'DELAY' | 'WEBHOOK',
           resumeDateTime: req.pauseMetadata.resumeDateTime,
           requestId: req.pauseMetadata.requestId,
           response: req.pauseMetadata.response,
         };
+
+        // Pre-compute delaySeconds for DELAY pauses so the Dapr workflow
+        // doesn't need to call datetime.now() (which breaks replay).
+        if (captured.type === 'DELAY' && captured.resumeDateTime) {
+          try {
+            const resumeMs = new Date(captured.resumeDateTime).getTime();
+            const nowMs = Date.now();
+            captured.delaySeconds = Math.max(0, Math.round((resumeMs - nowMs) / 1000));
+          } catch {
+            captured.delaySeconds = 0;
+          }
+        }
+
+        pauseRef.value = captured;
       }) as unknown as ActionContext['run']['pause'],
       respond: noop as unknown as ActionContext['run']['respond'],
     },
