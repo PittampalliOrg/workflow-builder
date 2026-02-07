@@ -14,16 +14,26 @@ interface ContextOptions {
   actionName: string;
 }
 
+export interface PauseCaptured {
+  type: 'DELAY' | 'WEBHOOK';
+  resumeDateTime?: string;
+  requestId?: string;
+  response?: unknown;
+}
+
 const noop = () => {};
 const asyncNoop = async () => {};
 
 /**
  * Build a minimal ActionContext that satisfies the AP framework interface.
+ * Returns both the context and a pauseRef that captures any pause requests.
  */
-export function buildActionContext(options: ContextOptions): ActionContext {
+export function buildActionContext(options: ContextOptions): { context: ActionContext; pauseRef: { value: PauseCaptured | null } } {
   const { auth, propsValue, executionId, actionName } = options;
 
-  return {
+  const pauseRef: { value: PauseCaptured | null } = { value: null };
+
+  const context = {
     auth,
     propsValue,
     executionType: 'BEGIN' as const,
@@ -48,11 +58,18 @@ export function buildActionContext(options: ContextOptions): ActionContext {
       token: '',
     },
 
-    // Run control
+    // Run control — pause captures metadata for Dapr handling
     run: {
       id: executionId,
       stop: noop as unknown as ActionContext['run']['stop'],
-      pause: noop as unknown as ActionContext['run']['pause'],
+      pause: ((req: { pauseMetadata: { type: string; resumeDateTime?: string; requestId?: string; response?: unknown } }) => {
+        pauseRef.value = {
+          type: req.pauseMetadata.type as 'DELAY' | 'WEBHOOK',
+          resumeDateTime: req.pauseMetadata.resumeDateTime,
+          requestId: req.pauseMetadata.requestId,
+          response: req.pauseMetadata.response,
+        };
+      }) as unknown as ActionContext['run']['pause'],
       respond: noop as unknown as ActionContext['run']['respond'],
     },
 
@@ -99,4 +116,6 @@ export function buildActionContext(options: ContextOptions): ActionContext {
     // Resume URL — stub
     generateResumeUrl: () => '',
   } as unknown as ActionContext;
+
+  return { context, pauseRef };
 }

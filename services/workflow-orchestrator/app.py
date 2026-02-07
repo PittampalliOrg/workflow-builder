@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from core.config import config
 from workflows.dynamic_workflow import wfr, dynamic_workflow
+from workflows.ap_workflow import ap_workflow
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state, get_state, delete_state
 from activities.publish_event import (
@@ -111,6 +112,10 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_planner_multi_step)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
+
+    # Register workflows
+    wfr.register_workflow(ap_workflow)
+    logger.info("[Workflow Orchestrator] Registered AP workflow")
 
     # Start the workflow runtime
     wfr.start()
@@ -198,6 +203,28 @@ class CloudEvent(BaseModel):
     id: str | None = None
     time: str | None = None
     datacontenttype: str = "application/json"
+
+
+class StartAPWorkflowRequest(BaseModel):
+    """Request from AP's dapr-executor.ts to start an AP flow execution."""
+    flowRunId: str
+    projectId: str
+    platformId: str | None = None
+    flowVersionId: str | None = None
+    flowId: str | None = None
+    executionType: str = "BEGIN"
+    triggerPayload: Any = None
+    executeTrigger: bool = True
+    progressUpdateType: str | None = None
+    callbackUrl: str = ""
+    flowVersion: dict[str, Any] = Field(default_factory=dict)
+
+
+class StartAPWorkflowResponse(BaseModel):
+    """Response from starting an AP workflow."""
+    instanceId: str
+    flowRunId: str
+    status: str = "started"
 
 
 class WorkflowStatusResponse(BaseModel):
@@ -297,6 +324,66 @@ def start_workflow(request: StartWorkflowRequest):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)
+def start_ap_workflow(request: StartAPWorkflowRequest):
+    """
+    Start an AP flow execution via Dapr workflow.
+
+    POST /api/v2/ap-workflows
+
+    Called by AP's dapr-executor.ts when AP_EXECUTION_ENGINE=dapr.
+    Receives the full FlowVersion JSON and walks the AP action chain
+    using the Dapr workflow runtime.
+    """
+    try:
+        client = get_workflow_client()
+
+        workflow_input = {
+            "flowRunId": request.flowRunId,
+            "projectId": request.projectId,
+            "platformId": request.platformId,
+            "flowVersionId": request.flowVersionId,
+            "flowId": request.flowId,
+            "executionType": request.executionType,
+            "triggerPayload": request.triggerPayload,
+            "executeTrigger": request.executeTrigger,
+            "progressUpdateType": request.progressUpdateType,
+            "callbackUrl": request.callbackUrl,
+            "flowVersion": request.flowVersion,
+        }
+
+        # Use the AP flow run ID as the Dapr instance ID for traceability
+        import time
+        import random
+        import string
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
+        instance_id = f"ap-{request.flowRunId}-{random_suffix}"
+
+        logger.info(
+            f"[AP Workflow] Starting AP flow: run={request.flowRunId}, "
+            f"flow={request.flowVersion.get('displayName', 'unknown')}, "
+            f"instance={instance_id}"
+        )
+
+        result_id = client.schedule_new_workflow(
+            workflow=ap_workflow,
+            input=workflow_input,
+            instance_id=instance_id,
+        )
+
+        logger.info(f"[AP Workflow] Workflow scheduled: {result_id}")
+
+        return StartAPWorkflowResponse(
+            instanceId=result_id,
+            flowRunId=request.flowRunId,
+            status="started",
+        )
+
+    except Exception as e:
+        logger.error(f"[AP Workflow] Failed to start AP workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -645,6 +732,7 @@ def get_config():
         "runtime": "python-dapr-workflow",
         "features": [
             "dynamic-workflow",
+            "ap-workflow",
             "child-workflows",
             "approval-gates",
             "timers",

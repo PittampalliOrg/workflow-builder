@@ -11,6 +11,12 @@ export interface ExecutionResult {
   success: boolean;
   data?: unknown;
   error?: string;
+  pause?: {
+    type: 'DELAY' | 'WEBHOOK';
+    resumeDateTime?: string;
+    requestId?: string;
+    response?: unknown;
+  };
 }
 
 /**
@@ -118,8 +124,8 @@ export async function executeAction(
   // Resolve auth
   const auth = resolveAuth(request);
 
-  // Build context
-  const context = buildActionContext({
+  // Build context (includes pauseRef to capture pause requests)
+  const { context, pauseRef } = buildActionContext({
     auth,
     propsValue: request.input,
     executionId: request.execution_id,
@@ -129,6 +135,19 @@ export async function executeAction(
   // Execute the action
   try {
     const result = await action.run(context);
+
+    // Check if the action requested a pause (DELAY or WEBHOOK)
+    if (pauseRef.value) {
+      console.log(
+        `[fn-activepieces] Action ${pieceName}/${actionName} requested pause: type=${pauseRef.value.type}`
+      );
+      return {
+        success: true,
+        data: result,
+        pause: pauseRef.value,
+      };
+    }
+
     return {
       success: true,
       data: result,

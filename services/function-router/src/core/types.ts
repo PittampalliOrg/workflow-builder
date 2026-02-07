@@ -35,6 +35,8 @@ export interface ExecuteRequest {
   integrations?: Record<string, Record<string, string>>;
   db_execution_id?: string;
   connection_external_id?: string;
+  ap_project_id?: string;
+  ap_platform_id?: string;
 }
 
 /**
@@ -56,6 +58,13 @@ export interface ExecuteResponse {
   error?: string;
   duration_ms: number;
   routed_to?: string;
+  /** Pause metadata from fn-activepieces when a piece requests DELAY or WEBHOOK pause */
+  pause?: {
+    type: 'DELAY' | 'WEBHOOK';
+    resumeDateTime?: string;
+    requestId?: string;
+    response?: unknown;
+  };
 }
 
 /**

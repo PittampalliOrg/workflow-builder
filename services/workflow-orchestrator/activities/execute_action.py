@@ -38,6 +38,8 @@ class ExecuteActionInput(BaseModel):
     integrations: dict[str, dict[str, str]] | None = None
     dbExecutionId: str | None = None
     connectionExternalId: str | None = None
+    apProjectId: str | None = None
+    apPlatformId: str | None = None
 
 
 class ActivityExecutionResult(BaseModel):
@@ -72,6 +74,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
     connection_external_id = input_data.get("connectionExternalId")
+    ap_project_id = input_data.get("apProjectId")
+    ap_platform_id = input_data.get("apPlatformId")
 
     # Ensure config is never None
     config = node.get("config") or {}
@@ -105,6 +109,8 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "integrations": integrations,
         "db_execution_id": db_execution_id,
         "connection_external_id": connection_external_id,
+        "ap_project_id": ap_project_id,
+        "ap_platform_id": ap_platform_id,
     }
 
     logger.info(
@@ -133,12 +139,18 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             f"(success={result.get('success')}, duration_ms={duration_ms})"
         )
 
-        return {
+        activity_result = {
             "success": result.get("success", False),
             "data": result.get("data"),
             "error": result.get("error"),
             "duration_ms": duration_ms,
         }
+
+        # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
+        if result.get("pause"):
+            activity_result["pause"] = result["pause"]
+
+        return activity_result
 
     except requests.Timeout:
         duration_ms = int((time.time() - start_time) * 1000)

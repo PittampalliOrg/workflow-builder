@@ -52,6 +52,8 @@ const ExecuteRequestSchema = z.object({
   integrations: z.record(z.string(), z.record(z.string(), z.string())).nullable().optional(),
   db_execution_id: z.string().nullable().optional(),
   connection_external_id: z.string().nullable().optional(),
+  ap_project_id: z.string().nullable().optional(),
+  ap_platform_id: z.string().nullable().optional(),
 });
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
@@ -133,9 +135,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const credentialStartTime = Date.now();
         let credentialsRaw: unknown | undefined;
 
+        const apContext = (body.ap_project_id && body.ap_platform_id) ? {
+          projectId: body.ap_project_id,
+          platformId: body.ap_platform_id,
+        } : undefined;
+
         if (isApRoute && body.connection_external_id) {
           // For AP actions: fetch raw connection value (passes directly to context.auth)
-          credentialsRaw = await fetchRawConnectionValue(body.connection_external_id);
+          credentialsRaw = await fetchRawConnectionValue(body.connection_external_id, apContext);
         }
 
         // Always fetch env-var-mapped credentials too (for native services and as fallback)
@@ -146,7 +153,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             executionId: body.db_execution_id,
             nodeId: body.node_id,
           } : undefined,
-          body.connection_external_id
+          body.connection_external_id,
+          apContext,
         );
         timing.credentialFetchMs = Date.now() - credentialStartTime;
 
