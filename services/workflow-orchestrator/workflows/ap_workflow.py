@@ -35,6 +35,28 @@ def normalize_piece_name(piece_name: str) -> str:
     return piece_name
 
 
+def extract_connection_id(auth_value: str | None) -> str | None:
+    """
+    Extract the connection ID from an AP auth template expression.
+
+    AP stores connection references as: {{connections['<externalId>']}}
+    The value inside the template IS the app_connection.externalId
+    (confirmed: AP UI sets it from connection.externalId).
+    We extract the literal ID from the template — the 'connections'
+    namespace is AP-internal, not a step variable reference.
+    """
+    import re
+    if not auth_value or not isinstance(auth_value, str):
+        return None
+    match = re.search(r"\{\{connections\['([^']+)'\]\}\}", auth_value)
+    if match:
+        return match.group(1)
+    # Fallback: if it's a plain string (already resolved or literal ID)
+    if not auth_value.startswith('{{'):
+        return auth_value
+    return None
+
+
 def build_function_slug(piece_name: str, action_name: str) -> str:
     """Build a function-router slug from AP piece/action names."""
     normalized = normalize_piece_name(piece_name)
@@ -309,12 +331,11 @@ def _handle_piece(
     resolved_input = resolve_ap_value(input_data, step_outputs)
     slug = build_function_slug(piece_name, ap_action_name)
 
-    # Extract connection ID from auth input
-    connection_id = None
-    if isinstance(resolved_input, dict):
-        auth_input = resolved_input.get('auth')
-        if isinstance(auth_input, str) and auth_input:
-            connection_id = auth_input
+    # Extract connection externalId from the raw (unresolved) auth input.
+    # AP stores it as {{connections['<externalId>']}} which is NOT
+    # a step variable — it's AP-internal. Extract the literal externalId.
+    raw_auth = input_data.get('auth') if isinstance(input_data, dict) else None
+    connection_id = extract_connection_id(raw_auth)
 
     node = {
         'id': action_name,
