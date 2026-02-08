@@ -118,6 +118,7 @@ interface ServiceList {
  */
 const STANDALONE_SERVICES: Record<string, string> = {
   "fn-activepieces": `http://fn-activepieces-standalone.${process.env.FUNCTIONS_NAMESPACE || "workflow-builder"}.svc.cluster.local`,
+  "planner-dapr-agent": `http://planner-dapr-agent.${process.env.FUNCTIONS_NAMESPACE || "workflow-builder"}.svc.cluster.local:8000`,
 };
 
 /**

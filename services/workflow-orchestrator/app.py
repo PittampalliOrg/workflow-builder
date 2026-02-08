@@ -359,12 +359,9 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
             "flowVersion": request.flowVersion,
         }
 
-        # Use the AP flow run ID as the Dapr instance ID for traceability
-        import time
-        import random
-        import string
-        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
-        instance_id = f"ap-{request.flowRunId}-{random_suffix}"
+        # Use the AP flow run ID as the Dapr instance ID (1:1 mapping).
+        # This makes monitor/status queries and resume events trivial and avoids UI confusion.
+        instance_id = request.flowRunId
 
         logger.info(
             f"[AP Workflow] Starting AP flow: run={request.flowRunId}, "
@@ -372,16 +369,22 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
             f"instance={instance_id}"
         )
 
-        result_id = client.schedule_new_workflow(
-            workflow=ap_workflow,
-            input=workflow_input,
-            instance_id=instance_id,
-        )
+        # Idempotent start: if the instance already exists, return it.
+        try:
+            client.schedule_new_workflow(
+                workflow=ap_workflow,
+                input=workflow_input,
+                instance_id=instance_id,
+            )
+        except Exception:
+            existing = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
+            if existing is None:
+                raise
 
-        logger.info(f"[AP Workflow] Workflow scheduled: {result_id}")
+        logger.info(f"[AP Workflow] Workflow scheduled: {instance_id}")
 
         return StartAPWorkflowResponse(
-            instanceId=result_id,
+            instanceId=instance_id,
             flowRunId=request.flowRunId,
             status="started",
         )

@@ -3697,8 +3697,221 @@ class StandaloneExecuteRequest(BaseModel):
     max_test_retries: Optional[int] = 3
 
 
+class OpenFunctionExecuteRequest(BaseModel):
+    """Request from function-router (OpenFunctions protocol).
+
+    function-router sends this when a planner/* slug is matched.
+    The 'step' field contains the action name (e.g., 'plan_tasks').
+    The 'input' field contains the AP piece property values.
+    """
+    step: str                                          # Action name from slug suffix
+    execution_id: str                                  # AP flow execution ID
+    workflow_id: str                                    # AP workflow ID
+    node_id: str                                        # AP step node ID
+    input: dict = {}                                    # AP piece property values
+    node_outputs: Optional[dict] = None                 # Upstream step outputs
+    credentials: Optional[dict] = None                  # Env-mapped credentials
+    credentials_raw: Optional[dict] = None              # Raw AP connection value
+    metadata: Optional[dict] = None                     # {pieceName, actionName}
+
+
+# ============================================================================
+# OpenFunctions Execute Endpoint (function-router → planner-dapr-agent)
+# ============================================================================
+
+# Mapping from AP piece action name → handler
+# Long-running actions are awaited synchronously (function-router has a 5-min timeout)
+
+async def _of_clone(inputs: dict, wf_id: str) -> dict:
+    """Handle clone action via OpenFunctions."""
+    req = StandaloneCloneRequest(
+        owner=inputs.get("sourceWorkflowId", "").split("/")[0] if "/" in inputs.get("sourceWorkflowId", "") else inputs.get("owner", ""),
+        repo=inputs.get("sourceWorkflowId", "").split("/")[-1] if "/" in inputs.get("sourceWorkflowId", "") else inputs.get("sourceWorkflowId", ""),
+        branch=inputs.get("branch", "main"),
+        token=inputs.get("token"),
+        execution_id=wf_id,
+    )
+    return await standalone_clone(req)
+
+
+async def _of_plan_tasks(inputs: dict, wf_id: str) -> dict:
+    """Handle plan_tasks action via OpenFunctions."""
+    req = StandalonePlanRequest(
+        task=inputs.get("prompt", ""),
+        cwd=inputs.get("cwd"),
+        workflow_id=inputs.get("workflowId") or wf_id,
+        model=inputs.get("model", "gpt-4o"),
+        max_turns=int(inputs.get("max_turns", 20)),
+    )
+    return await standalone_plan(req)
+
+
+async def _of_execute_tasks(inputs: dict, wf_id: str) -> dict:
+    """Handle execute_tasks action via OpenFunctions."""
+    req = StandaloneExecuteRequest(
+        workflow_id=inputs.get("workflowId") or wf_id,
+        model=inputs.get("model", "gpt-5.2-codex"),
+        max_turns=int(inputs.get("max_turns", 50)),
+        max_test_retries=int(inputs.get("max_test_retries", 3)),
+    )
+    return await _standalone_execute_impl(req)
+
+
+async def _of_multi_step(inputs: dict, wf_id: str) -> dict:
+    """Handle multi_step action via OpenFunctions."""
+    req = StandalonePlanRequest(
+        task=inputs.get("prompt", ""),
+        cwd=inputs.get("cwd"),
+        workflow_id=wf_id,
+        model=inputs.get("model", "gpt-4o"),
+        max_turns=int(inputs.get("maxIterations", 20)),
+    )
+    # Plan first
+    plan_result = await standalone_plan(req)
+
+    # On failure, standalone_plan returns JSONResponse; on success, a dict
+    if isinstance(plan_result, JSONResponse):
+        return plan_result
+    if not isinstance(plan_result, dict) or not plan_result.get("success", False):
+        return plan_result
+
+    # Extract plan data for execution
+    plan_data = plan_result
+    exec_req = StandaloneExecuteRequest(
+        plan=plan_data.get("output", {}),
+        tasks=plan_data.get("tasks", []),
+        workflow_id=plan_data.get("workflow_id", wf_id),
+        model=inputs.get("model", "gpt-5.2-codex"),
+        max_turns=int(inputs.get("maxIterations", 50)),
+    )
+    return await _standalone_execute_impl(exec_req)
+
+
+async def _of_run_workflow(inputs: dict, wf_id: str) -> dict:
+    """Handle run_workflow action via OpenFunctions."""
+    task_input = inputs.get("input", "")
+    parsed_input = None
+    if task_input:
+        try:
+            parsed_input = json.loads(task_input) if isinstance(task_input, str) else task_input
+        except json.JSONDecodeError:
+            parsed_input = {"raw": task_input}
+
+    req = RunRequest(
+        task=json.dumps(parsed_input) if parsed_input else f"Run workflow {inputs.get('workflowId', '')}",
+        mode="v2",
+    )
+    result = await start_workflow(req, BackgroundTasks())
+    return {
+        "success": True,
+        "instance_id": result.get("instance_id"),
+        "status": result.get("status"),
+        "mode": result.get("mode"),
+    }
+
+
+async def _of_approve(inputs: dict, wf_id: str) -> dict:
+    """Handle approve action via OpenFunctions."""
+    instance_id = inputs.get("workflowInstanceId", "")
+    req = ApprovalRequest(
+        approved=inputs.get("approved", True),
+        reason=inputs.get("reason"),
+    )
+    return await approve_workflow(instance_id, req)
+
+
+async def _of_check_status(inputs: dict, wf_id: str) -> dict:
+    """Handle check_status action via OpenFunctions."""
+    instance_id = inputs.get("workflowInstanceId", "")
+    return await get_status(instance_id)
+
+
+# Action name → handler mapping
+_OF_ACTION_HANDLERS = {
+    "clone": _of_clone,
+    "plan_tasks": _of_plan_tasks,
+    "execute_tasks": _of_execute_tasks,
+    "multi_step": _of_multi_step,
+    "run_workflow": _of_run_workflow,
+    "approve": _of_approve,
+    "check_status": _of_check_status,
+}
+
+
 @app.post("/execute")
-async def standalone_execute(request: StandaloneExecuteRequest):
+async def execute_endpoint(request: Request):
+    """Unified /execute endpoint handling both OpenFunctions and standalone requests.
+
+    - If 'step' field is present → OpenFunctions request from function-router
+    - Otherwise → standalone execute request (legacy)
+    """
+    import time as _time
+    body = await request.json()
+
+    # Detect OpenFunctions request by presence of 'step' field
+    if "step" in body:
+        of_req = OpenFunctionExecuteRequest(**body)
+        action_name = of_req.step
+        start_ts = _time.time()
+
+        logger.info(
+            f"[OpenFunctions] Executing action '{action_name}' "
+            f"(execution_id={of_req.execution_id}, node_id={of_req.node_id})"
+        )
+
+        handler = _OF_ACTION_HANDLERS.get(action_name)
+        if not handler:
+            return JSONResponse(status_code=400, content={
+                "success": False,
+                "error": f"Unknown planner action: '{action_name}'. "
+                         f"Available: {list(_OF_ACTION_HANDLERS.keys())}",
+                "duration_ms": 0,
+            })
+
+        try:
+            result = await handler(of_req.input, of_req.workflow_id)
+
+            # Normalize result — extract from JSONResponse if needed
+            if isinstance(result, JSONResponse):
+                import json as _json
+                result_data = _json.loads(result.body.decode())
+                duration_ms = int((_time.time() - start_ts) * 1000)
+                return JSONResponse(
+                    status_code=result.status_code,
+                    content={
+                        "success": result_data.get("success", False),
+                        "data": result_data,
+                        "error": result_data.get("error"),
+                        "duration_ms": duration_ms,
+                    },
+                )
+
+            duration_ms = int((_time.time() - start_ts) * 1000)
+            logger.info(
+                f"[OpenFunctions] Action '{action_name}' completed in {duration_ms}ms"
+            )
+
+            return {
+                "success": result.get("success", True) if isinstance(result, dict) else True,
+                "data": result if isinstance(result, dict) else {"raw": str(result)},
+                "duration_ms": duration_ms,
+            }
+
+        except Exception as e:
+            duration_ms = int((_time.time() - start_ts) * 1000)
+            logger.error(f"[OpenFunctions] Action '{action_name}' failed: {e}")
+            return JSONResponse(status_code=500, content={
+                "success": False,
+                "error": str(e),
+                "duration_ms": duration_ms,
+            })
+
+    # Fallback: standalone execute request
+    standalone_req = StandaloneExecuteRequest(**body)
+    return await _standalone_execute_impl(standalone_req)
+
+
+async def _standalone_execute_impl(request: StandaloneExecuteRequest):
     """Execute tasks as a standalone operation with sandbox.
 
     Creates an Agent Sandbox pod, runs execution and testing agents,

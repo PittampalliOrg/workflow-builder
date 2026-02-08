@@ -139,6 +139,7 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
             'payload': {
                 'flowRunId': flow_run_id,
                 'status': 'RUNNING',
+                'daprInstanceId': ctx.instance_id,
             },
         })
 
@@ -169,6 +170,7 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
                 'payload': {
                     'flowRunId': flow_run_id,
                     'status': 'SUCCEEDED',
+                    'daprInstanceId': ctx.instance_id,
                     'steps': _format_step_outputs(step_outputs),
                 },
             })
@@ -200,6 +202,7 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
                 'payload': {
                     'flowRunId': flow_run_id,
                     'status': 'FAILED',
+                    'daprInstanceId': ctx.instance_id,
                     'steps': _format_step_outputs(step_outputs),
                     'failedStep': failed_step or {
                         'name': 'unknown',
@@ -394,6 +397,7 @@ def _handle_piece(
                     'payload': {
                         'flowRunId': flow_run_id,
                         'status': 'PAUSED',
+                        'daprInstanceId': ctx.instance_id,
                         'pauseMetadata': {
                             'type': 'DELAY',
                             'resumeDateTime': resume_dt_str,
@@ -434,6 +438,7 @@ def _handle_piece(
                     'payload': {
                         'flowRunId': flow_run_id,
                         'status': 'PAUSED',
+                        'daprInstanceId': ctx.instance_id,
                         'pauseMetadata': {
                             'type': 'WEBHOOK',
                             'requestId': request_id,
