@@ -137,6 +137,29 @@ File:
 ### Formatting/Lint
 - `pnpm fix` currently fails in this local Nix environment because `npx ultracite@latest` downloads a dynamically linked Biome binary incompatible with this host setup.
 
+## Hardening And Completeness Updates
+
+### February 8, 2026
+Additional work was completed to make the integration safer and closer to upstream Activepieces behavior:
+
+- Fixed an authorization bug in dynamic property options (`POST /api/pieces/options`) to prevent cross-user connection access.
+- OAuth2 improvements:
+  - callback payload includes `state`
+  - UI validates `state` before exchanging/claiming tokens
+  - localStorage COOP fallback is keyed by `state` to avoid collisions
+  - supports `client_credentials` grant
+  - runtime refresh aligns with Activepieces-style semantics and persists refreshed tokens
+- Multi-auth: `piece_metadata.auth` can be an object or an array; UI supports selecting among auth methods.
+- Piece selection: list/latest selection prefers latest semver rather than `updatedAt` ordering.
+- Database constraints:
+  - `piece_metadata.platform_id` is `NOT NULL DEFAULT 'OFFICIAL'` and participates in uniqueness
+  - `app_connection.owner_id` is `NOT NULL` with `ON DELETE CASCADE`
+  - unique `(owner_id, external_id)`
+  - migration `0009` includes backfills/dedupe prior to applying constraints
+- Reduced secret exposure: app connection `GET` returns redacted data instead of decrypted values.
+
+See `docs/activepieces-auth.md` for the current end-to-end auth flow and operational notes.
+
 ## Current Compatibility Strategy
 The app now stores and understands Activepieces-style app connections while retaining compatibility with legacy integration usage in node config and execution paths. This allows incremental migration without breaking current UX.
 

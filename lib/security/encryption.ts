@@ -15,7 +15,8 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const ALGORITHM = "aes-256-cbc";
 const IV_LENGTH = 16;
-const ENCRYPTION_KEY_ENV = "AP_ENCRYPTION_KEY";
+const ENCRYPTION_KEY_ENV_PRIMARY = "INTEGRATION_ENCRYPTION_KEY";
+const ENCRYPTION_KEY_ENV_ALIAS = "AP_ENCRYPTION_KEY";
 
 export type EncryptedObject = {
   iv: string;
@@ -27,11 +28,13 @@ function isHex(s: string): boolean {
 }
 
 function getEncryptionKey(): Buffer {
-  const secret = process.env[ENCRYPTION_KEY_ENV];
+  const secret =
+    process.env[ENCRYPTION_KEY_ENV_PRIMARY] ??
+    process.env[ENCRYPTION_KEY_ENV_ALIAS];
 
   if (!secret) {
     throw new Error(
-      `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting connection credentials. ` +
+      `${ENCRYPTION_KEY_ENV_PRIMARY} (or ${ENCRYPTION_KEY_ENV_ALIAS}) environment variable is required for encrypting connection credentials. ` +
         `Generate one with: openssl rand -hex 32`
     );
   }
@@ -47,7 +50,7 @@ function getEncryptionKey(): Buffer {
   }
 
   throw new Error(
-    `${ENCRYPTION_KEY_ENV} must be either a 64-char hex string (openssl rand -hex 32) ` +
+    `${ENCRYPTION_KEY_ENV_PRIMARY}/${ENCRYPTION_KEY_ENV_ALIAS} must be either a 64-char hex string (openssl rand -hex 32) ` +
       `or a 32-char string. Got ${secret.length} characters.`
   );
 }

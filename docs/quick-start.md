@@ -162,6 +162,7 @@ kubectl create secret generic workflow-builder-secrets \
   --from-literal=DATABASE_URL=postgresql://postgres:password@postgresql:5432/workflow_builder \
   --from-literal=BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
   --from-literal=INTEGRATION_ENCRYPTION_KEY=$(openssl rand -hex 32) \
+  --from-literal=AP_ENCRYPTION_KEY=$(openssl rand -hex 32) \
   -n workflow-builder
 ```
 
