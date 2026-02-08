@@ -7,6 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import {
   AppConnectionScope,
@@ -15,6 +16,7 @@ import {
 } from "../types/app-connection";
 
 import { generateId } from "../utils/id";
+import type { EncryptedObject } from "../security/encryption";
 
 // Better Auth tables
 export const users = pgTable("users", {
@@ -110,7 +112,9 @@ export const pieceMetadata = pgTable(
     displayName: text("display_name").notNull(),
     logoUrl: text("logo_url").notNull(),
     description: text("description"),
-    platformId: text("platform_id"),
+    // Activepieces official pieces use NULL platformId upstream; we store 'OFFICIAL'
+    // to make uniqueness constraints work in Postgres.
+    platformId: text("platform_id").notNull().default("OFFICIAL"),
     version: text("version").notNull(),
     minimumSupportedRelease: text("minimum_supported_release").notNull(),
     maximumSupportedRelease: text("maximum_supported_release").notNull(),
@@ -125,7 +129,7 @@ export const pieceMetadata = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => ({
-    nameVersionPlatformIdx: index(
+    nameVersionPlatformIdx: uniqueIndex(
       "idx_piece_metadata_name_platform_id_version"
     ).on(table.name, table.version, table.platformId),
   })
@@ -147,15 +151,18 @@ export const appConnections = pgTable(
       .$type<AppConnectionStatus>(),
     platformId: text("platform_id"),
     pieceName: text("piece_name").notNull(),
-    ownerId: text("owner_id").references(() => users.id, {
-      onDelete: "set null",
-    }),
+    ownerId: text("owner_id")
+      .notNull()
+      .references(() => users.id, {
+        onDelete: "cascade",
+      }),
     projectIds: jsonb("project_ids").notNull().$type<string[]>().default([]),
     scope: text("scope")
       .notNull()
       .default(AppConnectionScope.PROJECT)
       .$type<AppConnectionScope>(),
-    value: jsonb("value").notNull().$type<{ iv: string; data: string }>(),
+    // EncryptedObject = { iv: string, data: string } stored as jsonb.
+    value: jsonb("value").notNull().$type<EncryptedObject>(),
     metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
     pieceVersion: text("piece_version").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -166,6 +173,9 @@ export const appConnections = pgTable(
       "idx_app_connection_platform_id_and_external_id"
     ).on(table.platformId, table.externalId),
     ownerIdIdx: index("idx_app_connection_owner_id").on(table.ownerId),
+    ownerExternalIdUniqueIdx: uniqueIndex(
+      "idx_app_connection_owner_external_id"
+    ).on(table.ownerId, table.externalId),
   })
 );
 

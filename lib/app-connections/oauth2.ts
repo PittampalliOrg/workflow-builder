@@ -5,45 +5,7 @@ import {
   type OAuth2ConnectionValueWithApp,
   OAuth2GrantType,
 } from "@/lib/types/app-connection";
-
-type PieceAuth = {
-  type?: string;
-  authUrl?: string;
-  tokenUrl?: string;
-  scope?: string[];
-  authorizationMethod?: OAuth2AuthorizationMethod;
-  prompt?: string;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
-
-function toPieceAuth(value: unknown): PieceAuth | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const scope = Array.isArray(value.scope)
-    ? value.scope.filter((entry): entry is string => typeof entry === "string")
-    : undefined;
-
-  const authorizationMethodRaw = value.authorizationMethod;
-  const authorizationMethod =
-    authorizationMethodRaw === OAuth2AuthorizationMethod.HEADER ||
-    authorizationMethodRaw === OAuth2AuthorizationMethod.BODY
-      ? authorizationMethodRaw
-      : undefined;
-
-  return {
-    type: typeof value.type === "string" ? value.type : undefined,
-    authUrl: typeof value.authUrl === "string" ? value.authUrl : undefined,
-    tokenUrl: typeof value.tokenUrl === "string" ? value.tokenUrl : undefined,
-    scope,
-    authorizationMethod,
-    prompt: typeof value.prompt === "string" ? value.prompt : undefined,
-  };
-}
+import { parsePieceAuthAll, PieceAuthType, type OAuth2AuthConfig } from "@/lib/types/piece-auth";
 
 export function resolveValueFromProps(
   value: string,
@@ -64,25 +26,14 @@ export function resolveValueFromProps(
 
 export function getOAuth2AuthConfig(
   piece: { auth?: unknown } | null | undefined
-): PieceAuth | null {
-  if (!piece || piece.auth === undefined || piece.auth === null) {
+): OAuth2AuthConfig | null {
+  if (!piece) {
     return null;
   }
 
-  const authValue = piece.auth;
-
-  if (Array.isArray(authValue)) {
-    for (const auth of authValue) {
-      const parsed = toPieceAuth(auth);
-      if (parsed?.type === "OAUTH2") {
-        return parsed;
-      }
-    }
-    return null;
-  }
-
-  const parsed = toPieceAuth(authValue);
-  return parsed?.type === "OAUTH2" ? parsed : null;
+  const configs = parsePieceAuthAll(piece.auth);
+  const oauth2 = configs.find((c) => c.type === PieceAuthType.OAUTH2) as OAuth2AuthConfig | undefined;
+  return oauth2 ?? null;
 }
 
 export function generatePkceVerifier(): string {
@@ -160,6 +111,13 @@ export async function exchangeOAuth2Code(params: {
       break;
     case OAuth2GrantType.CLIENT_CREDENTIALS:
       body.scope = resolveValueFromProps(params.scope, params.props);
+      if (params.props) {
+        for (const [key, value] of Object.entries(params.props)) {
+          if (value === undefined || value === null) continue;
+          if (typeof value === "object") continue;
+          body[key] = String(value);
+        }
+      }
       break;
   }
 

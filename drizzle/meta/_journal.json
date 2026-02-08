@@ -64,6 +64,13 @@
       "when": 1770572602741,
       "tag": "0008_natural_hedge_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1770582057533,
+      "tag": "0009_shallow_multiple_man",
+      "breakpoints": true
     }
   ]
 }

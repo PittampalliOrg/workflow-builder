@@ -75,11 +75,7 @@ export async function GET(
       );
     }
 
-    return NextResponse.json({
-      ...connection,
-      createdAt: connection.createdAt.toISOString(),
-      updatedAt: connection.updatedAt.toISOString(),
-    });
+    return NextResponse.json(removeSensitiveData(connection));
   } catch (error) {
     return NextResponse.json(
       {

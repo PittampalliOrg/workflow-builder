@@ -282,7 +282,7 @@ async function main() {
       displayName: String(detailPiece.displayName ?? normalizedName),
       logoUrl: String(detailPiece.logoUrl ?? ""),
       description: detailPiece.description ?? null,
-      platformId: detailPiece.platformId ?? null,
+      platformId: detailPiece.platformId ?? "OFFICIAL",
       version,
       minimumSupportedRelease: String(detailPiece.minimumSupportedRelease ?? "0.0.0"),
       maximumSupportedRelease: String(

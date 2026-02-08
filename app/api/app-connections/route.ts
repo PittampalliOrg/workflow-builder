@@ -14,6 +14,7 @@ import {
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 import {
   AppConnectionType,
+  OAuth2GrantType,
   type ListAppConnectionsRequestQuery,
   type UpsertAppConnectionRequestBody,
 } from "@/lib/types/app-connection";
@@ -123,56 +124,65 @@ export async function POST(request: Request) {
         { type: AppConnectionType.OAUTH2 }
       >;
 
-      if (!("code" in oauthRequest.value)) {
-        const connection = await upsertAppConnection(
-          session.user.id,
-          upsertPayload
-        );
-        return NextResponse.json(removeSensitiveData(connection), {
-          status: 201,
+      const value = oauthRequest.value as Record<string, unknown>;
+      const alreadyClaimed =
+        typeof value.access_token === "string" && value.access_token.length > 0;
+      const hasCode = typeof value.code === "string" && value.code.length > 0;
+      const grantType =
+        (value.grant_type as OAuth2GrantType | undefined) ??
+        OAuth2GrantType.AUTHORIZATION_CODE;
+
+      // If caller already has tokens (e.g., imported connection), store as-is.
+      if (!alreadyClaimed) {
+        // Otherwise we need to claim from the token URL.
+        if (!hasCode && grantType !== OAuth2GrantType.CLIENT_CREDENTIALS) {
+          return NextResponse.json(
+            { error: "Missing OAuth2 authorization code" },
+            { status: 400 }
+          );
+        }
+
+        if (!piece) {
+          return NextResponse.json(
+            { error: "Piece metadata not found" },
+            { status: 404 }
+          );
+        }
+
+        const oauthAuth = getOAuth2AuthConfig(piece);
+        if (!oauthAuth?.tokenUrl) {
+          return NextResponse.json(
+            { error: "Piece does not define an OAuth2 token URL" },
+            { status: 400 }
+          );
+        }
+
+        const props = (value.props as Record<string, unknown> | undefined) ?? undefined;
+        const tokenUrl = resolveValueFromProps(oauthAuth.tokenUrl, props);
+        const resolvedScope =
+          (value.scope as string | undefined) ??
+          (oauthAuth.scope?.join(" ") ?? "");
+
+        const claimed = await exchangeOAuth2Code({
+          code: hasCode ? (value.code as string) : "",
+          tokenUrl,
+          clientId: String(value.client_id ?? ""),
+          clientSecret: String(value.client_secret ?? ""),
+          redirectUrl: String(value.redirect_url ?? ""),
+          scope: resolvedScope,
+          props,
+          authorizationMethod:
+            (value.authorization_method as any) ?? oauthAuth.authorizationMethod,
+          codeVerifier: (value.code_verifier as string | undefined) ?? undefined,
+          grantType: grantType,
         });
+
+        upsertPayload = {
+          ...oauthRequest,
+          pieceVersion: oauthRequest.pieceVersion ?? piece.version,
+          value: claimed,
+        };
       }
-
-      if (!piece) {
-        return NextResponse.json(
-          { error: "Piece metadata not found" },
-          { status: 404 }
-        );
-      }
-
-      const oauthAuth = getOAuth2AuthConfig(piece);
-      if (!oauthAuth?.tokenUrl) {
-        return NextResponse.json(
-          { error: "Piece does not define an OAuth2 token URL" },
-          { status: 400 }
-        );
-      }
-
-      const tokenUrl = resolveValueFromProps(
-        oauthAuth.tokenUrl,
-        oauthRequest.value.props
-      );
-
-      const claimed = await exchangeOAuth2Code({
-        code: oauthRequest.value.code,
-        tokenUrl,
-        clientId: oauthRequest.value.client_id,
-        clientSecret: oauthRequest.value.client_secret,
-        redirectUrl: oauthRequest.value.redirect_url,
-        scope: oauthRequest.value.scope,
-        props: oauthRequest.value.props,
-        authorizationMethod:
-          oauthRequest.value.authorization_method ??
-          oauthAuth.authorizationMethod,
-        codeVerifier: oauthRequest.value.code_verifier,
-        grantType: oauthRequest.value.grant_type,
-      });
-
-      upsertPayload = {
-        ...oauthRequest,
-        pieceVersion: oauthRequest.pieceVersion ?? piece.version,
-        value: claimed,
-      };
     }
 
     const connection = await upsertAppConnection(

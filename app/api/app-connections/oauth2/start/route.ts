@@ -5,6 +5,7 @@ import {
   generatePkceChallenge,
   generatePkceVerifier,
   getOAuth2AuthConfig,
+  resolveValueFromProps,
 } from "@/lib/app-connections/oauth2";
 import { auth } from "@/lib/auth";
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
@@ -47,18 +48,21 @@ export async function POST(request: Request) {
       );
     }
 
-    const verifier = generatePkceVerifier();
-    const challenge = generatePkceChallenge(verifier);
+    const pkceEnabled = oauthAuth.pkce !== false;
+    const verifier = pkceEnabled ? generatePkceVerifier() : "";
+    const challenge = pkceEnabled ? generatePkceChallenge(verifier) : "";
     const state = generateOAuthState();
 
+    const resolvedAuthUrl = resolveValueFromProps(oauthAuth.authUrl, body.props);
     const authorizationUrl = buildOAuth2AuthorizationUrl({
-      authUrl: oauthAuth.authUrl,
+      authUrl: resolvedAuthUrl,
       clientId: body.clientId,
       redirectUrl: body.redirectUrl,
       scope: oauthAuth.scope ?? [],
       state,
-      codeChallenge: challenge,
+      codeChallenge: pkceEnabled ? challenge : undefined,
       prompt: oauthAuth.prompt,
+      extraParams: oauthAuth.extra,
     });
 
     return NextResponse.json({

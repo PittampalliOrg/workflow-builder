@@ -309,9 +309,17 @@ export async function validateWorkflowAppConnections(
     .from(appConnections)
     .where(inArray(appConnections.externalId, externalIds));
 
-  const invalidExternalIds = rows
+  const foundExternalIds = new Set(rows.map((row) => row.externalId));
+  const missingExternalIds = externalIds.filter(
+    (id) => !foundExternalIds.has(id)
+  );
+  const notOwnedExternalIds = rows
     .filter((row) => row.ownerId !== ownerId)
     .map((row) => row.externalId);
+
+  const invalidExternalIds = Array.from(
+    new Set([...missingExternalIds, ...notOwnedExternalIds])
+  );
 
   if (invalidExternalIds.length > 0) {
     return { valid: false, invalidExternalIds };

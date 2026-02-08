@@ -19,6 +19,7 @@
     "create-plugin": "tsx scripts/create-plugin.ts",
     "seed-functions": "tsx scripts/seed-functions.ts",
     "sync:activepieces-pieces": "tsx scripts/sync-activepieces-pieces.ts",
+    "analyze:activepieces-auth": "tsx scripts/analyze-activepieces-auth.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
@@ -66,6 +67,7 @@
     "react-resizable-panels": "^3.0.6",
     "react-syntax-highlighter": "^16.1.0",
     "resend": "^6.4.1",
+    "semver": "^7.7.3",
     "server-only": "^0.0.1",
     "sonner": "^2.0.7",
     "swr": "^2.4.0",
@@ -81,6 +83,7 @@
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/semver": "^7.7.1",
     "drizzle-kit": "^0.31.6",
     "knip": "^5.70.1",
     "prettier": "^3.7.3",
