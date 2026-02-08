@@ -40,6 +40,7 @@ import { cn } from "@/lib/utils";
 import { getAllDaprActivities } from "@/lib/dapr-activity-registry";
 import type { WorkflowNodeType } from "@/lib/workflow-store";
 import { getAllActions } from "@/plugins";
+import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 
 type ActionType = {
   id: string;
@@ -47,6 +48,7 @@ type ActionType = {
   description: string;
   category: string;
   integration?: string;
+  logoUrl?: string;
   // Dapr-specific fields
   isDaprActivity?: boolean;
   nodeType?: WorkflowNodeType;
@@ -95,8 +97,8 @@ const DAPR_CONTROL_FLOW: ActionType[] = [
   },
 ];
 
-// Combine System actions with plugin actions and Dapr activities
-function useAllActions(): ActionType[] {
+// Combine System actions with plugin actions, Dapr activities, and AP pieces
+function useAllActions(apPieces: ApIntegration[]): ActionType[] {
   return useMemo(() => {
     const pluginActions = getAllActions();
 
@@ -121,13 +123,26 @@ function useAllActions(): ActionType[] {
       activityName: activity.name,
     }));
 
+    // Map AP pieces to ActionType format (each piece = category, each action = item)
+    const mappedApActions: ActionType[] = apPieces.flatMap((piece) =>
+      piece.actions.map((action) => ({
+        id: `${piece.type}/${action.slug}`,
+        label: action.label,
+        description: action.description || "",
+        category: piece.label,
+        integration: piece.type,
+        logoUrl: piece.logoUrl,
+      }))
+    );
+
     return [
       ...SYSTEM_ACTIONS,
       ...DAPR_CONTROL_FLOW,
       ...mappedDaprActivities,
       ...mappedPluginActions,
+      ...mappedApActions,
     ];
-  }, []);
+  }, [apPieces]);
 }
 
 export type ActionSelection = {
@@ -166,6 +181,7 @@ function GroupIcon({
       <IntegrationIcon
         className="size-4"
         integration={firstAction.integration}
+        logoUrl={firstAction.logoUrl}
       />
     );
   }
@@ -190,7 +206,7 @@ function ActionIcon({
 }) {
   if (action.integration) {
     return (
-      <IntegrationIcon className={className} integration={action.integration} />
+      <IntegrationIcon className={className} integration={action.integration} logoUrl={action.logoUrl} />
     );
   }
   if (action.category === "System") {
@@ -251,9 +267,24 @@ export function ActionGrid({
   );
   const [showHidden, setShowHidden] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(getInitialViewMode);
-  const actions = useAllActions();
+  const [apPieces, setApPieces] = useState<ApIntegration[]>([]);
+  const actions = useAllActions(apPieces);
   const inputRef = useRef<HTMLInputElement>(null);
   const isTouch = useIsTouch();
+
+  // Fetch AP pieces from API
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/pieces/actions")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.pieces) {
+          setApPieces(data.pieces);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   const toggleViewMode = () => {
     const newMode = viewMode === "list" ? "grid" : "list";
