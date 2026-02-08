@@ -54,10 +54,11 @@ export {
   getDependenciesForActions,
   getIntegration,
   getIntegrationLabels,
-  getIntegrationTypes,
   getPluginEnvVars,
-  getSortedIntegrationTypes,
+  getPluginTypes,
+  getSortedPluginTypes,
   isFieldGroup,
   parseActionId,
+  registerApActions,
   registerIntegration,
 } from "./registry";

@@ -1,4 +1,5 @@
-import type { IntegrationType } from "@/lib/types/integration";
+/** Plugin type identifier string (e.g., "openai", "slack") */
+export type PluginType = string;
 import { LEGACY_ACTION_MAPPINGS } from "./legacy-mappings";
 
 /**
@@ -28,6 +29,8 @@ export type ActionConfigFieldBase = {
     | "text" // Regular text input
     | "number" // Number input
     | "select" // Dropdown select
+    | "dynamic-select" // Async dropdown loaded from external API
+    | "dynamic-multi-select" // Async multi-select dropdown
     | "schema-builder"; // Schema builder for structured output
 
   // Placeholder text
@@ -55,6 +58,14 @@ export type ActionConfigFieldBase = {
   showWhen?: {
     field: string;
     equals: string;
+  };
+
+  // For dynamic-select / dynamic-multi-select: async options metadata
+  dynamicOptions?: {
+    pieceName: string;
+    actionName: string;
+    propName: string;
+    refreshers: string[]; // other prop keys that trigger re-fetch
   };
 };
 
@@ -161,9 +172,13 @@ export type PluginAction = {
  */
 export type IntegrationPlugin = {
   // Basic info
-  type: IntegrationType;
+  type: PluginType;
   label: string;
   description: string;
+
+  // Activepieces piece name (used to link to piece_metadata for auth form rendering)
+  // e.g., "openai", "slack", "github"
+  pieceName?: string;
 
   // Icon component (should be exported from plugins/[name]/icon.tsx)
   icon: React.ComponentType<{ className?: string }>;
@@ -205,20 +220,47 @@ export type IntegrationPlugin = {
  */
 export type ActionWithFullId = PluginAction & {
   id: string; // Full action ID: {integration}/{slug}
-  integration: IntegrationType;
+  integration: PluginType;
 };
 
 /**
  * Integration Registry
  * Auto-populated by plugin files
  */
-const integrationRegistry = new Map<IntegrationType, IntegrationPlugin>();
+const integrationRegistry = new Map<PluginType, IntegrationPlugin>();
+
+/**
+ * Activepieces action cache
+ * Populated by the UI when AP pieces are fetched from /api/pieces/actions
+ */
+let apActionsCache: Map<string, ActionWithFullId> | null = null;
+
+/**
+ * Register Activepieces actions for findActionById fallback.
+ * Called by the UI after fetching AP pieces from the API.
+ */
+export function registerApActions(
+  actions: Array<PluginAction & { integration: string }>
+): void {
+  apActionsCache = new Map();
+  for (const action of actions) {
+    const id = `${action.integration}/${action.slug}`;
+    apActionsCache.set(id, { ...action, id });
+  }
+}
+
+/**
+ * Clear AP actions cache (for testing)
+ */
+export function clearApActionsCache(): void {
+  apActionsCache = null;
+}
 
 /**
  * Compute full action ID from integration type and action slug
  */
 export function computeActionId(
-  integrationType: IntegrationType,
+  integrationType: PluginType,
   actionSlug: string
 ): string {
   return `${integrationType}/${actionSlug}`;
@@ -252,7 +294,7 @@ export function registerIntegration(plugin: IntegrationPlugin) {
  * Get an integration plugin
  */
 export function getIntegration(
-  type: IntegrationType
+  type: PluginType
 ): IntegrationPlugin | undefined {
   return integrationRegistry.get(type);
 }
@@ -267,7 +309,7 @@ export function getAllIntegrations(): IntegrationPlugin[] {
 /**
  * Get all integration types
  */
-export function getIntegrationTypes(): IntegrationType[] {
+export function getPluginTypes(): PluginType[] {
   return Array.from(integrationRegistry.keys());
 }
 
@@ -326,7 +368,7 @@ export function findActionById(
   // First try parsing as a namespaced ID
   const parsed = parseActionId(actionId);
   if (parsed) {
-    const plugin = integrationRegistry.get(parsed.integration as IntegrationType);
+    const plugin = integrationRegistry.get(parsed.integration as PluginType);
     if (plugin) {
       const action = plugin.actions.find((a) => a.slug === parsed.slug);
       if (action) {
@@ -358,35 +400,43 @@ export function findActionById(
     }
   }
 
+  // Check Activepieces actions cache (populated from /api/pieces/actions)
+  if (apActionsCache) {
+    const apAction = apActionsCache.get(actionId);
+    if (apAction) {
+      return apAction;
+    }
+  }
+
   return undefined;
 }
 
 /**
  * Get integration labels map
  */
-export function getIntegrationLabels(): Record<IntegrationType, string> {
+export function getIntegrationLabels(): Record<PluginType, string> {
   const labels: Record<string, string> = {};
   for (const plugin of integrationRegistry.values()) {
     labels[plugin.type] = plugin.label;
   }
-  return labels as Record<IntegrationType, string>;
+  return labels as Record<PluginType, string>;
 }
 
 /**
  * Get integration descriptions map
  */
-export function getIntegrationDescriptions(): Record<IntegrationType, string> {
+export function getIntegrationDescriptions(): Record<PluginType, string> {
   const descriptions: Record<string, string> = {};
   for (const plugin of integrationRegistry.values()) {
     descriptions[plugin.type] = plugin.description;
   }
-  return descriptions as Record<IntegrationType, string>;
+  return descriptions as Record<PluginType, string>;
 }
 
 /**
  * Get sorted integration types for dropdowns
  */
-export function getSortedIntegrationTypes(): IntegrationType[] {
+export function getSortedPluginTypes(): PluginType[] {
   return Array.from(integrationRegistry.keys()).sort();
 }
 
@@ -412,7 +462,7 @@ export function getDependenciesForActions(
   actionIds: string[]
 ): Record<string, string> {
   const deps: Record<string, string> = {};
-  const integrations = new Set<IntegrationType>();
+  const integrations = new Set<PluginType>();
 
   // Find which integrations are used
   for (const actionId of actionIds) {

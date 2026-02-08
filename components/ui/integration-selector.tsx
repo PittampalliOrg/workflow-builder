@@ -14,17 +14,18 @@ import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection
 import { EditConnectionOverlay } from "@/components/overlays/edit-connection-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
-import { api, type Integration } from "@/lib/api-client";
+import { api } from "@/lib/api-client";
 import {
-  integrationsAtom,
-  integrationsVersionAtom,
-} from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+  connectionsAtom,
+  connectionsVersionAtom,
+  type AppConnection,
+} from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import { cn } from "@/lib/utils";
 import { getIntegration } from "@/plugins";
 
 type IntegrationSelectorProps = {
-  integrationType: IntegrationType;
+  integrationType: PluginType;
   value?: string;
   onChange: (integrationId: string) => void;
   onOpenSettings?: () => void;
@@ -41,15 +42,15 @@ export function IntegrationSelector({
   onAddConnection,
 }: IntegrationSelectorProps) {
   const { push } = useOverlay();
-  const [globalIntegrations, setGlobalIntegrations] = useAtom(integrationsAtom);
-  const integrationsVersion = useAtomValue(integrationsVersionAtom);
-  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
+  const [globalIntegrations, setGlobalIntegrations] = useAtom(connectionsAtom);
+  const integrationsVersion = useAtomValue(connectionsVersionAtom);
+  const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
   const lastVersionRef = useRef(integrationsVersion);
   const [hasFetched, setHasFetched] = useState(false);
 
   // Filter integrations from global cache
   const integrations = useMemo(
-    () => globalIntegrations.filter((i) => i.type === integrationType),
+    () => globalIntegrations.filter((i) => i.pieceName === integrationType),
     [globalIntegrations, integrationType]
   );
 
@@ -58,7 +59,7 @@ export function IntegrationSelector({
 
   const loadIntegrations = useCallback(async () => {
     try {
-      const all = await api.integration.getAll();
+      const all = await api.appConnection.list({ projectId: "default", limit: 1000 }).then(r => r.data);
       // Update global store so other components can access it
       setGlobalIntegrations(all);
       setHasFetched(true);
@@ -111,9 +112,9 @@ export function IntegrationSelector({
   }, [integrationType, push, handleNewIntegrationCreated]);
 
   const openEditConnectionOverlay = useCallback(
-    (integration: Integration) => {
+    (connection: AppConnection) => {
       push(EditConnectionOverlay, {
-        integration,
+        connection,
         onSuccess: handleIntegrationChange,
         onDelete: handleIntegrationChange,
       });
@@ -168,7 +169,7 @@ export function IntegrationSelector({
   // Single integration - show as outlined field (not radio-style)
   if (integrations.length === 1) {
     const integration = integrations[0];
-    const displayName = integration.name || `${integrationLabel} API Key`;
+    const displayName = integration.displayName || `${integrationLabel} API Key`;
 
     return (
       <>
@@ -200,7 +201,7 @@ export function IntegrationSelector({
       <div className="flex flex-col gap-1">
         {integrations.map((integration) => {
           const isSelected = value === integration.id;
-          const displayName = integration.name || `${integrationLabel} API Key`;
+          const displayName = integration.displayName || `${integrationLabel} API Key`;
           return (
             <div
               className={cn(

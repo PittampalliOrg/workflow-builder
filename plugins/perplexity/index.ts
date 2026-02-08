@@ -4,6 +4,7 @@ import { PerplexityIcon } from "./icon";
 
 const perplexityPlugin: IntegrationPlugin = {
   type: "perplexity",
+  pieceName: "perplexity",
   label: "Perplexity",
   description: "AI-powered search and research with real-time web access",
 

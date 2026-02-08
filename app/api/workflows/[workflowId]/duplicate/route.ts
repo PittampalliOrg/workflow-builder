@@ -27,7 +27,11 @@ function stripIntegrationIds(nodes: WorkflowNodeLike[]): WorkflowNodeLike[] {
     if (newNode.data) {
       const data = { ...newNode.data };
       if (data.config) {
-        const { integrationId: _, ...configWithoutIntegration } = data.config;
+        const {
+          integrationId: _,
+          auth: _auth,
+          ...configWithoutIntegration
+        } = data.config;
         data.config = configWithoutIntegration;
       }
       // Reset status to idle

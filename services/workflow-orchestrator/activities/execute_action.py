@@ -37,6 +37,9 @@ class ExecuteActionInput(BaseModel):
     workflowId: str
     integrations: dict[str, dict[str, str]] | None = None
     dbExecutionId: str | None = None
+    connectionExternalId: str | None = None
+    apProjectId: str | None = None
+    apPlatformId: str | None = None
 
 
 class ActivityExecutionResult(BaseModel):
@@ -70,9 +73,15 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     workflow_id = input_data.get("workflowId", "")
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
+    connection_external_id = input_data.get("connectionExternalId")
+    ap_project_id = input_data.get("apProjectId")
+    ap_platform_id = input_data.get("apPlatformId")
 
     # Ensure config is never None
+    # Support both flat (node.config) and nested (node.data.config) formats
     config = node.get("config") or {}
+    if not config and isinstance(node.get("data"), dict):
+        config = node["data"].get("config") or {}
 
     # Get actionType - the canonical identifier for functions
     action_type = config.get("actionType")
@@ -87,8 +96,11 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     # Resolve template variables in the node config
     resolved_config = resolve_templates(config, node_outputs)
 
-    # Use node.label with fallback to action_type or node.id if empty
-    node_name = node.get("label") or action_type or node.get("id", "unknown")
+    # Use node.label (flat or nested) with fallback to action_type or node.id
+    node_label = node.get("label") or ""
+    if not node_label and isinstance(node.get("data"), dict):
+        node_label = node["data"].get("label", "")
+    node_name = node_label or action_type or node.get("id", "unknown")
 
     # Build the request for function-router
     request_payload = {
@@ -98,11 +110,20 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         "node_id": node.get("id"),
         "node_name": node_name,
         "input": resolved_config,
-        "node_outputs": node_outputs,
         "integration_id": config.get("integrationId"),
         "integrations": integrations,
         "db_execution_id": db_execution_id,
+        "connection_external_id": connection_external_id,
+        "ap_project_id": ap_project_id,
+        "ap_platform_id": ap_platform_id,
     }
+
+    # Only include node_outputs for WB workflows (not AP flows).
+    # AP workflows resolve variables before calling this activity,
+    # and AP step_outputs use a different format ({output, type, status})
+    # that doesn't match function-router's Zod schema ({label, data}).
+    if workflow_id != "ap-flow":
+        request_payload["node_outputs"] = node_outputs
 
     logger.info(
         f"[Execute Action] Invoking function-router for {action_type} "
@@ -130,12 +151,18 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             f"(success={result.get('success')}, duration_ms={duration_ms})"
         )
 
-        return {
+        activity_result = {
             "success": result.get("success", False),
             "data": result.get("data"),
             "error": result.get("error"),
             "duration_ms": duration_ms,
         }
+
+        # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
+        if result.get("pause"):
+            activity_result["pause"] = result["pause"]
+
+        return activity_result
 
     except requests.Timeout:
         duration_ms = int((time.time() - start_time) * 1000)

@@ -23,8 +23,13 @@ import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
-import { integrationsAtom } from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+import {
+  generateNodeCode,
+  generateWorkflowCode,
+  getDaprNodeCodeFiles,
+} from "@/lib/code-generation";
+import { connectionsAtom } from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   clearNodeStatusesAtom,
   clearWorkflowAtom,
@@ -45,23 +50,38 @@ import {
 } from "@/lib/workflow-store";
 import { findActionById } from "@/plugins";
 import { ActionConfig } from "../workflow/config/action-config";
-import { ActionGrid, type ActionSelection } from "../workflow/config/action-grid";
+import {
+  ActionGrid,
+  type ActionSelection,
+} from "../workflow/config/action-grid";
 import { ActivityConfig } from "../workflow/config/activity-config";
 import { ApprovalGateConfig } from "../workflow/config/approval-gate-config";
 import { TimerConfig } from "../workflow/config/timer-config";
 import { TriggerConfig } from "../workflow/config/trigger-config";
 import { WorkflowRuns } from "../workflow/workflow-runs";
 import type { OverlayComponentProps } from "./types";
-import {
-  generateNodeCode,
-  generateWorkflowCode,
-  getDaprNodeCodeFiles,
-} from "@/lib/code-generation";
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
+
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
+}
+
+function applyConnectionConfig(
+  config: Record<string, unknown> | undefined,
+  integration: { id: string; externalId?: string }
+): Record<string, unknown> {
+  return {
+    ...(config ?? {}),
+    integrationId: integration.id,
+    ...(integration.externalId
+      ? { auth: buildConnectionAuthTemplate(integration.externalId) }
+      : {}),
+  };
+}
 
 type ConfigurationOverlayProps = OverlayComponentProps;
 
@@ -95,7 +115,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
   const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
 
   // Auto-fix invalid integration references
-  const globalIntegrations = useAtomValue(integrationsAtom);
+  const globalIntegrations = useAtomValue(connectionsAtom);
   useEffect(() => {
     if (!(selectedNode && isOwner)) return;
 
@@ -109,14 +129,14 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
     if (!(actionType && currentIntegrationId)) return;
 
     const action = findActionById(actionType);
-    const integrationType: IntegrationType | undefined =
-      (action?.integration as IntegrationType | undefined) ||
+    const integrationType: PluginType | undefined =
+      (action?.integration as PluginType | undefined) ||
       SYSTEM_ACTION_INTEGRATIONS[actionType];
 
     if (!integrationType) return;
 
     const validIntegrations = globalIntegrations.filter(
-      (i) => i.type === integrationType
+      (i) => i.pieceName === integrationType
     );
     const isValid = validIntegrations.some(
       (i) => i.id === currentIntegrationId
@@ -126,10 +146,10 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
       updateNodeData({
         id: selectedNode.id,
         data: {
-          config: {
-            ...selectedNode.data.config,
-            integrationId: validIntegrations[0].id,
-          },
+          config: applyConnectionConfig(
+            selectedNode.data.config,
+            validIntegrations[0]
+          ),
         },
       });
     }
@@ -569,18 +589,23 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
                   onSelectAction={(selection: ActionSelection) => {
                     // Handle Dapr activity selection - morph node type
-                    if (selection.isDaprActivity && selection.nodeType && selection.nodeType !== "action") {
+                    if (
+                      selection.isDaprActivity &&
+                      selection.nodeType &&
+                      selection.nodeType !== "action"
+                    ) {
                       morphNodeType({
                         id: selectedNode.id,
                         nodeType: selection.nodeType,
                         data: {
-                          label: selection.nodeType === "activity"
-                            ? (selection.activityName || "Activity")
-                            : selection.nodeType === "approval-gate"
-                            ? "Approval Gate"
-                            : selection.nodeType === "timer"
-                            ? "Timer"
-                            : "Step",
+                          label:
+                            selection.nodeType === "activity"
+                              ? selection.activityName || "Activity"
+                              : selection.nodeType === "approval-gate"
+                                ? "Approval Gate"
+                                : selection.nodeType === "timer"
+                                  ? "Timer"
+                                  : "Step",
                           config: {
                             activityName: selection.activityName,
                           },
@@ -769,7 +794,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 
               // Action and trigger nodes
               const nodeCode = generateNodeCode(selectedNode);
-              const triggerType = selectedNode.data.config?.triggerType as string;
+              const triggerType = selectedNode.data.config
+                ?.triggerType as string;
               let filename = "";
               let language = "typescript";
 
@@ -786,7 +812,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
                   filename = "trigger.ts";
                 }
               } else {
-                const actionType = selectedNode.data.config?.actionType as string;
+                const actionType = selectedNode.data.config
+                  ?.actionType as string;
                 filename = actionType
                   ? `${actionType.replace(/\//g, "-")}.ts`
                   : "action.ts";

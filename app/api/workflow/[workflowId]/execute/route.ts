@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
-import { getIntegrations, validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
 import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
@@ -139,43 +139,34 @@ export async function POST(
           }
         );
 
-        // Fetch user's integrations and format for the orchestrator
-        // Format: { "openai": { "apiKey": "..." }, "slack": { "botToken": "..." } }
-        const userIntegrations = await getIntegrations(session.user.id);
-        const formattedIntegrations: Record<string, Record<string, string>> = {};
-
-        for (const integration of userIntegrations) {
-          // Use integration type as the key (e.g., "openai", "slack", "github")
-          const integrationType = integration.type;
-
-          // Convert config values to strings for the orchestrator
-          const configEntries: Record<string, string> = {};
-          for (const [key, value] of Object.entries(integration.config || {})) {
-            if (value !== null && value !== undefined) {
-              configEntries[key] = String(value);
-            }
-          }
-
-          // If there's already an integration of this type, merge configs
-          // (user might have multiple openai integrations, use the first one)
-          if (!formattedIntegrations[integrationType]) {
-            formattedIntegrations[integrationType] = configEntries;
+        // Build per-node connection map from auth templates in node configs
+        // Instead of decrypting all connections upfront, we pass connection external IDs
+        // per node. The function-router calls the internal decrypt API at execution time
+        // to get fresh credentials (with OAuth2 token refresh).
+        const nodeConnectionMap: Record<string, string> = {};
+        for (const node of nodes) {
+          const config = ((node.data as Record<string, unknown>)?.config as Record<string, unknown>) || {};
+          const authTemplate = config.auth as string | undefined;
+          if (authTemplate) {
+            const match = authTemplate.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
+            if (match?.[1]) nodeConnectionMap[node.id] = match[1];
           }
         }
 
         console.log(
-          `[Execute] Passing ${Object.keys(formattedIntegrations).length} integration types to orchestrator:`,
-          Object.keys(formattedIntegrations)
+          `[Execute] Built per-node connection map for ${Object.keys(nodeConnectionMap).length} nodes:`,
+          Object.keys(nodeConnectionMap)
         );
 
         // Start workflow via generic orchestrator
-        // Pass the database execution ID so function-runner can log to the correct record
+        // Credentials are resolved at execution time by function-router via internal decrypt API
         const genericResult = await genericOrchestratorClient.startWorkflow(
           orchestratorUrl,
           definition,
           input,
-          formattedIntegrations,
-          execution.id // Database execution ID for logging
+          {}, // integrations — empty, credentials resolved at function-router
+          execution.id, // Database execution ID for logging
+          nodeConnectionMap, // Per-node connection external IDs
         );
 
         // Update execution with Dapr instance ID
@@ -223,14 +214,14 @@ export async function POST(
     // Direct workflow execution using activity-executor
     // This executes the visual workflow nodes directly
 
-    // Validate integrations
-    const validation = await validateWorkflowIntegrations(
+    // Validate connection references
+    const validation = await validateWorkflowAppConnections(
       workflow.nodes as WorkflowNode[],
       session.user.id
     );
     if (!validation.valid) {
       return NextResponse.json(
-        { error: "Workflow contains invalid integration references" },
+        { error: "Workflow contains invalid connection references" },
         { status: 403 }
       );
     }

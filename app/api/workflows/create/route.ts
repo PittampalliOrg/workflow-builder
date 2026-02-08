@@ -3,7 +3,7 @@ import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
 
@@ -42,14 +42,14 @@ export async function POST(request: Request) {
       );
     }
 
-    // Validate that all integrationIds in nodes belong to the current user
-    const validation = await validateWorkflowIntegrations(
+    // Validate that all connection references in nodes belong to the current user
+    const validation = await validateWorkflowAppConnections(
       body.nodes,
       session.user.id
     );
     if (!validation.valid) {
       return NextResponse.json(
-        { error: "Invalid integration references in workflow" },
+        { error: "Invalid connection references in workflow" },
         { status: 403 }
       );
     }

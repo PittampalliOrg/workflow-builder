@@ -113,7 +113,17 @@ interface ServiceList {
 }
 
 /**
+ * Standalone service URL mappings.
+ * These are regular K8s Deployments (not Knative) with a ClusterIP Service.
+ */
+const STANDALONE_SERVICES: Record<string, string> = {
+  "fn-activepieces": `http://fn-activepieces-standalone.${process.env.FUNCTIONS_NAMESPACE || "workflow-builder"}.svc.cluster.local`,
+  "planner-dapr-agent": `http://planner-dapr-agent.${process.env.FUNCTIONS_NAMESPACE || "workflow-builder"}.svc.cluster.local:8000`,
+};
+
+/**
  * Resolve an OpenFunction app-id to its internal Knative service URL.
+ * Falls back to standalone service URLs for non-Knative deployments.
  *
  * @param appId - The OpenFunction app-id (e.g., "fn-openai")
  * @returns The internal HTTP URL for the function
@@ -124,6 +134,14 @@ export async function resolveOpenFunctionUrl(appId: string): Promise<string> {
   if (cached && Date.now() < cached.expiresAt) {
     console.log(`[OpenFunction Resolver] Cache hit for ${appId}: ${cached.url}`);
     return cached.url;
+  }
+
+  // Check standalone services first (no K8s API needed)
+  const standaloneUrl = STANDALONE_SERVICES[appId];
+  if (standaloneUrl) {
+    console.log(`[OpenFunction Resolver] Standalone service: ${appId} → ${standaloneUrl}`);
+    cacheUrl(appId, standaloneUrl);
+    return standaloneUrl;
   }
 
   console.log(`[OpenFunction Resolver] Resolving URL for ${appId}`);
@@ -177,7 +195,6 @@ export async function resolveOpenFunctionUrl(appId: string): Promise<string> {
     return url;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[OpenFunction Resolver] Failed to resolve ${appId}:`, message);
     throw new Error(`Failed to resolve OpenFunction URL for ${appId}: ${message}`);
   }
 }

@@ -6,7 +6,7 @@
  * requiring the planner-dapr-agent.
  */
 
-import type { WorkflowNode, WorkflowEdge } from "./workflow-store";
+import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Activity executor service URL
 const ACTIVITY_EXECUTOR_URL =
@@ -75,7 +75,11 @@ function buildExecutionOrder(
   }
 
   while (queue.length > 0) {
-    const nodeId = queue.shift()!;
+    const nodeId = queue.shift();
+    if (!nodeId) {
+      continue;
+    }
+
     const node = nodeMap.get(nodeId);
     if (node) {
       result.push(node);
@@ -119,6 +123,17 @@ function getActivityId(node: WorkflowNode): string | null {
   return null;
 }
 
+function parseConnectionExternalIdFromAuth(
+  authValue: unknown
+): string | undefined {
+  if (typeof authValue !== "string") {
+    return;
+  }
+
+  const match = authValue.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
+  return match?.[1];
+}
+
 /**
  * Get node configuration/input
  */
@@ -128,7 +143,7 @@ function getNodeInput(node: WorkflowNode): Record<string, unknown> {
 
   // Clone config and exclude metadata fields
   const input: Record<string, unknown> = {};
-  const excludedFields = new Set(["actionType", "integrationId"]);
+  const excludedFields = new Set(["actionType", "auth"]);
 
   for (const [key, value] of Object.entries(config)) {
     if (!excludedFields.has(key)) {
@@ -184,7 +199,9 @@ async function executeNode(
 
   const input = getNodeInput(node);
   const config = (data.config as Record<string, unknown>) || {};
-  const integrationId = (config.integrationId as string) || (data.integrationId as string | undefined);
+  const connectionExternalId =
+    parseConnectionExternalIdFromAuth(config.auth) ||
+    parseConnectionExternalIdFromAuth(data.auth);
 
   const requestBody = {
     activity_id: activityId,
@@ -194,7 +211,7 @@ async function executeNode(
     node_name: label,
     input,
     node_outputs: nodeOutputs,
-    integration_id: integrationId,
+    connection_external_id: connectionExternalId,
   };
 
   try {
@@ -282,7 +299,9 @@ export async function executeWorkflow(
       }
 
       // Stop on error (unless it's a skipped node)
-      if (!output.success && !(output.data as Record<string, unknown>)?.skipped) {
+      if (
+        !(output.success || (output.data as Record<string, unknown>)?.skipped)
+      ) {
         return {
           success: false,
           outputs,
@@ -301,7 +320,8 @@ export async function executeWorkflow(
     return {
       success: false,
       outputs,
-      error: error instanceof Error ? error.message : "Workflow execution failed",
+      error:
+        error instanceof Error ? error.message : "Workflow execution failed",
       duration_ms: Date.now() - startTime,
     };
   }

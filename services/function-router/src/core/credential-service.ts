@@ -14,6 +14,13 @@ const DAPR_SECRETS_STORE = process.env.DAPR_SECRETS_STORE || "azure-keyvault";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 
+const WORKFLOW_BUILDER_URL = process.env.WORKFLOW_BUILDER_URL
+  || "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
+
+// AP server URL for direct connection decrypt (Daprized flows)
+const AP_API_URL = process.env.AP_API_URL || "";
+
 /**
  * Credential source types for audit logging
  */
@@ -21,6 +28,14 @@ export type CredentialSource =
   | "dapr_secret"
   | "request_body"
   | "not_found";
+
+/**
+ * Context for resolving AP connections (project/platform scoping)
+ */
+export interface ApConnectionContext {
+  projectId: string;
+  platformId: string;
+}
 
 /**
  * Audit context for credential resolution
@@ -83,6 +98,178 @@ const INTEGRATION_CONFIG_TO_ENV: Record<string, Record<string, string>> = {
   webflow: { apiToken: "WEBFLOW_API_TOKEN" },
   superagent: { apiKey: "SUPERAGENT_API_KEY" },
 };
+
+/**
+ * Map a decrypted connection value to environment variables based on connection type.
+ * Handles SECRET_TEXT, OAUTH2, CLOUD_OAUTH2, PLATFORM_OAUTH2, BASIC_AUTH, and CUSTOM_AUTH.
+ */
+function mapConnectionValueToEnvVars(
+  value: Record<string, unknown>,
+  integrationType: string
+): Record<string, string> {
+  const mapping = INTEGRATION_CONFIG_TO_ENV[integrationType] || {};
+  const credentials: Record<string, string> = {};
+
+  switch (value.type) {
+    case "SECRET_TEXT": {
+      // Map secret_text to the first env var in the integration's mapping
+      const envVar = Object.values(mapping)[0];
+      if (envVar) credentials[envVar] = String(value.secret_text);
+      break;
+    }
+    case "OAUTH2":
+    case "CLOUD_OAUTH2":
+    case "PLATFORM_OAUTH2": {
+      // Map access_token to whichever env var the integration expects
+      const token = String(value.access_token);
+      const envVar = Object.values(mapping)[0];
+      if (envVar) credentials[envVar] = token;
+      break;
+    }
+    case "BASIC_AUTH": {
+      credentials[`${integrationType.toUpperCase()}_USERNAME`] = String(value.username);
+      credentials[`${integrationType.toUpperCase()}_PASSWORD`] = String(value.password);
+      break;
+    }
+    case "CUSTOM_AUTH": {
+      const props = (value.props as Record<string, unknown>) || {};
+      for (const [key, val] of Object.entries(props)) {
+        if (val != null) {
+          const envVar = mapping[key];
+          credentials[envVar || key.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()] = String(val);
+        }
+      }
+      break;
+    }
+  }
+  return credentials;
+}
+
+/**
+ * Fetch decrypted credentials from the internal decrypt API.
+ * The API handles OAuth2 token refresh automatically.
+ */
+async function fetchConnectionCredentials(
+  connectionExternalId: string,
+  integrationType: string,
+  apContext?: ApConnectionContext,
+): Promise<Record<string, string>> {
+  try {
+    let data: { id: string; externalId: string; type: string; pieceName: string; value: Record<string, unknown> };
+
+    // Try AP's direct decrypt endpoint first when AP context is available
+    if (AP_API_URL && apContext) {
+      const url = `${AP_API_URL}/api/v1/dapr/connections/decrypt`;
+      console.log(`[Credential Service] Fetching connection ${connectionExternalId} via AP decrypt API`);
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          externalId: connectionExternalId,
+          projectId: apContext.projectId,
+          platformId: apContext.platformId,
+        }),
+      });
+
+      if (response.ok) {
+        data = await response.json() as typeof data;
+        const creds = mapConnectionValueToEnvVars(data.value, integrationType);
+        console.log(`[Credential Service] Fetched connection ${connectionExternalId} via AP API:`, Object.keys(creds));
+        return creds;
+      }
+      console.warn(`[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`);
+    }
+
+    // Fallback: WB internal decrypt API
+    const url = `${WORKFLOW_BUILDER_URL}/api/internal/connections/${connectionExternalId}/decrypt`;
+    console.log(`[Credential Service] Fetching connection ${connectionExternalId} via WB decrypt API`);
+
+    const response = await fetch(url, {
+      headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+    });
+
+    if (!response.ok) {
+      console.warn(`[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`);
+      return {};
+    }
+
+    data = await response.json() as typeof data;
+
+    const creds = mapConnectionValueToEnvVars(data.value, integrationType);
+    console.log(
+      `[Credential Service] Fetched connection ${connectionExternalId} via WB decrypt API:`,
+      Object.keys(creds)
+    );
+    return creds;
+  } catch (error) {
+    console.warn(
+      `[Credential Service] Failed to fetch connection ${connectionExternalId}:`,
+      error instanceof Error ? error.message : error
+    );
+    return {};
+  }
+}
+
+/**
+ * Fetch the raw decrypted connection value for Activepieces actions.
+ * Returns the raw AppConnectionValue (OAuth2/SecretText/BasicAuth/CustomAuth)
+ * that can be passed directly to AP action context.auth.
+ */
+export async function fetchRawConnectionValue(
+  connectionExternalId: string,
+  apContext?: ApConnectionContext,
+): Promise<unknown | null> {
+  try {
+    let data: { id: string; externalId: string; type: string; pieceName: string; value: Record<string, unknown> };
+
+    // Try AP's direct decrypt endpoint first when AP context is available
+    if (AP_API_URL && apContext) {
+      const url = `${AP_API_URL}/api/v1/dapr/connections/decrypt`;
+      console.log(`[Credential Service] Fetching raw connection ${connectionExternalId} via AP API`);
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          externalId: connectionExternalId,
+          projectId: apContext.projectId,
+          platformId: apContext.platformId,
+        }),
+      });
+
+      if (response.ok) {
+        data = await response.json() as typeof data;
+        console.log(`[Credential Service] Fetched raw connection ${connectionExternalId} via AP API: type=${data.value?.type}`);
+        return data.value;
+      }
+      console.warn(`[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`);
+    }
+
+    // Fallback: WB internal decrypt API
+    const url = `${WORKFLOW_BUILDER_URL}/api/internal/connections/${connectionExternalId}/decrypt`;
+    console.log(`[Credential Service] Fetching raw connection ${connectionExternalId} via WB API`);
+
+    const response = await fetch(url, {
+      headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
+    });
+
+    if (!response.ok) {
+      console.warn(`[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`);
+      return null;
+    }
+
+    data = await response.json() as typeof data;
+    console.log(`[Credential Service] Fetched raw connection ${connectionExternalId}: type=${data.value?.type}`);
+    return data.value;
+  } catch (error) {
+    console.warn(
+      `[Credential Service] Failed to fetch raw connection ${connectionExternalId}:`,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
 
 /**
  * Extract credentials from passed integrations object
@@ -240,7 +427,9 @@ async function logCredentialAccess(
 export async function fetchCredentialsWithAudit(
   integrationType: string,
   passedIntegrations?: Record<string, Record<string, string>>,
-  auditContext?: CredentialAuditContext
+  auditContext?: CredentialAuditContext,
+  connectionExternalId?: string,
+  apContext?: ApConnectionContext,
 ): Promise<CredentialFetchResult> {
   let result: CredentialFetchResult = {
     credentials: {},
@@ -249,7 +438,31 @@ export async function fetchCredentialsWithAudit(
     fallbackAttempted: false,
   };
 
-  // Step 1: Try passed integrations first (highest priority)
+  // Step 0 (NEW): Try internal decrypt API — highest priority
+  if (connectionExternalId) {
+    const creds = await fetchConnectionCredentials(connectionExternalId, integrationType, apContext);
+    if (Object.keys(creds).length > 0) {
+      result = {
+        credentials: creds,
+        source: "request_body",
+        keys: Object.keys(creds),
+        fallbackAttempted: false,
+      };
+
+      if (auditContext?.executionId && auditContext?.nodeId) {
+        await logCredentialAccess(
+          auditContext.executionId,
+          auditContext.nodeId,
+          integrationType,
+          result
+        );
+      }
+
+      return result;
+    }
+  }
+
+  // Step 1: Try passed integrations (legacy fallback)
   if (passedIntegrations) {
     const passedCreds = extractPassedCredentials(passedIntegrations, integrationType);
     if (Object.keys(passedCreds).length > 0) {

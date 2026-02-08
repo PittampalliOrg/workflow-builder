@@ -7,24 +7,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { api, type Integration } from "@/lib/api-client";
-import { getIntegration, getIntegrationLabels } from "@/plugins";
+import { api, type AppConnection } from "@/lib/api-client";
+import { AppConnectionType } from "@/lib/types/app-connection";
+import { getIntegration } from "@/plugins";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
 
-const SYSTEM_INTEGRATION_LABELS: Record<string, string> = {
-  database: "Database",
-};
-
-const getLabel = (type: string): string => {
-  const labels = getIntegrationLabels() as Record<string, string>;
-  return labels[type] || SYSTEM_INTEGRATION_LABELS[type] || type;
-};
-
 type EditConnectionOverlayProps = {
   overlayId: string;
-  integration: Integration;
+  connection: AppConnection;
   onSuccess?: () => void;
   onDelete?: () => void;
 };
@@ -129,18 +121,18 @@ function SecretField({
  */
 export function EditConnectionOverlay({
   overlayId,
-  integration,
+  connection,
   onSuccess,
   onDelete,
 }: EditConnectionOverlayProps) {
   const { push, closeAll } = useOverlay();
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
+  const [_testResult, setTestResult] = useState<{
     status: "success" | "error";
     message: string;
   } | null>(null);
-  const [name, setName] = useState(integration.name);
+  const [displayName, setDisplayName] = useState(connection.displayName);
   const [config, setConfig] = useState<Record<string, string>>({});
 
   const updateConfig = (key: string, value: string) => {
@@ -151,15 +143,29 @@ export function EditConnectionOverlay({
     try {
       setSaving(true);
       const hasNewConfig = Object.values(config).some((v) => v && v.length > 0);
-      await api.integration.update(integration.id, {
-        name: name.trim(),
-        ...(hasNewConfig ? { config } : {}),
-      });
+      if (hasNewConfig) {
+        // Re-upsert with new credentials (matched by externalId)
+        await api.appConnection.upsert({
+          externalId: connection.externalId,
+          displayName: displayName.trim(),
+          pieceName: connection.pieceName,
+          projectId: "default",
+          value: {
+            type: AppConnectionType.SECRET_TEXT,
+            secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+          },
+          type: AppConnectionType.SECRET_TEXT,
+        });
+      } else {
+        await api.appConnection.update(connection.id, {
+          displayName: displayName.trim(),
+        });
+      }
       toast.success("Connection updated");
       onSuccess?.();
       closeAll();
     } catch (error) {
-      console.error("Failed to update integration:", error);
+      console.error("Failed to update connection:", error);
       toast.error("Failed to update connection");
     } finally {
       setSaving(false);
@@ -180,9 +186,13 @@ export function EditConnectionOverlay({
       setSaving(true);
       setTestResult(null);
 
-      const result = await api.integration.testCredentials({
-        type: integration.type,
-        config,
+      const result = await api.appConnection.test({
+        pieceName: connection.pieceName,
+        value: {
+          type: AppConnectionType.SECRET_TEXT,
+          secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+        },
+        type: AppConnectionType.SECRET_TEXT,
       });
 
       if (result.status === "error") {
@@ -224,14 +234,16 @@ export function EditConnectionOverlay({
       let result: { status: "success" | "error"; message: string };
 
       if (hasNewConfig) {
-        // Test new credentials
-        result = await api.integration.testCredentials({
-          type: integration.type,
-          config,
+        result = await api.appConnection.test({
+          pieceName: connection.pieceName,
+          value: {
+            type: AppConnectionType.SECRET_TEXT,
+            secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+          },
+          type: AppConnectionType.SECRET_TEXT,
         });
       } else {
-        // Test existing credentials
-        result = await api.integration.testConnection(integration.id);
+        result = await api.appConnection.testExisting(connection.id);
       }
 
       setTestResult(result);
@@ -252,7 +264,7 @@ export function EditConnectionOverlay({
 
   const handleDelete = () => {
     push(DeleteConnectionOverlay, {
-      integration,
+      connection,
       onSuccess: () => {
         onDelete?.();
         closeAll();
@@ -260,26 +272,12 @@ export function EditConnectionOverlay({
     });
   };
 
-  // Get plugin form fields
-  const plugin = getIntegration(integration.type);
+  // Get plugin form fields (will be replaced by piece-metadata-driven auth in Phase 5)
+  const plugin = getIntegration(connection.pieceName);
   const formFields = plugin?.formFields;
 
   // Render config fields
   const renderConfigFields = () => {
-    if (integration.type === "database") {
-      return (
-        <SecretField
-          configKey="url"
-          fieldId="url"
-          helpText="Connection string in the format: postgresql://user:password@host:port/database"
-          label="Database URL"
-          onChange={updateConfig}
-          placeholder="postgresql://user:password@host:port/database"
-          value={config.url || ""}
-        />
-      );
-    }
-
     if (!formFields) return null;
 
     return formFields.map((field) => {
@@ -348,7 +346,7 @@ export function EditConnectionOverlay({
         { label: "Update", onClick: handleSave, loading: saving },
       ]}
       overlayId={overlayId}
-      title={`Edit ${getLabel(integration.type)}`}
+      title={`Edit ${connection.displayName}`}
     >
       <p className="-mt-2 mb-4 text-muted-foreground text-sm">
         Update your connection credentials
@@ -361,9 +359,9 @@ export function EditConnectionOverlay({
           <Label htmlFor="name">Label (Optional)</Label>
           <Input
             id="name"
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => setDisplayName(e.target.value)}
             placeholder="e.g. Production, Personal, Work"
-            value={name}
+            value={displayName}
           />
         </div>
       </div>
@@ -373,7 +371,7 @@ export function EditConnectionOverlay({
 
 type DeleteConnectionOverlayProps = {
   overlayId: string;
-  integration: Integration;
+  connection: AppConnection;
   onSuccess?: () => void;
 };
 
@@ -382,7 +380,7 @@ type DeleteConnectionOverlayProps = {
  */
 export function DeleteConnectionOverlay({
   overlayId,
-  integration,
+  connection,
   onSuccess,
 }: DeleteConnectionOverlayProps) {
   const { pop } = useOverlay();
@@ -391,11 +389,11 @@ export function DeleteConnectionOverlay({
   const handleDelete = async () => {
     try {
       setDeleting(true);
-      await api.integration.delete(integration.id);
+      await api.appConnection.delete(connection.id);
       toast.success("Connection deleted");
       onSuccess?.();
     } catch (error) {
-      console.error("Failed to delete integration:", error);
+      console.error("Failed to delete connection:", error);
       toast.error("Failed to delete connection");
       setDeleting(false);
     }

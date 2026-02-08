@@ -26,15 +26,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  integrationsAtom,
-  integrationsVersionAtom,
-} from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+  connectionsAtom,
+  connectionsVersionAtom,
+} from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   findActionById,
   getActionsByCategory,
   getAllIntegrations,
+  registerApActions,
 } from "@/plugins";
+import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
@@ -263,19 +265,23 @@ function SystemActionFields({
 // id is the legacy actionType, slug is the canonical functionSlug
 const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
   { id: "HTTP Request", label: "HTTP Request", slug: "system/http-request" },
-  { id: "Database Query", label: "Database Query", slug: "system/database-query" },
+  {
+    id: "Database Query",
+    label: "Database Query",
+    slug: "system/database-query",
+  },
   { id: "Condition", label: "Condition", slug: "system/condition" },
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
 
-// Build category mapping dynamically from plugins + System
-function useCategoryData() {
+// Build category mapping dynamically from plugins + System + AP pieces
+function useCategoryData(apPieces: ApIntegration[]) {
   return useMemo(() => {
     const pluginCategories = getActionsByCategory();
 
@@ -294,21 +300,47 @@ function useCategoryData() {
       }));
     }
 
+    // Merge AP piece actions into categories (keyed by displayName)
+    for (const piece of apPieces) {
+      const categoryKey = piece.label; // e.g. "Google Sheets"
+      if (!allCategories[categoryKey]) {
+        allCategories[categoryKey] = [];
+      }
+      for (const action of piece.actions) {
+        allCategories[categoryKey].push({
+          id: `${piece.type}/${action.slug}`,
+          label: action.label,
+        });
+      }
+    }
+
     return allCategories;
-  }, []);
+  }, [apPieces]);
 }
 
 // Get category for an action type (supports both new IDs, labels, and legacy labels)
-function getCategoryForAction(actionType: string): string | null {
+function getCategoryForAction(
+  actionType: string,
+  apPieces?: ApIntegration[]
+): string | null {
   // Check system actions first
   if (SYSTEM_ACTION_IDS.includes(actionType)) {
     return "System";
   }
 
-  // Use findActionById which handles legacy labels from plugin registry
+  // Use findActionById which handles legacy labels from plugin registry + AP cache
   const action = findActionById(actionType);
   if (action?.category) {
     return action.category;
+  }
+
+  // Check AP pieces directly (fallback for when cache isn't populated yet)
+  if (apPieces) {
+    const [pieceName] = actionType.split("/");
+    const piece = apPieces.find((p) => p.type === pieceName);
+    if (piece) {
+      return piece.label;
+    }
   }
 
   return null;
@@ -348,6 +380,18 @@ function getSlugForAction(actionType: string): string | null {
   return null;
 }
 
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
+}
+
+function getExternalIdFromAuthTemplate(
+  auth: string | undefined
+): string | undefined {
+  if (!auth) return undefined;
+  const match = auth.match(/\{\{connections\['([^']+)'\]\}\}/);
+  return match?.[1];
+}
+
 export function ActionConfig({
   config,
   onUpdateConfig,
@@ -355,20 +399,58 @@ export function ActionConfig({
   isOwner = true,
 }: ActionConfigProps) {
   const actionType = (config?.actionType as string) || "";
-  const categories = useCategoryData();
   const integrations = useMemo(() => getAllIntegrations(), []);
 
-  const selectedCategory = actionType ? getCategoryForAction(actionType) : null;
+  // Fetch Activepieces pieces from API
+  const [apPieces, setApPieces] = useState<ApIntegration[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/pieces/actions")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data?.pieces) {
+          setApPieces(data.pieces);
+          // Register AP actions in the global registry for findActionById fallback
+          const allActions = data.pieces.flatMap(
+            (p: ApIntegration) =>
+              p.actions.map((a) => ({ ...a, integration: p.type }))
+          );
+          registerApActions(allActions);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const categories = useCategoryData(apPieces);
+
+  const selectedCategory = actionType
+    ? getCategoryForAction(actionType, apPieces)
+    : null;
   const [category, setCategory] = useState<string>(selectedCategory || "");
-  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
-  const globalIntegrations = useAtomValue(integrationsAtom);
+  const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
+  const globalIntegrations = useAtomValue(connectionsAtom);
   const { push } = useOverlay();
+
+  // Build a lookup map for AP piece logoUrls
+  const apPieceMap = useMemo(() => {
+    const map = new Map<string, ApIntegration>();
+    for (const piece of apPieces) {
+      map.set(piece.label, piece);
+      map.set(piece.type, piece);
+    }
+    return map;
+  }, [apPieces]);
 
   // Sync category state when actionType changes (e.g., when switching nodes)
   useEffect(() => {
-    const newCategory = actionType ? getCategoryForAction(actionType) : null;
+    const newCategory = actionType
+      ? getCategoryForAction(actionType, apPieces)
+      : null;
     setCategory(newCategory || "");
-  }, [actionType]);
+  }, [actionType, apPieces]);
 
   const handleCategoryChange = (newCategory: string) => {
     setCategory(newCategory);
@@ -400,7 +482,7 @@ export function ActionConfig({
   const pluginAction = actionType ? findActionById(actionType) : null;
 
   // Determine the integration type for the current action
-  const integrationType: IntegrationType | undefined = useMemo(() => {
+  const integrationType: PluginType | undefined = useMemo(() => {
     if (!actionType) {
       return;
     }
@@ -410,29 +492,67 @@ export function ActionConfig({
       return SYSTEM_ACTION_INTEGRATIONS[actionType];
     }
 
-    // Check plugin actions
+    // Check plugin actions (includes AP actions via apActionsCache)
     const action = findActionById(actionType);
-    return action?.integration as IntegrationType | undefined;
-  }, [actionType]);
+    if (action?.integration) {
+      return action.integration as PluginType;
+    }
+
+    // Fallback: extract piece name from slug (e.g. "google-sheets/insert_row" → "google-sheets")
+    const slashIdx = actionType.indexOf("/");
+    if (slashIdx > 0) {
+      const pieceName = actionType.slice(0, slashIdx);
+      if (apPieceMap.has(pieceName)) {
+        return pieceName as PluginType;
+      }
+    }
+
+    return undefined;
+  }, [actionType, apPieceMap]);
 
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
     if (!integrationType) return false;
-    return globalIntegrations.some((i) => i.type === integrationType);
+    return globalIntegrations.some((i) => i.pieceName === integrationType);
   }, [integrationType, globalIntegrations]);
 
-  const handleConsentSuccess = (integrationId: string) => {
-    onUpdateConfig("integrationId", integrationId);
-    setIntegrationsVersion((v) => v + 1);
+  // Derive the selected connection ID from the auth template
+  const selectedConnectionId = useMemo(() => {
+    const authTemplate = config?.auth as string | undefined;
+    const externalId = getExternalIdFromAuthTemplate(authTemplate);
+    if (!externalId) return "";
+    const conn = globalIntegrations.find((i) => i.externalId === externalId);
+    return conn?.id || "";
+  }, [config?.auth, globalIntegrations]);
+
+  const applySelectedConnection = (
+    connectionId: string,
+    externalId?: string
+  ) => {
+    // If externalId is provided directly (e.g., from overlay creation),
+    // use it immediately to avoid race condition with stale integrations list
+    if (externalId) {
+      onUpdateConfig("auth", buildConnectionAuthTemplate(externalId));
+      return;
+    }
+    const selectedConnection = globalIntegrations.find(
+      (i) => i.id === connectionId
+    );
+    if (selectedConnection?.externalId) {
+      onUpdateConfig(
+        "auth",
+        buildConnectionAuthTemplate(selectedConnection.externalId)
+      );
+    }
   };
 
   const openConnectionOverlay = () => {
     if (integrationType) {
       push(ConfigureConnectionOverlay, {
         type: integrationType,
-        onSuccess: (integrationId: string) => {
+        onSuccess: (connectionId: string, externalId?: string) => {
           setIntegrationsVersion((v) => v + 1);
-          onUpdateConfig("integrationId", integrationId);
+          applySelectedConnection(connectionId, externalId);
         },
       });
     }
@@ -476,6 +596,23 @@ export function ActionConfig({
                   </div>
                 </SelectItem>
               ))}
+              {apPieces.length > 0 && (
+                <>
+                  <SelectSeparator />
+                  {apPieces.map((piece) => (
+                    <SelectItem key={piece.type} value={piece.label}>
+                      <div className="flex items-center gap-2">
+                        <IntegrationIcon
+                          className="size-4"
+                          integration={piece.type}
+                          logoUrl={piece.logoUrl}
+                        />
+                        <span>{piece.label}</span>
+                      </div>
+                    </SelectItem>
+                  ))}
+                </>
+              )}
             </SelectContent>
           </Select>
         </div>
@@ -535,8 +672,8 @@ export function ActionConfig({
           <IntegrationSelector
             disabled={disabled}
             integrationType={integrationType}
-            onChange={(id) => onUpdateConfig("integrationId", id)}
-            value={(config?.integrationId as string) || ""}
+            onChange={(id) => applySelectedConnection(id)}
+            value={selectedConnectionId}
           />
         </div>
       )}

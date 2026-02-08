@@ -11,11 +11,11 @@ import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
 import {
-  integrationsAtom,
-  integrationsLoadedAtom,
-  integrationsVersionAtom,
-} from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+  connectionsAtom,
+  connectionsLoadedAtom,
+  connectionsVersionAtom,
+} from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   batchSetNodeStatusesAtom,
   currentRunningNodeIdAtom,
@@ -45,61 +45,52 @@ type WorkflowPageProps = {
   params: Promise<{ workflowId: string }>;
 };
 
-// System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
-  "Database Query": "database",
-};
-
-// Helper to get required integration type for an action
-function getRequiredIntegrationType(
-  actionType: string
-): IntegrationType | undefined {
-  const action = findActionById(actionType);
-  return (
-    (action?.integration as IntegrationType | undefined) ||
-    SYSTEM_ACTION_INTEGRATIONS[actionType]
-  );
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
 }
 
-// Helper to check and fix a single node's integration
-type IntegrationFixResult = {
+// Helper to get required piece name for an action
+function getRequiredPieceName(
+  actionType: string
+): string | undefined {
+  const action = findActionById(actionType);
+  return action?.integration;
+}
+
+// Helper to check and fix a single node's connection
+type ConnectionFixResult = {
   nodeId: string;
-  newIntegrationId: string | undefined;
+  newConnectionExternalId?: string;
 };
 
-function checkNodeIntegration(
+function checkNodeConnection(
   node: WorkflowNode,
-  allIntegrations: { id: string; type: string }[],
-  validIntegrationIds: Set<string>
-): IntegrationFixResult | null {
+  connectionsByPiece: Map<string, { externalId: string }[]>
+): ConnectionFixResult | null {
   const actionType = node.data.config?.actionType as string | undefined;
   if (!actionType) {
     return null;
   }
 
-  const integrationType = getRequiredIntegrationType(actionType);
-  if (!integrationType) {
+  const pieceName = getRequiredPieceName(actionType);
+  if (!pieceName) {
     return null;
   }
 
-  const currentIntegrationId = node.data.config?.integrationId as
-    | string
-    | undefined;
-  const hasValidIntegration =
-    currentIntegrationId && validIntegrationIds.has(currentIntegrationId);
-
-  if (hasValidIntegration) {
+  // Already has a connection auth template
+  const currentAuth = node.data.config?.auth as string | undefined;
+  if (currentAuth && currentAuth.includes("connections[")) {
     return null;
   }
 
-  // Find available integrations of this type
-  const available = allIntegrations.filter((i) => i.type === integrationType);
+  // Find available connections for this piece
+  const available = connectionsByPiece.get(pieceName) ?? [];
 
   if (available.length === 1) {
-    return { nodeId: node.id, newIntegrationId: available[0].id };
-  }
-  if (available.length === 0 && currentIntegrationId) {
-    return { nodeId: node.id, newIntegrationId: undefined };
+    return {
+      nodeId: node.id,
+      newConnectionExternalId: available[0].externalId,
+    };
   }
   return null;
 }
@@ -134,9 +125,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
     currentWorkflowVisibilityAtom
   );
   const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
-  const setGlobalIntegrations = useSetAtom(integrationsAtom);
-  const setIntegrationsLoaded = useSetAtom(integrationsLoadedAtom);
-  const integrationsVersion = useAtomValue(integrationsVersionAtom);
+  const setGlobalConnections = useSetAtom(connectionsAtom);
+  const setConnectionsLoaded = useSetAtom(connectionsLoadedAtom);
+  const connectionsVersion = useAtomValue(connectionsVersionAtom);
 
   // Panel width state for resizing
   const [panelWidth, setPanelWidth] = useState(30); // default percentage
@@ -422,38 +413,42 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
     loadExistingWorkflow,
   ]);
 
-  // Auto-fix invalid/missing integrations on workflow load or when integrations change
+  // Auto-fix missing connections on workflow load or when connections change
   useEffect(() => {
-    // Skip if no nodes or no workflow
     if (nodes.length === 0 || !currentWorkflowId) {
       return;
     }
-
-    // Skip for non-owners (they can't modify the workflow and may not be authenticated)
     if (!isOwner) {
       return;
     }
 
-    // Skip if already checked for this workflow+version combination
     const lastFix = lastAutoFixRef.current;
     if (
       lastFix &&
       lastFix.workflowId === currentWorkflowId &&
-      lastFix.version === integrationsVersion
+      lastFix.version === connectionsVersion
     ) {
       return;
     }
 
-    const autoFixIntegrations = async () => {
+    const autoFixConnections = async () => {
       try {
-        const allIntegrations = await api.integration.getAll();
-        setGlobalIntegrations(allIntegrations);
-        setIntegrationsLoaded(true);
+        const response = await api.appConnection.list({ projectId: "default", limit: 1000 });
+        const allConnections = response.data;
+        setGlobalConnections(allConnections);
+        setConnectionsLoaded(true);
 
-        const validIds = new Set(allIntegrations.map((i) => i.id));
+        // Group connections by pieceName
+        const byPiece = new Map<string, { externalId: string }[]>();
+        for (const conn of allConnections) {
+          const list = byPiece.get(conn.pieceName) ?? [];
+          list.push({ externalId: conn.externalId });
+          byPiece.set(conn.pieceName, list);
+        }
+
         const fixes = nodes
-          .map((node) => checkNodeIntegration(node, allIntegrations, validIds))
-          .filter((fix): fix is IntegrationFixResult => fix !== null);
+          .map((node) => checkNodeConnection(node, byPiece))
+          .filter((fix): fix is ConnectionFixResult => fix !== null);
 
         for (const fix of fixes) {
           const node = nodes.find((n) => n.id === fix.nodeId);
@@ -463,7 +458,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
               data: {
                 config: {
                   ...node.data.config,
-                  integrationId: fix.newIntegrationId,
+                  auth: fix.newConnectionExternalId
+                    ? buildConnectionAuthTemplate(fix.newConnectionExternalId)
+                    : undefined,
                 },
               },
             });
@@ -472,25 +469,25 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
         lastAutoFixRef.current = {
           workflowId: currentWorkflowId,
-          version: integrationsVersion,
+          version: connectionsVersion,
         };
         if (fixes.length > 0) {
           setHasUnsavedChanges(true);
         }
       } catch (error) {
-        console.error("Failed to auto-fix integrations:", error);
+        console.error("Failed to auto-fix connections:", error);
       }
     };
 
-    autoFixIntegrations();
+    autoFixConnections();
   }, [
     nodes,
     currentWorkflowId,
-    integrationsVersion,
+    connectionsVersion,
     isOwner,
     updateNodeData,
-    setGlobalIntegrations,
-    setIntegrationsLoaded,
+    setGlobalConnections,
+    setConnectionsLoaded,
     setHasUnsavedChanges,
   ]);
 
@@ -616,17 +613,30 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
         // Build a complete status map: log-based statuses + currentRunningNodeId
         // Nodes NOT in this map get reset to "idle" by batchSetNodeStatuses
-        const statusMap = new Map<string, "idle" | "running" | "success" | "error">();
+        const statusMap = new Map<
+          string,
+          "idle" | "running" | "success" | "error"
+        >();
         for (const nodeStatus of statusData.nodeStatuses) {
-          const mappedStatus = nodeStatus.status === "pending" ? "idle" : nodeStatus.status;
-          statusMap.set(nodeStatus.nodeId, mappedStatus as "idle" | "running" | "success" | "error");
+          const mappedStatus =
+            nodeStatus.status === "pending" ? "idle" : nodeStatus.status;
+          statusMap.set(
+            nodeStatus.nodeId,
+            mappedStatus as "idle" | "running" | "success" | "error"
+          );
         }
 
         // Add the currently executing node from orchestrator status,
         // but only if logs haven't already recorded a terminal status.
         const runningNodeId = currentRunningNodeIdRef.current;
-        const existingStatus = runningNodeId ? statusMap.get(runningNodeId) : undefined;
-        if (runningNodeId && existingStatus !== "success" && existingStatus !== "error") {
+        const existingStatus = runningNodeId
+          ? statusMap.get(runningNodeId)
+          : undefined;
+        if (
+          runningNodeId &&
+          existingStatus !== "success" &&
+          existingStatus !== "error"
+        ) {
           statusMap.set(runningNodeId, "running");
         }
 

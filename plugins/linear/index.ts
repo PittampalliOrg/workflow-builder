@@ -4,6 +4,7 @@ import { LinearIcon } from "./icon";
 
 const linearPlugin: IntegrationPlugin = {
   type: "linear",
+  pieceName: "linear",
   label: "Linear",
   description: "Create and manage issues in Linear",
 

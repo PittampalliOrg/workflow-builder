@@ -3,7 +3,14 @@
  * Replaces server actions with API endpoints
  */
 
-import type { IntegrationConfig, IntegrationType } from "./types/integration";
+import {
+  type AppConnectionScope,
+  type AppConnectionStatus,
+  type AppConnectionValue,
+  type AppConnectionWithoutSensitiveData,
+  type UpdateConnectionValueRequestBody,
+  type UpsertAppConnectionRequestBody,
+} from "./types/app-connection";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -316,76 +323,6 @@ export const aiApi = {
   },
 };
 
-export type Integration = {
-  id: string;
-  name: string;
-  type: IntegrationType;
-  isManaged?: boolean;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type IntegrationWithConfig = Integration & {
-  config: IntegrationConfig;
-};
-
-// Integration API
-export const integrationApi = {
-  // List all integrations
-  getAll: (type?: IntegrationType) =>
-    apiCall<Integration[]>(`/api/integrations${type ? `?type=${type}` : ""}`),
-
-  // Get single integration with config
-  get: (id: string) =>
-    apiCall<IntegrationWithConfig>(`/api/integrations/${id}`),
-
-  // Create integration
-  create: (data: {
-    name: string;
-    type: IntegrationType;
-    config: IntegrationConfig;
-  }) =>
-    apiCall<Integration>("/api/integrations", {
-      method: "POST",
-      body: JSON.stringify(data),
-    }),
-
-  // Update integration
-  update: (id: string, data: { name?: string; config?: IntegrationConfig }) =>
-    apiCall<IntegrationWithConfig>(`/api/integrations/${id}`, {
-      method: "PUT",
-      body: JSON.stringify(data),
-    }),
-
-  // Delete integration
-  delete: (id: string) =>
-    apiCall<{ success: boolean }>(`/api/integrations/${id}`, {
-      method: "DELETE",
-    }),
-
-  // Test existing integration connection
-  testConnection: (integrationId: string) =>
-    apiCall<{ status: "success" | "error"; message: string }>(
-      `/api/integrations/${integrationId}/test`,
-      {
-        method: "POST",
-      }
-    ),
-
-  // Test credentials without saving
-  testCredentials: (data: {
-    type: IntegrationType;
-    config: IntegrationConfig;
-  }) =>
-    apiCall<{ status: "success" | "error"; message: string }>(
-      "/api/integrations/test",
-      {
-        method: "POST",
-        body: JSON.stringify(data),
-      }
-    ),
-};
-
 // User API
 export const userApi = {
   get: () =>
@@ -650,10 +587,7 @@ export const daprApi = {
   listExecutions: () => apiCall<DaprExecution[]>("/api/dapr/workflows"),
 
   // Start a Dapr workflow
-  startWorkflow: (
-    workflowId: string,
-    input: Record<string, unknown> = {}
-  ) =>
+  startWorkflow: (workflowId: string, input: Record<string, unknown> = {}) =>
     apiCall<{
       executionId: string;
       daprInstanceId: string;
@@ -671,16 +605,10 @@ export const daprApi = {
 
   // Get tasks from Dapr statestore
   getTasks: (executionId: string) =>
-    apiCall<DaprWorkflowTask[]>(
-      `/api/dapr/workflows/${executionId}/tasks`
-    ),
+    apiCall<DaprWorkflowTask[]>(`/api/dapr/workflows/${executionId}/tasks`),
 
   // Approve or reject a Dapr workflow
-  approve: (
-    executionId: string,
-    approved: boolean,
-    reason?: string
-  ) =>
+  approve: (executionId: string, approved: boolean, reason?: string) =>
     apiCall<{ success: boolean; message?: string }>(
       `/api/dapr/workflows/${executionId}/approve`,
       {
@@ -735,8 +663,10 @@ export const functionsApi = {
   }) => {
     const params = new URLSearchParams();
     if (options?.pluginId) params.set("pluginId", options.pluginId);
-    if (options?.executionType) params.set("executionType", options.executionType);
-    if (options?.integrationType) params.set("integrationType", options.integrationType);
+    if (options?.executionType)
+      params.set("executionType", options.executionType);
+    if (options?.integrationType)
+      params.set("integrationType", options.integrationType);
     if (options?.search) params.set("search", options.search);
     if (options?.includeDisabled) params.set("includeDisabled", "true");
     const queryString = params.toString();
@@ -746,8 +676,7 @@ export const functionsApi = {
   },
 
   // Get a function by ID
-  getById: (id: string) =>
-    apiCall<FunctionDefinition>(`/api/functions/${id}`),
+  getById: (id: string) => apiCall<FunctionDefinition>(`/api/functions/${id}`),
 
   // Create a new function
   create: (data: {
@@ -835,12 +764,161 @@ export const secretsApi = {
     apiCall<InfrastructureSecretsResponse>("/api/secrets/available"),
 };
 
+export type AppConnection = AppConnectionWithoutSensitiveData & {
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AppConnectionWithValue = Omit<
+  AppConnectionWithoutSensitiveData,
+  "createdAt" | "updatedAt"
+> & {
+  value: AppConnectionValue;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PieceMetadata = {
+  id: string;
+  name: string;
+  authors: string[];
+  displayName: string;
+  logoUrl: string;
+  description: string | null;
+  platformId: string | null;
+  version: string;
+  minimumSupportedRelease: string;
+  maximumSupportedRelease: string;
+  auth: unknown;
+  actions: Record<string, unknown>;
+  triggers: Record<string, unknown>;
+  pieceType: string;
+  categories: string[];
+  packageType: string;
+  i18n: unknown;
+  createdAt: string;
+  updatedAt: string;
+};
+
+// Pieces API
+export const pieceApi = {
+  list: (params?: {
+    searchQuery?: string;
+    categories?: string[];
+    limit?: number;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.searchQuery) search.set("searchQuery", params.searchQuery);
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.categories) {
+      for (const category of params.categories) {
+        search.append("categories", category);
+      }
+    }
+    const query = search.toString();
+    return apiCall<PieceMetadata[]>(`/api/pieces${query ? `?${query}` : ""}`);
+  },
+
+  get: (name: string, version?: string) =>
+    apiCall<PieceMetadata>(
+      `/api/pieces/${encodeURIComponent(name)}${
+        version ? `?version=${encodeURIComponent(version)}` : ""
+      }`
+    ),
+};
+
+// Activepieces-style app connections API
+export const appConnectionApi = {
+  list: (query?: {
+    projectId?: string;
+    pieceName?: string;
+    displayName?: string;
+    scope?: AppConnectionScope;
+    status?: AppConnectionStatus[];
+    limit?: number;
+  }) => {
+    const search = new URLSearchParams();
+    search.set("projectId", query?.projectId ?? "default");
+
+    if (query?.pieceName) search.set("pieceName", query.pieceName);
+    if (query?.displayName) search.set("displayName", query.displayName);
+    if (query?.scope) search.set("scope", query.scope);
+    if (query?.status) {
+      for (const status of query.status) {
+        search.append("status", status);
+      }
+    }
+    if (query?.limit) search.set("limit", String(query.limit));
+
+    return apiCall<{
+      data: AppConnection[];
+      next: string | null;
+      previous: string | null;
+    }>(`/api/app-connections?${search.toString()}`);
+  },
+
+  get: (id: string) =>
+    apiCall<AppConnectionWithValue>(`/api/app-connections/${id}`),
+
+  upsert: (body: UpsertAppConnectionRequestBody) =>
+    apiCall<AppConnection>("/api/app-connections", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  update: (id: string, body: UpdateConnectionValueRequestBody) =>
+    apiCall<AppConnection>(`/api/app-connections/${id}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  delete: (id: string) =>
+    apiCall<{ success: boolean }>(`/api/app-connections/${id}`, {
+      method: "DELETE",
+    }),
+
+  test: (body: Partial<UpsertAppConnectionRequestBody>) =>
+    apiCall<{ status: "success" | "error"; message: string }>(
+      "/api/app-connections/test",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      }
+    ),
+
+  testExisting: (id: string) =>
+    apiCall<{ status: "success" | "error"; message: string }>(
+      `/api/app-connections/${id}/test`,
+      {
+        method: "POST",
+      }
+    ),
+
+  oauth2Start: (body: {
+    pieceName: string;
+    pieceVersion?: string;
+    clientId: string;
+    redirectUrl: string;
+    props?: Record<string, unknown>;
+  }) =>
+    apiCall<{
+      authorizationUrl: string;
+      state: string;
+      codeVerifier: string;
+      codeChallenge: string;
+    }>("/api/app-connections/oauth2/start", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
+  appConnection: appConnectionApi,
   dapr: daprApi,
   functions: functionsApi,
-  integration: integrationApi,
+  piece: pieceApi,
   secrets: secretsApi,
   user: userApi,
   workflow: workflowApi,

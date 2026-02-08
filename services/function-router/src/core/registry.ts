@@ -24,6 +24,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "linear/*": { appId: "fn-linear", type: "openfunction" },
   "firecrawl/*": { appId: "fn-firecrawl", type: "openfunction" },
   "perplexity/*": { appId: "fn-perplexity", type: "openfunction" },
+  // Default fallback: route unknown slugs to fn-activepieces
+  "_default": { appId: "fn-activepieces", type: "openfunction" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

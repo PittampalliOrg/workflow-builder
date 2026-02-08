@@ -5,8 +5,8 @@ import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { integrationsVersionAtom } from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+import { connectionsVersionAtom } from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import { ConfigureConnectionOverlay } from "./add-connection-overlay";
 import { ConfigurationOverlay } from "./configuration-overlay";
 import { Overlay } from "./overlay";
@@ -33,7 +33,7 @@ type MissingRequiredField = {
 };
 
 type MissingIntegration = {
-  integrationType: IntegrationType;
+  integrationType: PluginType;
   integrationLabel: string;
   nodeNames: string[];
 };
@@ -57,7 +57,7 @@ export function WorkflowIssuesOverlay({
   onRunAnyway,
 }: WorkflowIssuesOverlayProps) {
   const { push, closeAll } = useOverlay();
-  const setIntegrationsVersion = useSetAtom(integrationsVersionAtom);
+  const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
   const isMobile = useIsMobile();
 
   const { brokenReferences, missingRequiredFields, missingIntegrations } =
@@ -81,7 +81,7 @@ export function WorkflowIssuesOverlay({
     }
   };
 
-  const handleAddIntegration = (integrationType: IntegrationType) => {
+  const handleAddIntegration = (integrationType: PluginType) => {
     push(ConfigureConnectionOverlay, {
       type: integrationType,
       onSuccess: () => {

@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { validateWorkflowIntegrations } from "@/lib/db/integrations";
+import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 
 // Helper to strip sensitive data from nodes for public viewing
@@ -23,8 +23,11 @@ function sanitizeNodesForPublicView(
         typeof data.config === "object" &&
         data.config !== null
       ) {
-        const { integrationId: _, ...configWithoutIntegration } =
-          data.config as Record<string, unknown>;
+        const {
+          integrationId: _,
+          auth: _auth,
+          ...configWithoutIntegration
+        } = data.config as Record<string, unknown>;
         data.config = configWithoutIntegration;
       }
       sanitizedNode.data = data;
@@ -149,15 +152,15 @@ export async function PATCH(
 
     const body = await request.json();
 
-    // Validate that all integrationIds in nodes belong to the current user
+    // Validate that all connection references in nodes belong to the current user
     if (Array.isArray(body.nodes)) {
-      const validation = await validateWorkflowIntegrations(
+      const validation = await validateWorkflowAppConnections(
         body.nodes,
         session.user.id
       );
       if (!validation.valid) {
         return NextResponse.json(
-          { error: "Invalid integration references in workflow" },
+          { error: "Invalid connection references in workflow" },
           { status: 403 }
         );
       }

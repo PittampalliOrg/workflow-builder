@@ -4,6 +4,7 @@ import { StripeIcon } from "./icon";
 
 const stripePlugin: IntegrationPlugin = {
   type: "stripe",
+  pieceName: "stripe",
   label: "Stripe",
   description: "Payment processing and billing",
 

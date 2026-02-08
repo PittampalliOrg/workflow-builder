@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from core.config import config
 from workflows.dynamic_workflow import wfr, dynamic_workflow
+from workflows.ap_workflow import ap_workflow
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state, get_state, delete_state
 from activities.publish_event import (
@@ -55,6 +56,7 @@ from activities.call_planner_service import (
     call_planner_multi_step,
 )
 from activities.log_node_execution import log_node_start, log_node_complete
+from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
 
 # Configuration from centralized config module
@@ -109,8 +111,15 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_planner_approve)
     wfr.register_activity(call_planner_status)
     wfr.register_activity(call_planner_multi_step)
+    # AP workflow callback activities
+    wfr.register_activity(send_ap_callback)
+    wfr.register_activity(send_ap_step_update)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
+
+    # Register workflows
+    wfr.register_workflow(ap_workflow)
+    logger.info("[Workflow Orchestrator] Registered AP workflow")
 
     # Start the workflow runtime
     wfr.start()
@@ -165,6 +174,10 @@ class StartWorkflowRequest(BaseModel):
         default=None,
         description="Database execution ID for logging"
     )
+    nodeConnectionMap: dict[str, str] | None = Field(
+        default=None,
+        description="Per-node connection external IDs for credential resolution"
+    )
 
 
 class StartWorkflowResponse(BaseModel):
@@ -194,6 +207,28 @@ class CloudEvent(BaseModel):
     id: str | None = None
     time: str | None = None
     datacontenttype: str = "application/json"
+
+
+class StartAPWorkflowRequest(BaseModel):
+    """Request from AP's dapr-executor.ts to start an AP flow execution."""
+    flowRunId: str
+    projectId: str
+    platformId: str | None = None
+    flowVersionId: str | None = None
+    flowId: str | None = None
+    executionType: str = "BEGIN"
+    triggerPayload: Any = None
+    executeTrigger: bool = True
+    progressUpdateType: str | None = None
+    callbackUrl: str = ""
+    flowVersion: dict[str, Any] = Field(default_factory=dict)
+
+
+class StartAPWorkflowResponse(BaseModel):
+    """Response from starting an AP workflow."""
+    instanceId: str
+    flowRunId: str
+    status: str = "started"
 
 
 class WorkflowStatusResponse(BaseModel):
@@ -264,6 +299,7 @@ def start_workflow(request: StartWorkflowRequest):
             "triggerData": trigger_data,
             "integrations": integrations,
             "dbExecutionId": db_execution_id,
+            "nodeConnectionMap": request.nodeConnectionMap,
         }
 
         # Generate a unique instance ID
@@ -292,6 +328,69 @@ def start_workflow(request: StartWorkflowRequest):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)
+def start_ap_workflow(request: StartAPWorkflowRequest):
+    """
+    Start an AP flow execution via Dapr workflow.
+
+    POST /api/v2/ap-workflows
+
+    Called by AP's dapr-executor.ts when AP_EXECUTION_ENGINE=dapr.
+    Receives the full FlowVersion JSON and walks the AP action chain
+    using the Dapr workflow runtime.
+    """
+    try:
+        client = get_workflow_client()
+
+        workflow_input = {
+            "flowRunId": request.flowRunId,
+            "projectId": request.projectId,
+            "platformId": request.platformId,
+            "flowVersionId": request.flowVersionId,
+            "flowId": request.flowId,
+            "executionType": request.executionType,
+            "triggerPayload": request.triggerPayload,
+            "executeTrigger": request.executeTrigger,
+            "progressUpdateType": request.progressUpdateType,
+            "callbackUrl": request.callbackUrl,
+            "flowVersion": request.flowVersion,
+        }
+
+        # Use the AP flow run ID as the Dapr instance ID (1:1 mapping).
+        # This makes monitor/status queries and resume events trivial and avoids UI confusion.
+        instance_id = request.flowRunId
+
+        logger.info(
+            f"[AP Workflow] Starting AP flow: run={request.flowRunId}, "
+            f"flow={request.flowVersion.get('displayName', 'unknown')}, "
+            f"instance={instance_id}"
+        )
+
+        # Idempotent start: if the instance already exists, return it.
+        try:
+            client.schedule_new_workflow(
+                workflow=ap_workflow,
+                input=workflow_input,
+                instance_id=instance_id,
+            )
+        except Exception:
+            existing = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
+            if existing is None:
+                raise
+
+        logger.info(f"[AP Workflow] Workflow scheduled: {instance_id}")
+
+        return StartAPWorkflowResponse(
+            instanceId=instance_id,
+            flowRunId=request.flowRunId,
+            status="started",
+        )
+
+    except Exception as e:
+        logger.error(f"[AP Workflow] Failed to start AP workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -640,6 +739,7 @@ def get_config():
         "runtime": "python-dapr-workflow",
         "features": [
             "dynamic-workflow",
+            "ap-workflow",
             "child-workflows",
             "approval-gates",
             "timers",

@@ -1,0 +1,51 @@
+{
+  "name": "fn-activepieces",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "node build.mjs",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@activepieces/pieces-common": "0.11.5",
+    "@activepieces/pieces-framework": "0.25.2",
+    "@activepieces/shared": "0.34.0",
+    "@activepieces/piece-google-sheets": "0.14.4",
+    "@activepieces/piece-google-calendar": "0.8.3",
+    "@activepieces/piece-google-docs": "0.3.3",
+    "@activepieces/piece-gmail": "0.11.3",
+    "@activepieces/piece-google-drive": "0.6.3",
+    "@activepieces/piece-notion": "0.5.3",
+    "@activepieces/piece-airtable": "0.6.4",
+    "@activepieces/piece-discord": "0.4.3",
+    "@activepieces/piece-microsoft-teams": "0.3.5",
+    "@activepieces/piece-microsoft-outlook": "0.2.6",
+    "@activepieces/piece-microsoft-excel-365": "0.4.4",
+    "@activepieces/piece-microsoft-todo": "0.2.3",
+    "@activepieces/piece-jira-cloud": "0.2.4",
+    "@activepieces/piece-asana": "0.4.3",
+    "@activepieces/piece-trello": "0.4.2",
+    "@activepieces/piece-clickup": "0.7.3",
+    "@activepieces/piece-todoist": "0.4.3",
+    "@activepieces/piece-monday": "0.3.2",
+    "@activepieces/piece-hubspot": "0.8.3",
+    "@activepieces/piece-salesforce": "0.3.4",
+    "@activepieces/piece-mailchimp": "0.5.2",
+    "@activepieces/piece-shopify": "0.2.3",
+    "@activepieces/piece-zendesk": "0.2.3",
+    "@activepieces/piece-sendgrid": "0.4.3",
+    "@activepieces/piece-dropbox": "0.6.3",
+    "@activepieces/piece-telegram-bot": "0.5.3",
+    "@fastify/cors": "^10.0.2",
+    "fastify": "^5.2.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5"
+  }
+}

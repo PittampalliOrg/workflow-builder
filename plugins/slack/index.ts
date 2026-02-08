@@ -4,6 +4,7 @@ import { SlackIcon } from "./icon";
 
 const slackPlugin: IntegrationPlugin = {
   type: "slack",
+  pieceName: "slack",
   label: "Slack",
   description: "Send messages to Slack channels",
 

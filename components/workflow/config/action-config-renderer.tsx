@@ -18,6 +18,7 @@ import {
   type ActionConfigFieldBase,
   isFieldGroup,
 } from "@/plugins";
+import { DynamicSelectField } from "./fields/dynamic-select-field";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
 type FieldProps = {
@@ -25,6 +26,7 @@ type FieldProps = {
   value: string;
   onChange: (value: unknown) => void;
   disabled?: boolean;
+  config: Record<string, unknown>;
 };
 
 function TemplateInputField({ field, value, onChange, disabled }: FieldProps) {
@@ -114,6 +116,31 @@ function SchemaBuilderField(props: FieldProps) {
   );
 }
 
+function DynamicSelectFieldWrapper(props: FieldProps) {
+  return (
+    <DynamicSelectField
+      config={props.config}
+      disabled={props.disabled}
+      field={props.field}
+      onChange={props.onChange}
+      value={props.value}
+    />
+  );
+}
+
+function DynamicMultiSelectFieldWrapper(props: FieldProps) {
+  return (
+    <DynamicSelectField
+      config={props.config}
+      disabled={props.disabled}
+      field={props.field}
+      multiSelect
+      onChange={props.onChange}
+      value={props.value}
+    />
+  );
+}
+
 const FIELD_RENDERERS: Record<
   ActionConfigFieldBase["type"],
   React.ComponentType<FieldProps>
@@ -123,6 +150,8 @@ const FIELD_RENDERERS: Record<
   text: TextInputField,
   number: NumberInputField,
   select: SelectField,
+  "dynamic-select": DynamicSelectFieldWrapper,
+  "dynamic-multi-select": DynamicMultiSelectFieldWrapper,
   "schema-builder": SchemaBuilderField,
 };
 
@@ -154,6 +183,7 @@ function renderField(
         {field.required && <span className="text-red-500">*</span>}
       </Label>
       <FieldRenderer
+        config={config}
         disabled={disabled}
         field={field}
         onChange={(val) => onUpdateConfig(field.key, val)}

@@ -242,6 +242,11 @@ dev:
         value: "https://workflow-builder.cnoe.localtest.me:8443"
       - name: BETTER_AUTH_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
+      # fn-activepieces internal URL (dev override for dynamic dropdown options)
+      - name: FN_ACTIVEPIECES_URL
+        value: "http://fn-activepieces-standalone.workflow-builder.svc.cluster.local"
+      # AP_ENCRYPTION_KEY is provided by envFrom secretRef: workflow-builder-secrets
+      # Do NOT override it here — DevSpace inherits the base deployment's envFrom
 
     # Add Dapr sidecar annotations for config/secret access
     # Note: DevSpace patches are applied to pod spec, not metadata

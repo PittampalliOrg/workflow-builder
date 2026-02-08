@@ -110,6 +110,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     trigger_data = input_data.get("triggerData", {})
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
+    node_connection_map = input_data.get("nodeConnectionMap") or {}
 
     start_time = time.time()
     execution_id = ctx.instance_id
@@ -228,6 +229,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "workflowId": workflow_id,
                             "integrations": integrations,
                             "dbExecutionId": db_execution_id,
+                            "connectionExternalId": node_connection_map.get(node.get("id")),
                         }
                     )
 

@@ -1,5 +1,13 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { Copy, Eraser, Eye, EyeOff, FileCode, RefreshCw, Trash2 } from "lucide-react";
+import {
+  Copy,
+  Eraser,
+  Eye,
+  EyeOff,
+  FileCode,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -17,8 +25,9 @@ import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
-import { integrationsAtom } from "@/lib/integrations-store";
-import type { IntegrationType } from "@/lib/types/integration";
+import { generateNodeCode, getDaprNodeCodeFiles } from "@/lib/code-generation";
+import { connectionsAtom } from "@/lib/connections-store";
+import type { PluginType } from "@/plugins/registry";
 import {
   clearNodeStatusesAtom,
   currentWorkflowIdAtom,
@@ -47,18 +56,40 @@ import { ActionGrid, type ActionSelection } from "./config/action-grid";
 import { ActivityConfig } from "./config/activity-config";
 import { ApprovalGateConfig } from "./config/approval-gate-config";
 import { TimerConfig } from "./config/timer-config";
-
 import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
-import {
-  generateNodeCode,
-  getDaprNodeCodeFiles,
-} from "@/lib/code-generation";
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
   "Database Query": "database",
 };
+
+function buildConnectionAuthTemplate(externalId: string): string {
+  return `{{connections['${externalId}']}}`;
+}
+
+function applyConnectionConfig(
+  config: Record<string, unknown> | undefined,
+  integration: { id: string; externalId?: string }
+): Record<string, unknown> {
+  return {
+    ...(config ?? {}),
+    integrationId: integration.id,
+    ...(integration.externalId
+      ? { auth: buildConnectionAuthTemplate(integration.externalId) }
+      : {}),
+  };
+}
+
+function clearConnectionConfig(
+  config: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  return {
+    ...(config ?? {}),
+    integrationId: undefined,
+    auth: undefined,
+  };
+}
 
 // Multi-selection panel component
 const MultiSelectionPanel = ({
@@ -196,7 +227,7 @@ export const PanelInner = () => {
   }, [selectedNode, activeTab, setActiveTab]);
 
   // Auto-fix invalid integration references when a node is selected
-  const globalIntegrations = useAtomValue(integrationsAtom);
+  const globalIntegrations = useAtomValue(connectionsAtom);
   useEffect(() => {
     if (!(selectedNode && isOwner)) {
       return;
@@ -216,8 +247,8 @@ export const PanelInner = () => {
 
     // Get the required integration type for this action
     const action = findActionById(actionType);
-    const integrationType: IntegrationType | undefined =
-      (action?.integration as IntegrationType | undefined) ||
+    const integrationType: PluginType | undefined =
+      (action?.integration as PluginType | undefined) ||
       SYSTEM_ACTION_INTEGRATIONS[actionType];
 
     if (!integrationType) {
@@ -235,22 +266,19 @@ export const PanelInner = () => {
 
     // Current integration was deleted - find a replacement
     const availableIntegrations = globalIntegrations.filter(
-      (i) => i.type === integrationType
+      (i) => i.pieceName === integrationType
     );
 
     if (availableIntegrations.length === 1) {
       // Auto-select the only available integration
-      const newConfig = {
-        ...selectedNode.data.config,
-        integrationId: availableIntegrations[0].id,
-      };
+      const newConfig = applyConnectionConfig(
+        selectedNode.data.config,
+        availableIntegrations[0]
+      );
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
     } else if (availableIntegrations.length === 0) {
       // No integrations available - clear the invalid reference
-      const newConfig = {
-        ...selectedNode.data.config,
-        integrationId: undefined,
-      };
+      const newConfig = clearConnectionConfig(selectedNode.data.config);
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
     }
     // If multiple integrations exist, let the user choose manually
@@ -317,8 +345,8 @@ export const PanelInner = () => {
     ) => {
       // Get integration type - check plugin registry first, then system actions
       const action = findActionById(actionType);
-      const integrationType: IntegrationType | undefined =
-        (action?.integration as IntegrationType | undefined) ||
+      const integrationType: PluginType | undefined =
+        (action?.integration as PluginType | undefined) ||
         SYSTEM_ACTION_INTEGRATIONS[actionType];
 
       if (!integrationType) {
@@ -332,22 +360,21 @@ export const PanelInner = () => {
       }
 
       try {
-        const all = await api.integration.getAll();
+        const all = await api.appConnection.list({ projectId: "default", limit: 1000 }).then(r => r.data);
 
         // Check if this operation was aborted (actionType changed)
         if (abortSignal.aborted) {
           return;
         }
 
-        const filtered = all.filter((i) => i.type === integrationType);
+        const filtered = all.filter((i) => i.pieceName === integrationType);
 
         // Auto-select if only one integration exists
         if (filtered.length === 1 && !abortSignal.aborted) {
-          const newConfig = {
-            ...currentConfig,
-            actionType,
-            integrationId: filtered[0].id,
-          };
+          const newConfig = applyConnectionConfig(
+            { ...currentConfig, actionType },
+            filtered[0]
+          );
           updateNodeData({ id: nodeId, data: { config: newConfig } });
         }
       } catch (error) {
@@ -372,7 +399,7 @@ export const PanelInner = () => {
 
       // When action type changes, clear the integrationId since it may not be valid for the new action
       if (key === "actionType" && selectedNode.data.config?.integrationId) {
-        newConfig = { ...newConfig, integrationId: undefined };
+        newConfig = clearConnectionConfig(newConfig);
       }
 
       updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
@@ -704,18 +731,23 @@ export const PanelInner = () => {
                   isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
                   onSelectAction={(selection: ActionSelection) => {
                     // Handle Dapr activity selection - morph node type
-                    if (selection.isDaprActivity && selection.nodeType && selection.nodeType !== "action") {
+                    if (
+                      selection.isDaprActivity &&
+                      selection.nodeType &&
+                      selection.nodeType !== "action"
+                    ) {
                       morphNodeType({
                         id: selectedNode.id,
                         nodeType: selection.nodeType,
                         data: {
-                          label: selection.nodeType === "activity"
-                            ? (selection.activityName || "Activity")
-                            : selection.nodeType === "approval-gate"
-                            ? "Approval Gate"
-                            : selection.nodeType === "timer"
-                            ? "Timer"
-                            : "Step",
+                          label:
+                            selection.nodeType === "activity"
+                              ? selection.activityName || "Activity"
+                              : selection.nodeType === "approval-gate"
+                                ? "Approval Gate"
+                                : selection.nodeType === "timer"
+                                  ? "Timer"
+                                  : "Step",
                           config: {
                             activityName: selection.activityName,
                           },
