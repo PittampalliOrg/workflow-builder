@@ -56,6 +56,9 @@ importers:
       '@activepieces/piece-microsoft-teams':
         specifier: 0.3.5
         version: 0.3.5
+      '@activepieces/piece-microsoft-todo':
+        specifier: 0.2.3
+        version: 0.2.3
       '@activepieces/piece-monday':
         specifier: 0.3.2
         version: 0.3.2
@@ -164,6 +167,9 @@ packages:
 
   '@activepieces/piece-microsoft-teams@0.3.5':
     resolution: {integrity: sha512-B429QFtmnPHOKEN3l4366OP8H1FXJ/G+X16RX1Rre0FwnJWjd/JNSxWAE+mK60EC1OStWN0+dvE6NmddBURViQ==}
+
+  '@activepieces/piece-microsoft-todo@0.2.3':
+    resolution: {integrity: sha512-4rh4wl4ObZ1EdCEi/nCFu9eN6ihVm+4zJcOBZxO+TTLwF6p1/sbGoJz1la0Z58JIB5M7ByJbo0haGxG+86ewlg==}
 
   '@activepieces/piece-monday@0.3.2':
     resolution: {integrity: sha512-Bibu/cb3/Eqoj1ML354pK7thk6s+CulBdIrHzX5Z0kRFPmcmjal2Bt4idJHFLIi3znBX4OdBOewyTVSdCeSLMQ==}
@@ -2133,6 +2139,37 @@ snapshots:
       - utf-8-validate
 
   '@activepieces/piece-microsoft-teams@0.3.5':
+    dependencies:
+      '@activepieces/pieces-common': 0.11.5
+      '@activepieces/pieces-framework': 0.25.2(zod@4.1.13)
+      '@activepieces/shared': 0.34.0
+      '@microsoft/microsoft-graph-client': 3.0.7
+      '@microsoft/microsoft-graph-types': 2.40.0
+      '@sinclair/typebox': 0.34.11
+      ai: 6.0.77(zod@4.1.13)
+      axios: 1.13.1
+      axios-retry: 4.4.1(axios@1.13.1)
+      dayjs: 1.11.9
+      deepmerge-ts: 7.1.0
+      form-data: 4.0.4
+      i18next: 23.13.0
+      mime-types: 2.1.35
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+      zod: 4.1.13
+    transitivePeerDependencies:
+      - '@azure/identity'
+      - '@azure/msal-browser'
+      - buffer
+      - bufferutil
+      - debug
+      - stream-browserify
+      - supports-color
+      - utf-8-validate
+
+  '@activepieces/piece-microsoft-todo@0.2.3':
     dependencies:
       '@activepieces/pieces-common': 0.11.5
       '@activepieces/pieces-framework': 0.25.2(zod@4.1.13)

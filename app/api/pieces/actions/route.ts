@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
+import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 
 // In-memory cache with 5-min TTL
 let cache: { data: unknown; timestamp: number } | null = null;
@@ -10,8 +11,11 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 /**
  * GET /api/pieces/actions
  *
- * Returns all Activepieces pieces with their actions converted to
+ * Returns installed Activepieces pieces with their actions converted to
  * Workflow Builder format (ActionConfigField[]).
+ *
+ * Only pieces listed in installed-pieces.ts are returned — these are the
+ * pieces with npm packages bundled into fn-activepieces for runtime execution.
  */
 export async function GET(request: Request) {
   try {
@@ -29,8 +33,9 @@ export async function GET(request: Request) {
       return NextResponse.json(cache.data);
     }
 
-    // Fetch all piece metadata from DB
-    const pieces = await listPieceMetadata({});
+    // Fetch all piece metadata from DB, then filter to installed pieces only
+    const allPieces = await listPieceMetadata({});
+    const pieces = allPieces.filter((p) => isPieceInstalled(p.name));
 
     // Convert to WB format
     const integrations = convertApPiecesToIntegrations(pieces);

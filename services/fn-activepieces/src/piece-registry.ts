@@ -1,7 +1,7 @@
 /**
  * Piece Registry
  *
- * Static imports of all 25 AP piece packages.
+ * Static imports of all 26 AP piece packages.
  * Each piece exports a Piece object with getAction(name) method.
  */
 import type { Piece } from '@activepieces/pieces-framework';
@@ -27,6 +27,7 @@ import { telegramBot } from '@activepieces/piece-telegram-bot';
 // Microsoft Office
 import { microsoftOutlook } from '@activepieces/piece-microsoft-outlook';
 import { microsoftExcel365 } from '@activepieces/piece-microsoft-excel-365';
+import { microsoftTodo } from '@activepieces/piece-microsoft-todo';
 
 // Project Management
 import { jiraCloud } from '@activepieces/piece-jira-cloud';
@@ -64,6 +65,7 @@ export const PIECES: Record<string, Piece> = {
   'microsoft-teams': microsoftTeams as unknown as Piece,
   'microsoft-outlook': microsoftOutlook as unknown as Piece,
   'microsoft-excel-365': microsoftExcel365 as unknown as Piece,
+  'microsoft-todo': microsoftTodo as unknown as Piece,
   'jira-cloud': jiraCloud as unknown as Piece,
   'asana': asana as unknown as Piece,
   'trello': trello as unknown as Piece,

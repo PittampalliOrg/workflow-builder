@@ -7,9 +7,10 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
  *   activepieces/packages/server/api/src/app/helper/encryption.ts
  *
  * Format: EncryptedObject = { iv: string (hex), data: string (hex) }
- * Key: 32-char hex string interpreted as 'binary' (32 bytes for AES-256).
- *      Upstream generates 16 random bytes → 32 hex chars, then uses
- *      Buffer.from(secret, 'binary') which treats each char as one byte.
+ *
+ * Key handling:
+ * - 32-char key: treated as binary (each char = 1 byte) for AP upstream compat
+ * - 64-char hex key: decoded as hex → 32 bytes (from `openssl rand -hex 32`)
  */
 
 const ALGORITHM = "aes-256-cbc";
@@ -21,18 +22,34 @@ export type EncryptedObject = {
   data: string;
 };
 
+function isHex(s: string): boolean {
+  return /^[0-9a-fA-F]+$/.test(s);
+}
+
 function getEncryptionKey(): Buffer {
   const secret = process.env[ENCRYPTION_KEY_ENV];
 
   if (!secret) {
     throw new Error(
-      `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting connection credentials`
+      `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting connection credentials. ` +
+        `Generate one with: openssl rand -hex 32`
     );
   }
 
-  // Match upstream: Buffer.from(secret, 'binary') — each char = 1 byte
-  // A 32-char hex string becomes a 32-byte key (AES-256)
-  return Buffer.from(secret, "binary");
+  // 64-char hex string (from `openssl rand -hex 32`) → decode as hex → 32 bytes
+  if (secret.length === 64 && isHex(secret)) {
+    return Buffer.from(secret, "hex");
+  }
+
+  // 32-char key → binary encoding (AP upstream compat: 16 random bytes → 32 hex chars)
+  if (secret.length === 32) {
+    return Buffer.from(secret, "binary");
+  }
+
+  throw new Error(
+    `${ENCRYPTION_KEY_ENV} must be either a 64-char hex string (openssl rand -hex 32) ` +
+      `or a 32-char string. Got ${secret.length} characters.`
+  );
 }
 
 export function encryptString(plaintext: string): EncryptedObject {

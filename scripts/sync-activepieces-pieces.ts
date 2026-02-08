@@ -32,6 +32,7 @@ type CliOptions = {
   dryRun: boolean;
   limit: number;
   onlyNames: string[];
+  includeDeprecated: boolean;
 };
 
 function normalizePieceName(name: string): string {
@@ -46,13 +47,19 @@ function parseArgs(argv: string[]): CliOptions {
     apiKey: process.env.ACTIVEPIECES_API_KEY,
     baseUrl: process.env.ACTIVEPIECES_API_BASE_URL ?? DEFAULT_BASE_URL,
     dryRun: false,
-    limit: 1000,
+    limit: 2000,
     onlyNames: [],
+    includeDeprecated: false,
   };
 
   for (const arg of argv) {
     if (arg === "--dry-run") {
       options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--include-deprecated") {
+      options.includeDeprecated = true;
       continue;
     }
 
@@ -166,30 +173,72 @@ async function fetchPieceDetail(
   return (await response.json()) as ActivepiecesPieceResponse;
 }
 
+/**
+ * Check if a piece is deprecated based on its maximumSupportedRelease.
+ * Pieces with a maxRelease below 1.0.0 are considered deprecated.
+ */
+function isDeprecated(piece: ActivepiecesPieceResponse): boolean {
+  const maxRelease = String(piece.maximumSupportedRelease ?? "99999.99999.9999");
+  const major = Number.parseInt(maxRelease.split(".")[0], 10);
+  return !Number.isNaN(major) && major < 1;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
 
   console.log(`[Sync Pieces] Source: ${options.baseUrl}`);
   console.log(`[Sync Pieces] Dry run: ${options.dryRun ? "yes" : "no"}`);
+  console.log(`[Sync Pieces] Include deprecated: ${options.includeDeprecated ? "yes" : "no"}`);
 
-  const pieces = await fetchPieces(options);
-  const filteredPieces =
+  const allPieces = await fetchPieces(options);
+  console.log(`[Sync Pieces] Fetched ${allPieces.length} pieces from API`);
+
+  // Filter by --only names if specified
+  let pieces =
     options.onlyNames.length === 0
-      ? pieces
-      : pieces.filter((piece) => {
+      ? allPieces
+      : allPieces.filter((piece) => {
           const normalized = normalizePieceName(String(piece.name ?? ""));
           return options.onlyNames.includes(normalized);
         });
 
-  if (filteredPieces.length === 0) {
+  // Filter out deprecated pieces (maximumSupportedRelease < 1.0.0)
+  if (!options.includeDeprecated) {
+    const before = pieces.length;
+    pieces = pieces.filter((p) => !isDeprecated(p));
+    const removed = before - pieces.length;
+    if (removed > 0) {
+      console.log(`[Sync Pieces] Filtered out ${removed} deprecated pieces`);
+    }
+  }
+
+  // Filter out pieces with 0 actions (nothing useful to sync)
+  {
+    const before = pieces.length;
+    pieces = pieces.filter((p) => {
+      const actions = p.actions;
+      if (typeof actions === "number") return actions > 0;
+      if (actions && typeof actions === "object") return Object.keys(actions).length > 0;
+      return false;
+    });
+    const removed = before - pieces.length;
+    if (removed > 0) {
+      console.log(`[Sync Pieces] Filtered out ${removed} pieces with 0 actions`);
+    }
+  }
+
+  console.log(`[Sync Pieces] ${pieces.length} pieces to sync`);
+
+  if (pieces.length === 0) {
     console.log("[Sync Pieces] No pieces matched filters. Nothing to sync.");
     return;
   }
 
   let syncedCount = 0;
   let skippedCount = 0;
+  let failedCount = 0;
 
-  for (const piece of filteredPieces) {
+  for (const piece of pieces) {
     const rawName = String(piece.name ?? "").trim();
     if (!rawName) {
       skippedCount += 1;
@@ -205,20 +254,27 @@ async function main() {
     let detailPiece = piece;
 
     if (needsDetail) {
-      console.log(
-        `[Sync Pieces] Fetching detail for ${normalizedName} (listing had actions=${piece.actions})...`
-      );
       const detail = await fetchPieceDetail(options, rawName);
       if (detail) {
         detailPiece = detail;
       } else {
         console.warn(
-          `[Sync Pieces] Could not fetch detail for ${normalizedName}, using listing data`
+          `[Sync Pieces] Could not fetch detail for ${normalizedName}, skipping`
         );
+        failedCount += 1;
+        continue;
       }
     }
 
     const version = String(detailPiece.version ?? "0.0.0").trim();
+    const actions = toObjectRecord(detailPiece.actions);
+    const actionCount = Object.keys(actions).length;
+
+    // Skip if detail fetch returned 0 actions
+    if (actionCount === 0) {
+      skippedCount += 1;
+      continue;
+    }
 
     const record = {
       name: normalizedName,
@@ -233,7 +289,7 @@ async function main() {
         detailPiece.maximumSupportedRelease ?? "9999.9999.9999"
       ),
       auth: detailPiece.auth ?? null,
-      actions: toObjectRecord(detailPiece.actions),
+      actions,
       triggers: toObjectRecord(detailPiece.triggers),
       pieceType: String(detailPiece.pieceType ?? "OFFICIAL"),
       categories: toStringArray(detailPiece.categories),
@@ -244,18 +300,22 @@ async function main() {
     };
 
     if (options.dryRun) {
-      console.log(`[Sync Pieces] Would upsert ${normalizedName}@${version} (${Object.keys(record.actions).length} actions)`);
+      console.log(`[Sync Pieces] Would upsert ${normalizedName}@${version} (${actionCount} actions)`);
       syncedCount += 1;
       continue;
     }
 
     await upsertPieceMetadata(record);
-    console.log(`[Sync Pieces] Synced ${normalizedName}@${version} (${Object.keys(record.actions).length} actions)`);
     syncedCount += 1;
+
+    // Progress logging every 50 pieces
+    if (syncedCount % 50 === 0) {
+      console.log(`[Sync Pieces] Progress: ${syncedCount}/${pieces.length} synced...`);
+    }
   }
 
   console.log(
-    `[Sync Pieces] Complete. Synced: ${syncedCount}, Skipped: ${skippedCount}`
+    `[Sync Pieces] Complete. Synced: ${syncedCount}, Skipped: ${skippedCount}, Failed: ${failedCount}`
   );
 }
 

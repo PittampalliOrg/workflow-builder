@@ -181,6 +181,7 @@ export async function POST(request: Request) {
     );
     return NextResponse.json(removeSensitiveData(connection), { status: 201 });
   } catch (error) {
+    console.error("[app-connections POST] Error:", error);
     return NextResponse.json(
       {
         error: "Failed to upsert app connection",

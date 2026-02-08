@@ -23,6 +23,7 @@
     "@activepieces/piece-microsoft-teams": "0.3.5",
     "@activepieces/piece-microsoft-outlook": "0.2.6",
     "@activepieces/piece-microsoft-excel-365": "0.4.4",
+    "@activepieces/piece-microsoft-todo": "0.2.3",
     "@activepieces/piece-jira-cloud": "0.2.4",
     "@activepieces/piece-asana": "0.4.3",
     "@activepieces/piece-trello": "0.4.2",
