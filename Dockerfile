@@ -35,8 +35,11 @@ ENV NODE_ENV=production
 ARG NEXT_PUBLIC_APP_URL="https://workflow-builder.cnoe.localtest.me:8443"
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
-# Bundle the migration script for runtime use (self-contained with dependencies)
-RUN npm install -g esbuild && esbuild lib/db/migrate.ts --bundle --platform=node --target=node22 --outfile=lib/db/migrate.bundle.js
+# Bundle scripts for runtime use (self-contained with dependencies)
+RUN npm install -g esbuild && \
+    esbuild lib/db/migrate.ts --bundle --platform=node --target=node22 --outfile=lib/db/migrate.bundle.js && \
+    esbuild scripts/seed-functions.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-functions.bundle.js && \
+    esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js
 
 # Run plugin discovery and build
 RUN pnpm discover-plugins && pnpm next build
@@ -59,9 +62,11 @@ COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy database migration files and bundled migration script
+# Copy database migration files and bundled scripts
 COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/lib/db/migrate.bundle.js ./lib/db/migrate.bundle.js
+COPY --from=builder /app/scripts/seed-functions.bundle.js ./scripts/seed-functions.bundle.js
+COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sync-activepieces-pieces.bundle.js
 
 USER nextjs
 

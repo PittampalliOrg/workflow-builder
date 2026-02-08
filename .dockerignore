@@ -39,6 +39,10 @@ docs
 Dockerfile
 .dockerignore
 
+# WIP files (reference non-existent modules)
+lib/step-registry.ts
+lib/codegen-registry.ts
+
 # Misc
 .DS_Store
 *.log
