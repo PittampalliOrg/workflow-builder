@@ -769,15 +769,6 @@ export type AppConnection = AppConnectionWithoutSensitiveData & {
   updatedAt: string;
 };
 
-export type AppConnectionWithValue = Omit<
-  AppConnectionWithoutSensitiveData,
-  "createdAt" | "updatedAt"
-> & {
-  value: AppConnectionValue;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type PieceMetadata = {
   id: string;
   name: string;
@@ -858,7 +849,7 @@ export const appConnectionApi = {
   },
 
   get: (id: string) =>
-    apiCall<AppConnectionWithValue>(`/api/app-connections/${id}`),
+    apiCall<AppConnection>(`/api/app-connections/${id}`),
 
   upsert: (body: UpsertAppConnectionRequestBody) =>
     apiCall<AppConnection>("/api/app-connections", {

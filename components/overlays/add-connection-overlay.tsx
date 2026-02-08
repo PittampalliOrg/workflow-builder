@@ -4,12 +4,32 @@ import { ExternalLink, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { api } from "@/lib/api-client";
-import { AppConnectionType } from "@/lib/types/app-connection";
+import {
+  AppConnectionType,
+  OAuth2GrantType,
+  type UpsertAppConnectionRequestBody,
+} from "@/lib/types/app-connection";
+import {
+  type PieceAuthConfig,
+  parsePieceAuthAll,
+  PieceAuthType,
+  PiecePropertyType,
+  type PieceAuthProperty,
+} from "@/lib/types/piece-auth";
 import type { PluginType } from "@/plugins/registry";
 import {
   getIntegration,
@@ -20,15 +40,6 @@ import { getIntegrationDescriptions } from "@/plugins/registry";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
-
-type PieceAuthConfig = {
-  type?: string;
-  authUrl?: string;
-  tokenUrl?: string;
-  scope?: string[];
-  displayName?: string;
-  description?: string;
-};
 
 // System integrations that don't have plugins
 const SYSTEM_INTEGRATION_TYPES: PluginType[] = ["database"];
@@ -272,7 +283,9 @@ function SecretField({
  * Hook to fetch piece auth config from synced metadata
  */
 function usePieceAuth(pieceName: string) {
-  const [authConfig, setAuthConfig] = useState<PieceAuthConfig | null>(null);
+  type ParsedAuthConfig = Exclude<PieceAuthConfig, null | undefined>;
+  const [authConfigs, setAuthConfigs] = useState<ParsedAuthConfig[]>([]);
+  const [selectedAuthIndex, setSelectedAuthIndex] = useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -280,9 +293,10 @@ function usePieceAuth(pieceName: string) {
     api.piece
       .get(pieceName)
       .then((piece) => {
-        if (!cancelled && piece?.auth) {
-          const auth = piece.auth as PieceAuthConfig;
-          setAuthConfig(auth);
+        if (!cancelled) {
+          const configs = parsePieceAuthAll(piece?.auth) as ParsedAuthConfig[];
+          setAuthConfigs(configs);
+          setSelectedAuthIndex(0);
         }
       })
       .catch(() => {
@@ -296,7 +310,15 @@ function usePieceAuth(pieceName: string) {
     };
   }, [pieceName]);
 
-  return { authConfig, loading };
+  const selectedAuthConfig = authConfigs[selectedAuthIndex] ?? null;
+
+  return {
+    authConfigs,
+    selectedAuthConfig,
+    selectedAuthIndex,
+    setSelectedAuthIndex,
+    loading,
+  };
 }
 
 /**
@@ -318,31 +340,134 @@ export function ConfigureConnectionOverlay({
   const [displayName, setDisplayName] = useState("");
   const [config, setConfig] = useState<Record<string, string>>({});
   const [oauthConnecting, setOauthConnecting] = useState(false);
+  const [oauthProps, setOauthProps] = useState<Record<string, unknown>>({});
+  const [customProps, setCustomProps] = useState<Record<string, unknown>>({});
+  const [oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(
+    OAuth2GrantType.AUTHORIZATION_CODE
+  );
 
   // Fetch piece auth config from synced metadata
-  const { authConfig, loading: authLoading } = usePieceAuth(type);
-  const isOAuth2 = authConfig?.type === "OAUTH2";
+  const {
+    authConfigs,
+    selectedAuthConfig,
+    selectedAuthIndex,
+    setSelectedAuthIndex,
+    loading: authLoading,
+  } = usePieceAuth(type);
+  const isOAuth2 = selectedAuthConfig?.type === PieceAuthType.OAUTH2;
+  const oauth2AuthConfig = isOAuth2
+    ? (selectedAuthConfig as Extract<
+        Exclude<PieceAuthConfig, null | undefined>,
+        { type: PieceAuthType.OAUTH2 }
+      >)
+    : null;
+
+  const supportsClientCredentials =
+    oauth2AuthConfig?.grantType === OAuth2GrantType.CLIENT_CREDENTIALS ||
+    oauth2AuthConfig?.grantType === "both_client_credentials_and_authorization_code";
+  const supportsAuthCode =
+    oauth2AuthConfig?.grantType !== OAuth2GrantType.CLIENT_CREDENTIALS;
+
+  useEffect(() => {
+    // Keep grant type in sync with what the piece declares.
+    if (!oauth2AuthConfig) return;
+    if (oauth2AuthConfig.grantType === OAuth2GrantType.CLIENT_CREDENTIALS) {
+      setOauthGrantType(OAuth2GrantType.CLIENT_CREDENTIALS);
+      return;
+    }
+    setOauthGrantType(OAuth2GrantType.AUTHORIZATION_CODE);
+  }, [oauth2AuthConfig]);
 
   const updateConfig = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
-  // --- SECRET_TEXT save flow ---
-  const doSaveSecretText = async () => {
-    try {
-      setSaving(true);
-      const name = displayName.trim() || getLabel(type);
-      const newConnection = await api.appConnection.upsert({
-        externalId: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-        displayName: name,
-        pieceName: type,
-        projectId: "default",
+  const connectionLabel = displayName.trim() || getLabel(type);
+  const connectionExternalId = useMemo(
+    () => connectionLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+    [connectionLabel]
+  );
+
+  const getFirstNonEmptyConfigValue = (): string =>
+    Object.values(config).find((v) => v && v.length > 0) || "";
+
+  const buildUpsertBody = (): UpsertAppConnectionRequestBody | null => {
+    const base = {
+      externalId: connectionExternalId,
+      displayName: connectionLabel,
+      pieceName: type,
+      projectId: "default",
+    } as const;
+
+    // If piece auth isn't known (not synced), fall back to existing SECRET_TEXT behavior.
+    if (!selectedAuthConfig) {
+      const secret_text = getFirstNonEmptyConfigValue();
+      if (!secret_text) return null;
+      return {
+        ...base,
+        type: AppConnectionType.SECRET_TEXT,
         value: {
           type: AppConnectionType.SECRET_TEXT,
-          secret_text:
-            Object.values(config).find((v) => v && v.length > 0) || "",
+          secret_text,
         },
-        type: AppConnectionType.SECRET_TEXT,
+      };
+    }
+
+    switch (selectedAuthConfig.type) {
+      case PieceAuthType.SECRET_TEXT: {
+        const secret_text = config.secret_text?.trim() || getFirstNonEmptyConfigValue();
+        if (!secret_text) return null;
+        return {
+          ...base,
+          type: AppConnectionType.SECRET_TEXT,
+          value: {
+            type: AppConnectionType.SECRET_TEXT,
+            secret_text,
+          },
+        };
+      }
+      case PieceAuthType.BASIC_AUTH: {
+        const username = config.username?.trim() || "";
+        const password = config.password?.trim() || "";
+        if (!username || !password) return null;
+        return {
+          ...base,
+          type: AppConnectionType.BASIC_AUTH,
+          value: {
+            type: AppConnectionType.BASIC_AUTH,
+            username,
+            password,
+          },
+        };
+      }
+      case PieceAuthType.CUSTOM_AUTH: {
+        const requiredKeys = Object.entries(selectedAuthConfig.props ?? {})
+          .filter(([, prop]) => (prop as { required?: boolean }).required)
+          .map(([k]) => k);
+        const missingRequired = requiredKeys.filter((k) => customProps[k] == null || customProps[k] === "");
+        if (missingRequired.length > 0) {
+          return null;
+        }
+        return {
+          ...base,
+          type: AppConnectionType.CUSTOM_AUTH,
+          value: {
+            type: AppConnectionType.CUSTOM_AUTH,
+            props: customProps,
+          },
+        };
+      }
+      default:
+        return null;
+    }
+  };
+
+  // --- Non-OAuth save/test flow ---
+  const doSaveNonOAuth = async (body: UpsertAppConnectionRequestBody) => {
+    try {
+      setSaving(true);
+      const newConnection = await api.appConnection.upsert({
+        ...body,
       });
       toast.success("Connection created");
       onSuccess?.(newConnection.id, newConnection.externalId);
@@ -355,9 +480,9 @@ export function ConfigureConnectionOverlay({
     }
   };
 
-  const handleSaveSecretText = async () => {
-    const hasConfig = Object.values(config).some((v) => v && v.length > 0);
-    if (!hasConfig) {
+  const handleSaveNonOAuth = async () => {
+    const body = buildUpsertBody();
+    if (!body) {
       toast.error("Please enter credentials");
       return;
     }
@@ -366,15 +491,7 @@ export function ConfigureConnectionOverlay({
       setSaving(true);
       setTestResult(null);
 
-      const result = await api.appConnection.test({
-        pieceName: type,
-        value: {
-          type: AppConnectionType.SECRET_TEXT,
-          secret_text:
-            Object.values(config).find((v) => v && v.length > 0) || "",
-        },
-        type: AppConnectionType.SECRET_TEXT,
-      });
+      const result = await api.appConnection.test(body);
 
       if (result.status === "error") {
         push(ConfirmOverlay, {
@@ -382,14 +499,14 @@ export function ConfigureConnectionOverlay({
           message: `The test failed: ${result.message}\n\nDo you want to save anyway?`,
           confirmLabel: "Save Anyway",
           onConfirm: async () => {
-            await doSaveSecretText();
+            await doSaveNonOAuth(body);
           },
         });
         setSaving(false);
         return;
       }
 
-      await doSaveSecretText();
+      await doSaveNonOAuth(body);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Failed to test connection";
@@ -398,7 +515,10 @@ export function ConfigureConnectionOverlay({
         message: `${message}\n\nDo you want to save anyway?`,
         confirmLabel: "Save Anyway",
         onConfirm: async () => {
-          await doSaveSecretText();
+          const body = buildUpsertBody();
+          if (body) {
+            await doSaveNonOAuth(body);
+          }
         },
       });
       setSaving(false);
@@ -406,8 +526,8 @@ export function ConfigureConnectionOverlay({
   };
 
   const handleTest = async () => {
-    const hasConfig = Object.values(config).some((v) => v && v.length > 0);
-    if (!hasConfig) {
+    const body = buildUpsertBody();
+    if (!body) {
       toast.error("Please enter credentials first");
       return;
     }
@@ -415,15 +535,7 @@ export function ConfigureConnectionOverlay({
     try {
       setTesting(true);
       setTestResult(null);
-      const result = await api.appConnection.test({
-        pieceName: type,
-        value: {
-          type: AppConnectionType.SECRET_TEXT,
-          secret_text:
-            Object.values(config).find((v) => v && v.length > 0) || "",
-        },
-        type: AppConnectionType.SECRET_TEXT,
-      });
+      const result = await api.appConnection.test(body);
       setTestResult(result);
       if (result.status === "success") {
         toast.success(result.message || "Connection successful");
@@ -452,6 +564,8 @@ export function ConfigureConnectionOverlay({
     clientSecret: string;
     redirectUrl: string;
     codeVerifier: string;
+    state: string;
+    storageKey: string;
     scope: string;
   } | null>(null);
 
@@ -504,12 +618,44 @@ export function ConfigureConnectionOverlay({
       processingRef.current = false;
       const redirectUrl = `${window.location.origin}/api/app-connections/oauth2/callback`;
 
+      // Client credentials grant doesn't use browser redirect flow.
+      if (oauthGrantType === OAuth2GrantType.CLIENT_CREDENTIALS) {
+        const name = connectionLabel;
+        const newConnection = await api.appConnection.upsert({
+          externalId: connectionExternalId,
+          displayName: name,
+          pieceName: type,
+          projectId: "default",
+          type: AppConnectionType.OAUTH2,
+          value: {
+            type: AppConnectionType.OAUTH2,
+            client_id: clientId,
+            client_secret: clientSecret,
+            redirect_url: "",
+            code: "",
+            scope: oauth2AuthConfig?.scope?.join(" ") ?? "",
+            grant_type: OAuth2GrantType.CLIENT_CREDENTIALS,
+            props: oauthProps,
+            authorization_method: oauth2AuthConfig?.authorizationMethod,
+          },
+        });
+
+        toast.success("Connection created via OAuth2");
+        onSuccess?.(newConnection.id, newConnection.externalId);
+        closeAll();
+        setOauthConnecting(false);
+        return;
+      }
+
       // Start OAuth2 flow — get authorization URL with PKCE
       const startResult = await api.appConnection.oauth2Start({
         pieceName: type,
         clientId,
         redirectUrl,
+        props: oauthProps,
       });
+
+      const storageKey = `oauth2_callback_result:${startResult.state}`;
 
       // Store OAuth state in ref so it survives across the async popup flow
       oauthStateRef.current = {
@@ -517,7 +663,9 @@ export function ConfigureConnectionOverlay({
         clientSecret,
         redirectUrl,
         codeVerifier: startResult.codeVerifier,
-        scope: authConfig?.scope?.join(" ") ?? "",
+        state: startResult.state,
+        storageKey,
+        scope: oauth2AuthConfig?.scope?.join(" ") ?? "",
       };
 
       // Close any existing popup first (matches AP: closeOAuth2Popup() before open)
@@ -540,6 +688,7 @@ export function ConfigureConnectionOverlay({
 
       // Clear any stale localStorage result from a previous attempt
       try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
+      try { localStorage.removeItem(storageKey); } catch { /* ok */ }
 
       // Shared handler: processes the OAuth callback result from either channel
       const processCallbackResult = async (data: Record<string, unknown>) => {
@@ -564,11 +713,19 @@ export function ConfigureConnectionOverlay({
 
         // Clean up localStorage fallback key
         try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
+        try { localStorage.removeItem(storageKey); } catch { /* ok */ }
 
         const code = decodeURIComponent(data.code as string);
+        const returnedState = typeof data.state === "string" ? data.state : "";
         const oauthState = oauthStateRef.current;
         if (!oauthState) {
           toast.error("OAuth state lost — please try again");
+          setOauthConnecting(false);
+          processingRef.current = false;
+          return;
+        }
+        if (oauthState.state !== returnedState) {
+          toast.error("OAuth state mismatch — please try again");
           setOauthConnecting(false);
           processingRef.current = false;
           return;
@@ -590,6 +747,8 @@ export function ConfigureConnectionOverlay({
               code,
               scope: oauthState.scope,
               code_verifier: oauthState.codeVerifier,
+              props: oauthProps,
+              authorization_method: oauth2AuthConfig?.authorizationMethod,
             },
           });
 
@@ -620,7 +779,8 @@ export function ConfigureConnectionOverlay({
       // Channel 2: localStorage (fallback for COOP — Google OAuth sets
       // Cross-Origin-Opener-Policy: same-origin which severs window.opener)
       const storageHandler = (event: StorageEvent) => {
-        if (event.key !== "oauth2_callback_result" || !event.newValue) return;
+        if (!event.newValue) return;
+        if (event.key !== storageKey && event.key !== "oauth2_callback_result") return;
         try {
           const data = JSON.parse(event.newValue);
           processCallbackResult(data);
@@ -638,7 +798,9 @@ export function ConfigureConnectionOverlay({
             // Also check localStorage one final time (storage event may have
             // fired before our listener was ready, or in same-tab scenario)
             try {
-              const stored = localStorage.getItem("oauth2_callback_result");
+              const stored =
+                localStorage.getItem(storageKey) ??
+                localStorage.getItem("oauth2_callback_result");
               if (stored) {
                 const data = JSON.parse(stored);
                 processCallbackResult(data);
@@ -671,6 +833,20 @@ export function ConfigureConnectionOverlay({
 
   // Render config fields for SECRET_TEXT mode
   const renderSecretTextFields = () => {
+    if (selectedAuthConfig?.type === PieceAuthType.SECRET_TEXT) {
+      return (
+        <SecretField
+          configKey="secret_text"
+          fieldId="secret_text"
+          helpText={selectedAuthConfig.description}
+          label={selectedAuthConfig.displayName || "API Key"}
+          onChange={updateConfig}
+          placeholder="Enter your API key"
+          value={config.secret_text || ""}
+        />
+      );
+    }
+
     if (type === "database") {
       return (
         <SecretField
@@ -734,9 +910,246 @@ export function ConfigureConnectionOverlay({
     });
   };
 
+  const renderAuthMethodSelect = () => {
+    if (authConfigs.length <= 1) return null;
+
+    return (
+      <div className="space-y-2">
+        <Label>Auth method</Label>
+        <Select
+          onValueChange={(val) => setSelectedAuthIndex(Number(val))}
+          value={String(selectedAuthIndex)}
+        >
+          <SelectTrigger>
+            <SelectValue placeholder="Select auth method" />
+          </SelectTrigger>
+          <SelectContent>
+            {authConfigs.map((cfg, idx) => (
+              <SelectItem key={`${cfg.type}-${idx}`} value={String(idx)}>
+                {cfg.displayName ? `${cfg.displayName} (${cfg.type})` : cfg.type}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  };
+
+  const renderPiecePropertyField = (params: {
+    propKey: string;
+    property: PieceAuthProperty;
+    value: unknown;
+    onChange: (val: unknown) => void;
+  }) => {
+    const { propKey, property, value, onChange } = params;
+
+    if (property.type === PiecePropertyType.MARKDOWN) {
+      return (
+        <div className="text-muted-foreground text-sm" key={propKey}>
+          {"value" in property ? property.value : ""}
+        </div>
+      );
+    }
+
+    const displayName =
+      "displayName" in property ? property.displayName : propKey;
+    const description = "description" in property ? property.description : undefined;
+
+    switch (property.type) {
+      case PiecePropertyType.SECRET_TEXT:
+        return (
+          <SecretField
+            key={propKey}
+            configKey={propKey}
+            fieldId={propKey}
+            label={displayName}
+            placeholder={description || `Enter ${displayName.toLowerCase()}`}
+            onChange={(_, v) => onChange(v)}
+            value={String(value ?? "")}
+          />
+        );
+      case PiecePropertyType.LONG_TEXT:
+        return (
+          <div className="space-y-2" key={propKey}>
+            <Label htmlFor={propKey}>{displayName}</Label>
+            <Textarea
+              disabled={saving || oauthConnecting}
+              id={propKey}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={description || `Enter ${displayName.toLowerCase()}`}
+              rows={3}
+              value={String(value ?? "")}
+            />
+            {description && (
+              <p className="text-muted-foreground text-xs">{description}</p>
+            )}
+          </div>
+        );
+      case PiecePropertyType.NUMBER:
+        return (
+          <div className="space-y-2" key={propKey}>
+            <Label htmlFor={propKey}>{displayName}</Label>
+            <Input
+              id={propKey}
+              onChange={(e) => onChange(Number(e.target.value))}
+              placeholder={description || `Enter ${displayName.toLowerCase()}`}
+              type="number"
+              value={value !== undefined && value !== null ? String(value) : ""}
+            />
+            {description && (
+              <p className="text-muted-foreground text-xs">{description}</p>
+            )}
+          </div>
+        );
+      case PiecePropertyType.CHECKBOX:
+        return (
+          <div className="flex items-center gap-2" key={propKey}>
+            <Checkbox
+              checked={!!value}
+              id={propKey}
+              onCheckedChange={(checked) => onChange(checked)}
+            />
+            <Label className="cursor-pointer" htmlFor={propKey}>
+              {displayName}
+            </Label>
+            {description && (
+              <p className="text-muted-foreground text-xs">{description}</p>
+            )}
+          </div>
+        );
+      case PiecePropertyType.STATIC_DROPDOWN:
+        return (
+          <div className="space-y-2" key={propKey}>
+            <Label htmlFor={propKey}>{displayName}</Label>
+            <Select
+              onValueChange={(val) => onChange(val)}
+              value={typeof value === "string" ? value : undefined}
+            >
+              <SelectTrigger id={propKey}>
+                <SelectValue
+                  placeholder={
+                    property.options?.placeholder ||
+                    `Select ${displayName.toLowerCase()}`
+                  }
+                />
+              </SelectTrigger>
+              <SelectContent>
+                {(property.options?.options || []).map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {description && (
+              <p className="text-muted-foreground text-xs">{description}</p>
+            )}
+          </div>
+        );
+      case PiecePropertyType.SHORT_TEXT:
+      default:
+        return (
+          <div className="space-y-2" key={propKey}>
+            <Label htmlFor={propKey}>{displayName}</Label>
+            <Input
+              id={propKey}
+              onChange={(e) => onChange(e.target.value)}
+              placeholder={description || `Enter ${displayName.toLowerCase()}`}
+              value={String(value ?? "")}
+            />
+            {description && (
+              <p className="text-muted-foreground text-xs">{description}</p>
+            )}
+          </div>
+        );
+    }
+  };
+
+  const renderBasicAuthFields = () => {
+    if (!selectedAuthConfig || selectedAuthConfig.type !== PieceAuthType.BASIC_AUTH) {
+      return null;
+    }
+    return (
+      <>
+        <div className="space-y-2">
+          <Label htmlFor="username">
+            {selectedAuthConfig.username?.displayName || "Username"}
+          </Label>
+          <Input
+            id="username"
+            onChange={(e) => updateConfig("username", e.target.value)}
+            placeholder={selectedAuthConfig.username?.description || "Enter username"}
+            value={config.username || ""}
+          />
+        </div>
+        <SecretField
+          configKey="password"
+          fieldId="password"
+          label={selectedAuthConfig.password?.displayName || "Password"}
+          onChange={updateConfig}
+          placeholder={selectedAuthConfig.password?.description || "Enter password"}
+          value={config.password || ""}
+        />
+      </>
+    );
+  };
+
+  const renderCustomAuthFields = () => {
+    if (!selectedAuthConfig || selectedAuthConfig.type !== PieceAuthType.CUSTOM_AUTH) {
+      return null;
+    }
+
+    const props = selectedAuthConfig.props ?? {};
+    const entries = Object.entries(props);
+    if (entries.length === 0) {
+      return (
+        <p className="text-muted-foreground text-sm">
+          This integration requires custom auth props, but none were defined in piece metadata.
+        </p>
+      );
+    }
+
+    return (
+      <div className="space-y-4">
+        {entries.map(([key, prop]) =>
+          renderPiecePropertyField({
+            propKey: key,
+            property: prop,
+            value: customProps[key],
+            onChange: (val) =>
+              setCustomProps((prev) => ({ ...prev, [key]: val })),
+          })
+        )}
+      </div>
+    );
+  };
+
+  const renderOAuth2PropsFields = () => {
+    if (!oauth2AuthConfig?.props) {
+      return null;
+    }
+    const entries = Object.entries(oauth2AuthConfig.props);
+    if (entries.length === 0) return null;
+
+    return (
+      <div className="space-y-4">
+        {entries.map(([key, prop]) =>
+          renderPiecePropertyField({
+            propKey: key,
+            property: prop,
+            value: oauthProps[key],
+            onChange: (val) =>
+              setOauthProps((prev) => ({ ...prev, [key]: val })),
+          })
+        )}
+      </div>
+    );
+  };
+
   // Render OAuth2 fields
   const renderOAuth2Fields = () => (
     <>
+      {renderAuthMethodSelect()}
       <SecretField
         configKey="clientId"
         fieldId="clientId"
@@ -755,11 +1168,33 @@ export function ConfigureConnectionOverlay({
         placeholder="Your OAuth2 Client Secret"
         value={config.clientSecret || ""}
       />
-      {authConfig?.scope && authConfig.scope.length > 0 && (
+      {renderOAuth2PropsFields()}
+      {supportsClientCredentials && supportsAuthCode && (
+        <div className="space-y-2">
+          <Label>Grant type</Label>
+          <Select
+            onValueChange={(val) => setOauthGrantType(val as OAuth2GrantType)}
+            value={oauthGrantType}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={OAuth2GrantType.AUTHORIZATION_CODE}>
+                Authorization code
+              </SelectItem>
+              <SelectItem value={OAuth2GrantType.CLIENT_CREDENTIALS}>
+                Client credentials
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {oauth2AuthConfig?.scope && oauth2AuthConfig.scope.length > 0 && (
         <div className="space-y-1">
           <Label className="text-muted-foreground text-xs">Scopes</Label>
           <p className="rounded-md bg-muted/50 px-3 py-2 font-mono text-xs">
-            {authConfig.scope.join(", ")}
+            {oauth2AuthConfig.scope.join(", ")}
           </p>
         </div>
       )}
@@ -795,8 +1230,8 @@ export function ConfigureConnectionOverlay({
           Connect via OAuth2
         </p>
         <div className="space-y-4">
-          {authConfig?.description && (
-            <AuthSetupInstructions description={authConfig.description} />
+          {oauth2AuthConfig?.description && (
+            <AuthSetupInstructions description={oauth2AuthConfig.description} />
           )}
           {renderOAuth2Fields()}
           <div className="space-y-2">
@@ -813,7 +1248,7 @@ export function ConfigureConnectionOverlay({
     );
   }
 
-  // SECRET_TEXT mode — existing behavior
+  // Non-OAuth mode (SECRET_TEXT / BASIC_AUTH / CUSTOM_AUTH / fallback)
   return (
     <Overlay
       actions={[
@@ -824,17 +1259,25 @@ export function ConfigureConnectionOverlay({
           loading: testing,
           disabled: saving,
         },
-        { label: "Create", onClick: handleSaveSecretText, loading: saving },
+        { label: "Create", onClick: handleSaveNonOAuth, loading: saving },
       ]}
       overlayId={overlayId}
       title={`Add ${getLabel(type)}`}
     >
-      <p className="-mt-2 mb-4 text-muted-foreground text-sm">
-        Enter your credentials
-      </p>
+      <p className="-mt-2 mb-4 text-muted-foreground text-sm">Enter credentials</p>
 
       <div className="space-y-4">
-        {renderSecretTextFields()}
+        {renderAuthMethodSelect()}
+
+        {selectedAuthConfig?.description && (
+          <AuthSetupInstructions description={selectedAuthConfig.description} />
+        )}
+
+        {selectedAuthConfig?.type === PieceAuthType.BASIC_AUTH
+          ? renderBasicAuthFields()
+          : selectedAuthConfig?.type === PieceAuthType.CUSTOM_AUTH
+            ? renderCustomAuthFields()
+            : renderSecretTextFields()}
 
         <div className="space-y-2">
           <Label htmlFor="name">Label (Optional)</Label>

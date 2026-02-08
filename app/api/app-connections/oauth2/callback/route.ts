@@ -18,16 +18,22 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
   const code = searchParams.get("code");
+  const state = searchParams.get("state");
   const error = searchParams.get("error");
   const errorDescription = searchParams.get("error_description") ?? "";
 
   const payload = error
-    ? { error, errorDescription }
+    ? { error, errorDescription, state }
     : code
-      ? { code }
-      : { error: "missing_code", errorDescription: "No authorization code received" };
+      ? { code, state }
+      : { error: "missing_code", errorDescription: "No authorization code received", state };
 
   const safePayload = JSON.stringify(JSON.stringify(payload));
+  const safeStorageKey = JSON.stringify(
+    state && state.length > 0
+      ? `oauth2_callback_result:${state}`
+      : "oauth2_callback_result"
+  );
 
   const html = `<!DOCTYPE html>
 <html>
@@ -36,6 +42,7 @@ export async function GET(request: Request) {
 <p>Completing connection&hellip; You can close this window.</p>
 <script>
   var payload = JSON.parse(${safePayload});
+  var storageKey = ${safeStorageKey};
   // Primary: postMessage (works when COOP doesn't block window.opener)
   try {
     if (window.opener) {
@@ -47,7 +54,7 @@ export async function GET(request: Request) {
   // Fallback: localStorage (works even when COOP severs window.opener)
   // The parent listens for the 'storage' event on this key.
   try {
-    localStorage.setItem('oauth2_callback_result', JSON.stringify(payload));
+    localStorage.setItem(storageKey, JSON.stringify(payload));
   } catch (e) {
     // localStorage may be unavailable in some contexts
   }

@@ -203,10 +203,9 @@ export type PieceAuthConfig =
   | undefined;
 
 /**
- * Parse the raw auth JSONB from piece_metadata into a typed PieceAuthConfig.
- * Returns null if the auth field is missing or has an unrecognized type.
+ * Parse a single raw auth object into a typed PieceAuthConfig.
  */
-export function parsePieceAuth(raw: unknown): PieceAuthConfig {
+function parsePieceAuthSingle(raw: unknown): PieceAuthConfig {
   if (!raw || typeof raw !== "object") {
     return null;
   }
@@ -273,4 +272,34 @@ export function parsePieceAuth(raw: unknown): PieceAuthConfig {
     default:
       return null;
   }
+}
+
+/**
+ * Parse the raw auth JSONB from piece_metadata into a list of typed auth configs.
+ *
+ * Activepieces supports:
+ * - null/undefined (no auth)
+ * - a single auth object
+ * - an array of auth objects (multiple auth methods per piece)
+ */
+export function parsePieceAuthAll(raw: unknown): Array<Exclude<PieceAuthConfig, null | undefined>> {
+  if (!raw) {
+    return [];
+  }
+  if (Array.isArray(raw)) {
+    return raw
+      .map(parsePieceAuthSingle)
+      .filter((c): c is Exclude<PieceAuthConfig, null | undefined> => Boolean(c));
+  }
+  const single = parsePieceAuthSingle(raw);
+  return single ? [single as Exclude<PieceAuthConfig, null | undefined>] : [];
+}
+
+/**
+ * Parse the raw auth JSONB from piece_metadata into a single typed auth config.
+ *
+ * Kept for backward compatibility: when multiple configs exist, the first is returned.
+ */
+export function parsePieceAuth(raw: unknown): PieceAuthConfig {
+  return parsePieceAuthAll(raw)[0] ?? null;
 }

@@ -26,6 +26,8 @@ type OAuthTestValue = {
   scope?: string;
   props?: Record<string, unknown>;
   authorization_method?: string;
+  code_verifier?: string;
+  // Backward-compat alias (some clients used this name incorrectly)
   code_challenge?: string;
   grant_type?: string;
 };
@@ -56,6 +58,10 @@ function parseOAuthTestValue(value: unknown): OAuthTestValue {
     authorization_method:
       typeof candidate.authorization_method === "string"
         ? candidate.authorization_method
+        : undefined,
+    code_verifier:
+      typeof candidate.code_verifier === "string"
+        ? candidate.code_verifier
         : undefined,
     code_challenge:
       typeof candidate.code_challenge === "string"
@@ -178,7 +184,7 @@ export async function POST(request: Request) {
       authorizationMethod: toAuthorizationMethod(
         oauthValue.authorization_method
       ),
-      codeVerifier: oauthValue.code_challenge,
+      codeVerifier: oauthValue.code_verifier ?? oauthValue.code_challenge,
       grantType: toGrantType(oauthValue.grant_type),
     });
 

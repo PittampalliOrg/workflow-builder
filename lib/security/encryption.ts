@@ -78,13 +78,13 @@ export function decryptString(encryptedObject: EncryptedObject): string {
 }
 
 export function encryptObject(
-  obj: Record<string, unknown>
+  obj: unknown
 ): EncryptedObject {
   return encryptString(JSON.stringify(obj));
 }
 
 export function decryptObject<
-  T extends Record<string, unknown> = Record<string, unknown>,
+  T = unknown,
 >(encryptedObject: EncryptedObject): T {
   const decrypted = decryptString(encryptedObject);
   return JSON.parse(decrypted) as T;

@@ -5,7 +5,9 @@ import {
   type BaseOAuth2ConnectionValue,
   type OAuth2ConnectionValueWithApp,
   OAuth2AuthorizationMethod,
+  OAuth2GrantType,
 } from "@/lib/types/app-connection";
+import { resolveValueFromProps } from "@/lib/app-connections/oauth2";
 
 const TOKEN_EXPIRY_BUFFER_SECONDS = 15 * 60; // 15 minutes
 
@@ -16,18 +18,29 @@ const TOKEN_EXPIRY_BUFFER_SECONDS = 15 * 60; // 15 minutes
 export function isOAuth2TokenExpired(
   connection: BaseOAuth2ConnectionValue
 ): boolean {
-  if (!connection.expires_in || !connection.claimed_at) {
+  const grantType = connection.grant_type ?? OAuth2GrantType.AUTHORIZATION_CODE;
+
+  // If we can't refresh (no refresh_token), treat it as non-expiring for our purposes.
+  if (
+    grantType === OAuth2GrantType.AUTHORIZATION_CODE &&
+    !connection.refresh_token
+  ) {
     return false;
   }
 
-  const expiresAt = connection.claimed_at + connection.expires_in;
+  const expiresIn = connection.expires_in ?? 60 * 60;
+  const claimedAt = connection.claimed_at ?? 0;
+  const expiresAt = claimedAt + expiresIn;
   const nowSeconds = Math.floor(Date.now() / 1000);
 
   return nowSeconds + TOKEN_EXPIRY_BUFFER_SECONDS >= expiresAt;
 }
 
 /**
- * Refresh an OAuth2 access token using the refresh_token grant.
+ * Refresh an OAuth2 access token.
+ *
+ * - authorization_code: refresh_token grant
+ * - client_credentials: re-claim using client_credentials grant
  * Returns the updated connection value with new tokens.
  *
  * Reference: activepieces/packages/server/api/src/app/app-connection/app-connection-service/oauth2/oauth2-util.ts
@@ -35,23 +48,44 @@ export function isOAuth2TokenExpired(
 export async function refreshOAuth2Token(
   connection: OAuth2ConnectionValueWithApp
 ): Promise<OAuth2ConnectionValueWithApp> {
-  if (!connection.refresh_token) {
-    throw new Error("No refresh token available for OAuth2 connection");
-  }
-
   const tokenUrl = connection.token_url;
   if (!tokenUrl) {
     throw new Error("No token URL configured for OAuth2 connection");
+  }
+
+  const grantType = connection.grant_type ?? OAuth2GrantType.AUTHORIZATION_CODE;
+  if (
+    grantType === OAuth2GrantType.AUTHORIZATION_CODE &&
+    !connection.refresh_token
+  ) {
+    // Nothing to do; keep current value.
+    return connection;
   }
 
   const headers: Record<string, string> = {
     "Content-Type": "application/x-www-form-urlencoded",
   };
 
-  const body = new URLSearchParams({
-    grant_type: "refresh_token",
-    refresh_token: connection.refresh_token,
-  });
+  const body = new URLSearchParams();
+  switch (grantType) {
+    case OAuth2GrantType.AUTHORIZATION_CODE:
+      body.set("grant_type", "refresh_token");
+      body.set("refresh_token", connection.refresh_token);
+      break;
+    case OAuth2GrantType.CLIENT_CREDENTIALS:
+      body.set("grant_type", OAuth2GrantType.CLIENT_CREDENTIALS);
+      if (connection.scope) {
+        body.set("scope", resolveValueFromProps(connection.scope, connection.props));
+      }
+      if (connection.props) {
+        for (const [key, value] of Object.entries(connection.props)) {
+          if (value === undefined || value === null) continue;
+          if (typeof value === "object") continue;
+          body.set(key, String(value));
+        }
+      }
+      break;
+  }
 
   // Apply authorization method
   const authMethod =
@@ -82,10 +116,22 @@ export async function refreshOAuth2Token(
 
   const tokenResponse = (await response.json()) as Record<string, unknown>;
 
+  const STANDARD_KEYS = new Set([
+    "access_token",
+    "token_type",
+    "refresh_token",
+    "scope",
+    "expires_in",
+  ]);
+  const extraData = Object.fromEntries(
+    Object.entries(tokenResponse).filter(([key]) => !STANDARD_KEYS.has(key))
+  );
+
   return {
     ...connection,
     type: AppConnectionType.OAUTH2,
-    access_token: (tokenResponse.access_token as string) ?? connection.access_token,
+    access_token:
+      (tokenResponse.access_token as string) ?? connection.access_token,
     refresh_token:
       (tokenResponse.refresh_token as string) ?? connection.refresh_token,
     token_type:
@@ -96,7 +142,7 @@ export async function refreshOAuth2Token(
       (tokenResponse.scope as string) ?? connection.scope,
     data: {
       ...connection.data,
-      ...((tokenResponse.data as Record<string, unknown>) ?? {}),
+      ...extraData,
     },
   };
 }
