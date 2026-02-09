@@ -1,6 +1,6 @@
 import { streamText } from "ai";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { generateAIActionPrompts } from "@/plugins";
 
 // Simple type for operations
@@ -248,9 +248,7 @@ REMEMBER: After adding all nodes, you MUST add edges to connect them! Every node
 
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

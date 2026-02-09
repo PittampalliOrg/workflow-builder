@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { apiKeys } from "@/lib/db/schema";
 
@@ -17,9 +17,7 @@ function generateApiKey(): { key: string; hash: string; prefix: string } {
 // GET - List all API keys for the current user
 export async function GET(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -50,24 +48,10 @@ export async function GET(request: Request) {
 // POST - Create a new API key
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
-    // Check if user is anonymous
-    const isAnonymous =
-      session.user.name === "Anonymous" ||
-      session.user.email?.startsWith("temp-");
-
-    if (isAnonymous) {
-      return NextResponse.json(
-        { error: "Anonymous users cannot create API keys" },
-        { status: 403 }
-      );
     }
 
     const body = await request.json().catch(() => ({}));

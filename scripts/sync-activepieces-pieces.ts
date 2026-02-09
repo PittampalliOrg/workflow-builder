@@ -282,7 +282,7 @@ async function main() {
       displayName: String(detailPiece.displayName ?? normalizedName),
       logoUrl: String(detailPiece.logoUrl ?? ""),
       description: detailPiece.description ?? null,
-      platformId: detailPiece.platformId ?? "OFFICIAL",
+      platformId: detailPiece.platformId ?? null,
       version,
       minimumSupportedRelease: String(detailPiece.minimumSupportedRelease ?? "0.0.0"),
       maximumSupportedRelease: String(
@@ -319,7 +319,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("[Sync Pieces] Failed:", error);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error("[Sync Pieces] Failed:", error);
+    process.exit(1);
+  });

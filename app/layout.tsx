@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { Analytics } from "@vercel/analytics/react";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { ReactFlowProvider } from "@xyflow/react";
@@ -16,7 +16,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
-import { auth } from "@/lib/auth";
+import { getSessionFromCookie } from "@/lib/auth-helpers";
 import { mono, sans } from "@/lib/fonts";
 import { cn } from "@/lib/utils";
 
@@ -40,9 +40,7 @@ type RootLayoutProps = {
 
 // Sidebar wrapper that fetches session and includes the canvas
 async function SidebarWrapper({ children }: { children: ReactNode }) {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+  const session = await getSessionFromCookie();
 
   const cookieStore = await cookies();
   const isCollapsed = cookieStore.get("sidebar_state")?.value !== "true";
@@ -64,6 +62,17 @@ async function SidebarWrapper({ children }: { children: ReactNode }) {
 
 const RootLayout = ({ children }: RootLayoutProps) => (
   <html lang="en" suppressHydrationWarning>
+    <head>
+      <script
+        dangerouslySetInnerHTML={{
+          __html: `window.ENV=${JSON.stringify({
+            NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
+            NEXT_PUBLIC_GITHUB_CLIENT_ID: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
+            NEXT_PUBLIC_GOOGLE_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+          })}`,
+        }}
+      />
+    </head>
     <body className={cn(sans.variable, mono.variable, "antialiased")}>
       <ThemeProvider
         attribute="class"

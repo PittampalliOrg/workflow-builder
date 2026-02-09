@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import {
   getFunctionById,
   updateFunction,
@@ -96,9 +96,7 @@ export async function GET(request: Request, { params }: RouteParams) {
  */
 export async function PATCH(request: Request, { params }: RouteParams) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -196,9 +194,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
  */
 export async function DELETE(request: Request, { params }: RouteParams) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

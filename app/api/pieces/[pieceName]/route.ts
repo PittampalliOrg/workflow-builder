@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 
 export async function GET(
@@ -7,9 +7,7 @@ export async function GET(
   context: { params: Promise<{ pieceName: string }> }
 ) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

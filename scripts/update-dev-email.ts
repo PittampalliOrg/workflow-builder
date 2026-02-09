@@ -1,7 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { eq } from "drizzle-orm";
-import { users, accounts } from "../lib/db/schema";
+import { users, userIdentities } from "../lib/db/schema";
 
 const DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 
@@ -11,8 +11,8 @@ async function updateDevEmail() {
 
   try {
     await db.update(users).set({ email: "admin@example.com" }).where(eq(users.id, "dev-admin-user"));
-    await db.update(accounts).set({ accountId: "admin@example.com" }).where(eq(accounts.id, "dev-admin-account"));
-    console.log("✅ Updated email to admin@example.com");
+    await db.update(userIdentities).set({ email: "admin@example.com" }).where(eq(userIdentities.email, "admin@localhost"));
+    console.log("Updated email to admin@example.com");
   } finally {
     await queryClient.end();
   }

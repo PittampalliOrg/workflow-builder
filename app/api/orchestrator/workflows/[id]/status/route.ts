@@ -6,8 +6,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -15,16 +14,14 @@ import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id: executionId } = await params;
 
     // Authenticate the request
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

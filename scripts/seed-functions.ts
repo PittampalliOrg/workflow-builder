@@ -299,4 +299,6 @@ async function seedFunctions() {
 }
 
 // Run the seed
-seedFunctions();
+seedFunctions().then(() => {
+  process.exit(0);
+});

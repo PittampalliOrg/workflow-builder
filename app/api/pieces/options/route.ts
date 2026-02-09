@@ -1,7 +1,18 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
-import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
+import { getSession } from "@/lib/auth-helpers";
+import { getAppConnectionByExternalIdInternal } from "@/lib/db/app-connections";
+import { encryptObject } from "@/lib/security/encryption";
+import {
+  AppConnectionType,
+  type OAuth2ConnectionValueWithApp,
+} from "@/lib/types/app-connection";
+import {
+  isOAuth2TokenExpired,
+  refreshOAuth2Token,
+} from "@/lib/app-connections/oauth2-refresh";
+import { appConnections } from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db";
 
 const FN_ACTIVEPIECES_URL =
   process.env.FN_ACTIVEPIECES_URL ||
@@ -34,9 +45,7 @@ function isValidBody(value: unknown): value is OptionsRequestBody {
  */
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -53,9 +62,8 @@ export async function POST(request: Request) {
     // Resolve auth if connectionExternalId is provided
     let authValue: unknown = undefined;
     if (rawBody.connectionExternalId) {
-      const connection = await getAppConnectionByExternalId(
-        rawBody.connectionExternalId,
-        session.user.id
+      const connection = await getAppConnectionByExternalIdInternal(
+        rawBody.connectionExternalId
       );
       if (!connection) {
         return NextResponse.json(
@@ -64,7 +72,32 @@ export async function POST(request: Request) {
         );
       }
 
-      authValue = await resolveConnectionValueForUse(connection);
+      let value = connection.value;
+
+      // Auto-refresh expired OAuth2 tokens
+      if (
+        connection.type === AppConnectionType.OAUTH2 &&
+        value.type === AppConnectionType.OAUTH2
+      ) {
+        const oauth2Value = value as OAuth2ConnectionValueWithApp;
+        if (isOAuth2TokenExpired(oauth2Value)) {
+          try {
+            const refreshedValue = await refreshOAuth2Token(oauth2Value);
+            await db
+              .update(appConnections)
+              .set({
+                value: encryptObject(refreshedValue),
+                updatedAt: new Date(),
+              })
+              .where(eq(appConnections.id, connection.id));
+            value = refreshedValue;
+          } catch {
+            // Use existing (possibly expired) value
+          }
+        }
+      }
+
+      authValue = value;
     }
 
     // Forward to fn-activepieces

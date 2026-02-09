@@ -7,7 +7,7 @@ import {
   pgTable,
   text,
   timestamp,
-  uniqueIndex,
+  unique,
 } from "drizzle-orm/pg-core";
 import {
   AppConnectionScope,
@@ -16,9 +16,41 @@ import {
 } from "../types/app-connection";
 
 import { generateId } from "../utils/id";
-import type { EncryptedObject } from "../security/encryption";
 
-// Better Auth tables
+// ============================================================================
+// Platform & Auth Tables (AP-compatible)
+// ============================================================================
+
+export type PlatformRole = "ADMIN" | "MEMBER";
+export type UserStatus = "ACTIVE" | "INACTIVE";
+export type IdentityProvider = "EMAIL" | "GITHUB" | "GOOGLE";
+export type ProjectRole = "ADMIN" | "EDITOR" | "OPERATOR" | "VIEWER";
+
+export const platforms = pgTable("platforms", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
+  name: text("name").notNull(),
+  ownerId: text("owner_id"), // Set after first user is created
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const signingKeys = pgTable("signing_keys", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
+  platformId: text("platform_id")
+    .notNull()
+    .references(() => platforms.id),
+  publicKey: text("public_key").notNull(), // PEM-encoded RSA public key
+  algorithm: text("algorithm").notNull().default("RS256"),
+  displayName: text("display_name"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Users table (extended from Better Auth)
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
   name: text("name"),
@@ -27,49 +59,71 @@ export const users = pgTable("users", {
   image: text("image"),
   createdAt: timestamp("created_at").notNull(),
   updatedAt: timestamp("updated_at").notNull(),
-  // Anonymous user tracking
-  isAnonymous: boolean("is_anonymous").default(false),
+  // Platform association
+  platformId: text("platform_id").references(() => platforms.id),
+  platformRole: text("platform_role").default("MEMBER").$type<PlatformRole>(),
+  status: text("status").default("ACTIVE").$type<UserStatus>(),
 });
 
-export const sessions = pgTable("sessions", {
-  id: text("id").primaryKey(),
-  expiresAt: timestamp("expires_at").notNull(),
-  token: text("token").notNull().unique(),
-  createdAt: timestamp("created_at").notNull(),
-  updatedAt: timestamp("updated_at").notNull(),
-  ipAddress: text("ip_address"),
-  userAgent: text("user_agent"),
+export const userIdentities = pgTable("user_identities", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
   userId: text("user_id")
     .notNull()
-    .references(() => users.id),
+    .references(() => users.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  password: text("password"), // bcrypt hash, nullable for social-only
+  provider: text("provider").notNull().$type<IdentityProvider>(),
+  firstName: text("first_name"),
+  lastName: text("last_name"),
+  tokenVersion: integer("token_version").notNull().default(0),
+  verified: boolean("verified").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const accounts = pgTable("accounts", {
-  id: text("id").primaryKey(),
-  accountId: text("account_id").notNull(),
-  providerId: text("provider_id").notNull(),
-  userId: text("user_id")
+export const projects = pgTable("projects", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => generateId()),
+  platformId: text("platform_id")
+    .notNull()
+    .references(() => platforms.id),
+  ownerId: text("owner_id")
     .notNull()
     .references(() => users.id),
-  accessToken: text("access_token"),
-  refreshToken: text("refresh_token"),
-  idToken: text("id_token"),
-  accessTokenExpiresAt: timestamp("access_token_expires_at"),
-  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
-  scope: text("scope"),
-  password: text("password"),
-  createdAt: timestamp("created_at").notNull(),
-  updatedAt: timestamp("updated_at").notNull(),
+  displayName: text("display_name").notNull(),
+  externalId: text("external_id").notNull().unique(), // AP-compatible external identifier
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const verifications = pgTable("verifications", {
-  id: text("id").primaryKey(),
-  identifier: text("identifier").notNull(),
-  value: text("value").notNull(),
-  expiresAt: timestamp("expires_at").notNull(),
-  createdAt: timestamp("created_at"),
-  updatedAt: timestamp("updated_at"),
-});
+export const projectMembers = pgTable(
+  "project_members",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    role: text("role").notNull().default("ADMIN").$type<ProjectRole>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectUserUnique: unique("uq_project_members_project_user").on(
+      table.projectId,
+      table.userId
+    ),
+  })
+);
+
+// Legacy tables (sessions, accounts, verifications) removed — replaced by JWT auth + userIdentities
 
 // Workflow visibility type
 export type WorkflowVisibility = "private" | "public";
@@ -112,9 +166,7 @@ export const pieceMetadata = pgTable(
     displayName: text("display_name").notNull(),
     logoUrl: text("logo_url").notNull(),
     description: text("description"),
-    // Activepieces official pieces use NULL platformId upstream; we store 'OFFICIAL'
-    // to make uniqueness constraints work in Postgres.
-    platformId: text("platform_id").notNull().default("OFFICIAL"),
+    platformId: text("platform_id"),
     version: text("version").notNull(),
     minimumSupportedRelease: text("minimum_supported_release").notNull(),
     maximumSupportedRelease: text("maximum_supported_release").notNull(),
@@ -129,7 +181,7 @@ export const pieceMetadata = pgTable(
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
   (table) => ({
-    nameVersionPlatformIdx: uniqueIndex(
+    nameVersionPlatformIdx: index(
       "idx_piece_metadata_name_platform_id_version"
     ).on(table.name, table.version, table.platformId),
   })
@@ -151,18 +203,15 @@ export const appConnections = pgTable(
       .$type<AppConnectionStatus>(),
     platformId: text("platform_id"),
     pieceName: text("piece_name").notNull(),
-    ownerId: text("owner_id")
-      .notNull()
-      .references(() => users.id, {
-        onDelete: "cascade",
-      }),
+    ownerId: text("owner_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
     projectIds: jsonb("project_ids").notNull().$type<string[]>().default([]),
     scope: text("scope")
       .notNull()
       .default(AppConnectionScope.PROJECT)
       .$type<AppConnectionScope>(),
-    // EncryptedObject = { iv: string, data: string } stored as jsonb.
-    value: jsonb("value").notNull().$type<EncryptedObject>(),
+    value: jsonb("value").notNull().$type<{ iv: string; data: string }>(),
     metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
     pieceVersion: text("piece_version").notNull(),
     createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -173,9 +222,6 @@ export const appConnections = pgTable(
       "idx_app_connection_platform_id_and_external_id"
     ).on(table.platformId, table.externalId),
     ownerIdIdx: index("idx_app_connection_owner_id").on(table.ownerId),
-    ownerExternalIdUniqueIdx: uniqueIndex(
-      "idx_app_connection_owner_external_id"
-    ).on(table.ownerId, table.externalId),
   })
 );
 
@@ -338,6 +384,30 @@ export const workflowExternalEvents = pgTable("workflow_external_events", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+// Platform OAuth Apps (admin-managed OAuth credentials per piece)
+export const platformOauthApps = pgTable(
+  "platform_oauth_apps",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    platformId: text("platform_id")
+      .notNull()
+      .references(() => platforms.id, { onDelete: "cascade" }),
+    pieceName: text("piece_name").notNull(), // e.g. "@activepieces/piece-google-sheets"
+    clientId: text("client_id").notNull(),
+    clientSecret: jsonb("client_secret").notNull().$type<{ iv: string; data: string }>(), // AES-256-CBC encrypted
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    platformPieceUnique: unique("uq_platform_oauth_apps_platform_piece").on(
+      table.platformId,
+      table.pieceName
+    ),
+  })
+);
+
 // API Keys table for webhook authentication
 export const apiKeys = pgTable("api_keys", {
   id: text("id")
@@ -365,7 +435,16 @@ export const workflowExecutionsRelations = relations(
 );
 
 export type User = typeof users.$inferSelect;
-export type Session = typeof sessions.$inferSelect;
+export type Platform = typeof platforms.$inferSelect;
+export type NewPlatform = typeof platforms.$inferInsert;
+export type SigningKey = typeof signingKeys.$inferSelect;
+export type NewSigningKey = typeof signingKeys.$inferInsert;
+export type UserIdentity = typeof userIdentities.$inferSelect;
+export type NewUserIdentity = typeof userIdentities.$inferInsert;
+export type Project = typeof projects.$inferSelect;
+export type NewProject = typeof projects.$inferInsert;
+export type ProjectMember = typeof projectMembers.$inferSelect;
+export type NewProjectMember = typeof projectMembers.$inferInsert;
 export type Workflow = typeof workflows.$inferSelect;
 export type NewWorkflow = typeof workflows.$inferInsert;
 export type PieceMetadata = typeof pieceMetadata.$inferSelect;
@@ -381,6 +460,8 @@ export type WorkflowExecutionLog = typeof workflowExecutionLogs.$inferSelect;
 export type NewWorkflowExecutionLog = typeof workflowExecutionLogs.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
+export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;
+export type NewPlatformOauthApp = typeof platformOauthApps.$inferInsert;
 
 // ============================================================================
 // Functions & Function Executions (Dynamic Function Registry)

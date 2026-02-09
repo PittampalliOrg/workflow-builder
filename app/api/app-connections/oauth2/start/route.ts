@@ -5,14 +5,13 @@ import {
   generatePkceChallenge,
   generatePkceVerifier,
   getOAuth2AuthConfig,
-  resolveValueFromProps,
 } from "@/lib/app-connections/oauth2";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({ headers: request.headers });
+    const session = await getSession(request);
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
@@ -48,21 +47,18 @@ export async function POST(request: Request) {
       );
     }
 
-    const pkceEnabled = oauthAuth.pkce !== false;
-    const verifier = pkceEnabled ? generatePkceVerifier() : "";
-    const challenge = pkceEnabled ? generatePkceChallenge(verifier) : "";
+    const verifier = generatePkceVerifier();
+    const challenge = generatePkceChallenge(verifier);
     const state = generateOAuthState();
 
-    const resolvedAuthUrl = resolveValueFromProps(oauthAuth.authUrl, body.props);
     const authorizationUrl = buildOAuth2AuthorizationUrl({
-      authUrl: resolvedAuthUrl,
+      authUrl: oauthAuth.authUrl,
       clientId: body.clientId,
       redirectUrl: body.redirectUrl,
       scope: oauthAuth.scope ?? [],
       state,
-      codeChallenge: pkceEnabled ? challenge : undefined,
+      codeChallenge: challenge,
       prompt: oauthAuth.prompt,
-      extraParams: oauthAuth.extra,
     });
 
     return NextResponse.json({

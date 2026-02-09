@@ -2,13 +2,15 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
-  accounts,
   apiKeys,
   appConnections,
   pieceMetadata,
-  sessions,
+  platforms,
+  projectMembers,
+  projects,
+  signingKeys,
+  userIdentities,
   users,
-  verifications,
   workflowConnectionRefs,
   workflowExecutionLogs,
   workflowExecutions,
@@ -19,9 +21,11 @@ import {
 // Construct schema object for drizzle
 const schema = {
   users,
-  sessions,
-  accounts,
-  verifications,
+  platforms,
+  signingKeys,
+  userIdentities,
+  projects,
+  projectMembers,
   workflows,
   workflowExecutions,
   workflowExecutionLogs,

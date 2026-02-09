@@ -71,6 +71,20 @@
       "when": 1770582057533,
       "tag": "0009_shallow_multiple_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1770604113530,
+      "tag": "0010_charming_mister_fear",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1770607656737,
+      "tag": "0011_neat_rage",
+      "breakpoints": true
     }
   ]
 }

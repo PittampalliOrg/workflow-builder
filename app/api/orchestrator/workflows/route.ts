@@ -7,8 +7,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows, workflowExecutions } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
@@ -20,9 +19,7 @@ import type { WorkflowNode, WorkflowEdge } from "@/lib/workflow-store";
 export async function POST(request: Request) {
   try {
     // Authenticate the request
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

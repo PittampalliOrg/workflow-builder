@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { api } from "@/lib/api-client";
+import { api, type OAuthAppSummary } from "@/lib/api-client";
 import {
   AppConnectionType,
   OAuth2GrantType,
@@ -346,6 +346,16 @@ export function ConfigureConnectionOverlay({
     OAuth2GrantType.AUTHORIZATION_CODE
   );
 
+  // Platform OAuth apps
+  const [oauthApps, setOauthApps] = useState<OAuthAppSummary[]>([]);
+  useEffect(() => {
+    api.oauthApp.list().then(setOauthApps).catch(() => {});
+  }, []);
+  const platformOAuthApp = useMemo(
+    () => oauthApps.find((a) => a.pieceName === type) ?? null,
+    [oauthApps, type]
+  );
+
   // Fetch piece auth config from synced metadata
   const {
     authConfigs,
@@ -561,7 +571,6 @@ export function ConfigureConnectionOverlay({
   // Store OAuth state across popup lifecycle (AP uses React Hook Form for this)
   const oauthStateRef = useRef<{
     clientId: string;
-    clientSecret: string;
     redirectUrl: string;
     codeVerifier: string;
     state: string;
@@ -606,61 +615,22 @@ export function ConfigureConnectionOverlay({
   }, [cleanupOAuthListeners, closeOAuthPopup]);
 
   const handleOAuth2Connect = async () => {
-    const clientId = config.clientId?.trim();
-    const clientSecret = config.clientSecret?.trim();
-    if (!clientId || !clientSecret) {
-      toast.error("Please enter Client ID and Client Secret");
-      return;
-    }
-
     try {
       setOauthConnecting(true);
       processingRef.current = false;
-      const redirectUrl = `${window.location.origin}/api/app-connections/oauth2/callback`;
 
-      // Client credentials grant doesn't use browser redirect flow.
-      if (oauthGrantType === OAuth2GrantType.CLIENT_CREDENTIALS) {
-        const name = connectionLabel;
-        const newConnection = await api.appConnection.upsert({
-          externalId: connectionExternalId,
-          displayName: name,
-          pieceName: type,
-          projectId: "default",
-          type: AppConnectionType.OAUTH2,
-          value: {
-            type: AppConnectionType.OAUTH2,
-            client_id: clientId,
-            client_secret: clientSecret,
-            redirect_url: "",
-            code: "",
-            scope: oauth2AuthConfig?.scope?.join(" ") ?? "",
-            grant_type: OAuth2GrantType.CLIENT_CREDENTIALS,
-            props: oauthProps,
-            authorization_method: oauth2AuthConfig?.authorizationMethod,
-          },
-        });
-
-        toast.success("Connection created via OAuth2");
-        onSuccess?.(newConnection.id, newConnection.externalId);
-        closeAll();
-        setOauthConnecting(false);
-        return;
-      }
-
-      // Start OAuth2 flow — get authorization URL with PKCE
+      // Start OAuth2 flow — server fetches platform clientId from oauth_apps table
       const startResult = await api.appConnection.oauth2Start({
         pieceName: type,
-        clientId,
-        redirectUrl,
         props: oauthProps,
       });
 
+      const redirectUrl = `${window.location.origin}/api/app-connections/oauth2/callback`;
       const storageKey = `oauth2_callback_result:${startResult.state}`;
 
       // Store OAuth state in ref so it survives across the async popup flow
       oauthStateRef.current = {
-        clientId,
-        clientSecret,
+        clientId: startResult.clientId,
         redirectUrl,
         codeVerifier: startResult.codeVerifier,
         state: startResult.state,
@@ -738,11 +708,10 @@ export function ConfigureConnectionOverlay({
             displayName: name,
             pieceName: type,
             projectId: "default",
-            type: AppConnectionType.OAUTH2,
+            type: AppConnectionType.PLATFORM_OAUTH2,
             value: {
-              type: AppConnectionType.OAUTH2,
+              type: AppConnectionType.PLATFORM_OAUTH2,
               client_id: oauthState.clientId,
-              client_secret: oauthState.clientSecret,
               redirect_url: oauthState.redirectUrl,
               code,
               scope: oauthState.scope,
@@ -1150,46 +1119,16 @@ export function ConfigureConnectionOverlay({
   const renderOAuth2Fields = () => (
     <>
       {renderAuthMethodSelect()}
-      <SecretField
-        configKey="clientId"
-        fieldId="clientId"
-        helpText="From your OAuth app settings"
-        label="Client ID"
-        onChange={updateConfig}
-        placeholder="Your OAuth2 Client ID"
-        value={config.clientId || ""}
-      />
-      <SecretField
-        configKey="clientSecret"
-        fieldId="clientSecret"
-        helpText="From your OAuth app settings"
-        label="Client Secret"
-        onChange={updateConfig}
-        placeholder="Your OAuth2 Client Secret"
-        value={config.clientSecret || ""}
-      />
-      {renderOAuth2PropsFields()}
-      {supportsClientCredentials && supportsAuthCode && (
-        <div className="space-y-2">
-          <Label>Grant type</Label>
-          <Select
-            onValueChange={(val) => setOauthGrantType(val as OAuth2GrantType)}
-            value={oauthGrantType}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={OAuth2GrantType.AUTHORIZATION_CODE}>
-                Authorization code
-              </SelectItem>
-              <SelectItem value={OAuth2GrantType.CLIENT_CREDENTIALS}>
-                Client credentials
-              </SelectItem>
-            </SelectContent>
-          </Select>
+      {platformOAuthApp ? (
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+          OAuth credentials configured by your administrator.
+        </div>
+      ) : (
+        <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
+          OAuth app not configured for this piece. Ask your administrator to set it up in Settings.
         </div>
       )}
+      {platformOAuthApp && renderOAuth2PropsFields()}
       {oauth2AuthConfig?.scope && oauth2AuthConfig.scope.length > 0 && (
         <div className="space-y-1">
           <Label className="text-muted-foreground text-xs">Scopes</Label>
@@ -1200,7 +1139,7 @@ export function ConfigureConnectionOverlay({
       )}
       <Button
         className="w-full"
-        disabled={oauthConnecting}
+        disabled={oauthConnecting || !platformOAuthApp}
         onClick={handleOAuth2Connect}
         size="lg"
       >

@@ -32,7 +32,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api-client";
-import { authClient, useSession } from "@/lib/auth-client";
+import { useSession } from "@/lib/auth-client";
 import { connectionsAtom } from "@/lib/connections-store";
 import type { PluginType } from "@/plugins/registry";
 import {
@@ -540,17 +540,9 @@ function useWorkflowHandlers({
       return;
     }
 
-    // Auto-sign in as anonymous if user has no session
     if (!session?.user) {
-      try {
-        await authClient.signIn.anonymous();
-        // Wait for session to be established
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } catch (error) {
-        console.error("Failed to create anonymous session:", error);
-        toast.error("Failed to authenticate. Please try signing in.");
-        return;
-      }
+      toast.error("Please sign in to execute workflows");
+      return;
     }
 
     // Switch to Runs tab when starting a test run
@@ -948,11 +940,10 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 
     setIsDuplicating(true);
     try {
-      // Auto-sign in as anonymous if user has no session
       if (!session?.user) {
-        await authClient.signIn.anonymous();
-        // Wait for session to be established
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        toast.error("Please sign in to duplicate workflows");
+        setIsDuplicating(false);
+        return;
       }
 
       const newWorkflow = await api.workflow.duplicate(currentWorkflowId);

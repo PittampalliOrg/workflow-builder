@@ -4,10 +4,22 @@ import {
   AppConnectionType,
   type BaseOAuth2ConnectionValue,
   type OAuth2ConnectionValueWithApp,
+  type PlatformOAuth2ConnectionValue,
   OAuth2AuthorizationMethod,
   OAuth2GrantType,
 } from "@/lib/types/app-connection";
 import { resolveValueFromProps } from "@/lib/app-connections/oauth2";
+
+/**
+ * Thrown when a refresh token is permanently invalid (revoked or expired).
+ * Callers should mark the connection status as ERROR.
+ */
+export class InvalidGrantError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidGrantError";
+  }
+}
 
 const TOKEN_EXPIRY_BUFFER_SECONDS = 15 * 60; // 15 minutes
 
@@ -46,8 +58,9 @@ export function isOAuth2TokenExpired(
  * Reference: activepieces/packages/server/api/src/app/app-connection/app-connection-service/oauth2/oauth2-util.ts
  */
 export async function refreshOAuth2Token(
-  connection: OAuth2ConnectionValueWithApp
-): Promise<OAuth2ConnectionValueWithApp> {
+  connection: OAuth2ConnectionValueWithApp | PlatformOAuth2ConnectionValue,
+  clientSecretOverride?: string
+): Promise<OAuth2ConnectionValueWithApp | PlatformOAuth2ConnectionValue> {
   const tokenUrl = connection.token_url;
   if (!tokenUrl) {
     throw new Error("No token URL configured for OAuth2 connection");
@@ -64,6 +77,7 @@ export async function refreshOAuth2Token(
 
   const headers: Record<string, string> = {
     "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "application/json",
   };
 
   const body = new URLSearchParams();
@@ -87,18 +101,23 @@ export async function refreshOAuth2Token(
       break;
   }
 
+  // Resolve client_secret: use override for PLATFORM_OAUTH2, otherwise from connection
+  const clientSecret =
+    clientSecretOverride ??
+    ("client_secret" in connection ? connection.client_secret : "");
+
   // Apply authorization method
   const authMethod =
     connection.authorization_method ?? OAuth2AuthorizationMethod.BODY;
 
   if (authMethod === OAuth2AuthorizationMethod.HEADER) {
     const credentials = Buffer.from(
-      `${connection.client_id}:${connection.client_secret}`
+      `${connection.client_id}:${clientSecret}`
     ).toString("base64");
     headers.Authorization = `Basic ${credentials}`;
   } else {
     body.set("client_id", connection.client_id);
-    body.set("client_secret", connection.client_secret);
+    body.set("client_secret", clientSecret);
   }
 
   const response = await fetch(tokenUrl, {
@@ -109,6 +128,19 @@ export async function refreshOAuth2Token(
 
   if (!response.ok) {
     const errorText = await response.text();
+    // Check for invalid_grant — token is permanently invalid
+    let isInvalidGrant = false;
+    try {
+      const errorJson = JSON.parse(errorText);
+      isInvalidGrant = errorJson?.error === "invalid_grant";
+    } catch {
+      isInvalidGrant = errorText.includes("invalid_grant");
+    }
+    if (isInvalidGrant) {
+      throw new InvalidGrantError(
+        `OAuth2 token refresh failed: invalid_grant. The refresh token is expired or revoked.`
+      );
+    }
     throw new Error(
       `OAuth2 token refresh failed (${response.status}): ${errorText}`
     );
@@ -127,9 +159,10 @@ export async function refreshOAuth2Token(
     Object.entries(tokenResponse).filter(([key]) => !STANDARD_KEYS.has(key))
   );
 
+  // Preserve the original connection type (OAUTH2 or PLATFORM_OAUTH2)
   return {
     ...connection,
-    type: AppConnectionType.OAUTH2,
+    type: connection.type,
     access_token:
       (tokenResponse.access_token as string) ?? connection.access_token,
     refresh_token:
@@ -137,12 +170,12 @@ export async function refreshOAuth2Token(
     token_type:
       (tokenResponse.token_type as string) ?? connection.token_type,
     expires_in: tokenResponse.expires_in as number | undefined,
-    claimed_at: Math.floor(Date.now() / 1000),
+    claimed_at: Math.round(Date.now() / 1000),
     scope:
       (tokenResponse.scope as string) ?? connection.scope,
     data: {
       ...connection.data,
       ...extraData,
     },
-  };
+  } as OAuth2ConnectionValueWithApp | PlatformOAuth2ConnectionValue;
 }

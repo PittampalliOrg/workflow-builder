@@ -3,6 +3,7 @@ import {
   AppConnectionType,
   OAuth2AuthorizationMethod,
   type OAuth2ConnectionValueWithApp,
+  type PlatformOAuth2ConnectionValue,
   OAuth2GrantType,
 } from "@/lib/types/app-connection";
 import { parsePieceAuthAll, PieceAuthType, type OAuth2AuthConfig } from "@/lib/types/piece-auth";
@@ -181,6 +182,102 @@ export async function exchangeOAuth2Code(params: {
     redirect_url: params.redirectUrl,
     authorization_method: authorizationMethod,
     grant_type: grantType,
+    props: params.props,
+    data: Object.fromEntries(
+      Object.entries(tokenPayload).filter(
+        ([key]) =>
+          ![
+            "access_token",
+            "token_type",
+            "refresh_token",
+            "scope",
+            "expires_in",
+          ].includes(key)
+      )
+    ),
+  };
+}
+
+/**
+ * Exchange an OAuth2 authorization code using platform-managed credentials.
+ * The client_secret is NOT stored in the returned value — it lives in oauth_apps.
+ */
+export async function exchangeOAuth2CodePlatform(params: {
+  code: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret: string; // from oauth_apps table, NOT stored in result
+  redirectUrl: string;
+  scope: string;
+  props?: Record<string, unknown>;
+  authorizationMethod?: OAuth2AuthorizationMethod;
+  codeVerifier?: string;
+}): Promise<PlatformOAuth2ConnectionValue> {
+  const body: Record<string, string> = {
+    grant_type: OAuth2GrantType.AUTHORIZATION_CODE,
+    code: params.code,
+    redirect_uri: params.redirectUrl,
+  };
+
+  if (params.codeVerifier) {
+    body.code_verifier = params.codeVerifier;
+  }
+
+  const headers: Record<string, string> = {
+    "content-type": "application/x-www-form-urlencoded",
+    accept: "application/json",
+  };
+
+  const authorizationMethod =
+    params.authorizationMethod ?? OAuth2AuthorizationMethod.BODY;
+
+  switch (authorizationMethod) {
+    case OAuth2AuthorizationMethod.BODY:
+      body.client_id = params.clientId;
+      body.client_secret = params.clientSecret;
+      break;
+    case OAuth2AuthorizationMethod.HEADER:
+      headers.authorization = `Basic ${Buffer.from(
+        `${params.clientId}:${params.clientSecret}`
+      ).toString("base64")}`;
+      break;
+  }
+
+  const response = await fetch(params.tokenUrl, {
+    method: "POST",
+    headers,
+    body: new URLSearchParams(body).toString(),
+  });
+
+  if (!response.ok) {
+    let message = `OAuth2 token exchange failed with ${response.status}`;
+    try {
+      const errorBody = (await response.json()) as Record<string, unknown>;
+      if (typeof errorBody.error_description === "string") {
+        message = errorBody.error_description;
+      }
+    } catch {
+      // no-op
+    }
+    throw new Error(message);
+  }
+
+  const tokenPayload = (await response.json()) as Record<string, unknown>;
+
+  const claimedAt = Math.round(Date.now() / 1000);
+  return {
+    type: AppConnectionType.PLATFORM_OAUTH2,
+    access_token: String(tokenPayload.access_token ?? ""),
+    token_type: String(tokenPayload.token_type ?? "bearer"),
+    refresh_token: String(tokenPayload.refresh_token ?? ""),
+    scope: String(tokenPayload.scope ?? params.scope ?? ""),
+    expires_in: Number(tokenPayload.expires_in ?? 3600),
+    claimed_at: claimedAt,
+    token_url: params.tokenUrl,
+    client_id: params.clientId,
+    redirect_url: params.redirectUrl,
+    authorization_method: authorizationMethod,
+    grant_type: OAuth2GrantType.AUTHORIZATION_CODE,
     props: params.props,
     data: Object.fromEntries(
       Object.entries(tokenPayload).filter(

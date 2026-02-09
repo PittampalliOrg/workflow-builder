@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
@@ -25,9 +25,7 @@ function createDefaultTriggerNode() {
 
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

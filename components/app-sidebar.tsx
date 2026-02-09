@@ -6,10 +6,11 @@ import { useState } from "react";
 import {
   Workflow,
   Activity,
-  Settings,
+  Plug,
   Plus,
   ChevronRight,
   PenTool,
+  Settings,
 } from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,8 @@ import type { User } from "@/lib/db/schema";
 const navigationLinks = [
   { href: "/", label: "Builder", icon: PenTool },
   { href: "/monitor", label: "Monitor", icon: Activity },
+  { href: "/connections", label: "Connections", icon: Plug },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function AppSidebar({ user }: { user: User | undefined }) {

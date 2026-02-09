@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
@@ -18,9 +18,7 @@ export async function POST(
     const { workflowId } = await context.params;
 
     // Get session
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
