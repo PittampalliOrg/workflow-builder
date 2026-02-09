@@ -76,13 +76,11 @@ export async function listPieceMetadata(
 
   const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const fetchLimit = Math.max(params.limit ?? 500, 5000);
   const rows = await db
     .select()
     .from(pieceMetadata)
     .where(whereClause)
-    .orderBy(desc(pieceMetadata.updatedAt))
-    .limit(fetchLimit);
+    .orderBy(desc(pieceMetadata.updatedAt));
 
   const candidates =
     !params.categories || params.categories.length === 0

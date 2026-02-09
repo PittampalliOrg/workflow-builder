@@ -41,8 +41,11 @@ export async function resolveConnectionValueForUse(
           .where(eq(appConnections.id, connection.id));
 
         value = refreshedValue;
-      } catch {
-        // Use existing (possibly expired) value and let caller handle downstream failure.
+      } catch (err) {
+        console.warn(
+          `[resolve-connection] OAuth2 token refresh failed for connection ${connection.id}:`,
+          err instanceof Error ? err.message : err
+        );
       }
     }
   }
