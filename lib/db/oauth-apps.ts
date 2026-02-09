@@ -1,21 +1,21 @@
 import "server-only";
 
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { db } from "./index";
-import { oauthApps } from "./schema";
+import { platformOauthApps } from "./schema";
 import {
   encryptString,
   decryptString,
   type EncryptedObject,
 } from "@/lib/security/encryption";
 import { generateId } from "@/lib/utils/id";
+import { ensureDefaultPlatform } from "@/lib/platform-service";
 
 export type DecryptedOAuthApp = {
   id: string;
   pieceName: string;
   clientId: string;
   clientSecret: string; // decrypted plaintext
-  extraParams?: Record<string, string>;
 };
 
 export type OAuthAppSummary = {
@@ -23,36 +23,37 @@ export type OAuthAppSummary = {
   pieceName: string;
   clientId: string;
   hasSecret: boolean;
-  extraParams?: Record<string, string>;
 };
 
 function decryptOAuthApp(
-  row: typeof oauthApps.$inferSelect
+  row: typeof platformOauthApps.$inferSelect
 ): DecryptedOAuthApp {
   return {
     id: row.id,
     pieceName: row.pieceName,
     clientId: row.clientId,
     clientSecret: decryptString(row.clientSecret as EncryptedObject),
-    extraParams: (row.extraParams as Record<string, string>) ?? undefined,
   };
 }
 
-function toSummary(row: typeof oauthApps.$inferSelect): OAuthAppSummary {
+function toSummary(row: typeof platformOauthApps.$inferSelect): OAuthAppSummary {
   return {
     id: row.id,
     pieceName: row.pieceName,
     clientId: row.clientId,
     hasSecret: true,
-    extraParams: (row.extraParams as Record<string, string>) ?? undefined,
   };
 }
 
 export async function getOAuthAppByPieceName(
   pieceName: string
 ): Promise<DecryptedOAuthApp | null> {
-  const row = await db.query.oauthApps.findFirst({
-    where: eq(oauthApps.pieceName, pieceName),
+  const platform = await ensureDefaultPlatform();
+  const row = await db.query.platformOauthApps.findFirst({
+    where: and(
+      eq(platformOauthApps.pieceName, pieceName),
+      eq(platformOauthApps.platformId, platform.id)
+    ),
   });
 
   if (!row) return null;
@@ -60,7 +61,11 @@ export async function getOAuthAppByPieceName(
 }
 
 export async function listOAuthApps(): Promise<OAuthAppSummary[]> {
-  const rows = await db.select().from(oauthApps);
+  const platform = await ensureDefaultPlatform();
+  const rows = await db
+    .select()
+    .from(platformOauthApps)
+    .where(eq(platformOauthApps.platformId, platform.id));
   return rows.map(toSummary);
 }
 
@@ -68,38 +73,40 @@ export async function upsertOAuthApp(params: {
   pieceName: string;
   clientId: string;
   clientSecret: string;
-  extraParams?: Record<string, string>;
 }): Promise<OAuthAppSummary> {
+  const platform = await ensureDefaultPlatform();
   const encryptedSecret = encryptString(params.clientSecret);
   const now = new Date();
 
-  const existing = await db.query.oauthApps.findFirst({
-    where: eq(oauthApps.pieceName, params.pieceName),
+  const existing = await db.query.platformOauthApps.findFirst({
+    where: and(
+      eq(platformOauthApps.pieceName, params.pieceName),
+      eq(platformOauthApps.platformId, platform.id)
+    ),
   });
 
   if (existing) {
     const [updated] = await db
-      .update(oauthApps)
+      .update(platformOauthApps)
       .set({
         clientId: params.clientId,
         clientSecret: encryptedSecret,
-        extraParams: params.extraParams ?? null,
         updatedAt: now,
       })
-      .where(eq(oauthApps.id, existing.id))
+      .where(eq(platformOauthApps.id, existing.id))
       .returning();
 
     return toSummary(updated);
   }
 
   const [created] = await db
-    .insert(oauthApps)
+    .insert(platformOauthApps)
     .values({
       id: generateId(),
+      platformId: platform.id,
       pieceName: params.pieceName,
       clientId: params.clientId,
       clientSecret: encryptedSecret,
-      extraParams: params.extraParams ?? null,
       createdAt: now,
       updatedAt: now,
     })
@@ -109,9 +116,15 @@ export async function upsertOAuthApp(params: {
 }
 
 export async function deleteOAuthApp(pieceName: string): Promise<boolean> {
+  const platform = await ensureDefaultPlatform();
   const rows = await db
-    .delete(oauthApps)
-    .where(eq(oauthApps.pieceName, pieceName))
+    .delete(platformOauthApps)
+    .where(
+      and(
+        eq(platformOauthApps.pieceName, pieceName),
+        eq(platformOauthApps.platformId, platform.id)
+      )
+    )
     .returning();
 
   return rows.length > 0;

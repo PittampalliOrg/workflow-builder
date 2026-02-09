@@ -760,8 +760,27 @@ export function ConfigureConnectionOverlay({
       storageHandlerRef.current = storageHandler;
       window.addEventListener("storage", storageHandler);
 
-      // Poll for popup close (COOP may block popup.closed, so wrap in try/catch)
+      // Poll for popup close with a grace period.
+      // COOP (Cross-Origin-Opener-Policy) from OAuth providers (Google, Microsoft)
+      // severs the popup reference, causing popup.closed to return true immediately.
+      // Tiling WMs (Sway, i3) may also close/reparent popup windows unexpectedly.
+      // We delay the close check so these false positives don't abort the flow.
+      // The callback will still arrive via postMessage or localStorage.
+      const POPUP_GRACE_PERIOD_MS = 10_000;
+      const popupOpenedAt = Date.now();
       popupCheckRef.current = setInterval(() => {
+        // During grace period, only check localStorage for early callbacks
+        if (Date.now() - popupOpenedAt < POPUP_GRACE_PERIOD_MS) {
+          try {
+            const stored = localStorage.getItem("oauth2_callback_result");
+            if (stored) {
+              const data = JSON.parse(stored);
+              processCallbackResult(data);
+            }
+          } catch { /* ok */ }
+          return;
+        }
+
         try {
           if (popup.closed && !processingRef.current) {
             // Also check localStorage one final time (storage event may have
@@ -779,7 +798,7 @@ export function ConfigureConnectionOverlay({
 
             cleanupOAuthListeners();
             toast.error(
-              "Authorization window was closed. If Google showed an error, ensure your app has the correct redirect URI and your account is listed as a test user."
+              "Authorization window was closed. Ensure your OAuth app has the correct redirect URI configured."
             );
             setOauthConnecting(false);
           }

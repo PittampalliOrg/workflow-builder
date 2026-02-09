@@ -1,4 +1,4 @@
-import { and, desc, eq, ilike, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
 import { parsePieceAuthAll, type PieceAuthConfig } from "@/lib/types/piece-auth";
@@ -166,7 +166,9 @@ export async function upsertPieceMetadata(
     where: and(
       eq(pieceMetadata.name, record.name),
       eq(pieceMetadata.version, record.version),
-      eq(pieceMetadata.platformId, record.platformId)
+      record.platformId
+        ? eq(pieceMetadata.platformId, record.platformId)
+        : isNull(pieceMetadata.platformId)
     ),
   });
 

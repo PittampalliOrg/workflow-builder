@@ -907,15 +907,25 @@ export const appConnectionApi = {
       }
     ),
 
+  rename: (id: string, displayName: string) =>
+    apiCall<AppConnection>(`/api/app-connections/${id}`, {
+      method: "POST",
+      body: JSON.stringify({ displayName }),
+    }),
+
+  bulkDelete: (ids: string[]) =>
+    Promise.all(ids.map((id) => appConnectionApi.delete(id))),
+
   oauth2Start: (body: {
     pieceName: string;
     pieceVersion?: string;
-    clientId: string;
-    redirectUrl: string;
+    clientId?: string;
+    redirectUrl?: string;
     props?: Record<string, unknown>;
   }) =>
     apiCall<{
       authorizationUrl: string;
+      clientId: string;
       state: string;
       codeVerifier: string;
       codeChallenge: string;

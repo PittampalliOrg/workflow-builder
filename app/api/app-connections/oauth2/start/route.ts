@@ -8,6 +8,7 @@ import {
 } from "@/lib/app-connections/oauth2";
 import { getSession } from "@/lib/auth-helpers";
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
+import { getOAuthAppByPieceName } from "@/lib/db/oauth-apps";
 
 export async function POST(request: Request) {
   try {
@@ -24,9 +25,9 @@ export async function POST(request: Request) {
       props?: Record<string, unknown>;
     };
 
-    if (!(body.pieceName && body.clientId && body.redirectUrl)) {
+    if (!body.pieceName) {
       return NextResponse.json(
-        { error: "pieceName, clientId, and redirectUrl are required" },
+        { error: "pieceName is required" },
         { status: 400 }
       );
     }
@@ -47,14 +48,32 @@ export async function POST(request: Request) {
       );
     }
 
+    // Resolve clientId: from request body or from platform_oauth_apps table
+    let clientId = body.clientId;
+    if (!clientId) {
+      const oauthApp = await getOAuthAppByPieceName(body.pieceName);
+      if (!oauthApp) {
+        return NextResponse.json(
+          { error: "No OAuth app configured for this piece. Configure it in Settings > OAuth Apps." },
+          { status: 400 }
+        );
+      }
+      clientId = oauthApp.clientId;
+    }
+
+    // Resolve redirectUrl: from request body or derive from request origin
+    const redirectUrl =
+      body.redirectUrl ||
+      `${new URL(request.url).origin}/api/app-connections/oauth2/callback`;
+
     const verifier = generatePkceVerifier();
     const challenge = generatePkceChallenge(verifier);
     const state = generateOAuthState();
 
     const authorizationUrl = buildOAuth2AuthorizationUrl({
       authUrl: oauthAuth.authUrl,
-      clientId: body.clientId,
-      redirectUrl: body.redirectUrl,
+      clientId,
+      redirectUrl,
       scope: oauthAuth.scope ?? [],
       state,
       codeChallenge: challenge,
@@ -63,6 +82,7 @@ export async function POST(request: Request) {
 
     return NextResponse.json({
       authorizationUrl,
+      clientId,
       state,
       codeVerifier: verifier,
       codeChallenge: challenge,

@@ -5,6 +5,7 @@ import {
   apiKeys,
   appConnections,
   pieceMetadata,
+  platformOauthApps,
   platforms,
   projectMembers,
   projects,
@@ -22,6 +23,7 @@ import {
 const schema = {
   users,
   platforms,
+  platformOauthApps,
   signingKeys,
   userIdentities,
   projects,
