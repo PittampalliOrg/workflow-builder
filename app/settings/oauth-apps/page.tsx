@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { api, type OAuthAppSummary, type PieceMetadata } from "@/lib/api-client";
-import { parsePieceAuthAll, PieceAuthType } from "@/lib/types/piece-auth";
+import { parsePieceAuth, PieceAuthType } from "@/lib/types/piece-auth";
 
 type OAuthPieceRow = {
   piece: PieceMetadata;
@@ -76,8 +76,8 @@ export default function OAuthAppsSettingsPage() {
     return pieces
       .filter((p) => {
         if (!p.auth) return false;
-        const configs = parsePieceAuthAll(p.auth);
-        return configs.some((c) => c.type === PieceAuthType.OAUTH2);
+        const config = parsePieceAuth(p.auth);
+        return config?.type === PieceAuthType.OAUTH2;
       })
       .map((piece) => ({
         piece,
