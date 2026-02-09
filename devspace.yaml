@@ -53,7 +53,8 @@ vars:
 
   # Database migrations
   RUN_MIGRATIONS:
-    default: "true"
+    # Migrations are executed via GitOps (ArgoCD hook job) in this stack.
+    default: "false"
   MIGRATION_COMMAND:
     default: "pnpm db:migrate"
 

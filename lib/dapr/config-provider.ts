@@ -23,9 +23,9 @@
 import {
   getConfiguration,
   getSecret,
-  getBulkSecrets,
   isAvailable,
   type ConfigurationItem,
+  getSecretMap,
 } from "./client";
 
 // ============================================================================
@@ -35,9 +35,12 @@ import {
 /**
  * Dapr component names
  */
-const CONFIG_STORE = process.env.DAPR_CONFIG_STORE || "azureappconfig";
-const SECRET_STORE = process.env.DAPR_SECRET_STORE || "azure-keyvault";
+const CONFIG_STORE =
+  process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-builder";
+const SECRET_STORE = process.env.DAPR_SECRET_STORE || "kubernetes-secrets";
 const CONFIG_LABEL = process.env.CONFIG_LABEL || "workflow-builder";
+const K8S_SECRET_NAME =
+  process.env.DAPR_K8S_SECRET_NAME || "workflow-builder-secrets";
 
 /**
  * Configuration keys to load from Dapr Configuration store
@@ -72,6 +75,28 @@ const SECRET_MAPPINGS: Record<string, string> = {
   ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY",
   GITHUB_TOKEN: "GITHUB-TOKEN",
 };
+
+/**
+ * Keys expected to exist in the workflow-builder-secrets Kubernetes Secret.
+ * When using the Dapr Kubernetes secret store, we read a single secret and
+ * extract these keys from its returned map.
+ */
+const K8S_SECRET_KEYS = [
+  "DATABASE_URL",
+  "AP_ENCRYPTION_KEY",
+  "INTERNAL_API_TOKEN",
+  "JWT_SIGNING_KEY",
+  "GITHUB_CLIENT_ID",
+  "GITHUB_CLIENT_SECRET",
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "OAUTH_APP_GOOGLE_CLIENT_ID",
+  "OAUTH_APP_GOOGLE_CLIENT_SECRET",
+  "OAUTH_APP_MICROSOFT_CLIENT_ID",
+  "OAUTH_APP_MICROSOFT_CLIENT_SECRET",
+  "OAUTH_APP_LINKEDIN_CLIENT_ID",
+  "OAUTH_APP_LINKEDIN_CLIENT_SECRET",
+] as const;
 
 // ============================================================================
 // State
@@ -160,6 +185,28 @@ async function loadConfigurationFromDapr(): Promise<void> {
 }
 
 async function loadSecretsFromDapr(): Promise<void> {
+  // Prefer Kubernetes secret store when configured (single Secret with multiple keys).
+  if (SECRET_STORE === "kubernetes-secrets") {
+    const data = await getSecretMap(SECRET_STORE, K8S_SECRET_NAME);
+    for (const key of K8S_SECRET_KEYS) {
+      const value = data[key];
+      if (value !== undefined && value !== "") {
+        secretCache[key] = value;
+        continue;
+      }
+      const envValue = process.env[key];
+      if (envValue !== undefined) {
+        secretCache[key] = envValue;
+      }
+    }
+
+    console.log(
+      `[ConfigProvider] Loaded ${Object.keys(secretCache).length} secrets from ${SECRET_STORE}:${K8S_SECRET_NAME}`
+    );
+    return;
+  }
+
+  // Azure Key Vault / single-value stores (secret name == key).
   for (const [envKey, kvName] of Object.entries(SECRET_MAPPINGS)) {
     try {
       const value = await getSecret(SECRET_STORE, kvName);
@@ -167,7 +214,6 @@ async function loadSecretsFromDapr(): Promise<void> {
         secretCache[envKey] = value;
       }
     } catch {
-      // Fall back to environment variable
       const envValue = process.env[envKey];
       if (envValue !== undefined) {
         secretCache[envKey] = envValue;

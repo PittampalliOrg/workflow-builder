@@ -36,8 +36,18 @@ const schema = {
   workflowConnectionRefs,
 };
 
-const connectionString =
-  process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+const envUrl = process.env.DATABASE_URL;
+const isProd = process.env.NODE_ENV === "production";
+const isNextBuild = process.env.NEXT_PHASE === "phase-production-build";
+
+let connectionString = envUrl;
+if (!connectionString) {
+  if (isProd && !isNextBuild) {
+    throw new Error("DATABASE_URL is required in production runtime");
+  }
+  // Dev + Next build: safe fallback to keep module evaluation from crashing.
+  connectionString = "postgres://localhost:5432/workflow";
+}
 
 // For migrations
 export const migrationClient = postgres(connectionString, { max: 1 });

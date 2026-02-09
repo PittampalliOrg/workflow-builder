@@ -1,14 +1,15 @@
 /**
  * Configuration Service for Next.js App
  *
- * Fetches configuration from the workflow-orchestrator service which has access
- * to Dapr Configuration Store (Azure App Configuration).
- *
- * Since the Next.js app doesn't have a Dapr sidecar, we fetch config via HTTP
- * from the orchestrator's /config endpoint, with fallback to environment variables.
+ * Fetches configuration directly from Dapr Configuration Store (Azure App Configuration)
+ * via the local Dapr sidecar, with fallback to environment variables and defaults.
  *
  * Configuration values are cached locally and refreshed periodically.
  */
+
+import "server-only";
+
+import { getConfiguration, isAvailable } from "./dapr/client";
 
 // Cache configuration
 const configCache = new Map<string, { value: string; fetchedAt: number }>();
@@ -40,47 +41,59 @@ const ENV_MAPPINGS: Record<string, string> = {
 };
 
 /**
- * Get the orchestrator base URL for fetching config
- * Uses the correct cross-namespace FQDN.
- * Note: We use the hardcoded default instead of env vars because DevSpace
- * may override env vars with incorrect values until it's restarted.
+ * Dapr configuration store settings.
+ *
+ * Default store is workflow-builder scoped; falls back to "azureappconfig" if the
+ * scoped component is not installed.
  */
-function getOrchestratorBaseUrl(): string {
-  // Always use the correct FQDN for cross-namespace access
-  // Env vars are not reliable during DevSpace development as they may have stale values
-  return DEFAULTS[CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL];
-}
+const DAPR_CONFIG_STORE =
+  process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-builder";
+const DAPR_CONFIG_LABEL = process.env.CONFIG_LABEL || "workflow-builder";
 
 /**
- * Fetch configuration from the orchestrator's config endpoint
+ * Cache Dapr health checks to avoid spamming the sidecar on every cache miss.
  */
-async function fetchConfigFromOrchestrator(key: string): Promise<string | null> {
-  try {
-    const baseUrl = getOrchestratorBaseUrl();
-    const url = `${baseUrl}/api/config/${encodeURIComponent(key)}`;
+let daprHealth: { ok: boolean; checkedAt: number } | null = null;
+const DAPR_HEALTH_TTL_MS = 15_000;
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      // Short timeout to avoid blocking
-      signal: AbortSignal.timeout(2000),
-    });
+async function isDaprAvailableCached(): Promise<boolean> {
+  if (daprHealth && Date.now() - daprHealth.checkedAt < DAPR_HEALTH_TTL_MS) {
+    return daprHealth.ok;
+  }
+  const ok = await isAvailable();
+  daprHealth = { ok, checkedAt: Date.now() };
+  return ok;
+}
 
-    if (!response.ok) {
-      return null;
-    }
-
-    const data = await response.json() as { value?: string };
-    return data.value || null;
-  } catch (error) {
-    // Orchestrator config endpoint not available, will use fallback
+async function fetchConfigFromDapr(key: string): Promise<string | null> {
+  if (!(await isDaprAvailableCached())) {
     return null;
   }
+
+  const stores = DAPR_CONFIG_STORE === "azureappconfig"
+    ? ["azureappconfig"]
+    : [DAPR_CONFIG_STORE, "azureappconfig"];
+
+  for (const storeName of stores) {
+    try {
+      const cfg = await getConfiguration(storeName, [key], {
+        label: DAPR_CONFIG_LABEL,
+      });
+      const item = cfg[key];
+      if (item?.value !== undefined) {
+        return item.value;
+      }
+    } catch {
+      // Try next store.
+    }
+  }
+
+  return null;
 }
 
 /**
  * Get a configuration value with caching
- * Priority: Cache -> Orchestrator Config -> Environment Variable -> Default
+ * Priority: Cache -> Dapr Config -> Environment Variable -> Default
  */
 export async function getConfig(key: string): Promise<string> {
   // Check cache first
@@ -89,11 +102,11 @@ export async function getConfig(key: string): Promise<string> {
     return cached.value;
   }
 
-  // Try to fetch from orchestrator
-  const orchestratorValue = await fetchConfigFromOrchestrator(key);
-  if (orchestratorValue) {
-    configCache.set(key, { value: orchestratorValue, fetchedAt: Date.now() });
-    return orchestratorValue;
+  // Try to fetch from Dapr config store
+  const daprValue = await fetchConfigFromDapr(key);
+  if (daprValue !== null) {
+    configCache.set(key, { value: daprValue, fetchedAt: Date.now() });
+    return daprValue;
   }
 
   // Fall back to environment variable
@@ -117,7 +130,7 @@ export async function getConfig(key: string): Promise<string> {
  * Uses hardcoded default to avoid stale env var issues during DevSpace development.
  */
 export async function getWorkflowOrchestratorUrl(): Promise<string> {
-  return DEFAULTS[CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL];
+  return getConfig(CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL);
 }
 
 /**
@@ -125,7 +138,7 @@ export async function getWorkflowOrchestratorUrl(): Promise<string> {
  * Uses hardcoded default to avoid stale env var issues during DevSpace development.
  */
 export async function getDaprOrchestratorUrl(): Promise<string> {
-  return DEFAULTS[CONFIG_KEYS.DAPR_ORCHESTRATOR_URL];
+  return getConfig(CONFIG_KEYS.DAPR_ORCHESTRATOR_URL);
 }
 
 /**
@@ -140,7 +153,7 @@ export async function getActivityExecutorUrl(): Promise<string> {
  * Uses hardcoded default to avoid stale env var issues during DevSpace development.
  */
 export async function getGenericOrchestratorUrl(): Promise<string> {
-  return DEFAULTS[CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL];
+  return getConfig(CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL);
 }
 
 /**

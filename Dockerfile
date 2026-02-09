@@ -37,7 +37,6 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
 # Bundle scripts for runtime use (self-contained with dependencies)
 RUN npm install -g esbuild && \
-    esbuild lib/db/migrate.ts --bundle --platform=node --target=node22 --outfile=lib/db/migrate.bundle.js && \
     esbuild scripts/seed-functions.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-functions.bundle.js && \
     esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js && \
     esbuild scripts/sync-oauth-apps.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-oauth-apps.bundle.js && \
@@ -55,18 +54,30 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
+# Atlas CLI (pinned)
+ARG ATLAS_VERSION=v1.1.0
+
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 nextjs
+
+# Install Atlas CLI for in-cluster migration jobs.
+# Verify the published sha256 for supply-chain hygiene.
+RUN apk add --no-cache curl ca-certificates && \
+    curl -sSfL -o /usr/local/bin/atlas "https://atlasbinaries.com/atlas/atlas-linux-amd64-${ATLAS_VERSION}" && \
+    curl -sSfL -o /tmp/atlas.sha256 "https://atlasbinaries.com/atlas/atlas-linux-amd64-${ATLAS_VERSION}.sha256" && \
+    echo "$(cat /tmp/atlas.sha256)  /usr/local/bin/atlas" | sha256sum -c - && \
+    chmod +x /usr/local/bin/atlas && \
+    rm -f /tmp/atlas.sha256
 
 # Copy standalone build output
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
-# Copy database migration files and bundled scripts
-COPY --from=builder /app/drizzle ./drizzle
-COPY --from=builder /app/lib/db/migrate.bundle.js ./lib/db/migrate.bundle.js
+# Copy Atlas migrations/config and bundled scripts
+COPY --from=builder /app/atlas.hcl ./atlas.hcl
+COPY --from=builder /app/atlas ./atlas
 COPY --from=builder /app/scripts/seed-functions.bundle.js ./scripts/seed-functions.bundle.js
 COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sync-activepieces-pieces.bundle.js
 COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
@@ -76,5 +87,5 @@ USER nextjs
 
 EXPOSE 3000
 
-# Run migrations then start the server
-CMD ["sh", "-c", "node lib/db/migrate.bundle.js && node server.js"]
+# Migrations run via GitOps (ArgoCD job). App should start without attempting schema changes.
+CMD ["node", "server.js"]

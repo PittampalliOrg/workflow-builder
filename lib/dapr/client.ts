@@ -128,11 +128,46 @@ export async function getSecret(
     }
 
     const data = (await response.json()) as Record<string, string>;
-    return data[secretName] ?? "";
+    // Dapr returns a map of key -> value for the requested secret.
+    // Secret stores like Azure Key Vault typically return a single entry keyed by secretName.
+    // Kubernetes secrets may return multiple keys and require callers to choose the key.
+    if (secretName in data) {
+      return data[secretName] ?? "";
+    }
+    const values = Object.values(data);
+    if (values.length === 1) {
+      return values[0] ?? "";
+    }
+    throw new Error(
+      `Secret '${secretName}' contains multiple keys; use getSecretMap() to select the desired key`
+    );
   } catch (error) {
     console.error(`[Dapr] Failed to get secret ${secretName} from ${storeName}:`, error);
     throw error;
   }
+}
+
+/**
+ * Get the full key/value map for a secret from a Dapr secrets store.
+ * Useful for Kubernetes secrets that contain multiple keys.
+ */
+export async function getSecretMap(
+  storeName: string,
+  secretName: string
+): Promise<Record<string, string>> {
+  const response = await fetch(
+    daprUrl(`/v1.0/secrets/${storeName}/${encodeURIComponent(secretName)}`),
+    {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Secret get failed: ${response.status}`);
+  }
+
+  return (await response.json()) as Record<string, string>;
 }
 
 /**
