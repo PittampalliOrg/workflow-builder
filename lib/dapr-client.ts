@@ -67,10 +67,7 @@ export type DaprApproveResult = {
   workflow_id: string;
 };
 
-async function daprFetch<T>(
-  url: string,
-  options?: RequestInit
-): Promise<T> {
+async function daprFetch<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -99,7 +96,7 @@ export const daprClient = {
   startWorkflow: (
     orchestratorUrl: string,
     featureRequest: string,
-    cwd: string = ""
+    cwd = ""
   ): Promise<DaprStartWorkflowResult> =>
     daprFetch(`${orchestratorUrl}/api/workflows`, {
       method: "POST",

@@ -1,40 +1,40 @@
 "use client";
 
+import {
+  Activity,
+  ChevronRight,
+  PenTool,
+  Plug,
+  Plus,
+  Settings,
+  Workflow,
+} from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState } from "react";
-import {
-  Workflow,
-  Activity,
-  Plug,
-  Plus,
-  ChevronRight,
-  PenTool,
-  Settings,
-} from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
 import { Button } from "@/components/ui/button";
-import {
-  Sidebar,
-  SidebarContent,
-  SidebarFooter,
-  SidebarHeader,
-  SidebarMenu,
-  SidebarMenuItem,
-  SidebarMenuButton,
-  SidebarGroup,
-  SidebarGroupLabel,
-  SidebarGroupContent,
-  useSidebar,
-} from "@/components/ui/sidebar";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { cn } from "@/lib/utils";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupContent,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  useSidebar,
+} from "@/components/ui/sidebar";
 import type { User } from "@/lib/db/schema";
+import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 const navigationLinks = [
   { href: "/", label: "Builder", icon: PenTool },
@@ -54,7 +54,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       // Builder is active on home page or any /workflows/* page
       return pathname === "/" || pathname.startsWith("/workflows");
     }
-    return pathname === href || pathname.startsWith(href + "/");
+    return pathname === href || pathname.startsWith(`${href}/`);
   };
 
   return (
@@ -100,10 +100,10 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 
       <SidebarContent>
         {/* Navigation Section (Collapsible) */}
-        <Collapsible open={workflowsOpen} onOpenChange={setWorkflowsOpen}>
+        <Collapsible onOpenChange={setWorkflowsOpen} open={workflowsOpen}>
           <SidebarGroup>
             <CollapsibleTrigger asChild>
-              <SidebarGroupLabel className="cursor-pointer hover:bg-muted/50 rounded-md -mx-2 px-2 flex items-center justify-between text-xs uppercase text-muted-foreground">
+              <SidebarGroupLabel className="-mx-2 flex cursor-pointer items-center justify-between rounded-md px-2 text-muted-foreground text-xs uppercase hover:bg-muted/50">
                 <div className="flex items-center gap-2">
                   <Workflow className="h-3 w-3" />
                   <span>Workflows</span>

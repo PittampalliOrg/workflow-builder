@@ -4,14 +4,19 @@
  * A scale-to-zero function that handles Perplexity AI queries.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { searchStep, type SearchInput } from "./steps/search.js";
-import { askStep, type AskInput } from "./steps/ask.js";
-import type { ExecuteRequest, ExecuteResponse, PerplexityCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import { type AskInput, askStep } from "./steps/ask.js";
+import { type SearchInput, searchStep } from "./steps/search.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  PerplexityCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -46,17 +51,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -75,7 +80,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-perplexity] Received request for step: ${body.step}`);
-    console.log(`[fn-perplexity] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-perplexity] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: PerplexityCredentials = {
       PERPLEXITY_API_KEY: body.credentials?.PERPLEXITY_API_KEY,
@@ -86,8 +93,11 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "search":
-        const searchResult = await searchStep(input as SearchInput, credentials);
+      case "search": {
+        const searchResult = await searchStep(
+          input as SearchInput,
+          credentials
+        );
         if (searchResult.success) {
           result = {
             success: true,
@@ -101,8 +111,9 @@ async function main() {
           result = { success: false, error: searchResult.error };
         }
         break;
+      }
 
-      case "ask":
+      case "ask": {
         const askResult = await askStep(input as AskInput, credentials);
         if (askResult.success) {
           result = {
@@ -117,6 +128,7 @@ async function main() {
           result = { success: false, error: askResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -133,7 +145,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-perplexity] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-perplexity] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

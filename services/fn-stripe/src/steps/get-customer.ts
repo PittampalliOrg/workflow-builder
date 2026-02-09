@@ -33,7 +33,13 @@ export type GetCustomerInput = {
 };
 
 export type GetCustomerResult =
-  | { success: true; id: string; email: string; name: string | null; created: number }
+  | {
+      success: true;
+      id: string;
+      email: string;
+      name: string | null;
+      created: number;
+    }
   | { success: false; error: string };
 
 export async function getCustomerStep(
@@ -45,11 +51,12 @@ export async function getCustomerStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "STRIPE_SECRET_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "STRIPE_SECRET_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
-  if (!input.customerId && !input.email) {
+  if (!(input.customerId || input.email)) {
     return {
       success: false,
       error: "Either Customer ID or Email is required",
@@ -60,18 +67,23 @@ export async function getCustomerStep(
     let customer: StripeCustomerResponse | null = null;
 
     if (input.customerId) {
-      const response = await fetch(`${STRIPE_API_URL}/customers/${input.customerId}`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const response = await fetch(
+        `${STRIPE_API_URL}/customers/${input.customerId}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        }
+      );
 
       if (!response.ok) {
         const errorData = (await response.json()) as StripeErrorResponse;
         return {
           success: false,
-          error: errorData.error?.message || `HTTP ${response.status}: Failed to get customer`,
+          error:
+            errorData.error?.message ||
+            `HTTP ${response.status}: Failed to get customer`,
         };
       }
 
@@ -81,18 +93,23 @@ export async function getCustomerStep(
       params.append("email", input.email);
       params.append("limit", "1");
 
-      const response = await fetch(`${STRIPE_API_URL}/customers?${params.toString()}`, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-        },
-      });
+      const response = await fetch(
+        `${STRIPE_API_URL}/customers?${params.toString()}`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        }
+      );
 
       if (!response.ok) {
         const errorData = (await response.json()) as StripeErrorResponse;
         return {
           success: false,
-          error: errorData.error?.message || `HTTP ${response.status}: Failed to search customers`,
+          error:
+            errorData.error?.message ||
+            `HTTP ${response.status}: Failed to search customers`,
         };
       }
 

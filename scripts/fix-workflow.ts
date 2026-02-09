@@ -1,22 +1,23 @@
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { sql } from "drizzle-orm";
 
-const DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+const DATABASE_URL =
+  process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 const WORKFLOW_ID = process.argv[2] || "3hoeloryk2wtx2so3taxj";
 
 // Activity name to function slug mapping
 const ACTIVITY_MAPPINGS: Record<string, string> = {
-  "generate_text": "openai/generate-text",
+  generate_text: "openai/generate-text",
   "generate-text": "openai/generate-text",
-  "generate_image": "openai/generate-image",
+  generate_image: "openai/generate-image",
   "generate-image": "openai/generate-image",
-  "send_email": "resend/send-email",
+  send_email: "resend/send-email",
   "send-email": "resend/send-email",
-  "send_message": "slack/send-message",
+  send_message: "slack/send-message",
   "send-message": "slack/send-message",
-  "scrape": "firecrawl/scrape",
-  "search": "firecrawl/search",
+  scrape: "firecrawl/scrape",
+  search: "firecrawl/search",
 };
 
 async function fixWorkflow() {
@@ -24,7 +25,9 @@ async function fixWorkflow() {
   const db = drizzle(queryClient);
 
   try {
-    const result = await db.execute(sql`SELECT id, name, nodes FROM workflows WHERE id = ${WORKFLOW_ID}`);
+    const result = await db.execute(
+      sql`SELECT id, name, nodes FROM workflows WHERE id = ${WORKFLOW_ID}`
+    );
 
     if (result.length === 0) {
       console.log("Workflow not found:", WORKFLOW_ID);
@@ -44,12 +47,15 @@ async function fixWorkflow() {
 
         // Skip if functionSlug already set
         if (config.functionSlug) {
-          console.log(`  Node ${node.id}: already has functionSlug = ${config.functionSlug}`);
+          console.log(
+            `  Node ${node.id}: already has functionSlug = ${config.functionSlug}`
+          );
           continue;
         }
 
         // Try to resolve from activityName or actionType
-        const activityName = config.activityName || config.actionType || node.data.label;
+        const activityName =
+          config.activityName || config.actionType || node.data.label;
 
         if (activityName) {
           // Check if it's already a slug format
@@ -57,10 +63,14 @@ async function fixWorkflow() {
 
           if (!activityName.includes("/")) {
             // Try to map it
-            functionSlug = ACTIVITY_MAPPINGS[activityName] || ACTIVITY_MAPPINGS[activityName.toLowerCase()];
+            functionSlug =
+              ACTIVITY_MAPPINGS[activityName] ||
+              ACTIVITY_MAPPINGS[activityName.toLowerCase()];
 
             if (!functionSlug) {
-              console.log(`  Node ${node.id}: WARNING - no mapping for "${activityName}"`);
+              console.log(
+                `  Node ${node.id}: WARNING - no mapping for "${activityName}"`
+              );
               continue;
             }
           }
@@ -70,7 +80,9 @@ async function fixWorkflow() {
             functionSlug,
           };
           changed = true;
-          console.log(`  Node ${node.id}: set functionSlug = ${functionSlug} (from ${activityName})`);
+          console.log(
+            `  Node ${node.id}: set functionSlug = ${functionSlug} (from ${activityName})`
+          );
         }
       }
     }
@@ -85,7 +97,6 @@ async function fixWorkflow() {
     } else {
       console.log("\nNo changes needed.");
     }
-
   } finally {
     await queryClient.end();
   }

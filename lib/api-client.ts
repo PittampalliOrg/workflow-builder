@@ -3,13 +3,13 @@
  * Replaces server actions with API endpoints
  */
 
-import {
-  type AppConnectionScope,
-  type AppConnectionStatus,
-  type AppConnectionValue,
-  type AppConnectionWithoutSensitiveData,
-  type UpdateConnectionValueRequestBody,
-  type UpsertAppConnectionRequestBody,
+import type {
+  AppConnectionScope,
+  AppConnectionStatus,
+  AppConnectionValue,
+  AppConnectionWithoutSensitiveData,
+  UpdateConnectionValueRequestBody,
+  UpsertAppConnectionRequestBody,
 } from "./types/app-connection";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
@@ -675,13 +675,21 @@ export const functionsApi = {
     includeDisabled?: boolean;
   }) => {
     const params = new URLSearchParams();
-    if (options?.pluginId) params.set("pluginId", options.pluginId);
-    if (options?.executionType)
+    if (options?.pluginId) {
+      params.set("pluginId", options.pluginId);
+    }
+    if (options?.executionType) {
       params.set("executionType", options.executionType);
-    if (options?.integrationType)
+    }
+    if (options?.integrationType) {
       params.set("integrationType", options.integrationType);
-    if (options?.search) params.set("search", options.search);
-    if (options?.includeDisabled) params.set("includeDisabled", "true");
+    }
+    if (options?.search) {
+      params.set("search", options.search);
+    }
+    if (options?.includeDisabled) {
+      params.set("includeDisabled", "true");
+    }
     const queryString = params.toString();
     return apiCall<{ functions: FunctionSummary[] }>(
       `/api/functions${queryString ? `?${queryString}` : ""}`
@@ -821,8 +829,12 @@ export const pieceApi = {
     limit?: number;
   }) => {
     const search = new URLSearchParams();
-    if (params?.searchQuery) search.set("searchQuery", params.searchQuery);
-    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.searchQuery) {
+      search.set("searchQuery", params.searchQuery);
+    }
+    if (params?.limit) {
+      search.set("limit", String(params.limit));
+    }
     if (params?.categories) {
       for (const category of params.categories) {
         search.append("categories", category);
@@ -853,15 +865,23 @@ export const appConnectionApi = {
     const search = new URLSearchParams();
     search.set("projectId", query?.projectId ?? "default");
 
-    if (query?.pieceName) search.set("pieceName", query.pieceName);
-    if (query?.displayName) search.set("displayName", query.displayName);
-    if (query?.scope) search.set("scope", query.scope);
+    if (query?.pieceName) {
+      search.set("pieceName", query.pieceName);
+    }
+    if (query?.displayName) {
+      search.set("displayName", query.displayName);
+    }
+    if (query?.scope) {
+      search.set("scope", query.scope);
+    }
     if (query?.status) {
       for (const status of query.status) {
         search.append("status", status);
       }
     }
-    if (query?.limit) search.set("limit", String(query.limit));
+    if (query?.limit) {
+      search.set("limit", String(query.limit));
+    }
 
     return apiCall<{
       data: AppConnection[];
@@ -963,12 +983,63 @@ const oauthAppApi = {
     ),
 };
 
+// MCP Server API (Activepieces-parity hosted MCP server per project)
+export type McpServerStatus = "ENABLED" | "DISABLED";
+
+export type McpInputProperty = {
+  name: string;
+  type: "TEXT" | "NUMBER" | "BOOLEAN" | "DATE" | "ARRAY" | "OBJECT";
+  required: boolean;
+  description?: string;
+};
+
+export type PopulatedMcpWorkflow = {
+  id: string;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  trigger: {
+    toolName: string;
+    toolDescription: string;
+    inputSchema: McpInputProperty[];
+    returnsResponse: boolean;
+  };
+};
+
+export type PopulatedMcpServer = {
+  id: string;
+  projectId: string;
+  status: McpServerStatus;
+  token: string;
+  flows: PopulatedMcpWorkflow[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+const mcpServerApi = {
+  get: (projectId: string) =>
+    apiCall<PopulatedMcpServer>(`/api/v1/projects/${projectId}/mcp-server`),
+
+  update: (projectId: string, body: { status: McpServerStatus }) =>
+    apiCall<PopulatedMcpServer>(`/api/v1/projects/${projectId}/mcp-server`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  rotate: (projectId: string) =>
+    apiCall<PopulatedMcpServer>(
+      `/api/v1/projects/${projectId}/mcp-server/rotate`,
+      { method: "POST" }
+    ),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
   appConnection: appConnectionApi,
   dapr: daprApi,
   functions: functionsApi,
+  mcpServer: mcpServerApi,
   oauthApp: oauthAppApi,
   piece: pieceApi,
   secrets: secretsApi,

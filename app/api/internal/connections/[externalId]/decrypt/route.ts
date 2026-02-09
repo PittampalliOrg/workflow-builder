@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { getAppConnectionByExternalIdInternal } from "@/lib/db/app-connections";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
+import { getAppConnectionByExternalIdInternal } from "@/lib/db/app-connections";
 
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN;
 

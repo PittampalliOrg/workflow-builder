@@ -4,14 +4,25 @@
  * A scale-to-zero function that handles Stripe customer operations.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { createCustomerStep, type CreateCustomerInput } from "./steps/create-customer.js";
-import { getCustomerStep, type GetCustomerInput } from "./steps/get-customer.js";
-import type { ExecuteRequest, ExecuteResponse, StripeCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import {
+  type CreateCustomerInput,
+  createCustomerStep,
+} from "./steps/create-customer.js";
+import {
+  type GetCustomerInput,
+  getCustomerStep,
+} from "./steps/get-customer.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  StripeCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -46,17 +57,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -75,7 +86,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-stripe] Received request for step: ${body.step}`);
-    console.log(`[fn-stripe] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-stripe] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: StripeCredentials = {
       STRIPE_SECRET_KEY: body.credentials?.STRIPE_SECRET_KEY,
@@ -86,17 +99,27 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "create-customer":
-        const createResult = await createCustomerStep(input as CreateCustomerInput, credentials);
+      case "create-customer": {
+        const createResult = await createCustomerStep(
+          input as CreateCustomerInput,
+          credentials
+        );
         if (createResult.success) {
-          result = { success: true, data: { id: createResult.id, email: createResult.email } };
+          result = {
+            success: true,
+            data: { id: createResult.id, email: createResult.email },
+          };
         } else {
           result = { success: false, error: createResult.error };
         }
         break;
+      }
 
-      case "get-customer":
-        const getResult = await getCustomerStep(input as GetCustomerInput, credentials);
+      case "get-customer": {
+        const getResult = await getCustomerStep(
+          input as GetCustomerInput,
+          credentials
+        );
         if (getResult.success) {
           result = {
             success: true,
@@ -111,6 +134,7 @@ async function main() {
           result = { success: false, error: getResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -127,7 +151,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-stripe] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-stripe] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

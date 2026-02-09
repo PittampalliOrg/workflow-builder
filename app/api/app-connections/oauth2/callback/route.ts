@@ -26,7 +26,11 @@ export async function GET(request: Request) {
     ? { error, errorDescription, state }
     : code
       ? { code, state }
-      : { error: "missing_code", errorDescription: "No authorization code received", state };
+      : {
+          error: "missing_code",
+          errorDescription: "No authorization code received",
+          state,
+        };
 
   const safePayload = JSON.stringify(JSON.stringify(payload));
   const safeStorageKey = JSON.stringify(

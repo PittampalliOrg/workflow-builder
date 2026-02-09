@@ -15,11 +15,11 @@ function daprUrl(path: string): string {
   return `http://${DAPR_HOST}:${DAPR_HTTP_PORT}${path}`;
 }
 
-interface ConfigurationItem {
+type ConfigurationItem = {
   value: string;
   version?: string;
   metadata?: Record<string, string>;
-}
+};
 
 /**
  * Get configuration values from Dapr Configuration Store
@@ -48,12 +48,14 @@ async function getConfiguration(
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Configuration get failed: ${response.status} - ${errorText}`);
+      throw new Error(
+        `Configuration get failed: ${response.status} - ${errorText}`
+      );
     }
 
     return (await response.json()) as Record<string, ConfigurationItem>;
   } catch (error) {
-    console.error(`[Config] Failed to get configuration from Dapr:`, error);
+    console.error("[Config] Failed to get configuration from Dapr:", error);
     throw error;
   }
 }
@@ -83,7 +85,8 @@ export const configRoutes: FastifyPluginAsync = async (
 
       return reply.status(200).send(result);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to get configuration";
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get configuration";
       console.error("[Config] Error fetching all configs:", errorMessage);
 
       // Return empty object on error (client will use env var fallbacks)
@@ -131,8 +134,12 @@ export const configRoutes: FastifyPluginAsync = async (
         key,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to get configuration";
-      console.error(`[Config] Error fetching config ${request.params.key}:`, errorMessage);
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to get configuration";
+      console.error(
+        `[Config] Error fetching config ${request.params.key}:`,
+        errorMessage
+      );
 
       // Return 404 on error (client will use env var fallbacks)
       return reply.status(404).send({
@@ -155,7 +162,8 @@ export const configRoutes: FastifyPluginAsync = async (
         label: CONFIG_LABEL,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
       return reply.status(503).send({
         status: "unavailable",
         store: CONFIG_STORE,

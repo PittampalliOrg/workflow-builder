@@ -42,7 +42,8 @@ export async function createCustomerStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "STRIPE_SECRET_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "STRIPE_SECRET_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
@@ -61,7 +62,10 @@ export async function createCustomerStep(
     }
     if (input.metadata) {
       try {
-        const metadataObj = JSON.parse(input.metadata) as Record<string, string>;
+        const metadataObj = JSON.parse(input.metadata) as Record<
+          string,
+          string
+        >;
         for (const [key, value] of Object.entries(metadataObj)) {
           params.append(`metadata[${key}]`, String(value));
         }
@@ -86,7 +90,9 @@ export async function createCustomerStep(
       const errorData = (await response.json()) as StripeErrorResponse;
       return {
         success: false,
-        error: errorData.error?.message || `HTTP ${response.status}: Failed to create customer`,
+        error:
+          errorData.error?.message ||
+          `HTTP ${response.status}: Failed to create customer`,
       };
     }
 

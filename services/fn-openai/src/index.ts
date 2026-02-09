@@ -4,14 +4,25 @@
  * A scale-to-zero function that handles OpenAI text and image generation.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { generateTextStep, type GenerateTextInput } from "./steps/generate-text.js";
-import { generateImageStep, type GenerateImageInput } from "./steps/generate-image.js";
-import type { ExecuteRequest, ExecuteResponse, OpenAICredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import {
+  type GenerateImageInput,
+  generateImageStep,
+} from "./steps/generate-image.js";
+import {
+  type GenerateTextInput,
+  generateTextStep,
+} from "./steps/generate-text.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  OpenAICredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Request schema
@@ -34,7 +45,9 @@ const ExecuteRequestSchema = z.object({
 });
 
 // Normalize input field names (handle aliases)
-function normalizeInput(input: Record<string, unknown>): Record<string, unknown> {
+function normalizeInput(
+  input: Record<string, unknown>
+): Record<string, unknown> {
   const normalized = { ...input };
 
   // Handle prompt aliases
@@ -71,17 +84,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -101,7 +114,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-openai] Received request for step: ${body.step}`);
-    console.log(`[fn-openai] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-openai] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     // Extract credentials
     const credentials: OpenAICredentials = {
@@ -109,12 +124,14 @@ async function main() {
     };
 
     // Normalize input
-    const normalizedInput = normalizeInput(body.input as Record<string, unknown>);
+    const normalizedInput = normalizeInput(
+      body.input as Record<string, unknown>
+    );
 
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "generate-text":
+      case "generate-text": {
         const textResult = await generateTextStep(
           normalizedInput as GenerateTextInput,
           credentials
@@ -128,8 +145,9 @@ async function main() {
           result = { success: false, error: textResult.error };
         }
         break;
+      }
 
-      case "generate-image":
+      case "generate-image": {
         const imageResult = await generateImageStep(
           normalizedInput as GenerateImageInput,
           credentials
@@ -140,6 +158,7 @@ async function main() {
           result = { success: false, error: imageResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -156,7 +175,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-openai] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-openai] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

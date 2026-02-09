@@ -61,7 +61,8 @@ export async function generateTextStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "OPENAI_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "OPENAI_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 

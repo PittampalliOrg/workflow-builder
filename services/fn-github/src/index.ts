@@ -4,15 +4,23 @@
  * A scale-to-zero function that handles GitHub operations.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { createIssueStep, type CreateIssueInput } from "./steps/create-issue.js";
-import { listIssuesStep, type ListIssuesInput } from "./steps/list-issues.js";
-import { getIssueStep, type GetIssueInput } from "./steps/get-issue.js";
-import type { ExecuteRequest, ExecuteResponse, GitHubCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import {
+  type CreateIssueInput,
+  createIssueStep,
+} from "./steps/create-issue.js";
+import { type GetIssueInput, getIssueStep } from "./steps/get-issue.js";
+import { type ListIssuesInput, listIssuesStep } from "./steps/list-issues.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  GitHubCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -47,17 +55,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -76,7 +84,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-github] Received request for step: ${body.step}`);
-    console.log(`[fn-github] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-github] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: GitHubCredentials = {
       GITHUB_TOKEN: body.credentials?.GITHUB_TOKEN,
@@ -87,8 +97,11 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "create-issue":
-        const createResult = await createIssueStep(input as CreateIssueInput, credentials);
+      case "create-issue": {
+        const createResult = await createIssueStep(
+          input as CreateIssueInput,
+          credentials
+        );
         if (createResult.success) {
           result = {
             success: true,
@@ -104,9 +117,13 @@ async function main() {
           result = { success: false, error: createResult.error };
         }
         break;
+      }
 
-      case "list-issues":
-        const listResult = await listIssuesStep(input as ListIssuesInput, credentials);
+      case "list-issues": {
+        const listResult = await listIssuesStep(
+          input as ListIssuesInput,
+          credentials
+        );
         if (listResult.success) {
           result = {
             success: true,
@@ -116,9 +133,13 @@ async function main() {
           result = { success: false, error: listResult.error };
         }
         break;
+      }
 
-      case "get-issue":
-        const getResult = await getIssueStep(input as GetIssueInput, credentials);
+      case "get-issue": {
+        const getResult = await getIssueStep(
+          input as GetIssueInput,
+          credentials
+        );
         if (getResult.success) {
           result = {
             success: true,
@@ -142,6 +163,7 @@ async function main() {
           result = { success: false, error: getResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -158,7 +180,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-github] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-github] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

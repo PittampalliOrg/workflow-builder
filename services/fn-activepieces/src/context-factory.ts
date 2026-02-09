@@ -5,32 +5,35 @@
  * Most AP actions only use `auth` and `propsValue` — the rest are
  * stubbed out with no-ops.
  */
-import type { ActionContext, StoreScope } from '@activepieces/pieces-framework';
+import type { ActionContext, StoreScope } from "@activepieces/pieces-framework";
 
-interface ContextOptions {
+type ContextOptions = {
   auth: unknown;
   propsValue: Record<string, unknown>;
   executionId: string;
   actionName: string;
-}
+};
 
-export interface PauseCaptured {
-  type: 'DELAY' | 'WEBHOOK';
+export type PauseCaptured = {
+  type: "DELAY" | "WEBHOOK";
   resumeDateTime?: string;
   /** Pre-computed delay in seconds (for DELAY type). Avoids datetime.now() in Dapr workflow. */
   delaySeconds?: number;
   requestId?: string;
   response?: unknown;
-}
+};
 
 const noop = () => {};
-const asyncNoop = async () => {};
+const _asyncNoop = async () => {};
 
 /**
  * Build a minimal ActionContext that satisfies the AP framework interface.
  * Returns both the context and a pauseRef that captures any pause requests.
  */
-export function buildActionContext(options: ContextOptions): { context: ActionContext; pauseRef: { value: PauseCaptured | null } } {
+export function buildActionContext(options: ContextOptions): {
+  context: ActionContext;
+  pauseRef: { value: PauseCaptured | null };
+} {
   const { auth, propsValue, executionId, actionName } = options;
 
   const pauseRef: { value: PauseCaptured | null } = { value: null };
@@ -38,7 +41,7 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
   const context = {
     auth,
     propsValue,
-    executionType: 'BEGIN' as const,
+    executionType: "BEGIN" as const,
 
     // Store — no-op stubs (our 25 pieces don't use persistent store)
     store: {
@@ -50,23 +53,30 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
     // Files — no-op stub
     files: {
       write: async (_params: { fileName: string; data: Buffer }) =>
-        'https://stub-file-url',
+        "https://stub-file-url",
     },
 
     // Server info — stubs
     server: {
-      apiUrl: '',
-      publicUrl: '',
-      token: '',
+      apiUrl: "",
+      publicUrl: "",
+      token: "",
     },
 
     // Run control — pause captures metadata for Dapr handling
     run: {
       id: executionId,
-      stop: noop as unknown as ActionContext['run']['stop'],
-      pause: ((req: { pauseMetadata: { type: string; resumeDateTime?: string; requestId?: string; response?: unknown } }) => {
+      stop: noop as unknown as ActionContext["run"]["stop"],
+      pause: ((req: {
+        pauseMetadata: {
+          type: string;
+          resumeDateTime?: string;
+          requestId?: string;
+          response?: unknown;
+        };
+      }) => {
         const captured: PauseCaptured = {
-          type: req.pauseMetadata.type as 'DELAY' | 'WEBHOOK',
+          type: req.pauseMetadata.type as "DELAY" | "WEBHOOK",
           resumeDateTime: req.pauseMetadata.resumeDateTime,
           requestId: req.pauseMetadata.requestId,
           response: req.pauseMetadata.response,
@@ -74,19 +84,22 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
 
         // Pre-compute delaySeconds for DELAY pauses so the Dapr workflow
         // doesn't need to call datetime.now() (which breaks replay).
-        if (captured.type === 'DELAY' && captured.resumeDateTime) {
+        if (captured.type === "DELAY" && captured.resumeDateTime) {
           try {
             const resumeMs = new Date(captured.resumeDateTime).getTime();
             const nowMs = Date.now();
-            captured.delaySeconds = Math.max(0, Math.round((resumeMs - nowMs) / 1000));
+            captured.delaySeconds = Math.max(
+              0,
+              Math.round((resumeMs - nowMs) / 1000)
+            );
           } catch {
             captured.delaySeconds = 0;
           }
         }
 
         pauseRef.value = captured;
-      }) as unknown as ActionContext['run']['pause'],
-      respond: noop as unknown as ActionContext['run']['respond'],
+      }) as unknown as ActionContext["run"]["pause"],
+      respond: noop as unknown as ActionContext["run"]["respond"],
     },
 
     // Step info
@@ -96,7 +109,7 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
 
     // Project — stubs
     project: {
-      id: 'default',
+      id: "default",
       externalId: async () => undefined,
     },
 
@@ -119,8 +132,8 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
     flows: {
       list: async () => ({ data: [], next: null, previous: null }),
       current: {
-        id: 'stub',
-        version: { id: 'stub' },
+        id: "stub",
+        version: { id: "stub" },
       },
     },
 
@@ -130,7 +143,7 @@ export function buildActionContext(options: ContextOptions): { context: ActionCo
     },
 
     // Resume URL — stub
-    generateResumeUrl: () => '',
+    generateResumeUrl: () => "",
   } as unknown as ActionContext;
 
   return { context, pauseRef };

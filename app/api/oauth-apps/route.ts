@@ -1,5 +1,5 @@
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { eq, and } from "drizzle-orm";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { platformOauthApps } from "@/lib/db/schema";
@@ -8,7 +8,9 @@ import { encryptString } from "@/lib/security/encryption";
 
 /** Ensure piece name has full AP package prefix */
 function toFullPieceName(name: string): string {
-  if (name.startsWith("@activepieces/piece-")) return name;
+  if (name.startsWith("@activepieces/piece-")) {
+    return name;
+  }
   return `@activepieces/piece-${name}`;
 }
 
@@ -49,7 +51,7 @@ export async function POST(request: Request) {
   const { clientId, clientSecret } = body;
   const pieceName = body.pieceName ? toFullPieceName(body.pieceName) : null;
 
-  if (!pieceName || !clientId || !clientSecret) {
+  if (!(pieceName && clientId && clientSecret)) {
     return NextResponse.json(
       { error: "pieceName, clientId, and clientSecret are required" },
       { status: 400 }
@@ -71,7 +73,12 @@ export async function POST(request: Request) {
     )
     .limit(1);
 
-  let resultApp;
+  let resultApp: {
+    pieceName: string;
+    clientId: string;
+    createdAt: Date;
+    updatedAt: Date;
+  };
 
   if (existing.length > 0) {
     // Update

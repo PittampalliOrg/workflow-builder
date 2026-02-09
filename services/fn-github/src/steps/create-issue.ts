@@ -23,12 +23,24 @@ export type CreateIssueInput = {
 };
 
 export type CreateIssueResult =
-  | { success: true; id: number; number: number; title: string; url: string; state: string }
+  | {
+      success: true;
+      id: number;
+      number: number;
+      title: string;
+      url: string;
+      state: string;
+    }
   | { success: false; error: string };
 
 function parseCommaSeparated(value?: string): string[] {
-  if (!value) return [];
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
+  if (!value) {
+    return [];
+  }
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 export async function createIssueStep(
@@ -40,7 +52,8 @@ export async function createIssueStep(
   if (!token) {
     return {
       success: false,
-      error: "GITHUB_TOKEN is not configured. Please add it in Project Integrations.",
+      error:
+        "GITHUB_TOKEN is not configured. Please add it in Project Integrations.",
     };
   }
 

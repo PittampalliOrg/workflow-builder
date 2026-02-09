@@ -7,8 +7,8 @@
  * Styled to match Diagrid's cyan/teal rounded rectangle design.
  */
 
+import { Handle, type NodeProps, Position } from "@xyflow/react";
 import { memo } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
 import type { ExecutionFlowNode as ExecutionFlowNodeType } from "@/lib/types/execution-graph";
 import { cn } from "@/lib/utils";
 
@@ -33,25 +33,26 @@ function ExecutionFlowNodeComponent({
       {/* Target handle (top) - for vertical layout */}
       {showTargetHandle && (
         <Handle
-          type="target"
-          position={Position.Top}
           className="!w-2 !h-2 !bg-teal-400 !border-0 !-top-1"
+          position={Position.Top}
+          type="target"
         />
       )}
 
       {/* Node content - Diagrid style */}
       <div
         className={cn(
-          "relative min-w-[200px] px-6 py-3 rounded-full border-2 transition-all duration-200",
+          "relative min-w-[200px] rounded-full border-2 px-6 py-3 transition-all duration-200",
           "cursor-pointer text-center",
-          selected && "ring-2 ring-teal-400 ring-offset-2 ring-offset-background"
+          selected &&
+            "ring-2 ring-teal-400 ring-offset-2 ring-offset-background"
         )}
         style={{
           backgroundColor: bgColor,
-          borderColor: borderColor,
+          borderColor,
         }}
       >
-        <span className="text-sm font-medium text-white">
+        <span className="font-medium text-sm text-white">
           {data.name || data.eventType || "Event"}
         </span>
       </div>
@@ -59,9 +60,9 @@ function ExecutionFlowNodeComponent({
       {/* Source handle (bottom) - for vertical layout */}
       {showSourceHandle && (
         <Handle
-          type="source"
-          position={Position.Bottom}
           className="!w-2 !h-2 !bg-teal-400 !border-0 !-bottom-1"
+          position={Position.Bottom}
+          type="source"
         />
       )}
     </>

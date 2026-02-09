@@ -1,8 +1,9 @@
 "use client";
 
+import { Check, Clock, Pause, X } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Check, X, Clock, Pause } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -18,15 +19,18 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
-  getStatusVariant,
-  getPhaseLabel,
+  calculateDuration,
+  formatAbsoluteTimestamp,
+  formatTimestamp,
+} from "@/lib/transforms/workflow-ui";
+import {
   getPhaseColor,
+  getPhaseLabel,
+  getStatusVariant,
   type WorkflowListItem,
   type WorkflowUIStatus,
 } from "@/lib/types/workflow-ui";
-import { formatTimestamp, formatAbsoluteTimestamp, calculateDuration } from "@/lib/transforms/workflow-ui";
 import { cn } from "@/lib/utils";
-import { Progress } from "@/components/ui/progress";
 
 // Status icon component
 function StatusIcon({ status }: { status: WorkflowUIStatus }) {
@@ -64,10 +68,10 @@ function getStatusBadgeClasses(status: WorkflowUIStatus): string {
   }
 }
 
-interface DaprWorkflowTableProps {
+type DaprWorkflowTableProps = {
   workflows: WorkflowListItem[];
   isLoading?: boolean;
-}
+};
 
 function WorkflowTableSkeleton() {
   return (
@@ -84,8 +88,8 @@ function WorkflowTableSkeleton() {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {Array.from({ length: 5 }).map((_, i) => (
-          <TableRow key={i}>
+        {["1", "2", "3", "4", "5"].map((k) => (
+          <TableRow key={k}>
             <TableCell>
               <Skeleton className="h-5 w-20" />
             </TableCell>
@@ -129,15 +133,15 @@ function WorkflowRow({ workflow }: { workflow: WorkflowListItem }) {
   return (
     <TableRow
       className={cn(
-        "border-b border-gray-700",
+        "border-gray-700 border-b",
         workflow.instanceId ? "cursor-pointer hover:bg-[#252c3d]" : "opacity-50"
       )}
       onClick={handleClick}
     >
       <TableCell>
         <Badge
-          variant={getStatusVariant(workflow.status)}
           className={cn("gap-1.5", getStatusBadgeClasses(workflow.status))}
+          variant={getStatusVariant(workflow.status)}
         >
           <StatusIcon status={workflow.status} />
           {workflow.status}
@@ -146,41 +150,59 @@ function WorkflowRow({ workflow }: { workflow: WorkflowListItem }) {
       <TableCell>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="font-mono text-sm text-white cursor-help">
-              {workflow.instanceId ? `${workflow.instanceId.substring(0, 20)}${workflow.instanceId.length > 20 ? "..." : ""}` : "-"}
+            <span className="cursor-help font-mono text-sm text-white">
+              {workflow.instanceId
+                ? `${workflow.instanceId.substring(0, 20)}${workflow.instanceId.length > 20 ? "..." : ""}`
+                : "-"}
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top" className="font-mono text-xs">
+          <TooltipContent className="font-mono text-xs" side="top">
             {workflow.instanceId || "Unknown"}
           </TooltipContent>
         </Tooltip>
       </TableCell>
-      <TableCell className="text-gray-400">
-        {workflow.workflowType}
-      </TableCell>
+      <TableCell className="text-gray-400">{workflow.workflowType}</TableCell>
       <TableCell className="text-gray-400">{workflow.appId}</TableCell>
       <TableCell>
         {customStatus?.currentTask ? (
           <div className="flex flex-col gap-1">
-            <span className="text-sm text-blue-400 truncate max-w-[200px]" title={customStatus.currentTask}>
+            <span
+              className="max-w-[200px] truncate text-blue-400 text-sm"
+              title={customStatus.currentTask}
+            >
               {customStatus.currentTask}
             </span>
             {customStatus.progress != null && workflow.status === "RUNNING" && (
               <div className="flex items-center gap-2">
-                <Progress value={customStatus.progress} className="h-1.5 w-16" />
-                <span className="text-xs text-gray-500">{customStatus.progress}%</span>
+                <Progress
+                  className="h-1.5 w-16"
+                  value={customStatus.progress}
+                />
+                <span className="text-gray-500 text-xs">
+                  {customStatus.progress}%
+                </span>
               </div>
             )}
           </div>
         ) : hasPhase ? (
           <div className="flex flex-col gap-1">
-            <span className={cn("text-sm capitalize", getPhaseColor(customStatus.phase))}>
+            <span
+              className={cn(
+                "text-sm capitalize",
+                getPhaseColor(customStatus.phase)
+              )}
+            >
               {getPhaseLabel(customStatus.phase)}
             </span>
             {customStatus.progress != null && workflow.status === "RUNNING" && (
               <div className="flex items-center gap-2">
-                <Progress value={customStatus.progress} className="h-1.5 w-16" />
-                <span className="text-xs text-gray-500">{customStatus.progress}%</span>
+                <Progress
+                  className="h-1.5 w-16"
+                  value={customStatus.progress}
+                />
+                <span className="text-gray-500 text-xs">
+                  {customStatus.progress}%
+                </span>
               </div>
             )}
           </div>
@@ -191,11 +213,11 @@ function WorkflowRow({ workflow }: { workflow: WorkflowListItem }) {
       <TableCell>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="text-gray-400 cursor-help">
+            <span className="cursor-help text-gray-400">
               {formatTimestamp(workflow.startTime)}
             </span>
           </TooltipTrigger>
-          <TooltipContent side="top" className="text-xs">
+          <TooltipContent className="text-xs" side="top">
             {formatAbsoluteTimestamp(workflow.startTime)}
           </TooltipContent>
         </Tooltip>
@@ -204,23 +226,24 @@ function WorkflowRow({ workflow }: { workflow: WorkflowListItem }) {
         {workflow.status === "RUNNING" ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="text-amber-400 cursor-help font-medium">
+              <span className="cursor-help font-medium text-amber-400">
                 {calculateDuration(workflow.startTime) || "-"}
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
+            <TooltipContent className="text-xs" side="top">
               Running for {calculateDuration(workflow.startTime)}
             </TooltipContent>
           </Tooltip>
         ) : workflow.endTime ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <span className="text-gray-400 cursor-help">
+              <span className="cursor-help text-gray-400">
                 {calculateDuration(workflow.startTime, workflow.endTime) || "-"}
               </span>
             </TooltipTrigger>
-            <TooltipContent side="top" className="text-xs">
-              Completed in {calculateDuration(workflow.startTime, workflow.endTime)}
+            <TooltipContent className="text-xs" side="top">
+              Completed in{" "}
+              {calculateDuration(workflow.startTime, workflow.endTime)}
             </TooltipContent>
           </Tooltip>
         ) : (
@@ -241,29 +264,40 @@ export function DaprWorkflowTable({
 
   if (!workflows.length) {
     return (
-      <div className="text-center py-12 text-gray-400">
+      <div className="py-12 text-center text-gray-400">
         No workflow executions found
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-gray-700 bg-[#1a1f2e] overflow-hidden">
+    <div className="overflow-hidden rounded-lg border border-gray-700 bg-[#1a1f2e]">
       <Table>
         <TableHeader>
-          <TableRow className="border-b border-gray-700 bg-[#1e2433] hover:bg-[#1e2433]">
-            <TableHead className="w-32 text-gray-400 font-medium">Status</TableHead>
-            <TableHead className="text-gray-400 font-medium">Instance ID</TableHead>
-            <TableHead className="text-gray-400 font-medium">Type</TableHead>
-            <TableHead className="text-gray-400 font-medium">App ID</TableHead>
-            <TableHead className="text-gray-400 font-medium">Phase</TableHead>
-            <TableHead className="text-gray-400 font-medium">Start Time</TableHead>
-            <TableHead className="text-gray-400 font-medium">Execution Time</TableHead>
+          <TableRow className="border-gray-700 border-b bg-[#1e2433] hover:bg-[#1e2433]">
+            <TableHead className="w-32 font-medium text-gray-400">
+              Status
+            </TableHead>
+            <TableHead className="font-medium text-gray-400">
+              Instance ID
+            </TableHead>
+            <TableHead className="font-medium text-gray-400">Type</TableHead>
+            <TableHead className="font-medium text-gray-400">App ID</TableHead>
+            <TableHead className="font-medium text-gray-400">Phase</TableHead>
+            <TableHead className="font-medium text-gray-400">
+              Start Time
+            </TableHead>
+            <TableHead className="font-medium text-gray-400">
+              Execution Time
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
           {workflows.map((workflow, index) => (
-            <WorkflowRow key={workflow.instanceId || `workflow-${index}`} workflow={workflow} />
+            <WorkflowRow
+              key={workflow.instanceId || `workflow-${index}`}
+              workflow={workflow}
+            />
           ))}
         </TableBody>
       </Table>

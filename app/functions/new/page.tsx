@@ -69,7 +69,9 @@ export default function NewFunctionPage() {
   };
 
   const generateSlug = (n: string, p: string): string => {
-    if (!n) return "";
+    if (!n) {
+      return "";
+    }
     const slugName = n
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
@@ -80,7 +82,7 @@ export default function NewFunctionPage() {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    if (!name || !functionSlug || !pluginId) {
+    if (!(name && functionSlug && pluginId)) {
       toast.error("Please fill in all required fields");
       return;
     }
@@ -109,7 +111,8 @@ export default function NewFunctionPage() {
         // OCI fields
         imageRef: executionType === "oci" ? imageRef : undefined,
         command: executionType === "oci" && command ? command : undefined,
-        workingDir: executionType === "oci" && workingDir ? workingDir : undefined,
+        workingDir:
+          executionType === "oci" && workingDir ? workingDir : undefined,
         // HTTP fields
         webhookUrl: executionType === "http" ? webhookUrl : undefined,
         webhookMethod: executionType === "http" ? webhookMethod : undefined,
@@ -133,12 +136,12 @@ export default function NewFunctionPage() {
     <div className="container mx-auto max-w-2xl py-8">
       <div className="mb-8 flex items-center gap-4">
         <Link href="/functions">
-          <Button variant="ghost" size="icon">
+          <Button size="icon" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>
         <div>
-          <h1 className="text-2xl font-bold">Create Function</h1>
+          <h1 className="font-bold text-2xl">Create Function</h1>
           <p className="text-muted-foreground">
             Define a custom function for workflow execution
           </p>
@@ -158,10 +161,10 @@ export default function NewFunctionPage() {
               <Label htmlFor="name">Name *</Label>
               <Input
                 id="name"
-                value={name}
                 onChange={(e) => handleNameChange(e.target.value)}
                 placeholder="My Custom Function"
                 required
+                value={name}
               />
             </div>
 
@@ -169,12 +172,12 @@ export default function NewFunctionPage() {
               <Label htmlFor="pluginId">Plugin ID *</Label>
               <Input
                 id="pluginId"
-                value={pluginId}
                 onChange={(e) => handlePluginChange(e.target.value)}
                 placeholder="custom"
                 required
+                value={pluginId}
               />
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 Group similar functions under the same plugin ID
               </p>
             </div>
@@ -183,13 +186,13 @@ export default function NewFunctionPage() {
               <Label htmlFor="slug">Function Slug *</Label>
               <Input
                 id="slug"
-                value={functionSlug}
                 onChange={(e) => setFunctionSlug(e.target.value)}
+                pattern="^[a-z0-9]+\/[a-z0-9-]+$"
                 placeholder="custom/my-function"
                 required
-                pattern="^[a-z0-9]+\/[a-z0-9-]+$"
+                value={functionSlug}
               />
-              <p className="text-xs text-muted-foreground">
+              <p className="text-muted-foreground text-xs">
                 Unique identifier in format: plugin/function-name
               </p>
             </div>
@@ -198,10 +201,10 @@ export default function NewFunctionPage() {
               <Label htmlFor="description">Description</Label>
               <Textarea
                 id="description"
-                value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="What does this function do?"
                 rows={3}
+                value={description}
               />
             </div>
 
@@ -210,22 +213,22 @@ export default function NewFunctionPage() {
                 <Label htmlFor="timeout">Timeout (seconds)</Label>
                 <Input
                   id="timeout"
+                  max={3600}
+                  min={1}
+                  onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
                   type="number"
                   value={timeoutSeconds}
-                  onChange={(e) => setTimeoutSeconds(Number(e.target.value))}
-                  min={1}
-                  max={3600}
                 />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="integrationType">Integration Type</Label>
                 <Input
                   id="integrationType"
-                  value={integrationType}
                   onChange={(e) => setIntegrationType(e.target.value)}
                   placeholder="e.g., openai, slack"
+                  value={integrationType}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground text-xs">
                   For credential lookup
                 </p>
               </div>
@@ -242,30 +245,30 @@ export default function NewFunctionPage() {
           </CardHeader>
           <CardContent>
             <Tabs
-              value={executionType}
               onValueChange={(v) => setExecutionType(v as ExecutionType)}
+              value={executionType}
             >
               <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="oci" className="gap-2">
+                <TabsTrigger className="gap-2" value="oci">
                   <Box className="h-4 w-4" />
                   Container (OCI)
                 </TabsTrigger>
-                <TabsTrigger value="http" className="gap-2">
+                <TabsTrigger className="gap-2" value="http">
                   <Globe className="h-4 w-4" />
                   Webhook (HTTP)
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="oci" className="mt-4 space-y-4">
+              <TabsContent className="mt-4 space-y-4" value="oci">
                 <div className="space-y-2">
                   <Label htmlFor="imageRef">Container Image *</Label>
                   <Input
                     id="imageRef"
-                    value={imageRef}
                     onChange={(e) => setImageRef(e.target.value)}
                     placeholder="gitea.cnoe.localtest.me:8443/functions/my-func:v1"
+                    value={imageRef}
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     Full OCI image reference including registry and tag
                   </p>
                 </div>
@@ -274,11 +277,11 @@ export default function NewFunctionPage() {
                   <Label htmlFor="command">Command Override</Label>
                   <Input
                     id="command"
-                    value={command}
                     onChange={(e) => setCommand(e.target.value)}
                     placeholder="/bin/run-function"
+                    value={command}
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     Optional: override container entrypoint
                   </p>
                 </div>
@@ -287,27 +290,27 @@ export default function NewFunctionPage() {
                   <Label htmlFor="workingDir">Working Directory</Label>
                   <Input
                     id="workingDir"
-                    value={workingDir}
                     onChange={(e) => setWorkingDir(e.target.value)}
                     placeholder="/app"
+                    value={workingDir}
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     Optional: working directory inside container
                   </p>
                 </div>
               </TabsContent>
 
-              <TabsContent value="http" className="mt-4 space-y-4">
+              <TabsContent className="mt-4 space-y-4" value="http">
                 <div className="space-y-2">
                   <Label htmlFor="webhookUrl">Webhook URL *</Label>
                   <Input
                     id="webhookUrl"
-                    value={webhookUrl}
                     onChange={(e) => setWebhookUrl(e.target.value)}
                     placeholder="https://api.example.com/webhook"
                     type="url"
+                    value={webhookUrl}
                   />
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-muted-foreground text-xs">
                     The URL that will receive function execution requests
                   </p>
                 </div>
@@ -316,8 +319,8 @@ export default function NewFunctionPage() {
                   <div className="space-y-2">
                     <Label htmlFor="webhookMethod">HTTP Method</Label>
                     <Select
-                      value={webhookMethod}
                       onValueChange={setWebhookMethod}
+                      value={webhookMethod}
                     >
                       <SelectTrigger id="webhookMethod">
                         <SelectValue />
@@ -333,13 +336,13 @@ export default function NewFunctionPage() {
                     <Label htmlFor="webhookTimeout">Timeout (seconds)</Label>
                     <Input
                       id="webhookTimeout"
-                      type="number"
-                      value={webhookTimeoutSeconds}
+                      max={300}
+                      min={1}
                       onChange={(e) =>
                         setWebhookTimeoutSeconds(Number(e.target.value))
                       }
-                      min={1}
-                      max={300}
+                      type="number"
+                      value={webhookTimeoutSeconds}
                     />
                   </div>
                 </div>
@@ -350,11 +353,11 @@ export default function NewFunctionPage() {
 
         <div className="flex justify-end gap-4">
           <Link href="/functions">
-            <Button variant="outline" type="button">
+            <Button type="button" variant="outline">
               Cancel
             </Button>
           </Link>
-          <Button type="submit" disabled={loading}>
+          <Button disabled={loading} type="submit">
             {loading ? "Creating..." : "Create Function"}
           </Button>
         </div>

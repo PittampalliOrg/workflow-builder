@@ -23,9 +23,8 @@
 import {
   getConfiguration,
   getSecret,
-  isAvailable,
-  type ConfigurationItem,
   getSecretMap,
+  isAvailable,
 } from "./client";
 
 // ============================================================================
@@ -102,8 +101,8 @@ const K8S_SECRET_KEYS = [
 // State
 // ============================================================================
 
-let configCache: Record<string, string> = {};
-let secretCache: Record<string, string> = {};
+const configCache: Record<string, string> = {};
+const secretCache: Record<string, string> = {};
 let initialized = false;
 let initializationPromise: Promise<void> | null = null;
 let daprAvailable = false;
@@ -117,8 +116,12 @@ let daprAvailable = false;
  * Should be called during application startup
  */
 export async function initializeConfig(): Promise<void> {
-  if (initialized) return;
-  if (initializationPromise) return initializationPromise;
+  if (initialized) {
+    return;
+  }
+  if (initializationPromise) {
+    return initializationPromise;
+  }
 
   initializationPromise = doInitialize();
   return initializationPromise;
@@ -134,19 +137,26 @@ async function doInitialize(): Promise<void> {
   }
 
   if (!daprAvailable) {
-    console.log("[ConfigProvider] Dapr sidecar not available, using environment variables");
+    console.log(
+      "[ConfigProvider] Dapr sidecar not available, using environment variables"
+    );
     loadFromEnvironment();
     initialized = true;
     return;
   }
 
-  console.log("[ConfigProvider] Dapr sidecar available, loading from Dapr stores...");
+  console.log(
+    "[ConfigProvider] Dapr sidecar available, loading from Dapr stores..."
+  );
 
   // Load configuration from Dapr
   try {
     await loadConfigurationFromDapr();
   } catch (error) {
-    console.warn("[ConfigProvider] Failed to load configuration from Dapr:", error);
+    console.warn(
+      "[ConfigProvider] Failed to load configuration from Dapr:",
+      error
+    );
     loadConfigFromEnvironment();
   }
 
@@ -181,7 +191,9 @@ async function loadConfigurationFromDapr(): Promise<void> {
     }
   }
 
-  console.log(`[ConfigProvider] Loaded ${Object.keys(configCache).length} configuration values`);
+  console.log(
+    `[ConfigProvider] Loaded ${Object.keys(configCache).length} configuration values`
+  );
 }
 
 async function loadSecretsFromDapr(): Promise<void> {
@@ -221,7 +233,9 @@ async function loadSecretsFromDapr(): Promise<void> {
     }
   }
 
-  console.log(`[ConfigProvider] Loaded ${Object.keys(secretCache).length} secrets`);
+  console.log(
+    `[ConfigProvider] Loaded ${Object.keys(secretCache).length} secrets`
+  );
 }
 
 function loadFromEnvironment(): void {
@@ -305,8 +319,10 @@ export function isDaprEnabled(): boolean {
 /**
  * Default URLs when Dapr config is not available
  */
-const DEFAULT_ORCHESTRATOR_URL = "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080";
-const DEFAULT_FUNCTION_RUNNER_URL = "http://function-runner.workflow-builder.svc.cluster.local:8080";
+const DEFAULT_ORCHESTRATOR_URL =
+  "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080";
+const DEFAULT_FUNCTION_RUNNER_URL =
+  "http://function-runner.workflow-builder.svc.cluster.local:8080";
 
 /**
  * Get the workflow orchestrator URL
@@ -360,7 +376,10 @@ export async function getOrchestratorUrlAsync(): Promise<string> {
 /**
  * Get a configuration value with lazy initialization
  */
-export async function getConfigAsync(key: string, defaultValue?: string): Promise<string> {
+export async function getConfigAsync(
+  key: string,
+  defaultValue?: string
+): Promise<string> {
   if (!initialized) {
     await initializeConfig();
   }

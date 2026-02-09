@@ -11,9 +11,9 @@ export const healthRoutes: FastifyPluginAsync = async (
   /**
    * Liveness probe - returns 200 if the server is running
    */
-  fastify.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ok" });
-  });
+  fastify.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "ok" })
+  );
 
   /**
    * Readiness probe - returns 200 if the server is ready to accept traffic
@@ -26,11 +26,11 @@ export const healthRoutes: FastifyPluginAsync = async (
   /**
    * Health endpoint for general health checks
    */
-  fastify.get("/health", async (_request, reply) => {
-    return reply.status(200).send({
+  fastify.get("/health", async (_request, reply) =>
+    reply.status(200).send({
       status: "healthy",
       service: "workflow-orchestrator",
       timestamp: new Date().toISOString(),
-    });
-  });
+    })
+  );
 };

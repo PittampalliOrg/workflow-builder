@@ -20,6 +20,7 @@ namespace: workflow-builder
 resources:
   - workflow-orchestrator.yaml
   - planner-dapr-agent.yaml
+  - mcp-gateway.yaml
   - dapr-secrets-component.yaml
   # KEDA scalers (optional - most sections commented out by default)
   - keda-scalers.yaml
@@ -38,4 +39,7 @@ images:
     newTag: latest
   - name: planner-dapr-agent
     newName: gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent
+    newTag: latest
+  - name: mcp-gateway
+    newName: gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway
     newTag: latest

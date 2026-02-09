@@ -25,18 +25,18 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import {
   connectionsAtom,
   connectionsVersionAtom,
 } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
 import {
   findActionById,
   getActionsByCategory,
   getAllIntegrations,
   registerApActions,
 } from "@/plugins";
-import type { ApIntegration } from "@/lib/activepieces/action-adapter";
+import type { PluginType } from "@/plugins/registry";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
@@ -387,7 +387,9 @@ function buildConnectionAuthTemplate(externalId: string): string {
 function getExternalIdFromAuthTemplate(
   auth: string | undefined
 ): string | undefined {
-  if (!auth) return undefined;
+  if (!auth) {
+    return;
+  }
   const match = auth.match(/\{\{connections\['([^']+)'\]\}\}/);
   return match?.[1];
 }
@@ -411,9 +413,8 @@ export function ActionConfig({
         if (!cancelled && data?.pieces) {
           setApPieces(data.pieces);
           // Register AP actions in the global registry for findActionById fallback
-          const allActions = data.pieces.flatMap(
-            (p: ApIntegration) =>
-              p.actions.map((a) => ({ ...a, integration: p.type }))
+          const allActions = data.pieces.flatMap((p: ApIntegration) =>
+            p.actions.map((a) => ({ ...a, integration: p.type }))
           );
           registerApActions(allActions);
         }
@@ -507,12 +508,14 @@ export function ActionConfig({
       }
     }
 
-    return undefined;
+    return;
   }, [actionType, apPieceMap]);
 
   // Check if there are existing connections for this integration type
   const hasExistingConnections = useMemo(() => {
-    if (!integrationType) return false;
+    if (!integrationType) {
+      return false;
+    }
     return globalIntegrations.some((i) => i.pieceName === integrationType);
   }, [integrationType, globalIntegrations]);
 
@@ -520,7 +523,9 @@ export function ActionConfig({
   const selectedConnectionId = useMemo(() => {
     const authTemplate = config?.auth as string | undefined;
     const externalId = getExternalIdFromAuthTemplate(authTemplate);
-    if (!externalId) return "";
+    if (!externalId) {
+      return "";
+    }
     const conn = globalIntegrations.find((i) => i.externalId === externalId);
     return conn?.id || "";
   }, [config?.auth, globalIntegrations]);

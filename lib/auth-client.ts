@@ -47,7 +47,9 @@ async function fetchSession(): Promise<SessionData> {
       }
     }
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return null;
+    }
     const data = await response.json();
     return { user: data.user };
   } catch {

@@ -1,6 +1,12 @@
 "use client";
 
-import { ChevronDown, ChevronRight, Cloud, Key, ShieldCheck } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Cloud,
+  Key,
+  ShieldCheck,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Spinner } from "@/components/ui/spinner";
@@ -55,23 +61,25 @@ export function InfrastructureSecretsSection({
   }, [loadSecrets]);
 
   // Filter secrets by type if specified
-  const filteredSecrets = data?.secrets.filter((secret) => {
-    if (!filterType) return true;
-    return secret.integrationType === filterType;
-  }) ?? [];
+  const filteredSecrets =
+    data?.secrets.filter((secret) => {
+      if (!filterType) {
+        return true;
+      }
+      return secret.integrationType === filterType;
+    }) ?? [];
 
   // Group secrets by integration type for display
-  const groupedSecrets = filteredSecrets.reduce<Record<string, InfrastructureSecret[]>>(
-    (acc, secret) => {
-      const type = secret.integrationType;
-      if (!acc[type]) {
-        acc[type] = [];
-      }
-      acc[type].push(secret);
-      return acc;
-    },
-    {}
-  );
+  const groupedSecrets = filteredSecrets.reduce<
+    Record<string, InfrastructureSecret[]>
+  >((acc, secret) => {
+    const type = secret.integrationType;
+    if (!acc[type]) {
+      acc[type] = [];
+    }
+    acc[type].push(secret);
+    return acc;
+  }, {});
 
   if (loading) {
     return (
@@ -147,11 +155,10 @@ export function InfrastructureSecretsSection({
             Object.entries(groupedSecrets).map(([type, secrets]) => (
               <div className="space-y-1" key={type}>
                 <div className="flex items-center gap-2 px-2 py-1 text-muted-foreground text-xs">
-                  <IntegrationIcon
-                    className="size-3"
-                    integration={type}
-                  />
-                  <span className="uppercase tracking-wide">{secrets[0].label}</span>
+                  <IntegrationIcon className="size-3" integration={type} />
+                  <span className="uppercase tracking-wide">
+                    {secrets[0].label}
+                  </span>
                 </div>
                 {secrets.map((secret) => (
                   <SecretItem
@@ -178,7 +185,12 @@ type SecretItemProps = {
   onSelect?: () => void;
 };
 
-function SecretItem({ secret, isConnected, isSelected, onSelect }: SecretItemProps) {
+function SecretItem({
+  secret,
+  isConnected,
+  isSelected,
+  onSelect,
+}: SecretItemProps) {
   const content = (
     <>
       <Key className="size-3.5 text-amber-500" />
@@ -195,9 +207,7 @@ function SecretItem({ secret, isConnected, isSelected, onSelect }: SecretItemPro
       <button
         className={cn(
           "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors",
-          isSelected
-            ? "bg-primary/10 text-primary"
-            : "hover:bg-muted/50"
+          isSelected ? "bg-primary/10 text-primary" : "hover:bg-muted/50"
         )}
         onClick={onSelect}
         type="button"
@@ -235,7 +245,9 @@ export function useInfrastructureSecrets(integrationType?: string) {
         }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load secrets");
+          setError(
+            err instanceof Error ? err.message : "Failed to load secrets"
+          );
         }
       } finally {
         if (!cancelled) {
@@ -252,10 +264,13 @@ export function useInfrastructureSecrets(integrationType?: string) {
   }, []);
 
   // Filter by integration type
-  const secrets = data?.secrets.filter((secret) => {
-    if (!integrationType) return true;
-    return secret.integrationType === integrationType;
-  }) ?? [];
+  const secrets =
+    data?.secrets.filter((secret) => {
+      if (!integrationType) {
+        return true;
+      }
+      return secret.integrationType === integrationType;
+    }) ?? [];
 
   return {
     secrets,

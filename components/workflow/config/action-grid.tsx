@@ -36,11 +36,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useIsTouch } from "@/hooks/use-touch";
-import { cn } from "@/lib/utils";
+import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import { getAllDaprActivities } from "@/lib/dapr-activity-registry";
+import { cn } from "@/lib/utils";
 import type { WorkflowNodeType } from "@/lib/workflow-store";
 import { getAllActions } from "@/plugins";
-import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 
 type ActionType = {
   id: string;
@@ -113,15 +113,17 @@ function useAllActions(apPieces: ApIntegration[]): ActionType[] {
 
     // Map Dapr activities to ActionType format
     const daprActivities = getAllDaprActivities();
-    const mappedDaprActivities: ActionType[] = daprActivities.map((activity) => ({
-      id: `dapr:${activity.name}`,
-      label: activity.label,
-      description: activity.description,
-      category: activity.category,
-      isDaprActivity: true,
-      nodeType: "activity",
-      activityName: activity.name,
-    }));
+    const mappedDaprActivities: ActionType[] = daprActivities.map(
+      (activity) => ({
+        id: `dapr:${activity.name}`,
+        label: activity.label,
+        description: activity.description,
+        category: activity.category,
+        isDaprActivity: true,
+        nodeType: "activity",
+        activityName: activity.name,
+      })
+    );
 
     // Map AP pieces to ActionType format (each piece = category, each action = item)
     const mappedApActions: ActionType[] = apPieces.flatMap((piece) =>
@@ -206,7 +208,11 @@ function ActionIcon({
 }) {
   if (action.integration) {
     return (
-      <IntegrationIcon className={className} integration={action.integration} logoUrl={action.logoUrl} />
+      <IntegrationIcon
+        className={className}
+        integration={action.integration}
+        logoUrl={action.logoUrl}
+      />
     );
   }
   if (action.category === "System") {
@@ -234,7 +240,9 @@ const VIEW_MODE_KEY = "workflow-action-grid-view-mode";
 type ViewMode = "list" | "grid";
 
 function getInitialHiddenGroups(): Set<string> {
-  if (typeof window === "undefined") return new Set();
+  if (typeof window === "undefined") {
+    return new Set();
+  }
   try {
     const stored = localStorage.getItem(HIDDEN_GROUPS_KEY);
     return stored ? new Set(JSON.parse(stored)) : new Set();
@@ -244,7 +252,9 @@ function getInitialHiddenGroups(): Set<string> {
 }
 
 function getInitialViewMode(): ViewMode {
-  if (typeof window === "undefined") return "list";
+  if (typeof window === "undefined") {
+    return "list";
+  }
   try {
     const stored = localStorage.getItem(VIEW_MODE_KEY);
     return stored === "grid" ? "grid" : "list";
@@ -283,7 +293,9 @@ export function ActionGrid({
         }
       })
       .catch(() => {});
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const toggleViewMode = () => {
@@ -349,8 +361,12 @@ export function ActionGrid({
 
     // Sort categories: System first, then alphabetically
     const sortedCategories = Object.keys(groups).sort((a, b) => {
-      if (a === "System") return -1;
-      if (b === "System") return 1;
+      if (a === "System") {
+        return -1;
+      }
+      if (b === "System") {
+        return 1;
+      }
       return a.localeCompare(b);
     });
 
@@ -362,7 +378,9 @@ export function ActionGrid({
 
   // Filter groups based on hidden state
   const visibleGroups = useMemo(() => {
-    if (showHidden) return groupedActions;
+    if (showHidden) {
+      return groupedActions;
+    }
     return groupedActions.filter((g) => !hiddenGroups.has(g.category));
   }, [groupedActions, hiddenGroups, showHidden]);
 
@@ -468,12 +486,14 @@ export function ActionGrid({
                   data-testid={`action-option-${action.id.toLowerCase().replace(/\s+/g, "-")}`}
                   disabled={disabled}
                   key={action.id}
-                  onClick={() => onSelectAction({
-                    actionType: action.id,
-                    isDaprActivity: action.isDaprActivity,
-                    nodeType: action.nodeType,
-                    activityName: action.activityName,
-                  })}
+                  onClick={() =>
+                    onSelectAction({
+                      actionType: action.id,
+                      isDaprActivity: action.isDaprActivity,
+                      nodeType: action.nodeType,
+                      activityName: action.activityName,
+                    })
+                  }
                   type="button"
                 >
                   <ActionIcon action={action} className="size-6" />
@@ -552,12 +572,14 @@ export function ActionGrid({
                       data-testid={`action-option-${action.id.toLowerCase().replace(/\s+/g, "-")}`}
                       disabled={disabled}
                       key={action.id}
-                      onClick={() => onSelectAction({
-                        actionType: action.id,
-                        isDaprActivity: action.isDaprActivity,
-                        nodeType: action.nodeType,
-                        activityName: action.activityName,
-                      })}
+                      onClick={() =>
+                        onSelectAction({
+                          actionType: action.id,
+                          isDaprActivity: action.isDaprActivity,
+                          nodeType: action.nodeType,
+                          activityName: action.activityName,
+                        })
+                      }
                       type="button"
                     >
                       <span className="min-w-0 flex-1 truncate">

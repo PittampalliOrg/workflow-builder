@@ -1,9 +1,12 @@
 import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import semver from "semver";
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
-import { parsePieceAuthAll, type PieceAuthConfig } from "@/lib/types/piece-auth";
+import {
+  type PieceAuthConfig,
+  parsePieceAuthAll,
+} from "@/lib/types/piece-auth";
 import { generateId } from "@/lib/utils/id";
-import semver from "semver";
 
 const ACTIVEPIECES_PACKAGE_PREFIX = "@activepieces/piece-";
 
@@ -31,11 +34,15 @@ function expandPieceNameCandidates(name: string): string[] {
 function compareVersionsDesc(a: string, b: string): number {
   const aValid = semver.valid(a);
   const bValid = semver.valid(b);
-  if (!aValid && !bValid) {
+  if (!(aValid || bValid)) {
     return b.localeCompare(a);
   }
-  if (!aValid) return 1;
-  if (!bValid) return -1;
+  if (!aValid) {
+    return 1;
+  }
+  if (!bValid) {
+    return -1;
+  }
   return semver.rcompare(a, b);
 }
 
@@ -60,7 +67,9 @@ function pickLatestPerName(rows: PieceMetadataRecord[]): PieceMetadataRecord[] {
       best.set(row.name, row);
     }
   }
-  return Array.from(best.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+  return Array.from(best.values()).sort((a, b) =>
+    a.displayName.localeCompare(b.displayName)
+  );
 }
 
 export async function listPieceMetadata(
@@ -236,7 +245,7 @@ export async function countPieceMetadata(): Promise<number> {
  */
 export async function getPieceAuthConfig(
   pieceName: string
-): Promise<Array<Exclude<PieceAuthConfig, null | undefined>>> {
+): Promise<Exclude<PieceAuthConfig, null | undefined>[]> {
   const piece = await getPieceMetadataByName(pieceName);
   if (!piece) {
     return [];

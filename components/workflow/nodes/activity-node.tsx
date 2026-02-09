@@ -3,21 +3,21 @@
 import type { NodeProps } from "@xyflow/react";
 import { useAtomValue } from "jotai";
 import {
-  Check,
-  Cpu,
-  XCircle,
-  Lightbulb,
-  Rocket,
-  TestTube2,
-  GitBranch,
-  Container,
-  Database,
-  Send,
-  Zap,
   Brain,
+  Check,
+  Container,
+  Cpu,
+  Database,
+  GitBranch,
+  ImagePlus,
+  Lightbulb,
   Mail,
   MessageSquare,
-  ImagePlus,
+  Rocket,
+  Send,
+  TestTube2,
+  XCircle,
+  Zap,
 } from "lucide-react";
 import { memo } from "react";
 import {
@@ -25,13 +25,13 @@ import {
   NodeDescription,
   NodeTitle,
 } from "@/components/ai-elements/node";
+import { getDaprActivity } from "@/lib/dapr-activity-registry";
 import { cn } from "@/lib/utils";
 import {
   executionLogsAtom,
   selectedExecutionIdAtom,
   type WorkflowNodeData,
 } from "@/lib/workflow-store";
-import { getDaprActivity } from "@/lib/dapr-activity-registry";
 
 /**
  * Returns the appropriate icon for an activity based on activity name,
@@ -44,19 +44,39 @@ const getActivityIcon = (
 ): React.ReactNode => {
   // Activity-specific icons (by name)
   const activityIcons: Record<string, React.ReactNode> = {
-    clone_repository: <GitBranch className="size-12 text-orange-400" strokeWidth={1.5} />,
-    run_planning: <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />,
-    planning: <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />,
-    run_execution: <Rocket className="size-12 text-green-400" strokeWidth={1.5} />,
+    clone_repository: (
+      <GitBranch className="size-12 text-orange-400" strokeWidth={1.5} />
+    ),
+    run_planning: (
+      <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />
+    ),
+    planning: (
+      <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />
+    ),
+    run_execution: (
+      <Rocket className="size-12 text-green-400" strokeWidth={1.5} />
+    ),
     execution: <Rocket className="size-12 text-green-400" strokeWidth={1.5} />,
-    testing: <TestTube2 className="size-12 text-purple-400" strokeWidth={1.5} />,
-    sandboxed_execution_and_testing: <Container className="size-12 text-cyan-400" strokeWidth={1.5} />,
-    persist_tasks: <Database className="size-12 text-blue-400" strokeWidth={1.5} />,
+    testing: (
+      <TestTube2 className="size-12 text-purple-400" strokeWidth={1.5} />
+    ),
+    sandboxed_execution_and_testing: (
+      <Container className="size-12 text-cyan-400" strokeWidth={1.5} />
+    ),
+    persist_tasks: (
+      <Database className="size-12 text-blue-400" strokeWidth={1.5} />
+    ),
     publish_event: <Send className="size-12 text-pink-400" strokeWidth={1.5} />,
-    generate_text: <Brain className="size-12 text-purple-400" strokeWidth={1.5} />,
-    generate_image: <ImagePlus className="size-12 text-purple-400" strokeWidth={1.5} />,
+    generate_text: (
+      <Brain className="size-12 text-purple-400" strokeWidth={1.5} />
+    ),
+    generate_image: (
+      <ImagePlus className="size-12 text-purple-400" strokeWidth={1.5} />
+    ),
     send_email: <Mail className="size-12 text-green-400" strokeWidth={1.5} />,
-    send_slack_message: <MessageSquare className="size-12 text-green-400" strokeWidth={1.5} />,
+    send_slack_message: (
+      <MessageSquare className="size-12 text-green-400" strokeWidth={1.5} />
+    ),
     http_request: <Zap className="size-12 text-amber-400" strokeWidth={1.5} />,
   };
 
@@ -67,18 +87,30 @@ const getActivityIcon = (
 
   // Icon name mapping (from activity.icon field)
   const iconNameMap: Record<string, React.ReactNode> = {
-    Lightbulb: <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />,
+    Lightbulb: (
+      <Lightbulb className="size-12 text-yellow-400" strokeWidth={1.5} />
+    ),
     Rocket: <Rocket className="size-12 text-green-400" strokeWidth={1.5} />,
-    TestTube2: <TestTube2 className="size-12 text-purple-400" strokeWidth={1.5} />,
-    GitBranch: <GitBranch className="size-12 text-orange-400" strokeWidth={1.5} />,
-    Container: <Container className="size-12 text-cyan-400" strokeWidth={1.5} />,
+    TestTube2: (
+      <TestTube2 className="size-12 text-purple-400" strokeWidth={1.5} />
+    ),
+    GitBranch: (
+      <GitBranch className="size-12 text-orange-400" strokeWidth={1.5} />
+    ),
+    Container: (
+      <Container className="size-12 text-cyan-400" strokeWidth={1.5} />
+    ),
     Database: <Database className="size-12 text-blue-400" strokeWidth={1.5} />,
     Send: <Send className="size-12 text-pink-400" strokeWidth={1.5} />,
     Zap: <Zap className="size-12 text-amber-400" strokeWidth={1.5} />,
     Brain: <Brain className="size-12 text-purple-400" strokeWidth={1.5} />,
     Mail: <Mail className="size-12 text-green-400" strokeWidth={1.5} />,
-    MessageSquare: <MessageSquare className="size-12 text-green-400" strokeWidth={1.5} />,
-    ImagePlus: <ImagePlus className="size-12 text-purple-400" strokeWidth={1.5} />,
+    MessageSquare: (
+      <MessageSquare className="size-12 text-green-400" strokeWidth={1.5} />
+    ),
+    ImagePlus: (
+      <ImagePlus className="size-12 text-purple-400" strokeWidth={1.5} />
+    ),
   };
 
   // Check icon name from activity definition
@@ -92,7 +124,9 @@ const getActivityIcon = (
     AI: <Brain className="size-12 text-purple-400" strokeWidth={1.5} />,
     State: <Database className="size-12 text-blue-400" strokeWidth={1.5} />,
     Events: <Send className="size-12 text-pink-400" strokeWidth={1.5} />,
-    Notifications: <Mail className="size-12 text-green-400" strokeWidth={1.5} />,
+    Notifications: (
+      <Mail className="size-12 text-green-400" strokeWidth={1.5} />
+    ),
     Integration: <Zap className="size-12 text-amber-400" strokeWidth={1.5} />,
     Plugin: <Zap className="size-12 text-amber-400" strokeWidth={1.5} />,
   };
@@ -139,8 +173,8 @@ type ActivityNodeProps = NodeProps & {
 
 export const ActivityNode = memo(
   ({ data, selected, id }: ActivityNodeProps) => {
-    const selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
-    const executionLogs = useAtomValue(executionLogsAtom);
+    const _selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
+    const _executionLogs = useAtomValue(executionLogsAtom);
 
     if (!data) {
       return null;

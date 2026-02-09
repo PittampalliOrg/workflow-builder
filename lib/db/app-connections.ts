@@ -3,8 +3,8 @@ import "server-only";
 import { and, count, eq, ilike, inArray } from "drizzle-orm";
 import {
   decryptObject,
-  encryptObject,
   type EncryptedObject,
+  encryptObject,
 } from "@/lib/security/encryption";
 import {
   AppConnectionScope,
@@ -298,7 +298,9 @@ export async function renameAppConnection(
     .where(and(eq(appConnections.id, id), eq(appConnections.ownerId, ownerId)))
     .returning();
 
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return decryptConnection(row);
 }
 
@@ -306,7 +308,9 @@ export async function deleteAppConnections(
   ids: string[],
   ownerId: string
 ): Promise<number> {
-  if (ids.length === 0) return 0;
+  if (ids.length === 0) {
+    return 0;
+  }
 
   const rows = await db
     .delete(appConnections)

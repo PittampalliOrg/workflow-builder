@@ -13,20 +13,20 @@ const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 /**
  * Input for the persist state activity
  */
-export interface PersistStateInput {
+export type PersistStateInput = {
   key: string;
   value: unknown;
   metadata?: Record<string, string>;
-}
+};
 
 /**
  * Output from the persist state activity
  */
-export interface PersistStateOutput {
+export type PersistStateOutput = {
   success: boolean;
   key: string;
   error?: string;
-}
+};
 
 /**
  * Save state to Dapr state store
@@ -62,8 +62,7 @@ export async function persistState(
       key,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(`[Persist State] Failed to save state ${key}:`, error);
 
@@ -78,26 +77,29 @@ export async function persistState(
 /**
  * Input for the get state activity
  */
-export interface GetStateInput {
+export type GetStateInput = {
   key: string;
-}
+};
 
 /**
  * Output from the get state activity
  */
-export interface GetStateOutput {
+export type GetStateOutput = {
   success: boolean;
   key: string;
   value?: unknown;
   error?: string;
-}
+};
 
 /**
  * Get state from Dapr state store
  *
  * Note: Dapr activities receive (ctx, input) but we don't need the ctx here
  */
-export async function getState(_ctx: unknown, input: GetStateInput): Promise<GetStateOutput> {
+export async function getState(
+  _ctx: unknown,
+  input: GetStateInput
+): Promise<GetStateOutput> {
   const { key } = input;
 
   console.log(`[Get State] Retrieving state with key: ${key}`);
@@ -118,8 +120,7 @@ export async function getState(_ctx: unknown, input: GetStateInput): Promise<Get
       value: result,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(`[Get State] Failed to get state ${key}:`, error);
 
@@ -159,8 +160,7 @@ export async function deleteState(
       key,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(`[Delete State] Failed to delete state ${key}:`, error);
 

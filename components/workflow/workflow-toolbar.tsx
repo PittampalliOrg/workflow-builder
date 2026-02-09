@@ -34,16 +34,15 @@ import {
 import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { connectionsAtom } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
 import {
   addNodeAtom,
   canRedoAtom,
   canUndoAtom,
   clearWorkflowAtom,
+  currentWorkflowEngineTypeAtom,
   currentWorkflowIdAtom,
   currentWorkflowNameAtom,
   currentWorkflowVisibilityAtom,
-  currentWorkflowEngineTypeAtom,
   deleteEdgeAtom,
   deleteNodeAtom,
   edgesAtom,
@@ -70,17 +69,21 @@ import {
   flattenConfigFields,
   getIntegrationLabels,
 } from "@/plugins";
+import type { PluginType } from "@/plugins/registry";
 import { Panel } from "../ai-elements/panel";
-import { SidebarToggle } from "../sidebar-toggle";
 import { DeployButton } from "../deploy-button";
 import { GitHubStarsButton } from "../github-stars-button";
 import { ConfigurationOverlay } from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
-import { DaprInputOverlay, type DaprWorkflowInput } from "../overlays/dapr-input-overlay";
+import {
+  DaprInputOverlay,
+  type DaprWorkflowInput,
+} from "../overlays/dapr-input-overlay";
 import { ExportWorkflowOverlay } from "../overlays/export-workflow-overlay";
 import { MakePublicOverlay } from "../overlays/make-public-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
 import { WorkflowIssuesOverlay } from "../overlays/workflow-issues-overlay";
+import { SidebarToggle } from "../sidebar-toggle";
 import { WorkflowIcon } from "../ui/workflow-icon";
 import { UserMenu } from "../workflows/user-menu";
 
@@ -424,7 +427,9 @@ async function executeTestWorkflow({
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.error || `Failed to execute workflow (${response.status})`);
+      throw new Error(
+        errorData.error || `Failed to execute workflow (${response.status})`
+      );
     }
 
     const result = await response.json();
@@ -587,7 +592,10 @@ function useWorkflowHandlers({
     // Check if this workflow has any planning/agent nodes that require feature_request
     const hasPlanningNodes = nodes.some((node) => {
       const actionType = node.data.config?.actionType as string | undefined;
-      return actionType === "Run Planning Agent" || actionType === "Run Execution Agent";
+      return (
+        actionType === "Run Planning Agent" ||
+        actionType === "Run Execution Agent"
+      );
     });
 
     // For Dapr workflows with planning nodes, show the input overlay
@@ -822,7 +830,9 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
       confirmVariant: "destructive" as const,
       destructive: true,
       onConfirm: async () => {
-        if (!currentWorkflowId) return;
+        if (!currentWorkflowId) {
+          return;
+        }
         try {
           await api.workflow.delete(currentWorkflowId);
           toast.success("Workflow deleted successfully");

@@ -7,37 +7,36 @@
  * Builds the graph from actual execution history data.
  */
 
-import { useMemo } from "react";
 import {
-  ReactFlow,
   Background,
-  Controls,
-  type Node,
-  type Edge,
   BackgroundVariant,
-  MarkerType,
+  Controls,
+  type Edge,
   Handle,
-  Position,
+  MarkerType,
+  type Node,
   type NodeProps,
+  Position,
+  ReactFlow,
 } from "@xyflow/react";
+import { useMemo } from "react";
 import "@xyflow/react/dist/style.css";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { cn } from "@/lib/utils";
 import { useDaprWorkflow } from "@/hooks/use-monitor-workflows";
 import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
+import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface WorkflowDefinitionGraphProps {
-  workflowName: string;
+type WorkflowDefinitionGraphProps = {
   appId: string;
   /** Instance ID of a completed execution to derive the workflow structure from */
   sampleInstanceId?: string;
   className?: string;
-}
+};
 
 interface DefinitionNodeData extends Record<string, unknown> {
   label: string;
@@ -61,28 +60,28 @@ function DefinitionNodeComponent({ data }: NodeProps<DefinitionNode>) {
     <>
       {type !== "start" && (
         <Handle
-          type="target"
-          position={Position.Top}
           className="!w-2 !h-2 !bg-teal-400 !border-0"
+          position={Position.Top}
+          type="target"
         />
       )}
       <div
         className={cn(
-          "px-6 py-3 border-2 min-w-[160px] text-center transition-all",
+          "min-w-[160px] border-2 px-6 py-3 text-center transition-all",
           isStartOrEnd ? "rounded-full px-8" : "rounded-lg"
         )}
         style={{
           backgroundColor: bgColor,
-          borderColor: borderColor,
+          borderColor,
         }}
       >
-        <span className="text-sm font-medium text-white">{label}</span>
+        <span className="font-medium text-sm text-white">{label}</span>
       </div>
       {type !== "end" && (
         <Handle
-          type="source"
-          position={Position.Bottom}
           className="!w-2 !h-2 !bg-teal-400 !border-0"
+          position={Position.Bottom}
+          type="source"
         />
       )}
     </>
@@ -101,9 +100,10 @@ const nodeTypes = {
  * Build graph nodes and edges from execution history events.
  * Extracts unique task names and creates a sequential workflow graph.
  */
-function buildGraphFromEvents(
-  events: DaprExecutionEvent[]
-): { nodes: DefinitionNode[]; edges: Edge[] } {
+function buildGraphFromEvents(events: DaprExecutionEvent[]): {
+  nodes: DefinitionNode[];
+  edges: Edge[];
+} {
   if (!events || events.length === 0) {
     return { nodes: [], edges: [] };
   }
@@ -118,11 +118,13 @@ function buildGraphFromEvents(
   const seenTasks = new Set<string>();
 
   for (const event of sortedEvents) {
-    if (event.eventType === "TaskCompleted" && event.name) {
-      if (!seenTasks.has(event.name)) {
-        seenTasks.add(event.name);
-        taskNames.push(event.name);
-      }
+    if (
+      event.eventType === "TaskCompleted" &&
+      event.name &&
+      !seenTasks.has(event.name)
+    ) {
+      seenTasks.add(event.name);
+      taskNames.push(event.name);
     }
   }
 
@@ -184,23 +186,29 @@ function buildGraphFromEvents(
 
 function GraphSkeleton() {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-4 py-8">
-      <Skeleton className="w-32 h-10 rounded-full" />
-      <Skeleton className="w-1 h-12" />
-      <Skeleton className="w-40 h-10 rounded-lg" />
-      <Skeleton className="w-1 h-12" />
-      <Skeleton className="w-40 h-10 rounded-lg" />
-      <Skeleton className="w-1 h-12" />
-      <Skeleton className="w-32 h-10 rounded-full" />
+    <div className="flex h-full flex-col items-center justify-center gap-4 py-8">
+      <Skeleton className="h-10 w-32 rounded-full" />
+      <Skeleton className="h-12 w-1" />
+      <Skeleton className="h-10 w-40 rounded-lg" />
+      <Skeleton className="h-12 w-1" />
+      <Skeleton className="h-10 w-40 rounded-lg" />
+      <Skeleton className="h-12 w-1" />
+      <Skeleton className="h-10 w-32 rounded-full" />
     </div>
   );
 }
 
-function EmptyGraph({ message, subtext }: { message: string; subtext?: string }) {
+function EmptyGraph({
+  message,
+  subtext,
+}: {
+  message: string;
+  subtext?: string;
+}) {
   return (
-    <div className="flex flex-col items-center justify-center h-full gap-2">
-      <p className="text-sm text-gray-400">{message}</p>
-      {subtext && <p className="text-xs text-gray-500">{subtext}</p>}
+    <div className="flex h-full flex-col items-center justify-center gap-2">
+      <p className="text-gray-400 text-sm">{message}</p>
+      {subtext && <p className="text-gray-500 text-xs">{subtext}</p>}
     </div>
   );
 }
@@ -210,7 +218,6 @@ function EmptyGraph({ message, subtext }: { message: string; subtext?: string })
 // ============================================================================
 
 export function WorkflowDefinitionGraph({
-  workflowName,
   appId,
   sampleInstanceId,
   className,
@@ -233,7 +240,9 @@ export function WorkflowDefinitionGraph({
   // Render content based on state
   const renderContent = () => {
     if (!sampleInstanceId) {
-      return <EmptyGraph message="No executions available to show workflow structure" />;
+      return (
+        <EmptyGraph message="No executions available to show workflow structure" />
+      );
     }
 
     if (isLoading) {
@@ -246,28 +255,28 @@ export function WorkflowDefinitionGraph({
 
     return (
       <ReactFlow
-        nodes={nodes}
         edges={edges}
-        nodeTypes={nodeTypes}
+        elementsSelectable={false}
         fitView
         fitViewOptions={{
           padding: 0.3,
           maxZoom: 1,
         }}
-        minZoom={0.5}
         maxZoom={1.5}
-        proOptions={{ hideAttribution: true }}
-        nodesDraggable={false}
+        minZoom={0.5}
+        nodes={nodes}
         nodesConnectable={false}
-        elementsSelectable={false}
+        nodesDraggable={false}
+        nodeTypes={nodeTypes}
         panOnDrag={true}
+        proOptions={{ hideAttribution: true }}
         zoomOnScroll={true}
       >
         <Background
-          variant={BackgroundVariant.Dots}
+          className="!bg-[#1a1f2e]"
           gap={20}
           size={1}
-          className="!bg-[#1a1f2e]"
+          variant={BackgroundVariant.Dots}
         />
         <Controls
           className="!bg-[#1e2433] !border !border-gray-700 !rounded-lg [&>button]:!bg-[#1e2433] [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
@@ -278,18 +287,22 @@ export function WorkflowDefinitionGraph({
   };
 
   return (
-    <Card className={cn("h-full min-h-[400px] bg-[#1a1f2e] border-gray-700", className)}>
+    <Card
+      className={cn(
+        "h-full min-h-[400px] border-gray-700 bg-[#1a1f2e]",
+        className
+      )}
+    >
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium text-gray-200">
+        <CardTitle className="font-medium text-base text-gray-200">
           Workflow Graph
         </CardTitle>
-        <p className="text-xs text-gray-500">
-          Structure derived from execution: {sampleInstanceId?.substring(0, 8) || "N/A"}...
+        <p className="text-gray-500 text-xs">
+          Structure derived from execution:{" "}
+          {sampleInstanceId?.substring(0, 8) || "N/A"}...
         </p>
       </CardHeader>
-      <CardContent className="h-[350px] p-0">
-        {renderContent()}
-      </CardContent>
+      <CardContent className="h-[350px] p-0">{renderContent()}</CardContent>
     </Card>
   );
 }

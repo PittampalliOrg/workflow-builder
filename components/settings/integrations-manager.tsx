@@ -11,7 +11,7 @@ import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { Spinner } from "@/components/ui/spinner";
-import { api, type AppConnection } from "@/lib/api-client";
+import { type AppConnection, api } from "@/lib/api-client";
 
 type IntegrationsManagerProps = {
   onIntegrationChange?: () => void;
@@ -49,7 +49,9 @@ export function IntegrationsManager({
 
     return connections
       .filter((conn) => {
-        if (!filter) return true;
+        if (!filter) {
+          return true;
+        }
         return (
           conn.displayName.toLowerCase().includes(filterLower) ||
           conn.pieceName.toLowerCase().includes(filterLower)

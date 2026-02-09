@@ -2,15 +2,15 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
-  DialogDescription,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
@@ -68,7 +68,7 @@ export function RenameConnectionDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>Rename Connection</DialogTitle>
@@ -80,21 +80,23 @@ export function RenameConnectionDialog({
           <div className="space-y-2">
             <Label htmlFor="connection-name">Name</Label>
             <Input
+              autoFocus
               id="connection-name"
-              value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") handleRename();
+                if (e.key === "Enter") {
+                  handleRename();
+                }
               }}
-              autoFocus
+              value={name}
             />
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button onClick={() => onOpenChange(false)} variant="outline">
             Cancel
           </Button>
-          <Button onClick={handleRename} disabled={saving}>
+          <Button disabled={saving} onClick={handleRename}>
             {saving ? "Renaming..." : "Rename"}
           </Button>
         </DialogFooter>

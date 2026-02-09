@@ -1,20 +1,22 @@
 "use client";
 
+import { Check, Copy, Loader2, Lock, LockOpen, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Loader2, Lock, LockOpen, Trash2, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
+import { SettingsSubnav } from "@/components/settings/settings-subnav";
 import { SidebarToggle } from "@/components/sidebar-toggle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
-  DialogDescription,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -23,9 +25,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
-import { api, type OAuthAppSummary, type PieceMetadata } from "@/lib/api-client";
-import { parsePieceAuthAll, PieceAuthType } from "@/lib/types/piece-auth";
+import {
+  api,
+  type OAuthAppSummary,
+  type PieceMetadata,
+} from "@/lib/api-client";
+import { PieceAuthType, parsePieceAuthAll } from "@/lib/types/piece-auth";
 
 type OAuthPieceRow = {
   piece: PieceMetadata;
@@ -75,7 +80,9 @@ export default function OAuthAppsSettingsPage() {
   const oauthPieceRows: OAuthPieceRow[] = useMemo(() => {
     return pieces
       .filter((p) => {
-        if (!p.auth) return false;
+        if (!p.auth) {
+          return false;
+        }
         const configs = parsePieceAuthAll(p.auth);
         return configs.some((c) => c.type === PieceAuthType.OAUTH2);
       })
@@ -85,8 +92,12 @@ export default function OAuthAppsSettingsPage() {
       }))
       .sort((a, b) => {
         // Configured first, then alphabetical
-        if (a.oauthApp && !b.oauthApp) return -1;
-        if (!a.oauthApp && b.oauthApp) return 1;
+        if (a.oauthApp && !b.oauthApp) {
+          return -1;
+        }
+        if (!a.oauthApp && b.oauthApp) {
+          return 1;
+        }
         return a.piece.displayName.localeCompare(b.piece.displayName);
       });
   }, [pieces, oauthApps]);
@@ -99,8 +110,10 @@ export default function OAuthAppsSettingsPage() {
   };
 
   const handleSave = async () => {
-    if (!configPiece) return;
-    if (!clientId.trim() || !clientSecret.trim()) {
+    if (!configPiece) {
+      return;
+    }
+    if (!(clientId.trim() && clientSecret.trim())) {
       toast.error("Both Client ID and Client Secret are required");
       return;
     }
@@ -148,30 +161,27 @@ export default function OAuthAppsSettingsPage() {
       <div className="flex items-center gap-2 border-b px-6 py-4">
         <SidebarToggle />
         <div>
-          <h1 className="text-xl font-semibold">OAuth Apps</h1>
-          <p className="text-sm text-muted-foreground">
+          <h1 className="font-semibold text-xl">OAuth Apps</h1>
+          <p className="text-muted-foreground text-sm">
             Configure platform OAuth credentials for pieces
           </p>
         </div>
       </div>
+      <SettingsSubnav />
 
       <div className="flex-1 overflow-auto p-6">
         {/* Redirect URI helper */}
         <div className="mb-6 rounded-md border bg-muted/30 p-4">
-          <Label className="text-sm font-medium">Redirect URI</Label>
-          <p className="mb-2 text-xs text-muted-foreground">
+          <Label className="font-medium text-sm">Redirect URI</Label>
+          <p className="mb-2 text-muted-foreground text-xs">
             Use this as the redirect/callback URI when registering OAuth apps
             with providers.
           </p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 rounded bg-muted px-3 py-1.5 text-xs font-mono">
+            <code className="flex-1 rounded bg-muted px-3 py-1.5 font-mono text-xs">
               {redirectUri}
             </code>
-            <Button
-              onClick={handleCopyRedirectUri}
-              size="sm"
-              variant="outline"
-            >
+            <Button onClick={handleCopyRedirectUri} size="sm" variant="outline">
               {copied ? (
                 <Check className="size-4" />
               ) : (
@@ -211,7 +221,7 @@ export default function OAuthAppsSettingsPage() {
                           src={piece.logoUrl}
                         />
                       ) : (
-                        <div className="flex size-6 items-center justify-center rounded bg-muted text-xs font-medium">
+                        <div className="flex size-6 items-center justify-center rounded bg-muted font-medium text-xs">
                           {piece.displayName.charAt(0)}
                         </div>
                       )}
@@ -220,17 +230,17 @@ export default function OAuthAppsSettingsPage() {
                       </span>
                     </div>
                   </TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
+                  <TableCell className="font-mono text-muted-foreground text-xs">
                     {oauthApp ? oauthApp.clientId : "—"}
                   </TableCell>
                   <TableCell>
                     {oauthApp ? (
-                      <Badge variant="default" className="gap-1">
+                      <Badge className="gap-1" variant="default">
                         <Lock className="size-3" />
                         Configured
                       </Badge>
                     ) : (
-                      <Badge variant="secondary" className="gap-1">
+                      <Badge className="gap-1" variant="secondary">
                         <LockOpen className="size-3" />
                         Not configured
                       </Badge>
@@ -247,12 +257,12 @@ export default function OAuthAppsSettingsPage() {
                       </Button>
                       {oauthApp && (
                         <Button
+                          className="text-destructive hover:text-destructive"
                           onClick={() =>
                             handleRemove(piece.name, piece.displayName)
                           }
                           size="sm"
                           variant="ghost"
-                          className="text-destructive hover:text-destructive"
                         >
                           <Trash2 className="size-4" />
                         </Button>
@@ -268,8 +278,8 @@ export default function OAuthAppsSettingsPage() {
 
       {/* Configure Dialog */}
       <Dialog
-        open={!!configPiece}
         onOpenChange={(open) => !open && setConfigPiece(null)}
+        open={!!configPiece}
       >
         <DialogContent>
           <DialogHeader>

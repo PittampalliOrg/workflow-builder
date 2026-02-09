@@ -6,7 +6,7 @@
  */
 import { getSql } from "./db.js";
 
-export interface ExecutionLogEntry {
+export type ExecutionLogEntry = {
   executionId: string;
   nodeId: string;
   nodeName: string;
@@ -19,19 +19,19 @@ export interface ExecutionLogEntry {
   startedAt?: Date;
   completedAt?: Date;
   durationMs?: number;
-}
+};
 
 /**
  * Timing breakdown for detailed performance analysis
  */
-export interface TimingBreakdown {
+export type TimingBreakdown = {
   credentialFetchMs?: number;
   routingMs?: number;
   coldStartMs?: number;
   executionMs?: number;
   routedTo?: string;
   wasColdStart?: boolean;
-}
+};
 
 /**
  * Generate a random ID (similar to the app's generateId)
@@ -48,7 +48,9 @@ function generateId(): string {
 /**
  * Log the start of an execution (status = running)
  */
-export async function logExecutionStart(entry: Omit<ExecutionLogEntry, "status">): Promise<string> {
+export async function logExecutionStart(
+  entry: Omit<ExecutionLogEntry, "status">
+): Promise<string> {
   const sql = getSql();
   const id = generateId();
   const startedAt = (entry.startedAt || new Date()).toISOString();
@@ -71,10 +73,12 @@ export async function logExecutionStart(entry: Omit<ExecutionLogEntry, "status">
         ${startedAt}
       )
     `;
-    console.log(`[Execution Logger] Started log ${id} for node ${entry.nodeName}`);
+    console.log(
+      `[Execution Logger] Started log ${id} for node ${entry.nodeName}`
+    );
     return id;
   } catch (error) {
-    console.error(`[Execution Logger] Failed to log start:`, error);
+    console.error("[Execution Logger] Failed to log start:", error);
     // Don't throw - logging failure shouldn't break execution
     return id;
   }
@@ -115,9 +119,11 @@ export async function logExecutionComplete(
         was_cold_start = ${timing.wasColdStart ?? null}
       WHERE id = ${logId}
     `;
-    console.log(`[Execution Logger] Completed log ${logId}: ${status}${timing.wasColdStart ? ' (cold start)' : ''}`);
+    console.log(
+      `[Execution Logger] Completed log ${logId}: ${status}${timing.wasColdStart ? " (cold start)" : ""}`
+    );
   } catch (error) {
-    console.error(`[Execution Logger] Failed to log completion:`, error);
+    console.error("[Execution Logger] Failed to log completion:", error);
     // Don't throw - logging failure shouldn't break execution
   }
 }
@@ -152,10 +158,12 @@ export async function logExecution(entry: ExecutionLogEntry): Promise<string> {
         ${now}
       )
     `;
-    console.log(`[Execution Logger] Logged execution ${id} for node ${entry.nodeName}: ${entry.status}`);
+    console.log(
+      `[Execution Logger] Logged execution ${id} for node ${entry.nodeName}: ${entry.status}`
+    );
     return id;
   } catch (error) {
-    console.error(`[Execution Logger] Failed to log execution:`, error);
+    console.error("[Execution Logger] Failed to log execution:", error);
     // Don't throw - logging failure shouldn't break execution
     return id;
   }

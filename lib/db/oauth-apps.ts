@@ -1,15 +1,15 @@
 import "server-only";
 
-import { eq, and } from "drizzle-orm";
-import { db } from "./index";
-import { platformOauthApps } from "./schema";
+import { and, eq } from "drizzle-orm";
+import { ensureDefaultPlatform } from "@/lib/platform-service";
 import {
-  encryptString,
   decryptString,
   type EncryptedObject,
+  encryptString,
 } from "@/lib/security/encryption";
 import { generateId } from "@/lib/utils/id";
-import { ensureDefaultPlatform } from "@/lib/platform-service";
+import { db } from "./index";
+import { platformOauthApps } from "./schema";
 
 export type DecryptedOAuthApp = {
   id: string;
@@ -36,7 +36,9 @@ function decryptOAuthApp(
   };
 }
 
-function toSummary(row: typeof platformOauthApps.$inferSelect): OAuthAppSummary {
+function toSummary(
+  row: typeof platformOauthApps.$inferSelect
+): OAuthAppSummary {
   return {
     id: row.id,
     pieceName: row.pieceName,
@@ -56,7 +58,9 @@ export async function getOAuthAppByPieceName(
     ),
   });
 
-  if (!row) return null;
+  if (!row) {
+    return null;
+  }
   return decryptOAuthApp(row);
 }
 

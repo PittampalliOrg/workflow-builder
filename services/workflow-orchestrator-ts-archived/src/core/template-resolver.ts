@@ -24,12 +24,12 @@ function getNestedValue(obj: unknown, path: string): unknown {
 
   for (const part of parts) {
     if (current === null || current === undefined) {
-      return undefined;
+      return;
     }
     if (typeof current === "object" && current !== null) {
       current = (current as Record<string, unknown>)[part];
     } else {
-      return undefined;
+      return;
     }
   }
 
@@ -43,10 +43,7 @@ function getNestedValue(obj: unknown, path: string): unknown {
  * @param nodeOutputs Map of node outputs
  * @returns The resolved value or the original template if not found
  */
-function resolveTemplate(
-  template: string,
-  nodeOutputs: NodeOutputs
-): unknown {
+function resolveTemplate(template: string, nodeOutputs: NodeOutputs): unknown {
   // Extract the path from the template (remove {{ and }})
   const path = template.slice(2, -2).trim();
   const parts = path.split(".");
@@ -81,10 +78,7 @@ function resolveTemplate(
  * @param nodeOutputs Map of node outputs
  * @returns The string with all templates resolved
  */
-function resolveStringTemplates(
-  str: string,
-  nodeOutputs: NodeOutputs
-): string {
+function resolveStringTemplates(str: string, nodeOutputs: NodeOutputs): string {
   // Check if the entire string is a single template
   const singleTemplateMatch = str.match(/^\{\{([^}]+)\}\}$/);
   if (singleTemplateMatch) {

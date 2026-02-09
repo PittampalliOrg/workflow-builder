@@ -3,10 +3,14 @@ import {
   AppConnectionType,
   OAuth2AuthorizationMethod,
   type OAuth2ConnectionValueWithApp,
-  type PlatformOAuth2ConnectionValue,
   OAuth2GrantType,
+  type PlatformOAuth2ConnectionValue,
 } from "@/lib/types/app-connection";
-import { parsePieceAuthAll, PieceAuthType, type OAuth2AuthConfig } from "@/lib/types/piece-auth";
+import {
+  type OAuth2AuthConfig,
+  PieceAuthType,
+  parsePieceAuthAll,
+} from "@/lib/types/piece-auth";
 
 export function resolveValueFromProps(
   value: string,
@@ -33,7 +37,9 @@ export function getOAuth2AuthConfig(
   }
 
   const configs = parsePieceAuthAll(piece.auth);
-  const oauth2 = configs.find((c) => c.type === PieceAuthType.OAUTH2) as OAuth2AuthConfig | undefined;
+  const oauth2 = configs.find((c) => c.type === PieceAuthType.OAUTH2) as
+    | OAuth2AuthConfig
+    | undefined;
   return oauth2 ?? null;
 }
 
@@ -114,12 +120,18 @@ export async function exchangeOAuth2Code(params: {
       body.scope = resolveValueFromProps(params.scope, params.props);
       if (params.props) {
         for (const [key, value] of Object.entries(params.props)) {
-          if (value === undefined || value === null) continue;
-          if (typeof value === "object") continue;
+          if (value === undefined || value === null) {
+            continue;
+          }
+          if (typeof value === "object") {
+            continue;
+          }
           body[key] = String(value);
         }
       }
       break;
+    default:
+      throw new Error(`Unsupported OAuth2 grant type: ${grantType}`);
   }
 
   if (params.codeVerifier) {
@@ -144,6 +156,10 @@ export async function exchangeOAuth2Code(params: {
         `${params.clientId}:${params.clientSecret}`
       ).toString("base64")}`;
       break;
+    default:
+      throw new Error(
+        `Unsupported OAuth2 authorization method: ${authorizationMethod}`
+      );
   }
 
   const response = await fetch(params.tokenUrl, {
@@ -241,6 +257,10 @@ export async function exchangeOAuth2CodePlatform(params: {
         `${params.clientId}:${params.clientSecret}`
       ).toString("base64")}`;
       break;
+    default:
+      throw new Error(
+        `Unsupported OAuth2 authorization method: ${authorizationMethod}`
+      );
   }
 
   const response = await fetch(params.tokenUrl, {

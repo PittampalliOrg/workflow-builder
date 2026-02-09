@@ -1,20 +1,24 @@
 import useSWR from "swr";
-import type { WorkflowListItem, WorkflowUIStatus, WorkflowDetail } from "@/lib/types/workflow-ui";
+import type {
+  WorkflowDetail,
+  WorkflowListItem,
+  WorkflowUIStatus,
+} from "@/lib/types/workflow-ui";
 
-interface MonitorWorkflowsResponse {
+type MonitorWorkflowsResponse = {
   workflows: WorkflowListItem[];
   total: number;
   limit: number;
   offset: number;
-}
+};
 
-interface UseMonitorWorkflowsOptions {
+type UseMonitorWorkflowsOptions = {
   search?: string;
   status?: WorkflowUIStatus[];
   limit?: number;
   offset?: number;
   refreshInterval?: number;
-}
+};
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -33,8 +37,12 @@ export function useMonitorWorkflows(options: UseMonitorWorkflowsOptions = {}) {
 
   // Build query parameters
   const params = new URLSearchParams();
-  if (search) params.set("search", search);
-  if (status && status.length > 0) params.set("status", status.join(","));
+  if (search) {
+    params.set("search", search);
+  }
+  if (status && status.length > 0) {
+    params.set("status", status.join(","));
+  }
   params.set("limit", limit.toString());
   params.set("offset", offset.toString());
 
@@ -69,9 +77,9 @@ export function useMonitorWorkflows(options: UseMonitorWorkflowsOptions = {}) {
  * @param refreshInterval - Polling interval in ms (0 to disable)
  */
 export function useDaprWorkflow(
-  appId: string,
+  _appId: string,
   instanceId: string,
-  refreshInterval: number = 3000
+  refreshInterval = 3000
 ) {
   const url = instanceId ? `/api/monitor/${instanceId}` : null;
 

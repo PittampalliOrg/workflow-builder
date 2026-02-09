@@ -9,12 +9,11 @@
  * - Registry-based routing with wildcard and default fallback support
  */
 import { DaprClient, HttpMethod } from "@dapr/dapr";
-import type {
-  ActivityExecutionRequest,
-  ActivityExecutionResult,
-  SerializedNode,
-} from "../core/types.js";
-import { resolveTemplates, type NodeOutputs } from "../core/template-resolver.js";
+import {
+  type NodeOutputs,
+  resolveTemplates,
+} from "../core/template-resolver.js";
+import type { ActivityExecutionResult, SerializedNode } from "../core/types.js";
 
 // Function router dispatches to OpenFunctions (Knative serverless)
 // All function execution routes through function-router exclusively
@@ -27,7 +26,7 @@ const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 /**
  * Input for the execute action activity
  */
-export interface ExecuteActionInput {
+export type ExecuteActionInput = {
   node: SerializedNode;
   nodeOutputs: NodeOutputs;
   executionId: string;
@@ -35,7 +34,7 @@ export interface ExecuteActionInput {
   integrations?: Record<string, Record<string, string>>;
   /** Database execution ID for logging (links to workflow_executions.id) */
   dbExecutionId?: string;
-}
+};
 
 /**
  * Execute an action node by calling the function-router service
@@ -46,7 +45,14 @@ export async function executeAction(
   _ctx: unknown,
   input: ExecuteActionInput
 ): Promise<ActivityExecutionResult> {
-  const { node, nodeOutputs, executionId, workflowId, integrations, dbExecutionId } = input;
+  const {
+    node,
+    nodeOutputs,
+    executionId,
+    workflowId,
+    integrations,
+    dbExecutionId,
+  } = input;
   // Ensure config is never undefined to prevent runtime errors
   const config = (node.config || {}) as Record<string, unknown>;
 
@@ -88,16 +94,16 @@ export async function executeAction(
     input: resolvedConfig,
     node_outputs: nodeOutputs,
     integration_id: integrationId,
-    integrations: integrations, // Pass user's integrations for credential resolution
+    integrations, // Pass user's integrations for credential resolution
     db_execution_id: dbExecutionId, // Database execution ID for logging
   };
 
   const targetService = FUNCTION_ROUTER_APP_ID;
 
-  console.log(
-    `[Execute Action] Invoking function-router for ${functionSlug}`,
-    { nodeId: node.id, nodeName }
-  );
+  console.log(`[Execute Action] Invoking function-router for ${functionSlug}`, {
+    nodeId: node.id,
+    nodeName,
+  });
 
   const startTime = Date.now();
 
@@ -122,10 +128,10 @@ export async function executeAction(
     // Parse response
     const result = response as ActivityExecutionResult;
 
-    console.log(
-      `[Execute Action] Function ${functionSlug} completed`,
-      { success: result.success, duration_ms }
-    );
+    console.log(`[Execute Action] Function ${functionSlug} completed`, {
+      success: result.success,
+      duration_ms,
+    });
 
     return {
       success: result.success,
@@ -135,8 +141,7 @@ export async function executeAction(
     };
   } catch (error) {
     const duration_ms = Date.now() - startTime;
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(
       `[Execute Action] Failed to invoke ${targetService} for ${functionSlug}:`,

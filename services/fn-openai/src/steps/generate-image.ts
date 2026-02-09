@@ -28,13 +28,17 @@ export async function generateImageStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "OPENAI_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "OPENAI_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
   const modelId = input.imageModel || "dall-e-3";
   const promptText = input.imagePrompt || "";
-  const size = (input.imageSize || "1024x1024") as "1024x1024" | "1792x1024" | "1024x1792";
+  const size = (input.imageSize || "1024x1024") as
+    | "1024x1024"
+    | "1792x1024"
+    | "1024x1792";
 
   if (!promptText || promptText.trim() === "") {
     return {

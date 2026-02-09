@@ -70,9 +70,10 @@ async function fetchConfigFromDapr(key: string): Promise<string | null> {
     return null;
   }
 
-  const stores = DAPR_CONFIG_STORE === "azureappconfig"
-    ? ["azureappconfig"]
-    : [DAPR_CONFIG_STORE, "azureappconfig"];
+  const stores =
+    DAPR_CONFIG_STORE === "azureappconfig"
+      ? ["azureappconfig"]
+      : [DAPR_CONFIG_STORE, "azureappconfig"];
 
   for (const storeName of stores) {
     try {

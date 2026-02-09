@@ -54,14 +54,20 @@ export const TimerNode = memo(({ data, selected, id }: TimerNodeProps) => {
 
   // Format duration for display
   const formatDuration = (seconds: number): string => {
-    if (seconds < 60) return `${seconds}s`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+    if (seconds < 60) {
+      return `${seconds}s`;
+    }
+    if (seconds < 3600) {
+      return `${Math.floor(seconds / 60)}m`;
+    }
     return `${Math.floor(seconds / 3600)}h`;
   };
 
   const displayDescription =
     data.description ||
-    (durationSeconds > 0 ? `Wait ${formatDuration(durationSeconds)}` : "Set duration");
+    (durationSeconds > 0
+      ? `Wait ${formatDuration(durationSeconds)}`
+      : "Set duration");
 
   return (
     <Node

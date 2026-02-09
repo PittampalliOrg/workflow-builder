@@ -5,16 +5,17 @@
  * Ships with 25 AP piece npm packages pre-installed.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from 'fastify';
-import cors from '@fastify/cors';
-import { z } from 'zod';
-import { executeAction } from './executor.js';
-import { fetchOptions, type OptionsRequest } from './options-executor.js';
-import { listPieceNames } from './piece-registry.js';
-import type { ExecuteRequest, ExecuteResponse } from './types.js';
 
-const PORT = parseInt(process.env.PORT || '8080', 10);
-const HOST = process.env.HOST || '0.0.0.0';
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import { executeAction } from "./executor.js";
+import { fetchOptions, type OptionsRequest } from "./options-executor.js";
+import { listPieceNames } from "./piece-registry.js";
+import type { ExecuteRequest, ExecuteResponse } from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
+const HOST = process.env.HOST || "0.0.0.0";
 
 // Request schema
 const ExecuteRequestSchema = z.object({
@@ -45,37 +46,37 @@ const ExecuteRequestSchema = z.object({
 async function main() {
   const app = Fastify({
     logger: {
-      level: process.env.LOG_LEVEL || 'info',
+      level: process.env.LOG_LEVEL || "info",
     },
   });
 
   // Register CORS
   await app.register(cors, {
     origin: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true,
   });
 
   // Health routes
-  app.get('/healthz', async (_request, reply) => {
-    return reply.status(200).send({ status: 'healthy' });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get('/readyz', async (_request, reply) => {
-    return reply.status(200).send({ status: 'ready' });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get('/health', async (_request, reply) => {
-    return reply.status(200).send({ status: 'healthy' });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // List installed pieces
-  app.get('/pieces', async (_request, reply) => {
-    return reply.status(200).send({
+  app.get("/pieces", async (_request, reply) =>
+    reply.status(200).send({
       pieces: listPieceNames(),
       count: listPieceNames().length,
-    });
-  });
+    })
+  );
 
   // Options route — fetch dynamic dropdown options for a prop
   const OptionsRequestSchema = z.object({
@@ -87,11 +88,11 @@ async function main() {
     searchValue: z.string().optional(),
   });
 
-  app.post<{ Body: OptionsRequest }>('/options', async (request, reply) => {
+  app.post<{ Body: OptionsRequest }>("/options", async (request, reply) => {
     const parseResult = OptionsRequestSchema.safeParse(request.body);
     if (!parseResult.success) {
       return reply.status(400).send({
-        error: 'Validation failed',
+        error: "Validation failed",
         details: parseResult.error.issues,
       });
     }
@@ -108,8 +109,7 @@ async function main() {
       );
       return reply.status(200).send(result);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
       console.error(
         `[fn-activepieces] Options fetch failed for ${body.pieceName}/${body.actionName}.${body.propertyName}:`,
         error
@@ -122,14 +122,14 @@ async function main() {
   });
 
   // Execute route
-  app.post<{ Body: ExecuteRequest }>('/execute', async (request, reply) => {
+  app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
     // Validate request body
     const parseResult = ExecuteRequestSchema.safeParse(request.body);
 
     if (!parseResult.success) {
       return reply.status(400).send({
         success: false,
-        error: 'Validation failed',
+        error: "Validation failed",
         details: parseResult.error.issues,
         duration_ms: 0,
       } as ExecuteResponse);
@@ -171,7 +171,7 @@ async function main() {
     await app.listen({ port: PORT, host: HOST });
     console.log(`fn-activepieces listening on ${HOST}:${PORT}`);
     console.log(
-      `Installed pieces: ${listPieceNames().join(', ')} (${listPieceNames().length} total)`
+      `Installed pieces: ${listPieceNames().join(", ")} (${listPieceNames().length} total)`
     );
   } catch (err) {
     app.log.error(err);

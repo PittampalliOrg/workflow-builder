@@ -5,13 +5,13 @@
  * updates the local execution record.
  */
 
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
+import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { eq, and } from "drizzle-orm";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
-import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 
 export async function GET(
   request: Request,
@@ -50,11 +50,12 @@ export async function GET(
         .where(eq(workflows.id, execution.workflowId))
         .limit(1);
 
-      if (!workflow || (workflow.userId !== session.user.id && workflow.visibility !== "public")) {
-        return NextResponse.json(
-          { error: "Access denied" },
-          { status: 403 }
-        );
+      if (
+        !workflow ||
+        (workflow.userId !== session.user.id &&
+          workflow.visibility !== "public")
+      ) {
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
       }
     }
 
@@ -92,7 +93,9 @@ export async function GET(
               phase: status.phase,
               progress: status.progress,
               output: status.outputs || null,
-              ...(localStatus === "success" || localStatus === "error" || localStatus === "cancelled"
+              ...(localStatus === "success" ||
+              localStatus === "error" ||
+              localStatus === "cancelled"
                 ? { completedAt: new Date() }
                 : {}),
             })
@@ -168,8 +171,6 @@ function mapRuntimeStatusToLocalStatus(
       return "cancelled";
     case "PENDING":
       return "pending";
-    case "RUNNING":
-    case "SUSPENDED":
     default:
       return "running";
   }

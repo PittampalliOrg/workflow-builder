@@ -1,21 +1,20 @@
 "use client";
 
+import { ArrowLeft, ExternalLink, Loader2, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Search, ExternalLink, Loader2, ArrowLeft } from "lucide-react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogFooter,
-  DialogDescription,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -23,19 +22,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { api, type OAuthAppSummary, type PieceMetadata } from "@/lib/api-client";
+import { Textarea } from "@/components/ui/textarea";
 import {
-  type PieceAuthConfig,
-  parsePieceAuthAll,
-  PieceAuthType,
-  type PieceAuthProperty,
-  PiecePropertyType,
-} from "@/lib/types/piece-auth";
+  api,
+  type OAuthAppSummary,
+  type PieceMetadata,
+} from "@/lib/api-client";
 import {
   AppConnectionType,
   OAuth2GrantType,
   type UpsertAppConnectionRequestBody,
 } from "@/lib/types/app-connection";
+import {
+  type PieceAuthConfig,
+  type PieceAuthProperty,
+  PieceAuthType,
+  PiecePropertyType,
+  parsePieceAuthAll,
+} from "@/lib/types/piece-auth";
 
 type NewConnectionDialogProps = {
   open: boolean;
@@ -74,7 +78,9 @@ function usePieceAuth(pieceName: string | null) {
       })
       .catch(() => {})
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -100,11 +106,11 @@ function AuthSetupInstructions({ description }: { description: string }) {
       <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground hover:text-foreground">
         Setup instructions
       </summary>
-      <div className="border-t px-3 py-2 space-y-1">
+      <div className="space-y-1 border-t px-3 py-2">
         {lines.map((line, i) => (
           <p
-            key={i}
             className="my-0.5 text-muted-foreground text-xs leading-relaxed"
+            key={`${line.trim()}-${i}`}
           >
             {line.trim()}
           </p>
@@ -141,13 +147,13 @@ export function NewConnectionDialog({
   const [oauthProps, setOauthProps] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
   const [oauthConnecting, setOauthConnecting] = useState(false);
-  const [oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(
+  const [_oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(
     OAuth2GrantType.AUTHORIZATION_CODE
   );
 
   // Platform OAuth apps (fetched once)
   const [oauthApps, setOauthApps] = useState<OAuthAppSummary[]>([]);
-  const [oauthAppsLoaded, setOauthAppsLoaded] = useState(false);
+  const [_oauthAppsLoaded, setOauthAppsLoaded] = useState(false);
 
   const {
     authConfigs,
@@ -159,19 +165,24 @@ export function NewConnectionDialog({
 
   const isOAuth2 = selectedAuthConfig?.type === PieceAuthType.OAUTH2;
   const oauth2AuthConfig = isOAuth2
-    ? (selectedAuthConfig as Extract<ParsedAuthConfig, { type: PieceAuthType.OAUTH2 }>)
+    ? (selectedAuthConfig as Extract<
+        ParsedAuthConfig,
+        { type: PieceAuthType.OAUTH2 }
+      >)
     : null;
 
-  const supportsClientCredentials =
+  const _supportsClientCredentials =
     oauth2AuthConfig?.grantType === OAuth2GrantType.CLIENT_CREDENTIALS ||
     oauth2AuthConfig?.grantType ===
       "both_client_credentials_and_authorization_code";
-  const supportsAuthCode =
+  const _supportsAuthCode =
     oauth2AuthConfig?.grantType !== OAuth2GrantType.CLIENT_CREDENTIALS;
 
   // Sync grant type with piece config
   useEffect(() => {
-    if (!oauth2AuthConfig) return;
+    if (!oauth2AuthConfig) {
+      return;
+    }
     if (oauth2AuthConfig.grantType === OAuth2GrantType.CLIENT_CREDENTIALS) {
       setOauthGrantType(OAuth2GrantType.CLIENT_CREDENTIALS);
       return;
@@ -196,7 +207,9 @@ export function NewConnectionDialog({
 
   // Fetch platform OAuth apps
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      return;
+    }
     api.oauthApp
       .list()
       .then((apps) => {
@@ -211,14 +224,16 @@ export function NewConnectionDialog({
   const platformOAuthApp = useMemo(
     () =>
       selectedPiece
-        ? oauthApps.find((a) => a.pieceName === selectedPiece.name) ?? null
+        ? (oauthApps.find((a) => a.pieceName === selectedPiece.name) ?? null)
         : null,
     [oauthApps, selectedPiece]
   );
 
   // Fetch pieces for Step 1
   useEffect(() => {
-    if (!open || preselectedPiece) return;
+    if (!open || preselectedPiece) {
+      return;
+    }
     setPiecesLoading(true);
     api.piece
       .list()
@@ -230,11 +245,11 @@ export function NewConnectionDialog({
   }, [open, preselectedPiece]);
 
   const filteredPieces = useMemo(() => {
-    if (!searchQuery.trim()) return pieces;
+    if (!searchQuery.trim()) {
+      return pieces;
+    }
     const q = searchQuery.toLowerCase();
-    return pieces.filter((p) =>
-      p.displayName.toLowerCase().includes(q)
-    );
+    return pieces.filter((p) => p.displayName.toLowerCase().includes(q));
   }, [pieces, searchQuery]);
 
   const connectionLabel =
@@ -252,7 +267,9 @@ export function NewConnectionDialog({
   // Non-OAuth save
   // ---------------------------------------------------------------------------
   const buildUpsertBody = (): UpsertAppConnectionRequestBody | null => {
-    if (!selectedPiece) return null;
+    if (!selectedPiece) {
+      return null;
+    }
     const base = {
       externalId: connectionExternalId,
       displayName: connectionLabel,
@@ -260,12 +277,16 @@ export function NewConnectionDialog({
       projectId: "default",
     } as const;
 
-    if (!selectedAuthConfig) return null;
+    if (!selectedAuthConfig) {
+      return null;
+    }
 
     switch (selectedAuthConfig.type) {
       case PieceAuthType.SECRET_TEXT: {
         const secret_text = config.secret_text?.trim();
-        if (!secret_text) return null;
+        if (!secret_text) {
+          return null;
+        }
         return {
           ...base,
           type: AppConnectionType.SECRET_TEXT,
@@ -275,7 +296,9 @@ export function NewConnectionDialog({
       case PieceAuthType.BASIC_AUTH: {
         const username = config.username?.trim() || "";
         const password = config.password?.trim() || "";
-        if (!username || !password) return null;
+        if (!(username && password)) {
+          return null;
+        }
         return {
           ...base,
           type: AppConnectionType.BASIC_AUTH,
@@ -289,7 +312,9 @@ export function NewConnectionDialog({
         const missingRequired = requiredKeys.filter(
           (k) => customProps[k] == null || customProps[k] === ""
         );
-        if (missingRequired.length > 0) return null;
+        if (missingRequired.length > 0) {
+          return null;
+        }
         return {
           ...base,
           type: AppConnectionType.CUSTOM_AUTH,
@@ -366,16 +391,19 @@ export function NewConnectionDialog({
     }
   }, []);
 
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       cleanupOAuthListeners();
       closeOAuthPopup();
       processingRef.current = false;
-    };
-  }, [cleanupOAuthListeners, closeOAuthPopup]);
+    },
+    [cleanupOAuthListeners, closeOAuthPopup]
+  );
 
   const handleOAuth2Connect = async () => {
-    if (!selectedPiece) return;
+    if (!selectedPiece) {
+      return;
+    }
 
     try {
       setOauthConnecting(true);
@@ -429,7 +457,9 @@ export function NewConnectionDialog({
 
       // Process callback from either postMessage or localStorage
       const processCallbackResult = async (data: Record<string, unknown>) => {
-        if (processingRef.current) return;
+        if (processingRef.current) {
+          return;
+        }
 
         if (data.error) {
           processingRef.current = true;
@@ -444,7 +474,9 @@ export function NewConnectionDialog({
           return;
         }
 
-        if (!data.code) return;
+        if (!data.code) {
+          return;
+        }
 
         processingRef.current = true;
         cleanupOAuthListeners();
@@ -462,8 +494,7 @@ export function NewConnectionDialog({
         }
 
         const code = decodeURIComponent(data.code as string);
-        const returnedState =
-          typeof data.state === "string" ? data.state : "";
+        const returnedState = typeof data.state === "string" ? data.state : "";
         const oauthState = oauthStateRef.current;
         if (!oauthState) {
           toast.error("OAuth state lost — please try again");
@@ -479,11 +510,12 @@ export function NewConnectionDialog({
         }
 
         try {
-          const name = displayName.trim() || `${selectedPiece!.displayName} Connection`;
+          const name =
+            displayName.trim() || `${selectedPiece?.displayName} Connection`;
           await api.appConnection.upsert({
             externalId: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
             displayName: name,
-            pieceName: selectedPiece!.name,
+            pieceName: selectedPiece?.name,
             projectId: "default",
             type: AppConnectionType.PLATFORM_OAUTH2,
             value: {
@@ -512,10 +544,16 @@ export function NewConnectionDialog({
 
       // Channel 1: postMessage
       const messageHandler = (event: MessageEvent) => {
-        if (!redirectUrl || !redirectUrl.startsWith(event.origin)) return;
+        if (!redirectUrl?.startsWith(event.origin)) {
+          return;
+        }
         const d = event.data;
-        if (!d || typeof d !== "object") return;
-        if (!d.code && !d.error) return;
+        if (!d || typeof d !== "object") {
+          return;
+        }
+        if (!(d.code || d.error)) {
+          return;
+        }
         processCallbackResult(d);
       };
       messageHandlerRef.current = messageHandler;
@@ -523,12 +561,15 @@ export function NewConnectionDialog({
 
       // Channel 2: localStorage (fallback for COOP)
       const storageHandler = (event: StorageEvent) => {
-        if (!event.newValue) return;
+        if (!event.newValue) {
+          return;
+        }
         if (
           event.key !== storageKey &&
           event.key !== "oauth2_callback_result"
-        )
+        ) {
           return;
+        }
         try {
           const d = JSON.parse(event.newValue);
           processCallbackResult(d);
@@ -609,9 +650,7 @@ export function NewConnectionDialog({
               type="password"
               value={String(value ?? "")}
             />
-            {desc && (
-              <p className="text-muted-foreground text-xs">{desc}</p>
-            )}
+            {desc && <p className="text-muted-foreground text-xs">{desc}</p>}
           </div>
         );
       case PiecePropertyType.LONG_TEXT:
@@ -626,9 +665,7 @@ export function NewConnectionDialog({
               rows={3}
               value={String(value ?? "")}
             />
-            {desc && (
-              <p className="text-muted-foreground text-xs">{desc}</p>
-            )}
+            {desc && <p className="text-muted-foreground text-xs">{desc}</p>}
           </div>
         );
       case PiecePropertyType.NUMBER:
@@ -642,9 +679,7 @@ export function NewConnectionDialog({
               type="number"
               value={value != null ? String(value) : ""}
             />
-            {desc && (
-              <p className="text-muted-foreground text-xs">{desc}</p>
-            )}
+            {desc && <p className="text-muted-foreground text-xs">{desc}</p>}
           </div>
         );
       case PiecePropertyType.CHECKBOX:
@@ -684,12 +719,9 @@ export function NewConnectionDialog({
                 ))}
               </SelectContent>
             </Select>
-            {desc && (
-              <p className="text-muted-foreground text-xs">{desc}</p>
-            )}
+            {desc && <p className="text-muted-foreground text-xs">{desc}</p>}
           </div>
         );
-      case PiecePropertyType.SHORT_TEXT:
       default:
         return (
           <div className="space-y-2" key={propKey}>
@@ -700,9 +732,7 @@ export function NewConnectionDialog({
               placeholder={desc || `Enter ${dn.toLowerCase()}`}
               value={String(value ?? "")}
             />
-            {desc && (
-              <p className="text-muted-foreground text-xs">{desc}</p>
-            )}
+            {desc && <p className="text-muted-foreground text-xs">{desc}</p>}
           </div>
         );
     }
@@ -774,11 +804,11 @@ export function NewConnectionDialog({
                       src={piece.logoUrl}
                     />
                   ) : (
-                    <div className="flex size-8 items-center justify-center rounded bg-muted text-xs font-medium">
+                    <div className="flex size-8 items-center justify-center rounded bg-muted font-medium text-xs">
                       {piece.displayName.charAt(0)}
                     </div>
                   )}
-                  <span className="line-clamp-2 text-xs font-medium">
+                  <span className="line-clamp-2 font-medium text-xs">
                     {piece.displayName}
                   </span>
                 </button>
@@ -794,15 +824,15 @@ export function NewConnectionDialog({
   // Step 2: Auth Form
   // ---------------------------------------------------------------------------
   const renderStep2 = () => {
-    if (!selectedPiece) return null;
+    if (!selectedPiece) {
+      return null;
+    }
 
     if (authLoading) {
       return (
         <>
           <DialogHeader>
-            <DialogTitle>
-              Connect {selectedPiece.displayName}
-            </DialogTitle>
+            <DialogTitle>Connect {selectedPiece.displayName}</DialogTitle>
             <DialogDescription>Loading auth configuration...</DialogDescription>
           </DialogHeader>
           <div className="flex items-center justify-center py-8">
@@ -826,9 +856,7 @@ export function NewConnectionDialog({
             Connect {selectedPiece.displayName}
           </DialogTitle>
           <DialogDescription>
-            {isOAuth2
-              ? "Connect via OAuth2"
-              : "Enter credentials"}
+            {isOAuth2 ? "Connect via OAuth2" : "Enter credentials"}
           </DialogDescription>
         </DialogHeader>
 
@@ -857,10 +885,7 @@ export function NewConnectionDialog({
                 </SelectTrigger>
                 <SelectContent>
                   {authConfigs.map((cfg, idx) => (
-                    <SelectItem
-                      key={`${cfg.type}-${idx}`}
-                      value={String(idx)}
-                    >
+                    <SelectItem key={`${cfg.type}-${idx}`} value={String(idx)}>
                       {cfg.displayName
                         ? `${cfg.displayName} (${cfg.type})`
                         : cfg.type}
@@ -882,16 +907,18 @@ export function NewConnectionDialog({
           {isOAuth2 ? (
             <>
               {platformOAuthApp ? (
-                <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+                <div className="rounded-md border bg-muted/30 px-3 py-2 text-muted-foreground text-sm">
                   OAuth credentials configured by your administrator.
                 </div>
               ) : (
                 <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-                  OAuth app not configured for this piece. Ask your administrator to set it up in Settings.
+                  OAuth app not configured for this piece. Ask your
+                  administrator to set it up in Settings.
                 </div>
               )}
               {/* Extra OAuth2 props */}
-              {platformOAuthApp && oauth2AuthConfig?.props &&
+              {platformOAuthApp &&
+                oauth2AuthConfig?.props &&
                 Object.entries(oauth2AuthConfig.props).map(([key, prop]) =>
                   renderPiecePropertyField({
                     propKey: key,
@@ -902,17 +929,16 @@ export function NewConnectionDialog({
                   })
                 )}
               {/* Scopes display */}
-              {oauth2AuthConfig?.scope &&
-                oauth2AuthConfig.scope.length > 0 && (
-                  <div className="space-y-1">
-                    <Label className="text-muted-foreground text-xs">
-                      Scopes
-                    </Label>
-                    <p className="rounded-md bg-muted/50 px-3 py-2 font-mono text-xs">
-                      {oauth2AuthConfig.scope.join(", ")}
-                    </p>
-                  </div>
-                )}
+              {oauth2AuthConfig?.scope && oauth2AuthConfig.scope.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-muted-foreground text-xs">
+                    Scopes
+                  </Label>
+                  <p className="rounded-md bg-muted/50 px-3 py-2 font-mono text-xs">
+                    {oauth2AuthConfig.scope.join(", ")}
+                  </p>
+                </div>
+              )}
             </>
           ) : selectedAuthConfig?.type === PieceAuthType.SECRET_TEXT ? (
             <div className="space-y-2">
@@ -982,11 +1008,7 @@ export function NewConnectionDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:gap-0">
-          <Button
-            onClick={handleBack}
-            type="button"
-            variant="outline"
-          >
+          <Button onClick={handleBack} type="button" variant="outline">
             <ArrowLeft className="mr-2 size-4" />
             Back
           </Button>
@@ -1012,7 +1034,7 @@ export function NewConnectionDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-2xl">
         {step === 1 ? renderStep1() : renderStep2()}
       </DialogContent>

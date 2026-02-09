@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { daprClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
-import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
+import type { WorkflowNode } from "@/lib/workflow-store";
 
 // Validate API key and return the user ID if valid
 async function validateApiKey(
@@ -69,7 +69,12 @@ const corsHeaders = {
 
 async function executeDaprWorkflowBackground(
   executionId: string,
-  workflow: { id: string; userId: string; nodes: unknown; edges: unknown } & Record<string, unknown>,
+  workflow: {
+    id: string;
+    userId: string;
+    nodes: unknown;
+    edges: unknown;
+  } & Record<string, unknown>,
   input: Record<string, unknown>
 ) {
   try {
@@ -192,16 +197,23 @@ export async function POST(
     console.log("[Webhook] Created execution:", execution.id);
 
     // Execute the workflow in the background (don't await)
-    const engineType = (workflow as Record<string, unknown>).engineType as string | undefined;
+    const engineType = (workflow as Record<string, unknown>).engineType as
+      | string
+      | undefined;
     if (engineType === "dapr") {
-      executeDaprWorkflowBackground(execution.id, workflow as typeof workflow & Record<string, unknown>, body);
+      executeDaprWorkflowBackground(
+        execution.id,
+        workflow as typeof workflow & Record<string, unknown>,
+        body
+      );
     } else {
       // Legacy workflows can no longer be executed
       await db
         .update(workflowExecutions)
         .set({
           status: "error",
-          error: "Legacy Vercel workflow execution is no longer supported. Please migrate to Dapr.",
+          error:
+            "Legacy Vercel workflow execution is no longer supported. Please migrate to Dapr.",
           completedAt: new Date(),
         })
         .where(eq(workflowExecutions.id, execution.id));

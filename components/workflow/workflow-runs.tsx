@@ -16,6 +16,7 @@ import {
 import Image from "next/image";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { api } from "@/lib/api-client";
 import {
   OUTPUT_DISPLAY_CONFIGS,
@@ -32,7 +33,6 @@ import {
 import { findActionById } from "@/plugins";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { toast } from "sonner";
 
 type ExecutionLog = {
   id: string;
@@ -460,9 +460,12 @@ function DaprExecutionDetails({
 
   // Determine status icon and color based on phase
   const getPhaseStatus = () => {
-    if (phase === "completed") return "success";
-    if (phase === "failed" || phase === "rejected" || phase === "timed_out")
+    if (phase === "completed") {
+      return "success";
+    }
+    if (phase === "failed" || phase === "rejected" || phase === "timed_out") {
       return "error";
+    }
     return "running";
   };
 
@@ -513,7 +516,9 @@ function DaprExecutionDetails({
       {phase === "awaiting_approval" && (
         <div className="flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
           <ShieldCheck className="size-5 text-amber-400" />
-          <span className="flex-1 text-sm font-medium">Plan review required</span>
+          <span className="flex-1 font-medium text-sm">
+            Plan review required
+          </span>
           <div className="flex gap-2">
             <Button
               disabled={isApproving}
@@ -888,7 +893,16 @@ export function WorkflowRuns({
         );
 
         // Track status updates to merge with fetched data
-        const statusUpdates: Record<string, { status: string; phase: string | null; progress: number | null; currentNodeId?: string | null; currentNodeName?: string | null }> = {};
+        const statusUpdates: Record<
+          string,
+          {
+            status: string;
+            phase: string | null;
+            progress: number | null;
+            currentNodeId?: string | null;
+            currentNodeName?: string | null;
+          }
+        > = {};
 
         for (const execution of runningExecutions) {
           try {
@@ -896,10 +910,12 @@ export function WorkflowRuns({
             const statusResponse = await api.dapr.getStatus(execution.id);
 
             // Collect status updates to merge
-            if (statusResponse.status !== execution.status ||
-                statusResponse.phase !== execution.phase ||
-                statusResponse.progress !== execution.progress ||
-                statusResponse.currentNodeId !== execution.currentNodeId) {
+            if (
+              statusResponse.status !== execution.status ||
+              statusResponse.phase !== execution.phase ||
+              statusResponse.progress !== execution.progress ||
+              statusResponse.currentNodeId !== execution.currentNodeId
+            ) {
               statusUpdates[execution.id] = {
                 status: statusResponse.status,
                 phase: statusResponse.phase,
@@ -916,8 +932,12 @@ export function WorkflowRuns({
           } catch (error) {
             // Log error and mark as error to stop the spinner
             // Any error polling status means we should stop the spinner
-            const errorMessage = error instanceof Error ? error.message : String(error);
-            console.warn(`Failed to poll status for ${execution.id}, marking as error:`, errorMessage);
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            console.warn(
+              `Failed to poll status for ${execution.id}, marking as error:`,
+              errorMessage
+            );
 
             // Mark as error locally to stop the spinner
             statusUpdates[execution.id] = {
@@ -939,7 +959,7 @@ export function WorkflowRuns({
         if (Object.keys(statusUpdates).length > 0) {
           newExecutions = newExecutions.map((e) =>
             statusUpdates[e.id]
-              ? { ...e, ...statusUpdates[e.id] } as WorkflowExecution
+              ? ({ ...e, ...statusUpdates[e.id] } as WorkflowExecution)
               : e
           );
         }
@@ -960,7 +980,14 @@ export function WorkflowRuns({
 
     const interval = setInterval(pollExecutions, 2000);
     return () => clearInterval(interval);
-  }, [isActive, currentWorkflowId, executions, expandedRuns, refreshExecutionLogs, selectedExecutionId, setCurrentRunningNodeId]);
+  }, [
+    isActive,
+    currentWorkflowId,
+    expandedRuns,
+    refreshExecutionLogs,
+    selectedExecutionId,
+    setCurrentRunningNodeId,
+  ]);
 
   const toggleRun = async (executionId: string) => {
     const newExpanded = new Set(expandedRuns);
@@ -1119,14 +1146,15 @@ export function WorkflowRuns({
                       </span>
                     </>
                   )}
-                  {execution.status === "running" && execution.currentNodeName && (
-                    <>
-                      <span>•</span>
-                      <span className="truncate max-w-[140px]">
-                        {execution.currentNodeName}
-                      </span>
-                    </>
-                  )}
+                  {execution.status === "running" &&
+                    execution.currentNodeName && (
+                      <>
+                        <span>•</span>
+                        <span className="max-w-[140px] truncate">
+                          {execution.currentNodeName}
+                        </span>
+                      </>
+                    )}
                   {executionLogs.length > 0 && (
                     <>
                       <span>•</span>

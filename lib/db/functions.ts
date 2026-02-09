@@ -3,10 +3,10 @@ import "server-only";
 import { and, eq, like, or, sql } from "drizzle-orm";
 import { db } from "./index";
 import {
+  type FunctionExecutionType,
+  type Function as FunctionType,
   functions,
   type NewFunction,
-  type Function as FunctionType,
-  type FunctionExecutionType,
   type RetryPolicy,
 } from "./schema";
 
@@ -258,36 +258,66 @@ export async function updateFunction(
     updatedAt: new Date(),
   };
 
-  if (input.name !== undefined) updateData.name = input.name;
-  if (input.description !== undefined)
+  if (input.name !== undefined) {
+    updateData.name = input.name;
+  }
+  if (input.description !== undefined) {
     updateData.description = input.description;
-  if (input.pluginId !== undefined) updateData.pluginId = input.pluginId;
-  if (input.version !== undefined) updateData.version = input.version;
-  if (input.executionType !== undefined)
+  }
+  if (input.pluginId !== undefined) {
+    updateData.pluginId = input.pluginId;
+  }
+  if (input.version !== undefined) {
+    updateData.version = input.version;
+  }
+  if (input.executionType !== undefined) {
     updateData.executionType = input.executionType;
-  if (input.imageRef !== undefined) updateData.imageRef = input.imageRef;
-  if (input.command !== undefined) updateData.command = input.command;
-  if (input.workingDir !== undefined) updateData.workingDir = input.workingDir;
-  if (input.containerEnv !== undefined)
+  }
+  if (input.imageRef !== undefined) {
+    updateData.imageRef = input.imageRef;
+  }
+  if (input.command !== undefined) {
+    updateData.command = input.command;
+  }
+  if (input.workingDir !== undefined) {
+    updateData.workingDir = input.workingDir;
+  }
+  if (input.containerEnv !== undefined) {
     updateData.containerEnv = input.containerEnv;
-  if (input.webhookUrl !== undefined) updateData.webhookUrl = input.webhookUrl;
-  if (input.webhookMethod !== undefined)
+  }
+  if (input.webhookUrl !== undefined) {
+    updateData.webhookUrl = input.webhookUrl;
+  }
+  if (input.webhookMethod !== undefined) {
     updateData.webhookMethod = input.webhookMethod;
-  if (input.webhookHeaders !== undefined)
+  }
+  if (input.webhookHeaders !== undefined) {
     updateData.webhookHeaders = input.webhookHeaders;
-  if (input.webhookTimeoutSeconds !== undefined)
+  }
+  if (input.webhookTimeoutSeconds !== undefined) {
     updateData.webhookTimeoutSeconds = input.webhookTimeoutSeconds;
-  if (input.inputSchema !== undefined) updateData.inputSchema = input.inputSchema;
-  if (input.outputSchema !== undefined)
+  }
+  if (input.inputSchema !== undefined) {
+    updateData.inputSchema = input.inputSchema;
+  }
+  if (input.outputSchema !== undefined) {
     updateData.outputSchema = input.outputSchema;
-  if (input.timeoutSeconds !== undefined)
+  }
+  if (input.timeoutSeconds !== undefined) {
     updateData.timeoutSeconds = input.timeoutSeconds;
-  if (input.retryPolicy !== undefined) updateData.retryPolicy = input.retryPolicy;
-  if (input.maxConcurrency !== undefined)
+  }
+  if (input.retryPolicy !== undefined) {
+    updateData.retryPolicy = input.retryPolicy;
+  }
+  if (input.maxConcurrency !== undefined) {
     updateData.maxConcurrency = input.maxConcurrency;
-  if (input.integrationType !== undefined)
+  }
+  if (input.integrationType !== undefined) {
     updateData.integrationType = input.integrationType;
-  if (input.isEnabled !== undefined) updateData.isEnabled = input.isEnabled;
+  }
+  if (input.isEnabled !== undefined) {
+    updateData.isEnabled = input.isEnabled;
+  }
 
   const [result] = await db
     .update(functions)
@@ -338,10 +368,12 @@ export async function validateFunctionSlugs(
   const existing = await db
     .select({ slug: functions.slug })
     .from(functions)
-    .where(and(
-      sql`${functions.slug} IN ${uniqueSlugs}`,
-      eq(functions.isEnabled, true)
-    ));
+    .where(
+      and(
+        sql`${functions.slug} IN ${uniqueSlugs}`,
+        eq(functions.isEnabled, true)
+      )
+    );
 
   const existingSlugs = new Set(existing.map((r) => r.slug));
   return uniqueSlugs.filter((slug) => !existingSlugs.has(slug));

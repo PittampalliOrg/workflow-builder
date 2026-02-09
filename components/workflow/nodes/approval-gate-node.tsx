@@ -10,10 +10,7 @@ import {
   NodeTitle,
 } from "@/components/ai-elements/node";
 import { cn } from "@/lib/utils";
-import {
-  daprPhaseAtom,
-  type WorkflowNodeData,
-} from "@/lib/workflow-store";
+import { daprPhaseAtom, type WorkflowNodeData } from "@/lib/workflow-store";
 
 const StatusBadge = ({
   status,
@@ -55,13 +52,10 @@ export const ApprovalGateNode = memo(
       return null;
     }
 
-    const eventName =
-      (data.config?.eventName as string) || "approval_event";
-    const timeoutHours =
-      (data.config?.timeoutHours as number) || 24;
+    const eventName = (data.config?.eventName as string) || "approval_event";
+    const timeoutHours = (data.config?.timeoutHours as number) || 24;
     const displayTitle = data.label || "Approval Gate";
-    const displayDescription =
-      data.description || `Wait for ${eventName}`;
+    const displayDescription = data.description || `Wait for ${eventName}`;
     const status = data.status;
 
     const isWaitingForApproval = daprPhase === "awaiting_approval";
@@ -82,10 +76,8 @@ export const ApprovalGateNode = memo(
         <div className="flex flex-col items-center justify-center gap-3 p-6">
           <ShieldCheck
             className={cn(
-              "size-12 strokeWidth-[1.5]",
-              isWaitingForApproval
-                ? "text-amber-400"
-                : "text-amber-300"
+              "strokeWidth-[1.5] size-12",
+              isWaitingForApproval ? "text-amber-400" : "text-amber-300"
             )}
             strokeWidth={1.5}
           />

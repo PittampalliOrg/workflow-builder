@@ -1,97 +1,113 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
+  <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Planner Agent - Workflow Event Viewer</title>
     <link rel="stylesheet" href="/static/css/app.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fira+Code&display=swap" rel="stylesheet">
-</head>
-<body>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Fira+Code&display=swap"
+      rel="stylesheet"
+    >
+  </head>
+  <body>
     <div id="app">
-        <!-- Header -->
-        <header>
-            <div class="logo">
-                <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="40" height="40" rx="8" fill="#3b82f6"/>
-                    <path d="M12 20h16M20 12v16" stroke="white" stroke-width="2.5" stroke-linecap="round"/>
-                    <circle cx="12" cy="20" r="2" fill="white"/>
-                    <circle cx="28" cy="20" r="2" fill="white"/>
-                    <circle cx="20" cy="12" r="2" fill="white"/>
-                    <circle cx="20" cy="28" r="2" fill="white"/>
-                </svg>
-                <h1>Planner Agent</h1>
+      <!-- Header -->
+      <header>
+        <div class="logo">
+          <svg
+            viewBox="0 0 40 40"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <rect width="40" height="40" rx="8" fill="#3b82f6" />
+            <path
+              d="M12 20h16M20 12v16"
+              stroke="white"
+              stroke-width="2.5"
+              stroke-linecap="round"
+            />
+            <circle cx="12" cy="20" r="2" fill="white" />
+            <circle cx="28" cy="20" r="2" fill="white" />
+            <circle cx="20" cy="12" r="2" fill="white" />
+            <circle cx="20" cy="28" r="2" fill="white" />
+          </svg>
+          <h1>Planner Agent</h1>
+        </div>
+        <div class="connection-status">
+          <span class="status-dot" id="status-dot"></span>
+          <span id="status-text">Disconnected</span>
+        </div>
+      </header>
+
+      <!-- Main Content -->
+      <main>
+        <!-- Sidebar -->
+        <aside class="sidebar">
+          <!-- Task Input -->
+          <div class="card">
+            <h2>New Task</h2>
+            <div class="task-input">
+              <textarea
+                id="task-input"
+                placeholder="Describe your coding task...&#10;&#10;Example: Create a Python function that calculates factorial"
+              ></textarea>
+              <button id="submit-btn">Start Workflow</button>
             </div>
-            <div class="connection-status">
-                <span class="status-dot" id="status-dot"></span>
-                <span id="status-text">Disconnected</span>
+          </div>
+
+          <!-- Workflow Info -->
+          <div class="card">
+            <h2>Workflow Status</h2>
+            <div class="workflow-info">
+              <div class="info-row">
+                <span class="label">Workflow ID</span>
+                <span class="value" id="workflow-id">-</span>
+              </div>
+              <div class="info-row">
+                <span class="label">Status</span>
+                <span class="status-badge" id="workflow-status">-</span>
+              </div>
+              <div class="info-row">
+                <span class="label">Phase</span>
+                <span class="value" id="workflow-phase">-</span>
+              </div>
+              <div class="info-row">
+                <span class="label">Progress</span>
+                <span class="value" id="workflow-progress">0%</span>
+              </div>
+              <div class="progress-bar">
+                <div class="fill" id="progress-fill" style="width: 0%"></div>
+              </div>
             </div>
-        </header>
 
-        <!-- Main Content -->
-        <main>
-            <!-- Sidebar -->
-            <aside class="sidebar">
-                <!-- Task Input -->
-                <div class="card">
-                    <h2>New Task</h2>
-                    <div class="task-input">
-                        <textarea
-                            id="task-input"
-                            placeholder="Describe your coding task...&#10;&#10;Example: Create a Python function that calculates factorial"
-                        ></textarea>
-                        <button id="submit-btn">Start Workflow</button>
-                    </div>
-                </div>
-
-                <!-- Workflow Info -->
-                <div class="card">
-                    <h2>Workflow Status</h2>
-                    <div class="workflow-info">
-                        <div class="info-row">
-                            <span class="label">Workflow ID</span>
-                            <span class="value" id="workflow-id">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Status</span>
-                            <span class="status-badge" id="workflow-status">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Phase</span>
-                            <span class="value" id="workflow-phase">-</span>
-                        </div>
-                        <div class="info-row">
-                            <span class="label">Progress</span>
-                            <span class="value" id="workflow-progress">0%</span>
-                        </div>
-                        <div class="progress-bar">
-                            <div class="fill" id="progress-fill" style="width: 0%"></div>
-                        </div>
-                    </div>
-
-                    <!-- Approval Buttons -->
-                    <div class="approval-buttons" id="approval-buttons" style="display: none;">
-                        <button class="approve" id="approve-btn">Approve</button>
-                        <button class="reject" id="reject-btn">Reject</button>
-                    </div>
-                </div>
-            </aside>
-
-            <!-- Events Panel -->
-            <div class="card events-panel">
-                <div class="events-header">
-                    <h2>Events</h2>
-                    <span class="events-count" id="events-count">0</span>
-                </div>
-                <div class="events-list" id="events-list">
-                    <!-- Events will be appended here -->
-                </div>
+            <!-- Approval Buttons -->
+            <div
+              class="approval-buttons"
+              id="approval-buttons"
+              style="display: none;"
+            >
+              <button class="approve" id="approve-btn">Approve</button>
+              <button class="reject" id="reject-btn">Reject</button>
             </div>
-        </main>
+          </div>
+        </aside>
+
+        <!-- Events Panel -->
+        <div class="card events-panel">
+          <div class="events-header">
+            <h2>Events</h2>
+            <span class="events-count" id="events-count">0</span>
+          </div>
+          <div class="events-list" id="events-list">
+            <!-- Events will be appended here -->
+          </div>
+        </div>
+      </main>
     </div>
 
     <script src="/static/js/app.js"></script>
-</body>
+  </body>
 </html>

@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import {
-  getFunctionById,
-  updateFunction,
   deleteFunction,
   type FunctionDefinition,
+  getFunctionById,
   type UpdateFunctionInput,
+  updateFunction,
 } from "@/lib/db/functions";
 import type { FunctionExecutionType, RetryPolicy } from "@/lib/db/schema";
 
@@ -66,14 +66,17 @@ export type DeleteFunctionResponse = {
  * GET /api/functions/[id]
  * Get a function by ID
  */
-export async function GET(request: Request, { params }: RouteParams) {
+export async function GET(_request: Request, { params }: RouteParams) {
   try {
     const { id } = await params;
 
     const fn = await getFunctionById(id);
 
     if (!fn) {
-      return NextResponse.json({ error: "Function not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Function not found" },
+        { status: 404 }
+      );
     }
 
     const response: GetFunctionResponse = fn;
@@ -108,7 +111,10 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     // Check if function exists
     const existing = await getFunctionById(id);
     if (!existing) {
-      return NextResponse.json({ error: "Function not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Function not found" },
+        { status: 404 }
+      );
     }
 
     // Check if user can update this function
@@ -205,7 +211,10 @@ export async function DELETE(request: Request, { params }: RouteParams) {
     // Check if function exists
     const existing = await getFunctionById(id);
     if (!existing) {
-      return NextResponse.json({ error: "Function not found" }, { status: 404 });
+      return NextResponse.json(
+        { error: "Function not found" },
+        { status: 404 }
+      );
     }
 
     // Check if user can delete this function

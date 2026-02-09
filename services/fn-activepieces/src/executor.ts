@@ -3,21 +3,22 @@
  *
  * Loads the AP piece, finds the action, builds the context, and runs it.
  */
-import { getPiece } from './piece-registry.js';
-import { buildActionContext } from './context-factory.js';
-import type { ExecuteRequest } from './types.js';
 
-export interface ExecutionResult {
+import { buildActionContext } from "./context-factory.js";
+import { getPiece } from "./piece-registry.js";
+import type { ExecuteRequest } from "./types.js";
+
+export type ExecutionResult = {
   success: boolean;
   data?: unknown;
   error?: string;
   pause?: {
-    type: 'DELAY' | 'WEBHOOK';
+    type: "DELAY" | "WEBHOOK";
     resumeDateTime?: string;
     requestId?: string;
     response?: unknown;
   };
-}
+};
 
 /**
  * Resolve pieceName and actionName from the request.
@@ -39,7 +40,7 @@ function resolveNames(request: ExecuteRequest): {
   }
 
   // The step name might be in "pieceName/actionName" format
-  const slashIdx = request.step.indexOf('/');
+  const slashIdx = request.step.indexOf("/");
   if (slashIdx > 0) {
     return {
       pieceName: request.step.slice(0, slashIdx),
@@ -78,7 +79,7 @@ function resolveAuth(request: ExecuteRequest): unknown {
     const values = Object.values(request.credentials);
     if (values.length === 1) {
       return {
-        type: 'SECRET_TEXT',
+        type: "SECRET_TEXT",
         secret_text: values[0],
       };
     }
@@ -86,7 +87,7 @@ function resolveAuth(request: ExecuteRequest): unknown {
     return request.credentials;
   }
 
-  return undefined;
+  return;
 }
 
 /**
@@ -106,24 +107,24 @@ async function executeCodeStep(
   if (!sourceCode?.code) {
     return {
       success: false,
-      error: 'No source code provided for CODE step',
+      error: "No source code provided for CODE step",
     };
   }
 
-  console.log(`[fn-activepieces] Executing CODE step`);
+  console.log("[fn-activepieces] Executing CODE step");
 
   try {
     // Wrap the AP code: it exports `code` as an async function
     // Strip `export` keywords — AsyncFunction body is not an ES module
-    const strippedCode = sourceCode.code.replace(/\bexport\s+/g, '');
+    const strippedCode = sourceCode.code.replace(/\bexport\s+/g, "");
 
     const wrappedCode = `
       ${strippedCode}
       ;return typeof code === 'function' ? code(inputs) : undefined;
     `;
 
-    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const fn = new AsyncFunction('inputs', wrappedCode);
+    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+    const fn = new AsyncFunction("inputs", wrappedCode);
     const result = await fn(codeInput);
 
     return {
@@ -132,7 +133,7 @@ async function executeCodeStep(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(`[fn-activepieces] CODE step failed:`, error);
+    console.error("[fn-activepieces] CODE step failed:", error);
     return {
       success: false,
       error: `Code execution failed: ${message}`,
@@ -147,23 +148,22 @@ export async function executeAction(
   request: ExecuteRequest
 ): Promise<ExecutionResult> {
   // Handle CODE steps specially — they don't use AP pieces
-  if (request.step === '_code/execute' || request.step.startsWith('_code/')) {
+  if (request.step === "_code/execute" || request.step.startsWith("_code/")) {
     return executeCodeStep(request);
   }
 
   const { pieceName, actionName } = resolveNames(request);
 
-  console.log(
-    `[fn-activepieces] Executing ${pieceName}/${actionName}`
-  );
+  console.log(`[fn-activepieces] Executing ${pieceName}/${actionName}`);
 
   // Look up piece
   const piece = getPiece(pieceName);
   if (!piece) {
     return {
       success: false,
-      error: `Piece "${pieceName}" is not installed in fn-activepieces. ` +
-        `Available pieces: ${(await import('./piece-registry.js')).listPieceNames().join(', ')}`,
+      error:
+        `Piece "${pieceName}" is not installed in fn-activepieces. ` +
+        `Available pieces: ${(await import("./piece-registry.js")).listPieceNames().join(", ")}`,
     };
   }
 
@@ -172,8 +172,9 @@ export async function executeAction(
   if (!action) {
     return {
       success: false,
-      error: `Action "${actionName}" not found in piece "${pieceName}". ` +
-        `Check the piece metadata for available action names.`,
+      error:
+        `Action "${actionName}" not found in piece "${pieceName}". ` +
+        "Check the piece metadata for available action names.",
     };
   }
 
@@ -209,8 +210,7 @@ export async function executeAction(
       data: result,
     };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[fn-activepieces] Action ${pieceName}/${actionName} failed:`,
       error

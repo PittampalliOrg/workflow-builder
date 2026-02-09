@@ -11,29 +11,30 @@
  * - Dapr state store for workflow state persistence
  * - Dapr pub/sub for event publishing
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
+
 import { WorkflowRuntime } from "@dapr/dapr";
-import { healthRoutes } from "./routes/health.js";
-import { workflowRoutes } from "./routes/workflows.js";
-import { configRoutes } from "./routes/config.js";
-import { dynamicWorkflow } from "./workflows/dynamic-workflow.js";
+import cors from "@fastify/cors";
+import Fastify from "fastify";
 import {
-  executeAction,
-  persistState,
-  getState,
   deleteState,
-  publishEvent,
-  publishPhaseChanged,
-  publishWorkflowStarted,
-  publishWorkflowCompleted,
-  publishWorkflowFailed,
-  publishApprovalRequested,
-  logExternalEvent,
+  executeAction,
+  getState,
   logApprovalRequest,
   logApprovalResponse,
   logApprovalTimeout,
+  logExternalEvent,
+  persistState,
+  publishApprovalRequested,
+  publishEvent,
+  publishPhaseChanged,
+  publishWorkflowCompleted,
+  publishWorkflowFailed,
+  publishWorkflowStarted,
 } from "./activities/index.js";
+import { configRoutes } from "./routes/config.js";
+import { healthRoutes } from "./routes/health.js";
+import { workflowRoutes } from "./routes/workflows.js";
+import { dynamicWorkflow } from "./workflows/dynamic-workflow.js";
 
 // Configuration from environment
 const PORT = Number(process.env.PORT) || 8080;
@@ -125,7 +126,9 @@ async function main() {
 
   // Graceful shutdown handler
   const shutdown = async (signal: string) => {
-    console.log(`\n[Workflow Orchestrator] Received ${signal}, shutting down...`);
+    console.log(
+      `\n[Workflow Orchestrator] Received ${signal}, shutting down...`
+    );
 
     // Stop workflow runtime first
     if (workflowRuntime) {
@@ -133,7 +136,10 @@ async function main() {
         await workflowRuntime.stop();
         console.log("[Workflow Orchestrator] Workflow runtime stopped");
       } catch (error) {
-        console.error("[Workflow Orchestrator] Error stopping workflow runtime:", error);
+        console.error(
+          "[Workflow Orchestrator] Error stopping workflow runtime:",
+          error
+        );
       }
     }
 
@@ -157,12 +163,16 @@ async function main() {
         "[Workflow Orchestrator] Failed to start workflow runtime (Dapr sidecar may not be ready):",
         error instanceof Error ? error.message : error
       );
-      console.warn("[Workflow Orchestrator] Will retry when processing requests...");
+      console.warn(
+        "[Workflow Orchestrator] Will retry when processing requests..."
+      );
     }
 
     // Start HTTP server
     await app.listen({ port: PORT, host: HOST });
-    console.log(`[Workflow Orchestrator] Server listening on http://${HOST}:${PORT}`);
+    console.log(
+      `[Workflow Orchestrator] Server listening on http://${HOST}:${PORT}`
+    );
     console.log("[Workflow Orchestrator] Ready to accept workflow requests");
 
     // If runtime failed initially, try to start it after a delay

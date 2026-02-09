@@ -6,15 +6,9 @@
  */
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
-import { SignJWT, importPKCS8, importSPKI, jwtVerify } from "jose";
+import { importPKCS8, importSPKI, jwtVerify, SignJWT } from "jose";
 import { db } from "./db";
-import {
-  platforms,
-  projectMembers,
-  projects,
-  userIdentities,
-  users,
-} from "./db/schema";
+import { userIdentities, users } from "./db/schema";
 import { ensureDefaultPlatform, getSigningKey } from "./platform-service";
 import { getOrCreateDefaultProject } from "./project-service";
 import { generateId } from "./utils/id";
@@ -69,7 +63,9 @@ export async function verifyPassword(
   // Try bcrypt first
   try {
     const bcryptMatch = await bcrypt.compare(password, hash);
-    if (bcryptMatch) return true;
+    if (bcryptMatch) {
+      return true;
+    }
   } catch {
     // Not a valid bcrypt hash, try scrypt fallback
   }
@@ -157,13 +153,17 @@ export async function verifyAccessToken(
   try {
     // First decode without verification to get platformId
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) {
+      return null;
+    }
 
     const payloadStr = Buffer.from(parts[1], "base64url").toString();
     const rawPayload = JSON.parse(payloadStr);
     const platformId = rawPayload.platformId;
 
-    if (!platformId) return null;
+    if (!platformId) {
+      return null;
+    }
 
     const publicKey = await getPublicKey(platformId);
     const { payload } = await jwtVerify(token, publicKey, {
@@ -173,7 +173,9 @@ export async function verifyAccessToken(
     const tokenPayload = payload as unknown as TokenPayload;
 
     // Check token type
-    if (tokenPayload.type !== "access") return null;
+    if (tokenPayload.type !== "access") {
+      return null;
+    }
 
     // Verify tokenVersion against DB
     const identity = await db
@@ -182,8 +184,12 @@ export async function verifyAccessToken(
       .where(eq(userIdentities.userId, tokenPayload.sub))
       .limit(1);
 
-    if (identity.length === 0) return null;
-    if (identity[0].tokenVersion !== tokenPayload.tokenVersion) return null;
+    if (identity.length === 0) {
+      return null;
+    }
+    if (identity[0].tokenVersion !== tokenPayload.tokenVersion) {
+      return null;
+    }
 
     return tokenPayload;
   } catch {
@@ -196,13 +202,17 @@ export async function verifyRefreshToken(
 ): Promise<TokenPayload | null> {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) {
+      return null;
+    }
 
     const payloadStr = Buffer.from(parts[1], "base64url").toString();
     const rawPayload = JSON.parse(payloadStr);
     const platformId = rawPayload.platformId;
 
-    if (!platformId) return null;
+    if (!platformId) {
+      return null;
+    }
 
     const publicKey = await getPublicKey(platformId);
     const { payload } = await jwtVerify(token, publicKey, {
@@ -211,7 +221,9 @@ export async function verifyRefreshToken(
 
     const tokenPayload = payload as unknown as TokenPayload;
 
-    if (tokenPayload.type !== "refresh") return null;
+    if (tokenPayload.type !== "refresh") {
+      return null;
+    }
 
     // Verify tokenVersion
     const identity = await db
@@ -220,8 +232,12 @@ export async function verifyRefreshToken(
       .where(eq(userIdentities.userId, tokenPayload.sub))
       .limit(1);
 
-    if (identity.length === 0) return null;
-    if (identity[0].tokenVersion !== tokenPayload.tokenVersion) return null;
+    if (identity.length === 0) {
+      return null;
+    }
+    if (identity[0].tokenVersion !== tokenPayload.tokenVersion) {
+      return null;
+    }
 
     return tokenPayload;
   } catch {
@@ -535,7 +551,9 @@ export async function refreshTokens(
   refreshToken: string
 ): Promise<AuthTokens | null> {
   const payload = await verifyRefreshToken(refreshToken);
-  if (!payload) return null;
+  if (!payload) {
+    return null;
+  }
 
   // Get current token version
   const identity = await db
@@ -544,7 +562,9 @@ export async function refreshTokens(
     .where(eq(userIdentities.userId, payload.sub))
     .limit(1);
 
-  if (identity.length === 0) return null;
+  if (identity.length === 0) {
+    return null;
+  }
 
   return generateTokens(
     payload.sub,

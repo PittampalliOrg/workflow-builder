@@ -5,20 +5,20 @@
  */
 
 import type {
-  WorkflowUIStatus,
-  WorkflowListItem,
-  WorkflowDetail,
-  DaprExecutionEvent,
-  DaprExecutionEventType,
-  DaprAgentTask,
-  TokenUsage,
-  TraceMetadata,
-} from "@/lib/types/workflow-ui";
-import type {
+  Workflow,
   WorkflowExecution,
   WorkflowExecutionLog,
-  Workflow,
 } from "@/lib/db/schema";
+import type {
+  DaprAgentTask,
+  DaprExecutionEvent,
+  DaprExecutionEventType,
+  TokenUsage,
+  TraceMetadata,
+  WorkflowDetail,
+  WorkflowListItem,
+  WorkflowUIStatus,
+} from "@/lib/types/workflow-ui";
 
 // ============================================================================
 // Timestamp Parsing
@@ -28,7 +28,9 @@ import type {
  * Parse a timestamp that may be in ISO format or Date object.
  * workflow-builder uses ISO 8601 timestamps directly (no protobuf parsing needed)
  */
-export function parseTimestamp(timestamp: string | Date | undefined | null): string {
+export function parseTimestamp(
+  timestamp: string | Date | undefined | null
+): string {
   if (!timestamp) {
     return "";
   }
@@ -40,7 +42,7 @@ export function parseTimestamp(timestamp: string | Date | undefined | null): str
 
   // ISO format string
   const date = new Date(timestamp);
-  if (!isNaN(date.getTime())) {
+  if (!Number.isNaN(date.getTime())) {
     return date.toISOString();
   }
 
@@ -114,12 +116,16 @@ export function calculateDuration(
   startTime: string | Date,
   endTime?: string | Date | null
 ): string | null {
-  if (!startTime) return null;
+  if (!startTime) {
+    return null;
+  }
 
   const start = new Date(startTime).getTime();
   const end = endTime ? new Date(endTime).getTime() : Date.now();
 
-  if (isNaN(start) || isNaN(end)) return null;
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return null;
+  }
 
   const durationMs = end - start;
 
@@ -129,15 +135,15 @@ export function calculateDuration(
   }
 
   // Less than 1 minute - show seconds
-  if (durationMs < 60000) {
+  if (durationMs < 60_000) {
     const seconds = Math.floor(durationMs / 1000);
     return `${seconds}s`;
   }
 
   // Less than 1 hour - show minutes and seconds
-  if (durationMs < 3600000) {
-    const minutes = Math.floor(durationMs / 60000);
-    const seconds = Math.floor((durationMs % 60000) / 1000);
+  if (durationMs < 3_600_000) {
+    const minutes = Math.floor(durationMs / 60_000);
+    const seconds = Math.floor((durationMs % 60_000) / 1000);
     if (seconds === 0) {
       return `${minutes}m`;
     }
@@ -145,8 +151,8 @@ export function calculateDuration(
   }
 
   // 1 hour or more - show hours and minutes
-  const hours = Math.floor(durationMs / 3600000);
-  const minutes = Math.floor((durationMs % 3600000) / 60000);
+  const hours = Math.floor(durationMs / 3_600_000);
+  const minutes = Math.floor((durationMs % 3_600_000) / 60_000);
   if (minutes === 0) {
     return `${hours}h`;
   }
@@ -164,7 +170,9 @@ export function calculateElapsed(
   const event = new Date(eventTimestamp).getTime();
   const reference = new Date(referenceTimestamp).getTime();
 
-  if (isNaN(event) || isNaN(reference)) return "-";
+  if (Number.isNaN(event) || Number.isNaN(reference)) {
+    return "-";
+  }
 
   const elapsedMs = event - reference;
 
@@ -174,15 +182,15 @@ export function calculateElapsed(
   }
 
   // Less than 1 minute
-  if (elapsedMs < 60000) {
+  if (elapsedMs < 60_000) {
     const seconds = Math.floor(elapsedMs / 1000);
     return `${seconds}s`;
   }
 
   // Less than 1 hour
-  if (elapsedMs < 3600000) {
-    const minutes = Math.floor(elapsedMs / 60000);
-    const seconds = Math.floor((elapsedMs % 60000) / 1000);
+  if (elapsedMs < 3_600_000) {
+    const minutes = Math.floor(elapsedMs / 60_000);
+    const seconds = Math.floor((elapsedMs % 60_000) / 1000);
     if (seconds === 0) {
       return `${minutes}m`;
     }
@@ -190,8 +198,8 @@ export function calculateElapsed(
   }
 
   // 1 hour or more
-  const hours = Math.floor(elapsedMs / 3600000);
-  const minutes = Math.floor((elapsedMs % 3600000) / 60000);
+  const hours = Math.floor(elapsedMs / 3_600_000);
+  const minutes = Math.floor((elapsedMs % 3_600_000) / 60_000);
   if (minutes === 0) {
     return `${hours}h`;
   }
@@ -205,13 +213,13 @@ export function calculateElapsed(
 /**
  * Dapr Agent Output structure
  */
-export interface DaprAgentOutput {
+export type DaprAgentOutput = {
   plan_text?: string;
   tasks?: DaprAgentTask[];
   usage?: TokenUsage;
   trace_id?: string;
   trace_metadata?: TraceMetadata;
-}
+};
 
 /**
  * Check if output is a Dapr agent output structure
@@ -256,10 +264,10 @@ export function formatTokenCount(count: number): string {
   if (count < 1000) {
     return count.toLocaleString();
   }
-  if (count < 1000000) {
+  if (count < 1_000_000) {
     return `${(count / 1000).toFixed(1)}K`;
   }
-  return `${(count / 1000000).toFixed(1)}M`;
+  return `${(count / 1_000_000).toFixed(1)}M`;
 }
 
 // ============================================================================
@@ -276,16 +284,20 @@ export function formatTokenCount(count: number): string {
  * - Older: "Jan 23, 2026"
  */
 export function formatRelativeTime(timestamp: string | Date): string {
-  if (!timestamp) return "-";
+  if (!timestamp) {
+    return "-";
+  }
 
   const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return "-";
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
 
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
+  const diffMins = Math.floor(diffMs / 60_000);
+  const diffHours = Math.floor(diffMs / 3_600_000);
+  const diffDays = Math.floor(diffMs / 86_400_000);
 
   // Format time for use in combined strings
   const timeStr = date.toLocaleTimeString("en-US", {
@@ -347,10 +359,14 @@ export function formatTimestamp(timestamp: string | Date): string {
  * Format: "23 Jan 2026 1:06:20 PM"
  */
 export function formatAbsoluteTimestamp(timestamp: string | Date): string {
-  if (!timestamp) return "-";
+  if (!timestamp) {
+    return "-";
+  }
 
   const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return "-";
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
 
   const options: Intl.DateTimeFormatOptions = {
     day: "numeric",
@@ -371,7 +387,9 @@ export function formatAbsoluteTimestamp(timestamp: string | Date): string {
  */
 export function formatTimeOnly(timestamp: string | Date): string {
   const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return "-";
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
 
   return date.toLocaleTimeString("en-US", {
     hour: "numeric",
@@ -387,7 +405,9 @@ export function formatTimeOnly(timestamp: string | Date): string {
  */
 export function formatDateTime(timestamp: string | Date): string {
   const date = new Date(timestamp);
-  if (isNaN(date.getTime())) return "-";
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
 
   const time = date.toLocaleTimeString("en-US", {
     hour: "2-digit",
@@ -451,14 +471,20 @@ export function mapExecutionLogsToEvents(
   }
 
   // Add ExecutionCompleted event if workflow is complete
-  if (workflowEnd && (workflowStatus === "success" || workflowStatus === "error" || workflowStatus === "cancelled")) {
+  if (
+    workflowEnd &&
+    (workflowStatus === "success" ||
+      workflowStatus === "error" ||
+      workflowStatus === "cancelled")
+  ) {
     events.push({
-      eventId: eventId,
+      eventId,
       eventType: "ExecutionCompleted",
       name: null,
       timestamp: parseTimestamp(workflowEnd),
       metadata: {
-        executionDuration: calculateDuration(workflowStart, workflowEnd) || undefined,
+        executionDuration:
+          calculateDuration(workflowStart, workflowEnd) || undefined,
         status: mapWorkflowStatus(workflowStatus),
       },
     });
@@ -485,7 +511,9 @@ export function toWorkflowListItem(
   workflow: Workflow
 ): WorkflowListItem {
   const startTime = parseTimestamp(execution.startedAt);
-  const endTime = execution.completedAt ? parseTimestamp(execution.completedAt) : null;
+  const endTime = execution.completedAt
+    ? parseTimestamp(execution.completedAt)
+    : null;
 
   return {
     instanceId: execution.id,
@@ -526,7 +554,10 @@ export function toWorkflowDetail(
 
   return {
     ...listItem,
-    executionDuration: calculateDuration(execution.startedAt, execution.completedAt),
+    executionDuration: calculateDuration(
+      execution.startedAt,
+      execution.completedAt
+    ),
     input: execution.input || {},
     output: execution.output || {},
     executionHistory,
@@ -544,7 +575,9 @@ export function filterWorkflowsBySearch(
   workflows: WorkflowListItem[],
   search?: string
 ): WorkflowListItem[] {
-  if (!search?.trim()) return workflows;
+  if (!search?.trim()) {
+    return workflows;
+  }
 
   const query = search.toLowerCase().trim();
   return workflows.filter(
@@ -563,7 +596,9 @@ export function filterWorkflowsByStatus(
   workflows: WorkflowListItem[],
   statuses?: WorkflowUIStatus[]
 ): WorkflowListItem[] {
-  if (!statuses?.length) return workflows;
+  if (!statuses?.length) {
+    return workflows;
+  }
   return workflows.filter((w) => statuses.includes(w.status));
 }
 
@@ -574,7 +609,9 @@ export function filterWorkflowsByAppId(
   workflows: WorkflowListItem[],
   appId?: string
 ): WorkflowListItem[] {
-  if (!appId?.trim()) return workflows;
+  if (!appId?.trim()) {
+    return workflows;
+  }
   return workflows.filter((w) => w.appId === appId);
 }
 

@@ -23,11 +23,11 @@ import type { WorkflowNameStats } from "@/lib/types/workflow-ui";
 // Types
 // ============================================================================
 
-interface WorkflowNamesTableProps {
+type WorkflowNamesTableProps = {
   workflowNames: WorkflowNameStats[];
   isLoading?: boolean;
   onRowClick?: (name: string, appId: string) => void;
-}
+};
 
 // ============================================================================
 // Skeleton Component
@@ -47,8 +47,8 @@ function WorkflowNamesTableSkeleton() {
         </TableRow>
       </TableHeader>
       <TableBody>
-        {Array.from({ length: 5 }).map((_, i) => (
-          <TableRow key={i}>
+        {["1", "2", "3", "4", "5"].map((k) => (
+          <TableRow key={k}>
             <TableCell>
               <Skeleton className="h-4 w-40" />
             </TableCell>
@@ -56,16 +56,16 @@ function WorkflowNamesTableSkeleton() {
               <Skeleton className="h-4 w-32" />
             </TableCell>
             <TableCell className="text-right">
-              <Skeleton className="h-5 w-12 ml-auto" />
+              <Skeleton className="ml-auto h-5 w-12" />
             </TableCell>
             <TableCell className="text-right">
-              <Skeleton className="h-5 w-10 ml-auto" />
+              <Skeleton className="ml-auto h-5 w-10" />
             </TableCell>
             <TableCell className="text-right">
-              <Skeleton className="h-5 w-10 ml-auto" />
+              <Skeleton className="ml-auto h-5 w-10" />
             </TableCell>
             <TableCell className="text-right">
-              <Skeleton className="h-5 w-10 ml-auto" />
+              <Skeleton className="ml-auto h-5 w-10" />
             </TableCell>
           </TableRow>
         ))}
@@ -78,10 +78,10 @@ function WorkflowNamesTableSkeleton() {
 // Row Component
 // ============================================================================
 
-interface WorkflowNameRowProps {
+type WorkflowNameRowProps = {
   stats: WorkflowNameStats;
   onClick?: () => void;
-}
+};
 
 function WorkflowNameRow({ stats, onClick }: WorkflowNameRowProps) {
   return (
@@ -92,13 +92,16 @@ function WorkflowNameRow({ stats, onClick }: WorkflowNameRowProps) {
       <TableCell className="font-medium">{stats.name}</TableCell>
       <TableCell className="text-muted-foreground">{stats.appId}</TableCell>
       <TableCell className="text-right">
-        <Badge variant="outline" className="font-mono">
+        <Badge className="font-mono" variant="outline">
           {stats.totalExecutions}
         </Badge>
       </TableCell>
       <TableCell className="text-right">
         {stats.runningCount > 0 ? (
-          <Badge variant="secondary" className="bg-amber-500/15 text-amber-600 hover:bg-amber-500/25 font-mono">
+          <Badge
+            className="bg-amber-500/15 font-mono text-amber-600 hover:bg-amber-500/25"
+            variant="secondary"
+          >
             {stats.runningCount}
           </Badge>
         ) : (
@@ -107,7 +110,10 @@ function WorkflowNameRow({ stats, onClick }: WorkflowNameRowProps) {
       </TableCell>
       <TableCell className="text-right">
         {stats.successCount > 0 ? (
-          <Badge variant="secondary" className="bg-green-500/15 text-green-600 hover:bg-green-500/25 font-mono">
+          <Badge
+            className="bg-green-500/15 font-mono text-green-600 hover:bg-green-500/25"
+            variant="secondary"
+          >
             {stats.successCount}
           </Badge>
         ) : (
@@ -116,7 +122,10 @@ function WorkflowNameRow({ stats, onClick }: WorkflowNameRowProps) {
       </TableCell>
       <TableCell className="text-right">
         {stats.failedCount > 0 ? (
-          <Badge variant="destructive" className="bg-red-500/15 text-red-600 hover:bg-red-500/25 font-mono">
+          <Badge
+            className="bg-red-500/15 font-mono text-red-600 hover:bg-red-500/25"
+            variant="destructive"
+          >
             {stats.failedCount}
           </Badge>
         ) : (
@@ -142,7 +151,7 @@ export function WorkflowNamesTable({
 
   if (!workflowNames.length) {
     return (
-      <div className="text-center py-12 text-muted-foreground">
+      <div className="py-12 text-center text-muted-foreground">
         No workflow types found
       </div>
     );
@@ -165,8 +174,12 @@ export function WorkflowNamesTable({
           {workflowNames.map((stats) => (
             <WorkflowNameRow
               key={`${stats.name}:${stats.appId}`}
+              onClick={
+                onRowClick
+                  ? () => onRowClick(stats.name, stats.appId)
+                  : undefined
+              }
               stats={stats}
-              onClick={onRowClick ? () => onRowClick(stats.name, stats.appId) : undefined}
             />
           ))}
         </TableBody>

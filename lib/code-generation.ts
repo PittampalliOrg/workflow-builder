@@ -8,11 +8,11 @@
 import { generateWorkflowDefinition } from "./workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
-export interface CodeFile {
+export type CodeFile = {
   filename: string;
   language: string;
   content: string;
-}
+};
 
 /**
  * Generate code representation for a workflow
@@ -141,9 +141,9 @@ function generateActionCode(node: WorkflowNode): string {
   };
 
   // Remove internal fields from input
-  delete invocation.input.actionType;
-  delete invocation.input.integrationId;
-  delete invocation.input.auth;
+  invocation.input.actionType = undefined;
+  invocation.input.integrationId = undefined;
+  invocation.input.auth = undefined;
 
   return `// Action: ${actionType}
 //
@@ -210,9 +210,15 @@ function generateTimerCode(node: WorkflowNode): string {
   const seconds = durationSeconds % 60;
 
   let durationStr = "";
-  if (hours > 0) durationStr += `${hours}h `;
-  if (minutes > 0) durationStr += `${minutes}m `;
-  if (seconds > 0 || durationStr === "") durationStr += `${seconds}s`;
+  if (hours > 0) {
+    durationStr += `${hours}h `;
+  }
+  if (minutes > 0) {
+    durationStr += `${minutes}m `;
+  }
+  if (seconds > 0 || durationStr === "") {
+    durationStr += `${seconds}s`;
+  }
 
   return `# Timer: ${durationStr.trim()}
 #

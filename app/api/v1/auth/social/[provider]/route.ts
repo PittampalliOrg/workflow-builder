@@ -7,11 +7,10 @@ function isSupportedProvider(provider: string): provider is Provider {
   return SUPPORTED_PROVIDERS.includes(provider as Provider);
 }
 
-const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
 export async function GET(
-  request: Request,
+  _request: Request,
   { params }: { params: Promise<{ provider: string }> }
 ) {
   try {
@@ -19,7 +18,9 @@ export async function GET(
 
     if (!isSupportedProvider(provider)) {
       return NextResponse.json(
-        { error: `Unsupported provider: ${provider}. Supported: ${SUPPORTED_PROVIDERS.join(", ")}` },
+        {
+          error: `Unsupported provider: ${provider}. Supported: ${SUPPORTED_PROVIDERS.join(", ")}`,
+        },
         { status: 400 }
       );
     }

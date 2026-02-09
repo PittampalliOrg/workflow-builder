@@ -7,8 +7,8 @@ import {
   getOAuth2AuthConfig,
 } from "@/lib/app-connections/oauth2";
 import { getSession } from "@/lib/auth-helpers";
-import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 import { getOAuthAppByPieceName } from "@/lib/db/oauth-apps";
+import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 
 export async function POST(request: Request) {
   try {
@@ -54,7 +54,10 @@ export async function POST(request: Request) {
       const oauthApp = await getOAuthAppByPieceName(body.pieceName);
       if (!oauthApp) {
         return NextResponse.json(
-          { error: "No OAuth app configured for this piece. Configure it in Settings > OAuth Apps." },
+          {
+            error:
+              "No OAuth app configured for this piece. Configure it in Settings > OAuth Apps.",
+          },
           { status: 400 }
         );
       }

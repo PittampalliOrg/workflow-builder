@@ -1,34 +1,36 @@
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import {
+  isOAuth2TokenExpired,
+  refreshOAuth2Token,
+} from "@/lib/app-connections/oauth2-refresh";
 import { getSession } from "@/lib/auth-helpers";
+import { db } from "@/lib/db";
 import { getAppConnectionByExternalIdInternal } from "@/lib/db/app-connections";
+import { appConnections } from "@/lib/db/schema";
 import { encryptObject } from "@/lib/security/encryption";
 import {
   AppConnectionType,
   type OAuth2ConnectionValueWithApp,
 } from "@/lib/types/app-connection";
-import {
-  isOAuth2TokenExpired,
-  refreshOAuth2Token,
-} from "@/lib/app-connections/oauth2-refresh";
-import { appConnections } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { db } from "@/lib/db";
 
 const FN_ACTIVEPIECES_URL =
   process.env.FN_ACTIVEPIECES_URL ||
   "http://fn-activepieces-standalone.workflow-builder.svc.cluster.local";
 
-interface OptionsRequestBody {
+type OptionsRequestBody = {
   pieceName: string;
   actionName: string;
   propertyName: string;
   connectionExternalId?: string;
   input?: Record<string, unknown>;
   searchValue?: string;
-}
+};
 
 function isValidBody(value: unknown): value is OptionsRequestBody {
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
   const body = value as Record<string, unknown>;
   return (
     typeof body.pieceName === "string" &&
@@ -54,13 +56,16 @@ export async function POST(request: Request) {
     const rawBody = await request.json();
     if (!isValidBody(rawBody)) {
       return NextResponse.json(
-        { error: "Invalid request body. Required: pieceName, actionName, propertyName" },
+        {
+          error:
+            "Invalid request body. Required: pieceName, actionName, propertyName",
+        },
         { status: 400 }
       );
     }
 
     // Resolve auth if connectionExternalId is provided
-    let authValue: unknown = undefined;
+    let authValue: unknown;
     if (rawBody.connectionExternalId) {
       const connection = await getAppConnectionByExternalIdInternal(
         rawBody.connectionExternalId
@@ -120,7 +125,10 @@ export async function POST(request: Request) {
         `[pieces/options] fn-activepieces returned ${fnResponse.status}: ${errorText}`
       );
       return NextResponse.json(
-        { error: "Failed to fetch options from fn-activepieces", details: errorText },
+        {
+          error: "Failed to fetch options from fn-activepieces",
+          details: errorText,
+        },
         { status: fnResponse.status }
       );
     }

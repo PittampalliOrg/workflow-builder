@@ -42,7 +42,9 @@ export async function getMetadata(): Promise<{
       method: "GET",
       signal: AbortSignal.timeout(5000),
     });
-    if (!response.ok) return null;
+    if (!response.ok) {
+      return null;
+    }
     return response.json();
   } catch {
     return null;
@@ -53,16 +55,16 @@ export async function getMetadata(): Promise<{
 // Configuration API
 // ============================================================================
 
-export interface ConfigurationItem {
+export type ConfigurationItem = {
   value: string;
   version?: string;
   metadata?: Record<string, string>;
-}
+};
 
-export interface ConfigurationOptions {
+export type ConfigurationOptions = {
   label?: string;
   metadata?: Record<string, string>;
-}
+};
 
 /**
  * Get configuration values from a Dapr configuration store
@@ -75,16 +77,18 @@ export async function getConfiguration(
   try {
     const url = new URL(daprUrl(`/v1.0/configuration/${storeName}`));
 
-    keys.forEach((k) => url.searchParams.append("key", k));
+    for (const k of keys) {
+      url.searchParams.append("key", k);
+    }
 
     if (options?.label) {
       url.searchParams.set("metadata.label", options.label);
     }
 
     if (options?.metadata) {
-      Object.entries(options.metadata).forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(options.metadata)) {
         url.searchParams.set(`metadata.${key}`, value);
-      });
+      }
     }
 
     const response = await fetch(url.toString(), {
@@ -98,7 +102,10 @@ export async function getConfiguration(
 
     return (await response.json()) as Record<string, ConfigurationItem>;
   } catch (error) {
-    console.error(`[Dapr] Failed to get configuration from ${storeName}:`, error);
+    console.error(
+      `[Dapr] Failed to get configuration from ${storeName}:`,
+      error
+    );
     throw error;
   }
 }
@@ -142,7 +149,10 @@ export async function getSecret(
       `Secret '${secretName}' contains multiple keys; use getSecretMap() to select the desired key`
     );
   } catch (error) {
-    console.error(`[Dapr] Failed to get secret ${secretName} from ${storeName}:`, error);
+    console.error(
+      `[Dapr] Failed to get secret ${secretName} from ${storeName}:`,
+      error
+    );
     throw error;
   }
 }
@@ -179,14 +189,17 @@ export async function getBulkSecrets(
   try {
     const response = await fetch(daprUrl(`/v1.0/secrets/${storeName}/bulk`), {
       method: "GET",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!response.ok) {
       throw new Error(`Bulk secrets get failed: ${response.status}`);
     }
 
-    const data = (await response.json()) as Record<string, Record<string, string>>;
+    const data = (await response.json()) as Record<
+      string,
+      Record<string, string>
+    >;
 
     // Flatten { secretName: { secretName: value } } to { secretName: value }
     const flattened: Record<string, string> = {};
@@ -196,7 +209,10 @@ export async function getBulkSecrets(
 
     return flattened;
   } catch (error) {
-    console.error(`[Dapr] Failed to get bulk secrets from ${storeName}:`, error);
+    console.error(
+      `[Dapr] Failed to get bulk secrets from ${storeName}:`,
+      error
+    );
     throw error;
   }
 }
@@ -205,21 +221,21 @@ export async function getBulkSecrets(
 // Service Invocation API
 // ============================================================================
 
-export interface ServiceInvokeOptions {
+export type ServiceInvokeOptions = {
   appId: string;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   body?: unknown;
   headers?: Record<string, string>;
   timeout?: number;
-}
+};
 
-export interface ServiceInvokeResponse<T = unknown> {
+export type ServiceInvokeResponse<T = unknown> = {
   ok: boolean;
   status: number;
   statusText: string;
   data: T | null;
-}
+};
 
 /**
  * Invoke a Dapr service using the dapr-app-id header pattern
@@ -233,7 +249,7 @@ export async function invokeService<T = unknown>(
     path,
     body,
     headers = {},
-    timeout = 30000,
+    timeout = 30_000,
   } = options;
 
   const requestHeaders: Record<string, string> = {
@@ -268,9 +284,13 @@ export async function invokeService<T = unknown>(
       data,
     };
   } catch (error) {
-    console.error(`[Dapr] Service invocation failed for ${appId}${path}:`, error);
+    console.error(
+      `[Dapr] Service invocation failed for ${appId}${path}:`,
+      error
+    );
 
-    const isTimeout = error instanceof DOMException && error.name === "TimeoutError";
+    const isTimeout =
+      error instanceof DOMException && error.name === "TimeoutError";
     return {
       ok: false,
       status: isTimeout ? 504 : 500,

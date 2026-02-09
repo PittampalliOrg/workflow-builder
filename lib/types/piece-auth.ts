@@ -186,7 +186,9 @@ export type OAuth2AuthConfig = {
   pkce?: boolean;
   pkceMethod?: "plain" | "S256";
   authorizationMethod?: OAuth2AuthorizationMethod;
-  grantType?: OAuth2GrantType | "both_client_credentials_and_authorization_code";
+  grantType?:
+    | OAuth2GrantType
+    | "both_client_credentials_and_authorization_code";
   extra?: Record<string, string>;
   props?: Record<string, PieceAuthProperty>;
 };
@@ -262,8 +264,9 @@ function parsePieceAuthSingle(raw: unknown): PieceAuthConfig {
         prompt: obj.prompt as OAuth2AuthConfig["prompt"],
         pkce: obj.pkce as boolean | undefined,
         pkceMethod: obj.pkceMethod as OAuth2AuthConfig["pkceMethod"],
-        authorizationMethod:
-          obj.authorizationMethod as OAuth2AuthorizationMethod | undefined,
+        authorizationMethod: obj.authorizationMethod as
+          | OAuth2AuthorizationMethod
+          | undefined,
         grantType: obj.grantType as OAuth2AuthConfig["grantType"],
         extra: obj.extra as Record<string, string> | undefined,
         props: obj.props as Record<string, PieceAuthProperty> | undefined,
@@ -282,14 +285,18 @@ function parsePieceAuthSingle(raw: unknown): PieceAuthConfig {
  * - a single auth object
  * - an array of auth objects (multiple auth methods per piece)
  */
-export function parsePieceAuthAll(raw: unknown): Array<Exclude<PieceAuthConfig, null | undefined>> {
+export function parsePieceAuthAll(
+  raw: unknown
+): Exclude<PieceAuthConfig, null | undefined>[] {
   if (!raw) {
     return [];
   }
   if (Array.isArray(raw)) {
     return raw
       .map(parsePieceAuthSingle)
-      .filter((c): c is Exclude<PieceAuthConfig, null | undefined> => Boolean(c));
+      .filter((c): c is Exclude<PieceAuthConfig, null | undefined> =>
+        Boolean(c)
+      );
   }
   const single = parsePieceAuthSingle(raw);
   return single ? [single as Exclude<PieceAuthConfig, null | undefined>] : [];

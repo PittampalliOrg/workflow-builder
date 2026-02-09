@@ -25,17 +25,17 @@ import {
 } from "@/lib/types/app-connection";
 import {
   type PieceAuthConfig,
-  parsePieceAuthAll,
+  type PieceAuthProperty,
   PieceAuthType,
   PiecePropertyType,
-  type PieceAuthProperty,
+  parsePieceAuthAll,
 } from "@/lib/types/piece-auth";
-import type { PluginType } from "@/plugins/registry";
 import {
   getIntegration,
   getIntegrationLabels,
   getSortedPluginTypes,
 } from "@/plugins";
+import type { PluginType } from "@/plugins/registry";
 import { getIntegrationDescriptions } from "@/plugins/registry";
 import { ConfirmOverlay } from "./confirm-overlay";
 import { Overlay } from "./overlay";
@@ -78,9 +78,9 @@ function AuthSetupInstructions({ description }: { description: string }) {
       <summary className="cursor-pointer px-3 py-2 font-medium text-muted-foreground hover:text-foreground">
         Setup instructions
       </summary>
-      <div className="border-t px-3 py-2 space-y-1">
+      <div className="space-y-1 border-t px-3 py-2">
         {lines.map((line, i) => (
-          <MarkdownLine key={i} text={line.trim()} />
+          <MarkdownLine key={`${line.trim()}-${i}`} text={line.trim()} />
         ))}
       </div>
     </details>
@@ -93,9 +93,11 @@ function MarkdownLine({ text }: { text: string }) {
   const parts: React.ReactNode[] = [];
   const regex = /\*\*([^*]+)\*\*|\[([^\]]+)\]\(([^)]+)\)/g;
   let lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(text)) !== null) {
+  while (true) {
+    const match = regex.exec(text);
+    if (!match) {
+      break;
+    }
     // Text before this match
     if (match.index > lastIndex) {
       parts.push(text.slice(lastIndex, match.index));
@@ -103,7 +105,7 @@ function MarkdownLine({ text }: { text: string }) {
     if (match[1]) {
       // Bold
       parts.push(
-        <strong key={match.index} className="font-semibold text-foreground">
+        <strong className="font-semibold text-foreground" key={match.index}>
           {match[1]}
         </strong>
       );
@@ -111,11 +113,11 @@ function MarkdownLine({ text }: { text: string }) {
       // Link
       parts.push(
         <a
-          key={match.index}
-          href={match[3]}
-          target="_blank"
-          rel="noopener noreferrer"
           className="text-primary underline"
+          href={match[3]}
+          key={match.index}
+          rel="noopener noreferrer"
+          target="_blank"
         >
           {match[2]}
         </a>
@@ -303,7 +305,9 @@ function usePieceAuth(pieceName: string) {
         // Piece not in metadata — fall back to plugin formFields
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
@@ -342,14 +346,17 @@ export function ConfigureConnectionOverlay({
   const [oauthConnecting, setOauthConnecting] = useState(false);
   const [oauthProps, setOauthProps] = useState<Record<string, unknown>>({});
   const [customProps, setCustomProps] = useState<Record<string, unknown>>({});
-  const [oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(
+  const [_oauthGrantType, setOauthGrantType] = useState<OAuth2GrantType>(
     OAuth2GrantType.AUTHORIZATION_CODE
   );
 
   // Platform OAuth apps
   const [oauthApps, setOauthApps] = useState<OAuthAppSummary[]>([]);
   useEffect(() => {
-    api.oauthApp.list().then(setOauthApps).catch(() => {});
+    api.oauthApp
+      .list()
+      .then(setOauthApps)
+      .catch(() => {});
   }, []);
   const platformOAuthApp = useMemo(
     () => oauthApps.find((a) => a.pieceName === type) ?? null,
@@ -372,15 +379,18 @@ export function ConfigureConnectionOverlay({
       >)
     : null;
 
-  const supportsClientCredentials =
+  const _supportsClientCredentials =
     oauth2AuthConfig?.grantType === OAuth2GrantType.CLIENT_CREDENTIALS ||
-    oauth2AuthConfig?.grantType === "both_client_credentials_and_authorization_code";
-  const supportsAuthCode =
+    oauth2AuthConfig?.grantType ===
+      "both_client_credentials_and_authorization_code";
+  const _supportsAuthCode =
     oauth2AuthConfig?.grantType !== OAuth2GrantType.CLIENT_CREDENTIALS;
 
   useEffect(() => {
     // Keep grant type in sync with what the piece declares.
-    if (!oauth2AuthConfig) return;
+    if (!oauth2AuthConfig) {
+      return;
+    }
     if (oauth2AuthConfig.grantType === OAuth2GrantType.CLIENT_CREDENTIALS) {
       setOauthGrantType(OAuth2GrantType.CLIENT_CREDENTIALS);
       return;
@@ -412,7 +422,9 @@ export function ConfigureConnectionOverlay({
     // If piece auth isn't known (not synced), fall back to existing SECRET_TEXT behavior.
     if (!selectedAuthConfig) {
       const secret_text = getFirstNonEmptyConfigValue();
-      if (!secret_text) return null;
+      if (!secret_text) {
+        return null;
+      }
       return {
         ...base,
         type: AppConnectionType.SECRET_TEXT,
@@ -425,8 +437,11 @@ export function ConfigureConnectionOverlay({
 
     switch (selectedAuthConfig.type) {
       case PieceAuthType.SECRET_TEXT: {
-        const secret_text = config.secret_text?.trim() || getFirstNonEmptyConfigValue();
-        if (!secret_text) return null;
+        const secret_text =
+          config.secret_text?.trim() || getFirstNonEmptyConfigValue();
+        if (!secret_text) {
+          return null;
+        }
         return {
           ...base,
           type: AppConnectionType.SECRET_TEXT,
@@ -439,7 +454,9 @@ export function ConfigureConnectionOverlay({
       case PieceAuthType.BASIC_AUTH: {
         const username = config.username?.trim() || "";
         const password = config.password?.trim() || "";
-        if (!username || !password) return null;
+        if (!(username && password)) {
+          return null;
+        }
         return {
           ...base,
           type: AppConnectionType.BASIC_AUTH,
@@ -454,7 +471,9 @@ export function ConfigureConnectionOverlay({
         const requiredKeys = Object.entries(selectedAuthConfig.props ?? {})
           .filter(([, prop]) => (prop as { required?: boolean }).required)
           .map(([k]) => k);
-        const missingRequired = requiredKeys.filter((k) => customProps[k] == null || customProps[k] === "");
+        const missingRequired = requiredKeys.filter(
+          (k) => customProps[k] == null || customProps[k] === ""
+        );
         if (missingRequired.length > 0) {
           return null;
         }
@@ -606,13 +625,14 @@ export function ConfigureConnectionOverlay({
     }
   }, []);
 
-  useEffect(() => {
-    return () => {
+  useEffect(
+    () => () => {
       cleanupOAuthListeners();
       closeOAuthPopup();
       processingRef.current = false;
-    };
-  }, [cleanupOAuthListeners, closeOAuthPopup]);
+    },
+    [cleanupOAuthListeners, closeOAuthPopup]
+  );
 
   const handleOAuth2Connect = async () => {
     try {
@@ -657,33 +677,55 @@ export function ConfigureConnectionOverlay({
       popupRef.current = popup;
 
       // Clear any stale localStorage result from a previous attempt
-      try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
-      try { localStorage.removeItem(storageKey); } catch { /* ok */ }
+      try {
+        localStorage.removeItem("oauth2_callback_result");
+      } catch {
+        /* ok */
+      }
+      try {
+        localStorage.removeItem(storageKey);
+      } catch {
+        /* ok */
+      }
 
       // Shared handler: processes the OAuth callback result from either channel
       const processCallbackResult = async (data: Record<string, unknown>) => {
-        if (processingRef.current) return;
+        if (processingRef.current) {
+          return;
+        }
 
         if (data.error) {
           processingRef.current = true;
           cleanupOAuthListeners();
           closeOAuthPopup();
-          const desc = (data.errorDescription || data.error || "Unknown error") as string;
+          const desc = (data.errorDescription ||
+            data.error ||
+            "Unknown error") as string;
           toast.error(`OAuth2 failed: ${desc}`);
           setOauthConnecting(false);
           processingRef.current = false;
           return;
         }
 
-        if (!data.code) return;
+        if (!data.code) {
+          return;
+        }
 
         processingRef.current = true;
         cleanupOAuthListeners();
         closeOAuthPopup();
 
         // Clean up localStorage fallback key
-        try { localStorage.removeItem("oauth2_callback_result"); } catch { /* ok */ }
-        try { localStorage.removeItem(storageKey); } catch { /* ok */ }
+        try {
+          localStorage.removeItem("oauth2_callback_result");
+        } catch {
+          /* ok */
+        }
+        try {
+          localStorage.removeItem(storageKey);
+        } catch {
+          /* ok */
+        }
 
         const code = decodeURIComponent(data.code as string);
         const returnedState = typeof data.state === "string" ? data.state : "";
@@ -736,10 +778,16 @@ export function ConfigureConnectionOverlay({
 
       // Channel 1: postMessage (works when COOP doesn't block window.opener)
       const messageHandler = (event: MessageEvent) => {
-        if (!redirectUrl || !redirectUrl.startsWith(event.origin)) return;
+        if (!redirectUrl?.startsWith(event.origin)) {
+          return;
+        }
         const data = event.data;
-        if (!data || typeof data !== "object") return;
-        if (!data.code && !data.error) return;
+        if (!data || typeof data !== "object") {
+          return;
+        }
+        if (!(data.code || data.error)) {
+          return;
+        }
         processCallbackResult(data);
       };
       messageHandlerRef.current = messageHandler;
@@ -748,8 +796,15 @@ export function ConfigureConnectionOverlay({
       // Channel 2: localStorage (fallback for COOP — Google OAuth sets
       // Cross-Origin-Opener-Policy: same-origin which severs window.opener)
       const storageHandler = (event: StorageEvent) => {
-        if (!event.newValue) return;
-        if (event.key !== storageKey && event.key !== "oauth2_callback_result") return;
+        if (!event.newValue) {
+          return;
+        }
+        if (
+          event.key !== storageKey &&
+          event.key !== "oauth2_callback_result"
+        ) {
+          return;
+        }
         try {
           const data = JSON.parse(event.newValue);
           processCallbackResult(data);
@@ -777,7 +832,9 @@ export function ConfigureConnectionOverlay({
               const data = JSON.parse(stored);
               processCallbackResult(data);
             }
-          } catch { /* ok */ }
+          } catch {
+            /* ok */
+          }
           return;
         }
 
@@ -794,7 +851,9 @@ export function ConfigureConnectionOverlay({
                 processCallbackResult(data);
                 return;
               }
-            } catch { /* ok */ }
+            } catch {
+              /* ok */
+            }
 
             cleanupOAuthListeners();
             toast.error(
@@ -849,7 +908,9 @@ export function ConfigureConnectionOverlay({
       );
     }
 
-    if (!formFields) return null;
+    if (!formFields) {
+      return null;
+    }
 
     return formFields.map((field) => {
       if (field.type === "password") {
@@ -899,7 +960,9 @@ export function ConfigureConnectionOverlay({
   };
 
   const renderAuthMethodSelect = () => {
-    if (authConfigs.length <= 1) return null;
+    if (authConfigs.length <= 1) {
+      return null;
+    }
 
     return (
       <div className="space-y-2">
@@ -914,7 +977,9 @@ export function ConfigureConnectionOverlay({
           <SelectContent>
             {authConfigs.map((cfg, idx) => (
               <SelectItem key={`${cfg.type}-${idx}`} value={String(idx)}>
-                {cfg.displayName ? `${cfg.displayName} (${cfg.type})` : cfg.type}
+                {cfg.displayName
+                  ? `${cfg.displayName} (${cfg.type})`
+                  : cfg.type}
               </SelectItem>
             ))}
           </SelectContent>
@@ -941,18 +1006,19 @@ export function ConfigureConnectionOverlay({
 
     const displayName =
       "displayName" in property ? property.displayName : propKey;
-    const description = "description" in property ? property.description : undefined;
+    const description =
+      "description" in property ? property.description : undefined;
 
     switch (property.type) {
       case PiecePropertyType.SECRET_TEXT:
         return (
           <SecretField
-            key={propKey}
             configKey={propKey}
             fieldId={propKey}
+            key={propKey}
             label={displayName}
-            placeholder={description || `Enter ${displayName.toLowerCase()}`}
             onChange={(_, v) => onChange(v)}
+            placeholder={description || `Enter ${displayName.toLowerCase()}`}
             value={String(value ?? "")}
           />
         );
@@ -1034,7 +1100,6 @@ export function ConfigureConnectionOverlay({
             )}
           </div>
         );
-      case PiecePropertyType.SHORT_TEXT:
       default:
         return (
           <div className="space-y-2" key={propKey}>
@@ -1054,7 +1119,10 @@ export function ConfigureConnectionOverlay({
   };
 
   const renderBasicAuthFields = () => {
-    if (!selectedAuthConfig || selectedAuthConfig.type !== PieceAuthType.BASIC_AUTH) {
+    if (
+      !selectedAuthConfig ||
+      selectedAuthConfig.type !== PieceAuthType.BASIC_AUTH
+    ) {
       return null;
     }
     return (
@@ -1066,7 +1134,9 @@ export function ConfigureConnectionOverlay({
           <Input
             id="username"
             onChange={(e) => updateConfig("username", e.target.value)}
-            placeholder={selectedAuthConfig.username?.description || "Enter username"}
+            placeholder={
+              selectedAuthConfig.username?.description || "Enter username"
+            }
             value={config.username || ""}
           />
         </div>
@@ -1075,7 +1145,9 @@ export function ConfigureConnectionOverlay({
           fieldId="password"
           label={selectedAuthConfig.password?.displayName || "Password"}
           onChange={updateConfig}
-          placeholder={selectedAuthConfig.password?.description || "Enter password"}
+          placeholder={
+            selectedAuthConfig.password?.description || "Enter password"
+          }
           value={config.password || ""}
         />
       </>
@@ -1083,7 +1155,10 @@ export function ConfigureConnectionOverlay({
   };
 
   const renderCustomAuthFields = () => {
-    if (!selectedAuthConfig || selectedAuthConfig.type !== PieceAuthType.CUSTOM_AUTH) {
+    if (
+      !selectedAuthConfig ||
+      selectedAuthConfig.type !== PieceAuthType.CUSTOM_AUTH
+    ) {
       return null;
     }
 
@@ -1092,7 +1167,8 @@ export function ConfigureConnectionOverlay({
     if (entries.length === 0) {
       return (
         <p className="text-muted-foreground text-sm">
-          This integration requires custom auth props, but none were defined in piece metadata.
+          This integration requires custom auth props, but none were defined in
+          piece metadata.
         </p>
       );
     }
@@ -1117,7 +1193,9 @@ export function ConfigureConnectionOverlay({
       return null;
     }
     const entries = Object.entries(oauth2AuthConfig.props);
-    if (entries.length === 0) return null;
+    if (entries.length === 0) {
+      return null;
+    }
 
     return (
       <div className="space-y-4">
@@ -1139,12 +1217,13 @@ export function ConfigureConnectionOverlay({
     <>
       {renderAuthMethodSelect()}
       {platformOAuthApp ? (
-        <div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+        <div className="rounded-md border bg-muted/30 px-3 py-2 text-muted-foreground text-sm">
           OAuth credentials configured by your administrator.
         </div>
       ) : (
         <div className="rounded-md border border-yellow-200 bg-yellow-50 px-3 py-2 text-sm text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-          OAuth app not configured for this piece. Ask your administrator to set it up in Settings.
+          OAuth app not configured for this piece. Ask your administrator to set
+          it up in Settings.
         </div>
       )}
       {platformOAuthApp && renderOAuth2PropsFields()}
@@ -1222,7 +1301,9 @@ export function ConfigureConnectionOverlay({
       overlayId={overlayId}
       title={`Add ${getLabel(type)}`}
     >
-      <p className="-mt-2 mb-4 text-muted-foreground text-sm">Enter credentials</p>
+      <p className="-mt-2 mb-4 text-muted-foreground text-sm">
+        Enter credentials
+      </p>
 
       <div className="space-y-4">
         {renderAuthMethodSelect()}

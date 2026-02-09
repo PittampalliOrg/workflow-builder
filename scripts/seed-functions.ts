@@ -13,22 +13,22 @@
  * 3. Sets executionType to "builtin" and isBuiltin to true
  * 4. Extracts input/output schemas from configFields/outputFields
  */
-import { drizzle } from "drizzle-orm/postgres-js";
+
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
 // Import plugin index to register all plugins
 import "../plugins/index.js";
 
+import { generateId } from "../lib/utils/id.js";
 // Import registry functions
 import {
+  type ActionWithFullId,
+  flattenConfigFields,
   getAllActions,
   getAllIntegrations,
-  flattenConfigFields,
-  type ActionWithFullId,
-  type IntegrationPlugin,
 } from "../plugins/registry.js";
-import { generateId } from "../lib/utils/id.js";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
@@ -36,7 +36,9 @@ const DATABASE_URL =
 /**
  * Convert plugin config fields to JSON Schema
  */
-function configFieldsToJsonSchema(action: ActionWithFullId): Record<string, unknown> {
+function configFieldsToJsonSchema(
+  action: ActionWithFullId
+): Record<string, unknown> {
   const flatFields = flattenConfigFields(action.configFields);
 
   const properties: Record<string, unknown> = {};
@@ -48,7 +50,9 @@ function configFieldsToJsonSchema(action: ActionWithFullId): Record<string, unkn
     switch (field.type) {
       case "number":
         prop.type = "number";
-        if (field.min !== undefined) prop.minimum = field.min;
+        if (field.min !== undefined) {
+          prop.minimum = field.min;
+        }
         break;
       case "select":
         prop.type = "string";
@@ -64,8 +68,12 @@ function configFieldsToJsonSchema(action: ActionWithFullId): Record<string, unkn
         prop.type = "string";
     }
 
-    if (field.placeholder) prop.description = field.placeholder;
-    if (field.defaultValue !== undefined) prop.default = field.defaultValue;
+    if (field.placeholder) {
+      prop.description = field.placeholder;
+    }
+    if (field.defaultValue !== undefined) {
+      prop.default = field.defaultValue;
+    }
 
     properties[field.key] = prop;
 
@@ -84,7 +92,9 @@ function configFieldsToJsonSchema(action: ActionWithFullId): Record<string, unkn
 /**
  * Convert plugin output fields to JSON Schema
  */
-function outputFieldsToJsonSchema(action: ActionWithFullId): Record<string, unknown> | null {
+function outputFieldsToJsonSchema(
+  action: ActionWithFullId
+): Record<string, unknown> | null {
   if (!action.outputFields || action.outputFields.length === 0) {
     return null;
   }
@@ -125,12 +135,14 @@ async function seedFunctions() {
     const actions = getAllActions();
     const integrations = getAllIntegrations();
 
-    console.log(`Found ${actions.length} actions across ${integrations.length} integrations\n`);
+    console.log(
+      `Found ${actions.length} actions across ${integrations.length} integrations\n`
+    );
 
     // Track stats
     let inserted = 0;
     let updated = 0;
-    let skipped = 0;
+    const skipped = 0;
 
     for (const action of actions) {
       const slug = action.id; // e.g., "openai/generate-text"
@@ -217,7 +229,10 @@ async function seedFunctions() {
           default: "GET",
         },
         headers: { type: "string", description: "JSON object of headers" },
-        body: { type: "string", description: "Request body (for POST/PUT/PATCH)" },
+        body: {
+          type: "string",
+          description: "Request body (for POST/PUT/PATCH)",
+        },
       },
       required: ["url"],
     };

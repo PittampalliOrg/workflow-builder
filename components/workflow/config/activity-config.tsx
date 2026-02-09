@@ -13,10 +13,10 @@ import {
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
 import {
-  getAllDaprActivities,
-  getDaprActivity,
   type DaprActivity,
   type DaprActivityConfigField,
+  getAllDaprActivities,
+  getDaprActivity,
 } from "@/lib/dapr-activity-registry";
 
 type ActivityConfigProps = {
@@ -202,10 +202,9 @@ export function ActivityConfig({
       </div>
 
       {/* Dynamic Input Fields */}
-      {selectedActivity &&
-        selectedActivity.inputFields.map((field) =>
-          renderActivityField(field, config, onUpdateConfig, disabled)
-        )}
+      {selectedActivity?.inputFields.map((field) =>
+        renderActivityField(field, config, onUpdateConfig, disabled)
+      )}
 
       {/* Timeout Override */}
       <div className="space-y-2">

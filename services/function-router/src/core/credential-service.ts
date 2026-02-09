@@ -7,15 +7,17 @@
  *
  * Includes audit logging for compliance and debugging.
  */
-import { SECRET_MAPPINGS } from "./types.js";
+
 import { getSql } from "./db.js";
+import { SECRET_MAPPINGS } from "./types.js";
 
 const DAPR_SECRETS_STORE = process.env.DAPR_SECRETS_STORE || "azure-keyvault";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 
-const WORKFLOW_BUILDER_URL = process.env.WORKFLOW_BUILDER_URL
-  || "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
+const WORKFLOW_BUILDER_URL =
+  process.env.WORKFLOW_BUILDER_URL ||
+  "http://workflow-builder.workflow-builder.svc.cluster.local:3000";
 const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 // AP server URL for direct connection decrypt (Daprized flows)
@@ -24,37 +26,34 @@ const AP_API_URL = process.env.AP_API_URL || "";
 /**
  * Credential source types for audit logging
  */
-export type CredentialSource =
-  | "dapr_secret"
-  | "request_body"
-  | "not_found";
+export type CredentialSource = "dapr_secret" | "request_body" | "not_found";
 
 /**
  * Context for resolving AP connections (project/platform scoping)
  */
-export interface ApConnectionContext {
+export type ApConnectionContext = {
   projectId: string;
   platformId: string;
-}
+};
 
 /**
  * Audit context for credential resolution
  */
-export interface CredentialAuditContext {
+export type CredentialAuditContext = {
   executionId?: string;
   nodeId?: string;
-}
+};
 
 /**
  * Result of credential fetch with audit information
  */
-export interface CredentialFetchResult {
+export type CredentialFetchResult = {
   credentials: Record<string, string>;
   source: CredentialSource;
   keys: string[];
   fallbackAttempted: boolean;
   fallbackReason?: string;
-}
+};
 
 /**
  * Fetch a single secret from Dapr secret store
@@ -66,17 +65,21 @@ async function fetchDaprSecret(secretKey: string): Promise<string | undefined> {
 
     if (!response.ok) {
       if (response.status === 404) {
-        return undefined;
+        return;
       }
-      console.warn(`[Credential Service] Dapr secret fetch failed for ${secretKey}: ${response.status}`);
-      return undefined;
+      console.warn(
+        `[Credential Service] Dapr secret fetch failed for ${secretKey}: ${response.status}`
+      );
+      return;
     }
 
-    const data = await response.json() as Record<string, string>;
+    const data = (await response.json()) as Record<string, string>;
     return data[secretKey];
   } catch (error) {
-    console.warn(`[Credential Service] Dapr secret store not available: ${error instanceof Error ? error.message : error}`);
-    return undefined;
+    console.warn(
+      `[Credential Service] Dapr secret store not available: ${error instanceof Error ? error.message : error}`
+    );
+    return;
   }
 }
 
@@ -114,7 +117,9 @@ function mapConnectionValueToEnvVars(
     case "SECRET_TEXT": {
       // Map secret_text to the first env var in the integration's mapping
       const envVar = Object.values(mapping)[0];
-      if (envVar) credentials[envVar] = String(value.secret_text);
+      if (envVar) {
+        credentials[envVar] = String(value.secret_text);
+      }
       break;
     }
     case "OAUTH2":
@@ -123,12 +128,18 @@ function mapConnectionValueToEnvVars(
       // Map access_token to whichever env var the integration expects
       const token = String(value.access_token);
       const envVar = Object.values(mapping)[0];
-      if (envVar) credentials[envVar] = token;
+      if (envVar) {
+        credentials[envVar] = token;
+      }
       break;
     }
     case "BASIC_AUTH": {
-      credentials[`${integrationType.toUpperCase()}_USERNAME`] = String(value.username);
-      credentials[`${integrationType.toUpperCase()}_PASSWORD`] = String(value.password);
+      credentials[`${integrationType.toUpperCase()}_USERNAME`] = String(
+        value.username
+      );
+      credentials[`${integrationType.toUpperCase()}_PASSWORD`] = String(
+        value.password
+      );
       break;
     }
     case "CUSTOM_AUTH": {
@@ -136,11 +147,15 @@ function mapConnectionValueToEnvVars(
       for (const [key, val] of Object.entries(props)) {
         if (val != null) {
           const envVar = mapping[key];
-          credentials[envVar || key.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()] = String(val);
+          credentials[
+            envVar || key.replace(/([a-z])([A-Z])/g, "$1_$2").toUpperCase()
+          ] = String(val);
         }
       }
       break;
     }
+    default:
+      throw new Error(`Unsupported connection type: ${String(value.type)}`);
   }
   return credentials;
 }
@@ -152,15 +167,23 @@ function mapConnectionValueToEnvVars(
 async function fetchConnectionCredentials(
   connectionExternalId: string,
   integrationType: string,
-  apContext?: ApConnectionContext,
+  apContext?: ApConnectionContext
 ): Promise<Record<string, string>> {
   try {
-    let data: { id: string; externalId: string; type: string; pieceName: string; value: Record<string, unknown> };
+    let data: {
+      id: string;
+      externalId: string;
+      type: string;
+      pieceName: string;
+      value: Record<string, unknown>;
+    };
 
     // Try AP's direct decrypt endpoint first when AP context is available
     if (AP_API_URL && apContext) {
       const url = `${AP_API_URL}/api/v1/dapr/connections/decrypt`;
-      console.log(`[Credential Service] Fetching connection ${connectionExternalId} via AP decrypt API`);
+      console.log(
+        `[Credential Service] Fetching connection ${connectionExternalId} via AP decrypt API`
+      );
 
       const response = await fetch(url, {
         method: "POST",
@@ -173,28 +196,37 @@ async function fetchConnectionCredentials(
       });
 
       if (response.ok) {
-        data = await response.json() as typeof data;
+        data = (await response.json()) as typeof data;
         const creds = mapConnectionValueToEnvVars(data.value, integrationType);
-        console.log(`[Credential Service] Fetched connection ${connectionExternalId} via AP API:`, Object.keys(creds));
+        console.log(
+          `[Credential Service] Fetched connection ${connectionExternalId} via AP API:`,
+          Object.keys(creds)
+        );
         return creds;
       }
-      console.warn(`[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`);
+      console.warn(
+        `[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`
+      );
     }
 
     // Fallback: WB internal decrypt API
     const url = `${WORKFLOW_BUILDER_URL}/api/internal/connections/${connectionExternalId}/decrypt`;
-    console.log(`[Credential Service] Fetching connection ${connectionExternalId} via WB decrypt API`);
+    console.log(
+      `[Credential Service] Fetching connection ${connectionExternalId} via WB decrypt API`
+    );
 
     const response = await fetch(url, {
       headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
     });
 
     if (!response.ok) {
-      console.warn(`[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`);
+      console.warn(
+        `[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`
+      );
       return {};
     }
 
-    data = await response.json() as typeof data;
+    data = (await response.json()) as typeof data;
 
     const creds = mapConnectionValueToEnvVars(data.value, integrationType);
     console.log(
@@ -218,15 +250,23 @@ async function fetchConnectionCredentials(
  */
 export async function fetchRawConnectionValue(
   connectionExternalId: string,
-  apContext?: ApConnectionContext,
+  apContext?: ApConnectionContext
 ): Promise<unknown | null> {
   try {
-    let data: { id: string; externalId: string; type: string; pieceName: string; value: Record<string, unknown> };
+    let data: {
+      id: string;
+      externalId: string;
+      type: string;
+      pieceName: string;
+      value: Record<string, unknown>;
+    };
 
     // Try AP's direct decrypt endpoint first when AP context is available
     if (AP_API_URL && apContext) {
       const url = `${AP_API_URL}/api/v1/dapr/connections/decrypt`;
-      console.log(`[Credential Service] Fetching raw connection ${connectionExternalId} via AP API`);
+      console.log(
+        `[Credential Service] Fetching raw connection ${connectionExternalId} via AP API`
+      );
 
       const response = await fetch(url, {
         method: "POST",
@@ -239,28 +279,38 @@ export async function fetchRawConnectionValue(
       });
 
       if (response.ok) {
-        data = await response.json() as typeof data;
-        console.log(`[Credential Service] Fetched raw connection ${connectionExternalId} via AP API: type=${data.value?.type}`);
+        data = (await response.json()) as typeof data;
+        console.log(
+          `[Credential Service] Fetched raw connection ${connectionExternalId} via AP API: type=${data.value?.type}`
+        );
         return data.value;
       }
-      console.warn(`[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`);
+      console.warn(
+        `[Credential Service] AP decrypt API returned ${response.status} for ${connectionExternalId}, falling back to WB`
+      );
     }
 
     // Fallback: WB internal decrypt API
     const url = `${WORKFLOW_BUILDER_URL}/api/internal/connections/${connectionExternalId}/decrypt`;
-    console.log(`[Credential Service] Fetching raw connection ${connectionExternalId} via WB API`);
+    console.log(
+      `[Credential Service] Fetching raw connection ${connectionExternalId} via WB API`
+    );
 
     const response = await fetch(url, {
       headers: { "X-Internal-Token": INTERNAL_API_TOKEN },
     });
 
     if (!response.ok) {
-      console.warn(`[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`);
+      console.warn(
+        `[Credential Service] Decrypt API returned ${response.status} for ${connectionExternalId}`
+      );
       return null;
     }
 
-    data = await response.json() as typeof data;
-    console.log(`[Credential Service] Fetched raw connection ${connectionExternalId}: type=${data.value?.type}`);
+    data = (await response.json()) as typeof data;
+    console.log(
+      `[Credential Service] Fetched raw connection ${connectionExternalId}: type=${data.value?.type}`
+    );
     return data.value;
   } catch (error) {
     console.warn(
@@ -288,7 +338,9 @@ function extractPassedCredentials(
   const mapping = INTEGRATION_CONFIG_TO_ENV[integrationType] || {};
 
   for (const [configKey, value] of Object.entries(integrationConfig)) {
-    if (!value) continue;
+    if (!value) {
+      continue;
+    }
 
     const envVar = mapping[configKey];
     if (envVar) {
@@ -318,7 +370,9 @@ async function fetchDaprCredentials(
 
   const credentials: Record<string, string> = {};
 
-  console.log(`[Credential Service] Fetching Dapr secrets for ${integrationType}`);
+  console.log(
+    `[Credential Service] Fetching Dapr secrets for ${integrationType}`
+  );
 
   for (const [envVar, secretKey] of Object.entries(mapping)) {
     const value = await fetchDaprSecret(secretKey);
@@ -346,9 +400,15 @@ export async function fetchCredentials(
 ): Promise<Record<string, string>> {
   // Step 1: Try passed integrations first (highest priority)
   if (passedIntegrations) {
-    const passedCreds = extractPassedCredentials(passedIntegrations, integrationType);
+    const passedCreds = extractPassedCredentials(
+      passedIntegrations,
+      integrationType
+    );
     if (Object.keys(passedCreds).length > 0) {
-      console.log(`[Credential Service] Using passed integrations for ${integrationType}:`, Object.keys(passedCreds));
+      console.log(
+        `[Credential Service] Using passed integrations for ${integrationType}:`,
+        Object.keys(passedCreds)
+      );
       return passedCreds;
     }
   }
@@ -356,11 +416,15 @@ export async function fetchCredentials(
   // Step 2: Try Dapr secrets (auto-injection)
   const daprCreds = await fetchDaprCredentials(integrationType);
   if (Object.keys(daprCreds).length > 0) {
-    console.log(`[Credential Service] Using Dapr secrets for ${integrationType}`);
+    console.log(
+      `[Credential Service] Using Dapr secrets for ${integrationType}`
+    );
     return daprCreds;
   }
 
-  console.log(`[Credential Service] No credentials found for ${integrationType}`);
+  console.log(
+    `[Credential Service] No credentials found for ${integrationType}`
+  );
   return {};
 }
 
@@ -405,9 +469,14 @@ async function logCredentialAccess(
         NOW()
       )
     `;
-    console.log(`[Credential Service] Logged credential access: ${id} (source: ${result.source})`);
+    console.log(
+      `[Credential Service] Logged credential access: ${id} (source: ${result.source})`
+    );
   } catch (error) {
-    console.error(`[Credential Service] Failed to log credential access:`, error);
+    console.error(
+      "[Credential Service] Failed to log credential access:",
+      error
+    );
     // Don't throw - audit logging failure shouldn't break execution
   }
 }
@@ -429,7 +498,7 @@ export async function fetchCredentialsWithAudit(
   passedIntegrations?: Record<string, Record<string, string>>,
   auditContext?: CredentialAuditContext,
   connectionExternalId?: string,
-  apContext?: ApConnectionContext,
+  apContext?: ApConnectionContext
 ): Promise<CredentialFetchResult> {
   let result: CredentialFetchResult = {
     credentials: {},
@@ -440,7 +509,11 @@ export async function fetchCredentialsWithAudit(
 
   // Step 0 (NEW): Try internal decrypt API — highest priority
   if (connectionExternalId) {
-    const creds = await fetchConnectionCredentials(connectionExternalId, integrationType, apContext);
+    const creds = await fetchConnectionCredentials(
+      connectionExternalId,
+      integrationType,
+      apContext
+    );
     if (Object.keys(creds).length > 0) {
       result = {
         credentials: creds,
@@ -464,9 +537,15 @@ export async function fetchCredentialsWithAudit(
 
   // Step 1: Try passed integrations (legacy fallback)
   if (passedIntegrations) {
-    const passedCreds = extractPassedCredentials(passedIntegrations, integrationType);
+    const passedCreds = extractPassedCredentials(
+      passedIntegrations,
+      integrationType
+    );
     if (Object.keys(passedCreds).length > 0) {
-      console.log(`[Credential Service] Using passed integrations for ${integrationType}:`, Object.keys(passedCreds));
+      console.log(
+        `[Credential Service] Using passed integrations for ${integrationType}:`,
+        Object.keys(passedCreds)
+      );
       result = {
         credentials: passedCreds,
         source: "request_body",
@@ -494,7 +573,9 @@ export async function fetchCredentialsWithAudit(
 
   const daprCreds = await fetchDaprCredentials(integrationType);
   if (Object.keys(daprCreds).length > 0) {
-    console.log(`[Credential Service] Using Dapr secrets for ${integrationType}`);
+    console.log(
+      `[Credential Service] Using Dapr secrets for ${integrationType}`
+    );
     result = {
       credentials: daprCreds,
       source: "dapr_secret",
@@ -517,13 +598,16 @@ export async function fetchCredentialsWithAudit(
   }
 
   // Step 3: No credentials found
-  console.log(`[Credential Service] No credentials found for ${integrationType}`);
+  console.log(
+    `[Credential Service] No credentials found for ${integrationType}`
+  );
   result = {
     credentials: {},
     source: "not_found",
     keys: [],
     fallbackAttempted: true,
-    fallbackReason: "No credentials in request body, Dapr secret store returned empty",
+    fallbackReason:
+      "No credentials in request body, Dapr secret store returned empty",
   };
 
   // Log to audit table if context provided

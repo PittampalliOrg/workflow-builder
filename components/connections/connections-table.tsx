@@ -1,27 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ColumnDef,
-  type ColumnFiltersState,
-  type RowSelectionState,
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
+  type RowSelectionState,
   useReactTable,
 } from "@tanstack/react-table";
 import { formatDistanceToNow } from "date-fns";
 import {
   MoreHorizontal,
-  Plus,
-  Search,
-  RefreshCw,
   Pencil,
-  Trash2,
   Plug,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -30,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
   TableBody,
@@ -38,19 +44,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Skeleton } from "@/components/ui/skeleton";
-import { api, type AppConnection, type PieceMetadata } from "@/lib/api-client";
+import { type AppConnection, api, type PieceMetadata } from "@/lib/api-client";
 import { AppConnectionStatus } from "@/lib/types/app-connection";
 import { ConnectionStatusBadge } from "./connection-status-badge";
+import { DeleteConnectionDialog } from "./delete-connection-dialog";
 import { NewConnectionDialog } from "./new-connection-dialog";
 import { RenameConnectionDialog } from "./rename-connection-dialog";
-import { DeleteConnectionDialog } from "./delete-connection-dialog";
 
 type ConnectionRow = AppConnection & {
   pieceDisplayName?: string;
@@ -80,7 +79,9 @@ export function ConnectionsTable() {
     name?: string;
     ids?: string[];
   }>({ open: false });
-  const [reconnectPiece, setReconnectPiece] = useState<PieceMetadata | undefined>();
+  const [reconnectPiece, setReconnectPiece] = useState<
+    PieceMetadata | undefined
+  >();
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -123,6 +124,7 @@ export function ConnectionsTable() {
         id: "select",
         header: ({ table }) => (
           <Checkbox
+            aria-label="Select all"
             checked={
               table.getIsAllPageRowsSelected() ||
               (table.getIsSomePageRowsSelected() && "indeterminate")
@@ -130,14 +132,13 @@ export function ConnectionsTable() {
             onCheckedChange={(value) =>
               table.toggleAllPageRowsSelected(!!value)
             }
-            aria-label="Select all"
           />
         ),
         cell: ({ row }) => (
           <Checkbox
+            aria-label="Select row"
             checked={row.getIsSelected()}
             onCheckedChange={(value) => row.toggleSelected(!!value)}
-            aria-label="Select row"
           />
         ),
         enableSorting: false,
@@ -154,16 +155,16 @@ export function ConnectionsTable() {
             <div className="flex items-center gap-2">
               {logoUrl ? (
                 <img
-                  src={logoUrl}
                   alt={displayName}
                   className="h-6 w-6 rounded"
+                  src={logoUrl}
                 />
               ) : (
                 <div className="flex h-6 w-6 items-center justify-center rounded bg-muted">
                   <Plug className="h-3 w-3 text-muted-foreground" />
                 </div>
               )}
-              <span className="text-sm font-medium">{displayName}</span>
+              <span className="font-medium text-sm">{displayName}</span>
             </div>
           );
         },
@@ -184,7 +185,9 @@ export function ConnectionsTable() {
           />
         ),
         filterFn: (row, _id, filterValue) => {
-          if (filterValue === "all") return true;
+          if (filterValue === "all") {
+            return true;
+          }
           return row.original.status === filterValue;
         },
       },
@@ -194,7 +197,7 @@ export function ConnectionsTable() {
         cell: ({ row }) => {
           const date = new Date(row.original.createdAt);
           return (
-            <span className="text-sm text-muted-foreground">
+            <span className="text-muted-foreground text-sm">
               {formatDistanceToNow(date, { addSuffix: true })}
             </span>
           );
@@ -207,7 +210,7 @@ export function ConnectionsTable() {
           return (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="h-8 w-8 p-0">
+                <Button className="h-8 w-8 p-0" variant="ghost">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -303,8 +306,8 @@ export function ConnectionsTable() {
           <Skeleton className="h-10 w-36" />
         </div>
         <div className="space-y-2">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Skeleton key={i} className="h-12 w-full" />
+          {["1", "2", "3", "4", "5"].map((k) => (
+            <Skeleton className="h-12 w-full" key={k} />
           ))}
         </div>
       </div>
@@ -315,17 +318,17 @@ export function ConnectionsTable() {
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2 flex-1">
+        <div className="flex flex-1 items-center gap-2">
           <div className="relative max-w-sm flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+            <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              className="pl-9"
+              onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search connections..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-9"
             />
           </div>
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select onValueChange={setStatusFilter} value={statusFilter}>
             <SelectTrigger className="w-[140px]">
               <SelectValue placeholder="Status" />
             </SelectTrigger>
@@ -339,20 +342,18 @@ export function ConnectionsTable() {
             </SelectContent>
           </Select>
           {hasSelection && (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={handleBulkDelete}
-            >
+            <Button onClick={handleBulkDelete} size="sm" variant="destructive">
               <Trash2 className="mr-2 h-4 w-4" />
               Delete ({selectedIds.length})
             </Button>
           )}
         </div>
-        <Button onClick={() => {
-          setReconnectPiece(undefined);
-          setNewDialogOpen(true);
-        }}>
+        <Button
+          onClick={() => {
+            setReconnectPiece(undefined);
+            setNewDialogOpen(true);
+          }}
+        >
           <Plus className="mr-2 h-4 w-4" />
           New Connection
         </Button>
@@ -362,8 +363,8 @@ export function ConnectionsTable() {
       {filteredData.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed py-16">
           <Plug className="mb-4 h-12 w-12 text-muted-foreground/50" />
-          <h3 className="text-lg font-medium">No connections yet</h3>
-          <p className="mt-1 text-sm text-muted-foreground">
+          <h3 className="font-medium text-lg">No connections yet</h3>
+          <p className="mt-1 text-muted-foreground text-sm">
             Connect your apps and services to use them in workflows.
           </p>
           <Button
@@ -399,8 +400,8 @@ export function ConnectionsTable() {
             <TableBody>
               {table.getRowModel().rows.map((row) => (
                 <TableRow
-                  key={row.id}
                   data-state={row.getIsSelected() && "selected"}
+                  key={row.id}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>
@@ -419,32 +420,30 @@ export function ConnectionsTable() {
 
       {/* Dialogs */}
       <NewConnectionDialog
-        open={newDialogOpen}
         onOpenChange={(open) => {
           setNewDialogOpen(open);
-          if (!open) setReconnectPiece(undefined);
+          if (!open) {
+            setReconnectPiece(undefined);
+          }
         }}
         onSuccess={handleDialogSuccess}
+        open={newDialogOpen}
         preselectedPiece={reconnectPiece}
       />
       <RenameConnectionDialog
-        open={renameDialog.open}
-        onOpenChange={(open) =>
-          setRenameDialog((prev) => ({ ...prev, open }))
-        }
         connectionId={renameDialog.id}
         currentName={renameDialog.name}
+        onOpenChange={(open) => setRenameDialog((prev) => ({ ...prev, open }))}
         onSuccess={handleDialogSuccess}
+        open={renameDialog.open}
       />
       <DeleteConnectionDialog
-        open={deleteDialog.open}
-        onOpenChange={(open) =>
-          setDeleteDialog((prev) => ({ ...prev, open }))
-        }
         connectionId={deleteDialog.id}
-        connectionName={deleteDialog.name}
         connectionIds={deleteDialog.ids}
+        connectionName={deleteDialog.name}
+        onOpenChange={(open) => setDeleteDialog((prev) => ({ ...prev, open }))}
         onSuccess={handleDialogSuccess}
+        open={deleteDialog.open}
       />
     </div>
   );

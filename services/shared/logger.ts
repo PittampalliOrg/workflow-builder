@@ -11,13 +11,13 @@
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-export interface TraceContext {
+export type TraceContext = {
   traceId?: string;
   spanId?: string;
   traceFlags?: string;
-}
+};
 
-export interface LogEntry {
+export type LogEntry = {
   timestamp: string;
   level: LogLevel;
   message: string;
@@ -25,7 +25,7 @@ export interface LogEntry {
   traceId?: string;
   spanId?: string;
   [key: string]: unknown;
-}
+};
 
 /**
  * Extract trace context from Dapr-propagated W3C traceparent header.
@@ -46,7 +46,7 @@ export function getTraceContext(
   if (headers instanceof Headers) {
     traceparent = headers.get("traceparent") ?? undefined;
   } else {
-    const value = headers["traceparent"] ?? headers["Traceparent"];
+    const value = headers.traceparent ?? headers.Traceparent;
     traceparent = Array.isArray(value) ? value[0] : value;
   }
 
@@ -167,16 +167,16 @@ export function createLoggerFromRequest(
 /**
  * Timing utilities for performance tracking
  */
-export interface TimingEntry {
+export type TimingEntry = {
   name: string;
   startMs: number;
   endMs?: number;
   durationMs?: number;
-}
+};
 
 export class TimingTracker {
-  private entries: Map<string, TimingEntry> = new Map();
-  private startTime: number;
+  private readonly entries: Map<string, TimingEntry> = new Map();
+  private readonly startTime: number;
 
   constructor() {
     this.startTime = Date.now();

@@ -36,11 +36,11 @@ type Input = z.infer<typeof InputSchema>;
 /**
  * Output type - define what your function returns
  */
-interface Output {
+type Output = {
   success: boolean;
   result?: string;
   error?: string;
-}
+};
 
 // ============================================================================
 // MAIN FUNCTION LOGIC
@@ -78,8 +78,12 @@ async function main() {
   const inputJson = process.env.INPUT || "{}";
 
   // Log context for debugging (goes to stderr, not captured as output)
-  console.error(`[Function] Execution ID: ${process.env.EXECUTION_ID || "unknown"}`);
-  console.error(`[Function] Workflow ID: ${process.env.WORKFLOW_ID || "unknown"}`);
+  console.error(
+    `[Function] Execution ID: ${process.env.EXECUTION_ID || "unknown"}`
+  );
+  console.error(
+    `[Function] Workflow ID: ${process.env.WORKFLOW_ID || "unknown"}`
+  );
   console.error(`[Function] Node ID: ${process.env.NODE_ID || "unknown"}`);
 
   try {
@@ -87,7 +91,7 @@ async function main() {
     const rawInput = JSON.parse(inputJson);
     const input = InputSchema.parse(rawInput);
 
-    console.error(`[Function] Input:`, JSON.stringify(input));
+    console.error("[Function] Input:", JSON.stringify(input));
 
     // Execute the function
     const output = await execute(input);

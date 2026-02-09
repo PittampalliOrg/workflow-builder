@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { api, type AppConnection } from "@/lib/api-client";
+import { type AppConnection, api } from "@/lib/api-client";
 import { AppConnectionType } from "@/lib/types/app-connection";
 import { getIntegration } from "@/plugins";
 import { ConfirmOverlay } from "./confirm-overlay";
@@ -152,7 +152,8 @@ export function EditConnectionOverlay({
           projectId: "default",
           value: {
             type: AppConnectionType.SECRET_TEXT,
-            secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+            secret_text:
+              Object.values(config).find((v) => v && v.length > 0) || "",
           },
           type: AppConnectionType.SECRET_TEXT,
         });
@@ -190,7 +191,8 @@ export function EditConnectionOverlay({
         pieceName: connection.pieceName,
         value: {
           type: AppConnectionType.SECRET_TEXT,
-          secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+          secret_text:
+            Object.values(config).find((v) => v && v.length > 0) || "",
         },
         type: AppConnectionType.SECRET_TEXT,
       });
@@ -238,7 +240,8 @@ export function EditConnectionOverlay({
           pieceName: connection.pieceName,
           value: {
             type: AppConnectionType.SECRET_TEXT,
-            secret_text: Object.values(config).find((v) => v && v.length > 0) || "",
+            secret_text:
+              Object.values(config).find((v) => v && v.length > 0) || "",
           },
           type: AppConnectionType.SECRET_TEXT,
         });
@@ -278,7 +281,9 @@ export function EditConnectionOverlay({
 
   // Render config fields
   const renderConfigFields = () => {
-    if (!formFields) return null;
+    if (!formFields) {
+      return null;
+    }
 
     return formFields.map((field) => {
       if (field.type === "password") {

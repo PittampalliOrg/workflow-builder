@@ -93,7 +93,9 @@ export function IntegrationsOverlay({ overlayId }: IntegrationsOverlayProps) {
 
             {/* User Connections Section */}
             <div>
-              <div className="mb-2 px-2 font-medium text-sm">Your Connections</div>
+              <div className="mb-2 px-2 font-medium text-sm">
+                Your Connections
+              </div>
               <IntegrationsManager
                 filter={filter}
                 onIntegrationChange={handleIntegrationChange}

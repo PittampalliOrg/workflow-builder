@@ -2,6 +2,8 @@ import "server-only";
 
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
+import type { DecryptedAppConnection } from "@/lib/db/app-connections";
+import { getOAuthAppByPieceName } from "@/lib/db/oauth-apps";
 import { appConnections } from "@/lib/db/schema";
 import { encryptObject } from "@/lib/security/encryption";
 import {
@@ -10,8 +12,6 @@ import {
   type OAuth2ConnectionValueWithApp,
   type PlatformOAuth2ConnectionValue,
 } from "@/lib/types/app-connection";
-import type { DecryptedAppConnection } from "@/lib/db/app-connections";
-import { getOAuthAppByPieceName } from "@/lib/db/oauth-apps";
 import { isOAuth2TokenExpired, refreshOAuth2Token } from "./oauth2-refresh";
 
 /**

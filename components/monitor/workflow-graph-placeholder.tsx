@@ -14,9 +14,9 @@ import { Card, CardContent } from "@/components/ui/card";
 // Types
 // ============================================================================
 
-interface WorkflowGraphPlaceholderProps {
+type WorkflowGraphPlaceholderProps = {
   workflowName: string;
-}
+};
 
 // ============================================================================
 // Component
@@ -27,16 +27,18 @@ export function WorkflowGraphPlaceholder({
 }: WorkflowGraphPlaceholderProps) {
   return (
     <Card className="h-full min-h-[400px]">
-      <CardContent className="flex flex-col items-center justify-center h-full py-16">
-        <div className="rounded-full bg-muted p-6 mb-4">
+      <CardContent className="flex h-full flex-col items-center justify-center py-16">
+        <div className="mb-4 rounded-full bg-muted p-6">
           <GitBranch className="h-12 w-12 text-muted-foreground" />
         </div>
-        <h3 className="text-lg font-medium mb-2">Workflow Graph</h3>
-        <p className="text-sm text-muted-foreground text-center max-w-md">
-          Visual representation of <span className="font-mono">{workflowName}</span> workflow execution graph will be available in a future update.
+        <h3 className="mb-2 font-medium text-lg">Workflow Graph</h3>
+        <p className="max-w-md text-center text-muted-foreground text-sm">
+          Visual representation of{" "}
+          <span className="font-mono">{workflowName}</span> workflow execution
+          graph will be available in a future update.
         </p>
-        <div className="mt-6 px-4 py-2 rounded-md bg-muted/50 border">
-          <p className="text-xs text-muted-foreground">
+        <div className="mt-6 rounded-md border bg-muted/50 px-4 py-2">
+          <p className="text-muted-foreground text-xs">
             Planned: React Flow integration
           </p>
         </div>

@@ -6,15 +6,15 @@
  * and sends it to the orchestrator service.
  */
 
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
-import { db } from "@/lib/db";
-import { workflows, workflowExecutions } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { generateWorkflowDefinition } from "@/lib/workflow-definition";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
-import type { WorkflowNode, WorkflowEdge } from "@/lib/workflow-store";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
+import { db } from "@/lib/db";
+import { workflowExecutions, workflows } from "@/lib/db/schema";
+import { generateWorkflowDefinition } from "@/lib/workflow-definition";
+import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 export async function POST(request: Request) {
   try {
@@ -51,11 +51,11 @@ export async function POST(request: Request) {
     }
 
     // Check if user has access to this workflow
-    if (workflow.userId !== session.user.id && workflow.visibility !== "public") {
-      return NextResponse.json(
-        { error: "Access denied" },
-        { status: 403 }
-      );
+    if (
+      workflow.userId !== session.user.id &&
+      workflow.visibility !== "public"
+    ) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
     // Parse workflow nodes and edges

@@ -16,7 +16,9 @@ export function useMonitorExecution(instanceId: string | null) {
     {
       // Poll every 3 seconds if workflow is running
       refreshInterval: (data) => {
-        if (!data) return 3000;
+        if (!data) {
+          return 3000;
+        }
         return data.status === "RUNNING" ? 3000 : 0;
       },
       revalidateOnFocus: true,

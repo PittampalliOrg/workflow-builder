@@ -1,22 +1,36 @@
-import { createPublicKey, createPrivateKey } from "node:crypto";
+import { createPrivateKey, createPublicKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { platforms, signingKeys } from "./db/schema";
 import { generateId } from "./utils/id";
 
-let cachedPlatform: { id: string; name: string; ownerId: string | null } | null = null;
+let cachedPlatform: {
+  id: string;
+  name: string;
+  ownerId: string | null;
+} | null = null;
 
 /**
  * Get or create the default platform for self-hosted deployments.
  * Self-hosted mode always has exactly one platform.
  */
-export async function ensureDefaultPlatform(): Promise<{ id: string; name: string; ownerId: string | null }> {
-  if (cachedPlatform) return cachedPlatform;
+export async function ensureDefaultPlatform(): Promise<{
+  id: string;
+  name: string;
+  ownerId: string | null;
+}> {
+  if (cachedPlatform) {
+    return cachedPlatform;
+  }
 
   // Try to find existing platform
   const existing = await db.select().from(platforms).limit(1);
   if (existing.length > 0) {
-    cachedPlatform = { id: existing[0].id, name: existing[0].name, ownerId: existing[0].ownerId };
+    cachedPlatform = {
+      id: existing[0].id,
+      name: existing[0].name,
+      ownerId: existing[0].ownerId,
+    };
     return cachedPlatform;
   }
 
@@ -38,7 +52,9 @@ export async function ensureDefaultPlatform(): Promise<{ id: string; name: strin
  * Generate RSA signing key pair and store the public key in the database.
  * Returns the private key PEM for JWT signing.
  */
-export async function generateSigningKeyPair(platformId: string): Promise<string> {
+export async function generateSigningKeyPair(
+  platformId: string
+): Promise<string> {
   // Use Web Crypto API to generate RSA key pair
   const keyPair = await crypto.subtle.generateKey(
     {
@@ -52,8 +68,14 @@ export async function generateSigningKeyPair(platformId: string): Promise<string
   );
 
   // Export keys in PEM format
-  const publicKeyBuffer = await crypto.subtle.exportKey("spki", keyPair.publicKey);
-  const privateKeyBuffer = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+  const publicKeyBuffer = await crypto.subtle.exportKey(
+    "spki",
+    keyPair.publicKey
+  );
+  const privateKeyBuffer = await crypto.subtle.exportKey(
+    "pkcs8",
+    keyPair.privateKey
+  );
 
   const publicKeyPem = `-----BEGIN PUBLIC KEY-----\n${Buffer.from(publicKeyBuffer).toString("base64")}\n-----END PUBLIC KEY-----`;
   const privateKeyPem = `-----BEGIN PRIVATE KEY-----\n${Buffer.from(privateKeyBuffer).toString("base64")}\n-----END PRIVATE KEY-----`;
@@ -74,20 +96,31 @@ export async function generateSigningKeyPair(platformId: string): Promise<string
  * If no signing key exists in the DB but JWT_SIGNING_KEY env var is set,
  * derives the public key from the private key and stores it.
  */
-export async function getSigningKey(platformId: string): Promise<string | null> {
-  const key = await db.select().from(signingKeys)
+export async function getSigningKey(
+  platformId: string
+): Promise<string | null> {
+  const key = await db
+    .select()
+    .from(signingKeys)
     .where(eq(signingKeys.platformId, platformId))
     .limit(1);
-  if (key.length > 0) return key[0].publicKey;
+  if (key.length > 0) {
+    return key[0].publicKey;
+  }
 
   // Auto-populate from JWT_SIGNING_KEY env var if available
   const privateKeyPem = process.env.JWT_SIGNING_KEY;
-  if (!privateKeyPem) return null;
+  if (!privateKeyPem) {
+    return null;
+  }
 
   try {
     const privateKey = createPrivateKey(privateKeyPem);
     const publicKey = createPublicKey(privateKey);
-    const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
+    const publicKeyPem = publicKey.export({
+      type: "spki",
+      format: "pem",
+    }) as string;
 
     // Store in DB for future lookups
     await db.insert(signingKeys).values({
@@ -108,12 +141,24 @@ export async function getSigningKey(platformId: string): Promise<string | null> 
  * Get platform by ID with caching.
  */
 export async function getPlatformById(id: string) {
-  if (cachedPlatform && cachedPlatform.id === id) return cachedPlatform;
+  if (cachedPlatform && cachedPlatform.id === id) {
+    return cachedPlatform;
+  }
 
-  const result = await db.select().from(platforms).where(eq(platforms.id, id)).limit(1);
-  if (result.length === 0) return null;
+  const result = await db
+    .select()
+    .from(platforms)
+    .where(eq(platforms.id, id))
+    .limit(1);
+  if (result.length === 0) {
+    return null;
+  }
 
-  const platform = { id: result[0].id, name: result[0].name, ownerId: result[0].ownerId };
+  const platform = {
+    id: result[0].id,
+    name: result[0].name,
+    ownerId: result[0].ownerId,
+  };
   cachedPlatform = platform;
   return platform;
 }

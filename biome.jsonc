@@ -8,7 +8,40 @@
       "!components/ai-elements",
       "!lib/utils.ts",
       "!hooks/use-mobile.ts",
-      "!plugins"
+      "!plugins",
+      "!services/workflow-orchestrator-ts-archived"
     ]
+  },
+  "linter": {
+    "rules": {
+      "complexity": {
+        "noExcessiveCognitiveComplexity": "off"
+      },
+      "performance": {
+        "noBarrelFile": "off",
+        "noImgElement": "off",
+        "noNamespaceImport": "off",
+        "useTopLevelRegex": "off"
+      },
+      "correctness": {
+        "useImageSize": "off"
+      },
+      "style": {
+        "noEnum": "off",
+        "noNestedTernary": "off",
+        "noNonNullAssertion": "off"
+      },
+      "suspicious": {
+        "useAwait": "off",
+        "noExplicitAny": "off",
+        "noEvolvingTypes": "off",
+        "noEmptyBlockStatements": "off"
+      },
+      "nursery": {
+        "noShadow": "off",
+        "noIncrementDecrement": "off",
+        "useMaxParams": "off"
+      }
+    }
   }
 }

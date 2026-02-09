@@ -7,10 +7,11 @@
  * Usage:
  *   pnpm tsx scripts/seed-dev-user.ts
  */
+
+import { generateKeyPairSync } from "node:crypto";
 import bcrypt from "bcryptjs";
-import { generateKeyPairSync } from "crypto";
-import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
   platforms,
@@ -48,7 +49,7 @@ async function seedDevUser() {
       console.log("Dev user already exists:");
       console.log(`   Email: ${email}`);
       console.log(`   Name: ${name}`);
-      console.log(`   Password: developer`);
+      console.log("   Password: developer");
       return;
     }
 
@@ -162,7 +163,7 @@ async function seedDevUser() {
 
     console.log("Created project membership (ADMIN role)");
 
-    console.log("\n" + "-".repeat(50));
+    console.log(`\n${"-".repeat(50)}`);
     console.log("\nDev user seeded successfully!");
     console.log("\nYou can now sign in with:");
     console.log("   Email: admin@example.com");

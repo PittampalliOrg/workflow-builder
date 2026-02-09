@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import {
-  signIn,
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
+  signIn,
 } from "@/lib/auth-service";
 
 const COOKIE_OPTIONS = {
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
   try {
     const { email, password } = await request.json();
 
-    if (!email || !password) {
+    if (!(email && password)) {
       return NextResponse.json(
         { error: "Email and password are required" },
         { status: 400 }

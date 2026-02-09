@@ -8,13 +8,14 @@
  * The router also pre-fetches credentials from Dapr secret store
  * to avoid each OpenFunction needing direct secret store access.
  */
-import Fastify from "fastify";
+
 import cors from "@fastify/cors";
-import { healthRoutes } from "./routes/health.js";
+import Fastify from "fastify";
 import { executeRoutes } from "./routes/execute.js";
 import { externalEventRoutes } from "./routes/external-event.js";
+import { healthRoutes } from "./routes/health.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 async function main() {
@@ -42,7 +43,9 @@ async function main() {
     console.log(`Function Router listening on ${HOST}:${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
     console.log(`Dapr HTTP port: ${process.env.DAPR_HTTP_PORT || "3500"}`);
-    console.log(`Registry file: ${process.env.REGISTRY_FILE_PATH || "/config/functions.json"}`);
+    console.log(
+      `Registry file: ${process.env.REGISTRY_FILE_PATH || "/config/functions.json"}`
+    );
   } catch (err) {
     app.log.error(err);
     process.exit(1);

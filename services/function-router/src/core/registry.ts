@@ -4,12 +4,14 @@
  * Loads function routing configuration from ConfigMap (mounted as file)
  * or falls back to environment variable / hardcoded defaults.
  */
-import { readFile } from "node:fs/promises";
+
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { FunctionRegistry, FunctionRegistryEntry } from "./types.js";
 
 // Path to ConfigMap-mounted registry file
-const REGISTRY_FILE_PATH = process.env.REGISTRY_FILE_PATH || "/config/functions.json";
+const REGISTRY_FILE_PATH =
+  process.env.REGISTRY_FILE_PATH || "/config/functions.json";
 
 // Fallback default registry (OpenFunctions only)
 const DEFAULT_REGISTRY: FunctionRegistry = {
@@ -25,12 +27,12 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "firecrawl/*": { appId: "fn-firecrawl", type: "openfunction" },
   "perplexity/*": { appId: "fn-perplexity", type: "openfunction" },
   // Default fallback: route unknown slugs to fn-activepieces
-  "_default": { appId: "fn-activepieces", type: "openfunction" },
+  _default: { appId: "fn-activepieces", type: "openfunction" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;
 let cacheTimestamp = 0;
-const CACHE_TTL_MS = 30000; // 30 seconds
+const CACHE_TTL_MS = 30_000; // 30 seconds
 
 /**
  * Load registry from file, environment, or use defaults
@@ -39,7 +41,7 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
   const now = Date.now();
 
   // Return cached if fresh
-  if (cachedRegistry && (now - cacheTimestamp) < CACHE_TTL_MS) {
+  if (cachedRegistry && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedRegistry;
   }
 
@@ -49,10 +51,15 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
       const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
       cachedRegistry = JSON.parse(content) as FunctionRegistry;
       cacheTimestamp = now;
-      console.log(`[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH}`);
+      console.log(
+        `[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH}`
+      );
       return cachedRegistry;
     } catch (error) {
-      console.error(`[Registry] Failed to load from ${REGISTRY_FILE_PATH}:`, error);
+      console.error(
+        `[Registry] Failed to load from ${REGISTRY_FILE_PATH}:`,
+        error
+      );
     }
   }
 
@@ -62,7 +69,9 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
     try {
       cachedRegistry = JSON.parse(envRegistry) as FunctionRegistry;
       cacheTimestamp = now;
-      console.log(`[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from FUNCTION_REGISTRY env`);
+      console.log(
+        `[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from FUNCTION_REGISTRY env`
+      );
       return cachedRegistry;
     } catch (error) {
       console.error("[Registry] Failed to parse FUNCTION_REGISTRY env:", error);
@@ -86,7 +95,9 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
  *
  * Throws an error if no matching OpenFunction is found.
  */
-export async function lookupFunction(slug: string): Promise<FunctionRegistryEntry> {
+export async function lookupFunction(
+  slug: string
+): Promise<FunctionRegistryEntry> {
   const registry = await loadRegistry();
 
   // Try exact match first
@@ -102,14 +113,14 @@ export async function lookupFunction(slug: string): Promise<FunctionRegistryEntr
   }
 
   // Fallback to default (if configured)
-  if (registry["_default"]) {
-    return registry["_default"];
+  if (registry._default) {
+    return registry._default;
   }
 
   // No OpenFunction found for this slug
   throw new Error(
     `No OpenFunction registered for function slug "${slug}". ` +
-    `Available patterns: ${Object.keys(registry).join(", ")}`
+      `Available patterns: ${Object.keys(registry).join(", ")}`
   );
 }
 

@@ -1,8 +1,9 @@
 "use client";
 
-import { Clock, Copy, Play, Webhook } from "lucide-react";
+import { Clock, Copy, Play, Webhook, Wrench } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +15,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
+import { type McpInputProperty, McpInputsBuilder } from "./mcp-inputs-builder";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
 type TriggerConfigProps = {
@@ -71,6 +73,12 @@ export function TriggerConfig({
               <div className="flex items-center gap-2">
                 <Webhook className="h-4 w-4" />
                 Webhook
+              </div>
+            </SelectItem>
+            <SelectItem value="MCP">
+              <div className="flex items-center gap-2">
+                <Wrench className="h-4 w-4" />
+                MCP Tool
               </div>
             </SelectItem>
           </SelectContent>
@@ -174,6 +182,111 @@ export function TriggerConfig({
           </div>
         </>
       )}
+
+      {/* MCP fields */}
+      {config?.triggerType === "MCP" &&
+        (() => {
+          let parsed: McpInputProperty[] = [];
+          if (config?.inputSchema && typeof config.inputSchema === "string") {
+            try {
+              parsed = JSON.parse(config.inputSchema) as McpInputProperty[];
+            } catch {
+              parsed = [];
+            }
+          }
+          const returnsResponse =
+            typeof config?.returnsResponse === "string"
+              ? config.returnsResponse.toLowerCase() === "true"
+              : false;
+          const exposeTool =
+            typeof config?.enabled === "string"
+              ? config.enabled.toLowerCase() !== "false"
+              : true;
+
+          return (
+            <>
+              <div className="space-y-2">
+                <Label className="ml-1" htmlFor="mcpToolName">
+                  Name
+                </Label>
+                <Input
+                  disabled={disabled}
+                  id="mcpToolName"
+                  onChange={(e) => onUpdateConfig("toolName", e.target.value)}
+                  placeholder="Used by MCP clients to call this tool"
+                  value={(config?.toolName as string) || ""}
+                />
+                <p className="text-muted-foreground text-xs">
+                  This becomes the MCP tool name for this workflow.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="ml-1" htmlFor="mcpToolDescription">
+                  Description
+                </Label>
+                <Input
+                  disabled={disabled}
+                  id="mcpToolDescription"
+                  onChange={(e) =>
+                    onUpdateConfig("toolDescription", e.target.value)
+                  }
+                  placeholder="Describe what this tool does"
+                  value={(config?.toolDescription as string) || ""}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Parameters</Label>
+                <McpInputsBuilder
+                  disabled={disabled}
+                  onChange={(schema) =>
+                    onUpdateConfig("inputSchema", JSON.stringify(schema))
+                  }
+                  value={parsed}
+                />
+                <p className="text-muted-foreground text-xs">
+                  Define the input parameters MCP clients can pass to this
+                  workflow.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 rounded-md border p-3">
+                <Checkbox
+                  checked={returnsResponse}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    onUpdateConfig("returnsResponse", String(Boolean(checked)))
+                  }
+                />
+                <div>
+                  <div className="font-medium text-sm">Wait for Response</div>
+                  <div className="text-muted-foreground text-xs">
+                    Keep the MCP client waiting until it receives a response via
+                    the Reply to MCP Client action.
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 rounded-md border p-3">
+                <Checkbox
+                  checked={exposeTool}
+                  disabled={disabled}
+                  onCheckedChange={(checked) =>
+                    onUpdateConfig("enabled", String(Boolean(checked)))
+                  }
+                />
+                <div>
+                  <div className="font-medium text-sm">Expose Tool</div>
+                  <div className="text-muted-foreground text-xs">
+                    When disabled, this workflow will not be exposed as an MCP
+                    tool.
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
     </>
   );
 }

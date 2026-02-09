@@ -4,6 +4,9 @@ import { formatDistanceToNow } from "date-fns";
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { RenameConnectionDialog } from "@/components/connections/rename-connection-dialog";
+import { AddConnectionOverlay } from "@/components/overlays/add-connection-overlay";
+import { useOverlay } from "@/components/overlays/overlay-provider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,10 +34,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { AddConnectionOverlay } from "@/components/overlays/add-connection-overlay";
-import { RenameConnectionDialog } from "@/components/connections/rename-connection-dialog";
-import { useOverlay } from "@/components/overlays/overlay-provider";
-import { type AppConnection, type PieceMetadata, api } from "@/lib/api-client";
+import { type AppConnection, api } from "@/lib/api-client";
 import { AppConnectionType } from "@/lib/types/app-connection";
 
 function getStatusBadge(status: string) {
@@ -91,18 +91,21 @@ export default function ConnectionsPage() {
 
   // Fetch piece metadata for logo URLs
   useEffect(() => {
-    api.piece.list().then((pieces) => {
-      const map = new Map<string, string>();
-      for (const p of pieces) {
-        if (p.logoUrl) {
-          map.set(p.name, p.logoUrl);
-          // Also map the short name
-          const short = p.name.replace(/^@activepieces\/piece-/, "");
-          map.set(short, p.logoUrl);
+    api.piece
+      .list()
+      .then((pieces) => {
+        const map = new Map<string, string>();
+        for (const p of pieces) {
+          if (p.logoUrl) {
+            map.set(p.name, p.logoUrl);
+            // Also map the short name
+            const short = p.name.replace(/^@activepieces\/piece-/, "");
+            map.set(short, p.logoUrl);
+          }
         }
-      }
-      setPieceLogos(map);
-    }).catch(() => {});
+        setPieceLogos(map);
+      })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -127,7 +130,9 @@ export default function ConnectionsPage() {
   };
 
   const handleDelete = async () => {
-    if (!deleteTarget) return;
+    if (!deleteTarget) {
+      return;
+    }
     try {
       setDeleting(true);
       await api.appConnection.delete(deleteTarget.id);
@@ -274,8 +279,7 @@ export default function ConnectionsPage() {
             <AlertDialogDescription>
               Are you sure you want to delete{" "}
               <strong>{deleteTarget?.displayName}</strong>? Any flows currently
-              using this connection{" "}
-              <strong>will break immediately</strong>.
+              using this connection <strong>will break immediately</strong>.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

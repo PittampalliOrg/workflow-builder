@@ -7,47 +7,38 @@
  * Tasks flow from left to right based on their dependency relationships.
  */
 
-import { useMemo, useCallback, useState } from "react";
 import {
-  ReactFlow,
   Background,
-  Controls,
-  useNodesState,
-  useEdgesState,
   BackgroundVariant,
-  MarkerType,
-  type Node,
+  Controls,
   type Edge,
   Handle,
+  MarkerType,
+  type Node,
   Position,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
 } from "@xyflow/react";
+import { useCallback, useMemo } from "react";
 import "@xyflow/react/dist/style.css";
-import {
-  Circle,
-  CheckCircle2,
-  Loader2,
-  XCircle,
-} from "lucide-react";
-import { cn } from "@/lib/utils";
+import { CheckCircle2, Circle, Loader2, XCircle } from "lucide-react";
 import type {
   DaprAgentTask,
   DaprAgentTaskStatus,
 } from "@/lib/types/workflow-ui";
-import {
-  getTaskStatusColor,
-  getTaskStatusBgColor,
-} from "@/lib/types/workflow-ui";
+import { getTaskStatusColor } from "@/lib/types/workflow-ui";
+import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface TaskDagGraphProps {
+type TaskDagGraphProps = {
   tasks: DaprAgentTask[];
   onTaskSelect?: (task: DaprAgentTask | null) => void;
-  selectedTaskId?: string | null;
   className?: string;
-}
+};
 
 interface TaskNodeData extends Record<string, unknown> {
   id: string;
@@ -81,11 +72,17 @@ function TaskStatusIcon({ status }: { status: DaprAgentTaskStatus }) {
   }
 }
 
-function TaskNodeComponent({ data, selected }: { data: TaskNodeData; selected?: boolean }) {
+function TaskNodeComponent({
+  data,
+  selected,
+}: {
+  data: TaskNodeData;
+  selected?: boolean;
+}) {
   return (
     <div
       className={cn(
-        "px-4 py-3 rounded-lg border-2 min-w-[180px] max-w-[220px] transition-all",
+        "min-w-[180px] max-w-[220px] rounded-lg border-2 px-4 py-3 transition-all",
         "bg-[#1e2433]",
         selected
           ? "border-teal-400 shadow-lg shadow-teal-500/20"
@@ -93,24 +90,27 @@ function TaskNodeComponent({ data, selected }: { data: TaskNodeData; selected?: 
       )}
     >
       <Handle
-        type="target"
-        position={Position.Left}
         className="!bg-gray-500 !border-gray-400 !w-2 !h-2"
+        position={Position.Left}
+        type="target"
       />
 
-      <div className="flex items-center gap-2 mb-1">
+      <div className="mb-1 flex items-center gap-2">
         <TaskStatusIcon status={data.status} />
-        <span className="text-xs font-mono text-gray-400">#{data.id}</span>
+        <span className="font-mono text-gray-400 text-xs">#{data.id}</span>
       </div>
 
-      <p className="text-sm font-medium text-gray-200 truncate" title={data.subject}>
+      <p
+        className="truncate font-medium text-gray-200 text-sm"
+        title={data.subject}
+      >
         {data.subject}
       </p>
 
       <Handle
-        type="source"
-        position={Position.Right}
         className="!bg-teal-500 !border-teal-400 !w-2 !h-2"
+        position={Position.Right}
+        type="source"
       />
     </div>
   );
@@ -179,7 +179,9 @@ function calculateTaskLayout(tasks: DaprAgentTask[]): {
 
     // Process tasks that depend on this one
     for (const blockedId of task.blocks) {
-      if (!taskMap.has(blockedId)) continue;
+      if (!taskMap.has(blockedId)) {
+        continue;
+      }
 
       const blockedLevel = levels.get(blockedId);
       if (blockedLevel === undefined || blockedLevel <= currentLevel) {
@@ -209,7 +211,7 @@ function calculateTaskLayout(tasks: DaprAgentTask[]): {
     if (!tasksByLevel.has(level)) {
       tasksByLevel.set(level, []);
     }
-    tasksByLevel.get(level)!.push(task);
+    tasksByLevel.get(level)?.push(task);
   }
 
   // Calculate positions
@@ -265,7 +267,6 @@ function calculateTaskLayout(tasks: DaprAgentTask[]): {
 export function TaskDagGraph({
   tasks,
   onTaskSelect,
-  selectedTaskId,
   className,
 }: TaskDagGraphProps) {
   // Generate graph layout
@@ -275,8 +276,8 @@ export function TaskDagGraph({
   );
 
   // React Flow state
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, _setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, _setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   // Handle node click
   const onNodeClick = useCallback(
@@ -299,37 +300,37 @@ export function TaskDagGraph({
   // Empty state
   if (tasks.length === 0) {
     return (
-      <div className={cn("flex items-center justify-center h-full", className)}>
+      <div className={cn("flex h-full items-center justify-center", className)}>
         <p className="text-muted-foreground">No tasks to display</p>
       </div>
     );
   }
 
   return (
-    <div className={cn("relative h-full w-full min-h-[300px]", className)}>
+    <div className={cn("relative h-full min-h-[300px] w-full", className)}>
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
+        edges={edges}
         fitView
         fitViewOptions={{
           padding: 0.3,
           maxZoom: 1.2,
         }}
-        minZoom={0.3}
         maxZoom={2}
+        minZoom={0.3}
+        nodes={nodes}
+        nodeTypes={nodeTypes}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
+        onNodesChange={onNodesChange}
+        onPaneClick={onPaneClick}
         proOptions={{ hideAttribution: true }}
       >
         <Background
-          variant={BackgroundVariant.Dots}
+          className="!bg-[#1a1f2e]"
           gap={20}
           size={1}
-          className="!bg-[#1a1f2e]"
+          variant={BackgroundVariant.Dots}
         />
         <Controls
           className="!bg-[#1e2433] !border !border-gray-700 !rounded-lg !shadow-sm [&>button]:!bg-[#1e2433] [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
