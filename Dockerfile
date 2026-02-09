@@ -54,8 +54,10 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Atlas CLI (pinned)
-ARG ATLAS_VERSION=v1.1.0
+# Atlas CLI
+# Use "latest" by default for dev inner-loop images; override in CI if you need
+# a reproducible, pinned version.
+ARG ATLAS_VERSION=latest
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs && \
