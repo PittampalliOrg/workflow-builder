@@ -6,6 +6,12 @@ import { platformOauthApps } from "@/lib/db/schema";
 import { ensureDefaultPlatform } from "@/lib/platform-service";
 import { encryptString } from "@/lib/security/encryption";
 
+/** Ensure piece name has full AP package prefix */
+function toFullPieceName(name: string): string {
+  if (name.startsWith("@activepieces/piece-")) return name;
+  return `@activepieces/piece-${name}`;
+}
+
 /**
  * GET /api/oauth-apps - List all platform OAuth apps (never returns clientSecret)
  */
@@ -26,7 +32,15 @@ export async function GET(request: Request) {
     .from(platformOauthApps)
     .where(eq(platformOauthApps.platformId, platform.id));
 
-  return NextResponse.json(apps);
+  // Normalize pieceName: DB stores full AP names (@activepieces/piece-X)
+  // but piece_metadata.name uses short names (X). Return both formats.
+  const normalized = apps.map((a) => ({
+    ...a,
+    pieceName: a.pieceName,
+    pieceShortName: a.pieceName.replace(/^@activepieces\/piece-/, ""),
+  }));
+
+  return NextResponse.json(normalized);
 }
 
 /**
@@ -40,7 +54,8 @@ export async function POST(request: Request) {
   }
 
   const body = await request.json();
-  const { pieceName, clientId, clientSecret } = body;
+  const { clientId, clientSecret } = body;
+  const pieceName = body.pieceName ? toFullPieceName(body.pieceName) : null;
 
   if (!pieceName || !clientId || !clientSecret) {
     return NextResponse.json(
@@ -111,7 +126,8 @@ export async function DELETE(request: Request) {
   }
 
   const { searchParams } = new URL(request.url);
-  const pieceName = searchParams.get("pieceName");
+  const rawPieceName = searchParams.get("pieceName");
+  const pieceName = rawPieceName ? toFullPieceName(rawPieceName) : null;
 
   if (!pieceName) {
     return NextResponse.json(

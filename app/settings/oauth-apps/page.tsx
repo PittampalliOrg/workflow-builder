@@ -81,7 +81,7 @@ export default function OAuthAppsSettingsPage() {
       })
       .map((piece) => ({
         piece,
-        oauthApp: oauthApps.find((a) => a.pieceName === piece.name) ?? null,
+        oauthApp: oauthApps.find((a) => a.pieceShortName === piece.name) ?? null,
       }))
       .sort((a, b) => {
         // Configured first, then alphabetical
@@ -92,7 +92,7 @@ export default function OAuthAppsSettingsPage() {
   }, [pieces, oauthApps]);
 
   const handleConfigure = (piece: PieceMetadata) => {
-    const existing = oauthApps.find((a) => a.pieceName === piece.name);
+    const existing = oauthApps.find((a) => a.pieceShortName === piece.name);
     setConfigPiece(piece);
     setClientId(existing?.clientId ?? "");
     setClientSecret("");

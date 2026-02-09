@@ -928,6 +928,7 @@ export const appConnectionApi = {
 // OAuth Apps API (platform-level OAuth credentials per piece)
 export type OAuthAppSummary = {
   pieceName: string;
+  pieceShortName: string;
   clientId: string;
   createdAt: string;
   updatedAt: string;
