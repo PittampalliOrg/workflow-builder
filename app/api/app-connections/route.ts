@@ -5,7 +5,7 @@ import {
   isOAuthConnectionType,
   resolveValueFromProps,
 } from "@/lib/app-connections/oauth2";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import {
   listAppConnections,
   removeSensitiveData,
@@ -35,9 +35,7 @@ function isUpsertBody(value: unknown): value is UpsertAppConnectionRequestBody {
 
 export async function GET(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -80,9 +78,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

@@ -1,14 +1,12 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
-import { accounts, users } from "@/lib/db/schema";
+import { userIdentities, users } from "@/lib/db/schema";
 
 export async function GET(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -21,7 +19,6 @@ export async function GET(request: Request) {
         name: true,
         email: true,
         image: true,
-        isAnonymous: true,
       },
     });
 
@@ -29,17 +26,17 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    // Get the user's account to determine auth provider
-    const userAccount = await db.query.accounts.findFirst({
-      where: eq(accounts.userId, session.user.id),
+    // Get the user's identity to determine auth provider
+    const identity = await db.query.userIdentities.findFirst({
+      where: eq(userIdentities.userId, session.user.id),
       columns: {
-        providerId: true,
+        provider: true,
       },
     });
 
     return NextResponse.json({
       ...userData,
-      providerId: userAccount?.providerId ?? null,
+      providerId: identity?.provider ?? null,
     });
   } catch (error) {
     console.error("Failed to get user:", error);
@@ -54,25 +51,23 @@ export async function GET(request: Request) {
 
 export async function PATCH(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     // Check if user is an OAuth user (can't update profile)
-    const userAccount = await db.query.accounts.findFirst({
-      where: eq(accounts.userId, session.user.id),
+    const identity = await db.query.userIdentities.findFirst({
+      where: eq(userIdentities.userId, session.user.id),
       columns: {
-        providerId: true,
+        provider: true,
       },
     });
 
     // Block updates for OAuth users (vercel, github, google, etc.)
     const oauthProviders = ["vercel", "github", "google"];
-    if (userAccount && oauthProviders.includes(userAccount.providerId)) {
+    if (identity && oauthProviders.includes(identity.provider)) {
       return NextResponse.json(
         { error: "Cannot update profile for OAuth users" },
         { status: 403 }

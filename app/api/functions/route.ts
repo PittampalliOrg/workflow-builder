@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import {
   getFunctions,
   createFunction,
@@ -65,9 +65,7 @@ export type CreateFunctionResponse = FunctionSummary;
 export async function GET(request: Request) {
   try {
     // Auth is optional for listing functions - public endpoint for workflow builder
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     // Parse query params
     const { searchParams } = new URL(request.url);
@@ -110,9 +108,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const session = await auth.api.getSession({
-      headers: request.headers,
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

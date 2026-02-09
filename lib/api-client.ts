@@ -45,15 +45,29 @@ export class ApiError extends Error {
   }
 }
 
-// Helper function to make API calls
+// Helper function to make API calls with automatic token refresh
 async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(endpoint, {
+  let response = await fetch(endpoint, {
     ...options,
     headers: {
       "Content-Type": "application/json",
       ...options?.headers,
     },
   });
+
+  // Auto-refresh on 401
+  if (response.status === 401) {
+    const refreshRes = await fetch("/api/v1/auth/refresh", { method: "POST" });
+    if (refreshRes.ok) {
+      response = await fetch(endpoint, {
+        ...options,
+        headers: {
+          "Content-Type": "application/json",
+          ...options?.headers,
+        },
+      });
+    }
+  }
 
   if (!response.ok) {
     const error = await response
@@ -331,7 +345,6 @@ export const userApi = {
       name: string | null;
       email: string;
       image: string | null;
-      isAnonymous: boolean | null;
       providerId: string | null;
     }>("/api/user"),
 
@@ -912,12 +925,41 @@ export const appConnectionApi = {
     }),
 };
 
+// OAuth Apps API (platform-level OAuth credentials per piece)
+export type OAuthAppSummary = {
+  pieceName: string;
+  clientId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const oauthAppApi = {
+  list: () => apiCall<OAuthAppSummary[]>("/api/oauth-apps"),
+
+  upsert: (body: {
+    pieceName: string;
+    clientId: string;
+    clientSecret: string;
+  }) =>
+    apiCall<{ success: boolean }>("/api/oauth-apps", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  delete: (pieceName: string) =>
+    apiCall<{ success: boolean }>(
+      `/api/oauth-apps?pieceName=${encodeURIComponent(pieceName)}`,
+      { method: "DELETE" }
+    ),
+};
+
 // Export all APIs as a single object
 export const api = {
   ai: aiApi,
   appConnection: appConnectionApi,
   dapr: daprApi,
   functions: functionsApi,
+  oauthApp: oauthAppApi,
   piece: pieceApi,
   secrets: secretsApi,
   user: userApi,

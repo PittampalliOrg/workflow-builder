@@ -6,8 +6,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
-import { headers } from "next/headers";
+import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
@@ -22,9 +21,7 @@ export async function POST(
     const { id: executionId } = await params;
 
     // Authenticate the request
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -132,9 +129,7 @@ export async function PATCH(
     const { id: executionId } = await params;
 
     // Authenticate the request
-    const session = await auth.api.getSession({
-      headers: await headers(),
-    });
+    const session = await getSession(request);
 
     if (!session?.user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

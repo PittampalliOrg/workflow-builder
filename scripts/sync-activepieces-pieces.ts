@@ -319,7 +319,11 @@ async function main() {
   );
 }
 
-main().catch((error) => {
-  console.error("[Sync Pieces] Failed:", error);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error("[Sync Pieces] Failed:", error);
+    process.exit(1);
+  });

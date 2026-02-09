@@ -242,6 +242,13 @@ dev:
         value: "https://workflow-builder.cnoe.localtest.me:8443"
       - name: BETTER_AUTH_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"
+      # Auth providers (enables social login buttons in UI)
+      - name: NEXT_PUBLIC_AUTH_PROVIDERS
+        value: "email,github,google"
+      - name: NEXT_PUBLIC_GITHUB_CLIENT_ID
+        value: "Ov23lixcpFfGjGtsNCxC"
+      - name: NEXT_PUBLIC_GOOGLE_CLIENT_ID
+        value: "875421392000-2u0qcvoa6sc2vpisl0v8ah5h4drrljvr.apps.googleusercontent.com"
       # fn-activepieces internal URL (dev override for dynamic dropdown options)
       - name: FN_ACTIVEPIECES_URL
         value: "http://fn-activepieces-standalone.workflow-builder.svc.cluster.local"

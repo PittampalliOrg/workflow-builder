@@ -64,6 +64,20 @@
       "when": 1770572602741,
       "tag": "0008_natural_hedge_knight",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1770610607268,
+      "tag": "0009_numerous_darkstar",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1770611506181,
+      "tag": "0010_round_frog_thor",
+      "breakpoints": true
     }
   ]
 }

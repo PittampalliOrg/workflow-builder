@@ -39,7 +39,9 @@ ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 RUN npm install -g esbuild && \
     esbuild lib/db/migrate.ts --bundle --platform=node --target=node22 --outfile=lib/db/migrate.bundle.js && \
     esbuild scripts/seed-functions.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-functions.bundle.js && \
-    esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js
+    esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js && \
+    esbuild scripts/sync-oauth-apps.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-oauth-apps.bundle.js && \
+    esbuild scripts/seed-dev-user.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-dev-user.bundle.js
 
 # Run plugin discovery and build
 RUN pnpm discover-plugins && pnpm next build
@@ -67,6 +69,8 @@ COPY --from=builder /app/drizzle ./drizzle
 COPY --from=builder /app/lib/db/migrate.bundle.js ./lib/db/migrate.bundle.js
 COPY --from=builder /app/scripts/seed-functions.bundle.js ./scripts/seed-functions.bundle.js
 COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sync-activepieces-pieces.bundle.js
+COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
+COPY --from=builder /app/scripts/seed-dev-user.bundle.js ./scripts/seed-dev-user.bundle.js
 
 USER nextjs
 

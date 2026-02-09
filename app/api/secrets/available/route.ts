@@ -6,7 +6,7 @@
  * then returns the known secret mappings.
  */
 
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 
 /**
  * Mapping of secret keys to their integration types and labels.
@@ -93,9 +93,7 @@ async function checkSecretStoreStatus(): Promise<{ available: boolean; connected
 
 export async function GET(request: Request) {
   // Require authentication
-  const session = await auth.api.getSession({
-    headers: request.headers,
-  });
+  const session = await getSession(request);
 
   if (!session?.user?.id) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });

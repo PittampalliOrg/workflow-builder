@@ -1,31 +1,32 @@
 /**
  * Seed Dev User Script
  *
- * Creates a development user with username "admin" and password "developer"
+ * Creates a development user with email "admin@example.com" and password "developer"
+ * Also creates the default platform, signing key, project, and project membership.
  *
  * Usage:
  *   pnpm tsx scripts/seed-dev-user.ts
  */
+import bcrypt from "bcryptjs";
+import { generateKeyPairSync } from "crypto";
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
-import { scryptSync, randomBytes } from "crypto";
-import { users, accounts } from "../lib/db/schema";
 import { eq } from "drizzle-orm";
+import postgres from "postgres";
+import {
+  platforms,
+  projectMembers,
+  projects,
+  signingKeys,
+  userIdentities,
+  users,
+} from "../lib/db/schema";
+import { generateId } from "../lib/utils/id";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 
-/**
- * Hash password using scrypt (same as Better Auth)
- */
-function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `${salt}:${hash}`;
-}
-
 async function seedDevUser() {
-  console.log("🌱 Seeding development user...\n");
+  console.log("Seeding development user...\n");
 
   const queryClient = postgres(DATABASE_URL, { max: 1 });
   const db = drizzle(queryClient);
@@ -44,15 +45,61 @@ async function seedDevUser() {
       .limit(1);
 
     if (existingUser.length > 0) {
-      console.log("✅ Dev user already exists:");
+      console.log("Dev user already exists:");
       console.log(`   Email: ${email}`);
       console.log(`   Name: ${name}`);
       console.log(`   Password: developer`);
       return;
     }
 
-    // Create user
     const now = new Date();
+
+    // 1. Create or get default platform
+    const platformId = "default-platform";
+    const existingPlatform = await db
+      .select()
+      .from(platforms)
+      .where(eq(platforms.id, platformId))
+      .limit(1);
+
+    if (existingPlatform.length === 0) {
+      await db.insert(platforms).values({
+        id: platformId,
+        name: "Default Platform",
+        ownerId: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      console.log("Created default platform");
+    }
+
+    // 2. Generate and store signing key pair
+    const existingKey = await db
+      .select()
+      .from(signingKeys)
+      .where(eq(signingKeys.platformId, platformId))
+      .limit(1);
+
+    if (existingKey.length === 0) {
+      const { publicKey } = generateKeyPairSync("rsa", {
+        modulusLength: 2048,
+        publicKeyEncoding: { type: "spki", format: "pem" },
+        privateKeyEncoding: { type: "pkcs8", format: "pem" },
+      });
+
+      await db.insert(signingKeys).values({
+        id: generateId(),
+        platformId,
+        publicKey: publicKey as string,
+        algorithm: "RS256",
+        displayName: "Default Signing Key",
+        createdAt: now,
+        updatedAt: now,
+      });
+      console.log("Created signing key pair");
+    }
+
+    // 3. Create user
     await db.insert(users).values({
       id: userId,
       name,
@@ -60,40 +107,68 @@ async function seedDevUser() {
       emailVerified: true,
       createdAt: now,
       updatedAt: now,
-      isAnonymous: false,
+      platformId,
+      platformRole: "ADMIN",
+      status: "ACTIVE",
     });
 
-    console.log("✅ Created user:");
+    console.log("Created user:");
     console.log(`   ID: ${userId}`);
     console.log(`   Email: ${email}`);
     console.log(`   Name: ${name}`);
 
-    // Create credential account with hashed password
-    const hashedPassword = hashPassword(password);
-    const accountId = `dev-admin-account`;
+    // 4. Create user identity with bcrypt password hash
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    await db.insert(accounts).values({
-      id: accountId,
-      accountId: email, // Better Auth uses email as accountId for credential provider
-      providerId: "credential",
+    await db.insert(userIdentities).values({
+      id: generateId(),
       userId,
+      email,
       password: hashedPassword,
+      provider: "EMAIL",
+      firstName: name,
+      lastName: null,
+      tokenVersion: 0,
+      verified: true,
       createdAt: now,
       updatedAt: now,
     });
 
-    console.log("\n✅ Created credential account:");
-    console.log(`   Provider: credential (email/password)`);
-    console.log(`   Password: developer`);
+    console.log("Created user identity (bcrypt password)");
 
-    console.log("\n─".repeat(50));
-    console.log("\n🎉 Dev user seeded successfully!");
+    // 5. Create default project
+    const projectId = "dev-default-project";
+    await db.insert(projects).values({
+      id: projectId,
+      platformId,
+      ownerId: userId,
+      displayName: "Default Project",
+      externalId: `project-${userId}`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    console.log("Created default project");
+
+    // 6. Create project membership (ADMIN)
+    await db.insert(projectMembers).values({
+      id: generateId(),
+      projectId,
+      userId,
+      role: "ADMIN",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    console.log("Created project membership (ADMIN role)");
+
+    console.log("\n" + "-".repeat(50));
+    console.log("\nDev user seeded successfully!");
     console.log("\nYou can now sign in with:");
-    console.log("   Email: admin@localhost");
+    console.log("   Email: admin@example.com");
     console.log("   Password: developer");
-
   } catch (error) {
-    console.error("❌ Failed to seed dev user:", error);
+    console.error("Failed to seed dev user:", error);
     process.exit(1);
   } finally {
     await queryClient.end();

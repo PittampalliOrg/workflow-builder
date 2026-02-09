@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
@@ -18,9 +18,7 @@ export async function GET(
 ) {
   const { id } = await context.params;
 
-  const session = await auth.api.getSession({
-    headers: request.headers,
-  });
+  const session = await getSession(request);
 
   if (!session) {
     return new Response("Unauthorized", { status: 401 });
