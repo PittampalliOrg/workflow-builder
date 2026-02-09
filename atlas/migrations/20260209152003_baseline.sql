@@ -1,4 +1,3 @@
-[dotenv@17.2.3] injecting env (0) from .env -- tip: 📡 add observability to secrets: https://dotenvx.com/ops
 CREATE TABLE "api_keys" (
 	"id" text PRIMARY KEY NOT NULL,
 	"user_id" text NOT NULL,
