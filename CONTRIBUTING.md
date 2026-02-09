@@ -75,6 +75,7 @@ BETTER_AUTH_SECRET=your-auth-secret-here  # Generate with: openssl rand -base64 
 
 # Credentials Encryption
 INTEGRATION_ENCRYPTION_KEY=your-64-character-hex-string  # Generate with: openssl rand -hex 32
+AP_ENCRYPTION_KEY=your-64-character-hex-string           # Optional alias supported by the Activepieces-style connection encryption
 
 # App URLs
 NEXT_PUBLIC_APP_URL=http://localhost:3000

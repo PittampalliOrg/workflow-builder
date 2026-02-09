@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { api, type OAuthAppSummary, type PieceMetadata } from "@/lib/api-client";
-import { parsePieceAuth, PieceAuthType } from "@/lib/types/piece-auth";
+import { parsePieceAuthAll, PieceAuthType } from "@/lib/types/piece-auth";
 
 type OAuthPieceRow = {
   piece: PieceMetadata;
@@ -76,12 +76,12 @@ export default function OAuthAppsSettingsPage() {
     return pieces
       .filter((p) => {
         if (!p.auth) return false;
-        const config = parsePieceAuth(p.auth);
-        return config?.type === PieceAuthType.OAUTH2;
+        const configs = parsePieceAuthAll(p.auth);
+        return configs.some((c) => c.type === PieceAuthType.OAUTH2);
       })
       .map((piece) => ({
         piece,
-        oauthApp: oauthApps.find((a) => a.pieceShortName === piece.name) ?? null,
+        oauthApp: oauthApps.find((a) => a.pieceName === piece.name) ?? null,
       }))
       .sort((a, b) => {
         // Configured first, then alphabetical
@@ -92,7 +92,7 @@ export default function OAuthAppsSettingsPage() {
   }, [pieces, oauthApps]);
 
   const handleConfigure = (piece: PieceMetadata) => {
-    const existing = oauthApps.find((a) => a.pieceShortName === piece.name);
+    const existing = oauthApps.find((a) => a.pieceName === piece.name);
     setConfigPiece(piece);
     setClientId(existing?.clientId ?? "");
     setClientSecret("");

@@ -1,8 +1,9 @@
-import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
-import { type PieceAuthConfig, parsePieceAuth } from "@/lib/types/piece-auth";
+import { parsePieceAuthAll, type PieceAuthConfig } from "@/lib/types/piece-auth";
 import { generateId } from "@/lib/utils/id";
+import semver from "semver";
 
 const ACTIVEPIECES_PACKAGE_PREFIX = "@activepieces/piece-";
 
@@ -27,6 +28,41 @@ function expandPieceNameCandidates(name: string): string[] {
   return Array.from(candidates);
 }
 
+function compareVersionsDesc(a: string, b: string): number {
+  const aValid = semver.valid(a);
+  const bValid = semver.valid(b);
+  if (!aValid && !bValid) {
+    return b.localeCompare(a);
+  }
+  if (!aValid) return 1;
+  if (!bValid) return -1;
+  return semver.rcompare(a, b);
+}
+
+function pickLatestPerName(rows: PieceMetadataRecord[]): PieceMetadataRecord[] {
+  const best = new Map<string, PieceMetadataRecord>();
+  for (const row of rows) {
+    const current = best.get(row.name);
+    if (!current) {
+      best.set(row.name, row);
+      continue;
+    }
+    const cmp = compareVersionsDesc(row.version, current.version);
+    if (cmp < 0) {
+      continue;
+    }
+    if (cmp > 0) {
+      best.set(row.name, row);
+      continue;
+    }
+    // Same version (or both invalid): prefer most recently updated.
+    if (row.updatedAt > current.updatedAt) {
+      best.set(row.name, row);
+    }
+  }
+  return Array.from(best.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+}
+
 export async function listPieceMetadata(
   params: ListPieceMetadataParams
 ): Promise<PieceMetadataRecord[]> {
@@ -44,19 +80,41 @@ export async function listPieceMetadata(
     .select()
     .from(pieceMetadata)
     .where(whereClause)
-    .orderBy(desc(pieceMetadata.updatedAt))
-    .limit(params.limit ?? 500);
+    .orderBy(desc(pieceMetadata.updatedAt));
 
-  if (!params.categories || params.categories.length === 0) {
-    return rows;
-  }
+  const candidates =
+    !params.categories || params.categories.length === 0
+      ? rows
+      : (() => {
+          const lowerCategories = params.categories.map((c) => c.toLowerCase());
+          return rows.filter((row) =>
+            (row.categories ?? []).some((category) =>
+              lowerCategories.includes(category.toLowerCase())
+            )
+          );
+        })();
 
-  const lowerCategories = params.categories.map((c) => c.toLowerCase());
-  return rows.filter((row) =>
-    (row.categories ?? []).some((category) =>
-      lowerCategories.includes(category.toLowerCase())
-    )
-  );
+  const latest = pickLatestPerName(candidates);
+  return latest.slice(0, params.limit ?? latest.length);
+}
+
+export async function listAllPieceVersionsByName(
+  name: string
+): Promise<PieceMetadataRecord[]> {
+  const candidateNames = expandPieceNameCandidates(name);
+  const rows = await db
+    .select()
+    .from(pieceMetadata)
+    .where(inArray(pieceMetadata.name, candidateNames));
+
+  return rows.sort((a, b) => compareVersionsDesc(a.version, b.version));
+}
+
+export async function getLatestPieceMetadataByName(
+  name: string
+): Promise<PieceMetadataRecord | null> {
+  const rows = await listAllPieceVersionsByName(name);
+  return rows[0] ?? null;
 }
 
 export async function getPieceMetadataByName(
@@ -75,14 +133,7 @@ export async function getPieceMetadataByName(
     return row ?? null;
   }
 
-  const rows = await db
-    .select()
-    .from(pieceMetadata)
-    .where(inArray(pieceMetadata.name, candidateNames))
-    .orderBy(desc(pieceMetadata.updatedAt))
-    .limit(1);
-
-  return rows[0] ?? null;
+  return getLatestPieceMetadataByName(name);
 }
 
 export async function getPieceMetadataByNames(
@@ -111,16 +162,11 @@ export type UpsertPieceMetadataInput = Omit<
 export async function upsertPieceMetadata(
   record: UpsertPieceMetadataInput
 ): Promise<PieceMetadataRecord> {
-  const platformCondition =
-    record.platformId === null
-      ? isNull(pieceMetadata.platformId)
-      : eq(pieceMetadata.platformId, record.platformId);
-
   const existing = await db.query.pieceMetadata.findFirst({
     where: and(
       eq(pieceMetadata.name, record.name),
       eq(pieceMetadata.version, record.version),
-      platformCondition
+      eq(pieceMetadata.platformId, record.platformId)
     ),
   });
 
@@ -188,10 +234,10 @@ export async function countPieceMetadata(): Promise<number> {
  */
 export async function getPieceAuthConfig(
   pieceName: string
-): Promise<PieceAuthConfig> {
+): Promise<Array<Exclude<PieceAuthConfig, null | undefined>>> {
   const piece = await getPieceMetadataByName(pieceName);
   if (!piece) {
-    return null;
+    return [];
   }
-  return parsePieceAuth(piece.auth);
+  return parsePieceAuthAll(piece.auth);
 }

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, eq, inArray, like } from "drizzle-orm";
+import { and, count, eq, ilike, inArray } from "drizzle-orm";
 import {
   decryptObject,
   encryptObject,
@@ -123,7 +123,7 @@ export async function listAppConnections(params: {
 
   if (params.query.displayName) {
     conditions.push(
-      like(appConnections.displayName, `%${params.query.displayName}%`)
+      ilike(appConnections.displayName, `%${params.query.displayName}%`)
     );
   }
 
@@ -258,6 +258,66 @@ export async function deleteAppConnection(
   return rows.length > 0;
 }
 
+export async function countAppConnections(params: {
+  ownerId: string;
+  query: ListAppConnectionsRequestQuery;
+}): Promise<number> {
+  const conditions = [eq(appConnections.ownerId, params.ownerId)];
+
+  if (params.query.pieceName) {
+    conditions.push(eq(appConnections.pieceName, params.query.pieceName));
+  }
+  if (params.query.displayName) {
+    conditions.push(
+      ilike(appConnections.displayName, `%${params.query.displayName}%`)
+    );
+  }
+  if (params.query.status && params.query.status.length > 0) {
+    conditions.push(inArray(appConnections.status, params.query.status));
+  }
+
+  const [result] = await db
+    .select({ count: count() })
+    .from(appConnections)
+    .where(and(...conditions));
+
+  return result?.count ?? 0;
+}
+
+export async function renameAppConnection(
+  id: string,
+  ownerId: string,
+  newDisplayName: string
+): Promise<DecryptedAppConnection | null> {
+  const [row] = await db
+    .update(appConnections)
+    .set({
+      displayName: newDisplayName,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(appConnections.id, id), eq(appConnections.ownerId, ownerId)))
+    .returning();
+
+  if (!row) return null;
+  return decryptConnection(row);
+}
+
+export async function deleteAppConnections(
+  ids: string[],
+  ownerId: string
+): Promise<number> {
+  if (ids.length === 0) return 0;
+
+  const rows = await db
+    .delete(appConnections)
+    .where(
+      and(inArray(appConnections.id, ids), eq(appConnections.ownerId, ownerId))
+    )
+    .returning();
+
+  return rows.length;
+}
+
 export function parseConnectionExternalIdFromAuth(
   auth: unknown
 ): string | null {
@@ -309,9 +369,17 @@ export async function validateWorkflowAppConnections(
     .from(appConnections)
     .where(inArray(appConnections.externalId, externalIds));
 
-  const invalidExternalIds = rows
+  const foundExternalIds = new Set(rows.map((row) => row.externalId));
+  const missingExternalIds = externalIds.filter(
+    (id) => !foundExternalIds.has(id)
+  );
+  const notOwnedExternalIds = rows
     .filter((row) => row.ownerId !== ownerId)
     .map((row) => row.externalId);
+
+  const invalidExternalIds = Array.from(
+    new Set([...missingExternalIds, ...notOwnedExternalIds])
+  );
 
   if (invalidExternalIds.length > 0) {
     return { valid: false, invalidExternalIds };

@@ -32,15 +32,7 @@ export async function GET(request: Request) {
     .from(platformOauthApps)
     .where(eq(platformOauthApps.platformId, platform.id));
 
-  // Normalize pieceName: DB stores full AP names (@activepieces/piece-X)
-  // but piece_metadata.name uses short names (X). Return both formats.
-  const normalized = apps.map((a) => ({
-    ...a,
-    pieceName: a.pieceName,
-    pieceShortName: a.pieceName.replace(/^@activepieces\/piece-/, ""),
-  }));
-
-  return NextResponse.json(normalized);
+  return NextResponse.json(apps);
 }
 
 /**

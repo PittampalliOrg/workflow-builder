@@ -158,10 +158,12 @@ kubectl wait --for=condition=ready pod/postgresql-0 -n workflow-builder --timeou
 ## 5. Configure Secrets
 
 ```bash
+ENCRYPTION_KEY=$(openssl rand -hex 32)
 kubectl create secret generic workflow-builder-secrets \
   --from-literal=DATABASE_URL=postgresql://postgres:password@postgresql:5432/workflow_builder \
   --from-literal=BETTER_AUTH_SECRET=$(openssl rand -hex 32) \
-  --from-literal=INTEGRATION_ENCRYPTION_KEY=$(openssl rand -hex 32) \
+  --from-literal=INTEGRATION_ENCRYPTION_KEY=$ENCRYPTION_KEY \
+  --from-literal=AP_ENCRYPTION_KEY=$ENCRYPTION_KEY \
   -n workflow-builder
 ```
 
