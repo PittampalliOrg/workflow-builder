@@ -8,7 +8,7 @@
  *   pnpm tsx scripts/seed-dev-user.ts
  */
 import bcrypt from "bcryptjs";
-import { generateKeyPairSync } from "crypto";
+import { createPrivateKey, createPublicKey } from "crypto";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -73,7 +73,7 @@ async function seedDevUser() {
       console.log("Created default platform");
     }
 
-    // 2. Generate and store signing key pair
+    // 2. Derive and store signing public key from JWT_SIGNING_KEY
     const existingKey = await db
       .select()
       .from(signingKeys)
@@ -81,22 +81,25 @@ async function seedDevUser() {
       .limit(1);
 
     if (existingKey.length === 0) {
-      const { publicKey } = generateKeyPairSync("rsa", {
-        modulusLength: 2048,
-        publicKeyEncoding: { type: "spki", format: "pem" },
-        privateKeyEncoding: { type: "pkcs8", format: "pem" },
-      });
+      const privateKeyPem = process.env.JWT_SIGNING_KEY;
+      if (privateKeyPem) {
+        const privateKey = createPrivateKey(privateKeyPem);
+        const publicKey = createPublicKey(privateKey);
+        const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;
 
-      await db.insert(signingKeys).values({
-        id: generateId(),
-        platformId,
-        publicKey: publicKey as string,
-        algorithm: "RS256",
-        displayName: "Default Signing Key",
-        createdAt: now,
-        updatedAt: now,
-      });
-      console.log("Created signing key pair");
+        await db.insert(signingKeys).values({
+          id: generateId(),
+          platformId,
+          publicKey: publicKeyPem,
+          algorithm: "RS256",
+          displayName: "Derived from JWT_SIGNING_KEY",
+          createdAt: now,
+          updatedAt: now,
+        });
+        console.log("Created signing key (derived from JWT_SIGNING_KEY)");
+      } else {
+        console.log("Skipping signing key (JWT_SIGNING_KEY not set, will auto-derive at runtime)");
+      }
     }
 
     // 3. Create user

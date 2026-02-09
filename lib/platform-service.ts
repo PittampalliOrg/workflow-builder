@@ -1,5 +1,6 @@
 import { createPublicKey, createPrivateKey } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { getSecretValueAsync } from "./dapr/config-provider";
 import { db } from "./db";
 import { platforms, signingKeys } from "./db/schema";
 import { generateId } from "./utils/id";
@@ -80,11 +81,18 @@ export async function getSigningKey(platformId: string): Promise<string | null> 
     .limit(1);
   if (key.length > 0) return key[0].publicKey;
 
-  // Auto-populate from JWT_SIGNING_KEY env var if available
-  const privateKeyPem = process.env.JWT_SIGNING_KEY;
+  // Auto-populate from JWT_SIGNING_KEY (Dapr secret store or env var)
+  const privateKeyPem = await getSecretValueAsync("JWT_SIGNING_KEY");
   if (!privateKeyPem) return null;
 
   try {
+    // Verify the platform exists before inserting a signing key (FK constraint).
+    // Stale JWTs from a previous cluster may reference platforms that no longer exist.
+    const platform = await db.select({ id: platforms.id }).from(platforms)
+      .where(eq(platforms.id, platformId))
+      .limit(1);
+    if (platform.length === 0) return null;
+
     const privateKey = createPrivateKey(privateKeyPem);
     const publicKey = createPublicKey(privateKey);
     const publicKeyPem = publicKey.export({ type: "spki", format: "pem" }) as string;

@@ -12,6 +12,11 @@ function toFullPieceName(name: string): string {
   return `@activepieces/piece-${name}`;
 }
 
+/** Strip AP package prefix to match piece_metadata.name format */
+function toShortPieceName(name: string): string {
+  return name.replace(/^@activepieces\/piece-/, "");
+}
+
 /**
  * GET /api/oauth-apps - List all platform OAuth apps (never returns clientSecret)
  */
@@ -32,7 +37,13 @@ export async function GET(request: Request) {
     .from(platformOauthApps)
     .where(eq(platformOauthApps.platformId, platform.id));
 
-  return NextResponse.json(apps);
+  // Normalize piece names to short format to match piece_metadata.name
+  const normalized = apps.map((app) => ({
+    ...app,
+    pieceName: toShortPieceName(app.pieceName),
+  }));
+
+  return NextResponse.json(normalized);
 }
 
 /**

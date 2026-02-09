@@ -8,6 +8,7 @@ import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 import { SignJWT, importPKCS8, importSPKI, jwtVerify } from "jose";
 import { db } from "./db";
+import { getSecretValueAsync } from "./dapr/config-provider";
 import {
   platforms,
   projectMembers,
@@ -96,10 +97,10 @@ export async function verifyPassword(
 // ============================================================================
 
 async function getPrivateKey() {
-  const keyPem = process.env.JWT_SIGNING_KEY;
+  const keyPem = await getSecretValueAsync("JWT_SIGNING_KEY");
   if (!keyPem) {
     throw new Error(
-      "JWT_SIGNING_KEY environment variable is required. Set it to an RSA private key in PEM format."
+      "JWT_SIGNING_KEY is required. Set it via Dapr secret store or as an environment variable (RSA private key in PEM format)."
     );
   }
   return importPKCS8(keyPem, "RS256");
