@@ -9,7 +9,9 @@ data "external_schema" "drizzle" {
     "bash",
     "-lc",
     // drizzle-kit export generates the full schema SQL from an empty state.
-    "pnpm -s drizzle-kit export --sql",
+    // drizzle.config.ts loads dotenv; DOTENV_CONFIG_QUIET prevents dotenv
+    // from printing to stdout (which would corrupt the SQL stream).
+    "DOTENV_CONFIG_QUIET=true pnpm -s drizzle-kit export --sql",
   ]
 }
 
@@ -41,4 +43,3 @@ env "k8s" {
     dir = "file://atlas/migrations"
   }
 }
-
