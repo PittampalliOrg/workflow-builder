@@ -77,8 +77,7 @@ export function GET(request: Request) {
 	    // localStorage may be unavailable in some contexts
 	  }
 	  // Same-tab fallback: when the popup is blocked, we navigate the main tab to
-	  // the provider. In that case, `;
-	window.opener` is null and we need to return
+	  // the provider. In that case, window.opener is null and we need to return
 	  // to /connections to finish the flow.
 	  var sameTabState = null;
 	  try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (e) {}

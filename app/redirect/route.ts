@@ -35,11 +35,10 @@ export async function GET(request: Request) {
 						};
 
 	// JSON.stringify output is safe to embed into a <script> as long as we escape
-	// the closing script tag sequence.
-	const payloadJson = JSON.stringify(payload).replaceAll(
-		"</script>",
-		"<\\/script>",
-	);
+	// the closing script tag sequence. Avoid replaceAll for runtime compatibility.
+	const payloadJson = JSON.stringify(payload)
+		.split("</script>")
+		.join("<\\/script>");
 
 	const html = `<!doctype html>
 <html lang="en">
@@ -91,8 +90,7 @@ export async function GET(request: Request) {
 	        } catch (_) {}
 
 	        // Same-tab fallback: when the popup is blocked, we navigate the main tab to
-	        // the provider. In that case, `;
-	window.opener` is null and we need to return
+	        // the provider. In that case, window.opener is null and we need to return
 	        // to /connections to finish the flow.
 	        var sameTabState = null;
 	        try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (_) {}
