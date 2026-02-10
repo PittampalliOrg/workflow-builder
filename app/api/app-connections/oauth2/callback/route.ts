@@ -36,59 +36,66 @@ export function GET(request: Request) {
 	}
 
 	const safePayload = JSON.stringify(JSON.stringify(payload));
-	const safeStorageKey = JSON.stringify("oauth2_callback_result");
 	const safeScopedStorageKey = JSON.stringify(
 		state && state.length > 0 ? `oauth2_callback_result:${state}` : "",
 	);
 
 	const html = `<!DOCTYPE html>
-<html>
-<head><title>Connecting...</title></head>
-<body>
-<p>Completing connection&hellip; You can close this window.</p>
-<script>
-  var payload = JSON.parse(${safePayload});
-  var storageKey = ${safeStorageKey};
-  var scopedStorageKey = ${safeScopedStorageKey};
-  var origin = window.location.origin;
-  // Primary: postMessage (works when COOP doesn't block window.opener)
-  try {
-    if (window.opener) {
-      window.opener.postMessage(payload, origin);
-    }
-  } catch (e) {
-    // COOP may block access to window.opener
-  }
-  // Extra fallback: BroadcastChannel (more reliable than storage events in some browsers)
-  try {
-    if (payload && payload.state && typeof BroadcastChannel !== "undefined") {
-      var bc = new BroadcastChannel("oauth2_callback_result:" + payload.state);
-      bc.postMessage(payload);
-      bc.close();
-    }
-  } catch (e) {
-    // ignore
-  }
-  // Fallback: localStorage (works even when COOP severs window.opener)
-  // The parent listens for the 'storage' event on this key.
-  try {
-    // Write the scoped key first to avoid a race where the parent processes the
-    // unscoped key and cleans up before the scoped key is written.
-    if (scopedStorageKey) {
-      localStorage.setItem(scopedStorageKey, JSON.stringify(payload));
-    }
-    localStorage.setItem(storageKey, JSON.stringify(payload));
-  } catch (e) {
-    // localStorage may be unavailable in some contexts
-  }
-  // Auto-close after a brief delay to let both channels deliver.
-  // Leave the window open on error so the user can read what happened.
-  if (payload && payload.code) {
-    setTimeout(function() { window.close(); }, 1000);
-  }
-</script>
-</body>
-</html>`;
+	<html>
+	<head><title>Connecting...</title></head>
+	<body>
+	<p>Completing connection&hellip; You can close this window.</p>
+	<script>
+	  var payload = JSON.parse(${safePayload});
+	  var scopedStorageKey = ${safeScopedStorageKey};
+	  var origin = window.location.origin;
+	  // Primary: postMessage (works when COOP doesn't block window.opener)
+	  try {
+	    if (window.opener) {
+	      window.opener.postMessage(payload, origin);
+	    }
+	  } catch (e) {
+	    // COOP may block access to window.opener
+	  }
+	  // Extra fallback: BroadcastChannel (more reliable than storage events in some browsers)
+	  try {
+	    if (payload && payload.state && typeof BroadcastChannel !== "undefined") {
+	      var bc = new BroadcastChannel("oauth2_callback_result:" + payload.state);
+	      bc.postMessage(payload);
+	      bc.close();
+	    }
+	  } catch (e) {
+	    // ignore
+	  }
+	  // Fallback: localStorage (works even when COOP severs window.opener)
+	  // The parent listens for the 'storage' event on this key.
+	  try {
+	    if (scopedStorageKey) {
+	      localStorage.setItem(scopedStorageKey, JSON.stringify(payload));
+	    }
+	  } catch (e) {
+	    // localStorage may be unavailable in some contexts
+	  }
+	  // Same-tab fallback: when the popup is blocked, we navigate the main tab to
+	  // the provider. In that case, `;
+	window.opener` is null and we need to return
+	  // to /connections to finish the flow.
+	  var sameTabState = null;
+	  try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (e) {}
+	  var shouldReturnToConnections = !window.opener && payload && payload.state && sameTabState === payload.state;
+	  if (shouldReturnToConnections) {
+	    try { sessionStorage.removeItem("oauth2_same_tab_state"); } catch (e) {}
+	    try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (e) {}
+	    return;
+	  }
+	  // Auto-close after a brief delay to let both channels deliver.
+	  // Leave the window open on error so the user can read what happened.
+	  if (payload && payload.code) {
+	    setTimeout(function() { window.close(); }, 1000);
+	  }
+	</script>
+	</body>
+	</html>`;
 
 	return new NextResponse(html, {
 		status: 200,

@@ -15,15 +15,24 @@ export async function GET(request: Request) {
 	const errorDescription = url.searchParams.get("error_description");
 
 	// Precompute a payload so it can be embedded safely.
-	const payload = error
-		? { error, errorDescription, state }
-		: code
-			? { code, state }
-			: {
-					error: "missing_code",
-					errorDescription: "No authorization code received",
-					state,
-				};
+	// We require `state` for all resumable flows to avoid collisions/stale results.
+	const payload =
+		error && state
+			? { error, errorDescription, state }
+			: code && state
+				? { code, state }
+				: !state
+					? {
+							error: "missing_state",
+							errorDescription:
+								"Missing OAuth state. Please restart the authorization flow.",
+							state,
+						}
+					: {
+							error: "missing_code",
+							errorDescription: "No authorization code received",
+							state,
+						};
 
 	// JSON.stringify output is safe to embed into a <script> as long as we escape
 	// the closing script tag sequence.
@@ -53,43 +62,54 @@ export async function GET(request: Request) {
         <p class="desc">You can close this window if it doesn't close automatically.</p>
       </div>
     </div>
-    <script>
-      (function () {
-        var payload = ${payloadJson};
+	    <script>
+	      (function () {
+	        var payload = ${payloadJson};
 
-        // Primary: postMessage (works when COOP doesn't block window.opener)
-        try {
-          if (window.opener) {
-            window.opener.postMessage(payload, window.location.origin);
-          }
-        } catch (_) {}
+	        // Primary: postMessage (works when COOP doesn't block window.opener)
+	        try {
+	          if (window.opener) {
+	            window.opener.postMessage(payload, window.location.origin);
+	          }
+	        } catch (_) {}
 
-        // Extra fallback: BroadcastChannel (more reliable than storage events in some browsers)
-        try {
-          if (payload && payload.state && typeof BroadcastChannel !== "undefined") {
-            var bc = new BroadcastChannel("oauth2_callback_result:" + payload.state);
-            bc.postMessage(payload);
-            bc.close();
-          }
-        } catch (_) {}
+	        // Extra fallback: BroadcastChannel (more reliable than storage events in some browsers)
+	        try {
+	          if (payload && payload.state && typeof BroadcastChannel !== "undefined") {
+	            var bc = new BroadcastChannel("oauth2_callback_result:" + payload.state);
+	            bc.postMessage(payload);
+	            bc.close();
+	          }
+	        } catch (_) {}
 
-        // Fallback: localStorage (works even when COOP severs window.opener)
-        // Prefer the state-scoped key to avoid collisions and stale entries.
-        try {
-          if (payload && payload.state) {
-            localStorage.setItem("oauth2_callback_result:" + payload.state, JSON.stringify(payload));
-          } else {
-            localStorage.setItem("oauth2_callback_result", JSON.stringify(payload));
-          }
-        } catch (_) {}
+	        // Fallback: localStorage (works even when COOP severs window.opener)
+	        // Prefer the state-scoped key to avoid collisions and stale entries.
+	        try {
+	          if (payload && payload.state) {
+	            localStorage.setItem("oauth2_callback_result:" + payload.state, JSON.stringify(payload));
+	          }
+	        } catch (_) {}
 
-        if (payload && payload.code) {
-          setTimeout(function () { window.close(); }, 750);
-        }
-      })();
-    </script>
-  </body>
-</html>`;
+	        // Same-tab fallback: when the popup is blocked, we navigate the main tab to
+	        // the provider. In that case, `;
+	window.opener` is null and we need to return
+	        // to /connections to finish the flow.
+	        var sameTabState = null;
+	        try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (_) {}
+	        var shouldReturnToConnections = !window.opener && payload && payload.state && sameTabState === payload.state;
+	        if (shouldReturnToConnections) {
+	          try { sessionStorage.removeItem("oauth2_same_tab_state"); } catch (_) {}
+	          try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (_) {}
+	          return;
+	        }
+
+	        if (payload && payload.code) {
+	          setTimeout(function () { window.close(); }, 750);
+	        }
+	      })();
+	    </script>
+	  </body>
+	</html>`;
 
 	return new NextResponse(html, {
 		status: 200,

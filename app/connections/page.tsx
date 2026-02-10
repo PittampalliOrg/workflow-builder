@@ -35,6 +35,12 @@ import { AddConnectionOverlay } from "@/components/overlays/add-connection-overl
 import { RenameConnectionDialog } from "@/components/connections/rename-connection-dialog";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { type AppConnection, api } from "@/lib/api-client";
+import {
+	clearOAuth2Pending,
+	clearOAuth2Result,
+	loadOAuth2Pending,
+	loadOAuth2Result,
+} from "@/lib/app-connections/oauth2-resume-client";
 import { AppConnectionType } from "@/lib/types/app-connection";
 
 function getStatusBadge(status: string) {
@@ -110,6 +116,84 @@ export default function ConnectionsPage() {
 
 	useEffect(() => {
 		fetchConnections();
+	}, [fetchConnections]);
+
+	// Same-tab OAuth2 fallback: when popups are blocked, we navigate the current tab
+	// to the provider and then return to /connections to finish creating the connection.
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+
+		const url = new URL(window.location.href);
+		const resume = url.searchParams.get("oauth2_resume");
+		const state = url.searchParams.get("state");
+		if (resume !== "1" || !state) return;
+
+		// Remove query params immediately to avoid re-processing on refresh.
+		url.searchParams.delete("oauth2_resume");
+		url.searchParams.delete("state");
+		const nextUrl = `${url.pathname}${url.searchParams.toString() ? `?${url.searchParams.toString()}` : ""}`;
+		window.history.replaceState(null, "", nextUrl);
+
+		const pending = loadOAuth2Pending(state);
+		const result = loadOAuth2Result(state);
+
+		// Always clear stored state to avoid stale retries.
+		clearOAuth2Pending(state);
+		clearOAuth2Result(state);
+
+		if (!pending || !result) {
+			toast.error(
+				"Authorization could not be resumed. Please try connecting again.",
+				{
+					description: `Missing ${!pending ? "pending state" : "callback"} data.`,
+				},
+			);
+			return;
+		}
+
+		if ("error" in result) {
+			toast.error(`OAuth2 failed: ${result.errorDescription || result.error}`);
+			return;
+		}
+
+		if (!result.code) {
+			toast.error("OAuth2 callback missing code. Please try again.");
+			return;
+		}
+
+		void (async () => {
+			try {
+				const code = decodeURIComponent(result.code);
+				await api.appConnection.upsert({
+					externalId: pending.displayName
+						.toLowerCase()
+						.replace(/[^a-z0-9]+/g, "-"),
+					displayName: pending.displayName,
+					pieceName: pending.pieceName,
+					projectId: "default",
+					type: AppConnectionType.PLATFORM_OAUTH2,
+					value: {
+						type: AppConnectionType.PLATFORM_OAUTH2,
+						client_id: pending.clientId,
+						redirect_url: pending.redirectUrl,
+						code,
+						scope: pending.scope,
+						code_verifier: pending.codeVerifier || undefined,
+						props: pending.props,
+						authorization_method: pending.authorizationMethod,
+					},
+				});
+				toast.success("Connection created via OAuth2");
+				await fetchConnections();
+			} catch (error) {
+				console.error("Failed to resume OAuth2 connection:", error);
+				toast.error(
+					error instanceof Error
+						? error.message
+						: "Failed to create connection",
+				);
+			}
+		})();
 	}, [fetchConnections]);
 
 	const handleAddConnection = () => {

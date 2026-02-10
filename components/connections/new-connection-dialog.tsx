@@ -28,6 +28,7 @@ import {
 	type OAuthAppSummary,
 	type PieceMetadataSummary,
 } from "@/lib/api-client";
+import { saveOAuth2Pending } from "@/lib/app-connections/oauth2-resume-client";
 import {
 	type PieceAuthConfig,
 	parsePieceAuthAll,
@@ -37,6 +38,7 @@ import {
 } from "@/lib/types/piece-auth";
 import {
 	AppConnectionType,
+	type OAuth2AuthorizationMethod,
 	OAuth2GrantType,
 	type UpsertAppConnectionRequestBody,
 } from "@/lib/types/app-connection";
@@ -408,6 +410,32 @@ export function NewConnectionDialog({
 			popupNavigatedRef.current = false;
 
 			const redirectUrl = `${window.location.origin}/redirect`;
+			const resolvedDisplayName =
+				displayName.trim() || `${selectedPiece.displayName} Connection`;
+
+			const startSameTabOAuth = async () => {
+				const startResult = await api.appConnection.oauth2Start({
+					pieceName: selectedPiece.name,
+					props: oauthProps,
+					redirectUrl,
+				});
+
+				saveOAuth2Pending({
+					state: startResult.state,
+					pieceName: selectedPiece.name,
+					displayName: resolvedDisplayName,
+					clientId: startResult.clientId,
+					redirectUrl: startResult.redirectUrl,
+					codeVerifier: startResult.codeVerifier,
+					scope: startResult.scope,
+					props: oauthProps,
+					authorizationMethod: oauth2AuthConfig?.authorizationMethod as
+						| OAuth2AuthorizationMethod
+						| undefined,
+				});
+
+				window.location.assign(startResult.authorizationUrl);
+			};
 
 			// Open synchronously to avoid popup blockers; navigate after the async start call.
 			// Authorization code grant - start PKCE flow via server
@@ -419,7 +447,26 @@ export function NewConnectionDialog({
 			);
 
 			if (!popup) {
-				toast.error("Popup blocked. Please allow popups for this site.");
+				toast.error("Popup blocked.", {
+					description:
+						"Please allow popups for this site, or continue authorization in this tab.",
+					action: {
+						label: "Continue in this tab",
+						onClick: () => {
+							void (async () => {
+								try {
+									await startSameTabOAuth();
+								} catch (err) {
+									const message =
+										err instanceof Error
+											? err.message
+											: "Failed to start OAuth2 flow";
+									toast.error(message);
+								}
+							})();
+						},
+					},
+				});
 				setOauthConnecting(false);
 				return;
 			}
@@ -515,6 +562,46 @@ export function NewConnectionDialog({
 				scope: startResult.scope,
 			};
 
+			// If the popup was closed by the browser before navigation, fall back to
+			// same-tab auth (state is still valid).
+			try {
+				if (popup.closed) {
+					toast.error("Authorization popup was closed.", {
+						description: "You can continue authorization in this tab instead.",
+						action: {
+							label: "Continue in this tab",
+							onClick: () => {
+								void (async () => {
+									try {
+										saveOAuth2Pending({
+											state: startResult.state,
+											pieceName: selectedPiece.name,
+											displayName: resolvedDisplayName,
+											clientId: startResult.clientId,
+											redirectUrl: startResult.redirectUrl,
+											codeVerifier: startResult.codeVerifier,
+											scope: startResult.scope,
+											props: oauthProps,
+											authorizationMethod:
+												oauth2AuthConfig?.authorizationMethod as
+													| OAuth2AuthorizationMethod
+													| undefined,
+										});
+										window.location.assign(startResult.authorizationUrl);
+									} catch {
+										/* ignore */
+									}
+								})();
+							},
+						},
+					});
+					setOauthConnecting(false);
+					return;
+				}
+			} catch {
+				/* ignore */
+			}
+
 			try {
 				popup.location.href = startResult.authorizationUrl;
 				popupNavigatedRef.current = true;
@@ -551,15 +638,37 @@ export function NewConnectionDialog({
 					/* ignore */
 				}
 
-				toast.error("Failed to navigate OAuth popup. Please try again.");
+				toast.error("Failed to navigate OAuth popup.", {
+					description: "You can continue authorization in this tab instead.",
+					action: {
+						label: "Continue in this tab",
+						onClick: () => {
+							void (async () => {
+								try {
+									saveOAuth2Pending({
+										state: startResult.state,
+										pieceName: selectedPiece.name,
+										displayName: resolvedDisplayName,
+										clientId: startResult.clientId,
+										redirectUrl: startResult.redirectUrl,
+										codeVerifier: startResult.codeVerifier,
+										scope: startResult.scope,
+										props: oauthProps,
+										authorizationMethod:
+											oauth2AuthConfig?.authorizationMethod as
+												| OAuth2AuthorizationMethod
+												| undefined,
+									});
+									window.location.assign(startResult.authorizationUrl);
+								} catch {
+									/* ignore */
+								}
+							})();
+						},
+					},
+				});
 				setOauthConnecting(false);
 				return;
-			}
-
-			try {
-				localStorage.removeItem("oauth2_callback_result");
-			} catch {
-				/* ok */
 			}
 			try {
 				localStorage.removeItem(storageKey);
@@ -589,12 +698,6 @@ export function NewConnectionDialog({
 				processingRef.current = true;
 				cleanupOAuthListeners();
 				closeOAuthPopup();
-
-				try {
-					localStorage.removeItem("oauth2_callback_result");
-				} catch {
-					/* ok */
-				}
 				try {
 					localStorage.removeItem(storageKey);
 				} catch {
@@ -680,8 +783,7 @@ export function NewConnectionDialog({
 			// Channel 2: localStorage (fallback for COOP)
 			const storageHandler = (event: StorageEvent) => {
 				if (!event.newValue) return;
-				if (event.key !== storageKey && event.key !== "oauth2_callback_result")
-					return;
+				if (event.key !== storageKey) return;
 				try {
 					const d = JSON.parse(event.newValue);
 					processCallbackResult(d);
@@ -705,9 +807,36 @@ export function NewConnectionDialog({
 				try {
 					if (!popupNavigatedRef.current && popup.closed) {
 						cleanupOAuthListeners();
-						toast.error(
-							"Authorization popup was closed. Please allow popups for this site and try again.",
-						);
+						toast.error("Authorization popup was closed.", {
+							description:
+								"Please allow popups for this site, or continue authorization in this tab.",
+							action: {
+								label: "Continue in this tab",
+								onClick: () => {
+									void (async () => {
+										try {
+											saveOAuth2Pending({
+												state: startResult.state,
+												pieceName: selectedPiece.name,
+												displayName: resolvedDisplayName,
+												clientId: startResult.clientId,
+												redirectUrl: startResult.redirectUrl,
+												codeVerifier: startResult.codeVerifier,
+												scope: startResult.scope,
+												props: oauthProps,
+												authorizationMethod:
+													oauth2AuthConfig?.authorizationMethod as
+														| OAuth2AuthorizationMethod
+														| undefined,
+											});
+											window.location.assign(startResult.authorizationUrl);
+										} catch {
+											/* ignore */
+										}
+									})();
+								},
+							},
+						});
 						setOauthConnecting(false);
 						return;
 					}
@@ -726,9 +855,7 @@ export function NewConnectionDialog({
 
 				if (Date.now() - popupOpenedAt < POPUP_GRACE_PERIOD_MS) {
 					try {
-						const stored =
-							localStorage.getItem(storageKey) ??
-							localStorage.getItem("oauth2_callback_result");
+						const stored = localStorage.getItem(storageKey);
 						if (stored) {
 							const d = JSON.parse(stored);
 							processCallbackResult(d);
@@ -742,9 +869,7 @@ export function NewConnectionDialog({
 				// After grace period, keep polling localStorage in case storage events
 				// or BroadcastChannel delivery are blocked by the environment.
 				try {
-					const stored =
-						localStorage.getItem(storageKey) ??
-						localStorage.getItem("oauth2_callback_result");
+					const stored = localStorage.getItem(storageKey);
 					if (stored) {
 						const d = JSON.parse(stored);
 						processCallbackResult(d);
