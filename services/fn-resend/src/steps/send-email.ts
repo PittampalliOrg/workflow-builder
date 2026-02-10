@@ -41,7 +41,8 @@ export async function sendEmailStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "RESEND_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "RESEND_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
@@ -50,7 +51,8 @@ export async function sendEmailStep(
   if (!senderEmail) {
     return {
       success: false,
-      error: "No sender is configured. Please add it in the action or in Project Integrations.",
+      error:
+        "No sender is configured. Please add it in the action or in Project Integrations.",
     };
   }
 
@@ -83,7 +85,8 @@ export async function sendEmailStep(
       const errorData = (await response.json()) as ResendErrorResponse;
       return {
         success: false,
-        error: errorData.message || `HTTP ${response.status}: Failed to send email`,
+        error:
+          errorData.message || `HTTP ${response.status}: Failed to send email`,
       };
     }
 

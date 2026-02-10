@@ -142,6 +142,7 @@ export async function POST(
         nodes: newNodes,
         edges: newEdges,
         userId: session.user.id,
+        projectId: session.user.projectId,
         visibility: "private", // Duplicated workflows are always private
       })
       .returning();

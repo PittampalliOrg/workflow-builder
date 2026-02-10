@@ -1,39 +1,38 @@
 "use client";
 
+import { BarChart3, FileJson2, FileText, ListTodo } from "lucide-react";
 import { useMemo } from "react";
-import { ListTodo, BarChart3, FileJson2, FileText } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { JsonPanel } from "./json-panel";
-import { TaskListPanel } from "./task-list-panel";
-import { UsageMetricsPanel } from "./usage-metrics-panel";
-import { TraceMetadataPanel } from "./trace-metadata-panel";
 import {
   isDaprAgentOutput,
   parseDaprAgentOutput,
 } from "@/lib/transforms/workflow-ui";
-import { cn } from "@/lib/utils";
+import { JsonPanel } from "./json-panel";
+import { TaskListPanel } from "./task-list-panel";
+import { TraceMetadataPanel } from "./trace-metadata-panel";
+import { UsageMetricsPanel } from "./usage-metrics-panel";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface InputOutputSectionProps {
+type InputOutputSectionProps = {
   input: unknown;
   output: unknown;
   /** Raw DaprAgentOutput preserved from API */
   daprAgentOutput?: unknown;
-}
+};
 
 // ============================================================================
 // Summary Tab Content
 // ============================================================================
 
-interface SummaryTabProps {
+type SummaryTabProps = {
   planText: string | undefined;
   taskCount: number;
   totalTokens: number | undefined;
   traceId: string | undefined;
-}
+};
 
 function SummaryTab({
   planText,
@@ -46,8 +45,12 @@ function SummaryTab({
       {/* Plan Output */}
       {planText && (
         <div className="rounded-lg border border-gray-700 bg-[#1e2433] p-4">
-          <h4 className="text-sm font-medium text-gray-300 mb-2">Plan Output</h4>
-          <p className="text-sm text-gray-200 whitespace-pre-wrap">{planText}</p>
+          <h4 className="mb-2 font-medium text-gray-300 text-sm">
+            Plan Output
+          </h4>
+          <p className="whitespace-pre-wrap text-gray-200 text-sm">
+            {planText}
+          </p>
         </div>
       )}
 
@@ -55,13 +58,13 @@ function SummaryTab({
       <div className="flex items-center gap-4 text-sm">
         {taskCount > 0 && (
           <span className="text-gray-400">
-            <span className="text-teal-400 font-medium">{taskCount}</span> tasks
+            <span className="font-medium text-teal-400">{taskCount}</span> tasks
             created
           </span>
         )}
         {totalTokens !== undefined && (
           <span className="text-gray-400">
-            <span className="text-amber-400 font-medium">
+            <span className="font-medium text-amber-400">
               {totalTokens.toLocaleString()}
             </span>{" "}
             tokens used
@@ -70,7 +73,7 @@ function SummaryTab({
         {traceId && (
           <span className="text-gray-400">
             Trace:{" "}
-            <code className="text-xs bg-gray-800 px-1 py-0.5 rounded text-gray-300">
+            <code className="rounded bg-gray-800 px-1 py-0.5 text-gray-300 text-xs">
               {traceId.slice(0, 12)}...
             </code>
           </span>
@@ -84,9 +87,9 @@ function SummaryTab({
 // DaprAgent Output Section (Tabbed)
 // ============================================================================
 
-interface DaprAgentOutputSectionProps {
+type DaprAgentOutputSectionProps = {
   output: unknown;
-}
+};
 
 function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
   const parsed = useMemo(() => parseDaprAgentOutput(output), [output]);
@@ -100,27 +103,27 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
   const hasUsage = usage !== undefined;
 
   return (
-    <div className="rounded-lg border bg-[#1e2433] overflow-hidden">
+    <div className="overflow-hidden rounded-lg border bg-[#1e2433]">
       {/* Header */}
-      <div className="px-4 py-2 border-b border-gray-700">
-        <span className="text-sm font-medium text-gray-300">Output</span>
+      <div className="border-gray-700 border-b px-4 py-2">
+        <span className="font-medium text-gray-300 text-sm">Output</span>
       </div>
 
       {/* Tabbed Content */}
-      <Tabs defaultValue="summary" className="w-full">
-        <div className="px-4 pt-2 border-b border-gray-700">
-          <TabsList className="bg-transparent border-0 p-0 h-auto gap-0">
+      <Tabs className="w-full" defaultValue="summary">
+        <div className="border-gray-700 border-b px-4 pt-2">
+          <TabsList className="h-auto gap-0 border-0 bg-transparent p-0">
             <TabsTrigger
+              className="gap-2 rounded-none border-transparent border-b-2 px-4 py-2 text-gray-400 data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200"
               value="summary"
-              className="gap-2 px-4 py-2 rounded-none border-b-2 border-transparent data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200 text-gray-400"
             >
               <FileText className="h-4 w-4" />
               Summary
             </TabsTrigger>
             {hasTasks && (
               <TabsTrigger
+                className="gap-2 rounded-none border-transparent border-b-2 px-4 py-2 text-gray-400 data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200"
                 value="tasks"
-                className="gap-2 px-4 py-2 rounded-none border-b-2 border-transparent data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200 text-gray-400"
               >
                 <ListTodo className="h-4 w-4" />
                 Tasks ({tasks.length})
@@ -128,16 +131,16 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
             )}
             {hasUsage && (
               <TabsTrigger
+                className="gap-2 rounded-none border-transparent border-b-2 px-4 py-2 text-gray-400 data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200"
                 value="usage"
-                className="gap-2 px-4 py-2 rounded-none border-b-2 border-transparent data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200 text-gray-400"
               >
                 <BarChart3 className="h-4 w-4" />
                 Usage
               </TabsTrigger>
             )}
             <TabsTrigger
+              className="gap-2 rounded-none border-transparent border-b-2 px-4 py-2 text-gray-400 data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200"
               value="raw"
-              className="gap-2 px-4 py-2 rounded-none border-b-2 border-transparent data-[state=active]:border-teal-400 data-[state=active]:bg-transparent data-[state=active]:text-gray-200 text-gray-400"
             >
               <FileJson2 className="h-4 w-4" />
               Raw JSON
@@ -146,7 +149,7 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
         </div>
 
         <div className="p-4">
-          <TabsContent value="summary" className="mt-0">
+          <TabsContent className="mt-0" value="summary">
             <SummaryTab
               planText={planText}
               taskCount={tasks.length}
@@ -156,24 +159,24 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
           </TabsContent>
 
           {hasTasks && (
-            <TabsContent value="tasks" className="mt-0">
+            <TabsContent className="mt-0" value="tasks">
               <TaskListPanel tasks={tasks} />
             </TabsContent>
           )}
 
           {hasUsage && (
-            <TabsContent value="usage" className="mt-0 space-y-4">
+            <TabsContent className="mt-0 space-y-4" value="usage">
               <UsageMetricsPanel usage={usage} />
               {trace && <TraceMetadataPanel trace={trace} />}
             </TabsContent>
           )}
 
-          <TabsContent value="raw" className="mt-0">
+          <TabsContent className="mt-0" value="raw">
             <JsonPanel
-              title="Raw Output"
               data={output}
               maxHeight="300px"
               showExpand
+              title="Raw Output"
             />
           </TabsContent>
         </div>
@@ -200,8 +203,8 @@ export function InputOutputSection({
 
   if (isDaprAgent) {
     return (
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <JsonPanel title="Input" data={input} maxHeight="250px" />
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <JsonPanel data={input} maxHeight="250px" title="Input" />
         <DaprAgentOutputSection output={effectiveOutput} />
       </div>
     );
@@ -209,9 +212,9 @@ export function InputOutputSection({
 
   // Default: Regular JSON panels for non-DaprAgent output
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <JsonPanel title="Input" data={input} maxHeight="250px" />
-      <JsonPanel title="Output" data={output} maxHeight="250px" />
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+      <JsonPanel data={input} maxHeight="250px" title="Input" />
+      <JsonPanel data={output} maxHeight="250px" title="Output" />
     </div>
   );
 }

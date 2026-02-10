@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows/[id]/events - SSE event stream for Dapr workflow status
@@ -48,9 +48,7 @@ export async function GET(
   const stream = new ReadableStream({
     async start(controller) {
       const sendEvent = (data: Record<string, unknown>) => {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
-        );
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
       };
 
       let lastPhase = "";
@@ -84,14 +82,20 @@ export async function GET(
             // Update local DB - check phase and outputs.success for internal failures
             let localStatus: "running" | "success" | "error" = "running";
             let errorMessage: string | null = status.error || null;
-            const outputs = status.outputs as Record<string, unknown> | undefined;
+            const outputs = status.outputs as
+              | Record<string, unknown>
+              | undefined;
             const outputSuccess = outputs?.success;
 
             if (status.runtimeStatus === "COMPLETED") {
               // Check if workflow actually succeeded or failed internally
               if (phase === "failed" || outputSuccess === false) {
                 localStatus = "error";
-                errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+                errorMessage =
+                  errorMessage ||
+                  message ||
+                  (outputs?.error as string) ||
+                  "Workflow failed";
               } else {
                 localStatus = "success";
               }
@@ -108,7 +112,11 @@ export async function GET(
                 localStatus = "success";
               } else if (phase === "failed" || outputSuccess === false) {
                 localStatus = "error";
-                errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+                errorMessage =
+                  errorMessage ||
+                  message ||
+                  (outputs?.error as string) ||
+                  "Workflow failed";
               }
               // If phase/outputs don't indicate completion, keep as running
             }
@@ -136,8 +144,7 @@ export async function GET(
                 type: "complete",
                 daprStatus: status.runtimeStatus,
                 phase,
-                progress:
-                  status.runtimeStatus === "COMPLETED" ? 100 : progress,
+                progress: status.runtimeStatus === "COMPLETED" ? 100 : progress,
                 message,
                 output: status.outputs,
               });

@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { Check, Filter, Search, X } from "lucide-react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,8 +19,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type {
+  WorkflowFilters as WorkflowFiltersType,
   WorkflowUIStatus,
-  WorkflowFilters,
 } from "@/lib/types/workflow-ui";
 import { cn } from "@/lib/utils";
 
@@ -33,11 +33,11 @@ const ALL_STATUSES: WorkflowUIStatus[] = [
   "TERMINATED",
 ];
 
-interface WorkflowFiltersProps {
-  filters: WorkflowFilters;
-  onFiltersChange: (filters: WorkflowFilters) => void;
+type WorkflowFiltersProps = {
+  filters: WorkflowFiltersType;
+  onFiltersChange: (filters: WorkflowFiltersType) => void;
   availableAppIds?: string[];
-}
+};
 
 export function WorkflowFilters({
   filters,
@@ -45,7 +45,7 @@ export function WorkflowFilters({
   availableAppIds = ["workflow-orchestrator"],
 }: WorkflowFiltersProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
-  const [tempFilters, setTempFilters] = useState<WorkflowFilters>(filters);
+  const [tempFilters, setTempFilters] = useState<WorkflowFiltersType>(filters);
 
   const handleSearchChange = (value: string) => {
     onFiltersChange({ ...filters, search: value || undefined });
@@ -89,20 +89,20 @@ export function WorkflowFilters({
   return (
     <div className="flex items-center gap-3">
       {/* Search Input */}
-      <div className="relative flex-1 max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+      <div className="relative max-w-sm flex-1">
+        <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
+          className="pl-9"
+          onChange={(e) => handleSearchChange(e.target.value)}
           placeholder="Search workflows..."
           value={filters.search || ""}
-          onChange={(e) => handleSearchChange(e.target.value)}
-          className="pl-9"
         />
         {filters.search && (
           <Button
-            variant="ghost"
-            size="icon"
-            className="absolute right-1 top-1/2 -translate-y-1/2 h-6 w-6"
+            className="absolute top-1/2 right-1 h-6 w-6 -translate-y-1/2"
             onClick={() => handleSearchChange("")}
+            size="icon"
+            variant="ghost"
           >
             <X className="h-3 w-3" />
           </Button>
@@ -110,26 +110,26 @@ export function WorkflowFilters({
       </div>
 
       {/* Filters Popover */}
-      <Popover open={popoverOpen} onOpenChange={setPopoverOpen}>
+      <Popover onOpenChange={setPopoverOpen} open={popoverOpen}>
         <PopoverTrigger asChild>
-          <Button variant="outline" className="gap-2">
+          <Button className="gap-2" variant="outline">
             <Filter className="h-4 w-4" />
             Filters
             {activeFilterCount > 0 && (
-              <span className="ml-1 rounded-full bg-primary px-1.5 py-0.5 text-xs text-primary-foreground">
+              <span className="ml-1 rounded-full bg-primary px-1.5 py-0.5 text-primary-foreground text-xs">
                 {activeFilterCount}
               </span>
             )}
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-80" align="end">
+        <PopoverContent align="end" className="w-80">
           <div className="space-y-4">
             {/* App ID Filter */}
             <div className="space-y-2">
-              <Label className="text-sm font-medium">App ID</Label>
+              <Label className="font-medium text-sm">App ID</Label>
               <Select
-                value={tempFilters.appId || "all"}
                 onValueChange={handleAppIdChange}
+                value={tempFilters.appId || "all"}
               >
                 <SelectTrigger>
                   <SelectValue placeholder="All apps" />
@@ -147,21 +147,21 @@ export function WorkflowFilters({
 
             {/* Status Filter - using toggle badges instead of checkboxes */}
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Status</Label>
+              <Label className="font-medium text-sm">Status</Label>
               <div className="flex flex-wrap gap-2">
                 {ALL_STATUSES.map((status) => {
-                  const isSelected = tempFilters.status?.includes(status) || false;
+                  const isSelected = tempFilters.status?.includes(status);
                   return (
                     <Badge
-                      key={status}
-                      variant={isSelected ? "default" : "outline"}
                       className={cn(
                         "cursor-pointer select-none transition-colors",
                         isSelected && "bg-primary"
                       )}
+                      key={status}
                       onClick={() => handleStatusToggle(status)}
+                      variant={isSelected ? "default" : "outline"}
                     >
-                      {isSelected && <Check className="h-3 w-3 mr-1" />}
+                      {isSelected && <Check className="mr-1 h-3 w-3" />}
                       {status}
                     </Badge>
                   );
@@ -170,20 +170,20 @@ export function WorkflowFilters({
             </div>
 
             {/* Actions */}
-            <div className="flex items-center justify-between pt-2 border-t">
+            <div className="flex items-center justify-between border-t pt-2">
               <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleClearAll}
                 className="text-muted-foreground"
+                onClick={handleClearAll}
+                size="sm"
+                variant="ghost"
               >
                 Clear all
               </Button>
               <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={handleCancel}>
+                <Button onClick={handleCancel} size="sm" variant="outline">
                   Cancel
                 </Button>
-                <Button size="sm" onClick={handleApply}>
+                <Button onClick={handleApply} size="sm">
                   Apply
                 </Button>
               </div>

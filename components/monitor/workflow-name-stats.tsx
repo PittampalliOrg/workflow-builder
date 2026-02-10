@@ -7,7 +7,13 @@
  * Displays: Executions, Running, Success, Failed, Success rate.
  */
 
-import { Activity, CheckCircle, Clock, XCircle, TrendingUp } from "lucide-react";
+import {
+  Activity,
+  CheckCircle,
+  Clock,
+  TrendingUp,
+  XCircle,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,10 +23,10 @@ import type { WorkflowNameStats as WorkflowNameStatsType } from "@/lib/types/wor
 // Types
 // ============================================================================
 
-interface WorkflowNameStatsProps {
+type WorkflowNameStatsProps = {
   stats: WorkflowNameStatsType | null;
   isLoading?: boolean;
-}
+};
 
 // ============================================================================
 // Skeleton Component
@@ -28,11 +34,11 @@ interface WorkflowNameStatsProps {
 
 function WorkflowNameStatsSkeleton() {
   return (
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <Card key={i}>
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+      {["1", "2", "3", "4", "5"].map((k) => (
+        <Card key={k}>
           <CardContent className="p-4">
-            <Skeleton className="h-4 w-20 mb-2" />
+            <Skeleton className="mb-2 h-4 w-20" />
             <Skeleton className="h-8 w-16" />
           </CardContent>
         </Card>
@@ -45,14 +51,14 @@ function WorkflowNameStatsSkeleton() {
 // Stat Card Component
 // ============================================================================
 
-interface StatCardProps {
+type StatCardProps = {
   title: string;
   value: string | number;
   icon: React.ReactNode;
   iconColor?: string;
   progress?: number;
   progressColor?: string;
-}
+};
 
 function StatCard({
   title,
@@ -65,21 +71,21 @@ function StatCard({
   return (
     <Card>
       <CardContent className="p-4">
-        <div className="flex items-center gap-2 mb-2">
+        <div className="mb-2 flex items-center gap-2">
           <span className={iconColor}>{icon}</span>
-          <span className="text-sm text-muted-foreground">{title}</span>
+          <span className="text-muted-foreground text-sm">{title}</span>
         </div>
-        <div className="text-2xl font-bold">{value}</div>
+        <div className="font-bold text-2xl">{value}</div>
         {progress !== undefined && (
           <div className="mt-2">
             <Progress
-              value={progress}
               className="h-1.5"
               style={
                 progressColor
                   ? { ["--progress-background" as string]: progressColor }
                   : undefined
               }
+              value={progress}
             />
           </div>
         )}
@@ -92,14 +98,17 @@ function StatCard({
 // Main Component
 // ============================================================================
 
-export function WorkflowNameStats({ stats, isLoading }: WorkflowNameStatsProps) {
+export function WorkflowNameStats({
+  stats,
+  isLoading,
+}: WorkflowNameStatsProps) {
   if (isLoading) {
     return <WorkflowNameStatsSkeleton />;
   }
 
   if (!stats) {
     return (
-      <div className="text-center py-8 text-muted-foreground">
+      <div className="py-8 text-center text-muted-foreground">
         No statistics available
       </div>
     );
@@ -111,46 +120,46 @@ export function WorkflowNameStats({ stats, isLoading }: WorkflowNameStatsProps) 
       : 0;
 
   return (
-    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+    <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
       {/* Executions */}
       <StatCard
+        icon={<Activity className="h-4 w-4" />}
         title="Executions"
         value={stats.totalExecutions}
-        icon={<Activity className="h-4 w-4" />}
       />
 
       {/* Running */}
       <StatCard
-        title="Running"
-        value={stats.runningCount}
         icon={<Clock className="h-4 w-4" />}
         iconColor="text-cyan-500"
+        title="Running"
+        value={stats.runningCount}
       />
 
       {/* Success */}
       <StatCard
-        title="Success"
-        value={stats.successCount}
         icon={<CheckCircle className="h-4 w-4" />}
         iconColor="text-green-500"
+        title="Success"
+        value={stats.successCount}
       />
 
       {/* Failed */}
       <StatCard
-        title="Failed"
-        value={stats.failedCount}
         icon={<XCircle className="h-4 w-4" />}
         iconColor="text-red-500"
+        title="Failed"
+        value={stats.failedCount}
       />
 
       {/* Success Rate */}
       <StatCard
-        title="Success rate"
-        value={`${successRate}%`}
         icon={<TrendingUp className="h-4 w-4" />}
         iconColor="text-green-500"
         progress={successRate}
         progressColor="rgb(34 197 94)"
+        title="Success rate"
+        value={`${successRate}%`}
       />
     </div>
   );

@@ -4,27 +4,27 @@
  * Loads an AP piece, finds a DROPDOWN prop, and calls its options() function
  * to return dynamic dropdown choices (e.g., list of Google Calendars).
  */
-import { getPiece } from './piece-registry.js';
+import { getPiece } from "./piece-registry.js";
 
-export interface OptionsRequest {
+export type OptionsRequest = {
   pieceName: string;
   actionName: string;
   propertyName: string;
   auth: unknown;
   input: Record<string, unknown>;
   searchValue?: string;
-}
+};
 
-export interface DropdownOption {
+export type DropdownOption = {
   label: string;
   value: unknown;
-}
+};
 
-export interface DropdownState {
+export type DropdownState = {
   options: DropdownOption[];
   disabled?: boolean;
   placeholder?: string;
-}
+};
 
 /**
  * Fetch dynamic dropdown options for a piece action property.
@@ -63,7 +63,7 @@ export async function fetchOptions(
 
   // Check if prop has an options function
   const optionsFn = prop.options;
-  if (typeof optionsFn !== 'function') {
+  if (typeof optionsFn !== "function") {
     throw new Error(
       `Property "${propertyName}" does not have a dynamic options function.`
     );
@@ -74,11 +74,11 @@ export async function fetchOptions(
 
   // Build context for the options function
   const ctx = {
-    searchValue: searchValue || '',
+    searchValue: searchValue || "",
     server: {
-      apiUrl: '',
-      publicUrl: '',
-      token: '',
+      apiUrl: "",
+      publicUrl: "",
+      token: "",
     },
   };
 
@@ -86,7 +86,7 @@ export async function fetchOptions(
   const result = await optionsFn(propsValue, ctx);
 
   // Normalize the result — AP options functions return DropdownState
-  if (result && typeof result === 'object') {
+  if (result && typeof result === "object") {
     const dropdownState = result as {
       options?: Array<{ label: string; value: unknown }>;
       disabled?: boolean;

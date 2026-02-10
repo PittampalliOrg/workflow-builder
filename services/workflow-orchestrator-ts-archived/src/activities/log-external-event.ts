@@ -10,7 +10,8 @@ import { DaprClient, HttpMethod } from "@dapr/dapr";
 
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
-const FUNCTION_ROUTER_APP_ID = process.env.FUNCTION_ROUTER_APP_ID || "function-router";
+const FUNCTION_ROUTER_APP_ID =
+  process.env.FUNCTION_ROUTER_APP_ID || "function-router";
 
 /**
  * External event types
@@ -23,7 +24,7 @@ export type ExternalEventType =
 /**
  * Input for logging an external event
  */
-export interface LogExternalEventInput {
+export type LogExternalEventInput = {
   executionId: string; // Database execution ID
   nodeId: string;
   eventName: string;
@@ -33,16 +34,16 @@ export interface LogExternalEventInput {
   reason?: string;
   respondedBy?: string;
   payload?: Record<string, unknown>;
-}
+};
 
 /**
  * Output from logging an external event
  */
-export interface LogExternalEventOutput {
+export type LogExternalEventOutput = {
   success: boolean;
   eventId?: string;
   error?: string;
-}
+};
 
 /**
  * Log an external event to the database
@@ -78,12 +79,12 @@ export async function logExternalEvent(
       payload: input.payload,
     };
 
-    const result = await client.invoker.invoke(
+    const result = (await client.invoker.invoke(
       FUNCTION_ROUTER_APP_ID,
       "external-event",
       HttpMethod.POST,
       requestPayload
-    ) as { success: boolean; event_id?: string; error?: string };
+    )) as { success: boolean; event_id?: string; error?: string };
 
     if (!result.success) {
       console.warn(
@@ -104,13 +105,9 @@ export async function logExternalEvent(
       eventId: result.event_id,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
-    console.error(
-      `[Log External Event] Error logging ${eventType}:`,
-      error
-    );
+    console.error(`[Log External Event] Error logging ${eventType}:`, error);
 
     // Don't throw - audit logging failure shouldn't break workflow execution
     return {

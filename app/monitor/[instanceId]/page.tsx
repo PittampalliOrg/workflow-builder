@@ -5,17 +5,17 @@
  * Shows detailed information about a single workflow execution
  */
 
-import { useParams, useRouter } from "next/navigation";
-import Link from "next/link";
 import { ArrowLeft, ChevronRight, RefreshCw } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
 import {
   InputOutputSection,
   WorkflowDetailHeader,
   WorkflowDetailTabs,
 } from "@/components/monitor";
 import { SidebarToggle } from "@/components/sidebar-toggle";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 
 // ============================================================================
@@ -25,7 +25,8 @@ import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 function ExecutionDetailView({ instanceId }: { instanceId: string }) {
   const router = useRouter();
 
-  const { execution, isLoading, isError, mutate } = useMonitorExecution(instanceId);
+  const { execution, isLoading, isError, mutate } =
+    useMonitorExecution(instanceId);
 
   const handleRefresh = () => {
     mutate();
@@ -33,11 +34,11 @@ function ExecutionDetailView({ instanceId }: { instanceId: string }) {
 
   if (isLoading && !execution) {
     return (
-      <div className="flex flex-col h-full">
-        <div className="px-6 py-4 border-b">
+      <div className="flex h-full flex-col">
+        <div className="border-b px-6 py-4">
           <Skeleton className="h-6 w-48" />
         </div>
-        <div className="flex-1 p-6 space-y-6">
+        <div className="flex-1 space-y-6 p-6">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-48 w-full" />
           <Skeleton className="h-64 w-full" />
@@ -48,15 +49,15 @@ function ExecutionDetailView({ instanceId }: { instanceId: string }) {
 
   if (isError || !execution) {
     return (
-      <div className="flex flex-col items-center justify-center h-full">
-        <p className="text-destructive font-medium">
+      <div className="flex h-full flex-col items-center justify-center">
+        <p className="font-medium text-destructive">
           Workflow execution not found
         </p>
         <Button
-          variant="outline"
-          size="sm"
           className="mt-4"
           onClick={() => router.push("/monitor")}
+          size="sm"
+          variant="outline"
         >
           Back to monitor
         </Button>
@@ -67,11 +68,11 @@ function ExecutionDetailView({ instanceId }: { instanceId: string }) {
   return (
     <div className="container mx-auto py-6">
       {/* Breadcrumb Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <SidebarToggle />
           <Link href="/monitor">
-            <Button variant="ghost" size="icon" className="h-8 w-8">
+            <Button className="h-8 w-8" size="icon" variant="ghost">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
@@ -79,29 +80,31 @@ function ExecutionDetailView({ instanceId }: { instanceId: string }) {
             {/* Breadcrumb */}
             <nav className="flex items-center gap-1.5 text-sm">
               <Link
+                className="text-muted-foreground transition-colors hover:text-foreground"
                 href="/monitor"
-                className="text-muted-foreground hover:text-foreground transition-colors"
               >
                 Monitor
               </Link>
               <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-              <span className="text-foreground font-medium truncate max-w-[200px]">
+              <span className="max-w-[200px] truncate font-medium text-foreground">
                 {execution.instanceId.substring(0, 8)}...
               </span>
             </nav>
             {/* Title */}
-            <h1 className="text-2xl font-bold mt-0.5">
+            <h1 className="mt-0.5 font-bold text-2xl">
               {execution.workflowName || "Workflow Execution"}
             </h1>
           </div>
         </div>
         <Button
-          variant="outline"
-          size="sm"
-          onClick={handleRefresh}
           disabled={isLoading}
+          onClick={handleRefresh}
+          size="sm"
+          variant="outline"
         >
-          <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? "animate-spin" : ""}`} />
+          <RefreshCw
+            className={`mr-2 h-4 w-4 ${isLoading ? "animate-spin" : ""}`}
+          />
           Refresh
         </Button>
       </div>
@@ -115,7 +118,7 @@ function ExecutionDetailView({ instanceId }: { instanceId: string }) {
 
         {/* Input/Output Section */}
         <section>
-          <h2 className="text-base font-semibold mb-4">Input / Output</h2>
+          <h2 className="mb-4 font-semibold text-base">Input / Output</h2>
           <InputOutputSection
             input={execution.input}
             output={execution.output}

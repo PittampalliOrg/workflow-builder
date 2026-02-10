@@ -11,6 +11,7 @@ import type {
 	UpdateConnectionValueRequestBody,
 	UpsertAppConnectionRequestBody,
 } from "./types/app-connection";
+import type { McpInputProperty } from "./mcp/types";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -998,12 +999,55 @@ const oauthAppApi = {
 		),
 };
 
+export type McpServerStatus = "ENABLED" | "DISABLED";
+
+export type PopulatedMcpWorkflow = {
+	id: string;
+	name: string;
+	description: string | null;
+	enabled: boolean;
+	trigger: {
+		toolName: string;
+		toolDescription: string;
+		inputSchema: McpInputProperty[];
+		returnsResponse: boolean;
+	};
+};
+
+export type PopulatedMcpServer = {
+	id: string;
+	projectId: string;
+	status: McpServerStatus;
+	token: string;
+	flows: PopulatedMcpWorkflow[];
+	createdAt: string;
+	updatedAt: string;
+};
+
+const mcpServerApi = {
+	get: (projectId: string) =>
+		apiCall<PopulatedMcpServer>(`/api/v1/projects/${projectId}/mcp-server`),
+
+	update: (projectId: string, body: { status: McpServerStatus }) =>
+		apiCall<PopulatedMcpServer>(`/api/v1/projects/${projectId}/mcp-server`, {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	rotate: (projectId: string) =>
+		apiCall<PopulatedMcpServer>(
+			`/api/v1/projects/${projectId}/mcp-server/rotate`,
+			{ method: "POST" },
+		),
+};
+
 // Export all APIs as a single object
 export const api = {
 	ai: aiApi,
 	appConnection: appConnectionApi,
 	dapr: daprApi,
 	functions: functionsApi,
+	mcpServer: mcpServerApi,
 	oauthApp: oauthAppApi,
 	piece: pieceApi,
 	secrets: secretsApi,

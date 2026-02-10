@@ -9,12 +9,12 @@ import {
   timestamp,
   unique,
 } from "drizzle-orm/pg-core";
+import type { EncryptedObject } from "../security/encryption";
 import {
   AppConnectionScope,
   AppConnectionStatus,
   type AppConnectionType,
 } from "../types/app-connection";
-
 import { generateId } from "../utils/id";
 
 // ============================================================================
@@ -138,6 +138,11 @@ export const workflows = pgTable("workflows", {
   userId: text("user_id")
     .notNull()
     .references(() => users.id),
+  // Project scoping (MCP and multi-user parity with Activepieces).
+  // Nullable for backward-compat; new workflows should always set this.
+  projectId: text("project_id").references(() => projects.id, {
+    onDelete: "cascade",
+  }),
   // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
   nodes: jsonb("nodes").notNull().$type<any[]>(),
   // biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
@@ -153,6 +158,78 @@ export const workflows = pgTable("workflows", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// ============================================================================
+// MCP (Hosted Server) - Activepieces Parity
+// ============================================================================
+
+export type McpServerStatus = "ENABLED" | "DISABLED";
+
+export const mcpServers = pgTable(
+  "mcp_server",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: text("status")
+      .notNull()
+      .default("DISABLED")
+      .$type<McpServerStatus>(),
+    // Encrypted at rest using AP-compatible AES-256-CBC via AP_ENCRYPTION_KEY.
+    tokenEncrypted: jsonb("token_encrypted").notNull().$type<EncryptedObject>(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectUnique: unique("uq_mcp_server_project_id").on(table.projectId),
+    projectIdx: index("idx_mcp_server_project_id").on(table.projectId),
+  })
+);
+
+export type McpRunStatus = "STARTED" | "RESPONDED" | "TIMED_OUT" | "FAILED";
+
+export const mcpRuns = pgTable(
+  "mcp_run",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => generateId()),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    mcpServerId: text("mcp_server_id")
+      .notNull()
+      .references(() => mcpServers.id, { onDelete: "cascade" }),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    workflowExecutionId: text("workflow_execution_id").references(
+      () => workflowExecutions.id,
+      { onDelete: "set null" }
+    ),
+    daprInstanceId: text("dapr_instance_id"),
+    toolName: text("tool_name").notNull(),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - MCP tool args
+    input: jsonb("input").notNull().$type<Record<string, any>>(),
+    // biome-ignore lint/suspicious/noExplicitAny: JSONB type - Reply payload
+    response: jsonb("response").$type<any>(),
+    status: text("status").notNull().$type<McpRunStatus>(),
+    respondedAt: timestamp("responded_at"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    projectIdx: index("idx_mcp_run_project_id").on(table.projectId),
+    mcpServerIdx: index("idx_mcp_run_mcp_server_id").on(table.mcpServerId),
+    workflowIdx: index("idx_mcp_run_workflow_id").on(table.workflowId),
+    workflowExecutionIdx: index("idx_mcp_run_workflow_execution_id").on(
+      table.workflowExecutionId
+    ),
+  })
+);
 
 // Piece metadata cache imported from Activepieces
 export const pieceMetadata = pgTable(
@@ -396,7 +473,9 @@ export const platformOauthApps = pgTable(
       .references(() => platforms.id, { onDelete: "cascade" }),
     pieceName: text("piece_name").notNull(), // e.g. "@activepieces/piece-google-sheets"
     clientId: text("client_id").notNull(),
-    clientSecret: jsonb("client_secret").notNull().$type<{ iv: string; data: string }>(), // AES-256-CBC encrypted
+    clientSecret: jsonb("client_secret")
+      .notNull()
+      .$type<{ iv: string; data: string }>(), // AES-256-CBC encrypted
     createdAt: timestamp("created_at").notNull().defaultNow(),
     updatedAt: timestamp("updated_at").notNull().defaultNow(),
   },
@@ -447,6 +526,10 @@ export type ProjectMember = typeof projectMembers.$inferSelect;
 export type NewProjectMember = typeof projectMembers.$inferInsert;
 export type Workflow = typeof workflows.$inferSelect;
 export type NewWorkflow = typeof workflows.$inferInsert;
+export type McpServer = typeof mcpServers.$inferSelect;
+export type NewMcpServer = typeof mcpServers.$inferInsert;
+export type McpRun = typeof mcpRuns.$inferSelect;
+export type NewMcpRun = typeof mcpRuns.$inferInsert;
 export type PieceMetadata = typeof pieceMetadata.$inferSelect;
 export type NewPieceMetadata = typeof pieceMetadata.$inferInsert;
 export type AppConnectionRecord = typeof appConnections.$inferSelect;
@@ -487,12 +570,12 @@ export type FunctionExecutionStatus =
 /**
  * Retry policy configuration for functions
  */
-export interface RetryPolicy {
+export type RetryPolicy = {
   maxAttempts?: number;
   initialDelaySeconds?: number;
   maxDelaySeconds?: number;
   backoffMultiplier?: number;
-}
+};
 
 /**
  * Functions table - stores function definitions

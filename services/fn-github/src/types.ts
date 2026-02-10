@@ -2,14 +2,14 @@
  * Type definitions for fn-github OpenFunction
  */
 
-export interface NodeOutput {
+export type NodeOutput = {
   label: string;
   data: unknown;
-}
+};
 
 export type NodeOutputs = Record<string, NodeOutput>;
 
-export interface ExecuteRequest {
+export type ExecuteRequest = {
   step: string;
   execution_id: string;
   workflow_id: string;
@@ -17,15 +17,15 @@ export interface ExecuteRequest {
   input: Record<string, unknown>;
   node_outputs?: NodeOutputs;
   credentials?: Record<string, string>;
-}
+};
 
-export interface ExecuteResponse {
+export type ExecuteResponse = {
   success: boolean;
   data?: unknown;
   error?: string;
   duration_ms: number;
-}
+};
 
-export interface GitHubCredentials {
+export type GitHubCredentials = {
   GITHUB_TOKEN?: string;
-}
+};

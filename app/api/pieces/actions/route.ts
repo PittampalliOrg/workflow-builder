@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/auth-helpers";
-import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { getSession } from "@/lib/auth-helpers";
+import { listPieceMetadata } from "@/lib/db/piece-metadata";
 
 // In-memory cache with 5-min TTL
 let cache: { data: unknown; timestamp: number } | null = null;

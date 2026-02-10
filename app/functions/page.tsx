@@ -94,12 +94,12 @@ export default function FunctionsPage() {
       <div className="mb-8 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link href="/">
-            <Button variant="ghost" size="icon">
+            <Button size="icon" variant="ghost">
               <ArrowLeft className="h-4 w-4" />
             </Button>
           </Link>
           <div>
-            <h1 className="text-2xl font-bold">Functions</h1>
+            <h1 className="font-bold text-2xl">Functions</h1>
             <p className="text-muted-foreground">
               Manage function definitions for workflow execution
             </p>
@@ -121,18 +121,18 @@ export default function FunctionsPage() {
           <div className="flex gap-4">
             <div className="flex-1">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
+                  className="pl-10"
+                  onChange={(e) => setSearch(e.target.value)}
                   placeholder="Search functions..."
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="pl-10"
                 />
               </div>
             </div>
             <Select
-              value={executionTypeFilter}
               onValueChange={setExecutionTypeFilter}
+              value={executionTypeFilter}
             >
               <SelectTrigger className="w-[180px]">
                 <SelectValue placeholder="Execution Type" />
@@ -171,7 +171,7 @@ export default function FunctionsPage() {
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12">
             <Cloud className="mb-4 h-12 w-12 text-muted-foreground" />
-            <h3 className="mb-2 text-lg font-semibold">No functions found</h3>
+            <h3 className="mb-2 font-semibold text-lg">No functions found</h3>
             <p className="mb-4 text-center text-muted-foreground">
               {search || executionTypeFilter !== "all"
                 ? "Try adjusting your filters"
@@ -216,7 +216,7 @@ export default function FunctionsPage() {
                           <div>
                             <div className="font-medium">{fn.name}</div>
                             {fn.description && (
-                              <div className="text-sm text-muted-foreground">
+                              <div className="text-muted-foreground text-sm">
                                 {fn.description}
                               </div>
                             )}
@@ -228,14 +228,16 @@ export default function FunctionsPage() {
                           </code>
                         </TableCell>
                         <TableCell>
-                          <Badge variant="secondary" className="gap-1">
+                          <Badge className="gap-1" variant="secondary">
                             {executionTypeIcons[fn.executionType]}
                             {executionTypeLabels[fn.executionType]}
                           </Badge>
                         </TableCell>
                         <TableCell>
                           {fn.integrationType ? (
-                            <Badge variant="outline">{fn.integrationType}</Badge>
+                            <Badge variant="outline">
+                              {fn.integrationType}
+                            </Badge>
                           ) : (
                             <span className="text-muted-foreground">-</span>
                           )}
@@ -247,15 +249,15 @@ export default function FunctionsPage() {
                             )}
                             {fn.isEnabled ? (
                               <Badge
-                                variant="outline"
                                 className="border-green-500 text-green-500"
+                                variant="outline"
                               >
                                 Enabled
                               </Badge>
                             ) : (
                               <Badge
-                                variant="outline"
                                 className="border-red-500 text-red-500"
+                                variant="outline"
                               >
                                 Disabled
                               </Badge>

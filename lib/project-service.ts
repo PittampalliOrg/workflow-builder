@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { db } from "./db";
-import { projectMembers, projects, type ProjectRole } from "./db/schema";
+import { type ProjectRole, projectMembers, projects } from "./db/schema";
 import { generateId } from "./utils/id";
 
 /**
@@ -57,9 +57,14 @@ export async function getOrCreateDefaultProject(
 /**
  * List all projects the user is a member of.
  */
-export async function listProjects(
-  userId: string
-): Promise<Array<{ id: string; displayName: string; externalId: string; role: ProjectRole }>> {
+export async function listProjects(userId: string): Promise<
+  Array<{
+    id: string;
+    displayName: string;
+    externalId: string;
+    role: ProjectRole;
+  }>
+> {
   const results = await db
     .select({
       id: projects.id,
@@ -71,7 +76,12 @@ export async function listProjects(
     .innerJoin(projects, eq(projects.id, projectMembers.projectId))
     .where(eq(projectMembers.userId, userId));
 
-  return results as Array<{ id: string; displayName: string; externalId: string; role: ProjectRole }>;
+  return results as Array<{
+    id: string;
+    displayName: string;
+    externalId: string;
+    role: ProjectRole;
+  }>;
 }
 
 /**

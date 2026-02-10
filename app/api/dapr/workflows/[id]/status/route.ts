@@ -2,9 +2,9 @@ import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows/[id]/status - Get Dapr workflow status
@@ -59,10 +59,11 @@ export async function GET(
       workflow?.daprOrchestratorUrl || defaultOrchestratorUrl;
 
     // Fetch status from generic orchestrator (v2 API)
-    const orchestratorStatus = await genericOrchestratorClient.getWorkflowStatus(
-      orchestratorUrl,
-      execution.daprInstanceId
-    );
+    const orchestratorStatus =
+      await genericOrchestratorClient.getWorkflowStatus(
+        orchestratorUrl,
+        execution.daprInstanceId
+      );
 
     // Extract fields from orchestrator response
     const phase = orchestratorStatus.phase || null;
@@ -74,14 +75,20 @@ export async function GET(
     // COMPLETED even when workflow internally failed
     let localStatus = execution.status;
     let errorMessage: string | null = orchestratorStatus.error || null;
-    const outputs = orchestratorStatus.outputs as Record<string, unknown> | undefined;
+    const outputs = orchestratorStatus.outputs as
+      | Record<string, unknown>
+      | undefined;
     const outputSuccess = outputs?.success;
 
     if (orchestratorStatus.runtimeStatus === "COMPLETED") {
       // Check if workflow actually succeeded or failed internally
       if (phase === "failed" || outputSuccess === false) {
         localStatus = "error";
-        errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+        errorMessage =
+          errorMessage ||
+          message ||
+          (outputs?.error as string) ||
+          "Workflow failed";
       } else {
         localStatus = "success";
       }
@@ -100,7 +107,11 @@ export async function GET(
         localStatus = "success";
       } else if (phase === "failed" || outputSuccess === false) {
         localStatus = "error";
-        errorMessage = errorMessage || message || outputs?.error as string || "Workflow failed";
+        errorMessage =
+          errorMessage ||
+          message ||
+          (outputs?.error as string) ||
+          "Workflow failed";
       }
       // If phase/outputs don't indicate completion, keep current status
     }
@@ -135,8 +146,11 @@ export async function GET(
 
     // If the Dapr orchestrator can't find the workflow, mark the execution as error
     // to stop the infinite polling loop
-    const errorMessage = error instanceof Error ? error.message : "Failed to get workflow status";
-    const isNotFound = errorMessage.includes("404") || errorMessage.toLowerCase().includes("not found");
+    const errorMessage =
+      error instanceof Error ? error.message : "Failed to get workflow status";
+    const isNotFound =
+      errorMessage.includes("404") ||
+      errorMessage.toLowerCase().includes("not found");
 
     if (isNotFound) {
       const { id } = await context.params;

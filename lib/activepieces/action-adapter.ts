@@ -5,13 +5,14 @@
  * into Workflow Builder ActionConfigField[] format that the existing
  * ActionConfigRenderer can render.
  */
+
+import type { PieceMetadataRecord } from "@/lib/db/piece-metadata";
 import type {
   ActionConfigFieldBase,
   OutputField,
   PluginAction,
   SelectOption,
 } from "@/plugins/registry";
-import type { PieceMetadataRecord } from "@/lib/db/piece-metadata";
 
 /**
  * Activepieces prop types (from piece framework)
@@ -36,7 +37,7 @@ type ApPropType =
   | "SECRET_TEXT"
   | "BASIC_AUTH";
 
-interface ApProp {
+type ApProp = {
   type: ApPropType;
   displayName: string;
   description?: string;
@@ -48,26 +49,26 @@ interface ApProp {
     disabled?: boolean;
     placeholder?: string;
   };
-}
+};
 
-interface ApAction {
+type ApAction = {
   name: string;
   displayName: string;
   description: string;
   props: Record<string, ApProp>;
   requireAuth?: boolean;
-}
+};
 
 /**
  * AP piece as returned from piece_metadata with actions/triggers parsed
  */
-export interface ApIntegration {
+export type ApIntegration = {
   type: string;
   label: string;
   pieceName: string;
   logoUrl: string;
   actions: PluginAction[];
-}
+};
 
 /**
  * Convert a single AP prop to a WB config field.
@@ -154,8 +155,7 @@ function apPropToConfigField(
       return {
         ...base,
         type: "dynamic-select" as const,
-        placeholder:
-          prop.description || `Select ${prop.displayName}`,
+        placeholder: prop.description || `Select ${prop.displayName}`,
         dynamicOptions: {
           pieceName,
           actionName,
@@ -168,8 +168,7 @@ function apPropToConfigField(
       return {
         ...base,
         type: "dynamic-multi-select" as const,
-        placeholder:
-          prop.description || `Select ${prop.displayName}`,
+        placeholder: prop.description || `Select ${prop.displayName}`,
         dynamicOptions: {
           pieceName,
           actionName,
@@ -291,7 +290,9 @@ export function convertApPieceToIntegration(
   const actions: PluginAction[] = [];
 
   for (const [actionName, action] of Object.entries(rawActions)) {
-    if (!action || typeof action !== "object") continue;
+    if (!action || typeof action !== "object") {
+      continue;
+    }
     actions.push(
       convertApActionToWbAction(
         pieceName,

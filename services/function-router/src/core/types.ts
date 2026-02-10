@@ -5,24 +5,24 @@
 /**
  * Function registry entry - maps function slugs to target services
  */
-export interface FunctionRegistryEntry {
+export type FunctionRegistryEntry = {
   /** Dapr app-id of the target service */
   appId: string;
   /** Type of service: "openfunction" for scale-to-zero Knative services */
   type: "openfunction";
-}
+};
 
 /**
  * Function registry - loaded from ConfigMap
  */
-export interface FunctionRegistry {
+export type FunctionRegistry = {
   [slug: string]: FunctionRegistryEntry;
-}
+};
 
 /**
  * Execute request from workflow-orchestrator
  */
-export interface ExecuteRequest {
+export type ExecuteRequest = {
   function_id?: string;
   function_slug?: string;
   execution_id: string;
@@ -37,22 +37,22 @@ export interface ExecuteRequest {
   connection_external_id?: string;
   ap_project_id?: string;
   ap_platform_id?: string;
-}
+};
 
 /**
  * Node outputs from upstream nodes
  */
-export interface NodeOutput {
+export type NodeOutput = {
   label: string;
   data: unknown;
-}
+};
 
 export type NodeOutputs = Record<string, NodeOutput>;
 
 /**
  * Execute response
  */
-export interface ExecuteResponse {
+export type ExecuteResponse = {
   success: boolean;
   data?: unknown;
   error?: string;
@@ -60,17 +60,17 @@ export interface ExecuteResponse {
   routed_to?: string;
   /** Pause metadata from fn-activepieces when a piece requests DELAY or WEBHOOK pause */
   pause?: {
-    type: 'DELAY' | 'WEBHOOK';
+    type: "DELAY" | "WEBHOOK";
     resumeDateTime?: string;
     requestId?: string;
     response?: unknown;
   };
-}
+};
 
 /**
  * OpenFunction request format
  */
-export interface OpenFunctionRequest {
+export type OpenFunctionRequest = {
   step: string;
   execution_id: string;
   workflow_id: string;
@@ -82,7 +82,7 @@ export interface OpenFunctionRequest {
   credentials_raw?: unknown;
   /** Piece metadata for fn-activepieces routing */
   metadata?: { pieceName: string; actionName: string };
-}
+};
 
 /**
  * Credential mappings for integration types

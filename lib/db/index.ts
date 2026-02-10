@@ -4,6 +4,8 @@ import postgres from "postgres";
 import {
   apiKeys,
   appConnections,
+  mcpRuns,
+  mcpServers,
   pieceMetadata,
   platformOauthApps,
   platforms,
@@ -32,6 +34,8 @@ const schema = {
   workflowExecutions,
   workflowExecutionLogs,
   workflowExecutionsRelations,
+  mcpServers,
+  mcpRuns,
   apiKeys,
   pieceMetadata,
   appConnections,

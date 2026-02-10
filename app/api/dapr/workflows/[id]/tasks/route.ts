@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
+import { daprClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows/[id]/tasks - Get tasks from Dapr statestore

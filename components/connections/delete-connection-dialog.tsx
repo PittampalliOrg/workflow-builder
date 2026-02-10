@@ -51,16 +51,14 @@ export function DeleteConnectionDialog({
       onOpenChange(false);
       onSuccess?.();
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Failed to delete"
-      );
+      toast.error(error instanceof Error ? error.message : "Failed to delete");
     } finally {
       setDeleting(false);
     }
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog onOpenChange={onOpenChange} open={open}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>
@@ -75,9 +73,9 @@ export function DeleteConnectionDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            onClick={handleDelete}
-            disabled={deleting}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={deleting}
+            onClick={handleDelete}
           >
             {deleting ? "Deleting..." : "Delete"}
           </AlertDialogAction>

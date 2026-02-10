@@ -1,8 +1,9 @@
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { sql } from "drizzle-orm";
 
-const DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+const DATABASE_URL =
+  process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 const WORKFLOW_ID = process.argv[2] || "3hoeloryk2wtx2so3taxj";
 
 async function checkWorkflow() {
@@ -10,7 +11,9 @@ async function checkWorkflow() {
   const db = drizzle(queryClient);
 
   try {
-    const result = await db.execute(sql`SELECT id, name, nodes FROM workflows WHERE id = ${WORKFLOW_ID}`);
+    const result = await db.execute(
+      sql`SELECT id, name, nodes FROM workflows WHERE id = ${WORKFLOW_ID}`
+    );
 
     for (const row of result as any[]) {
       console.log("Workflow:", row.name, "(", row.id, ")");

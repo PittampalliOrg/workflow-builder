@@ -1,39 +1,39 @@
 "use client";
 
-import { useState } from "react";
 import {
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   Circle,
-  CheckCircle2,
   Loader2,
   XCircle,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useState } from "react";
 import type {
   DaprAgentTask,
   DaprAgentTaskStatus,
 } from "@/lib/types/workflow-ui";
 import {
-  getTaskStatusColor,
   getTaskStatusBgColor,
+  getTaskStatusColor,
 } from "@/lib/types/workflow-ui";
+import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface TaskListPanelProps {
+type TaskListPanelProps = {
   tasks: DaprAgentTask[];
   className?: string;
   defaultExpanded?: boolean;
-}
+};
 
-interface TaskItemProps {
+type TaskItemProps = {
   task: DaprAgentTask;
   allTasks: DaprAgentTask[];
   defaultExpanded?: boolean;
-}
+};
 
 // ============================================================================
 // Status Icon Component
@@ -70,63 +70,71 @@ function TaskItem({ task, allTasks, defaultExpanded = false }: TaskItemProps) {
   };
 
   const hasDetails =
-    task.description ||
-    task.blockedBy.length > 0 ||
-    task.blocks.length > 0;
+    task.description || task.blockedBy.length > 0 || task.blocks.length > 0;
+
+  const headerClassName = cn(
+    "flex w-full items-center gap-3 px-4 py-3 text-left transition-colors",
+    hasDetails && "cursor-pointer hover:bg-gray-800/50"
+  );
+
+  const headerContent = (
+    <>
+      {/* Expand Icon */}
+      {hasDetails ? (
+        expanded ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-gray-400" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-gray-400" />
+        )
+      ) : (
+        <div className="w-4 shrink-0" />
+      )}
+
+      {/* Status Icon */}
+      <TaskStatusIcon status={task.status} />
+
+      {/* Task ID & Subject */}
+      <div className="min-w-0 flex-1">
+        <span className="font-medium text-gray-300 text-sm">#{task.id}</span>
+        <span className="mx-2 text-gray-500">·</span>
+        <span className="truncate text-gray-200 text-sm">{task.subject}</span>
+      </div>
+
+      {/* Status Badge */}
+      <span
+        className={cn(
+          "shrink-0 rounded-full px-2 py-0.5 text-xs",
+          getTaskStatusBgColor(task.status),
+          getTaskStatusColor(task.status)
+        )}
+      >
+        {task.status.replace("_", " ")}
+      </span>
+    </>
+  );
 
   return (
-    <div className="border-b border-gray-700 last:border-b-0">
+    <div className="border-gray-700 border-b last:border-b-0">
       {/* Task Header */}
-      <div
-        className={cn(
-          "flex items-center gap-3 px-4 py-3 transition-colors",
-          hasDetails && "cursor-pointer hover:bg-gray-800/50"
-        )}
-        onClick={() => hasDetails && setExpanded(!expanded)}
-      >
-        {/* Expand Icon */}
-        {hasDetails ? (
-          expanded ? (
-            <ChevronDown className="h-4 w-4 text-gray-400 shrink-0" />
-          ) : (
-            <ChevronRight className="h-4 w-4 text-gray-400 shrink-0" />
-          )
-        ) : (
-          <div className="w-4 shrink-0" />
-        )}
-
-        {/* Status Icon */}
-        <TaskStatusIcon status={task.status} />
-
-        {/* Task ID & Subject */}
-        <div className="flex-1 min-w-0">
-          <span className="text-sm font-medium text-gray-300">
-            #{task.id}
-          </span>
-          <span className="mx-2 text-gray-500">·</span>
-          <span className="text-sm text-gray-200 truncate">
-            {task.subject}
-          </span>
-        </div>
-
-        {/* Status Badge */}
-        <span
-          className={cn(
-            "px-2 py-0.5 text-xs rounded-full shrink-0",
-            getTaskStatusBgColor(task.status),
-            getTaskStatusColor(task.status)
-          )}
+      {hasDetails ? (
+        <button
+          aria-expanded={expanded}
+          className={headerClassName}
+          onClick={() => setExpanded((v) => !v)}
+          type="button"
         >
-          {task.status.replace("_", " ")}
-        </span>
-      </div>
+          {headerContent}
+        </button>
+      ) : (
+        <div className={headerClassName}>{headerContent}</div>
+      )}
 
       {/* Expanded Details */}
       {expanded && hasDetails && (
-        <div className="px-4 pb-3 pl-11 space-y-2">
+        <div className="space-y-2 px-4 pb-3 pl-11">
           {/* Description */}
           {task.description && (
-            <p className="text-sm text-gray-400 whitespace-pre-wrap">
+            <p className="whitespace-pre-wrap text-gray-400 text-sm">
               {task.description}
             </p>
           )}
@@ -134,12 +142,12 @@ function TaskItem({ task, allTasks, defaultExpanded = false }: TaskItemProps) {
           {/* Dependencies */}
           {task.blockedBy.length > 0 && (
             <div className="flex items-start gap-2 text-xs">
-              <span className="text-gray-500 shrink-0">blockedBy:</span>
+              <span className="shrink-0 text-gray-500">blockedBy:</span>
               <div className="flex flex-wrap gap-1">
                 {task.blockedBy.map((id) => (
                   <span
+                    className="rounded bg-red-500/10 px-1.5 py-0.5 text-red-400"
                     key={id}
-                    className="px-1.5 py-0.5 bg-red-500/10 text-red-400 rounded"
                   >
                     {getTaskSubject(id)}
                   </span>
@@ -150,12 +158,12 @@ function TaskItem({ task, allTasks, defaultExpanded = false }: TaskItemProps) {
 
           {task.blocks.length > 0 && (
             <div className="flex items-start gap-2 text-xs">
-              <span className="text-gray-500 shrink-0">blocks:</span>
+              <span className="shrink-0 text-gray-500">blocks:</span>
               <div className="flex flex-wrap gap-1">
                 {task.blocks.map((id) => (
                   <span
+                    className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-400"
                     key={id}
-                    className="px-1.5 py-0.5 bg-amber-500/10 text-amber-400 rounded"
                   >
                     {getTaskSubject(id)}
                   </span>
@@ -181,7 +189,7 @@ export function TaskListPanel({
   if (tasks.length === 0) {
     return (
       <div className={cn("rounded-lg border bg-[#1e2433] p-6", className)}>
-        <p className="text-sm text-gray-400 text-center">No tasks found</p>
+        <p className="text-center text-gray-400 text-sm">No tasks found</p>
       </div>
     );
   }
@@ -198,13 +206,13 @@ export function TaskListPanel({
   return (
     <div
       className={cn(
-        "rounded-lg border border-gray-700 bg-[#1e2433] overflow-hidden",
+        "overflow-hidden rounded-lg border border-gray-700 bg-[#1e2433]",
         className
       )}
     >
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-700 bg-[#1a1f2e]">
-        <span className="text-sm font-medium text-gray-300">
+      <div className="flex items-center justify-between border-gray-700 border-b bg-[#1a1f2e] px-4 py-2">
+        <span className="font-medium text-gray-300 text-sm">
           Tasks ({tasks.length})
         </span>
         <div className="flex items-center gap-3 text-xs">
@@ -233,10 +241,10 @@ export function TaskListPanel({
       <div className="max-h-[400px] overflow-y-auto">
         {tasks.map((task) => (
           <TaskItem
-            key={task.id}
-            task={task}
             allTasks={tasks}
             defaultExpanded={defaultExpanded}
+            key={task.id}
+            task={task}
           />
         ))}
       </div>

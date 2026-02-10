@@ -115,6 +115,7 @@ export async function POST(request: Request) {
         nodes,
         edges,
         userId: session.user.id,
+        projectId: session.user.projectId,
       })
       .returning();
 

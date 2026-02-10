@@ -178,7 +178,9 @@ async function fetchPieceDetail(
  * Pieces with a maxRelease below 1.0.0 are considered deprecated.
  */
 function isDeprecated(piece: ActivepiecesPieceResponse): boolean {
-  const maxRelease = String(piece.maximumSupportedRelease ?? "99999.99999.9999");
+  const maxRelease = String(
+    piece.maximumSupportedRelease ?? "99999.99999.9999"
+  );
   const major = Number.parseInt(maxRelease.split(".")[0], 10);
   return !Number.isNaN(major) && major < 1;
 }
@@ -188,7 +190,9 @@ async function main() {
 
   console.log(`[Sync Pieces] Source: ${options.baseUrl}`);
   console.log(`[Sync Pieces] Dry run: ${options.dryRun ? "yes" : "no"}`);
-  console.log(`[Sync Pieces] Include deprecated: ${options.includeDeprecated ? "yes" : "no"}`);
+  console.log(
+    `[Sync Pieces] Include deprecated: ${options.includeDeprecated ? "yes" : "no"}`
+  );
 
   const allPieces = await fetchPieces(options);
   console.log(`[Sync Pieces] Fetched ${allPieces.length} pieces from API`);
@@ -217,13 +221,19 @@ async function main() {
     const before = pieces.length;
     pieces = pieces.filter((p) => {
       const actions = p.actions;
-      if (typeof actions === "number") return actions > 0;
-      if (actions && typeof actions === "object") return Object.keys(actions).length > 0;
+      if (typeof actions === "number") {
+        return actions > 0;
+      }
+      if (actions && typeof actions === "object") {
+        return Object.keys(actions).length > 0;
+      }
       return false;
     });
     const removed = before - pieces.length;
     if (removed > 0) {
-      console.log(`[Sync Pieces] Filtered out ${removed} pieces with 0 actions`);
+      console.log(
+        `[Sync Pieces] Filtered out ${removed} pieces with 0 actions`
+      );
     }
   }
 
@@ -284,7 +294,9 @@ async function main() {
       description: detailPiece.description ?? null,
       platformId: detailPiece.platformId ?? null,
       version,
-      minimumSupportedRelease: String(detailPiece.minimumSupportedRelease ?? "0.0.0"),
+      minimumSupportedRelease: String(
+        detailPiece.minimumSupportedRelease ?? "0.0.0"
+      ),
       maximumSupportedRelease: String(
         detailPiece.maximumSupportedRelease ?? "9999.9999.9999"
       ),
@@ -295,12 +307,18 @@ async function main() {
       categories: toStringArray(detailPiece.categories),
       packageType: String(detailPiece.packageType ?? "REGISTRY"),
       i18n: detailPiece.i18n ?? null,
-      createdAt: detailPiece.created ? new Date(detailPiece.created) : new Date(),
-      updatedAt: detailPiece.updated ? new Date(detailPiece.updated) : new Date(),
+      createdAt: detailPiece.created
+        ? new Date(detailPiece.created)
+        : new Date(),
+      updatedAt: detailPiece.updated
+        ? new Date(detailPiece.updated)
+        : new Date(),
     };
 
     if (options.dryRun) {
-      console.log(`[Sync Pieces] Would upsert ${normalizedName}@${version} (${actionCount} actions)`);
+      console.log(
+        `[Sync Pieces] Would upsert ${normalizedName}@${version} (${actionCount} actions)`
+      );
       syncedCount += 1;
       continue;
     }
@@ -310,7 +328,9 @@ async function main() {
 
     // Progress logging every 50 pieces
     if (syncedCount % 50 === 0) {
-      console.log(`[Sync Pieces] Progress: ${syncedCount}/${pieces.length} synced...`);
+      console.log(
+        `[Sync Pieces] Progress: ${syncedCount}/${pieces.length} synced...`
+      );
     }
   }
 

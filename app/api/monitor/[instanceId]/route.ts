@@ -1,19 +1,33 @@
-import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/lib/db";
-import { workflowExecutions, workflows, workflowExecutionLogs } from "@/lib/db/schema";
-import { eq, asc } from "drizzle-orm";
-import { toWorkflowDetail, mapWorkflowStatus } from "@/lib/transforms/workflow-ui";
+import { asc, eq } from "drizzle-orm";
+import { type NextRequest, NextResponse } from "next/server";
 import { getWorkflowOrchestratorUrl } from "@/lib/config-service";
+import { db } from "@/lib/db";
+import {
+  workflowExecutionLogs,
+  workflowExecutions,
+  workflows,
+} from "@/lib/db/schema";
+import {
+  mapWorkflowStatus,
+  toWorkflowDetail,
+} from "@/lib/transforms/workflow-ui";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Dapr workflow status response from orchestrator
  */
-interface DaprWorkflowStatus {
+type DaprWorkflowStatus = {
   instanceId: string;
   workflowId: string;
-  runtimeStatus: "RUNNING" | "COMPLETED" | "FAILED" | "TERMINATED" | "PENDING" | "SUSPENDED" | "UNKNOWN";
+  runtimeStatus:
+    | "RUNNING"
+    | "COMPLETED"
+    | "FAILED"
+    | "TERMINATED"
+    | "PENDING"
+    | "SUSPENDED"
+    | "UNKNOWN";
   phase?: string;
   progress?: number;
   message?: string;
@@ -23,12 +37,14 @@ interface DaprWorkflowStatus {
   error?: string;
   startedAt?: string;
   completedAt?: string;
-}
+};
 
 /**
  * Fetch real-time workflow status from Dapr via orchestrator
  */
-async function fetchDaprWorkflowStatus(daprInstanceId: string): Promise<DaprWorkflowStatus | null> {
+async function fetchDaprWorkflowStatus(
+  daprInstanceId: string
+): Promise<DaprWorkflowStatus | null> {
   try {
     const orchestratorUrl = await getWorkflowOrchestratorUrl();
     const url = `${orchestratorUrl}/api/v2/workflows/${encodeURIComponent(daprInstanceId)}/status`;
@@ -41,14 +57,19 @@ async function fetchDaprWorkflowStatus(daprInstanceId: string): Promise<DaprWork
     });
 
     if (!response.ok) {
-      console.warn(`[Monitor] Failed to fetch Dapr status for ${daprInstanceId}: ${response.status}`);
+      console.warn(
+        `[Monitor] Failed to fetch Dapr status for ${daprInstanceId}: ${response.status}`
+      );
       return null;
     }
 
-    return await response.json() as DaprWorkflowStatus;
+    return (await response.json()) as DaprWorkflowStatus;
   } catch (error) {
     // Don't fail the request if Dapr status is unavailable
-    console.warn(`[Monitor] Could not fetch Dapr status for ${daprInstanceId}:`, error);
+    console.warn(
+      `[Monitor] Could not fetch Dapr status for ${daprInstanceId}:`,
+      error
+    );
     return null;
   }
 }
@@ -59,7 +80,7 @@ async function fetchDaprWorkflowStatus(daprInstanceId: string): Promise<DaprWork
  * Merges PostgreSQL data with real-time Dapr status
  */
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ instanceId: string }> }
 ) {
   try {
@@ -113,7 +134,10 @@ export async function GET(
 
         // Update status from Dapr if it's a known valid status
         // UNKNOWN means Dapr doesn't have the workflow (purged/not found) - trust PostgreSQL instead
-        if (daprStatus.runtimeStatus && daprStatus.runtimeStatus !== "UNKNOWN") {
+        if (
+          daprStatus.runtimeStatus &&
+          daprStatus.runtimeStatus !== "UNKNOWN"
+        ) {
           const daprMappedStatus = mapWorkflowStatus(daprStatus.runtimeStatus);
 
           // Dapr is authoritative for active workflows
@@ -129,7 +153,14 @@ export async function GET(
         if (daprStatus.phase) {
           detail.customStatus = {
             ...detail.customStatus,
-            phase: daprStatus.phase as "clone" | "exploration" | "planning" | "awaiting_approval" | "executing" | "completed" | "failed",
+            phase: daprStatus.phase as
+              | "clone"
+              | "exploration"
+              | "planning"
+              | "awaiting_approval"
+              | "executing"
+              | "completed"
+              | "failed",
             progress: daprStatus.progress ?? detail.customStatus?.progress ?? 0,
             message: daprStatus.message ?? detail.customStatus?.message ?? "",
             currentTask: daprStatus.currentNodeName,

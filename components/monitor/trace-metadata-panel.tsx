@@ -1,28 +1,28 @@
 "use client";
 
+import { Activity, Check, Copy, ExternalLink } from "lucide-react";
 import { useState } from "react";
-import { Check, Copy, ExternalLink, Activity } from "lucide-react";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import type { TraceMetadata } from "@/lib/types/workflow-ui";
+import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface TraceMetadataPanelProps {
+type TraceMetadataPanelProps = {
   trace: TraceMetadata;
   className?: string;
   compact?: boolean;
-}
+};
 
-interface TraceFieldProps {
+type TraceFieldProps = {
   label: string;
   value: string | undefined;
   truncate?: boolean;
   copyable?: boolean;
   linkUrl?: string;
-}
+};
 
 // ============================================================================
 // Trace Field Component
@@ -37,7 +37,9 @@ function TraceField({
 }: TraceFieldProps) {
   const [copied, setCopied] = useState(false);
 
-  if (!value) return null;
+  if (!value) {
+    return null;
+  }
 
   const handleCopy = async () => {
     try {
@@ -49,17 +51,18 @@ function TraceField({
     }
   };
 
-  const displayValue = truncate && value.length > 24
-    ? `${value.slice(0, 12)}...${value.slice(-8)}`
-    : value;
+  const displayValue =
+    truncate && value.length > 24
+      ? `${value.slice(0, 12)}...${value.slice(-8)}`
+      : value;
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-400">{label}:</span>
+      <span className="text-gray-400 text-xs">{label}:</span>
       <code
         className={cn(
-          "px-1.5 py-0.5 bg-gray-800 rounded text-xs font-mono text-gray-200",
-          truncate && "truncate max-w-[200px]"
+          "rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-200 text-xs",
+          truncate && "max-w-[200px] truncate"
         )}
         title={value}
       >
@@ -67,10 +70,10 @@ function TraceField({
       </code>
       {copyable && (
         <Button
-          variant="ghost"
-          size="sm"
           className="h-auto p-1 text-gray-400 hover:text-gray-200"
           onClick={handleCopy}
+          size="sm"
+          variant="ghost"
         >
           {copied ? (
             <Check className="h-3 w-3 text-green-400" />
@@ -81,10 +84,10 @@ function TraceField({
       )}
       {linkUrl && (
         <a
-          href={linkUrl}
-          target="_blank"
-          rel="noopener noreferrer"
           className="text-teal-400 hover:text-teal-300"
+          href={linkUrl}
+          rel="noopener noreferrer"
+          target="_blank"
         >
           <ExternalLink className="h-3 w-3" />
         </a>
@@ -110,10 +113,8 @@ export function TraceMetadataPanel({
 
   if (compact) {
     return (
-      <div className={cn("flex items-center gap-4 flex-wrap", className)}>
-        {trace.trace_id && (
-          <TraceField label="Trace" value={trace.trace_id} />
-        )}
+      <div className={cn("flex flex-wrap items-center gap-4", className)}>
+        {trace.trace_id && <TraceField label="Trace" value={trace.trace_id} />}
         {trace.agent_span_id && (
           <TraceField label="Span" value={trace.agent_span_id} />
         )}
@@ -124,26 +125,26 @@ export function TraceMetadataPanel({
   return (
     <div
       className={cn(
-        "rounded-lg border border-gray-700 bg-[#1a1f2e] overflow-hidden",
+        "overflow-hidden rounded-lg border border-gray-700 bg-[#1a1f2e]",
         className
       )}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2 border-b border-gray-700">
+      <div className="flex items-center gap-2 border-gray-700 border-b px-4 py-2">
         <Activity className="h-4 w-4 text-teal-400" />
-        <span className="text-sm font-medium text-gray-300">
+        <span className="font-medium text-gray-300 text-sm">
           Trace Information
         </span>
       </div>
 
       {/* Content */}
-      <div className="p-4 space-y-3">
+      <div className="space-y-3 p-4">
         {trace.workflow_name && (
           <TraceField
-            label="Workflow"
-            value={trace.workflow_name}
-            truncate={false}
             copyable={false}
+            label="Workflow"
+            truncate={false}
+            value={trace.workflow_name}
           />
         )}
         {trace.trace_id && (
@@ -155,11 +156,11 @@ export function TraceMetadataPanel({
 
         {/* Additional metadata */}
         {trace.metadata && Object.keys(trace.metadata).length > 0 && (
-          <div className="pt-2 border-t border-gray-700">
-            <span className="text-xs text-gray-400 block mb-2">Metadata</span>
+          <div className="border-gray-700 border-t pt-2">
+            <span className="mb-2 block text-gray-400 text-xs">Metadata</span>
             <div className="space-y-1">
               {Object.entries(trace.metadata).map(([key, value]) => (
-                <div key={key} className="flex items-center gap-2 text-xs">
+                <div className="flex items-center gap-2 text-xs" key={key}>
                   <span className="text-gray-500">{key}:</span>
                   <span className="text-gray-300">
                     {typeof value === "object"

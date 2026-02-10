@@ -10,38 +10,34 @@
  * 2. Workflow definitions can be updated without redeploying
  * 3. All workflow logic is centralized and testable
  */
+import type { TWorkflow, WorkflowContext } from "@dapr/dapr";
 import {
-  type WorkflowContext,
-  type TWorkflow,
-} from "@dapr/dapr";
-import type {
-  DynamicWorkflowInput,
-  DynamicWorkflowOutput,
-  SerializedNode,
-  WorkflowCustomStatus,
-  ApprovalGateConfig,
-  TimerConfig,
-  ActionNodeConfig,
-  ActivityExecutionResult,
-} from "../core/types.js";
-import { type NodeOutputs } from "../core/template-resolver.js";
-import {
-  executeAction,
   type ExecuteActionInput,
+  executeAction,
 } from "../activities/execute-action.js";
-import {
-  persistState,
-  type PersistStateInput,
-} from "../activities/persist-state.js";
-import {
-  publishPhaseChanged,
-  type PhaseChangedInput,
-} from "../activities/publish-event.js";
 import {
   logApprovalRequest,
   logApprovalResponse,
   logApprovalTimeout,
 } from "../activities/log-external-event.js";
+import {
+  type PersistStateInput,
+  persistState,
+} from "../activities/persist-state.js";
+import {
+  type PhaseChangedInput,
+  publishPhaseChanged,
+} from "../activities/publish-event.js";
+import type { NodeOutputs } from "../core/template-resolver.js";
+import type {
+  ActivityExecutionResult,
+  ApprovalGateConfig,
+  DynamicWorkflowInput,
+  DynamicWorkflowOutput,
+  SerializedNode,
+  TimerConfig,
+  WorkflowCustomStatus,
+} from "../core/types.js";
 
 /**
  * Current status storage (since Dapr doesn't have getCustomStatus)
@@ -65,11 +61,10 @@ function updateStatus(
 /**
  * Calculate progress percentage based on completed nodes
  */
-function calculateProgress(
-  completedNodes: number,
-  totalNodes: number
-): number {
-  if (totalNodes === 0) return 100;
+function calculateProgress(completedNodes: number, totalNodes: number): number {
+  if (totalNodes === 0) {
+    return 100;
+  }
   return Math.round((completedNodes / totalNodes) * 100);
 }
 
@@ -93,7 +88,7 @@ function getTimeoutSeconds(config: ApprovalGateConfig | TimerConfig): number {
     return config.durationHours * 3600;
   }
   // Default: 24 hours for approval gates, 60 seconds for timers
-  return "eventName" in config ? 86400 : 60;
+  return "eventName" in config ? 86_400 : 60;
 }
 
 /**
@@ -137,7 +132,11 @@ async function* processApprovalGateNode(
   executionId: string,
   workflowId: string,
   dbExecutionId?: string
-): AsyncGenerator<unknown, { approved: boolean; reason?: string; respondedBy?: string }, unknown> {
+): AsyncGenerator<
+  unknown,
+  { approved: boolean; reason?: string; respondedBy?: string },
+  unknown
+> {
   const config = node.config as unknown as ApprovalGateConfig;
   const eventName = config.eventName || `approval_${node.id}`;
   const timeoutSeconds = getTimeoutSeconds(config);
@@ -249,7 +248,7 @@ async function* processTimerNode(
 async function* processConditionNode(
   _ctx: WorkflowContext,
   node: SerializedNode,
-  nodeOutputs: NodeOutputs
+  _nodeOutputs: NodeOutputs
 ): AsyncGenerator<unknown, { result: boolean; branch: string }, unknown> {
   // TODO: Implement condition evaluation logic
   // For now, always return true
@@ -345,9 +344,7 @@ export const dynamicWorkflow: TWorkflow = async function* (
             // Check if this is a fatal error or if we should continue
             const continueOnError = node.config?.continueOnError === true;
             if (!continueOnError) {
-              throw new Error(
-                result.error || `Action failed: ${node.label}`
-              );
+              throw new Error(result.error || `Action failed: ${node.label}`);
             }
             console.warn(
               `[Dynamic Workflow] Action failed but continuing: ${result.error}`
@@ -472,10 +469,9 @@ export const dynamicWorkflow: TWorkflow = async function* (
     };
   } catch (error) {
     const durationMs = Date.now() - startTime;
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
-    console.error(`[Dynamic Workflow] Workflow failed:`, error);
+    console.error("[Dynamic Workflow] Workflow failed:", error);
 
     updateStatus(ctx, {
       phase: "failed",

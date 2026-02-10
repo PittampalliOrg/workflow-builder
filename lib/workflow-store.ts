@@ -8,10 +8,10 @@ export type WorkflowNodeType =
   | "action"
   | "add"
   // Dapr workflow node types
-  | "activity"        // ctx.call_activity()
-  | "approval-gate"   // ctx.wait_for_external_event() + timer
-  | "timer"           // ctx.create_timer()
-  | "publish-event";  // publish to pub/sub
+  | "activity" // ctx.call_activity()
+  | "approval-gate" // ctx.wait_for_external_event() + timer
+  | "timer" // ctx.create_timer()
+  | "publish-event"; // publish to pub/sub
 
 export type WorkflowNodeData = {
   label: string;
@@ -636,8 +636,7 @@ export const daprInstanceIdAtom = atom<string | null>(null);
 
 // Engine type for the current workflow
 export type WorkflowEngineType = "vercel" | "dapr";
-export const currentWorkflowEngineTypeAtom =
-  atom<WorkflowEngineType>("dapr");
+export const currentWorkflowEngineTypeAtom = atom<WorkflowEngineType>("dapr");
 
 // Morph node type atom - changes a node's type after creation (e.g., action -> activity)
 export const morphNodeTypeAtom = atom(
@@ -659,7 +658,10 @@ export const morphNodeTypeAtom = atom(
     const currentNodes = get(nodesAtom);
     const currentEdges = get(edgesAtom);
     const history = get(historyAtom);
-    set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
+    set(historyAtom, [
+      ...history,
+      { nodes: currentNodes, edges: currentEdges },
+    ]);
     set(futureAtom, []);
 
     // Update the node's type and data

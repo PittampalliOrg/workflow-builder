@@ -32,11 +32,11 @@ const ExternalEventRequestSchema = z.object({
 
 type ExternalEventRequest = z.infer<typeof ExternalEventRequestSchema>;
 
-interface ExternalEventResponse {
+type ExternalEventResponse = {
   success: boolean;
   event_id?: string;
   error?: string;
-}
+};
 
 /**
  * Generate a random ID for event records
@@ -85,8 +85,7 @@ export async function externalEventRoutes(app: FastifyInstance): Promise<void> {
         }
 
         // Determine timestamps based on event type
-        const requestedAt =
-          body.event_type === "approval_request" ? now : null;
+        const requestedAt = body.event_type === "approval_request" ? now : null;
         const respondedAt =
           body.event_type === "approval_response" ||
           body.event_type === "timeout"
@@ -129,10 +128,7 @@ export async function externalEventRoutes(app: FastifyInstance): Promise<void> {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
 
-        console.error(
-          `[External Event Route] Failed to log event:`,
-          error
-        );
+        console.error("[External Event Route] Failed to log event:", error);
 
         return reply.status(500).send({
           success: false,
@@ -168,10 +164,7 @@ export async function externalEventRoutes(app: FastifyInstance): Promise<void> {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
 
-        console.error(
-          `[External Event Route] Failed to fetch events:`,
-          error
-        );
+        console.error("[External Event Route] Failed to fetch events:", error);
 
         return reply.status(500).send({
           success: false,

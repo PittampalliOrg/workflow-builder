@@ -45,8 +45,8 @@ export function ApprovalGateConfig({
         <Input
           disabled={disabled}
           id="timeoutHours"
-          min={1}
           max={168}
+          min={1}
           onChange={(e) => onUpdateConfig("timeoutHours", e.target.value)}
           placeholder="24"
           type="number"

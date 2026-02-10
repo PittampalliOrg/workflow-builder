@@ -1,10 +1,10 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { cookies } from "next/headers";
 import { Analytics } from "@vercel/analytics/react";
 import { SpeedInsights } from "@vercel/speed-insights/next";
 import { ReactFlowProvider } from "@xyflow/react";
 import { Provider } from "jotai";
+import { cookies } from "next/headers";
 import { type ReactNode, Suspense } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
 import { AuthProvider } from "@/components/auth/provider";
@@ -47,13 +47,17 @@ async function SidebarWrapper({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider defaultOpen={!isCollapsed}>
-      <AppSidebar user={session?.user as Parameters<typeof AppSidebar>[0]["user"]} />
-      <SidebarInset className="bg-transparent relative">
+      <AppSidebar
+        user={session?.user as Parameters<typeof AppSidebar>[0]["user"]}
+      />
+      <SidebarInset className="relative bg-transparent">
         <ReactFlowProvider>
           {/* Canvas renders behind everything in the content area */}
           <PersistentCanvas />
           {/* Page content overlays the canvas */}
-          <div className="pointer-events-none relative z-10 flex-1 min-h-0">{children}</div>
+          <div className="pointer-events-none relative z-10 min-h-0 flex-1">
+            {children}
+          </div>
         </ReactFlowProvider>
       </SidebarInset>
     </SidebarProvider>
@@ -64,11 +68,14 @@ const RootLayout = ({ children }: RootLayoutProps) => (
   <html lang="en" suppressHydrationWarning>
     <head>
       <script
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: required to expose selected env vars to the client at runtime
         dangerouslySetInnerHTML={{
           __html: `window.ENV=${JSON.stringify({
             NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
-            NEXT_PUBLIC_GITHUB_CLIENT_ID: process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
-            NEXT_PUBLIC_GOOGLE_CLIENT_ID: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+            NEXT_PUBLIC_GITHUB_CLIENT_ID:
+              process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
+            NEXT_PUBLIC_GOOGLE_CLIENT_ID:
+              process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
           })}`,
         }}
       />
@@ -87,10 +94,12 @@ const RootLayout = ({ children }: RootLayoutProps) => (
                 fallback={
                   <GitHubStarsProvider stars={null}>
                     <SidebarProvider>
-                      <SidebarInset className="bg-transparent relative">
+                      <SidebarInset className="relative bg-transparent">
                         <ReactFlowProvider>
                           <PersistentCanvas />
-                          <div className="pointer-events-none relative z-10 flex-1 min-h-0">{children}</div>
+                          <div className="pointer-events-none relative z-10 min-h-0 flex-1">
+                            {children}
+                          </div>
                         </ReactFlowProvider>
                       </SidebarInset>
                     </SidebarProvider>

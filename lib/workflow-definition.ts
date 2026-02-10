@@ -16,7 +16,7 @@ import type {
  * Serialized node format for workflow definitions
  * Contains all the data needed to execute a node in the orchestrator
  */
-export interface SerializedNode {
+export type SerializedNode = {
   id: string;
   type: WorkflowNodeType;
   label: string;
@@ -24,23 +24,23 @@ export interface SerializedNode {
   enabled: boolean;
   position: { x: number; y: number };
   config: Record<string, unknown>;
-}
+};
 
 /**
  * Serialized edge format for workflow definitions
  */
-export interface SerializedEdge {
+export type SerializedEdge = {
   id: string;
   source: string;
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
-}
+};
 
 /**
  * Complete workflow definition that can be stored and executed
  */
-export interface WorkflowDefinition {
+export type WorkflowDefinition = {
   id: string;
   name: string;
   version: string;
@@ -56,12 +56,12 @@ export interface WorkflowDefinition {
     author?: string;
     tags?: string[];
   };
-}
+};
 
 /**
  * Input to start a workflow execution
  */
-export interface WorkflowExecutionInput {
+export type WorkflowExecutionInput = {
   /** Workflow definition to execute */
   definition: WorkflowDefinition;
   /** Trigger data that starts the workflow */
@@ -72,12 +72,12 @@ export interface WorkflowExecutionInput {
   userId?: string;
   /** Integration credentials map (integrationId -> credentials) */
   integrations?: Record<string, Record<string, string>>;
-}
+};
 
 /**
  * Output from a completed workflow execution
  */
-export interface WorkflowExecutionOutput {
+export type WorkflowExecutionOutput = {
   success: boolean;
   /** Outputs from each node keyed by node ID */
   outputs: Record<string, unknown>;
@@ -87,7 +87,7 @@ export interface WorkflowExecutionOutput {
   durationMs: number;
   /** Final phase of the workflow */
   phase: WorkflowPhase;
-}
+};
 
 /**
  * Workflow execution phases
@@ -105,7 +105,7 @@ export type WorkflowPhase =
 /**
  * Status update during workflow execution
  */
-export interface WorkflowStatusUpdate {
+export type WorkflowStatusUpdate = {
   workflowId: string;
   executionId: string;
   phase: WorkflowPhase;
@@ -114,12 +114,12 @@ export interface WorkflowStatusUpdate {
   currentNodeId?: string;
   currentNodeName?: string;
   outputs?: Record<string, unknown>;
-}
+};
 
 /**
  * Activity execution request sent to the function-router service
  */
-export interface ActivityExecutionRequest {
+export type ActivityExecutionRequest = {
   activityId: string; // e.g., "slack/send-message"
   executionId: string;
   workflowId: string;
@@ -128,44 +128,44 @@ export interface ActivityExecutionRequest {
   input: Record<string, unknown>;
   nodeOutputs?: Record<string, { label: string; data: unknown }>;
   connectionExternalId?: string;
-}
+};
 
 /**
  * Activity execution result from the function-router service
  */
-export interface ActivityExecutionResult {
+export type ActivityExecutionResult = {
   success: boolean;
   data?: unknown;
   error?: string;
   durationMs: number;
-}
+};
 
 /**
  * Approval gate configuration
  */
-export interface ApprovalGateConfig {
+export type ApprovalGateConfig = {
   eventName: string;
   timeoutSeconds: number;
   approvers?: string[];
   message?: string;
-}
+};
 
 /**
  * Timer configuration
  */
-export interface TimerConfig {
+export type TimerConfig = {
   durationSeconds: number;
   label?: string;
-}
+};
 
 /**
  * Publish event configuration
  */
-export interface PublishEventConfig {
+export type PublishEventConfig = {
   topic: string;
   eventType: string;
   data?: Record<string, unknown>;
-}
+};
 
 // ─── Workflow Definition Generation ─────────────────────────────────────────────
 

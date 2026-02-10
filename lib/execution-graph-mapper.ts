@@ -5,18 +5,18 @@
  * for visualization in the ExecutionFlow component.
  */
 
-import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
 import type {
-  ExecutionFlowNode,
   ExecutionFlowEdge,
+  ExecutionFlowNode,
   ExecutionGraph,
 } from "@/lib/types/execution-graph";
+import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-const NODE_WIDTH = 280;
+const _NODE_WIDTH = 280;
 const NODE_HEIGHT = 80;
 const NODE_GAP_Y = 40;
 
@@ -106,11 +106,11 @@ export function calculateDuration(
 
   if (durationMs < 1000) {
     return `${durationMs}ms`;
-  } else if (durationMs < 60000) {
-    return `${(durationMs / 1000).toFixed(1)}s`;
-  } else {
-    const minutes = Math.floor(durationMs / 60000);
-    const seconds = ((durationMs % 60000) / 1000).toFixed(0);
-    return `${minutes}m ${seconds}s`;
   }
+  if (durationMs < 60_000) {
+    return `${(durationMs / 1000).toFixed(1)}s`;
+  }
+  const minutes = Math.floor(durationMs / 60_000);
+  const seconds = ((durationMs % 60_000) / 1000).toFixed(0);
+  return `${minutes}m ${seconds}s`;
 }

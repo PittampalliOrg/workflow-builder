@@ -29,31 +29,33 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { ActionConfigFieldBase } from "@/plugins/registry";
 import { cn } from "@/lib/utils";
+import type { ActionConfigFieldBase } from "@/plugins/registry";
 
-interface DropdownOption {
+type DropdownOption = {
   label: string;
   value: unknown;
-}
+};
 
-interface DropdownState {
+type DropdownState = {
   options: DropdownOption[];
   disabled?: boolean;
   placeholder?: string;
-}
+};
 
-interface DynamicSelectFieldProps {
+type DynamicSelectFieldProps = {
   field: ActionConfigFieldBase;
   value: string;
   onChange: (value: unknown) => void;
   disabled?: boolean;
   config: Record<string, unknown>;
   multiSelect?: boolean;
-}
+};
 
 function getExternalIdFromAuth(auth: unknown): string | undefined {
-  if (typeof auth !== "string") return undefined;
+  if (typeof auth !== "string") {
+    return;
+  }
   const match = auth.match(/\{\{connections\['([^']+)'\]\}\}/);
   return match?.[1];
 }
@@ -97,14 +99,16 @@ export function DynamicSelectField({
 
   // Build refresher dependency string for change detection
   const refresherValues = useMemo(() => {
-    if (!dynamicOpts?.refreshers?.length) return "";
-    return dynamicOpts.refreshers
-      .map((r) => String(config[r] ?? ""))
-      .join("|");
+    if (!dynamicOpts?.refreshers?.length) {
+      return "";
+    }
+    return dynamicOpts.refreshers.map((r) => String(config[r] ?? "")).join("|");
   }, [dynamicOpts?.refreshers, config]);
 
   const refresh = useCallback(async () => {
-    if (!dynamicOpts) return;
+    if (!dynamicOpts) {
+      return;
+    }
 
     const fetchId = ++fetchIdRef.current;
     setLoading(true);
@@ -132,7 +136,9 @@ export function DynamicSelectField({
         }),
       });
 
-      if (fetchId !== fetchIdRef.current) return;
+      if (fetchId !== fetchIdRef.current) {
+        return;
+      }
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -153,7 +159,9 @@ export function DynamicSelectField({
       setDropdownDisabled(data.disabled ?? false);
       setDropdownPlaceholder(data.placeholder);
     } catch (err) {
-      if (fetchId !== fetchIdRef.current) return;
+      if (fetchId !== fetchIdRef.current) {
+        return;
+      }
       setError(err instanceof Error ? err.message : "Failed to load options");
       setOptions([]);
     } finally {
@@ -161,7 +169,7 @@ export function DynamicSelectField({
         setLoading(false);
       }
     }
-  }, [dynamicOpts, connectionExternalId, config, refresherValues]);
+  }, [dynamicOpts, connectionExternalId, config]);
 
   // Fetch on mount and when refresher values change
   useEffect(() => {
@@ -176,11 +184,13 @@ export function DynamicSelectField({
     previousRefresherValues.current = refresherValues;
     isFirstRender.current = false;
     refresh();
-  }, [refresherValues]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [refresherValues, multiSelect, onChange, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Client-side filter
   const filteredOptions = useMemo(() => {
-    if (!searchTerm) return options;
+    if (!searchTerm) {
+      return options;
+    }
     const lower = searchTerm.toLowerCase();
     return options.filter(
       (opt) =>
@@ -191,12 +201,16 @@ export function DynamicSelectField({
 
   // Resolve selected option label (check both current + cached)
   const selectedOption = useMemo(() => {
-    if (!value || (multiSelect && value === "[]")) return undefined;
+    if (!value || (multiSelect && value === "[]")) {
+      return;
+    }
 
     if (multiSelect) {
       try {
         const values = JSON.parse(value) as unknown[];
-        if (values.length === 0) return undefined;
+        if (values.length === 0) {
+          return;
+        }
         const allOpts = [...cachedOptions.current, ...options];
         const labels = values.map((v) => {
           const opt = allOpts.find((o) => String(o.value) === String(v));
@@ -204,7 +218,7 @@ export function DynamicSelectField({
         });
         return { label: labels.join(", "), value };
       } catch {
-        return undefined;
+        return;
       }
     }
 
@@ -225,11 +239,15 @@ export function DynamicSelectField({
   };
 
   const handleSelect = (idx: string) => {
-    const optionIndex = parseInt(idx);
-    if (isNaN(optionIndex) || optionIndex < 0) return;
+    const optionIndex = Number.parseInt(idx, 10);
+    if (Number.isNaN(optionIndex) || optionIndex < 0) {
+      return;
+    }
 
     const option = options[optionIndex];
-    if (!option) return;
+    if (!option) {
+      return;
+    }
 
     if (multiSelect) {
       try {
@@ -319,7 +337,6 @@ export function DynamicSelectField({
       >
         <div className="relative">
           <Button
-            ref={triggerRef}
             aria-expanded={open}
             className="w-full justify-between font-normal"
             disabled={isDisabled}
@@ -327,10 +344,11 @@ export function DynamicSelectField({
               setOpen(!open);
               e.preventDefault();
             }}
+            ref={triggerRef}
             role="combobox"
             variant="outline"
           >
-            <span className="flex w-full truncate select-none">
+            <span className="flex w-full select-none truncate">
               {loading && !selectedOption ? (
                 <span className="text-muted-foreground">Loading...</span>
               ) : selectedOption ? (
@@ -342,7 +360,7 @@ export function DynamicSelectField({
             <ChevronsUpDown className="ml-2 size-4 shrink-0 opacity-50" />
           </Button>
           {/* Utility buttons (refresh + deselect) — shown on right side */}
-          <div className="absolute right-10 top-2 z-50 flex items-center gap-1">
+          <div className="absolute top-2 right-10 z-50 flex items-center gap-1">
             {selectedOption && !isDisabled && !loading && (
               <TooltipProvider>
                 <Tooltip>
@@ -403,7 +421,7 @@ export function DynamicSelectField({
           <CommandGroup>
             <CommandList>
               {!loading &&
-                filteredOptions.map((option, idx) => {
+                filteredOptions.map((option, _idx) => {
                   // Find the original index in options array
                   const originalIndex = options.indexOf(option);
                   return (
@@ -412,7 +430,9 @@ export function DynamicSelectField({
                       key={originalIndex}
                       onSelect={(currentValue) => {
                         handleSelect(currentValue);
-                        if (!multiSelect) setOpen(false);
+                        if (!multiSelect) {
+                          setOpen(false);
+                        }
                       }}
                       value={String(originalIndex)}
                     >
@@ -425,9 +445,7 @@ export function DynamicSelectField({
                     </CommandItem>
                   );
                 })}
-              {loading && (
-                <CommandItem disabled>Loading...</CommandItem>
-              )}
+              {loading && <CommandItem disabled>Loading...</CommandItem>}
             </CommandList>
           </CommandGroup>
         </Command>

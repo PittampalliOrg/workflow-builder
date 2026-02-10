@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
+import { daprClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
 
 /**
  * POST /api/dapr/workflows/[id]/approve - Approve or reject a Dapr workflow
@@ -74,9 +74,7 @@ export async function POST(
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to approve workflow",
+          error instanceof Error ? error.message : "Failed to approve workflow",
       },
       { status: 500 }
     );

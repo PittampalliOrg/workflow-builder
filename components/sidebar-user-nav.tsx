@@ -3,8 +3,6 @@
 import { ChevronUp } from "lucide-react";
 import Image from "next/image";
 import { useTheme } from "next-themes";
-import { signOut, useSession } from "@/lib/auth-client";
-import type { User } from "@/lib/db/schema";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,9 +15,11 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { signOut, useSession } from "@/lib/auth-client";
+import type { User } from "@/lib/db/schema";
 
 export function SidebarUserNav({ user }: { user: User }) {
-  const { data: session, isPending } = useSession();
+  const { isPending } = useSession();
   const { setTheme, resolvedTheme } = useTheme();
 
   const handleSignOut = async () => {
@@ -41,9 +41,7 @@ export function SidebarUserNav({ user }: { user: User }) {
                 </div>
               </SidebarMenuButton>
             ) : (
-              <SidebarMenuButton
-                className="h-10 bg-background data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
-              >
+              <SidebarMenuButton className="h-10 bg-background data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
                 {user.image ? (
                   <Image
                     alt={user.email ?? "User Avatar"}
@@ -53,7 +51,7 @@ export function SidebarUserNav({ user }: { user: User }) {
                     width={24}
                   />
                 ) : (
-                  <div className="size-6 rounded-full bg-muted flex items-center justify-center text-xs">
+                  <div className="flex size-6 items-center justify-center rounded-full bg-muted text-xs">
                     {user.email?.[0]?.toUpperCase() || "U"}
                   </div>
                 )}

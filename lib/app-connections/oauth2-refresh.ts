@@ -1,14 +1,13 @@
 import "server-only";
 
-import {
-  AppConnectionType,
-  type BaseOAuth2ConnectionValue,
-  type OAuth2ConnectionValueWithApp,
-  type PlatformOAuth2ConnectionValue,
-  OAuth2AuthorizationMethod,
-  OAuth2GrantType,
-} from "@/lib/types/app-connection";
 import { resolveValueFromProps } from "@/lib/app-connections/oauth2";
+import {
+  type BaseOAuth2ConnectionValue,
+  OAuth2AuthorizationMethod,
+  type OAuth2ConnectionValueWithApp,
+  OAuth2GrantType,
+  type PlatformOAuth2ConnectionValue,
+} from "@/lib/types/app-connection";
 
 /**
  * Thrown when a refresh token is permanently invalid (revoked or expired).
@@ -89,16 +88,25 @@ export async function refreshOAuth2Token(
     case OAuth2GrantType.CLIENT_CREDENTIALS:
       body.set("grant_type", OAuth2GrantType.CLIENT_CREDENTIALS);
       if (connection.scope) {
-        body.set("scope", resolveValueFromProps(connection.scope, connection.props));
+        body.set(
+          "scope",
+          resolveValueFromProps(connection.scope, connection.props)
+        );
       }
       if (connection.props) {
         for (const [key, value] of Object.entries(connection.props)) {
-          if (value === undefined || value === null) continue;
-          if (typeof value === "object") continue;
+          if (value === undefined || value === null) {
+            continue;
+          }
+          if (typeof value === "object") {
+            continue;
+          }
           body.set(key, String(value));
         }
       }
       break;
+    default:
+      throw new Error(`Unsupported OAuth2 grant type: ${grantType}`);
   }
 
   // Resolve client_secret: use override for PLATFORM_OAUTH2, otherwise from connection
@@ -138,7 +146,7 @@ export async function refreshOAuth2Token(
     }
     if (isInvalidGrant) {
       throw new InvalidGrantError(
-        `OAuth2 token refresh failed: invalid_grant. The refresh token is expired or revoked.`
+        "OAuth2 token refresh failed: invalid_grant. The refresh token is expired or revoked."
       );
     }
     throw new Error(
@@ -167,12 +175,10 @@ export async function refreshOAuth2Token(
       (tokenResponse.access_token as string) ?? connection.access_token,
     refresh_token:
       (tokenResponse.refresh_token as string) ?? connection.refresh_token,
-    token_type:
-      (tokenResponse.token_type as string) ?? connection.token_type,
+    token_type: (tokenResponse.token_type as string) ?? connection.token_type,
     expires_in: tokenResponse.expires_in as number | undefined,
     claimed_at: Math.round(Date.now() / 1000),
-    scope:
-      (tokenResponse.scope as string) ?? connection.scope,
+    scope: (tokenResponse.scope as string) ?? connection.scope,
     data: {
       ...connection.data,
       ...extraData,

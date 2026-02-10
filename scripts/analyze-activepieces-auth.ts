@@ -3,9 +3,9 @@
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
 import {
-  parsePieceAuthAll,
-  PieceAuthType,
   type OAuth2AuthConfig,
+  PieceAuthType,
+  parsePieceAuthAll,
 } from "@/lib/types/piece-auth";
 
 type Counts = Record<string, number>;
@@ -74,10 +74,17 @@ async function main() {
           oauth2AuthorizationMethodCounts,
           String(oauth.authorizationMethod ?? "undefined")
         );
-        if (oauth.props && Object.keys(oauth.props).length > 0) oauth2WithProps += 1;
-        if (oauth.extra && Object.keys(oauth.extra).length > 0) oauth2WithExtra += 1;
-        if (oauth.pkce === false) oauth2PkceFalse += 1;
-        else oauth2PkceTrue += 1;
+        if (oauth.props && Object.keys(oauth.props).length > 0) {
+          oauth2WithProps += 1;
+        }
+        if (oauth.extra && Object.keys(oauth.extra).length > 0) {
+          oauth2WithExtra += 1;
+        }
+        if (oauth.pkce === false) {
+          oauth2PkceFalse += 1;
+        } else {
+          oauth2PkceTrue += 1;
+        }
       }
     }
 
@@ -99,10 +106,18 @@ async function main() {
   }
 
   console.log(`[Auth Analyze] piece_metadata rows: ${rows.length}`);
-  console.log(`[Auth Analyze] auth shapes: ${JSON.stringify(authShapeCounts, null, 2)}`);
-  console.log(`[Auth Analyze] raw auth types: ${JSON.stringify(rawAuthTypeCounts, null, 2)}`);
-  console.log(`[Auth Analyze] parsed auth types: ${JSON.stringify(parsedAuthTypeCounts, null, 2)}`);
-  console.log(`[Auth Analyze] oauth2 grantType: ${JSON.stringify(oauth2GrantTypeCounts, null, 2)}`);
+  console.log(
+    `[Auth Analyze] auth shapes: ${JSON.stringify(authShapeCounts, null, 2)}`
+  );
+  console.log(
+    `[Auth Analyze] raw auth types: ${JSON.stringify(rawAuthTypeCounts, null, 2)}`
+  );
+  console.log(
+    `[Auth Analyze] parsed auth types: ${JSON.stringify(parsedAuthTypeCounts, null, 2)}`
+  );
+  console.log(
+    `[Auth Analyze] oauth2 grantType: ${JSON.stringify(oauth2GrantTypeCounts, null, 2)}`
+  );
   console.log(
     `[Auth Analyze] oauth2 authorizationMethod: ${JSON.stringify(
       oauth2AuthorizationMethodCounts,
@@ -135,7 +150,9 @@ main().catch((err) => {
       ((err as any).cause.code === "ECONNREFUSED" ||
         ((err as any).cause.errors &&
           Array.isArray((err as any).cause.errors) &&
-          (err as any).cause.errors.some((e: any) => e?.code === "ECONNREFUSED"))));
+          (err as any).cause.errors.some(
+            (e: any) => e?.code === "ECONNREFUSED"
+          ))));
 
   if (looksLikeConnRefused) {
     console.error(

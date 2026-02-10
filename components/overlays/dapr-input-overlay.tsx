@@ -16,10 +16,7 @@ type DaprInputOverlayProps = OverlayComponentProps<{
   onRun: (input: DaprWorkflowInput) => void;
 }>;
 
-export function DaprInputOverlay({
-  overlayId,
-  onRun,
-}: DaprInputOverlayProps) {
+export function DaprInputOverlay({ overlayId, onRun }: DaprInputOverlayProps) {
   const { closeAll } = useOverlay();
   const [featureRequest, setFeatureRequest] = useState("");
   const [cwd, setCwd] = useState("/workspace");
@@ -59,12 +56,12 @@ export function DaprInputOverlay({
             Feature Request <span className="text-red-500">*</span>
           </Label>
           <textarea
-            id="featureRequest"
-            placeholder="Describe the feature to plan and implement..."
-            value={featureRequest}
-            onChange={(e) => setFeatureRequest(e.target.value)}
-            rows={4}
             className="flex min-h-[80px] w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+            id="featureRequest"
+            onChange={(e) => setFeatureRequest(e.target.value)}
+            placeholder="Describe the feature to plan and implement..."
+            rows={4}
+            value={featureRequest}
           />
           <p className="text-muted-foreground text-xs">
             The feature description that will be sent to the planning agent.
@@ -76,9 +73,9 @@ export function DaprInputOverlay({
           <Label htmlFor="cwd">Working Directory</Label>
           <Input
             id="cwd"
+            onChange={(e) => setCwd(e.target.value)}
             placeholder="/workspace"
             value={cwd}
-            onChange={(e) => setCwd(e.target.value)}
           />
           <p className="text-muted-foreground text-xs">
             The working directory for the agent (default: /workspace).

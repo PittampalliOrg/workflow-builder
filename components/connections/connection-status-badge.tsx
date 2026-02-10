@@ -1,7 +1,7 @@
 "use client";
 
-import { cn } from "@/lib/utils";
 import { AppConnectionStatus } from "@/lib/types/app-connection";
+import { cn } from "@/lib/utils";
 
 const statusConfig: Record<
   AppConnectionStatus,
@@ -29,12 +29,13 @@ export function ConnectionStatusBadge({
 }: {
   status: AppConnectionStatus;
 }) {
-  const config = statusConfig[status] ?? statusConfig[AppConnectionStatus.MISSING];
+  const config =
+    statusConfig[status] ?? statusConfig[AppConnectionStatus.MISSING];
 
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 text-xs font-medium",
+        "inline-flex items-center gap-1.5 font-medium text-xs",
         config.textClass
       )}
     >

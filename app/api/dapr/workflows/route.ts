@@ -1,9 +1,9 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
+import { daprClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { daprClient } from "@/lib/dapr-client";
 
 /**
  * GET /api/dapr/workflows - List Dapr workflow executions for the current user
@@ -136,9 +136,7 @@ export async function POST(request: Request) {
     return NextResponse.json(
       {
         error:
-          error instanceof Error
-            ? error.message
-            : "Failed to start workflow",
+          error instanceof Error ? error.message : "Failed to start workflow",
       },
       { status: 500 }
     );

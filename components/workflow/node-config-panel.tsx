@@ -27,7 +27,6 @@ import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import { generateNodeCode, getDaprNodeCodeFiles } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
 import {
   clearNodeStatusesAtom,
   currentWorkflowIdAtom,
@@ -50,6 +49,7 @@ import {
   updateNodeDataAtom,
 } from "@/lib/workflow-store";
 import { findActionById } from "@/plugins";
+import type { PluginType } from "@/plugins/registry";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { ActionConfig } from "./config/action-config";
 import { ActionGrid, type ActionSelection } from "./config/action-grid";
@@ -360,7 +360,9 @@ export const PanelInner = () => {
       }
 
       try {
-        const all = await api.appConnection.list({ projectId: "default", limit: 1000 }).then(r => r.data);
+        const all = await api.appConnection
+          .list({ projectId: "default", limit: 1000 })
+          .then((r) => r.data);
 
         // Check if this operation was aborted (actionType changed)
         if (abortSignal.aborted) {
@@ -921,7 +923,9 @@ export const PanelInner = () => {
             if (isDaprNode) {
               const codeFiles = getDaprNodeCodeFiles(selectedNode);
               const file = codeFiles[0];
-              if (!file) return null;
+              if (!file) {
+                return null;
+              }
 
               return (
                 <>

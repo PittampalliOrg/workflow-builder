@@ -4,13 +4,21 @@
  * A scale-to-zero function that handles Slack messaging.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { sendMessageStep, type SendMessageInput } from "./steps/send-message.js";
-import type { ExecuteRequest, ExecuteResponse, SlackCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import {
+  type SendMessageInput,
+  sendMessageStep,
+} from "./steps/send-message.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  SlackCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -31,7 +39,9 @@ const ExecuteRequestSchema = z.object({
   credentials: z.record(z.string(), z.string()).optional(),
 });
 
-function normalizeInput(input: Record<string, unknown>): Record<string, unknown> {
+function normalizeInput(
+  input: Record<string, unknown>
+): Record<string, unknown> {
   const normalized = { ...input };
 
   // Handle channel aliases
@@ -64,17 +74,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -93,19 +103,25 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-slack] Received request for step: ${body.step}`);
-    console.log(`[fn-slack] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-slack] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: SlackCredentials = {
-      SLACK_API_KEY: body.credentials?.SLACK_API_KEY || body.credentials?.SLACK_BOT_TOKEN,
-      SLACK_BOT_TOKEN: body.credentials?.SLACK_BOT_TOKEN || body.credentials?.SLACK_API_KEY,
+      SLACK_API_KEY:
+        body.credentials?.SLACK_API_KEY || body.credentials?.SLACK_BOT_TOKEN,
+      SLACK_BOT_TOKEN:
+        body.credentials?.SLACK_BOT_TOKEN || body.credentials?.SLACK_API_KEY,
     };
 
-    const normalizedInput = normalizeInput(body.input as Record<string, unknown>);
+    const normalizedInput = normalizeInput(
+      body.input as Record<string, unknown>
+    );
 
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "send-message":
+      case "send-message": {
         const sendResult = await sendMessageStep(
           normalizedInput as SendMessageInput,
           credentials
@@ -119,6 +135,7 @@ async function main() {
           result = { success: false, error: sendResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -135,7 +152,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-slack] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-slack] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

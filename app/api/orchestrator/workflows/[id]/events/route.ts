@@ -5,13 +5,13 @@
  * Used for approval gates and other event-driven patterns.
  */
 
+import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
+import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
-import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 
 export async function POST(
   request: Request,
@@ -61,10 +61,7 @@ export async function POST(
         .limit(1);
 
       if (!workflow || workflow.userId !== session.user.id) {
-        return NextResponse.json(
-          { error: "Access denied" },
-          { status: 403 }
-        );
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
       }
     }
 
@@ -169,10 +166,7 @@ export async function PATCH(
         .limit(1);
 
       if (!workflow || workflow.userId !== session.user.id) {
-        return NextResponse.json(
-          { error: "Access denied" },
-          { status: 403 }
-        );
+        return NextResponse.json({ error: "Access denied" }, { status: 403 });
       }
     }
 

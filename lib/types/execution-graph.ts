@@ -4,7 +4,7 @@
  * Type definitions for the React Flow execution graph visualization.
  */
 
-import type { Node, Edge } from "@xyflow/react";
+import type { Edge, Node } from "@xyflow/react";
 import type { DaprExecutionEventType } from "./workflow-ui";
 
 // ============================================================================
@@ -14,10 +14,10 @@ import type { DaprExecutionEventType } from "./workflow-ui";
 /**
  * Handle configuration for nodes
  */
-export interface NodeHandles {
+export type NodeHandles = {
   target?: boolean;
   source?: boolean;
-}
+};
 
 /**
  * Data payload for execution event nodes
@@ -63,7 +63,7 @@ export type ExecutionFlowEdge = Edge;
 /**
  * Complete execution graph with nodes and edges
  */
-export interface ExecutionGraph {
+export type ExecutionGraph = {
   nodes: ExecutionFlowNode[];
   edges: ExecutionFlowEdge[];
-}
+};

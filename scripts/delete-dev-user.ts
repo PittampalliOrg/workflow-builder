@@ -1,8 +1,9 @@
+import { sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { sql } from "drizzle-orm";
 
-const DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+const DATABASE_URL =
+  process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 
 async function deleteDevUser() {
   const queryClient = postgres(DATABASE_URL, { max: 1 });

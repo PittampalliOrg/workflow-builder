@@ -80,6 +80,7 @@ export async function POST(request: Request) {
         nodes,
         edges: body.edges,
         userId: session.user.id,
+        projectId: session.user.projectId,
       })
       .returning();
 

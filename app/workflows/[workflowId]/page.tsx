@@ -15,7 +15,6 @@ import {
   connectionsLoadedAtom,
   connectionsVersionAtom,
 } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
 import {
   batchSetNodeStatusesAtom,
   currentRunningNodeIdAtom,
@@ -50,9 +49,7 @@ function buildConnectionAuthTemplate(externalId: string): string {
 }
 
 // Helper to get required piece name for an action
-function getRequiredPieceName(
-  actionType: string
-): string | undefined {
+function getRequiredPieceName(actionType: string): string | undefined {
   const action = findActionById(actionType);
   return action?.integration;
 }
@@ -79,7 +76,7 @@ function checkNodeConnection(
 
   // Already has a connection auth template
   const currentAuth = node.data.config?.auth as string | undefined;
-  if (currentAuth && currentAuth.includes("connections[")) {
+  if (currentAuth?.includes("connections[")) {
     return null;
   }
 
@@ -433,7 +430,10 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
     const autoFixConnections = async () => {
       try {
-        const response = await api.appConnection.list({ projectId: "default", limit: 1000 });
+        const response = await api.appConnection.list({
+          projectId: "default",
+          limit: 1000,
+        });
         const allConnections = response.data;
         setGlobalConnections(allConnections);
         setConnectionsLoaded(true);

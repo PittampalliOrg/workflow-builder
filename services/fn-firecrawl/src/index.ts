@@ -4,14 +4,19 @@
  * A scale-to-zero function that handles Firecrawl web scraping and search.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { scrapeStep, type ScrapeInput } from "./steps/scrape.js";
-import { searchStep, type SearchInput } from "./steps/search.js";
-import type { ExecuteRequest, ExecuteResponse, FirecrawlCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import { type ScrapeInput, scrapeStep } from "./steps/scrape.js";
+import { type SearchInput, searchStep } from "./steps/search.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  FirecrawlCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -46,17 +51,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -75,7 +80,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-firecrawl] Received request for step: ${body.step}`);
-    console.log(`[fn-firecrawl] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-firecrawl] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: FirecrawlCredentials = {
       FIRECRAWL_API_KEY: body.credentials?.FIRECRAWL_API_KEY,
@@ -86,8 +93,11 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "scrape":
-        const scrapeResult = await scrapeStep(input as ScrapeInput, credentials);
+      case "scrape": {
+        const scrapeResult = await scrapeStep(
+          input as ScrapeInput,
+          credentials
+        );
         if (scrapeResult.success) {
           result = {
             success: true,
@@ -100,9 +110,13 @@ async function main() {
           result = { success: false, error: scrapeResult.error };
         }
         break;
+      }
 
-      case "search":
-        const searchResult = await searchStep(input as SearchInput, credentials);
+      case "search": {
+        const searchResult = await searchStep(
+          input as SearchInput,
+          credentials
+        );
         if (searchResult.success) {
           result = {
             success: true,
@@ -112,6 +126,7 @@ async function main() {
           result = { success: false, error: searchResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -128,7 +143,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-firecrawl] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-firecrawl] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

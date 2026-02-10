@@ -4,13 +4,14 @@
  * REST API endpoints for managing workflow executions.
  * These are the v2 API endpoints that accept WorkflowDefinitions.
  */
-import type { FastifyInstance, FastifyPluginAsync } from "fastify";
+
 import { DaprWorkflowClient } from "@dapr/dapr";
+import type { FastifyInstance, FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type {
-  WorkflowDefinition,
   DynamicWorkflowInput,
   WorkflowCustomStatus,
+  WorkflowDefinition,
 } from "../core/types.js";
 import { dynamicWorkflow } from "../workflows/dynamic-workflow.js";
 
@@ -27,16 +28,20 @@ const StartWorkflowSchema = z.object({
     nodes: z.array(z.unknown()),
     edges: z.array(z.unknown()),
     executionOrder: z.array(z.string()),
-    metadata: z.object({
-      description: z.string().optional(),
-      author: z.string().optional(),
-      tags: z.array(z.string()).optional(),
-    }).optional(),
+    metadata: z
+      .object({
+        description: z.string().optional(),
+        author: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+      })
+      .optional(),
     createdAt: z.string().optional(),
     updatedAt: z.string().optional(),
   }),
   triggerData: z.record(z.string(), z.unknown()),
-  integrations: z.record(z.string(), z.record(z.string(), z.string())).optional(),
+  integrations: z
+    .record(z.string(), z.record(z.string(), z.string()))
+    .optional(),
   // Database execution ID for logging (links to workflow_executions.id)
   dbExecutionId: z.string().optional(),
 });
@@ -63,9 +68,7 @@ function getWorkflowClient(): DaprWorkflowClient {
 /**
  * Map Dapr runtime status to our status format
  */
-function mapRuntimeStatus(
-  daprStatus: string
-): string {
+function mapRuntimeStatus(daprStatus: string): string {
   const statusMap: Record<string, string> = {
     WORKFLOW_RUNTIME_STATUS_UNSPECIFIED: "UNKNOWN",
     WORKFLOW_RUNTIME_STATUS_RUNNING: "RUNNING",
@@ -170,8 +173,13 @@ export const workflowRoutes: FastifyPluginAsync = async (
         const stateAny = state as unknown as Record<string, unknown>;
 
         // Extract custom status from serializedOutput
-        const serializedOutput = stateAny.serializedOutput as string | undefined;
-        let customStatus: WorkflowCustomStatus = { phase: "pending", progress: 0 };
+        const serializedOutput = stateAny.serializedOutput as
+          | string
+          | undefined;
+        let customStatus: WorkflowCustomStatus = {
+          phase: "pending",
+          progress: 0,
+        };
         if (serializedOutput) {
           try {
             customStatus = JSON.parse(serializedOutput) as WorkflowCustomStatus;
@@ -186,13 +194,17 @@ export const workflowRoutes: FastifyPluginAsync = async (
         );
 
         // Extract failure details if present
-        const failureDetails = stateAny.failureDetails as { message?: string } | undefined;
+        const failureDetails = stateAny.failureDetails as
+          | { message?: string }
+          | undefined;
 
         return reply.send({
           instanceId,
           workflowId: stateAny.name || instanceId.split("-")[0],
           runtimeStatus,
-          phase: customStatus.phase || (runtimeStatus === "RUNNING" ? "running" : "pending"),
+          phase:
+            customStatus.phase ||
+            (runtimeStatus === "RUNNING" ? "running" : "pending"),
           progress: customStatus.progress || 0,
           message: customStatus.message,
           currentNodeId: customStatus.currentNodeId,
@@ -206,7 +218,10 @@ export const workflowRoutes: FastifyPluginAsync = async (
               : undefined,
         });
       } catch (error) {
-        console.error("[Workflow Routes] Failed to get workflow status:", error);
+        console.error(
+          "[Workflow Routes] Failed to get workflow status:",
+          error
+        );
 
         return reply.status(500).send({
           error: "Failed to get workflow status",

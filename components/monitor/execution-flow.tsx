@@ -7,44 +7,42 @@
  * Vertical layout (top to bottom) matching Diagrid's design.
  */
 
-import { useCallback, useMemo, useState } from "react";
 import {
-  ReactFlow,
   Background,
-  Controls,
-  useNodesState,
-  useEdgesState,
-  type OnSelectionChangeFunc,
-  type NodeMouseHandler,
   BackgroundVariant,
+  Controls,
   MarkerType,
+  type NodeMouseHandler,
+  type OnSelectionChangeFunc,
+  ReactFlow,
+  useEdgesState,
+  useNodesState,
 } from "@xyflow/react";
+import { useCallback, useMemo, useState } from "react";
 import "@xyflow/react/dist/style.css";
 import { RefreshCw } from "lucide-react";
-
-import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
-import type {
-  ExecutionFlowNode as ExecutionFlowNodeType,
-  ExecutionNodeData,
-  AppNode,
-} from "@/lib/types/execution-graph";
-import { mapExecutionEventsToGraph } from "@/lib/execution-graph-mapper";
-import { ExecutionFlowNode } from "./execution-flow-node";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { mapExecutionEventsToGraph } from "@/lib/execution-graph-mapper";
+import type {
+  AppNode,
+  ExecutionFlowNode as ExecutionFlowNodeType,
+  ExecutionNodeData,
+} from "@/lib/types/execution-graph";
+import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
 import { cn } from "@/lib/utils";
+import { ExecutionFlowNode } from "./execution-flow-node";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface ExecutionFlowProps {
+type ExecutionFlowProps = {
   events: DaprExecutionEvent[];
   onEventSelect?: (event: DaprExecutionEvent | null) => void;
-  selectedEventId?: number | null;
   onRefresh?: () => void;
   className?: string;
-}
+};
 
 // ============================================================================
 // Node Types Registration
@@ -74,7 +72,6 @@ const defaultEdgeOptions = {
 export function ExecutionFlow({
   events,
   onEventSelect,
-  selectedEventId,
   onRefresh,
   className,
 }: ExecutionFlowProps) {
@@ -87,8 +84,8 @@ export function ExecutionFlow({
   );
 
   // React Flow state
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, _setNodes, onNodesChange] = useNodesState(initialNodes);
+  const [edges, _setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
   // Handle node selection
   const onSelectionChange: OnSelectionChangeFunc = useCallback(
@@ -128,22 +125,22 @@ export function ExecutionFlow({
   // Empty state
   if (events.length === 0) {
     return (
-      <div className={cn("flex items-center justify-center h-full", className)}>
+      <div className={cn("flex h-full items-center justify-center", className)}>
         <p className="text-muted-foreground">No execution events to display</p>
       </div>
     );
   }
 
   return (
-    <div className={cn("relative h-full w-full min-h-[400px]", className)}>
+    <div className={cn("relative h-full min-h-[400px] w-full", className)}>
       {/* Controls bar - Diagrid style */}
       <div className="absolute top-4 right-4 z-10 flex items-center gap-4">
         {onRefresh && (
           <Button
-            variant="ghost"
-            size="sm"
+            className="gap-2 text-teal-400 hover:bg-transparent hover:text-teal-300"
             onClick={onRefresh}
-            className="text-teal-400 hover:text-teal-300 hover:bg-transparent gap-2"
+            size="sm"
+            variant="ghost"
           >
             <RefreshCw className="h-4 w-4" />
             Refresh
@@ -151,13 +148,13 @@ export function ExecutionFlow({
         )}
         <div className="flex items-center gap-2">
           <Switch
-            id="show-context"
             checked={showContext}
+            id="show-context"
             onCheckedChange={setShowContext}
           />
           <label
+            className="cursor-pointer text-muted-foreground text-sm"
             htmlFor="show-context"
-            className="text-sm text-muted-foreground cursor-pointer"
           >
             Show context
           </label>
@@ -165,29 +162,29 @@ export function ExecutionFlow({
       </div>
 
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onSelectionChange={onSelectionChange}
-        onNodeClick={onNodeClick}
-        onPaneClick={onPaneClick}
-        nodeTypes={nodeTypes}
         defaultEdgeOptions={defaultEdgeOptions}
+        edges={edges}
         fitView
         fitViewOptions={{
           padding: 0.3,
           maxZoom: 1.2,
         }}
-        minZoom={0.3}
         maxZoom={2}
+        minZoom={0.3}
+        nodes={nodes}
+        nodeTypes={nodeTypes}
+        onEdgesChange={onEdgesChange}
+        onNodeClick={onNodeClick}
+        onNodesChange={onNodesChange}
+        onPaneClick={onPaneClick}
+        onSelectionChange={onSelectionChange}
         proOptions={{ hideAttribution: true }}
       >
         <Background
-          variant={BackgroundVariant.Dots}
+          className="!bg-[#1a1f2e]"
           gap={20}
           size={1}
-          className="!bg-[#1a1f2e]"
+          variant={BackgroundVariant.Dots}
         />
         <Controls
           className="!bg-[#1e2433] !border !border-gray-700 !rounded-lg !shadow-sm [&>button]:!bg-[#1e2433] [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"

@@ -30,7 +30,8 @@ export async function sendMessageStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "SLACK_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "SLACK_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 

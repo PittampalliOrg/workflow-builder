@@ -4,13 +4,18 @@
  * A scale-to-zero function that handles email sending via Resend.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { sendEmailStep, type SendEmailInput } from "./steps/send-email.js";
-import type { ExecuteRequest, ExecuteResponse, ResendCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import { type SendEmailInput, sendEmailStep } from "./steps/send-email.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  ResendCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -31,7 +36,9 @@ const ExecuteRequestSchema = z.object({
   credentials: z.record(z.string(), z.string()).optional(),
 });
 
-function normalizeInput(input: Record<string, unknown>): Record<string, unknown> {
+function normalizeInput(
+  input: Record<string, unknown>
+): Record<string, unknown> {
   const normalized = { ...input };
 
   // Handle common aliases
@@ -68,17 +75,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -97,14 +104,18 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-resend] Received request for step: ${body.step}`);
-    console.log(`[fn-resend] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-resend] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: ResendCredentials = {
       RESEND_API_KEY: body.credentials?.RESEND_API_KEY,
       RESEND_FROM_EMAIL: body.credentials?.RESEND_FROM_EMAIL,
     };
 
-    const normalizedInput = normalizeInput(body.input as Record<string, unknown>);
+    const normalizedInput = normalizeInput(
+      body.input as Record<string, unknown>
+    );
 
     // Add execution_id as idempotency key if not provided
     if (!normalizedInput.idempotencyKey) {
@@ -114,7 +125,7 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "send-email":
+      case "send-email": {
         const sendResult = await sendEmailStep(
           normalizedInput as SendEmailInput,
           credentials
@@ -125,6 +136,7 @@ async function main() {
           result = { success: false, error: sendResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -141,7 +153,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-resend] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-resend] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

@@ -7,11 +7,11 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
 import {
+  type DaprPhase,
   daprInstanceIdAtom,
   daprMessageAtom,
   daprPhaseAtom,
   daprProgressAtom,
-  type DaprPhase,
   nodesAtom,
   updateNodeDataAtom,
 } from "@/lib/workflow-store";
@@ -47,7 +47,7 @@ export function DaprWorkflowMonitor({
   const [phase, setPhase] = useAtom(daprPhaseAtom);
   const [progress, setProgress] = useAtom(daprProgressAtom);
   const [message, setMessage] = useAtom(daprMessageAtom);
-  const setInstanceId = useSetAtom(daprInstanceIdAtom);
+  const _setInstanceId = useSetAtom(daprInstanceIdAtom);
   const updateNodeData = useSetAtom(updateNodeDataAtom);
   const [nodes] = useAtom(nodesAtom);
   const [isApproving, setIsApproving] = useState(false);
@@ -75,8 +75,7 @@ export function DaprWorkflowMonitor({
             updateNodeData({
               id: node.id,
               data: {
-                status:
-                  currentPhase === "completed" ? "success" : "idle",
+                status: currentPhase === "completed" ? "success" : "idle",
               },
             });
           }
@@ -86,7 +85,10 @@ export function DaprWorkflowMonitor({
               id: node.id,
               data: { status: "running" },
             });
-          } else if (currentPhase === "executing" || currentPhase === "completed") {
+          } else if (
+            currentPhase === "executing" ||
+            currentPhase === "completed"
+          ) {
             updateNodeData({
               id: node.id,
               data: { status: "success" },
@@ -100,7 +102,9 @@ export function DaprWorkflowMonitor({
 
   // Connect to SSE event stream
   useEffect(() => {
-    if (!executionId) return;
+    if (!executionId) {
+      return;
+    }
 
     const eventSource = new EventSource(
       `/api/dapr/workflows/${executionId}/events`
@@ -118,9 +122,9 @@ export function DaprWorkflowMonitor({
           setMessage(data.message || "");
           updateNodeStatuses(data.phase || "", data.currentActivity);
         } else if (data.type === "complete") {
-          const finalPhase = (data.daprStatus === "COMPLETED"
-            ? "completed"
-            : "failed") as DaprPhase;
+          const finalPhase = (
+            data.daprStatus === "COMPLETED" ? "completed" : "failed"
+          ) as DaprPhase;
           setPhase(finalPhase);
           setProgress(data.progress || 100);
           setMessage(data.message || "");
@@ -147,7 +151,6 @@ export function DaprWorkflowMonitor({
     setPhase,
     setProgress,
     setMessage,
-    setInstanceId,
     updateNodeStatuses,
     onComplete,
   ]);
@@ -156,22 +159,17 @@ export function DaprWorkflowMonitor({
     setIsApproving(true);
     try {
       await api.dapr.approve(executionId, approved);
-      toast.success(
-        approved ? "Workflow approved" : "Workflow rejected"
-      );
+      toast.success(approved ? "Workflow approved" : "Workflow rejected");
     } catch (error) {
       toast.error(
-        error instanceof Error
-          ? error.message
-          : "Failed to process approval"
+        error instanceof Error ? error.message : "Failed to process approval"
       );
     } finally {
       setIsApproving(false);
     }
   };
 
-  const phaseLabel =
-    PHASE_LABELS[phase || ""] || phase || "Initializing...";
+  const phaseLabel = PHASE_LABELS[phase || ""] || phase || "Initializing...";
   const isComplete = phase === "completed" || phase === "failed";
 
   return (
@@ -181,9 +179,7 @@ export function DaprWorkflowMonitor({
         {!isComplete && (
           <Loader2 className="size-4 animate-spin text-muted-foreground" />
         )}
-        {phase === "completed" && (
-          <Check className="size-4 text-green-500" />
-        )}
+        {phase === "completed" && <Check className="size-4 text-green-500" />}
         {phase === "failed" && <X className="size-4 text-red-500" />}
         <span className="font-medium text-sm">{phaseLabel}</span>
       </div>
@@ -199,9 +195,7 @@ export function DaprWorkflowMonitor({
       )}
 
       {/* Status message */}
-      {message && (
-        <p className="text-muted-foreground text-xs">{message}</p>
-      )}
+      {message && <p className="text-muted-foreground text-xs">{message}</p>}
 
       {/* Approval buttons */}
       {phase === "awaiting_approval" && (

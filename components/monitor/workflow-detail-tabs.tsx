@@ -10,37 +10,40 @@
  * - Relationships tab: (placeholder for future implementation)
  */
 
-import { useState, useMemo } from "react";
-import { GitBranch, History, Network, ListTodo } from "lucide-react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { GitBranch, History, ListTodo, Network } from "lucide-react";
+import { useMemo, useState } from "react";
 import {
-  ResizablePanelGroup,
-  ResizablePanel,
   ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
 } from "@/components/ui/resizable";
-import { ExecutionHistoryTable } from "./execution-history-table";
-import { ExecutionFlow } from "./execution-flow";
-import { EventDetailsPanel } from "./event-details-panel";
-import { TaskDagGraph } from "./task-dag-graph";
-import { TaskListPanel } from "./task-list-panel";
-import type { DaprExecutionEvent, DaprAgentTask } from "@/lib/types/workflow-ui";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   isDaprAgentOutput,
   parseDaprAgentOutput,
 } from "@/lib/transforms/workflow-ui";
+import type {
+  DaprAgentTask,
+  DaprExecutionEvent,
+} from "@/lib/types/workflow-ui";
+import { EventDetailsPanel } from "./event-details-panel";
+import { ExecutionFlow } from "./execution-flow";
+import { ExecutionHistoryTable } from "./execution-history-table";
+import { TaskDagGraph } from "./task-dag-graph";
+import { TaskListPanel } from "./task-list-panel";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface WorkflowDetailTabsProps {
+type WorkflowDetailTabsProps = {
   events: DaprExecutionEvent[];
   /** Optional workflow output - if DaprAgentOutput, shows Tasks tab */
   output?: unknown;
   /** Raw DaprAgentOutput preserved from API */
   daprAgentOutput?: unknown;
   defaultTab?: "graph" | "history" | "tasks" | "relationships";
-}
+};
 
 // ============================================================================
 // Placeholder Components
@@ -49,11 +52,11 @@ interface WorkflowDetailTabsProps {
 function RelationshipsPlaceholder() {
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
-      <div className="rounded-full bg-muted p-4 mb-4">
+      <div className="mb-4 rounded-full bg-muted p-4">
         <Network className="h-8 w-8 text-muted-foreground" />
       </div>
-      <h3 className="text-lg font-medium">Relationships</h3>
-      <p className="text-sm text-muted-foreground mt-1 max-w-md">
+      <h3 className="font-medium text-lg">Relationships</h3>
+      <p className="mt-1 max-w-md text-muted-foreground text-sm">
         View workflow dependencies and related executions in a future update.
       </p>
     </div>
@@ -64,21 +67,21 @@ function RelationshipsPlaceholder() {
 // Tasks Tab Content
 // ============================================================================
 
-interface TasksTabContentProps {
+type TasksTabContentProps = {
   tasks: DaprAgentTask[];
-}
+};
 
 function TasksTabContent({ tasks }: TasksTabContentProps) {
-  const [selectedTask, setSelectedTask] = useState<DaprAgentTask | null>(null);
+  const [, setSelectedTask] = useState<DaprAgentTask | null>(null);
 
   if (tasks.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
-        <div className="rounded-full bg-muted p-4 mb-4">
+        <div className="mb-4 rounded-full bg-muted p-4">
           <ListTodo className="h-8 w-8 text-muted-foreground" />
         </div>
-        <h3 className="text-lg font-medium">No Tasks</h3>
-        <p className="text-sm text-muted-foreground mt-1 max-w-md">
+        <h3 className="font-medium text-lg">No Tasks</h3>
+        <p className="mt-1 max-w-md text-muted-foreground text-sm">
           This workflow does not have any tasks to display.
         </p>
       </div>
@@ -88,22 +91,21 @@ function TasksTabContent({ tasks }: TasksTabContentProps) {
   return (
     <div className="space-y-6">
       {/* Task DAG Graph */}
-      <div className="rounded-lg border border-gray-700 bg-[#1a1f2e] overflow-hidden">
-        <div className="px-4 py-2 border-b border-gray-700">
-          <span className="text-sm font-medium text-gray-300">
+      <div className="overflow-hidden rounded-lg border border-gray-700 bg-[#1a1f2e]">
+        <div className="border-gray-700 border-b px-4 py-2">
+          <span className="font-medium text-gray-300 text-sm">
             Task Dependency Graph
           </span>
         </div>
         <TaskDagGraph
-          tasks={tasks}
-          onTaskSelect={setSelectedTask}
-          selectedTaskId={selectedTask?.id}
           className="h-[350px]"
+          onTaskSelect={setSelectedTask}
+          tasks={tasks}
         />
       </div>
 
       {/* Task List */}
-      <TaskListPanel tasks={tasks} defaultExpanded={false} />
+      <TaskListPanel defaultExpanded={false} tasks={tasks} />
     </div>
   );
 }
@@ -134,46 +136,45 @@ export function WorkflowDetailTabs({
   const hasTasks = tasks.length > 0;
 
   // Determine grid columns based on whether tasks tab exists
-  const tabCount = hasTasks ? 4 : 3;
+  const _tabCount = hasTasks ? 4 : 3;
   const gridColsClass = hasTasks ? "grid-cols-4" : "grid-cols-3";
 
   return (
-    <Tabs defaultValue={defaultTab} className="w-full">
+    <Tabs className="w-full" defaultValue={defaultTab}>
       <TabsList className={`grid w-full ${gridColsClass} max-w-lg`}>
-        <TabsTrigger value="graph" className="gap-2">
+        <TabsTrigger className="gap-2" value="graph">
           <GitBranch className="h-4 w-4" />
           Graph
         </TabsTrigger>
-        <TabsTrigger value="history" className="gap-2">
+        <TabsTrigger className="gap-2" value="history">
           <History className="h-4 w-4" />
           History
         </TabsTrigger>
         {hasTasks && (
-          <TabsTrigger value="tasks" className="gap-2">
+          <TabsTrigger className="gap-2" value="tasks">
             <ListTodo className="h-4 w-4" />
             Tasks
           </TabsTrigger>
         )}
-        <TabsTrigger value="relationships" className="gap-2">
+        <TabsTrigger className="gap-2" value="relationships">
           <Network className="h-4 w-4" />
           Relationships
         </TabsTrigger>
       </TabsList>
 
-      <TabsContent value="graph" className="mt-6">
-        <ResizablePanelGroup direction="horizontal" className="min-h-[500px]">
+      <TabsContent className="mt-6" value="graph">
+        <ResizablePanelGroup className="min-h-[500px]" direction="horizontal">
           <ResizablePanel defaultSize={selectedEvent ? 65 : 100} minSize={40}>
             <ExecutionFlow
+              className="h-full"
               events={events}
               onEventSelect={setSelectedEvent}
-              selectedEventId={selectedEvent?.eventId}
-              className="h-full"
             />
           </ResizablePanel>
           {selectedEvent && (
             <>
               <ResizableHandle withHandle />
-              <ResizablePanel defaultSize={35} minSize={25} maxSize={50}>
+              <ResizablePanel defaultSize={35} maxSize={50} minSize={25}>
                 <EventDetailsPanel
                   event={selectedEvent}
                   onClose={() => setSelectedEvent(null)}
@@ -184,9 +185,9 @@ export function WorkflowDetailTabs({
         </ResizablePanelGroup>
       </TabsContent>
 
-      <TabsContent value="history" className="mt-6">
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-sm text-muted-foreground">
+      <TabsContent className="mt-6" value="history">
+        <div className="mb-4 flex items-center justify-between">
+          <span className="text-muted-foreground text-sm">
             {events.length} events
           </span>
         </div>
@@ -194,12 +195,12 @@ export function WorkflowDetailTabs({
       </TabsContent>
 
       {hasTasks && (
-        <TabsContent value="tasks" className="mt-6">
+        <TabsContent className="mt-6" value="tasks">
           <TasksTabContent tasks={tasks} />
         </TabsContent>
       )}
 
-      <TabsContent value="relationships" className="mt-6">
+      <TabsContent className="mt-6" value="relationships">
         <RelationshipsPlaceholder />
       </TabsContent>
     </Tabs>

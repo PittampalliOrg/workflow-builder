@@ -14,22 +14,22 @@ const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 /**
  * Input for the publish event activity
  */
-export interface PublishEventInput {
+export type PublishEventInput = {
   topic: string;
   eventType: string;
   data: Record<string, unknown>;
   metadata?: Record<string, string>;
-}
+};
 
 /**
  * Output from the publish event activity
  */
-export interface PublishEventOutput {
+export type PublishEventOutput = {
   success: boolean;
   topic: string;
   eventType: string;
   error?: string;
-}
+};
 
 /**
  * Publish an event to the specified topic
@@ -72,8 +72,7 @@ export async function publishEvent(
       eventType,
     };
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
 
     console.error(
       `[Publish Event] Failed to publish ${eventType} to ${topic}:`,
@@ -112,11 +111,11 @@ export const WORKFLOW_EVENTS_TOPIC = "workflow.events";
 /**
  * Input for workflow started event
  */
-export interface WorkflowStartedInput {
+export type WorkflowStartedInput = {
   workflowId: string;
   executionId: string;
   workflowName: string;
-}
+};
 
 /**
  * Publish a workflow started event
@@ -140,11 +139,11 @@ export async function publishWorkflowStarted(
 /**
  * Input for workflow completed event
  */
-export interface WorkflowCompletedInput {
+export type WorkflowCompletedInput = {
   workflowId: string;
   executionId: string;
   outputs: Record<string, unknown>;
-}
+};
 
 /**
  * Publish a workflow completed event
@@ -168,11 +167,11 @@ export async function publishWorkflowCompleted(
 /**
  * Input for workflow failed event
  */
-export interface WorkflowFailedInput {
+export type WorkflowFailedInput = {
   workflowId: string;
   executionId: string;
   error: string;
-}
+};
 
 /**
  * Publish a workflow failed event
@@ -196,13 +195,13 @@ export async function publishWorkflowFailed(
 /**
  * Input for phase changed event
  */
-export interface PhaseChangedInput {
+export type PhaseChangedInput = {
   workflowId: string;
   executionId: string;
   phase: WorkflowPhase;
   progress: number;
   message?: string;
-}
+};
 
 /**
  * Publish a phase change event
@@ -228,14 +227,14 @@ export async function publishPhaseChanged(
 /**
  * Input for approval requested event
  */
-export interface ApprovalRequestedInput {
+export type ApprovalRequestedInput = {
   workflowId: string;
   executionId: string;
   nodeId: string;
   nodeName: string;
   eventName: string;
   timeoutSeconds: number;
-}
+};
 
 /**
  * Publish an approval requested event
@@ -254,7 +253,9 @@ export async function publishApprovalRequested(
       nodeName: input.nodeName,
       eventName: input.eventName,
       timeoutSeconds: input.timeoutSeconds,
-      expiresAt: new Date(Date.now() + input.timeoutSeconds * 1000).toISOString(),
+      expiresAt: new Date(
+        Date.now() + input.timeoutSeconds * 1000
+      ).toISOString(),
       timestamp: new Date().toISOString(),
     },
   });

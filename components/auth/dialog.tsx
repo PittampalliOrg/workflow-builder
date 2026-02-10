@@ -87,7 +87,7 @@ const EmailIcon = () => (
 type Provider = "email" | "github" | "google";
 
 const getProviderIcon = (provider: Provider, compact = false) => {
-  const iconClass = compact ? "size-3.5" : undefined;
+  const _iconClass = compact ? "size-3.5" : undefined;
   switch (provider) {
     case "github":
       return <GitHubIcon />;
@@ -253,9 +253,7 @@ const SocialButtons = ({
 );
 
 type UseAuthHandlers = {
-  handleSocialSignIn: (
-    provider: "github" | "google"
-  ) => Promise<void>;
+  handleSocialSignIn: (provider: "github" | "google") => Promise<void>;
   handleEmailAuth: (e: React.FormEvent) => Promise<void>;
   toggleMode: () => void;
 };
@@ -285,9 +283,7 @@ const useAuthHandlers = (options: AuthHandlersOptions): UseAuthHandlers => {
     setOpen,
   } = options;
 
-  const handleSocialSignIn = async (
-    provider: "github" | "google"
-  ) => {
+  const handleSocialSignIn = async (provider: "github" | "google") => {
     try {
       setLoadingProvider(provider);
       await signIn.social({ provider, callbackURL: window.location.pathname });
@@ -510,9 +506,7 @@ const MultiProviderDialog = ({
   onToggleMode,
   onSignIn,
 }: MultiProviderDialogProps) => {
-  const hasSocialProviders =
-    enabledProviders.github ||
-    enabledProviders.google;
+  const hasSocialProviders = enabledProviders.github || enabledProviders.google;
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>

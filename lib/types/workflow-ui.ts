@@ -37,17 +37,17 @@ export type DaprExecutionEventType =
 /**
  * Metadata for execution events
  */
-export interface DaprExecutionEventMetadata {
+export type DaprExecutionEventMetadata = {
   elapsed?: string;
   executionDuration?: string;
   status?: string;
   taskId?: string;
-}
+};
 
 /**
  * Execution event for history table
  */
-export interface DaprExecutionEvent {
+export type DaprExecutionEvent = {
   eventId: number | null;
   eventType: DaprExecutionEventType;
   name: string | null;
@@ -55,7 +55,7 @@ export interface DaprExecutionEvent {
   input?: unknown;
   output?: unknown;
   metadata?: DaprExecutionEventMetadata;
-}
+};
 
 // ============================================================================
 // Workflow Name Stats Types
@@ -65,14 +65,14 @@ export interface DaprExecutionEvent {
  * Aggregated statistics for a workflow type (name + appId combination)
  * Used in the "Workflow names" tab to show summary stats
  */
-export interface WorkflowNameStats {
+export type WorkflowNameStats = {
   name: string; // workflowType
   appId: string;
   totalExecutions: number;
   runningCount: number;
   successCount: number;
   failedCount: number;
-}
+};
 
 // ============================================================================
 // Token Usage Types
@@ -81,11 +81,11 @@ export interface WorkflowNameStats {
 /**
  * Token usage metrics for AI workflows
  */
-export interface TokenUsage {
+export type TokenUsage = {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-}
+};
 
 // ============================================================================
 // Dapr Agent Task Types
@@ -94,12 +94,16 @@ export interface TokenUsage {
 /**
  * Status of a Dapr agent task
  */
-export type DaprAgentTaskStatus = "pending" | "in_progress" | "completed" | "failed";
+export type DaprAgentTaskStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed";
 
 /**
  * A task in the Dapr agent workflow
  */
-export interface DaprAgentTask {
+export type DaprAgentTask = {
   id: string;
   title: string;
   subject: string;
@@ -112,7 +116,7 @@ export interface DaprAgentTask {
   startedAt?: string;
   completedAt?: string;
   error?: string;
-}
+};
 
 /**
  * Get status color class for task status
@@ -157,12 +161,12 @@ export function getTaskStatusBgColor(status: DaprAgentTaskStatus): string {
 /**
  * Trace metadata for observability
  */
-export interface TraceMetadata {
+export type TraceMetadata = {
   trace_id?: string;
   agent_span_id?: string;
   workflow_name?: string;
   metadata?: Record<string, unknown>;
-}
+};
 
 // ============================================================================
 // Custom Status Types (for workflow phases)
@@ -184,13 +188,13 @@ export type WorkflowPhase =
  * Custom status from workflow
  * Contains phase, progress, and human-readable message
  */
-export interface WorkflowCustomStatus {
+export type WorkflowCustomStatus = {
   phase: WorkflowPhase;
   progress: number; // 0-100
   message: string;
   plan_id?: string;
   currentTask?: string; // Currently executing task title
-}
+};
 
 // ============================================================================
 // Workflow List Types
@@ -199,7 +203,7 @@ export interface WorkflowCustomStatus {
 /**
  * List item for table view (summary)
  */
-export interface WorkflowListItem {
+export type WorkflowListItem = {
   instanceId: string;
   workflowType: string; // e.g., "planExecutionWorkflow", "planningAndExecutionWorkflow"
   appId: string; // e.g., "workflow-orchestrator", "workflow-builder"
@@ -210,7 +214,7 @@ export interface WorkflowListItem {
   customStatus?: WorkflowCustomStatus;
   /** Workflow name from workflows table */
   workflowName?: string;
-}
+};
 
 // ============================================================================
 // Dapr Runtime Status Types
@@ -231,7 +235,7 @@ export type DaprRuntimeStatus =
 /**
  * Real-time Dapr workflow status (fetched from orchestrator)
  */
-export interface DaprWorkflowRuntimeStatus {
+export type DaprWorkflowRuntimeStatus = {
   runtimeStatus: DaprRuntimeStatus;
   phase?: string;
   progress?: number;
@@ -239,7 +243,7 @@ export interface DaprWorkflowRuntimeStatus {
   currentNodeId?: string;
   currentNodeName?: string;
   error?: string;
-}
+};
 
 // ============================================================================
 // Workflow Detail Types
@@ -264,11 +268,11 @@ export interface WorkflowDetail extends WorkflowListItem {
 /**
  * Filter options for workflow list
  */
-export interface WorkflowFilters {
+export type WorkflowFilters = {
   search?: string;
   status?: WorkflowUIStatus[];
   appId?: string;
-}
+};
 
 // ============================================================================
 // Helper Functions

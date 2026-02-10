@@ -6,8 +6,8 @@
  * Panel showing recent workflow executions with navigation.
  */
 
+import { Check, ChevronRight, Circle } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Check, Circle, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,20 +17,22 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { getStatusVariant, type WorkflowListItem } from "@/lib/types/workflow-ui";
 import { calculateDuration } from "@/lib/transforms/workflow-ui";
+import {
+  getStatusVariant,
+  type WorkflowListItem,
+} from "@/lib/types/workflow-ui";
 import { cn } from "@/lib/utils";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface LatestExecutionsPanelProps {
+type LatestExecutionsPanelProps = {
   executions: WorkflowListItem[];
   workflowName: string;
-  appId: string;
   isLoading?: boolean;
-}
+};
 
 // ============================================================================
 // Skeleton Component
@@ -43,8 +45,11 @@ function LatestExecutionsPanelSkeleton() {
         <Skeleton className="h-5 w-40" />
       </CardHeader>
       <CardContent className="space-y-3">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div key={i} className="flex items-center justify-between p-3 rounded-lg border">
+        {["1", "2", "3", "4", "5"].map((k) => (
+          <div
+            className="flex items-center justify-between rounded-lg border p-3"
+            key={k}
+          >
             <div className="space-y-2">
               <Skeleton className="h-4 w-24" />
               <Skeleton className="h-3 w-16" />
@@ -61,10 +66,10 @@ function LatestExecutionsPanelSkeleton() {
 // Execution Item Component
 // ============================================================================
 
-interface ExecutionItemProps {
+type ExecutionItemProps = {
   execution: WorkflowListItem;
   onClick: () => void;
-}
+};
 
 function ExecutionItem({ execution, onClick }: ExecutionItemProps) {
   const duration = execution.endTime
@@ -72,45 +77,45 @@ function ExecutionItem({ execution, onClick }: ExecutionItemProps) {
     : calculateDuration(execution.startTime); // Running duration
 
   return (
-    <div
-      className="flex items-center justify-between p-3 rounded-lg border hover:bg-muted/50 cursor-pointer transition-colors"
+    <button
+      className="flex w-full cursor-pointer items-center justify-between rounded-lg border p-3 text-left transition-colors hover:bg-muted/50"
       onClick={onClick}
+      type="button"
     >
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex min-w-0 items-center gap-3">
         <div className="min-w-0">
           <Tooltip>
             <TooltipTrigger asChild>
-              <p className="font-mono text-sm truncate">
+              <p className="truncate font-mono text-sm">
                 {execution.instanceId.substring(0, 12)}...
               </p>
             </TooltipTrigger>
-            <TooltipContent side="top" className="font-mono text-xs">
+            <TooltipContent className="font-mono text-xs" side="top">
               {execution.instanceId}
             </TooltipContent>
           </Tooltip>
-          <p className="text-xs text-muted-foreground">
-            {duration || "-"}
-          </p>
+          <p className="text-muted-foreground text-xs">{duration || "-"}</p>
         </div>
       </div>
       <div className="flex items-center gap-2">
         <Badge
-          variant={getStatusVariant(execution.status)}
           className={cn(
             "gap-1 text-xs",
-            execution.status === "COMPLETED" && "bg-green-600 hover:bg-green-700",
+            execution.status === "COMPLETED" &&
+              "bg-green-600 hover:bg-green-700",
             execution.status === "RUNNING" && "bg-amber-500 hover:bg-amber-600"
           )}
+          variant={getStatusVariant(execution.status)}
         >
           {execution.status === "COMPLETED" && <Check className="h-3 w-3" />}
           {execution.status === "RUNNING" && (
-            <Circle className="h-2 w-2 fill-current animate-pulse" />
+            <Circle className="h-2 w-2 animate-pulse fill-current" />
           )}
           {execution.status}
         </Badge>
         <ChevronRight className="h-4 w-4 text-muted-foreground" />
       </div>
-    </div>
+    </button>
   );
 }
 
@@ -121,7 +126,6 @@ function ExecutionItem({ execution, onClick }: ExecutionItemProps) {
 export function LatestExecutionsPanel({
   executions,
   workflowName,
-  appId,
   isLoading,
 }: LatestExecutionsPanelProps) {
   const router = useRouter();
@@ -149,10 +153,10 @@ export function LatestExecutionsPanel({
             Latest {executions.length} executions
           </CardTitle>
           <Button
-            variant="link"
-            size="sm"
-            className="text-cyan-500 hover:text-cyan-400 p-0 h-auto"
+            className="h-auto p-0 text-cyan-500 hover:text-cyan-400"
             onClick={handleSeeAllClick}
+            size="sm"
+            variant="link"
           >
             See all executions
           </Button>
@@ -160,14 +164,14 @@ export function LatestExecutionsPanel({
       </CardHeader>
       <CardContent className="space-y-2">
         {executions.length === 0 ? (
-          <p className="text-center text-muted-foreground py-4">
+          <p className="py-4 text-center text-muted-foreground">
             No executions found
           </p>
         ) : (
           executions.map((execution) => (
             <ExecutionItem
-              key={execution.instanceId}
               execution={execution}
+              key={execution.instanceId}
               onClick={() => handleExecutionClick(execution.instanceId)}
             />
           ))

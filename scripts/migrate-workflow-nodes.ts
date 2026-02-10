@@ -14,8 +14,9 @@
  * 3. Uses mapping rules for legacy action names
  * 4. Updates workflows in place (unless --dry-run is specified)
  */
-import { drizzle } from "drizzle-orm/postgres-js";
+
 import { sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 
 // Import the legacy mappings
@@ -46,7 +47,9 @@ const SYSTEM_ACTION_MAPPINGS: Record<string, string> = {
  * 4. Fuzzy match (lowercase, normalize separators)
  */
 function normalizeToSlug(actionType: string): string | null {
-  if (!actionType) return null;
+  if (!actionType) {
+    return null;
+  }
 
   // Already a slug format (e.g., "openai/generate-text")
   if (actionType.includes("/")) {
@@ -95,7 +98,7 @@ function normalizeToSlug(actionType: string): string | null {
   return null;
 }
 
-interface WorkflowNode {
+type WorkflowNode = {
   id: string;
   type?: string; // React Flow node type
   data: {
@@ -103,28 +106,31 @@ interface WorkflowNode {
     label?: string;
     config?: Record<string, unknown>;
   };
-}
+};
 
-interface WorkflowRow {
+type WorkflowRow = {
   id: string;
   name: string;
   nodes: WorkflowNode[];
-}
+};
 
 /**
  * Migrate a single workflow's nodes
  */
-function migrateWorkflowNodes(
-  nodes: WorkflowNode[]
-): { nodes: WorkflowNode[]; changes: number } {
+function migrateWorkflowNodes(nodes: WorkflowNode[]): {
+  nodes: WorkflowNode[];
+  changes: number;
+} {
   let changes = 0;
 
   const migratedNodes = nodes.map((node) => {
     // Handle both 'action' and 'activity' node types for function execution
     // Check BOTH node.type (React Flow) and node.data.type
     const isActivityOrAction =
-      node.type === "activity" || node.type === "action" ||
-      node.data?.type === "activity" || node.data?.type === "action";
+      node.type === "activity" ||
+      node.type === "action" ||
+      node.data?.type === "activity" ||
+      node.data?.type === "action";
 
     if (!isActivityOrAction) {
       return node;
@@ -132,11 +138,16 @@ function migrateWorkflowNodes(
 
     const config = node.data.config || {};
     // Check activityName (legacy field) and actionType (for action nodes)
-    const actionType = (config.activityName || config.actionType || node.data.label) as string | undefined;
+    const actionType = (config.activityName ||
+      config.actionType ||
+      node.data.label) as string | undefined;
     const existingSlug = config.functionSlug as string | undefined;
 
     // If this is an activity node with a functionSlug, convert it to an action node
-    if ((node.type === "activity" || node.data?.type === "activity") && existingSlug) {
+    if (
+      (node.type === "activity" || node.data?.type === "activity") &&
+      existingSlug
+    ) {
       changes++;
       return {
         ...node,
@@ -156,7 +167,11 @@ function migrateWorkflowNodes(
     }
 
     // If this is an activity node with activityName but no functionSlug, migrate it
-    if ((node.type === "activity" || node.data?.type === "activity") && actionType && !existingSlug) {
+    if (
+      (node.type === "activity" || node.data?.type === "activity") &&
+      actionType &&
+      !existingSlug
+    ) {
       const functionSlug = normalizeToSlug(actionType);
       if (!functionSlug) {
         return node;
@@ -180,7 +195,10 @@ function migrateWorkflowNodes(
     }
 
     // For action nodes with functionSlug, convert functionSlug to actionType
-    if ((node.type === "action" || node.data?.type === "action") && existingSlug) {
+    if (
+      (node.type === "action" || node.data?.type === "action") &&
+      existingSlug
+    ) {
       changes++;
       return {
         ...node,
@@ -197,7 +215,11 @@ function migrateWorkflowNodes(
     }
 
     // For action nodes without functionSlug, normalize actionType
-    if ((node.type === "action" || node.data?.type === "action") && actionType && !existingSlug) {
+    if (
+      (node.type === "action" || node.data?.type === "action") &&
+      actionType &&
+      !existingSlug
+    ) {
       const functionSlug = normalizeToSlug(actionType);
       if (!functionSlug) {
         return node;
@@ -278,7 +300,10 @@ async function migrateWorkflows() {
         const migratedNode = migratedNodes[i];
 
         // Log type changes
-        if (originalNode.data?.type === "activity" && migratedNode.data?.type === "action") {
+        if (
+          originalNode.data?.type === "activity" &&
+          migratedNode.data?.type === "action"
+        ) {
           const actionType = migratedNode.data.config?.actionType;
           console.log(
             `   - Activity node "${originalNode.data.label}" → Action node "${actionType}"`
@@ -321,7 +346,9 @@ async function migrateWorkflows() {
     console.log(`   Workflows skipped: ${skipped}`);
 
     if (DRY_RUN) {
-      console.log("\n📝 This was a dry run. Run without --dry-run to apply changes.");
+      console.log(
+        "\n📝 This was a dry run. Run without --dry-run to apply changes."
+      );
     }
   } catch (error) {
     console.error("❌ Migration failed:", error);

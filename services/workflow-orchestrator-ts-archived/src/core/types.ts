@@ -21,7 +21,7 @@ export type WorkflowNodeType =
 /**
  * Serialized node format for workflow definitions
  */
-export interface SerializedNode {
+export type SerializedNode = {
   id: string;
   type: WorkflowNodeType;
   label: string;
@@ -29,23 +29,23 @@ export interface SerializedNode {
   enabled: boolean;
   position: { x: number; y: number };
   config: Record<string, unknown>;
-}
+};
 
 /**
  * Serialized edge format for workflow definitions
  */
-export interface SerializedEdge {
+export type SerializedEdge = {
   id: string;
   source: string;
   target: string;
   sourceHandle?: string | null;
   targetHandle?: string | null;
-}
+};
 
 /**
  * Complete workflow definition that can be stored and executed
  */
-export interface WorkflowDefinition {
+export type WorkflowDefinition = {
   id: string;
   name: string;
   version: string;
@@ -61,7 +61,7 @@ export interface WorkflowDefinition {
     author?: string;
     tags?: string[];
   };
-}
+};
 
 /**
  * Workflow execution phases
@@ -79,42 +79,42 @@ export type WorkflowPhase =
 /**
  * Input to the dynamic workflow function
  */
-export interface DynamicWorkflowInput {
+export type DynamicWorkflowInput = {
   definition: WorkflowDefinition;
   triggerData: Record<string, unknown>;
   integrations?: Record<string, Record<string, string>>;
   /** Database execution ID for logging (links to workflow_executions.id) */
   dbExecutionId?: string;
-}
+};
 
 /**
  * Output from the dynamic workflow function
  */
-export interface DynamicWorkflowOutput {
+export type DynamicWorkflowOutput = {
   success: boolean;
   outputs: Record<string, unknown>;
   error?: string;
   durationMs: number;
   phase: WorkflowPhase;
-}
+};
 
 /**
  * Custom status stored in Dapr workflow state
  */
-export interface WorkflowCustomStatus {
+export type WorkflowCustomStatus = {
   phase: WorkflowPhase;
   progress: number; // 0-100
   message?: string;
   currentNodeId?: string;
   currentNodeName?: string;
-}
+};
 
 /**
  * Activity execution request sent to the activity-executor service
  * @deprecated Use function-router format instead (same as ExecuteRequest)
  * This interface is kept for backwards compatibility only.
  */
-export interface ActivityExecutionRequest {
+export type ActivityExecutionRequest = {
   activity_id: string; // e.g., "slack/send-message"
   execution_id: string;
   workflow_id: string;
@@ -123,44 +123,44 @@ export interface ActivityExecutionRequest {
   input: Record<string, unknown>;
   node_outputs?: Record<string, { label: string; data: unknown }>;
   integration_id?: string;
-}
+};
 
 /**
  * Activity execution result from the activity-executor service
  */
-export interface ActivityExecutionResult {
+export type ActivityExecutionResult = {
   success: boolean;
   data?: unknown;
   error?: string;
   duration_ms: number;
-}
+};
 
 /**
  * Approval gate configuration
  */
-export interface ApprovalGateConfig {
+export type ApprovalGateConfig = {
   eventName: string;
   timeoutSeconds?: number;
   timeoutHours?: number;
   approvers?: string[];
   message?: string;
-}
+};
 
 /**
  * Timer configuration
  */
-export interface TimerConfig {
+export type TimerConfig = {
   durationSeconds?: number;
   durationMinutes?: number;
   durationHours?: number;
-}
+};
 
 /**
  * Action node configuration
  */
-export interface ActionNodeConfig {
+export type ActionNodeConfig = {
   actionId?: string;
   activityName?: string;
   integrationId?: string;
   [key: string]: unknown;
-}
+};

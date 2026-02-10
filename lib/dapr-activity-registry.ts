@@ -14,14 +14,8 @@
  * and planner-agent specific activities.
  */
 
-import type {
-  ActionConfigFieldBase,
-  OutputField,
-} from "@/plugins/registry";
-import {
-  getAllActions,
-  type ActionWithFullId,
-} from "@/plugins/registry";
+import type { ActionConfigFieldBase, OutputField } from "@/plugins/registry";
+import { type ActionWithFullId, getAllActions } from "@/plugins/registry";
 
 export type DaprActivityConfigField = ActionConfigFieldBase;
 
@@ -101,7 +95,9 @@ function pluginActionToDaprActivity(action: ActionWithFullId): DaprActivity {
     serviceMethod: "POST /execute",
     timeout: 300, // 5 minute default timeout for plugin activities
     inputFields: action.configFields
-      .filter((field): field is DaprActivityConfigField => field.type !== "group")
+      .filter(
+        (field): field is DaprActivityConfigField => field.type !== "group"
+      )
       .map((field) => ({
         key: field.key,
         label: field.label,
@@ -133,7 +129,9 @@ export function registerPluginActivities(): void {
     registerDaprActivity(daprActivity);
   }
 
-  console.log(`[Dapr Activity Registry] Registered ${actions.length} plugin activities`);
+  console.log(
+    `[Dapr Activity Registry] Registered ${actions.length} plugin activities`
+  );
 }
 
 /**
@@ -208,7 +206,8 @@ registerDaprActivity({
       key: "node_outputs",
       label: "Node Outputs",
       type: "template-textarea",
-      placeholder: "JSON object with outputs from previous nodes (for template resolution)",
+      placeholder:
+        "JSON object with outputs from previous nodes (for template resolution)",
       rows: 4,
     },
     {
@@ -370,7 +369,8 @@ registerDaprActivity({
       key: "event_type",
       label: "Event Type",
       type: "template-input",
-      placeholder: "e.g. initial, task_progress, execution_started, execution_completed",
+      placeholder:
+        "e.g. initial, task_progress, execution_started, execution_completed",
     },
     {
       key: "data",

@@ -5,15 +5,12 @@
  * - Authorization: Bearer <token> header (API routes)
  * - wb_access_token cookie (SSR server components)
  */
+
+import { eq } from "drizzle-orm";
 import { cookies } from "next/headers";
-import {
-  ACCESS_TOKEN_COOKIE,
-  type TokenPayload,
-  verifyAccessToken,
-} from "./auth-service";
+import { ACCESS_TOKEN_COOKIE, verifyAccessToken } from "./auth-service";
 import { db } from "./db";
 import { users } from "./db/schema";
-import { eq } from "drizzle-orm";
 
 export type SessionUser = {
   id: string;
@@ -61,7 +58,9 @@ export async function getSessionFromCookie(): Promise<Session | null> {
   try {
     const cookieStore = await cookies();
     const token = cookieStore.get(ACCESS_TOKEN_COOKIE)?.value;
-    if (!token) return null;
+    if (!token) {
+      return null;
+    }
     return verifyAndBuildSession(token);
   } catch {
     return null;
@@ -73,7 +72,9 @@ export async function getSessionFromCookie(): Promise<Session | null> {
  */
 async function verifyAndBuildSession(token: string): Promise<Session | null> {
   const payload = await verifyAccessToken(token);
-  if (!payload) return null;
+  if (!payload) {
+    return null;
+  }
 
   // Look up user data for name/image (not stored in JWT)
   const user = await db
@@ -87,7 +88,9 @@ async function verifyAndBuildSession(token: string): Promise<Session | null> {
     .where(eq(users.id, payload.sub))
     .limit(1);
 
-  if (user.length === 0) return null;
+  if (user.length === 0) {
+    return null;
+  }
 
   return {
     user: {
@@ -112,5 +115,5 @@ function parseCookie(cookieHeader: string, name: string): string | undefined {
       return valueParts.join("=");
     }
   }
-  return undefined;
+  return;
 }

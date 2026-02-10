@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
+import type { SocialProfile } from "@/lib/auth-service";
 import {
-  signInSocial,
   ACCESS_TOKEN_COOKIE,
   REFRESH_TOKEN_COOKIE,
+  signInSocial,
 } from "@/lib/auth-service";
-import type { SocialProfile } from "@/lib/auth-service";
 
 const COOKIE_OPTIONS = {
   httpOnly: true,
@@ -13,14 +13,16 @@ const COOKIE_OPTIONS = {
   path: "/",
 };
 
-const APP_URL =
-  process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
 // ============================================================================
 // GitHub helpers
 // ============================================================================
 
-async function exchangeGitHubCode(code: string, redirectUri: string): Promise<string> {
+async function exchangeGitHubCode(
+  code: string,
+  redirectUri: string
+): Promise<string> {
   const response = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: {
@@ -38,7 +40,9 @@ async function exchangeGitHubCode(code: string, redirectUri: string): Promise<st
   const data = await response.json();
 
   if (data.error) {
-    throw new Error(`GitHub token exchange failed: ${data.error_description || data.error}`);
+    throw new Error(
+      `GitHub token exchange failed: ${data.error_description || data.error}`
+    );
   }
 
   return data.access_token;
@@ -96,7 +100,10 @@ async function fetchGitHubProfile(accessToken: string): Promise<SocialProfile> {
 // Google helpers
 // ============================================================================
 
-async function exchangeGoogleCode(code: string, redirectUri: string): Promise<string> {
+async function exchangeGoogleCode(
+  code: string,
+  redirectUri: string
+): Promise<string> {
   const response = await fetch("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: {
@@ -114,18 +121,23 @@ async function exchangeGoogleCode(code: string, redirectUri: string): Promise<st
   const data = await response.json();
 
   if (data.error) {
-    throw new Error(`Google token exchange failed: ${data.error_description || data.error}`);
+    throw new Error(
+      `Google token exchange failed: ${data.error_description || data.error}`
+    );
   }
 
   return data.access_token;
 }
 
 async function fetchGoogleProfile(accessToken: string): Promise<SocialProfile> {
-  const response = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
+  const response = await fetch(
+    "https://www.googleapis.com/oauth2/v2/userinfo",
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    }
+  );
 
   if (!response.ok) {
     throw new Error("Failed to fetch Google user profile");
@@ -160,7 +172,7 @@ export async function GET(
     const state = url.searchParams.get("state");
 
     // Validate required params
-    if (!code || !state) {
+    if (!(code && state)) {
       return NextResponse.redirect(
         `${APP_URL}/sign-in?error=Missing+code+or+state+parameter`
       );
@@ -232,7 +244,8 @@ export async function GET(
     return response;
   } catch (error) {
     console.error("OAuth callback failed:", error);
-    const errorMessage = error instanceof Error ? error.message : "OAuth+callback+failed";
+    const errorMessage =
+      error instanceof Error ? error.message : "OAuth+callback+failed";
     return NextResponse.redirect(
       `${APP_URL}/sign-in?error=${encodeURIComponent(errorMessage)}`
     );

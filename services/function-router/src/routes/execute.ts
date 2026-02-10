@@ -14,18 +14,37 @@
  * - executionMs: Time for the actual function call
  * - wasColdStart: Detected based on response time anomalies
  */
+
+import { DaprClient, HttpMethod } from "@dapr/dapr";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { DaprClient, HttpMethod } from "@dapr/dapr";
+import {
+  fetchCredentialsWithAudit,
+  fetchRawConnectionValue,
+} from "../core/credential-service.js";
+import {
+  logExecutionComplete,
+  logExecutionStart,
+  type TimingBreakdown,
+} from "../core/execution-logger.js";
+import {
+  getResponseTimeAverage,
+  recordResponseTime,
+  resolveOpenFunctionUrl,
+} from "../core/openfunction-resolver.js";
 import { lookupFunction } from "../core/registry.js";
-import { fetchCredentialsWithAudit, fetchRawConnectionValue } from "../core/credential-service.js";
-import { resolveOpenFunctionUrl, getResponseTimeAverage, recordResponseTime } from "../core/openfunction-resolver.js";
-import { logExecutionStart, logExecutionComplete, type TimingBreakdown } from "../core/execution-logger.js";
-import type { ExecuteRequest, ExecuteResponse, OpenFunctionRequest } from "../core/types.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  OpenFunctionRequest,
+} from "../core/types.js";
 
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
-const HTTP_TIMEOUT_MS = parseInt(process.env.HTTP_TIMEOUT_MS || "60000", 10);
+const HTTP_TIMEOUT_MS = Number.parseInt(
+  process.env.HTTP_TIMEOUT_MS || "60000",
+  10
+);
 
 // Cold start detection: if response time is > 3x average, likely a cold start
 const COLD_START_MULTIPLIER = 3;
@@ -49,7 +68,10 @@ const ExecuteRequestSchema = z.object({
     )
     .optional(),
   integration_id: z.string().nullable().optional(),
-  integrations: z.record(z.string(), z.record(z.string(), z.string())).nullable().optional(),
+  integrations: z
+    .record(z.string(), z.record(z.string(), z.string()))
+    .nullable()
+    .optional(),
   db_execution_id: z.string().nullable().optional(),
   connection_external_id: z.string().nullable().optional(),
   ap_project_id: z.string().nullable().optional(),
@@ -84,8 +106,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       } as ExecuteResponse);
     }
 
-    console.log(`[Execute Route] Received request for function: ${functionSlug}`);
-    console.log(`[Execute Route] Workflow: ${body.workflow_id}, Node: ${body.node_name}`);
+    console.log(
+      `[Execute Route] Received request for function: ${functionSlug}`
+    );
+    console.log(
+      `[Execute Route] Workflow: ${body.workflow_id}, Node: ${body.node_name}`
+    );
 
     const startTime = Date.now();
 
@@ -105,13 +131,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           input: body.input,
         });
       } catch (logError) {
-        console.error(`[Execute Route] Failed to log execution start:`, logError);
+        console.error(
+          "[Execute Route] Failed to log execution start:",
+          logError
+        );
       }
     }
 
     // Step 1: Look up the target service
     const target = await lookupFunction(functionSlug);
-    console.log(`[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`);
+    console.log(
+      `[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`
+    );
     timing.routedTo = target.appId;
 
     // Step 2: Create Dapr client for service invocation
@@ -135,30 +166,40 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const credentialStartTime = Date.now();
         let credentialsRaw: unknown | undefined;
 
-        const apContext = (body.ap_project_id && body.ap_platform_id) ? {
-          projectId: body.ap_project_id,
-          platformId: body.ap_platform_id,
-        } : undefined;
+        const apContext =
+          body.ap_project_id && body.ap_platform_id
+            ? {
+                projectId: body.ap_project_id,
+                platformId: body.ap_platform_id,
+              }
+            : undefined;
 
         if (isApRoute && body.connection_external_id) {
           // For AP actions: fetch raw connection value (passes directly to context.auth)
-          credentialsRaw = await fetchRawConnectionValue(body.connection_external_id, apContext);
+          credentialsRaw = await fetchRawConnectionValue(
+            body.connection_external_id,
+            apContext
+          );
         }
 
         // Always fetch env-var-mapped credentials too (for native services and as fallback)
         const credentialResult = await fetchCredentialsWithAudit(
           pluginId,
           body.integrations,
-          body.db_execution_id ? {
-            executionId: body.db_execution_id,
-            nodeId: body.node_id,
-          } : undefined,
+          body.db_execution_id
+            ? {
+                executionId: body.db_execution_id,
+                nodeId: body.node_id,
+              }
+            : undefined,
           body.connection_external_id,
-          apContext,
+          apContext
         );
         timing.credentialFetchMs = Date.now() - credentialStartTime;
 
-        console.log(`[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`);
+        console.log(
+          `[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`
+        );
 
         const openFunctionRequest: OpenFunctionRequest = {
           step: isApRoute ? functionSlug : stepName,
@@ -179,7 +220,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const functionUrl = await resolveOpenFunctionUrl(target.appId);
         timing.routingMs = Date.now() - routingStartTime;
 
-        console.log(`[Execute Route] Invoking OpenFunction ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`);
+        console.log(
+          `[Execute Route] Invoking OpenFunction ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`
+        );
 
         // Make direct HTTP call to the Knative service
         const controller = new AbortController();
@@ -209,10 +252,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
           // Cold start detection
           const avgResponseTime = getResponseTimeAverage(target.appId);
-          if (avgResponseTime > 0 && timing.executionMs > avgResponseTime * COLD_START_MULTIPLIER) {
+          if (
+            avgResponseTime > 0 &&
+            timing.executionMs > avgResponseTime * COLD_START_MULTIPLIER
+          ) {
             timing.wasColdStart = true;
             timing.coldStartMs = timing.executionMs - avgResponseTime;
-            console.log(`[Execute Route] Cold start detected for ${target.appId}: ${timing.executionMs}ms vs avg ${avgResponseTime}ms`);
+            console.log(
+              `[Execute Route] Cold start detected for ${target.appId}: ${timing.executionMs}ms vs avg ${avgResponseTime}ms`
+            );
           } else {
             timing.wasColdStart = false;
           }
@@ -223,7 +271,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           clearTimeout(timeoutId);
           timing.executionMs = Date.now() - executionStartTime;
           if (httpError instanceof Error && httpError.name === "AbortError") {
-            throw new Error(`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`);
+            throw new Error(
+              `Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`
+            );
           }
           throw httpError;
         }
@@ -231,7 +281,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         response.routed_to = target.appId;
       } else {
         // Route to function-runner (builtin fallback)
-        console.log(`[Execute Route] Routing to function-runner for builtin execution`);
+        console.log(
+          "[Execute Route] Routing to function-runner for builtin execution"
+        );
 
         const executionStartTime = Date.now();
         const result = await client.invoker.invoke(
@@ -251,7 +303,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
       console.log(
         `[Execute Route] Function ${functionSlug} completed via ${target.appId}: success=${response.success}, duration=${duration_ms}ms` +
-        (timing.wasColdStart ? ' (cold start)' : '')
+          (timing.wasColdStart ? " (cold start)" : "")
       );
 
       // Log execution completion (only if we started logging)
@@ -265,7 +317,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             timing,
           });
         } catch (logError) {
-          console.error(`[Execute Route] Failed to log execution completion:`, logError);
+          console.error(
+            "[Execute Route] Failed to log execution completion:",
+            logError
+          );
         }
       }
 
@@ -273,9 +328,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(statusCode).send(response);
     } catch (error) {
       const duration_ms = Date.now() - startTime;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
-      console.error(`[Execute Route] Failed to route ${functionSlug} to ${target.appId}:`, error);
+      console.error(
+        `[Execute Route] Failed to route ${functionSlug} to ${target.appId}:`,
+        error
+      );
 
       // Log execution failure (only if we started logging)
       if (logId && body.db_execution_id) {
@@ -287,7 +346,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             timing,
           });
         } catch (logError) {
-          console.error(`[Execute Route] Failed to log execution failure:`, logError);
+          console.error(
+            "[Execute Route] Failed to log execution failure:",
+            logError
+          );
         }
       }
 

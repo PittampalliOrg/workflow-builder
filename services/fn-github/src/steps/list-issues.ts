@@ -55,7 +55,8 @@ export async function listIssuesStep(
   if (!token) {
     return {
       success: false,
-      error: "GITHUB_TOKEN is not configured. Please add it in Project Integrations.",
+      error:
+        "GITHUB_TOKEN is not configured. Please add it in Project Integrations.",
     };
   }
 

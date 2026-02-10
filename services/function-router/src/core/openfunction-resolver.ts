@@ -9,7 +9,7 @@
  * 2. Query Services with label openfunction.io/serving={resourceRef}
  * 3. Find the -latest service → construct internal URL
  */
-import { readFileSync, existsSync } from "fs";
+import { existsSync, readFileSync } from "node:fs";
 
 // Cache for function → URL mappings (TTL: 60 seconds)
 const urlCache = new Map<string, { url: string; expiresAt: number }>();
@@ -33,15 +33,21 @@ let serviceAccountToken: string | null = null;
  * Get the service account token for in-cluster authentication
  */
 function getServiceAccountToken(): string {
-  if (serviceAccountToken) return serviceAccountToken;
-
-  if (existsSync(TOKEN_PATH)) {
-    serviceAccountToken = readFileSync(TOKEN_PATH, "utf-8").trim();
-    console.log("[OpenFunction Resolver] Loaded service account token for in-cluster auth");
+  if (serviceAccountToken) {
     return serviceAccountToken;
   }
 
-  throw new Error("Not running in Kubernetes cluster - no service account token found");
+  if (existsSync(TOKEN_PATH)) {
+    serviceAccountToken = readFileSync(TOKEN_PATH, "utf-8").trim();
+    console.log(
+      "[OpenFunction Resolver] Loaded service account token for in-cluster auth"
+    );
+    return serviceAccountToken;
+  }
+
+  throw new Error(
+    "Not running in Kubernetes cluster - no service account token found"
+  );
 }
 
 /**
@@ -51,7 +57,7 @@ async function k8sRequest<T>(path: string): Promise<T> {
   const token = getServiceAccountToken();
 
   // Use https module for proper CA certificate handling
-  const https = await import("https");
+  const https = await import("node:https");
   const ca = existsSync(CA_PATH) ? readFileSync(CA_PATH) : undefined;
 
   return new Promise((resolve, reject) => {
@@ -71,7 +77,9 @@ async function k8sRequest<T>(path: string): Promise<T> {
 
     const req = https.request(options, (res) => {
       let data = "";
-      res.on("data", (chunk) => (data += chunk));
+      res.on("data", (chunk) => {
+        data += chunk;
+      });
       res.on("end", () => {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
           try {
@@ -90,7 +98,7 @@ async function k8sRequest<T>(path: string): Promise<T> {
   });
 }
 
-interface FunctionCR {
+type FunctionCR = {
   status?: {
     serving?: {
       resourceRef?: string;
@@ -101,16 +109,16 @@ interface FunctionCR {
       value: string;
     }>;
   };
-}
+};
 
-interface ServiceList {
+type ServiceList = {
   items: Array<{
     metadata?: {
       name?: string;
       labels?: Record<string, string>;
     };
   }>;
-}
+};
 
 /**
  * Standalone service URL mappings.
@@ -132,14 +140,18 @@ export async function resolveOpenFunctionUrl(appId: string): Promise<string> {
   // Check cache first
   const cached = urlCache.get(appId);
   if (cached && Date.now() < cached.expiresAt) {
-    console.log(`[OpenFunction Resolver] Cache hit for ${appId}: ${cached.url}`);
+    console.log(
+      `[OpenFunction Resolver] Cache hit for ${appId}: ${cached.url}`
+    );
     return cached.url;
   }
 
   // Check standalone services first (no K8s API needed)
   const standaloneUrl = STANDALONE_SERVICES[appId];
   if (standaloneUrl) {
-    console.log(`[OpenFunction Resolver] Standalone service: ${appId} → ${standaloneUrl}`);
+    console.log(
+      `[OpenFunction Resolver] Standalone service: ${appId} → ${standaloneUrl}`
+    );
     cacheUrl(appId, standaloneUrl);
     return standaloneUrl;
   }
@@ -195,7 +207,9 @@ export async function resolveOpenFunctionUrl(appId: string): Promise<string> {
     return url;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to resolve OpenFunction URL for ${appId}: ${message}`);
+    throw new Error(
+      `Failed to resolve OpenFunction URL for ${appId}: ${message}`
+    );
   }
 }
 
@@ -218,7 +232,9 @@ export function clearCache(): void {
  * Pre-warm the cache by resolving all known OpenFunction app-ids.
  */
 export async function warmCache(appIds: string[]): Promise<void> {
-  console.log(`[OpenFunction Resolver] Pre-warming cache for ${appIds.length} functions`);
+  console.log(
+    `[OpenFunction Resolver] Pre-warming cache for ${appIds.length} functions`
+  );
 
   const results = await Promise.allSettled(
     appIds.map((appId) => resolveOpenFunctionUrl(appId))
@@ -235,7 +251,10 @@ export async function warmCache(appIds: string[]): Promise<void> {
 /**
  * Record a response time for a function (for cold start detection)
  */
-export function recordResponseTime(appId: string, responseTimeMs: number): void {
+export function recordResponseTime(
+  appId: string,
+  responseTimeMs: number
+): void {
   let history = responseTimeHistory.get(appId);
   if (!history) {
     history = [];
@@ -266,7 +285,7 @@ export function getResponseTimeAverage(appId: string): number {
   const median = sorted[Math.floor(sorted.length / 2)];
 
   // Filter out outliers (likely cold starts we already recorded)
-  const filtered = sorted.filter(t => t <= median * 2);
+  const filtered = sorted.filter((t) => t <= median * 2);
 
   if (filtered.length < 2) {
     return 0; // All data points are outliers

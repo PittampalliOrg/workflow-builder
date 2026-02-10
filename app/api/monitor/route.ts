@@ -1,9 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { and, desc, eq, ilike, or } from "drizzle-orm";
+import { type NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { desc, eq, or, ilike, and } from "drizzle-orm";
 import { toWorkflowListItem } from "@/lib/transforms/workflow-ui";
-import type { WorkflowListItem, WorkflowUIStatus } from "@/lib/types/workflow-ui";
+import type {
+  WorkflowListItem,
+  WorkflowUIStatus,
+} from "@/lib/types/workflow-ui";
 
 export const dynamic = "force-dynamic";
 
@@ -15,9 +18,11 @@ export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams;
     const search = searchParams.get("search") || undefined;
-    const statusFilter = searchParams.get("status")?.split(",") as WorkflowUIStatus[] | undefined;
-    const limit = parseInt(searchParams.get("limit") || "50");
-    const offset = parseInt(searchParams.get("offset") || "0");
+    const statusFilter = searchParams.get("status")?.split(",") as
+      | WorkflowUIStatus[]
+      | undefined;
+    const limit = Number.parseInt(searchParams.get("limit") || "50", 10);
+    const offset = Number.parseInt(searchParams.get("offset") || "0", 10);
 
     // Build query
     let query = db
@@ -58,7 +63,11 @@ export async function GET(request: NextRequest) {
         }
       });
       filters.push(
-        or(...dbStatuses.map((status) => eq(workflowExecutions.status, status as any)))
+        or(
+          ...dbStatuses.map((status) =>
+            eq(workflowExecutions.status, status as any)
+          )
+        )
       );
     }
 

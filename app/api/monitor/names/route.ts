@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
+import { eq, sql } from "drizzle-orm";
+import { type NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
-import { eq, sql } from "drizzle-orm";
 import type { WorkflowNameStats } from "@/lib/types/workflow-ui";
 
 export const dynamic = "force-dynamic";
@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  * GET /api/monitor/names
  * Get aggregated statistics by workflow name
  */
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
     // Aggregate by workflow name
     const results = await db

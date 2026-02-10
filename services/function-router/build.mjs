@@ -3,9 +3,10 @@
  *
  * Uses esbuild to bundle the service with all dependencies.
  */
+
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { resolve, dirname } from "path";
-import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -21,9 +22,7 @@ async function build() {
       sourcemap: true,
       minify: false,
       keepNames: true,
-      external: [
-        "node:*",
-      ],
+      external: ["node:*"],
       banner: {
         js: `
 import { createRequire } from 'module';

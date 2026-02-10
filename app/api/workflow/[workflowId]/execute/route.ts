@@ -1,11 +1,18 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
-import { getGenericOrchestratorUrl, getDaprOrchestratorUrl } from "@/lib/config-service";
+import {
+  getDaprOrchestratorUrl,
+  getGenericOrchestratorUrl,
+} from "@/lib/config-service";
+import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
-import { workflowExecutions, workflowExecutionLogs, workflows } from "@/lib/db/schema";
-import { daprClient, genericOrchestratorClient } from "@/lib/dapr-client";
+import {
+  workflowExecutionLogs,
+  workflowExecutions,
+  workflows,
+} from "@/lib/db/schema";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import { executeWorkflow } from "@/lib/workflow-executor";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
@@ -45,7 +52,9 @@ export async function POST(
     const input = body.input || {};
 
     // Route based on engine type
-    const engineType = (workflow as Record<string, unknown>).engineType as string | undefined;
+    const engineType = (workflow as Record<string, unknown>).engineType as
+      | string
+      | undefined;
 
     // Check if this is a planning workflow (has feature_request) or direct execution
     // First check request body input, then check activity node configs
@@ -65,14 +74,19 @@ export async function POST(
           const config = (data.config as Record<string, unknown>) || {};
           // Only check for explicit feature_request field (used by planner-agent workflows)
           // Do NOT treat generic AI prompts as feature_request
-          if (config.feature_request && typeof config.feature_request === "string") {
+          if (
+            config.feature_request &&
+            typeof config.feature_request === "string"
+          ) {
             featureRequest = config.feature_request;
           }
           // Check for cwd in activity config
           if (!cwd && config.cwd && typeof config.cwd === "string") {
             cwd = config.cwd;
           }
-          if (featureRequest) break; // Found what we need
+          if (featureRequest) {
+            break; // Found what we need
+          }
         }
       }
     }
@@ -143,11 +157,19 @@ export async function POST(
         // to get fresh credentials (with OAuth2 token refresh).
         const nodeConnectionMap: Record<string, string> = {};
         for (const node of nodes) {
-          const config = ((node.data as Record<string, unknown>)?.config as Record<string, unknown>) || {};
+          const config =
+            ((node.data as Record<string, unknown>)?.config as Record<
+              string,
+              unknown
+            >) || {};
           const authTemplate = config.auth as string | undefined;
           if (authTemplate) {
-            const match = authTemplate.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
-            if (match?.[1]) nodeConnectionMap[node.id] = match[1];
+            const match = authTemplate.match(
+              /\{\{connections\[['"]([^'"]+)['"]\]\}\}/
+            );
+            if (match?.[1]) {
+              nodeConnectionMap[node.id] = match[1];
+            }
           }
         }
 
@@ -164,7 +186,7 @@ export async function POST(
           input,
           {}, // integrations — empty, credentials resolved at function-router
           execution.id, // Database execution ID for logging
-          nodeConnectionMap, // Per-node connection external IDs
+          nodeConnectionMap // Per-node connection external IDs
         );
 
         // Update execution with Dapr instance ID
@@ -269,7 +291,7 @@ async function executeWorkflowAsync(
   workflowId: string,
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
-  userId: string
+  _userId: string
 ) {
   try {
     // Execute the workflow
@@ -278,7 +300,7 @@ async function executeWorkflowAsync(
       edges,
       executionId,
       workflowId,
-      async (nodeId, status, output) => {
+      async (nodeId, _status, output) => {
         // Log each node execution
         if (output) {
           await db.insert(workflowExecutionLogs).values({
@@ -311,7 +333,8 @@ async function executeWorkflowAsync(
       .update(workflowExecutions)
       .set({
         status: "error",
-        error: error instanceof Error ? error.message : "Workflow execution failed",
+        error:
+          error instanceof Error ? error.message : "Workflow execution failed",
         completedAt: new Date(),
       })
       .where(eq(workflowExecutions.id, executionId));

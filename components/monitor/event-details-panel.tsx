@@ -7,30 +7,30 @@
  * Matches Diagrid Catalyst style with prominent Input/Output panels.
  */
 
-import { X, Info, Copy, Check } from "lucide-react";
+import { Check, Copy, Info, X } from "lucide-react";
 import { useState } from "react";
-import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
 import { SyntaxHighlightedJson } from "./json-panel";
 
 // ============================================================================
 // Types
 // ============================================================================
 
-interface EventDetailsPanelProps {
+type EventDetailsPanelProps = {
   event: DaprExecutionEvent;
   onClose: () => void;
-}
+};
 
 // ============================================================================
 // Helper Components
 // ============================================================================
 
-interface JsonPanelProps {
+type JsonPanelProps = {
   title: string;
   data: unknown;
-}
+};
 
 function JsonPanel({ title, data }: JsonPanelProps) {
   const [copied, setCopied] = useState(false);
@@ -48,25 +48,25 @@ function JsonPanel({ title, data }: JsonPanelProps) {
   const hasData = data !== undefined && data !== null;
 
   return (
-    <div className="border border-border/50 rounded-lg overflow-hidden bg-[#1e2433]">
+    <div className="overflow-hidden rounded-lg border border-border/50 bg-[#1e2433]">
       {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700">
-        <span className="text-sm font-medium text-gray-300">{title}</span>
+      <div className="flex items-center justify-between border-gray-700 border-b px-3 py-2">
+        <span className="font-medium text-gray-300 text-sm">{title}</span>
         {hasData && (
           <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-xs text-teal-400 hover:text-teal-300 hover:bg-transparent"
+            className="h-6 px-2 text-teal-400 text-xs hover:bg-transparent hover:text-teal-300"
             onClick={handleCopy}
+            size="sm"
+            variant="ghost"
           >
             {copied ? (
               <>
-                <Check className="h-3 w-3 mr-1" />
+                <Check className="mr-1 h-3 w-3" />
                 Copied
               </>
             ) : (
               <>
-                <Copy className="h-3 w-3 mr-1" />
+                <Copy className="mr-1 h-3 w-3" />
                 Copy
               </>
             )}
@@ -74,11 +74,11 @@ function JsonPanel({ title, data }: JsonPanelProps) {
         )}
       </div>
       {/* Content with syntax highlighting */}
-      <div className="p-3 max-h-48 overflow-auto">
+      <div className="max-h-48 overflow-auto p-3">
         {hasData ? (
           <SyntaxHighlightedJson data={data} />
         ) : (
-          <p className="text-xs text-muted-foreground italic">No data</p>
+          <p className="text-muted-foreground text-xs italic">No data</p>
         )}
       </div>
     </div>
@@ -91,33 +91,38 @@ function JsonPanel({ title, data }: JsonPanelProps) {
 
 export function EventDetailsPanel({ event, onClose }: EventDetailsPanelProps) {
   // Calculate execution time if we have metadata
-  const executionTime = event.metadata?.executionDuration || event.metadata?.elapsed;
+  const executionTime =
+    event.metadata?.executionDuration || event.metadata?.elapsed;
 
   return (
-    <div className="h-full flex flex-col bg-card border-l min-w-[320px]">
+    <div className="flex h-full min-w-[320px] flex-col border-l bg-card">
       {/* Header - Activity name with close button */}
-      <div className="flex items-start justify-between px-4 py-3 border-b">
-        <div className="flex-1 min-w-0">
-          <h3 className="font-semibold text-foreground text-lg truncate">
+      <div className="flex items-start justify-between border-b px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate font-semibold text-foreground text-lg">
             {event.name || event.eventType}
           </h3>
           {/* Type Badge */}
           <div className="mt-1">
             <Badge
+              className="border-teal-500/30 bg-teal-500/10 text-teal-400 text-xs"
               variant="outline"
-              className="text-xs bg-teal-500/10 text-teal-400 border-teal-500/30"
             >
-              {event.eventType === "TaskCompleted" || event.eventType === "TaskScheduled"
+              {event.eventType === "TaskCompleted" ||
+              event.eventType === "TaskScheduled"
                 ? "activity"
-                : event.eventType.toLowerCase().replace("orchestrator", "").replace("execution", "")}
+                : event.eventType
+                    .toLowerCase()
+                    .replace("orchestrator", "")
+                    .replace("execution", "")}
             </Badge>
           </div>
         </div>
         <Button
-          variant="ghost"
-          size="icon"
           className="h-8 w-8 shrink-0"
           onClick={onClose}
+          size="icon"
+          variant="ghost"
         >
           <X className="h-4 w-4" />
           <span className="sr-only">Close</span>
@@ -125,21 +130,23 @@ export function EventDetailsPanel({ event, onClose }: EventDetailsPanelProps) {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div className="flex-1 space-y-4 overflow-auto p-4">
         {/* Execution Time - Prominent like Diagrid */}
         {executionTime && (
           <div className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Execution time:</span>
-            <span className="font-semibold text-foreground">{executionTime}</span>
+            <span className="font-semibold text-foreground">
+              {executionTime}
+            </span>
             <Info className="h-3.5 w-3.5 text-muted-foreground" />
           </div>
         )}
 
         {/* Input Panel - Always visible */}
-        <JsonPanel title="Input" data={event.input} />
+        <JsonPanel data={event.input} title="Input" />
 
         {/* Output Panel - Always visible */}
-        <JsonPanel title="Output" data={event.output} />
+        <JsonPanel data={event.output} title="Output" />
       </div>
     </div>
   );

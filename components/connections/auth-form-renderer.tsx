@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -12,7 +13,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   type PieceAuthConfig,
   type PieceAuthProperty,
@@ -87,9 +87,7 @@ export function AuthFormRenderer({
               disabled={disabled}
               id="username"
               onChange={(e) => updateValue("username", e.target.value)}
-              placeholder={
-                authConfig.username?.description || "Enter username"
-              }
+              placeholder={authConfig.username?.description || "Enter username"}
               value={(values.username as string) || ""}
             />
           </div>
@@ -101,9 +99,7 @@ export function AuthFormRenderer({
               disabled={disabled}
               id="password"
               onChange={(e) => updateValue("password", e.target.value)}
-              placeholder={
-                authConfig.password?.description || "Enter password"
-              }
+              placeholder={authConfig.password?.description || "Enter password"}
               type="password"
               value={(values.password as string) || ""}
             />
@@ -135,11 +131,9 @@ export function AuthFormRenderer({
                   props: { ...props, [key]: val },
                 });
               }}
-              propKey={key}
               property={prop}
-              value={
-                ((values.props as Record<string, unknown>) || {})[key] ?? ""
-              }
+              propKey={key}
+              value={(values.props as Record<string, unknown>)?.[key] ?? ""}
             />
           ))}
         </div>
@@ -171,9 +165,7 @@ function PropertyField({
 }) {
   if (property.type === PiecePropertyType.MARKDOWN) {
     return (
-      <div className="text-muted-foreground text-sm">
-        {property.value}
-      </div>
+      <div className="text-muted-foreground text-sm">{property.value}</div>
     );
   }
 
@@ -356,8 +348,8 @@ function OAuth2AuthForm({
             disabled={disabled}
             key={key}
             onChange={() => {}}
-            propKey={key}
             property={prop}
+            propKey={key}
             value=""
           />
         ))}

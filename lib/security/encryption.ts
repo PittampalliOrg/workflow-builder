@@ -32,7 +32,7 @@ function getEncryptionKey(): Buffer {
   if (!secret) {
     throw new Error(
       `${ENCRYPTION_KEY_ENV} environment variable is required for encrypting connection credentials. ` +
-        `Generate one with: openssl rand -hex 32`
+        "Generate one with: openssl rand -hex 32"
     );
   }
 
@@ -77,9 +77,7 @@ export function decryptString(encryptedObject: EncryptedObject): string {
   return decrypted;
 }
 
-export function encryptObject(
-  obj: Record<string, unknown>
-): EncryptedObject {
+export function encryptObject(obj: Record<string, unknown>): EncryptedObject {
   return encryptString(JSON.stringify(obj));
 }
 

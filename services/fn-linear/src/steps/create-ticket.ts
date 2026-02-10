@@ -67,7 +67,8 @@ export async function createTicketStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "LINEAR_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "LINEAR_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
@@ -77,7 +78,7 @@ export async function createTicketStep(
     if (!targetTeamId) {
       const teamsResult = await linearQuery<TeamsQueryResponse>(
         apiKey,
-        `query { teams { nodes { id name } } }`
+        "query { teams { nodes { id name } } }"
       );
 
       if (teamsResult.errors?.length) {

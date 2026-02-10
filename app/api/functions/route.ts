@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import {
-  getFunctions,
-  createFunction,
-  isSlugAvailable,
-  type FunctionSummary,
   type CreateFunctionInput,
+  createFunction,
+  type FunctionSummary,
+  getFunctions,
+  isSlugAvailable,
 } from "@/lib/db/functions";
 import type { FunctionExecutionType } from "@/lib/db/schema";
 
@@ -117,7 +117,7 @@ export async function POST(request: Request) {
     const body: CreateFunctionRequest = await request.json();
 
     // Validate required fields
-    if (!body.name || !body.slug || !body.pluginId || !body.executionType) {
+    if (!(body.name && body.slug && body.pluginId && body.executionType)) {
       return NextResponse.json(
         { error: "name, slug, pluginId, and executionType are required" },
         { status: 400 }

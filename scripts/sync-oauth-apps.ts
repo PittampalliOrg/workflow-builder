@@ -17,28 +17,36 @@
  *   DATABASE_URL - PostgreSQL connection string
  *   AP_ENCRYPTION_KEY - AES-256-CBC encryption key
  */
+
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { eq, and } from "drizzle-orm";
 import postgres from "postgres";
-import { platforms, platformOauthApps } from "../lib/db/schema";
-import { encryptString } from "../lib/security/encryption";
-import { generateId } from "../lib/utils/id";
+import { platformOauthApps, platforms } from "../lib/db/schema";
 import {
   envSuffixToPieceNames,
   pieceNameToFullName,
 } from "../lib/oauth-app-env-mapping";
+import { encryptString } from "../lib/security/encryption";
+import { generateId } from "../lib/utils/id";
 
 const DATABASE_URL =
   process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 
 /** Extract OAUTH_APP_<SUFFIX>_CLIENT_ID entries from process.env */
-function discoverOAuthApps(): { suffix: string; clientId: string; clientSecret: string }[] {
+function discoverOAuthApps(): {
+  suffix: string;
+  clientId: string;
+  clientSecret: string;
+}[] {
   const pattern = /^OAUTH_APP_(.+)_CLIENT_ID$/;
-  const results: { suffix: string; clientId: string; clientSecret: string }[] = [];
+  const results: { suffix: string; clientId: string; clientSecret: string }[] =
+    [];
 
   for (const [key, value] of Object.entries(process.env)) {
     const match = key.match(pattern);
-    if (!match || !value) continue;
+    if (!(match && value)) {
+      continue;
+    }
 
     const suffix = match[1];
     const secretKey = `OAUTH_APP_${suffix}_CLIENT_SECRET`;

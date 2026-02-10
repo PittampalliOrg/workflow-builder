@@ -77,7 +77,8 @@ export async function findIssuesStep(
   if (!apiKey) {
     return {
       success: false,
-      error: "LINEAR_API_KEY is not configured. Please add it in Project Integrations.",
+      error:
+        "LINEAR_API_KEY is not configured. Please add it in Project Integrations.",
     };
   }
 
@@ -128,14 +129,16 @@ export async function findIssuesStep(
       };
     }
 
-    const mappedIssues: LinearIssue[] = (result.data?.issues.nodes || []).map((issue) => ({
-      id: issue.id,
-      title: issue.title,
-      url: issue.url,
-      state: issue.state?.name || "Unknown",
-      priority: issue.priority,
-      assigneeId: issue.assignee?.id || undefined,
-    }));
+    const mappedIssues: LinearIssue[] = (result.data?.issues.nodes || []).map(
+      (issue) => ({
+        id: issue.id,
+        title: issue.title,
+        url: issue.url,
+        state: issue.state?.name || "Unknown",
+        priority: issue.priority,
+        assigneeId: issue.assignee?.id || undefined,
+      })
+    );
 
     return {
       success: true,

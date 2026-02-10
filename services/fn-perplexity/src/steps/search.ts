@@ -62,7 +62,7 @@ function getSearchDomains(focus?: string): string[] | undefined {
     case "reddit":
       return ["reddit.com"];
     default:
-      return undefined;
+      return;
   }
 }
 

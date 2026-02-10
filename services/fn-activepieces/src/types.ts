@@ -2,7 +2,7 @@
  * Type definitions for fn-activepieces
  */
 
-export interface ExecuteRequest {
+export type ExecuteRequest = {
   step: string;
   execution_id: string;
   workflow_id: string;
@@ -15,11 +15,11 @@ export interface ExecuteRequest {
     pieceName: string;
     actionName: string;
   };
-}
+};
 
-export interface ExecuteResponse {
+export type ExecuteResponse = {
   success: boolean;
   data?: unknown;
   error?: string;
   duration_ms: number;
-}
+};

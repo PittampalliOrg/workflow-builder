@@ -4,14 +4,22 @@
  * A scale-to-zero function that handles Linear ticket operations.
  * Receives requests from the function-router with pre-fetched credentials.
  */
-import Fastify from "fastify";
-import cors from "@fastify/cors";
-import { z } from "zod";
-import { createTicketStep, type CreateTicketInput } from "./steps/create-ticket.js";
-import { findIssuesStep, type FindIssuesInput } from "./steps/find-issues.js";
-import type { ExecuteRequest, ExecuteResponse, LinearCredentials } from "./types.js";
 
-const PORT = parseInt(process.env.PORT || "8080", 10);
+import cors from "@fastify/cors";
+import Fastify from "fastify";
+import { z } from "zod";
+import {
+  type CreateTicketInput,
+  createTicketStep,
+} from "./steps/create-ticket.js";
+import { type FindIssuesInput, findIssuesStep } from "./steps/find-issues.js";
+import type {
+  ExecuteRequest,
+  ExecuteResponse,
+  LinearCredentials,
+} from "./types.js";
+
+const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const ExecuteRequestSchema = z.object({
@@ -46,17 +54,17 @@ async function main() {
   });
 
   // Health routes
-  app.get("/healthz", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/healthz", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
-  app.get("/readyz", async (_request, reply) => {
-    return reply.status(200).send({ status: "ready" });
-  });
+  app.get("/readyz", async (_request, reply) =>
+    reply.status(200).send({ status: "ready" })
+  );
 
-  app.get("/health", async (_request, reply) => {
-    return reply.status(200).send({ status: "healthy" });
-  });
+  app.get("/health", async (_request, reply) =>
+    reply.status(200).send({ status: "healthy" })
+  );
 
   // Execute route
   app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -75,7 +83,9 @@ async function main() {
     const startTime = Date.now();
 
     console.log(`[fn-linear] Received request for step: ${body.step}`);
-    console.log(`[fn-linear] Workflow: ${body.workflow_id}, Node: ${body.node_id}`);
+    console.log(
+      `[fn-linear] Workflow: ${body.workflow_id}, Node: ${body.node_id}`
+    );
 
     const credentials: LinearCredentials = {
       LINEAR_API_KEY: body.credentials?.LINEAR_API_KEY,
@@ -87,20 +97,31 @@ async function main() {
     let result: { success: boolean; data?: unknown; error?: string };
 
     switch (body.step) {
-      case "create-ticket":
-        const createResult = await createTicketStep(input as CreateTicketInput, credentials);
+      case "create-ticket": {
+        const createResult = await createTicketStep(
+          input as CreateTicketInput,
+          credentials
+        );
         if (createResult.success) {
           result = {
             success: true,
-            data: { id: createResult.id, url: createResult.url, title: createResult.title },
+            data: {
+              id: createResult.id,
+              url: createResult.url,
+              title: createResult.title,
+            },
           };
         } else {
           result = { success: false, error: createResult.error };
         }
         break;
+      }
 
-      case "find-issues":
-        const findResult = await findIssuesStep(input as FindIssuesInput, credentials);
+      case "find-issues": {
+        const findResult = await findIssuesStep(
+          input as FindIssuesInput,
+          credentials
+        );
         if (findResult.success) {
           result = {
             success: true,
@@ -110,6 +131,7 @@ async function main() {
           result = { success: false, error: findResult.error };
         }
         break;
+      }
 
       default:
         result = {
@@ -126,7 +148,9 @@ async function main() {
       duration_ms,
     };
 
-    console.log(`[fn-linear] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`);
+    console.log(
+      `[fn-linear] Step ${body.step} completed: success=${result.success}, duration=${duration_ms}ms`
+    );
 
     const statusCode = result.success ? 200 : 500;
     return reply.status(statusCode).send(response);

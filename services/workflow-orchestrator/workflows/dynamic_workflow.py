@@ -381,6 +381,23 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             completed_nodes += 1
 
+            # Reserved workflow control channel.
+            # Allows specific steps (e.g., MCP "Reply to Client") to request an early stop
+            # without failing the workflow.
+            try:
+                if isinstance(node_result, dict):
+                    data = node_result.get("data")
+                    if isinstance(data, dict):
+                        ctl = data.get("__workflow_builder_control")
+                        if isinstance(ctl, dict) and ctl.get("stop") is True:
+                            logger.info(
+                                f"[Dynamic Workflow] Early stop requested by node: {node.get('label')}"
+                            )
+                            break
+            except Exception:
+                # Never let control parsing break workflow execution.
+                pass
+
         # Workflow completed successfully
         duration_ms = int((time.time() - start_time) * 1000)
 

@@ -1,10 +1,10 @@
 import useSWR from "swr";
 import type { WorkflowNameStats } from "@/lib/types/workflow-ui";
 
-interface MonitorByNameResponse {
+type MonitorByNameResponse = {
   stats: WorkflowNameStats[];
   total: number;
-}
+};
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
