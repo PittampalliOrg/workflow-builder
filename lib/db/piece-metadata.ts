@@ -1,7 +1,10 @@
-import { and, desc, eq, ilike, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { pieceMetadata } from "@/lib/db/schema";
-import { parsePieceAuthAll, type PieceAuthConfig } from "@/lib/types/piece-auth";
+import {
+	parsePieceAuthAll,
+	type PieceAuthConfig,
+} from "@/lib/types/piece-auth";
 import { generateId } from "@/lib/utils/id";
 import semver from "semver";
 
@@ -10,224 +13,323 @@ const ACTIVEPIECES_PACKAGE_PREFIX = "@activepieces/piece-";
 export type PieceMetadataRecord = typeof pieceMetadata.$inferSelect;
 
 export type ListPieceMetadataParams = {
-  searchQuery?: string;
-  categories?: string[];
-  includeHidden?: boolean;
-  limit?: number;
+	searchQuery?: string;
+	categories?: string[];
+	includeHidden?: boolean;
+	limit?: number;
 };
 
 function expandPieceNameCandidates(name: string): string[] {
-  const candidates = new Set([name]);
+	const candidates = new Set([name]);
 
-  if (name.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)) {
-    candidates.add(name.slice(ACTIVEPIECES_PACKAGE_PREFIX.length));
-  } else {
-    candidates.add(`${ACTIVEPIECES_PACKAGE_PREFIX}${name}`);
-  }
+	if (name.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)) {
+		candidates.add(name.slice(ACTIVEPIECES_PACKAGE_PREFIX.length));
+	} else {
+		candidates.add(`${ACTIVEPIECES_PACKAGE_PREFIX}${name}`);
+	}
 
-  return Array.from(candidates);
+	return Array.from(candidates);
 }
 
 function compareVersionsDesc(a: string, b: string): number {
-  const aValid = semver.valid(a);
-  const bValid = semver.valid(b);
-  if (!aValid && !bValid) {
-    return b.localeCompare(a);
-  }
-  if (!aValid) return 1;
-  if (!bValid) return -1;
-  return semver.rcompare(a, b);
+	const aValid = semver.valid(a);
+	const bValid = semver.valid(b);
+	if (!aValid && !bValid) {
+		return b.localeCompare(a);
+	}
+	if (!aValid) return 1;
+	if (!bValid) return -1;
+	return semver.rcompare(a, b);
 }
 
-function pickLatestPerName(rows: PieceMetadataRecord[]): PieceMetadataRecord[] {
-  const best = new Map<string, PieceMetadataRecord>();
-  for (const row of rows) {
-    const current = best.get(row.name);
-    if (!current) {
-      best.set(row.name, row);
-      continue;
-    }
-    const cmp = compareVersionsDesc(row.version, current.version);
-    if (cmp < 0) {
-      continue;
-    }
-    if (cmp > 0) {
-      best.set(row.name, row);
-      continue;
-    }
-    // Same version (or both invalid): prefer most recently updated.
-    if (row.updatedAt > current.updatedAt) {
-      best.set(row.name, row);
-    }
-  }
-  return Array.from(best.values()).sort((a, b) => a.displayName.localeCompare(b.displayName));
+function pickLatestPerName<
+	TRow extends {
+		name: string;
+		version: string;
+		displayName: string;
+		updatedAt: Date;
+	},
+>(rows: TRow[]): TRow[] {
+	const best = new Map<string, TRow>();
+	for (const row of rows) {
+		const current = best.get(row.name);
+		if (!current) {
+			best.set(row.name, row);
+			continue;
+		}
+		const cmp = compareVersionsDesc(row.version, current.version);
+		if (cmp < 0) {
+			continue;
+		}
+		if (cmp > 0) {
+			best.set(row.name, row);
+			continue;
+		}
+		// Same version (or both invalid): prefer most recently updated.
+		if (row.updatedAt > current.updatedAt) {
+			best.set(row.name, row);
+		}
+	}
+	return Array.from(best.values()).sort((a, b) =>
+		a.displayName.localeCompare(b.displayName),
+	);
 }
 
 export async function listPieceMetadata(
-  params: ListPieceMetadataParams
+	params: ListPieceMetadataParams,
 ): Promise<PieceMetadataRecord[]> {
-  const conditions = [];
+	const conditions = [];
 
-  if (params.searchQuery) {
-    conditions.push(
-      ilike(pieceMetadata.displayName, `%${params.searchQuery}%`)
-    );
-  }
+	if (params.searchQuery) {
+		const q = params.searchQuery;
+		const qStripped = q.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)
+			? q.slice(ACTIVEPIECES_PACKAGE_PREFIX.length)
+			: q;
+		conditions.push(
+			or(
+				ilike(pieceMetadata.displayName, `%${q}%`),
+				ilike(pieceMetadata.name, `%${q}%`),
+				ilike(pieceMetadata.displayName, `%${qStripped}%`),
+				ilike(pieceMetadata.name, `%${qStripped}%`),
+			),
+		);
+	}
 
-  const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+	const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const rows = await db
-    .select()
-    .from(pieceMetadata)
-    .where(whereClause)
-    .orderBy(desc(pieceMetadata.updatedAt));
+	const rows = await db
+		.select()
+		.from(pieceMetadata)
+		.where(whereClause)
+		.orderBy(desc(pieceMetadata.updatedAt));
 
-  const candidates =
-    !params.categories || params.categories.length === 0
-      ? rows
-      : (() => {
-          const lowerCategories = params.categories.map((c) => c.toLowerCase());
-          return rows.filter((row) =>
-            (row.categories ?? []).some((category) =>
-              lowerCategories.includes(category.toLowerCase())
-            )
-          );
-        })();
+	const candidates =
+		!params.categories || params.categories.length === 0
+			? rows
+			: (() => {
+					const lowerCategories = params.categories.map((c) => c.toLowerCase());
+					return rows.filter((row) =>
+						(row.categories ?? []).some((category) =>
+							lowerCategories.includes(category.toLowerCase()),
+						),
+					);
+				})();
 
-  const latest = pickLatestPerName(candidates);
-  return latest.slice(0, params.limit ?? latest.length);
+	const latest = pickLatestPerName(candidates);
+	return latest.slice(0, params.limit ?? latest.length);
+}
+
+export type PieceMetadataSummaryRecord = Pick<
+	PieceMetadataRecord,
+	| "id"
+	| "name"
+	| "authors"
+	| "displayName"
+	| "logoUrl"
+	| "description"
+	| "platformId"
+	| "version"
+	| "minimumSupportedRelease"
+	| "maximumSupportedRelease"
+	| "auth"
+	| "pieceType"
+	| "categories"
+	| "packageType"
+	| "createdAt"
+	| "updatedAt"
+>;
+
+export async function listPieceMetadataSummaries(
+	params: ListPieceMetadataParams,
+): Promise<PieceMetadataSummaryRecord[]> {
+	const conditions = [];
+
+	if (params.searchQuery) {
+		const q = params.searchQuery;
+		const qStripped = q.startsWith(ACTIVEPIECES_PACKAGE_PREFIX)
+			? q.slice(ACTIVEPIECES_PACKAGE_PREFIX.length)
+			: q;
+		conditions.push(
+			or(
+				ilike(pieceMetadata.displayName, `%${q}%`),
+				ilike(pieceMetadata.name, `%${q}%`),
+				ilike(pieceMetadata.displayName, `%${qStripped}%`),
+				ilike(pieceMetadata.name, `%${qStripped}%`),
+			),
+		);
+	}
+
+	const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+	const rows = await db
+		.select({
+			id: pieceMetadata.id,
+			name: pieceMetadata.name,
+			authors: pieceMetadata.authors,
+			displayName: pieceMetadata.displayName,
+			logoUrl: pieceMetadata.logoUrl,
+			description: pieceMetadata.description,
+			platformId: pieceMetadata.platformId,
+			version: pieceMetadata.version,
+			minimumSupportedRelease: pieceMetadata.minimumSupportedRelease,
+			maximumSupportedRelease: pieceMetadata.maximumSupportedRelease,
+			auth: pieceMetadata.auth,
+			pieceType: pieceMetadata.pieceType,
+			categories: pieceMetadata.categories,
+			packageType: pieceMetadata.packageType,
+			createdAt: pieceMetadata.createdAt,
+			updatedAt: pieceMetadata.updatedAt,
+		})
+		.from(pieceMetadata)
+		.where(whereClause)
+		.orderBy(desc(pieceMetadata.updatedAt));
+
+	const candidates =
+		!params.categories || params.categories.length === 0
+			? rows
+			: (() => {
+					const lowerCategories = params.categories.map((c) => c.toLowerCase());
+					return rows.filter((row) =>
+						(row.categories ?? []).some((category) =>
+							lowerCategories.includes(category.toLowerCase()),
+						),
+					);
+				})();
+
+	const latest = pickLatestPerName(candidates);
+	return latest.slice(0, params.limit ?? latest.length);
 }
 
 export async function listAllPieceVersionsByName(
-  name: string
+	name: string,
 ): Promise<PieceMetadataRecord[]> {
-  const candidateNames = expandPieceNameCandidates(name);
-  const rows = await db
-    .select()
-    .from(pieceMetadata)
-    .where(inArray(pieceMetadata.name, candidateNames));
+	const candidateNames = expandPieceNameCandidates(name);
+	const rows = await db
+		.select()
+		.from(pieceMetadata)
+		.where(inArray(pieceMetadata.name, candidateNames));
 
-  return rows.sort((a, b) => compareVersionsDesc(a.version, b.version));
+	return rows.sort((a, b) => compareVersionsDesc(a.version, b.version));
 }
 
 export async function getLatestPieceMetadataByName(
-  name: string
+	name: string,
 ): Promise<PieceMetadataRecord | null> {
-  const rows = await listAllPieceVersionsByName(name);
-  return rows[0] ?? null;
+	const rows = await listAllPieceVersionsByName(name);
+	return rows[0] ?? null;
 }
 
 export async function getPieceMetadataByName(
-  name: string,
-  version?: string
+	name: string,
+	version?: string,
 ): Promise<PieceMetadataRecord | null> {
-  const candidateNames = expandPieceNameCandidates(name);
+	const candidateNames = expandPieceNameCandidates(name);
 
-  if (version) {
-    const row = await db.query.pieceMetadata.findFirst({
-      where: and(
-        inArray(pieceMetadata.name, candidateNames),
-        eq(pieceMetadata.version, version)
-      ),
-    });
-    return row ?? null;
-  }
+	if (version) {
+		const row = await db.query.pieceMetadata.findFirst({
+			where: and(
+				inArray(pieceMetadata.name, candidateNames),
+				eq(pieceMetadata.version, version),
+			),
+		});
+		return row ?? null;
+	}
 
-  return getLatestPieceMetadataByName(name);
+	return getLatestPieceMetadataByName(name);
 }
 
 export async function getPieceMetadataByNames(
-  names: string[]
+	names: string[],
 ): Promise<PieceMetadataRecord[]> {
-  if (names.length === 0) {
-    return [];
-  }
+	if (names.length === 0) {
+		return [];
+	}
 
-  const candidates = names.flatMap((name) => expandPieceNameCandidates(name));
-  return db
-    .select()
-    .from(pieceMetadata)
-    .where(inArray(pieceMetadata.name, Array.from(new Set(candidates))));
+	const candidates = names.flatMap((name) => expandPieceNameCandidates(name));
+	return db
+		.select()
+		.from(pieceMetadata)
+		.where(inArray(pieceMetadata.name, Array.from(new Set(candidates))));
 }
 
 export type UpsertPieceMetadataInput = Omit<
-  PieceMetadataRecord,
-  "id" | "createdAt" | "updatedAt"
+	PieceMetadataRecord,
+	"id" | "createdAt" | "updatedAt"
 > & {
-  id?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
+	id?: string;
+	createdAt?: Date;
+	updatedAt?: Date;
 };
 
 export async function upsertPieceMetadata(
-  record: UpsertPieceMetadataInput
+	record: UpsertPieceMetadataInput,
 ): Promise<PieceMetadataRecord> {
-  const existing = await db.query.pieceMetadata.findFirst({
-    where: and(
-      eq(pieceMetadata.name, record.name),
-      eq(pieceMetadata.version, record.version),
-      record.platformId
-        ? eq(pieceMetadata.platformId, record.platformId)
-        : isNull(pieceMetadata.platformId)
-    ),
-  });
+	const existing = await db.query.pieceMetadata.findFirst({
+		where: and(
+			eq(pieceMetadata.name, record.name),
+			eq(pieceMetadata.version, record.version),
+			record.platformId
+				? eq(pieceMetadata.platformId, record.platformId)
+				: isNull(pieceMetadata.platformId),
+		),
+	});
 
-  if (existing) {
-    const {
-      id: _incomingId,
-      createdAt: _createdAt,
-      ...updatableFields
-    } = record;
-    const [updated] = await db
-      .update(pieceMetadata)
-      .set({
-        ...updatableFields,
-        updatedAt: record.updatedAt ?? new Date(),
-      })
-      .where(eq(pieceMetadata.id, existing.id))
-      .returning();
+	if (existing) {
+		const {
+			id: _incomingId,
+			createdAt: _createdAt,
+			...updatableFields
+		} = record;
+		const [updated] = await db
+			.update(pieceMetadata)
+			.set({
+				...updatableFields,
+				updatedAt: record.updatedAt ?? new Date(),
+			})
+			.where(eq(pieceMetadata.id, existing.id))
+			.returning();
 
-    return updated;
-  }
+		return updated;
+	}
 
-  const [inserted] = await db
-    .insert(pieceMetadata)
-    .values({
-      ...record,
-      id: record.id ?? generateId(),
-      createdAt: record.createdAt ?? new Date(),
-      updatedAt: record.updatedAt ?? new Date(),
-    })
-    .returning();
+	const [inserted] = await db
+		.insert(pieceMetadata)
+		.values({
+			...record,
+			id: record.id ?? generateId(),
+			createdAt: record.createdAt ?? new Date(),
+			updatedAt: record.updatedAt ?? new Date(),
+		})
+		.returning();
 
-  return inserted;
+	return inserted;
 }
 
 export async function deletePieceMetadataByNameVersion(
-  rows: Array<{ name: string; version: string }>
+	rows: Array<{ name: string; version: string }>,
 ): Promise<void> {
-  if (rows.length === 0) {
-    return;
-  }
+	if (rows.length === 0) {
+		return;
+	}
 
-  for (const row of rows) {
-    await db
-      .delete(pieceMetadata)
-      .where(
-        and(
-          eq(pieceMetadata.name, row.name),
-          eq(pieceMetadata.version, row.version)
-        )
-      );
-  }
+	for (const row of rows) {
+		await db
+			.delete(pieceMetadata)
+			.where(
+				and(
+					eq(pieceMetadata.name, row.name),
+					eq(pieceMetadata.version, row.version),
+				),
+			);
+	}
 }
 
 export async function countPieceMetadata(): Promise<number> {
-  const [result] = await db
-    .select({ count: sql<number>`count(*)::int` })
-    .from(pieceMetadata);
+	const [result] = await db
+		.select({ count: sql<number>`count(*)::int` })
+		.from(pieceMetadata);
 
-  return result?.count ?? 0;
+	return result?.count ?? 0;
 }
 
 /**
@@ -235,11 +337,11 @@ export async function countPieceMetadata(): Promise<number> {
  * Returns null if the piece doesn't exist or has no auth config.
  */
 export async function getPieceAuthConfig(
-  pieceName: string
+	pieceName: string,
 ): Promise<Array<Exclude<PieceAuthConfig, null | undefined>>> {
-  const piece = await getPieceMetadataByName(pieceName);
-  if (!piece) {
-    return [];
-  }
-  return parsePieceAuthAll(piece.auth);
+	const piece = await getPieceMetadataByName(pieceName);
+	if (!piece) {
+		return [];
+	}
+	return parsePieceAuthAll(piece.auth);
 }

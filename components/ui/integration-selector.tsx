@@ -10,7 +10,7 @@ import {
   Settings,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ConfigureConnectionOverlay } from "@/components/overlays/add-connection-overlay";
+import { AddConnectionOverlay } from "@/components/overlays/add-connection-overlay";
 import { EditConnectionOverlay } from "@/components/overlays/edit-connection-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { Button } from "@/components/ui/button";
@@ -105,8 +105,8 @@ export function IntegrationSelector({
   };
 
   const openNewConnectionOverlay = useCallback(() => {
-    push(ConfigureConnectionOverlay, {
-      type: integrationType,
+    push(AddConnectionOverlay, {
+      preselectedPieceName: integrationType,
       onSuccess: handleNewIntegrationCreated,
     });
   }, [integrationType, push, handleNewIntegrationCreated]);
