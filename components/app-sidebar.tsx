@@ -1,30 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   Workflow,
   Activity,
   Plug,
-  Plus,
   ChevronRight,
   PenTool,
   Settings,
 } from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
-import { Button } from "@/components/ui/button";
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarHeader,
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
   SidebarGroup,
   SidebarGroupLabel,
   SidebarGroupContent,
+  SidebarRail,
   useSidebar,
 } from "@/components/ui/sidebar";
 import {
@@ -32,7 +30,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { User } from "@/lib/db/schema";
 
@@ -44,7 +41,6 @@ const navigationLinks = [
 ];
 
 export function AppSidebar({ user }: { user: User | undefined }) {
-  const router = useRouter();
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
   const [workflowsOpen, setWorkflowsOpen] = useState(true);
@@ -58,46 +54,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
   };
 
   return (
-    <Sidebar className="group-data-[side=left]:border-r-0">
-      <SidebarHeader>
-        <SidebarMenu>
-          <div className="flex flex-row items-center justify-between">
-            <Link
-              className="flex flex-row items-center gap-3"
-              href="/"
-              onClick={() => {
-                setOpenMobile(false);
-              }}
-            >
-              <span className="cursor-pointer rounded-md px-2 font-semibold text-lg hover:bg-muted">
-                Workflow Builder
-              </span>
-            </Link>
-            <div className="flex flex-row gap-1">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    className="h-8 p-1 md:h-fit md:p-2"
-                    onClick={() => {
-                      setOpenMobile(false);
-                      router.push("/");
-                      router.refresh();
-                    }}
-                    type="button"
-                    variant="ghost"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent align="end" className="hidden md:block">
-                  New Workflow
-                </TooltipContent>
-              </Tooltip>
-            </div>
-          </div>
-        </SidebarMenu>
-      </SidebarHeader>
-
+    <Sidebar collapsible="icon" className="group-data-[side=left]:border-r-0">
       <SidebarContent>
         {/* Navigation Section (Collapsible) */}
         <Collapsible open={workflowsOpen} onOpenChange={setWorkflowsOpen}>
@@ -124,6 +81,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
                       <SidebarMenuButton
                         asChild
                         isActive={isActiveLink(link.href)}
+                        tooltip={link.label}
                       >
                         <Link
                           href={link.href}
@@ -143,6 +101,7 @@ export function AppSidebar({ user }: { user: User | undefined }) {
       </SidebarContent>
 
       <SidebarFooter>{user && <SidebarUserNav user={user} />}</SidebarFooter>
+      <SidebarRail />
     </Sidebar>
   );
 }
