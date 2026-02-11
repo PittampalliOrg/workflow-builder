@@ -15,20 +15,9 @@ const REGISTRY_FILE_PATH =
 
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
-	// Serverless functions (scale-to-zero Knative services)
-	"openai/generate-text": { appId: "fn-openai", type: "knative" },
-	"openai/generate-image": { appId: "fn-openai", type: "knative" },
-	"openai/*": { appId: "fn-openai", type: "knative" },
 	"system/*": { appId: "fn-system", type: "knative" },
-	"slack/*": { appId: "fn-slack", type: "knative" },
-	"github/*": { appId: "fn-github", type: "knative" },
-	"resend/*": { appId: "fn-resend", type: "knative" },
-	"stripe/*": { appId: "fn-stripe", type: "knative" },
-	"linear/*": { appId: "fn-linear", type: "knative" },
-	"firecrawl/*": { appId: "fn-firecrawl", type: "knative" },
-	"perplexity/*": { appId: "fn-perplexity", type: "knative" },
 	"planner/*": { appId: "planner-dapr-agent", type: "knative" },
-	// Default fallback: route unknown slugs to fn-activepieces
+	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
 

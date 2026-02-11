@@ -7,7 +7,14 @@
 
 import { airtable } from "@activepieces/piece-airtable";
 import { asana } from "@activepieces/piece-asana";
+import { azureBlobStorage } from "@activepieces/piece-azure-blob-storage";
+import { azureOpenai } from "@activepieces/piece-azure-openai";
+import { bitly } from "@activepieces/piece-bitly";
+import { browseAi } from "@activepieces/piece-browse-ai";
+import { browserless } from "@activepieces/piece-browserless";
+import { claude } from "@activepieces/piece-claude";
 import { clickup } from "@activepieces/piece-clickup";
+import { contextualAi } from "@activepieces/piece-contextual-ai";
 // Communication
 import { discord } from "@activepieces/piece-discord";
 // Storage
@@ -20,8 +27,11 @@ import { googleDrive } from "@activepieces/piece-google-drive";
 import { googleSheets } from "@activepieces/piece-google-sheets";
 // CRM & Marketing
 import { hubspot } from "@activepieces/piece-hubspot";
+import { huggingface } from "@activepieces/piece-hugging-face";
 // Project Management
 import { jiraCloud } from "@activepieces/piece-jira-cloud";
+import { linear } from "@activepieces/piece-linear";
+import { linkedin } from "@activepieces/piece-linkedin";
 import { mailchimp } from "@activepieces/piece-mailchimp";
 import { microsoftExcel365 } from "@activepieces/piece-microsoft-excel-365";
 import { microsoftOneDrive } from "@activepieces/piece-microsoft-onedrive";
@@ -31,8 +41,13 @@ import { microsoftOutlook } from "@activepieces/piece-microsoft-outlook";
 import { microsoftTeams } from "@activepieces/piece-microsoft-teams";
 import { microsoftTodo } from "@activepieces/piece-microsoft-todo";
 import { monday } from "@activepieces/piece-monday";
+import { nocodb } from "@activepieces/piece-nocodb";
 // Productivity
 import { notion } from "@activepieces/piece-notion";
+import { openai } from "@activepieces/piece-openai";
+import { perplexityAi } from "@activepieces/piece-perplexity-ai";
+import { postgres } from "@activepieces/piece-postgres";
+import { resend } from "@activepieces/piece-resend";
 import { salesforce } from "@activepieces/piece-salesforce";
 // Email
 import { sendgrid } from "@activepieces/piece-sendgrid";
@@ -41,6 +56,7 @@ import { shopify } from "@activepieces/piece-shopify";
 import { telegramBot } from "@activepieces/piece-telegram-bot";
 import { todoist } from "@activepieces/piece-todoist";
 import { trello } from "@activepieces/piece-trello";
+import { youtube } from "@activepieces/piece-youtube";
 import { zendesk } from "@activepieces/piece-zendesk";
 import type { Piece } from "@activepieces/pieces-framework";
 
@@ -79,6 +95,28 @@ export const PIECES: Record<string, Piece> = {
 	sendgrid: sendgrid as unknown as Piece,
 	dropbox: dropbox as unknown as Piece,
 	"telegram-bot": telegramBot as unknown as Piece,
+	// AI & ML
+	openai: openai as unknown as Piece,
+	claude: claude as unknown as Piece,
+	"azure-openai": azureOpenai as unknown as Piece,
+	"hugging-face": huggingface as unknown as Piece,
+	"perplexity-ai": perplexityAi as unknown as Piece,
+	"contextual-ai": contextualAi as unknown as Piece,
+	// Developer Tools
+	linear: linear as unknown as Piece,
+	postgres: postgres as unknown as Piece,
+	nocodb: nocodb as unknown as Piece,
+	browserless: browserless as unknown as Piece,
+	"browse-ai": browseAi as unknown as Piece,
+	bitly: bitly as unknown as Piece,
+	// Cloud
+	"azure-blob-storage": azureBlobStorage as unknown as Piece,
+	// Communication (extended)
+	resend: resend as unknown as Piece,
+	linkedin: linkedin as unknown as Piece,
+	// Media
+	youtube: youtube as unknown as Piece,
+	// Custom/internal
 	mcp: mcp as unknown as Piece,
 };
 

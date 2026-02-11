@@ -57,6 +57,32 @@ export const INSTALLED_PIECES: readonly string[] = [
 
 	// Storage
 	"dropbox",
+
+	// AI & ML
+	"openai",
+	"claude",
+	"azure-openai",
+	"hugging-face",
+	"perplexity-ai",
+	"contextual-ai",
+
+	// Developer Tools
+	"linear",
+	"postgres",
+	"nocodb",
+	"browserless",
+	"browse-ai",
+	"bitly",
+
+	// Cloud
+	"azure-blob-storage",
+
+	// Communication (extended)
+	"resend",
+	"linkedin",
+
+	// Media
+	"youtube",
 ];
 
 const INSTALLED_SET = new Set(
