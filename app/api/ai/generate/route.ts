@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { withPlannerPiece } from "@/lib/actions/planner-actions";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
@@ -138,9 +139,9 @@ async function processOperationStream(
 async function generateAIPieceActionPrompts(): Promise<string> {
 	const allPieces = await listPieceMetadata({});
 	const pieces = allPieces.filter((p) => isPieceInstalled(p.name));
-	const integrations = convertApPiecesToIntegrations(
-		pieces,
-	) as IntegrationDefinition[];
+	const integrations = withPlannerPiece(
+		convertApPiecesToIntegrations(pieces) as IntegrationDefinition[],
+	);
 
 	const lines: string[] = [];
 

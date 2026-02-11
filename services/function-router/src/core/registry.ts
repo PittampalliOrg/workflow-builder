@@ -27,6 +27,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
 	"linear/*": { appId: "fn-linear", type: "knative" },
 	"firecrawl/*": { appId: "fn-firecrawl", type: "knative" },
 	"perplexity/*": { appId: "fn-perplexity", type: "knative" },
+	"planner/*": { appId: "planner-dapr-agent", type: "knative" },
 	// Default fallback: route unknown slugs to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };

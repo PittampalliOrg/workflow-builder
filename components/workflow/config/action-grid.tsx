@@ -37,6 +37,10 @@ import {
 } from "@/components/ui/tooltip";
 import { api } from "@/lib/api-client";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
+import {
+	HIDDEN_DAPR_ACTIVITY_NAMES,
+	PLANNER_CATEGORY_LABEL,
+} from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { useIsTouch } from "@/hooks/use-touch";
 import { getAllDaprActivities } from "@/lib/dapr-activity-registry";
@@ -102,7 +106,9 @@ const DAPR_CONTROL_FLOW: ActionType[] = [
 function useAllActions(apPieces: IntegrationDefinition[]): ActionType[] {
 	return useMemo(() => {
 		// Map Dapr activities to ActionType format
-		const daprActivities = getAllDaprActivities();
+		const daprActivities = getAllDaprActivities().filter(
+			(activity) => !HIDDEN_DAPR_ACTIVITY_NAMES.has(activity.name),
+		);
 		const mappedDaprActivities: ActionType[] = daprActivities.map(
 			(activity) => ({
 				id: `dapr:${activity.name}`,
@@ -156,6 +162,7 @@ const DAPR_CATEGORY_ICONS: Record<string, typeof Zap> = {
 	Events: Radio,
 	"Control Flow": Clock,
 	AI: Sparkles,
+	[PLANNER_CATEGORY_LABEL]: Bot,
 	Notifications: Bell,
 	Integration: Globe,
 };

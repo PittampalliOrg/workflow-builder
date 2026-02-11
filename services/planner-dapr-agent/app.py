@@ -3837,6 +3837,40 @@ _OF_ACTION_HANDLERS = {
     "check_status": _of_check_status,
 }
 
+_OF_ACTION_ALIASES = {
+    "clone": "clone",
+    "clone_repository": "clone",
+    "plan": "plan_tasks",
+    "plan_tasks": "plan_tasks",
+    "plan_tasks_only": "plan_tasks",
+    "run_planning": "plan_tasks",
+    "execute": "execute_tasks",
+    "execute_tasks": "execute_tasks",
+    "execute_tasks_only": "execute_tasks",
+    "execute_plan_tasks_only": "execute_tasks",
+    "run_execution": "execute_tasks",
+    "multi_step": "multi_step",
+    "run_workflow": "run_workflow",
+    "approve": "approve",
+    "status": "check_status",
+    "check_plan_status": "check_status",
+    "check_status": "check_status",
+}
+
+
+def _normalize_of_action_name(action_name: str) -> str:
+    raw = (action_name or "").strip()
+    if not raw:
+        return raw
+    if raw in _OF_ACTION_HANDLERS:
+        return raw
+
+    normalized = raw.lower().replace(" ", "_").replace("-", "_")
+    if normalized.startswith("planner/"):
+        normalized = normalized.split("/", 1)[1]
+
+    return _OF_ACTION_ALIASES.get(normalized, normalized)
+
 
 @app.post("/execute")
 async def execute_endpoint(request: Request):
@@ -3851,11 +3885,13 @@ async def execute_endpoint(request: Request):
     # Detect OpenFunctions request by presence of 'step' field
     if "step" in body:
         of_req = OpenFunctionExecuteRequest(**body)
-        action_name = of_req.step
+        raw_action_name = of_req.step
+        action_name = _normalize_of_action_name(raw_action_name)
         start_ts = _time.time()
 
         logger.info(
-            f"[OpenFunctions] Executing action '{action_name}' "
+            f"[OpenFunctions] Executing action '{raw_action_name}' "
+            f"(normalized='{action_name}') "
             f"(execution_id={of_req.execution_id}, node_id={of_req.node_id})"
         )
 
@@ -3863,8 +3899,11 @@ async def execute_endpoint(request: Request):
         if not handler:
             return JSONResponse(status_code=400, content={
                 "success": False,
-                "error": f"Unknown planner action: '{action_name}'. "
-                         f"Available: {list(_OF_ACTION_HANDLERS.keys())}",
+                "error": (
+                    f"Unknown planner action: '{raw_action_name}' "
+                    f"(normalized: '{action_name}'). "
+                    f"Available: {list(_OF_ACTION_HANDLERS.keys())}"
+                ),
                 "duration_ms": 0,
             })
 
@@ -3888,7 +3927,8 @@ async def execute_endpoint(request: Request):
 
             duration_ms = int((_time.time() - start_ts) * 1000)
             logger.info(
-                f"[OpenFunctions] Action '{action_name}' completed in {duration_ms}ms"
+                f"[OpenFunctions] Action '{raw_action_name}' "
+                f"(normalized='{action_name}') completed in {duration_ms}ms"
             )
 
             return {
