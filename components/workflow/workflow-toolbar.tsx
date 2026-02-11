@@ -35,6 +35,10 @@ import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { connectionsAtom } from "@/lib/connections-store";
 import {
+	getRequiredConnectionForAction,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
+import {
 	addNodeAtom,
 	canRedoAtom,
 	canUndoAtom,
@@ -352,9 +356,14 @@ function getMissingIntegrations(
 		const action = findActionById(actionType);
 		// Fall back to built-in action integrations for actions not in the registry
 		const requiredPluginType =
-			action?.integration || BUILTIN_ACTION_INTEGRATIONS[actionType];
+			getRequiredConnectionForAction(actionType) ||
+			action?.integration ||
+			BUILTIN_ACTION_INTEGRATIONS[actionType];
 
-		if (!requiredPluginType) {
+		if (
+			!requiredPluginType ||
+			!requiresConnectionForIntegration(requiredPluginType)
+		) {
 			continue;
 		}
 

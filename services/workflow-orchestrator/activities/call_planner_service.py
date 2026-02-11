@@ -14,6 +14,7 @@ Endpoints:
 
 import json
 import logging
+import os
 import time
 
 import httpx
@@ -26,6 +27,17 @@ DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 PLANNER_APP_ID = config.PLANNER_APP_ID
 DAPR_SECRETS_STORE = config.DAPR_SECRETS_STORE
+WORKFLOW_BUILDER_URL = os.getenv(
+    "WORKFLOW_BUILDER_URL",
+    "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+)
+INTERNAL_API_TOKEN = os.getenv("INTERNAL_API_TOKEN", "")
+
+
+def _normalize_branch_name(branch_value: object) -> str:
+    """Normalize an optional branch value and default to main when blank."""
+    branch = str(branch_value or "").strip()
+    return branch or "main"
 
 
 def _fetch_github_token_from_dapr() -> str:
@@ -45,14 +57,88 @@ def _fetch_github_token_from_dapr() -> str:
     return ""
 
 
+def _extract_github_token_from_connection_value(value: dict) -> str:
+    """Extract a GitHub token from a decrypted app connection value."""
+    value_type = str(value.get("type", ""))
+    if value_type in ("OAUTH2", "CLOUD_OAUTH2", "PLATFORM_OAUTH2"):
+        token = str(value.get("access_token", "")).strip()
+        return token
+
+    if value_type == "SECRET_TEXT":
+        token = str(value.get("secret_text", "")).strip()
+        return token
+
+    if value_type == "CUSTOM_AUTH":
+        props = value.get("props", {})
+        if isinstance(props, dict):
+            for key in ("token", "accessToken", "personalAccessToken", "pat", "apiKey"):
+                candidate = props.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+
+    return ""
+
+
+def _fetch_github_token_from_connection(connection_external_id: str) -> str:
+    """
+    Resolve GitHub token from a selected app connection via workflow-builder internal API.
+    """
+    if not connection_external_id:
+        return ""
+    if not INTERNAL_API_TOKEN:
+        logger.warning(
+            "[Call Planner Clone] INTERNAL_API_TOKEN is not set, cannot resolve connection token"
+        )
+        return ""
+
+    decrypt_url = (
+        f"{WORKFLOW_BUILDER_URL}/api/internal/connections/"
+        f"{connection_external_id}/decrypt"
+    )
+
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                decrypt_url,
+                headers={"X-Internal-Token": INTERNAL_API_TOKEN},
+            )
+            if response.status_code != 200:
+                logger.warning(
+                    "[Call Planner Clone] Failed to decrypt connection %s: HTTP %s",
+                    connection_external_id,
+                    response.status_code,
+                )
+                return ""
+
+            payload = response.json()
+            value = payload.get("value")
+            if not isinstance(value, dict):
+                return ""
+
+            token = _extract_github_token_from_connection_value(value)
+            if token:
+                logger.info(
+                    "[Call Planner Clone] Resolved GitHub token from selected connection"
+                )
+            return token
+    except Exception as e:
+        logger.warning(
+            "[Call Planner Clone] Connection token lookup failed for %s: %s",
+            connection_external_id,
+            e,
+        )
+        return ""
+
+
 def call_planner_clone(ctx, input_data: dict) -> dict:
     """
     Call planner-dapr-agent /clone endpoint for standalone repository cloning.
 
     Token resolution priority:
     1. Explicit token from node config (repositoryToken)
-    2. User's GitHub integration (passed via integrations dict)
-    3. Dapr secret store (azure-keyvault/github-token)
+    2. Selected node connection (connection_external_id)
+    3. User's GitHub integration (passed via integrations dict)
+    4. Dapr secret store (azure-keyvault/github-token)
 
     Args:
         ctx: Dapr activity context (unused but required by Dapr)
@@ -61,15 +147,17 @@ def call_planner_clone(ctx, input_data: dict) -> dict:
             - repo: Repository name
             - branch: Branch to clone (default: "main")
             - token: GitHub token (already resolved from config + integrations)
+            - connection_external_id: Optional app connection external ID
             - execution_id: Parent execution ID for tracking
 
     Returns:
         Result with clonePath, commitHash, repository, branch, file_count
     """
-    owner = input_data.get("owner", "")
-    repo = input_data.get("repo", "")
-    branch = input_data.get("branch", "main")
+    owner = str(input_data.get("owner", "")).strip()
+    repo = str(input_data.get("repo", "")).strip()
+    branch = _normalize_branch_name(input_data.get("branch", "main"))
     token = input_data.get("token", "")
+    connection_external_id = input_data.get("connection_external_id", "")
     execution_id = input_data.get("execution_id", "")
 
     if not owner or not repo:
@@ -78,11 +166,20 @@ def call_planner_clone(ctx, input_data: dict) -> dict:
             "error": "Both 'owner' and 'repo' are required for cloning",
         }
 
-    # Fallback: try Dapr secret store if no token from config/integrations
+    token_source = "config/integrations" if token else "none"
+
+    # Fallback: resolve token from selected node connection
+    if not token and connection_external_id:
+        token = _fetch_github_token_from_connection(connection_external_id)
+        if token:
+            token_source = "selected-connection"
+
+    # Fallback: try Dapr secret store if no token from config/connection
     if not token:
         token = _fetch_github_token_from_dapr()
+        if token:
+            token_source = "dapr-secrets"
 
-    token_source = "config/integrations" if input_data.get("token") else ("dapr-secrets" if token else "none")
     logger.info(f"[Call Planner Clone] Cloning {owner}/{repo}@{branch} (token source: {token_source})")
 
     try:
@@ -606,6 +703,7 @@ def call_planner_multi_step(ctx, input_data: dict) -> dict:
     max_test_retries = input_data.get("max_test_retries", 3)
     auto_approve = input_data.get("auto_approve", False)
     repository = input_data.get("repository")
+    connection_external_id = input_data.get("connection_external_id", "")
     parent_execution_id = input_data.get("parent_execution_id")
 
     logger.info(f"[Call Planner Multi-Step] Invoking planner-dapr-agent /workflow/dapr")
@@ -615,6 +713,29 @@ def call_planner_multi_step(ctx, input_data: dict) -> dict:
         logger.info(f"[Call Planner Multi-Step] Repository: {repository.get('owner')}/{repository.get('repo')}")
     if parent_execution_id:
         logger.info(f"[Call Planner Multi-Step] Parent execution ID: {parent_execution_id}")
+
+    repo_payload = repository
+    if isinstance(repository, dict):
+        repo_payload = {**repository}
+        repo_payload["branch"] = _normalize_branch_name(repo_payload.get("branch", "main"))
+        repo_token = str(repo_payload.get("token", "")).strip()
+        token_source = "config"
+
+        if not repo_token and connection_external_id:
+            repo_token = _fetch_github_token_from_connection(connection_external_id)
+            if repo_token:
+                token_source = "selected-connection"
+
+        if not repo_token:
+            repo_token = _fetch_github_token_from_dapr()
+            if repo_token:
+                token_source = "dapr-secrets"
+
+        if repo_token:
+            repo_payload["token"] = repo_token
+        logger.info(
+            f"[Call Planner Multi-Step] Repository token source: {token_source}"
+        )
 
     try:
         # Dapr service invocation URL - calls planner-dapr-agent /workflow/dapr endpoint
@@ -629,8 +750,12 @@ def call_planner_multi_step(ctx, input_data: dict) -> dict:
         }
 
         # Include repository config only when owner and repo are both provided
-        if repository and repository.get("owner") and repository.get("repo"):
-            payload["repository"] = repository
+        if (
+            isinstance(repo_payload, dict)
+            and repo_payload.get("owner")
+            and repo_payload.get("repo")
+        ):
+            payload["repository"] = repo_payload
 
         # Include parent_execution_id for event routing back to parent workflow
         if parent_execution_id:

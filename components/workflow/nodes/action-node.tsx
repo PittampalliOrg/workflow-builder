@@ -31,6 +31,10 @@ import {
 	selectedExecutionIdAtom,
 	type WorkflowNodeData,
 } from "@/lib/workflow-store";
+import {
+	getRequiredConnectionForAction,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 // Helper to get display name for AI model
@@ -122,8 +126,12 @@ const requiresIntegration = (
 	}
 
 	// Piece actions typically require a connection
+	const actionRequiredIntegration = getRequiredConnectionForAction(actionType);
+	if (actionRequiredIntegration) {
+		return true;
+	}
 	const action = findActionById(actionType);
-	return action !== undefined;
+	return action ? requiresConnectionForIntegration(action.integration) : false;
 };
 
 // Helper to get provider logo for action type

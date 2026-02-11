@@ -25,6 +25,10 @@ import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
+import {
+	getRequiredConnectionForAction,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
 import { generateNodeCode, getDaprNodeCodeFiles } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
 import {
@@ -248,8 +252,15 @@ export const PanelInner = () => {
 
 		// Get the required integration type for this action
 		const action = findActionById(actionType);
-		const integrationType: IntegrationType | undefined =
-			action?.integration || SYSTEM_ACTION_INTEGRATIONS[actionType];
+		const actionRequiredIntegration =
+			getRequiredConnectionForAction(actionType);
+		const rawIntegrationType: IntegrationType | undefined =
+			actionRequiredIntegration ||
+			action?.integration ||
+			SYSTEM_ACTION_INTEGRATIONS[actionType];
+		const integrationType = requiresConnectionForIntegration(rawIntegrationType)
+			? rawIntegrationType
+			: undefined;
 
 		if (!integrationType) {
 			return;
@@ -345,8 +356,17 @@ export const PanelInner = () => {
 		) => {
 			// Get integration type - check plugin registry first, then system actions
 			const action = findActionById(actionType);
-			const integrationType: IntegrationType | undefined =
-				action?.integration || SYSTEM_ACTION_INTEGRATIONS[actionType];
+			const actionRequiredIntegration =
+				getRequiredConnectionForAction(actionType);
+			const rawIntegrationType: IntegrationType | undefined =
+				actionRequiredIntegration ||
+				action?.integration ||
+				SYSTEM_ACTION_INTEGRATIONS[actionType];
+			const integrationType = requiresConnectionForIntegration(
+				rawIntegrationType,
+			)
+				? rawIntegrationType
+				: undefined;
 
 			if (!integrationType) {
 				// No integration needed, remove from pending

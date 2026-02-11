@@ -44,6 +44,37 @@ logger = logging.getLogger(__name__)
 # Create workflow runtime
 wfr = wf.WorkflowRuntime()
 
+PLANNER_ACTION_ALIASES: dict[str, str] = {
+    "planner/run_workflow": "planner/run-workflow",
+    "planner/plan_tasks": "planner/plan",
+    "planner/execute_tasks": "planner/execute",
+    "planner/multi_step": "planner/multi-step",
+    "planner/check_status": "planner/status",
+    "run planner workflow": "planner/run-workflow",
+    "plan tasks only": "planner/plan",
+    "execute tasks only": "planner/execute",
+    "execute plan tasks only": "planner/execute",
+    "clone repository": "planner/clone",
+    "clone, plan & execute in sandbox": "planner/multi-step",
+    "approve plan": "planner/approve",
+    "check plan status": "planner/status",
+    "run planning agent": "planner/plan",
+    "run execution agent": "planner/execute",
+    "dapr:run_planning": "planner/plan",
+    "dapr:run_execution": "planner/execute",
+}
+
+
+def normalize_planner_action_type(action_type: str) -> str:
+    """Normalize planner action aliases to canonical planner/* slugs."""
+    if not action_type:
+        return action_type
+
+    normalized_key = (
+        action_type.strip().lower().replace("-", "_")
+    )
+    return PLANNER_ACTION_ALIASES.get(normalized_key, action_type)
+
 
 def is_unresolved_template(value: str) -> bool:
     """Check if a string value is an unresolved template like {{PlanNode.workflow_id}}."""
@@ -81,6 +112,12 @@ def get_timeout_seconds(config: dict[str, Any]) -> int:
         return int(config["durationHours"]) * 3600
     # Default: 24 hours for approval gates, 60 seconds for timers
     return 86400 if "eventName" in config else 60
+
+
+def _normalize_git_branch(branch_value: object) -> str:
+    """Normalize optional branch values and default to main for empty input."""
+    branch = str(branch_value or "").strip()
+    return branch or "main"
 
 
 @wfr.workflow(name="dynamic_workflow")
@@ -168,7 +205,14 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- Action / Activity nodes ---
             if node_type in ("action", "activity"):
-                action_type = config.get("actionType", "")
+                raw_action_type = config.get("actionType", "")
+                action_type = normalize_planner_action_type(raw_action_type)
+
+                if raw_action_type != action_type:
+                    logger.info(
+                        f"[Dynamic Workflow] Normalized actionType "
+                        f"'{raw_action_type}' -> '{action_type}'"
+                    )
 
                 # Check if this is a planner child workflow
                 if action_type.startswith("planner/"):
@@ -191,7 +235,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         log_id = start_result.get("logId")
 
                     node_result = yield from process_planner_child_workflow(
-                        ctx, node, node_outputs, action_type, integrations, db_execution_id
+                        ctx,
+                        node,
+                        node_outputs,
+                        action_type,
+                        integrations,
+                        db_execution_id,
+                        node_connection_map.get(node.get("id")),
                     )
 
                     # Log node completion for planner/* nodes
@@ -373,9 +423,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 node_result = {"skipped": True, "reason": f"Unknown type: {node_type}"}
 
             # Store node output (include actionType for template resolver matching)
+            output_action_type = config.get("actionType", "")
+            if node_type in ("action", "activity"):
+                output_action_type = normalize_planner_action_type(output_action_type)
+
             node_outputs[node.get("id")] = {
                 "label": node.get("label"),
-                "actionType": config.get("actionType", ""),
+                "actionType": output_action_type,
                 "data": node_result,
             }
 
@@ -457,6 +511,7 @@ def process_planner_child_workflow(
     action_type: str,
     integrations: dict | None,
     db_execution_id: str | None,
+    connection_external_id: str | None = None,
 ):
     """
     Invoke planner-dapr-agent workflow via Dapr service invocation with event-based completion.
@@ -486,6 +541,7 @@ def process_planner_child_workflow(
         action_type: The planner action type (e.g., "planner/run-workflow")
         integrations: User's integration credentials
         db_execution_id: Database execution ID (used as parent_execution_id for event routing)
+        connection_external_id: Selected app connection external ID for this node
 
     Yields:
         Activity calls to planner-dapr-agent and event waits
@@ -521,8 +577,11 @@ def process_planner_child_workflow(
             input={
                 "owner": resolved_config.get("repositoryOwner", ""),
                 "repo": resolved_config.get("repositoryRepo", ""),
-                "branch": resolved_config.get("repositoryBranch", "main"),
+                "branch": _normalize_git_branch(
+                    resolved_config.get("repositoryBranch", "main")
+                ),
                 "token": token,
+                "connection_external_id": connection_external_id,
                 "execution_id": ctx.instance_id,
             },
         )
@@ -802,7 +861,9 @@ def process_planner_child_workflow(
             repository = {
                 "owner": repo_owner,
                 "repo": repo_name,
-                "branch": resolved_config.get("repositoryBranch", "main"),
+                "branch": _normalize_git_branch(
+                    resolved_config.get("repositoryBranch", "main")
+                ),
                 "token": resolved_config.get("repositoryToken", ""),
             }
 
@@ -816,6 +877,7 @@ def process_planner_child_workflow(
                 "max_test_retries": int(resolved_config.get("maxTestRetries", 3)),
                 "auto_approve": resolved_config.get("autoApprove") in (True, "true"),
                 "repository": repository,
+                "connection_external_id": connection_external_id,
                 "parent_execution_id": ctx.instance_id,
             },
         )

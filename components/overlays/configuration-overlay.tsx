@@ -24,6 +24,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import {
+	getRequiredConnectionForAction,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
+import {
 	generateNodeCode,
 	generateWorkflowCode,
 	getDaprNodeCodeFiles,
@@ -134,8 +138,15 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 		}
 
 		const action = findActionById(actionType);
-		const integrationType: IntegrationType | undefined =
-			action?.integration || SYSTEM_ACTION_INTEGRATIONS[actionType];
+		const actionRequiredIntegration =
+			getRequiredConnectionForAction(actionType);
+		const rawIntegrationType: IntegrationType | undefined =
+			actionRequiredIntegration ||
+			action?.integration ||
+			SYSTEM_ACTION_INTEGRATIONS[actionType];
+		const integrationType = requiresConnectionForIntegration(rawIntegrationType)
+			? rawIntegrationType
+			: undefined;
 
 		if (!integrationType) {
 			return;

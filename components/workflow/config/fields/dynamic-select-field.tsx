@@ -147,17 +147,26 @@ export function DynamicSelectField({
 				}
 			}
 
-			const res = await fetch("/api/pieces/options", {
+			const optionsEndpoint =
+				dynamicOpts.provider === "planner"
+					? "/api/planner/options"
+					: "/api/pieces/options";
+
+			const requestBody: Record<string, unknown> = {
+				actionName: dynamicOpts.actionName,
+				propertyName: dynamicOpts.propName,
+				connectionExternalId,
+				input,
+			};
+			if (dynamicOpts.provider !== "planner") {
+				requestBody.pieceName = dynamicOpts.pieceName;
+			}
+
+			const res = await fetch(optionsEndpoint, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				signal: controller.signal,
-				body: JSON.stringify({
-					pieceName: dynamicOpts.pieceName,
-					actionName: dynamicOpts.actionName,
-					propertyName: dynamicOpts.propName,
-					connectionExternalId,
-					input,
-				}),
+				body: JSON.stringify(requestBody),
 			});
 
 			if (fetchId !== fetchIdRef.current || controller.signal.aborted) {

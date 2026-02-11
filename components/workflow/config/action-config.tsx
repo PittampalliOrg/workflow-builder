@@ -30,6 +30,11 @@ import {
 	connectionsVersionAtom,
 } from "@/lib/connections-store";
 import type { IntegrationType } from "@/lib/actions/types";
+import {
+	getRequiredConnectionForAction,
+	normalizePlannerActionType,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import { ActionConfigRenderer } from "./action-config-renderer";
@@ -301,14 +306,16 @@ function getCategoryForAction(
 	actionType: string,
 	apPieces?: ApIntegration[],
 ): string | null {
+	const normalizedActionType = normalizeActionType(actionType);
+
 	// Check system actions first
-	if (SYSTEM_ACTION_IDS.includes(actionType)) {
+	if (SYSTEM_ACTION_IDS.includes(normalizedActionType)) {
 		return "System";
 	}
 
 	// Check AP pieces directly
 	if (apPieces) {
-		const [pieceName] = actionType.split("/");
+		const [pieceName] = normalizedActionType.split("/");
 		const piece = apPieces.find((p) => p.type === pieceName);
 		if (piece) return piece.label;
 	}
@@ -318,25 +325,31 @@ function getCategoryForAction(
 
 // Normalize action type to new ID format (handles legacy labels via findActionById)
 function normalizeActionType(actionType: string): string {
+	const normalizedActionType = normalizePlannerActionType(actionType);
+
 	// Check system actions first - they use their label as ID
-	if (SYSTEM_ACTION_IDS.includes(actionType)) {
-		return actionType;
+	if (SYSTEM_ACTION_IDS.includes(normalizedActionType)) {
+		return normalizedActionType;
 	}
 
-	return actionType;
+	return normalizedActionType;
 }
 
 // Get the canonical function slug for an action
 // This is the identifier used by the orchestrator and function-runner
 function getSlugForAction(actionType: string): string | null {
+	const normalizedActionType = normalizeActionType(actionType);
+
 	// Check system actions first
-	const systemAction = SYSTEM_ACTIONS.find((a) => a.id === actionType);
+	const systemAction = SYSTEM_ACTIONS.find(
+		(a) => a.id === normalizedActionType,
+	);
 	if (systemAction) {
 		return systemAction.id;
 	}
 
 	// For piece actions, the action type is already the canonical slug
-	return actionType;
+	return normalizedActionType;
 }
 
 function buildConnectionAuthTemplate(externalId: string): string {
@@ -358,6 +371,7 @@ export function ActionConfig({
 	isOwner = true,
 }: ActionConfigProps) {
 	const actionType = (config?.actionType as string) || "";
+	const normalizedActionType = normalizeActionType(actionType);
 	const {
 		pieces: apPieces,
 		findActionById,
@@ -366,8 +380,8 @@ export function ActionConfig({
 
 	const categories = useCategoryData(apPieces);
 
-	const selectedCategory = actionType
-		? getCategoryForAction(actionType, apPieces)
+	const selectedCategory = normalizedActionType
+		? getCategoryForAction(normalizedActionType, apPieces)
 		: null;
 	const [category, setCategory] = useState<string>(selectedCategory || "");
 	const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
@@ -376,11 +390,11 @@ export function ActionConfig({
 
 	// Sync category state when actionType changes (e.g., when switching nodes)
 	useEffect(() => {
-		const newCategory = actionType
-			? getCategoryForAction(actionType, apPieces)
+		const newCategory = normalizedActionType
+			? getCategoryForAction(normalizedActionType, apPieces)
 			: null;
 		setCategory(newCategory || "");
-	}, [actionType, apPieces]);
+	}, [normalizedActionType, apPieces]);
 
 	const handleCategoryChange = (newCategory: string) => {
 		setCategory(newCategory);
@@ -409,32 +423,47 @@ export function ActionConfig({
 	};
 
 	// Get dynamic config fields for plugin actions
-	const pieceAction = actionType ? findActionById(actionType) : null;
+	const pieceAction = actionType ? findActionById(normalizedActionType) : null;
 
 	// Determine the integration type for the current action
 	const integrationType: IntegrationType | undefined = useMemo(() => {
-		if (!actionType) {
+		if (!normalizedActionType) {
 			return;
 		}
 
+		const actionRequiredIntegration =
+			getRequiredConnectionForAction(normalizedActionType);
+		if (actionRequiredIntegration) {
+			return actionRequiredIntegration;
+		}
+
 		// Check system actions first
-		if (SYSTEM_ACTION_INTEGRATIONS[actionType]) {
-			return SYSTEM_ACTION_INTEGRATIONS[actionType];
+		if (SYSTEM_ACTION_INTEGRATIONS[normalizedActionType]) {
+			return SYSTEM_ACTION_INTEGRATIONS[normalizedActionType];
 		}
 
 		// Piece actions
-		const action = findActionById(actionType);
-		if (action?.integration) return action.integration;
+		const action = findActionById(normalizedActionType);
+		if (action?.integration) {
+			return requiresConnectionForIntegration(action.integration)
+				? action.integration
+				: undefined;
+		}
 
 		// Fallback: extract piece name from slug
-		const slashIdx = actionType.indexOf("/");
+		const slashIdx = normalizedActionType.indexOf("/");
 		if (slashIdx > 0) {
-			const pieceName = actionType.slice(0, slashIdx);
-			if (getIntegration(pieceName)) return pieceName;
+			const pieceName = normalizedActionType.slice(0, slashIdx);
+			if (
+				getIntegration(pieceName) &&
+				requiresConnectionForIntegration(pieceName)
+			) {
+				return pieceName;
+			}
 		}
 
 		return undefined;
-	}, [actionType, findActionById, getIntegration]);
+	}, [normalizedActionType, findActionById, getIntegration]);
 
 	// Check if there are existing connections for this integration type
 	const hasExistingConnections = useMemo(() => {
@@ -594,14 +623,14 @@ export function ActionConfig({
 
 			{/* System actions - hardcoded config fields */}
 			<SystemActionFields
-				actionType={(config?.actionType as string) || ""}
+				actionType={normalizedActionType}
 				config={config}
 				disabled={disabled}
 				onUpdateConfig={onUpdateConfig}
 			/>
 
 			{/* Plugin actions - declarative config fields */}
-			{pieceAction && !SYSTEM_ACTION_IDS.includes(actionType) && (
+			{pieceAction && !SYSTEM_ACTION_IDS.includes(normalizedActionType) && (
 				<ActionConfigRenderer
 					config={config}
 					disabled={disabled}

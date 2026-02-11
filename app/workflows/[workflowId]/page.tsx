@@ -11,6 +11,10 @@ import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ApiError, api } from "@/lib/api-client";
 import {
+	getRequiredConnectionForAction,
+	requiresConnectionForIntegration,
+} from "@/lib/actions/planner-actions";
+import {
 	connectionsAtom,
 	connectionsLoadedAtom,
 	connectionsVersionAtom,
@@ -53,8 +57,18 @@ function getRequiredPieceName(
 	actionType: string,
 	findActionById: ReturnType<typeof usePiecesCatalog>["findActionById"],
 ): string | undefined {
+	const actionRequiredIntegration = getRequiredConnectionForAction(actionType);
+	if (actionRequiredIntegration) {
+		return actionRequiredIntegration;
+	}
+
 	const action = findActionById(actionType);
-	return action?.integration;
+	if (!action?.integration) {
+		return undefined;
+	}
+	return requiresConnectionForIntegration(action.integration)
+		? action.integration
+		: undefined;
 }
 
 // Helper to check and fix a single node's connection
