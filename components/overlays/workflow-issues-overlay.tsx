@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { IntegrationIcon } from "@/components/ui/integration-icon";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { connectionsVersionAtom } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
+import type { IntegrationType } from "@/lib/actions/types";
 import { AddConnectionOverlay } from "./add-connection-overlay";
 import { ConfigurationOverlay } from "./configuration-overlay";
 import { Overlay } from "./overlay";
@@ -33,7 +33,7 @@ type MissingRequiredField = {
 };
 
 type MissingIntegration = {
-	integrationType: PluginType;
+	integrationType: IntegrationType;
 	integrationLabel: string;
 	nodeNames: string[];
 };
@@ -81,7 +81,7 @@ export function WorkflowIssuesOverlay({
 		}
 	};
 
-	const handleAddIntegration = (integrationType: PluginType) => {
+	const handleAddIntegration = (integrationType: IntegrationType) => {
 		push(AddConnectionOverlay, {
 			preselectedPieceName: integrationType,
 			onSuccess: () => {

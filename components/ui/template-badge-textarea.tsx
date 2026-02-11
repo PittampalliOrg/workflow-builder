@@ -4,7 +4,7 @@ import { useAtom } from "jotai";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow-store";
-import { findActionById } from "@/plugins";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import { TemplateAutocomplete } from "./template-autocomplete";
 
 export interface TemplateBadgeTextareaProps {
@@ -27,7 +27,11 @@ function doesNodeExist(template: string, nodes: ReturnType<typeof useAtom<typeof
 }
 
 // Helper to get display text from template by looking up current node label
-function getDisplayTextForTemplate(template: string, nodes: ReturnType<typeof useAtom<typeof nodesAtom>>[0]): string {
+function getDisplayTextForTemplate(
+  template: string,
+  nodes: ReturnType<typeof useAtom<typeof nodesAtom>>[0],
+  findActionById: ReturnType<typeof usePiecesCatalog>["findActionById"]
+): string {
   // Extract nodeId and field from template: {{@nodeId:OldLabel.field}}
   const match = template.match(/\{\{@([^:]+):([^}]+)\}\}/);
   if (!match) return template;
@@ -83,6 +87,7 @@ export function TemplateBadgeTextarea({
   id,
   rows = 3,
 }: TemplateBadgeTextareaProps) {
+  const { findActionById } = usePiecesCatalog();
   const [isFocused, setIsFocused] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const [internalValue, setInternalValue] = useState(value);
@@ -298,7 +303,7 @@ export function TemplateBadgeTextarea({
       badge.contentEditable = "false";
       badge.setAttribute("data-template", fullMatch);
       // Use current node label for display
-      badge.textContent = getDisplayTextForTemplate(fullMatch, nodes);
+      badge.textContent = getDisplayTextForTemplate(fullMatch, nodes, findActionById);
       container.appendChild(badge);
 
       lastIndex = pattern.lastIndex;
@@ -617,4 +622,3 @@ export function TemplateBadgeTextarea({
     </>
   );
 }
-

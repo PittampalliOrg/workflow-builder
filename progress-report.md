@@ -44,10 +44,8 @@
   - Seeds ~35+ built-in functions with proper metadata
 
 #### 1.3 KEDA Autoscaling ✅
-- Created `k8s/knative/keda-scalers.yaml` with:
-  - Prometheus-based HTTP request scaling
-  - Dapr pub/sub queue depth scaling
-  - Scale 0-20 replicas, 30s cooldown
+- Kubernetes manifests are managed in the stacks repo (`~/repos/PittampalliOrg/stacks/main/`).
+- For scale-to-zero execution, the current stack uses Knative autoscaling.
 
 ---
 
@@ -142,10 +140,8 @@ Modified `services/workflow-orchestrator/src/activities/execute-action.ts`:
 
 ### Kubernetes Manifests ✅
 
-**workflow-builder repo (`k8s/knative/`):**
-- `function-runner.yaml` - Knative Service + Dapr sidecar
-- `keda-scalers.yaml` - KEDA autoscaling configuration
-- Updated `kustomization.yaml`
+**Kubernetes manifests:**
+- Manifests are managed in the stacks repo at `~/repos/PittampalliOrg/stacks/main/` using the `cnoe://` convention (idpbuilder + ArgoCD).
 
 **stacks/main repo (`packages/components/active-development/`):**
 - `apps/function-runner.yaml` - ArgoCD Application

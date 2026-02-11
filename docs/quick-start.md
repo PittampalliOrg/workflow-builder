@@ -195,7 +195,10 @@ kind load docker-image workflow-orchestrator:latest
 kind load docker-image function-runner:latest
 
 # Deploy services
-kubectl apply -k k8s/knative/
+# Kubernetes manifests are managed in the stacks repo (idpbuilder + ArgoCD).
+cd ~/repos/PittampalliOrg/stacks/main
+source deployment/scripts/cluster-menu.sh
+clu
 ```
 
 ## 8. Verify Deployment

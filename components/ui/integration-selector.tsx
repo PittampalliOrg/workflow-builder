@@ -20,12 +20,12 @@ import {
   connectionsVersionAtom,
   type AppConnection,
 } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
 import { cn } from "@/lib/utils";
-import { getIntegration } from "@/plugins";
+import type { IntegrationType } from "@/lib/actions/types";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 type IntegrationSelectorProps = {
-  integrationType: PluginType;
+  integrationType: IntegrationType;
   value?: string;
   onChange: (integrationId: string) => void;
   onOpenSettings?: () => void;
@@ -42,6 +42,7 @@ export function IntegrationSelector({
   onAddConnection,
 }: IntegrationSelectorProps) {
   const { push } = useOverlay();
+  const { getIntegration } = usePiecesCatalog();
   const [globalIntegrations, setGlobalIntegrations] = useAtom(connectionsAtom);
   const integrationsVersion = useAtomValue(connectionsVersionAtom);
   const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
@@ -143,8 +144,8 @@ export function IntegrationSelector({
     );
   }
 
-  const plugin = getIntegration(integrationType);
-  const integrationLabel = plugin?.label || integrationType;
+  const integration = getIntegration(integrationType);
+  const integrationLabel = integration?.label || integrationType;
 
   // No integrations - show add button
   if (integrations.length === 0) {

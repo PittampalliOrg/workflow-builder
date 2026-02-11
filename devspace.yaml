@@ -129,10 +129,6 @@ dev:
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
 
-        # Run plugin discovery (generate plugins/index.ts only, skip README update)
-        echo "Discovering plugins..."
-        (tsx scripts/discover-plugins.ts 2>&1 | grep -v "README" || true)
-
         echo "Starting Next.js development server with Turbo..."
         exec next dev --turbo
 
@@ -252,7 +248,7 @@ dev:
         value: "875421392000-2u0qcvoa6sc2vpisl0v8ah5h4drrljvr.apps.googleusercontent.com"
       # fn-activepieces internal URL (dev override for dynamic dropdown options)
       - name: FN_ACTIVEPIECES_URL
-        value: "http://fn-activepieces-standalone.workflow-builder.svc.cluster.local"
+        value: "http://fn-activepieces.workflow-builder.svc.cluster.local"
       # AP_ENCRYPTION_KEY is provided by envFrom secretRef: workflow-builder-secrets
       # Do NOT override it here — DevSpace inherits the base deployment's envFrom
 

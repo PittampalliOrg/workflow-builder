@@ -1,9 +1,8 @@
 "use client";
 
 import { Database, HelpCircle } from "lucide-react";
-import type { PluginType } from "@/plugins/registry";
 import { cn } from "@/lib/utils";
-import { getIntegration } from "@/plugins";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 interface IntegrationIconProps {
   integration: string;
@@ -41,28 +40,25 @@ export function IntegrationIcon({
   className = "h-3 w-3",
   logoUrl,
 }: IntegrationIconProps) {
+  const { getIntegration } = usePiecesCatalog();
+
   // Check for special icons first (integrations without plugins)
   const SpecialIcon = SPECIAL_ICONS[integration];
   if (SpecialIcon) {
     return <SpecialIcon className={cn("text-foreground", className)} />;
   }
 
-  // Look up plugin from registry
-  const plugin = getIntegration(integration as PluginType);
-
-  if (plugin?.icon) {
-    const PluginIcon = plugin.icon;
-    return <PluginIcon className={cn("text-foreground", className)} />;
-  }
+  const piece = getIntegration(integration);
+  const resolvedLogoUrl = logoUrl || piece?.logoUrl;
 
   // Fallback to logoUrl for Activepieces pieces
-  if (logoUrl) {
+  if (resolvedLogoUrl) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
         alt={integration}
         className={cn("object-contain", className)}
-        src={logoUrl}
+        src={resolvedLogoUrl}
       />
     );
   }

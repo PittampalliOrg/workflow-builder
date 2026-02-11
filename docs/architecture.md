@@ -555,8 +555,11 @@ VALUES ('External API', 'external/api-call', 'external', 'http',
 ### Deploy with Kustomize
 
 ```bash
-# Apply all manifests
-kubectl apply -k k8s/knative/
+# Kubernetes manifests are managed in the stacks repo (idpbuilder + ArgoCD).
+# See: ~/repos/PittampalliOrg/stacks/main/CLAUDE.md
+cd ~/repos/PittampalliOrg/stacks/main
+source deployment/scripts/cluster-menu.sh
+clu
 
 # Verify deployment
 kubectl get pods -n workflow-builder
@@ -591,8 +594,10 @@ pnpm seed-functions
 
 5. **Deploy services:**
 ```bash
-kubectl apply -f k8s/knative/workflow-orchestrator.yaml
-kubectl apply -f k8s/knative/function-runner.yaml
+# Kubernetes manifests live in the stacks repo.
+cd ~/repos/PittampalliOrg/stacks/main
+source deployment/scripts/cluster-menu.sh
+clu
 ```
 
 ### Docker Images

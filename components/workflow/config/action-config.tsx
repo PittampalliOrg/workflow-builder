@@ -29,13 +29,8 @@ import {
 	connectionsAtom,
 	connectionsVersionAtom,
 } from "@/lib/connections-store";
-import type { PluginType } from "@/plugins/registry";
-import {
-	findActionById,
-	getActionsByCategory,
-	getAllIntegrations,
-	registerApActions,
-} from "@/plugins";
+import type { IntegrationType } from "@/lib/actions/types";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import { ActionConfigRenderer } from "./action-config-renderer";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
@@ -232,7 +227,7 @@ function SystemActionFields({
 	disabled: boolean;
 }) {
 	switch (actionType) {
-		case "HTTP Request":
+		case "system/http-request":
 			return (
 				<HttpRequestFields
 					config={config}
@@ -240,7 +235,7 @@ function SystemActionFields({
 					onUpdateConfig={onUpdateConfig}
 				/>
 			);
-		case "Database Query":
+		case "system/database-query":
 			return (
 				<DatabaseQueryFields
 					config={config}
@@ -248,7 +243,7 @@ function SystemActionFields({
 					onUpdateConfig={onUpdateConfig}
 				/>
 			);
-		case "Condition":
+		case "system/condition":
 			return (
 				<ConditionFields
 					config={config}
@@ -262,30 +257,26 @@ function SystemActionFields({
 }
 
 // System actions that don't have plugins
-// id is the legacy actionType, slug is the canonical functionSlug
-const SYSTEM_ACTIONS: Array<{ id: string; label: string; slug: string }> = [
-	{ id: "HTTP Request", label: "HTTP Request", slug: "system/http-request" },
+// id is the canonical function slug used by the orchestrator/function-router
+const SYSTEM_ACTIONS: Array<{ id: string; label: string }> = [
+	{ id: "system/http-request", label: "HTTP Request" },
 	{
-		id: "Database Query",
+		id: "system/database-query",
 		label: "Database Query",
-		slug: "system/database-query",
 	},
-	{ id: "Condition", label: "Condition", slug: "system/condition" },
+	{ id: "system/condition", label: "Condition" },
 ];
 
 const SYSTEM_ACTION_IDS = SYSTEM_ACTIONS.map((a) => a.id);
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
-	"Database Query": "database",
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+	"system/database-query": "database",
 };
 
-// Build category mapping dynamically from plugins + System + AP pieces
+// Build category mapping from System + ActivePieces pieces
 function useCategoryData(apPieces: ApIntegration[]) {
 	return useMemo(() => {
-		const pluginCategories = getActionsByCategory();
-
-		// Build category map including System with both id and label
 		const allCategories: Record<
 			string,
 			Array<{ id: string; label: string }>
@@ -293,25 +284,12 @@ function useCategoryData(apPieces: ApIntegration[]) {
 			System: SYSTEM_ACTIONS,
 		};
 
-		for (const [category, actions] of Object.entries(pluginCategories)) {
-			allCategories[category] = actions.map((a) => ({
-				id: a.id,
-				label: a.label,
-			}));
-		}
-
-		// Merge AP piece actions into categories (keyed by displayName)
+		// Each piece displayName is a category; each action is an item.
 		for (const piece of apPieces) {
-			const categoryKey = piece.label; // e.g. "Google Sheets"
-			if (!allCategories[categoryKey]) {
-				allCategories[categoryKey] = [];
-			}
-			for (const action of piece.actions) {
-				allCategories[categoryKey].push({
-					id: `${piece.type}/${action.slug}`,
-					label: action.label,
-				});
-			}
+			allCategories[piece.label] = piece.actions.map((action) => ({
+				id: `${piece.type}/${action.slug}`,
+				label: action.label,
+			}));
 		}
 
 		return allCategories;
@@ -328,19 +306,11 @@ function getCategoryForAction(
 		return "System";
 	}
 
-	// Use findActionById which handles legacy labels from plugin registry + AP cache
-	const action = findActionById(actionType);
-	if (action?.category) {
-		return action.category;
-	}
-
-	// Check AP pieces directly (fallback for when cache isn't populated yet)
+	// Check AP pieces directly
 	if (apPieces) {
 		const [pieceName] = actionType.split("/");
 		const piece = apPieces.find((p) => p.type === pieceName);
-		if (piece) {
-			return piece.label;
-		}
+		if (piece) return piece.label;
 	}
 
 	return null;
@@ -353,12 +323,6 @@ function normalizeActionType(actionType: string): string {
 		return actionType;
 	}
 
-	// Use findActionById which handles legacy labels and returns the proper ID
-	const action = findActionById(actionType);
-	if (action) {
-		return action.id;
-	}
-
 	return actionType;
 }
 
@@ -368,16 +332,11 @@ function getSlugForAction(actionType: string): string | null {
 	// Check system actions first
 	const systemAction = SYSTEM_ACTIONS.find((a) => a.id === actionType);
 	if (systemAction) {
-		return systemAction.slug;
+		return systemAction.id;
 	}
 
-	// For plugin actions, the action id IS the slug (e.g., "openai/generate-text")
-	const action = findActionById(actionType);
-	if (action) {
-		return action.id; // Plugin action IDs are already in slug format
-	}
-
-	return null;
+	// For piece actions, the action type is already the canonical slug
+	return actionType;
 }
 
 function buildConnectionAuthTemplate(externalId: string): string {
@@ -399,29 +358,11 @@ export function ActionConfig({
 	isOwner = true,
 }: ActionConfigProps) {
 	const actionType = (config?.actionType as string) || "";
-	const integrations = useMemo(() => getAllIntegrations(), []);
-
-	// Fetch Activepieces pieces from API
-	const [apPieces, setApPieces] = useState<ApIntegration[]>([]);
-	useEffect(() => {
-		let cancelled = false;
-		fetch("/api/pieces/actions")
-			.then((res) => (res.ok ? res.json() : null))
-			.then((data) => {
-				if (!cancelled && data?.pieces) {
-					setApPieces(data.pieces);
-					// Register AP actions in the global registry for findActionById fallback
-					const allActions = data.pieces.flatMap((p: ApIntegration) =>
-						p.actions.map((a) => ({ ...a, integration: p.type })),
-					);
-					registerApActions(allActions);
-				}
-			})
-			.catch(() => {});
-		return () => {
-			cancelled = true;
-		};
-	}, []);
+	const {
+		pieces: apPieces,
+		findActionById,
+		getIntegration,
+	} = usePiecesCatalog();
 
 	const categories = useCategoryData(apPieces);
 
@@ -432,16 +373,6 @@ export function ActionConfig({
 	const setIntegrationsVersion = useSetAtom(connectionsVersionAtom);
 	const globalIntegrations = useAtomValue(connectionsAtom);
 	const { push } = useOverlay();
-
-	// Build a lookup map for AP piece logoUrls
-	const apPieceMap = useMemo(() => {
-		const map = new Map<string, ApIntegration>();
-		for (const piece of apPieces) {
-			map.set(piece.label, piece);
-			map.set(piece.type, piece);
-		}
-		return map;
-	}, [apPieces]);
 
 	// Sync category state when actionType changes (e.g., when switching nodes)
 	useEffect(() => {
@@ -478,10 +409,10 @@ export function ActionConfig({
 	};
 
 	// Get dynamic config fields for plugin actions
-	const pluginAction = actionType ? findActionById(actionType) : null;
+	const pieceAction = actionType ? findActionById(actionType) : null;
 
 	// Determine the integration type for the current action
-	const integrationType: PluginType | undefined = useMemo(() => {
+	const integrationType: IntegrationType | undefined = useMemo(() => {
 		if (!actionType) {
 			return;
 		}
@@ -491,23 +422,19 @@ export function ActionConfig({
 			return SYSTEM_ACTION_INTEGRATIONS[actionType];
 		}
 
-		// Check plugin actions (includes AP actions via apActionsCache)
+		// Piece actions
 		const action = findActionById(actionType);
-		if (action?.integration) {
-			return action.integration as PluginType;
-		}
+		if (action?.integration) return action.integration;
 
-		// Fallback: extract piece name from slug (e.g. "google-sheets/insert_row" → "google-sheets")
+		// Fallback: extract piece name from slug
 		const slashIdx = actionType.indexOf("/");
 		if (slashIdx > 0) {
 			const pieceName = actionType.slice(0, slashIdx);
-			if (apPieceMap.has(pieceName)) {
-				return pieceName as PluginType;
-			}
+			if (getIntegration(pieceName)) return pieceName;
 		}
 
 		return undefined;
-	}, [actionType, apPieceMap]);
+	}, [actionType, findActionById, getIntegration]);
 
 	// Check if there are existing connections for this integration type
 	const hasExistingConnections = useMemo(() => {
@@ -584,20 +511,8 @@ export function ActionConfig({
 								</div>
 							</SelectItem>
 							<SelectSeparator />
-							{integrations.map((integration) => (
-								<SelectItem key={integration.type} value={integration.label}>
-									<div className="flex items-center gap-2">
-										<IntegrationIcon
-											className="size-4"
-											integration={integration.type}
-										/>
-										<span>{integration.label}</span>
-									</div>
-								</SelectItem>
-							))}
 							{apPieces.length > 0 && (
 								<>
-									<SelectSeparator />
 									{apPieces.map((piece) => (
 										<SelectItem key={piece.type} value={piece.label}>
 											<div className="flex items-center gap-2">
@@ -686,11 +601,11 @@ export function ActionConfig({
 			/>
 
 			{/* Plugin actions - declarative config fields */}
-			{pluginAction && !SYSTEM_ACTION_IDS.includes(actionType) && (
+			{pieceAction && !SYSTEM_ACTION_IDS.includes(actionType) && (
 				<ActionConfigRenderer
 					config={config}
 					disabled={disabled}
-					fields={pluginAction.configFields}
+					fields={pieceAction.configFields}
 					onUpdateConfig={handlePluginUpdateConfig}
 				/>
 			)}

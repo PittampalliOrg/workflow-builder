@@ -5,8 +5,8 @@
 	"license": "Apache-2.0",
 	"description": "A template for building your own AI-driven workflow automation platform",
 	"scripts": {
-		"dev": "pnpm discover-plugins && next dev",
-		"build": "pnpm discover-plugins && next build",
+		"dev": "next dev",
+		"build": "next build",
 		"start": "next start",
 		"type-check": "tsc --noEmit",
 		"check": "node scripts/biome-wasm.mjs check --changed",

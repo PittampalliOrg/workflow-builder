@@ -2,16 +2,16 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  Code,
-  Copy,
-  Eraser,
-  Eye,
-  EyeOff,
-  FileCode,
-  Play,
-  RefreshCw,
-  Settings2,
-  Trash2,
+	Code,
+	Copy,
+	Eraser,
+	Eye,
+	EyeOff,
+	FileCode,
+	Play,
+	RefreshCw,
+	Settings2,
+	Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -24,35 +24,35 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api } from "@/lib/api-client";
 import {
-  generateNodeCode,
-  generateWorkflowCode,
-  getDaprNodeCodeFiles,
+	generateNodeCode,
+	generateWorkflowCode,
+	getDaprNodeCodeFiles,
 } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
 import {
-  clearNodeStatusesAtom,
-  clearWorkflowAtom,
-  currentWorkflowIdAtom,
-  currentWorkflowNameAtom,
-  deleteEdgeAtom,
-  deleteNodeAtom,
-  edgesAtom,
-  isGeneratingAtom,
-  isWorkflowOwnerAtom,
-  morphNodeTypeAtom,
-  newlyCreatedNodeIdAtom,
-  nodesAtom,
-  propertiesPanelActiveTabAtom,
-  selectedEdgeAtom,
-  selectedNodeAtom,
-  updateNodeDataAtom,
+	clearNodeStatusesAtom,
+	clearWorkflowAtom,
+	currentWorkflowIdAtom,
+	currentWorkflowNameAtom,
+	deleteEdgeAtom,
+	deleteNodeAtom,
+	edgesAtom,
+	isGeneratingAtom,
+	isWorkflowOwnerAtom,
+	morphNodeTypeAtom,
+	newlyCreatedNodeIdAtom,
+	nodesAtom,
+	propertiesPanelActiveTabAtom,
+	selectedEdgeAtom,
+	selectedNodeAtom,
+	updateNodeDataAtom,
 } from "@/lib/workflow-store";
-import { findActionById } from "@/plugins";
-import type { PluginType } from "@/plugins/registry";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
+import type { IntegrationType } from "@/lib/actions/types";
 import { ActionConfig } from "../workflow/config/action-config";
 import {
-  ActionGrid,
-  type ActionSelection,
+	ActionGrid,
+	type ActionSelection,
 } from "../workflow/config/action-grid";
 import { ActivityConfig } from "../workflow/config/activity-config";
 import { ApprovalGateConfig } from "../workflow/config/approval-gate-config";
@@ -62,901 +62,901 @@ import { WorkflowRuns } from "../workflow/workflow-runs";
 import type { OverlayComponentProps } from "./types";
 
 // System actions that need integrations (not in plugin registry)
-const SYSTEM_ACTION_INTEGRATIONS: Record<string, PluginType> = {
-  "Database Query": "database",
+const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
+	"system/database-query": "database",
 };
 
 function buildConnectionAuthTemplate(externalId: string): string {
-  return `{{connections['${externalId}']}}`;
+	return `{{connections['${externalId}']}}`;
 }
 
 function applyConnectionConfig(
-  config: Record<string, unknown> | undefined,
-  integration: { id: string; externalId?: string }
+	config: Record<string, unknown> | undefined,
+	integration: { id: string; externalId?: string },
 ): Record<string, unknown> {
-  return {
-    ...(config ?? {}),
-    integrationId: integration.id,
-    ...(integration.externalId
-      ? { auth: buildConnectionAuthTemplate(integration.externalId) }
-      : {}),
-  };
+	return {
+		...(config ?? {}),
+		integrationId: integration.id,
+		...(integration.externalId
+			? { auth: buildConnectionAuthTemplate(integration.externalId) }
+			: {}),
+	};
 }
 
 type ConfigurationOverlayProps = OverlayComponentProps;
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex UI logic with multiple conditions
 export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
-  const { push, closeAll } = useOverlay();
-  const [selectedNodeId] = useAtom(selectedNodeAtom);
-  const [selectedEdgeId] = useAtom(selectedEdgeAtom);
-  const [nodes] = useAtom(nodesAtom);
-  const [edges] = useAtom(edgesAtom);
-  const [isGenerating] = useAtom(isGeneratingAtom);
-  const [currentWorkflowId] = useAtom(currentWorkflowIdAtom);
-  const [currentWorkflowName, setCurrentWorkflowName] = useAtom(
-    currentWorkflowNameAtom
-  );
-  const isOwner = useAtomValue(isWorkflowOwnerAtom);
-  const updateNodeData = useSetAtom(updateNodeDataAtom);
-  const deleteNode = useSetAtom(deleteNodeAtom);
-  const deleteEdge = useSetAtom(deleteEdgeAtom);
-  const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
-  const clearWorkflow = useSetAtom(clearWorkflowAtom);
-  const morphNodeType = useSetAtom(morphNodeTypeAtom);
-  const [newlyCreatedNodeId, setNewlyCreatedNodeId] = useAtom(
-    newlyCreatedNodeIdAtom
-  );
-  const [activeTab, setActiveTab] = useAtom(propertiesPanelActiveTabAtom);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const refreshRunsRef = useRef<(() => Promise<void>) | null>(null);
+	const { push, closeAll } = useOverlay();
+	const { findActionById } = usePiecesCatalog();
+	const [selectedNodeId] = useAtom(selectedNodeAtom);
+	const [selectedEdgeId] = useAtom(selectedEdgeAtom);
+	const [nodes] = useAtom(nodesAtom);
+	const [edges] = useAtom(edgesAtom);
+	const [isGenerating] = useAtom(isGeneratingAtom);
+	const [currentWorkflowId] = useAtom(currentWorkflowIdAtom);
+	const [currentWorkflowName, setCurrentWorkflowName] = useAtom(
+		currentWorkflowNameAtom,
+	);
+	const isOwner = useAtomValue(isWorkflowOwnerAtom);
+	const updateNodeData = useSetAtom(updateNodeDataAtom);
+	const deleteNode = useSetAtom(deleteNodeAtom);
+	const deleteEdge = useSetAtom(deleteEdgeAtom);
+	const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
+	const clearWorkflow = useSetAtom(clearWorkflowAtom);
+	const morphNodeType = useSetAtom(morphNodeTypeAtom);
+	const [newlyCreatedNodeId, setNewlyCreatedNodeId] = useAtom(
+		newlyCreatedNodeIdAtom,
+	);
+	const [activeTab, setActiveTab] = useAtom(propertiesPanelActiveTabAtom);
+	const [isRefreshing, setIsRefreshing] = useState(false);
+	const refreshRunsRef = useRef<(() => Promise<void>) | null>(null);
 
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId);
-  const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
+	const selectedNode = nodes.find((node) => node.id === selectedNodeId);
+	const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
 
-  // Auto-fix invalid integration references
-  const globalIntegrations = useAtomValue(connectionsAtom);
-  useEffect(() => {
-    if (!(selectedNode && isOwner)) {
-      return;
-    }
+	// Auto-fix invalid integration references
+	const globalIntegrations = useAtomValue(connectionsAtom);
+	useEffect(() => {
+		if (!(selectedNode && isOwner)) {
+			return;
+		}
 
-    const actionType = selectedNode.data.config?.actionType as
-      | string
-      | undefined;
-    const currentIntegrationId = selectedNode.data.config?.integrationId as
-      | string
-      | undefined;
+		const actionType = selectedNode.data.config?.actionType as
+			| string
+			| undefined;
+		const currentIntegrationId = selectedNode.data.config?.integrationId as
+			| string
+			| undefined;
 
-    if (!(actionType && currentIntegrationId)) {
-      return;
-    }
+		if (!(actionType && currentIntegrationId)) {
+			return;
+		}
 
-    const action = findActionById(actionType);
-    const integrationType: PluginType | undefined =
-      (action?.integration as PluginType | undefined) ||
-      SYSTEM_ACTION_INTEGRATIONS[actionType];
+		const action = findActionById(actionType);
+		const integrationType: IntegrationType | undefined =
+			action?.integration || SYSTEM_ACTION_INTEGRATIONS[actionType];
 
-    if (!integrationType) {
-      return;
-    }
+		if (!integrationType) {
+			return;
+		}
 
-    const validIntegrations = globalIntegrations.filter(
-      (i) => i.pieceName === integrationType
-    );
-    const isValid = validIntegrations.some(
-      (i) => i.id === currentIntegrationId
-    );
+		const validIntegrations = globalIntegrations.filter(
+			(i) => i.pieceName === integrationType,
+		);
+		const isValid = validIntegrations.some(
+			(i) => i.id === currentIntegrationId,
+		);
 
-    if (!isValid && validIntegrations.length > 0) {
-      updateNodeData({
-        id: selectedNode.id,
-        data: {
-          config: applyConnectionConfig(
-            selectedNode.data.config,
-            validIntegrations[0]
-          ),
-        },
-      });
-    }
-  }, [selectedNode, globalIntegrations, isOwner, updateNodeData]);
+		if (!isValid && validIntegrations.length > 0) {
+			updateNodeData({
+				id: selectedNode.id,
+				data: {
+					config: applyConnectionConfig(
+						selectedNode.data.config,
+						validIntegrations[0],
+					),
+				},
+			});
+		}
+	}, [selectedNode, globalIntegrations, isOwner, updateNodeData]);
 
-  const handleUpdateConfig = useCallback(
-    (key: string, value: string) => {
-      if (!selectedNode) {
-        return;
-      }
-      updateNodeData({
-        id: selectedNode.id,
-        data: {
-          config: { ...selectedNode.data.config, [key]: value },
-        },
-      });
-    },
-    [selectedNode, updateNodeData]
-  );
+	const handleUpdateConfig = useCallback(
+		(key: string, value: string) => {
+			if (!selectedNode) {
+				return;
+			}
+			updateNodeData({
+				id: selectedNode.id,
+				data: {
+					config: { ...selectedNode.data.config, [key]: value },
+				},
+			});
+		},
+		[selectedNode, updateNodeData],
+	);
 
-  const handleUpdateLabel = useCallback(
-    (label: string) => {
-      if (!selectedNode) {
-        return;
-      }
-      updateNodeData({ id: selectedNode.id, data: { label } });
-    },
-    [selectedNode, updateNodeData]
-  );
+	const handleUpdateLabel = useCallback(
+		(label: string) => {
+			if (!selectedNode) {
+				return;
+			}
+			updateNodeData({ id: selectedNode.id, data: { label } });
+		},
+		[selectedNode, updateNodeData],
+	);
 
-  const handleUpdateDescription = useCallback(
-    (description: string) => {
-      if (!selectedNode) {
-        return;
-      }
-      updateNodeData({ id: selectedNode.id, data: { description } });
-    },
-    [selectedNode, updateNodeData]
-  );
+	const handleUpdateDescription = useCallback(
+		(description: string) => {
+			if (!selectedNode) {
+				return;
+			}
+			updateNodeData({ id: selectedNode.id, data: { description } });
+		},
+		[selectedNode, updateNodeData],
+	);
 
-  const handleToggleEnabled = useCallback(() => {
-    if (!selectedNode) {
-      return;
-    }
-    updateNodeData({
-      id: selectedNode.id,
-      data: { enabled: selectedNode.data.enabled === false },
-    });
-  }, [selectedNode, updateNodeData]);
+	const handleToggleEnabled = useCallback(() => {
+		if (!selectedNode) {
+			return;
+		}
+		updateNodeData({
+			id: selectedNode.id,
+			data: { enabled: selectedNode.data.enabled === false },
+		});
+	}, [selectedNode, updateNodeData]);
 
-  const handleDeleteNode = useCallback(() => {
-    push(ConfirmOverlay, {
-      title: "Delete Step",
-      message:
-        "Are you sure you want to delete this node? This action cannot be undone.",
-      confirmLabel: "Delete",
-      confirmVariant: "destructive" as const,
-      onConfirm: () => {
-        if (selectedNode) {
-          deleteNode(selectedNode.id);
-          closeAll();
-        }
-      },
-    });
-  }, [selectedNode, deleteNode, closeAll, push]);
+	const handleDeleteNode = useCallback(() => {
+		push(ConfirmOverlay, {
+			title: "Delete Step",
+			message:
+				"Are you sure you want to delete this node? This action cannot be undone.",
+			confirmLabel: "Delete",
+			confirmVariant: "destructive" as const,
+			onConfirm: () => {
+				if (selectedNode) {
+					deleteNode(selectedNode.id);
+					closeAll();
+				}
+			},
+		});
+	}, [selectedNode, deleteNode, closeAll, push]);
 
-  const handleRefreshRuns = async () => {
-    if (refreshRunsRef.current) {
-      setIsRefreshing(true);
-      await refreshRunsRef.current();
-      setIsRefreshing(false);
-    }
-  };
+	const handleRefreshRuns = async () => {
+		if (refreshRunsRef.current) {
+			setIsRefreshing(true);
+			await refreshRunsRef.current();
+			setIsRefreshing(false);
+		}
+	};
 
-  const handleDeleteAllRuns = () => {
-    push(ConfirmOverlay, {
-      title: "Delete All Runs",
-      message:
-        "Are you sure you want to delete all workflow runs? This action cannot be undone.",
-      confirmLabel: "Delete",
-      confirmVariant: "destructive" as const,
-      onConfirm: async () => {
-        if (!currentWorkflowId) {
-          return;
-        }
-        try {
-          await api.workflow.deleteExecutions(currentWorkflowId);
-          clearNodeStatuses();
-          if (refreshRunsRef.current) {
-            await refreshRunsRef.current();
-          }
-          toast.success("All runs deleted");
-        } catch (error) {
-          console.error("Failed to delete runs:", error);
-          toast.error("Failed to delete runs");
-        }
-      },
-    });
-  };
+	const handleDeleteAllRuns = () => {
+		push(ConfirmOverlay, {
+			title: "Delete All Runs",
+			message:
+				"Are you sure you want to delete all workflow runs? This action cannot be undone.",
+			confirmLabel: "Delete",
+			confirmVariant: "destructive" as const,
+			onConfirm: async () => {
+				if (!currentWorkflowId) {
+					return;
+				}
+				try {
+					await api.workflow.deleteExecutions(currentWorkflowId);
+					clearNodeStatuses();
+					if (refreshRunsRef.current) {
+						await refreshRunsRef.current();
+					}
+					toast.success("All runs deleted");
+				} catch (error) {
+					console.error("Failed to delete runs:", error);
+					toast.error("Failed to delete runs");
+				}
+			},
+		});
+	};
 
-  // Determine which tabs to show (only for node view)
-  const showCodeTab =
-    selectedNode &&
-    (selectedNode.data.type !== "trigger" ||
-      (selectedNode.data.config?.triggerType as string) !== "Manual") &&
-    selectedNode.data.config?.actionType !== "Condition";
+	// Determine which tabs to show (only for node view)
+	const showCodeTab =
+		selectedNode &&
+		(selectedNode.data.type !== "trigger" ||
+			(selectedNode.data.config?.triggerType as string) !== "Manual") &&
+		selectedNode.data.config?.actionType !== "Condition";
 
-  // Get current tab title
-  const getTabTitle = () => {
-    if (!selectedNode) {
-      // For workflow view, validate the tab
-      const validTab =
-        activeTab === "properties" ||
-        activeTab === "code" ||
-        (activeTab === "runs" && isOwner)
-          ? activeTab
-          : "properties";
-      switch (validTab) {
-        case "properties":
-          return "Workflow";
-        case "code":
-          return "Code";
-        case "runs":
-          return "Runs";
-        default:
-          return "Workflow";
-      }
-    }
-    switch (activeTab) {
-      case "properties":
-        return "Properties";
-      case "code":
-        return "Code";
-      case "runs":
-        return "Runs";
-      default:
-        return "Properties";
-    }
-  };
+	// Get current tab title
+	const getTabTitle = () => {
+		if (!selectedNode) {
+			// For workflow view, validate the tab
+			const validTab =
+				activeTab === "properties" ||
+				activeTab === "code" ||
+				(activeTab === "runs" && isOwner)
+					? activeTab
+					: "properties";
+			switch (validTab) {
+				case "properties":
+					return "Workflow";
+				case "code":
+					return "Code";
+				case "runs":
+					return "Runs";
+				default:
+					return "Workflow";
+			}
+		}
+		switch (activeTab) {
+			case "properties":
+				return "Properties";
+			case "code":
+				return "Code";
+			case "runs":
+				return "Runs";
+			default:
+				return "Properties";
+		}
+	};
 
-  // Generate full workflow code
-  const { code: workflowCode } = generateWorkflowCode(nodes, edges, {
-    workflowId: currentWorkflowId || "workflow",
-    functionName: currentWorkflowName,
-  });
+	// Generate full workflow code
+	const { code: workflowCode } = generateWorkflowCode(nodes, edges, {
+		workflowId: currentWorkflowId || "workflow",
+		functionName: currentWorkflowName,
+	});
 
-  // Handle copy workflow code
-  const handleCopyWorkflowCode = () => {
-    navigator.clipboard.writeText(workflowCode);
-    toast.success("Code copied to clipboard");
-  };
+	// Handle copy workflow code
+	const handleCopyWorkflowCode = () => {
+		navigator.clipboard.writeText(workflowCode);
+		toast.success("Code copied to clipboard");
+	};
 
-  // Handle copy node code
-  const handleCopyCode = useCallback(() => {
-    if (!selectedNode) {
-      return;
-    }
-    navigator.clipboard.writeText(generateNodeCode(selectedNode));
-    toast.success("Code copied to clipboard");
-  }, [selectedNode]);
+	// Handle copy node code
+	const handleCopyCode = useCallback(() => {
+		if (!selectedNode) {
+			return;
+		}
+		navigator.clipboard.writeText(generateNodeCode(selectedNode));
+		toast.success("Code copied to clipboard");
+	}, [selectedNode]);
 
-  // Handle updating workflow name
-  const handleUpdateWorkflowName = async (newName: string) => {
-    setCurrentWorkflowName(newName);
+	// Handle updating workflow name
+	const handleUpdateWorkflowName = async (newName: string) => {
+		setCurrentWorkflowName(newName);
 
-    if (currentWorkflowId) {
-      try {
-        await api.workflow.update(currentWorkflowId, { name: newName });
-      } catch (error) {
-        console.error("Failed to update workflow name:", error);
-      }
-    }
-  };
+		if (currentWorkflowId) {
+			try {
+				await api.workflow.update(currentWorkflowId, { name: newName });
+			} catch (error) {
+				console.error("Failed to update workflow name:", error);
+			}
+		}
+	};
 
-  // Handle clear workflow
-  const handleClearWorkflow = () => {
-    push(ConfirmOverlay, {
-      title: "Clear Workflow",
-      message:
-        "Are you sure you want to clear all nodes and connections? This action cannot be undone.",
-      confirmLabel: "Clear Workflow",
-      confirmVariant: "destructive" as const,
-      destructive: true,
-      onConfirm: () => {
-        clearWorkflow();
-      },
-    });
-  };
+	// Handle clear workflow
+	const handleClearWorkflow = () => {
+		push(ConfirmOverlay, {
+			title: "Clear Workflow",
+			message:
+				"Are you sure you want to clear all nodes and connections? This action cannot be undone.",
+			confirmLabel: "Clear Workflow",
+			confirmVariant: "destructive" as const,
+			destructive: true,
+			onConfirm: () => {
+				clearWorkflow();
+			},
+		});
+	};
 
-  // Handle delete workflow
-  const handleDeleteWorkflow = () => {
-    push(ConfirmOverlay, {
-      title: "Delete Workflow",
-      message: `Are you sure you want to delete "${currentWorkflowName}"? This will permanently delete the workflow. This cannot be undone.`,
-      confirmLabel: "Delete Workflow",
-      confirmVariant: "destructive" as const,
-      destructive: true,
-      onConfirm: async () => {
-        if (!currentWorkflowId) {
-          return;
-        }
-        try {
-          await api.workflow.delete(currentWorkflowId);
-          closeAll();
-          toast.success("Workflow deleted successfully");
-          window.location.href = "/";
-        } catch (error) {
-          console.error("Failed to delete workflow:", error);
-          toast.error("Failed to delete workflow. Please try again.");
-        }
-      },
-    });
-  };
+	// Handle delete workflow
+	const handleDeleteWorkflow = () => {
+		push(ConfirmOverlay, {
+			title: "Delete Workflow",
+			message: `Are you sure you want to delete "${currentWorkflowName}"? This will permanently delete the workflow. This cannot be undone.`,
+			confirmLabel: "Delete Workflow",
+			confirmVariant: "destructive" as const,
+			destructive: true,
+			onConfirm: async () => {
+				if (!currentWorkflowId) {
+					return;
+				}
+				try {
+					await api.workflow.delete(currentWorkflowId);
+					closeAll();
+					toast.success("Workflow deleted successfully");
+					window.location.href = "/";
+				} catch (error) {
+					console.error("Failed to delete workflow:", error);
+					toast.error("Failed to delete workflow. Please try again.");
+				}
+			},
+		});
+	};
 
-  // Handle delete edge
-  const handleDeleteEdge = () => {
-    if (selectedEdgeId) {
-      push(ConfirmOverlay, {
-        title: "Delete Connection",
-        message:
-          "Are you sure you want to delete this connection? This action cannot be undone.",
-        confirmLabel: "Delete",
-        confirmVariant: "destructive" as const,
-        onConfirm: () => {
-          deleteEdge(selectedEdgeId);
-          closeAll();
-        },
-      });
-    }
-  };
+	// Handle delete edge
+	const handleDeleteEdge = () => {
+		if (selectedEdgeId) {
+			push(ConfirmOverlay, {
+				title: "Delete Connection",
+				message:
+					"Are you sure you want to delete this connection? This action cannot be undone.",
+				confirmLabel: "Delete",
+				confirmVariant: "destructive" as const,
+				onConfirm: () => {
+					deleteEdge(selectedEdgeId);
+					closeAll();
+				},
+			});
+		}
+	};
 
-  // If an edge is selected, show edge properties
-  if (selectedEdge && !selectedNode) {
-    return (
-      <div className="flex h-full max-h-[80vh] flex-col">
-        <SmartOverlayHeader overlayId={overlayId} title="Connection" />
+	// If an edge is selected, show edge properties
+	if (selectedEdge && !selectedNode) {
+		return (
+			<div className="flex h-full max-h-[80vh] flex-col">
+				<SmartOverlayHeader overlayId={overlayId} title="Connection" />
 
-        <div className="flex-1 space-y-4 overflow-y-auto px-6 pt-4 pb-6">
-          <div className="space-y-2">
-            <Label htmlFor="edge-id">Connection ID</Label>
-            <Input disabled id="edge-id" value={selectedEdge.id} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="edge-source">Source</Label>
-            <Input disabled id="edge-source" value={selectedEdge.source} />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="edge-target">Target</Label>
-            <Input disabled id="edge-target" value={selectedEdge.target} />
-          </div>
-          {isOwner && (
-            <div className="pt-2">
-              <Button onClick={handleDeleteEdge} variant="ghost">
-                <Trash2 className="mr-2 size-4" />
-                Delete Connection
-              </Button>
-            </div>
-          )}
-        </div>
-      </div>
-    );
-  }
+				<div className="flex-1 space-y-4 overflow-y-auto px-6 pt-4 pb-6">
+					<div className="space-y-2">
+						<Label htmlFor="edge-id">Connection ID</Label>
+						<Input disabled id="edge-id" value={selectedEdge.id} />
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="edge-source">Source</Label>
+						<Input disabled id="edge-source" value={selectedEdge.source} />
+					</div>
+					<div className="space-y-2">
+						<Label htmlFor="edge-target">Target</Label>
+						<Input disabled id="edge-target" value={selectedEdge.target} />
+					</div>
+					{isOwner && (
+						<div className="pt-2">
+							<Button onClick={handleDeleteEdge} variant="ghost">
+								<Trash2 className="mr-2 size-4" />
+								Delete Connection
+							</Button>
+						</div>
+					)}
+				</div>
+			</div>
+		);
+	}
 
-  // If no node is selected, show workflow-level configuration
-  if (!selectedNode) {
-    // For workflow view, only properties, code, and runs (if owner) are valid tabs
-    const validWorkflowTab =
-      activeTab === "properties" ||
-      activeTab === "code" ||
-      (activeTab === "runs" && isOwner)
-        ? activeTab
-        : "properties";
+	// If no node is selected, show workflow-level configuration
+	if (!selectedNode) {
+		// For workflow view, only properties, code, and runs (if owner) are valid tabs
+		const validWorkflowTab =
+			activeTab === "properties" ||
+			activeTab === "code" ||
+			(activeTab === "runs" && isOwner)
+				? activeTab
+				: "properties";
 
-    return (
-      <div className="flex h-full max-h-[80vh] flex-col">
-        <SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
+		return (
+			<div className="flex h-full max-h-[80vh] flex-col">
+				<SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
 
-        <div className="flex-1 overflow-y-auto">
-          {validWorkflowTab === "properties" && (
-            <div className="space-y-4 px-6 pt-4 pb-6">
-              <div className="space-y-2">
-                <Label htmlFor="workflow-name">Workflow Name</Label>
-                <Input
-                  disabled={!isOwner}
-                  id="workflow-name"
-                  onChange={(e) => handleUpdateWorkflowName(e.target.value)}
-                  value={currentWorkflowName}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="workflow-id">Workflow ID</Label>
-                <Input
-                  disabled
-                  id="workflow-id"
-                  value={currentWorkflowId || "Not saved"}
-                />
-              </div>
-              {!isOwner && (
-                <div className="rounded-lg border border-muted bg-muted/30 p-3">
-                  <p className="text-muted-foreground text-sm">
-                    You are viewing a public workflow. Duplicate it to make
-                    changes.
-                  </p>
-                </div>
-              )}
-              {isOwner && (
-                <div className="flex items-center gap-2 pt-2">
-                  <Button onClick={handleClearWorkflow} variant="ghost">
-                    <Eraser className="mr-2 size-4" />
-                    Clear
-                  </Button>
-                  <Button onClick={handleDeleteWorkflow} variant="ghost">
-                    <Trash2 className="mr-2 size-4" />
-                    Delete
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
+				<div className="flex-1 overflow-y-auto">
+					{validWorkflowTab === "properties" && (
+						<div className="space-y-4 px-6 pt-4 pb-6">
+							<div className="space-y-2">
+								<Label htmlFor="workflow-name">Workflow Name</Label>
+								<Input
+									disabled={!isOwner}
+									id="workflow-name"
+									onChange={(e) => handleUpdateWorkflowName(e.target.value)}
+									value={currentWorkflowName}
+								/>
+							</div>
+							<div className="space-y-2">
+								<Label htmlFor="workflow-id">Workflow ID</Label>
+								<Input
+									disabled
+									id="workflow-id"
+									value={currentWorkflowId || "Not saved"}
+								/>
+							</div>
+							{!isOwner && (
+								<div className="rounded-lg border border-muted bg-muted/30 p-3">
+									<p className="text-muted-foreground text-sm">
+										You are viewing a public workflow. Duplicate it to make
+										changes.
+									</p>
+								</div>
+							)}
+							{isOwner && (
+								<div className="flex items-center gap-2 pt-2">
+									<Button onClick={handleClearWorkflow} variant="ghost">
+										<Eraser className="mr-2 size-4" />
+										Clear
+									</Button>
+									<Button onClick={handleDeleteWorkflow} variant="ghost">
+										<Trash2 className="mr-2 size-4" />
+										Delete
+									</Button>
+								</div>
+							)}
+						</div>
+					)}
 
-          {validWorkflowTab === "code" && (
-            <div className="flex flex-col">
-              <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <FileCode className="size-3.5 text-muted-foreground" />
-                  <code className="text-muted-foreground text-xs">
-                    workflow.json
-                  </code>
-                </div>
-                <Button
-                  className="h-7 text-xs"
-                  onClick={handleCopyWorkflowCode}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Copy className="mr-1 size-3" />
-                  Copy
-                </Button>
-              </div>
-              <div className="h-[400px]">
-                <CodeEditor
-                  defaultLanguage="json"
-                  height="100%"
-                  options={{
-                    readOnly: true,
-                    minimap: { enabled: false },
-                    lineNumbers: "on",
-                    scrollBeyondLastLine: false,
-                    fontSize: 12,
-                    wordWrap: "on",
-                  }}
-                  value={workflowCode}
-                />
-              </div>
-            </div>
-          )}
+					{validWorkflowTab === "code" && (
+						<div className="flex flex-col">
+							<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
+								<div className="flex items-center gap-2">
+									<FileCode className="size-3.5 text-muted-foreground" />
+									<code className="text-muted-foreground text-xs">
+										workflow.json
+									</code>
+								</div>
+								<Button
+									className="h-7 text-xs"
+									onClick={handleCopyWorkflowCode}
+									size="sm"
+									variant="ghost"
+								>
+									<Copy className="mr-1 size-3" />
+									Copy
+								</Button>
+							</div>
+							<div className="h-[400px]">
+								<CodeEditor
+									defaultLanguage="json"
+									height="100%"
+									options={{
+										readOnly: true,
+										minimap: { enabled: false },
+										lineNumbers: "on",
+										scrollBeyondLastLine: false,
+										fontSize: 12,
+										wordWrap: "on",
+									}}
+									value={workflowCode}
+								/>
+							</div>
+						</div>
+					)}
 
-          {validWorkflowTab === "runs" && isOwner && (
-            <div className="flex h-full flex-col">
-              <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-                <Button
-                  className="text-muted-foreground"
-                  disabled={isRefreshing}
-                  onClick={handleRefreshRuns}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <RefreshCw
-                    className={`size-4 ${isRefreshing ? "animate-spin" : ""}`}
-                  />
-                </Button>
-                <Button
-                  className="text-muted-foreground"
-                  onClick={handleDeleteAllRuns}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Eraser className="size-4" />
-                </Button>
-              </div>
-              <div className="flex-1 overflow-y-auto p-4">
-                <WorkflowRuns
-                  isActive={validWorkflowTab === "runs"}
-                  onRefreshRef={refreshRunsRef}
-                />
-              </div>
-            </div>
-          )}
-        </div>
+					{validWorkflowTab === "runs" && isOwner && (
+						<div className="flex h-full flex-col">
+							<div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+								<Button
+									className="text-muted-foreground"
+									disabled={isRefreshing}
+									onClick={handleRefreshRuns}
+									size="icon"
+									variant="ghost"
+								>
+									<RefreshCw
+										className={`size-4 ${isRefreshing ? "animate-spin" : ""}`}
+									/>
+								</Button>
+								<Button
+									className="text-muted-foreground"
+									onClick={handleDeleteAllRuns}
+									size="icon"
+									variant="ghost"
+								>
+									<Eraser className="size-4" />
+								</Button>
+							</div>
+							<div className="flex-1 overflow-y-auto p-4">
+								<WorkflowRuns
+									isActive={validWorkflowTab === "runs"}
+									onRefreshRef={refreshRunsRef}
+								/>
+							</div>
+						</div>
+					)}
+				</div>
 
-        {/* Bottom tab navigation */}
-        <div className="flex shrink-0 items-center justify-around border-t bg-background pb-safe">
-          <button
-            className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-              validWorkflowTab === "properties"
-                ? "text-foreground"
-                : "text-muted-foreground"
-            }`}
-            onClick={() => setActiveTab("properties")}
-            type="button"
-          >
-            <Settings2 className="size-5" />
-            Workflow
-          </button>
-          <button
-            className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-              validWorkflowTab === "code"
-                ? "text-foreground"
-                : "text-muted-foreground"
-            }`}
-            onClick={() => setActiveTab("code")}
-            type="button"
-          >
-            <Code className="size-5" />
-            Code
-          </button>
-          {isOwner && (
-            <button
-              className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-                validWorkflowTab === "runs"
-                  ? "text-foreground"
-                  : "text-muted-foreground"
-              }`}
-              onClick={() => setActiveTab("runs")}
-              type="button"
-            >
-              <Play className="size-5" />
-              Runs
-            </button>
-          )}
-        </div>
-      </div>
-    );
-  }
+				{/* Bottom tab navigation */}
+				<div className="flex shrink-0 items-center justify-around border-t bg-background pb-safe">
+					<button
+						className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+							validWorkflowTab === "properties"
+								? "text-foreground"
+								: "text-muted-foreground"
+						}`}
+						onClick={() => setActiveTab("properties")}
+						type="button"
+					>
+						<Settings2 className="size-5" />
+						Workflow
+					</button>
+					<button
+						className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+							validWorkflowTab === "code"
+								? "text-foreground"
+								: "text-muted-foreground"
+						}`}
+						onClick={() => setActiveTab("code")}
+						type="button"
+					>
+						<Code className="size-5" />
+						Code
+					</button>
+					{isOwner && (
+						<button
+							className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+								validWorkflowTab === "runs"
+									? "text-foreground"
+									: "text-muted-foreground"
+							}`}
+							onClick={() => setActiveTab("runs")}
+							type="button"
+						>
+							<Play className="size-5" />
+							Runs
+						</button>
+					)}
+				</div>
+			</div>
+		);
+	}
 
-  return (
-    <div className="flex h-full max-h-[80vh] flex-col">
-      {/* Header with current tab name */}
-      <SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
+	return (
+		<div className="flex h-full max-h-[80vh] flex-col">
+			{/* Header with current tab name */}
+			<SmartOverlayHeader overlayId={overlayId} title={getTabTitle()} />
 
-      {/* Content based on active tab */}
-      <div className="flex-1 overflow-y-auto">
-        {activeTab === "properties" && (
-          <div className="space-y-4 px-6 pt-4 pb-6">
-            {/* Action selection */}
-            {selectedNode.data.type === "action" &&
-              !selectedNode.data.config?.actionType &&
-              isOwner && (
-                <ActionGrid
-                  disabled={isGenerating}
-                  isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
-                  onSelectAction={(selection: ActionSelection) => {
-                    // Handle Dapr activity selection - morph node type
-                    if (
-                      selection.isDaprActivity &&
-                      selection.nodeType &&
-                      selection.nodeType !== "action"
-                    ) {
-                      morphNodeType({
-                        id: selectedNode.id,
-                        nodeType: selection.nodeType,
-                        data: {
-                          label:
-                            selection.nodeType === "activity"
-                              ? selection.activityName || "Activity"
-                              : selection.nodeType === "approval-gate"
-                                ? "Approval Gate"
-                                : selection.nodeType === "timer"
-                                  ? "Timer"
-                                  : "Step",
-                          config: {
-                            activityName: selection.activityName,
-                          },
-                        },
-                      });
-                    } else {
-                      // Regular action selection
-                      handleUpdateConfig("actionType", selection.actionType);
-                    }
-                    if (selectedNode?.id === newlyCreatedNodeId) {
-                      setNewlyCreatedNodeId(null);
-                    }
-                  }}
-                />
-              )}
+			{/* Content based on active tab */}
+			<div className="flex-1 overflow-y-auto">
+				{activeTab === "properties" && (
+					<div className="space-y-4 px-6 pt-4 pb-6">
+						{/* Action selection */}
+						{selectedNode.data.type === "action" &&
+							!selectedNode.data.config?.actionType &&
+							isOwner && (
+								<ActionGrid
+									disabled={isGenerating}
+									isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
+									onSelectAction={(selection: ActionSelection) => {
+										// Handle Dapr activity selection - morph node type
+										if (
+											selection.isDaprActivity &&
+											selection.nodeType &&
+											selection.nodeType !== "action"
+										) {
+											morphNodeType({
+												id: selectedNode.id,
+												nodeType: selection.nodeType,
+												data: {
+													label:
+														selection.nodeType === "activity"
+															? selection.activityName || "Activity"
+															: selection.nodeType === "approval-gate"
+																? "Approval Gate"
+																: selection.nodeType === "timer"
+																	? "Timer"
+																	: "Step",
+													config: {
+														activityName: selection.activityName,
+													},
+												},
+											});
+										} else {
+											// Regular action selection
+											handleUpdateConfig("actionType", selection.actionType);
+										}
+										if (selectedNode?.id === newlyCreatedNodeId) {
+											setNewlyCreatedNodeId(null);
+										}
+									}}
+								/>
+							)}
 
-            {selectedNode.data.type === "trigger" && (
-              <TriggerConfig
-                config={selectedNode.data.config || {}}
-                disabled={isGenerating || !isOwner}
-                onUpdateConfig={handleUpdateConfig}
-                workflowId={currentWorkflowId ?? undefined}
-              />
-            )}
+						{selectedNode.data.type === "trigger" && (
+							<TriggerConfig
+								config={selectedNode.data.config || {}}
+								disabled={isGenerating || !isOwner}
+								onUpdateConfig={handleUpdateConfig}
+								workflowId={currentWorkflowId ?? undefined}
+							/>
+						)}
 
-            {selectedNode.data.type === "action" &&
-              selectedNode.data.config?.actionType !== undefined && (
-                <ActionConfig
-                  config={selectedNode.data.config || {}}
-                  disabled={isGenerating || !isOwner}
-                  isOwner={isOwner}
-                  onUpdateConfig={handleUpdateConfig}
-                />
-              )}
+						{selectedNode.data.type === "action" &&
+							selectedNode.data.config?.actionType !== undefined && (
+								<ActionConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									isOwner={isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
 
-            {/* Dapr Activity Config */}
-            {selectedNode.type === "activity" && (
-              <ActivityConfig
-                config={selectedNode.data.config || {}}
-                disabled={isGenerating || !isOwner}
-                onUpdateConfig={handleUpdateConfig}
-              />
-            )}
+						{/* Dapr Activity Config */}
+						{selectedNode.type === "activity" && (
+							<ActivityConfig
+								config={selectedNode.data.config || {}}
+								disabled={isGenerating || !isOwner}
+								onUpdateConfig={handleUpdateConfig}
+							/>
+						)}
 
-            {/* Dapr Approval Gate Config */}
-            {selectedNode.type === "approval-gate" && (
-              <ApprovalGateConfig
-                config={selectedNode.data.config || {}}
-                disabled={isGenerating || !isOwner}
-                onUpdateConfig={handleUpdateConfig}
-              />
-            )}
+						{/* Dapr Approval Gate Config */}
+						{selectedNode.type === "approval-gate" && (
+							<ApprovalGateConfig
+								config={selectedNode.data.config || {}}
+								disabled={isGenerating || !isOwner}
+								onUpdateConfig={handleUpdateConfig}
+							/>
+						)}
 
-            {/* Dapr Timer Config */}
-            {selectedNode.type === "timer" && (
-              <TimerConfig
-                config={selectedNode.data.config || {}}
-                disabled={isGenerating || !isOwner}
-                onUpdateConfig={handleUpdateConfig}
-              />
-            )}
+						{/* Dapr Timer Config */}
+						{selectedNode.type === "timer" && (
+							<TimerConfig
+								config={selectedNode.data.config || {}}
+								disabled={isGenerating || !isOwner}
+								onUpdateConfig={handleUpdateConfig}
+							/>
+						)}
 
-            {/* Label & Description */}
-            {(selectedNode.data.type !== "action" ||
-              selectedNode.data.config?.actionType !== undefined) && (
-              <>
-                <div className="space-y-2">
-                  <Label htmlFor="label">Label</Label>
-                  <Input
-                    disabled={isGenerating || !isOwner}
-                    id="label"
-                    onChange={(e) => handleUpdateLabel(e.target.value)}
-                    value={selectedNode.data.label as string}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="description">Description</Label>
-                  <Input
-                    disabled={isGenerating || !isOwner}
-                    id="description"
-                    onChange={(e) => handleUpdateDescription(e.target.value)}
-                    placeholder="Optional description"
-                    value={(selectedNode.data.description as string) || ""}
-                  />
-                </div>
-              </>
-            )}
+						{/* Label & Description */}
+						{(selectedNode.data.type !== "action" ||
+							selectedNode.data.config?.actionType !== undefined) && (
+							<>
+								<div className="space-y-2">
+									<Label htmlFor="label">Label</Label>
+									<Input
+										disabled={isGenerating || !isOwner}
+										id="label"
+										onChange={(e) => handleUpdateLabel(e.target.value)}
+										value={selectedNode.data.label as string}
+									/>
+								</div>
+								<div className="space-y-2">
+									<Label htmlFor="description">Description</Label>
+									<Input
+										disabled={isGenerating || !isOwner}
+										id="description"
+										onChange={(e) => handleUpdateDescription(e.target.value)}
+										placeholder="Optional description"
+										value={(selectedNode.data.description as string) || ""}
+									/>
+								</div>
+							</>
+						)}
 
-            {/* Actions */}
-            {isOwner && (
-              <div className="flex items-center gap-2 pt-2">
-                {selectedNode.data.type === "action" && (
-                  <Button
-                    className="text-muted-foreground"
-                    onClick={handleToggleEnabled}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    {selectedNode.data.enabled === false ? (
-                      <>
-                        <EyeOff className="mr-2 size-4" />
-                        Disabled
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="mr-2 size-4" />
-                        Enabled
-                      </>
-                    )}
-                  </Button>
-                )}
-                <Button
-                  className="text-muted-foreground"
-                  onClick={handleDeleteNode}
-                  size="sm"
-                  variant="ghost"
-                >
-                  <Trash2 className="mr-2 size-4" />
-                  Delete
-                </Button>
-              </div>
-            )}
-          </div>
-        )}
+						{/* Actions */}
+						{isOwner && (
+							<div className="flex items-center gap-2 pt-2">
+								{selectedNode.data.type === "action" && (
+									<Button
+										className="text-muted-foreground"
+										onClick={handleToggleEnabled}
+										size="sm"
+										variant="ghost"
+									>
+										{selectedNode.data.enabled === false ? (
+											<>
+												<EyeOff className="mr-2 size-4" />
+												Disabled
+											</>
+										) : (
+											<>
+												<Eye className="mr-2 size-4" />
+												Enabled
+											</>
+										)}
+									</Button>
+								)}
+								<Button
+									className="text-muted-foreground"
+									onClick={handleDeleteNode}
+									size="sm"
+									variant="ghost"
+								>
+									<Trash2 className="mr-2 size-4" />
+									Delete
+								</Button>
+							</div>
+						)}
+					</div>
+				)}
 
-        {/* Preload Code tab - always render but hide when not active */}
-        {showCodeTab && (
-          <div
-            className={`flex flex-col ${activeTab === "code" ? "" : "invisible absolute -z-10"}`}
-          >
-            {(() => {
-              // Dapr node types
-              const isDaprNode =
-                selectedNode.type === "activity" ||
-                selectedNode.type === "approval-gate" ||
-                selectedNode.type === "timer" ||
-                selectedNode.type === "publish-event";
+				{/* Preload Code tab - always render but hide when not active */}
+				{showCodeTab && (
+					<div
+						className={`flex flex-col ${activeTab === "code" ? "" : "invisible absolute -z-10"}`}
+					>
+						{(() => {
+							// Dapr node types
+							const isDaprNode =
+								selectedNode.type === "activity" ||
+								selectedNode.type === "approval-gate" ||
+								selectedNode.type === "timer" ||
+								selectedNode.type === "publish-event";
 
-              if (isDaprNode) {
-                const codeFiles = getDaprNodeCodeFiles(selectedNode);
-                const file = codeFiles[0];
-                if (!file) {
-                  return null;
-                }
+							if (isDaprNode) {
+								const codeFiles = getDaprNodeCodeFiles(selectedNode);
+								const file = codeFiles[0];
+								if (!file) {
+									return null;
+								}
 
-                return (
-                  <>
-                    <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
-                      <div className="flex items-center gap-2">
-                        <FileCode className="size-3.5 text-muted-foreground" />
-                        <code className="text-muted-foreground text-xs">
-                          {file.filename}
-                        </code>
-                      </div>
-                      <Button
-                        className="text-muted-foreground"
-                        onClick={() => {
-                          navigator.clipboard.writeText(file.content);
-                          toast.success("Code copied to clipboard");
-                        }}
-                        size="sm"
-                        variant="ghost"
-                      >
-                        <Copy className="mr-2 size-4" />
-                        Copy
-                      </Button>
-                    </div>
-                    <div className="h-[400px]">
-                      <CodeEditor
-                        height="100%"
-                        language={file.language}
-                        options={{
-                          readOnly: true,
-                          minimap: { enabled: false },
-                          scrollBeyondLastLine: false,
-                          fontSize: 13,
-                          lineNumbers: "on",
-                          folding: false,
-                          wordWrap: "off",
-                          padding: { top: 16, bottom: 16 },
-                        }}
-                        value={file.content}
-                      />
-                    </div>
-                  </>
-                );
-              }
+								return (
+									<>
+										<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
+											<div className="flex items-center gap-2">
+												<FileCode className="size-3.5 text-muted-foreground" />
+												<code className="text-muted-foreground text-xs">
+													{file.filename}
+												</code>
+											</div>
+											<Button
+												className="text-muted-foreground"
+												onClick={() => {
+													navigator.clipboard.writeText(file.content);
+													toast.success("Code copied to clipboard");
+												}}
+												size="sm"
+												variant="ghost"
+											>
+												<Copy className="mr-2 size-4" />
+												Copy
+											</Button>
+										</div>
+										<div className="h-[400px]">
+											<CodeEditor
+												height="100%"
+												language={file.language}
+												options={{
+													readOnly: true,
+													minimap: { enabled: false },
+													scrollBeyondLastLine: false,
+													fontSize: 13,
+													lineNumbers: "on",
+													folding: false,
+													wordWrap: "off",
+													padding: { top: 16, bottom: 16 },
+												}}
+												value={file.content}
+											/>
+										</div>
+									</>
+								);
+							}
 
-              // Action and trigger nodes
-              const nodeCode = generateNodeCode(selectedNode);
-              const triggerType = selectedNode.data.config
-                ?.triggerType as string;
-              let filename = "";
-              let language = "typescript";
+							// Action and trigger nodes
+							const nodeCode = generateNodeCode(selectedNode);
+							const triggerType = selectedNode.data.config
+								?.triggerType as string;
+							let filename = "";
+							let language = "typescript";
 
-              if (selectedNode.data.type === "trigger") {
-                if (triggerType === "Schedule") {
-                  filename = "vercel.json";
-                  language = "json";
-                } else if (triggerType === "Webhook") {
-                  const webhookPath =
-                    (selectedNode.data.config?.webhookPath as string) ||
-                    "/webhook";
-                  filename = `webhook${webhookPath}.ts`;
-                } else {
-                  filename = "trigger.ts";
-                }
-              } else {
-                const actionType = selectedNode.data.config
-                  ?.actionType as string;
-                filename = actionType
-                  ? `${actionType.replace(/\//g, "-")}.ts`
-                  : "action.ts";
-              }
+							if (selectedNode.data.type === "trigger") {
+								if (triggerType === "Schedule") {
+									filename = "vercel.json";
+									language = "json";
+								} else if (triggerType === "Webhook") {
+									const webhookPath =
+										(selectedNode.data.config?.webhookPath as string) ||
+										"/webhook";
+									filename = `webhook${webhookPath}.ts`;
+								} else {
+									filename = "trigger.ts";
+								}
+							} else {
+								const actionType = selectedNode.data.config
+									?.actionType as string;
+								filename = actionType
+									? `${actionType.replace(/\//g, "-")}.ts`
+									: "action.ts";
+							}
 
-              return (
-                <>
-                  <div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <FileCode className="size-3.5 text-muted-foreground" />
-                      <code className="text-muted-foreground text-xs">
-                        {filename}
-                      </code>
-                    </div>
-                    <Button
-                      className="text-muted-foreground"
-                      onClick={handleCopyCode}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      <Copy className="mr-2 size-4" />
-                      Copy
-                    </Button>
-                  </div>
-                  <div className="h-[400px]">
-                    <CodeEditor
-                      height="100%"
-                      language={language}
-                      options={{
-                        readOnly: true,
-                        minimap: { enabled: false },
-                        scrollBeyondLastLine: false,
-                        fontSize: 13,
-                        lineNumbers: "on",
-                        folding: false,
-                        wordWrap: "off",
-                        padding: { top: 16, bottom: 16 },
-                      }}
-                      value={nodeCode}
-                    />
-                  </div>
-                </>
-              );
-            })()}
-          </div>
-        )}
+							return (
+								<>
+									<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
+										<div className="flex items-center gap-2">
+											<FileCode className="size-3.5 text-muted-foreground" />
+											<code className="text-muted-foreground text-xs">
+												{filename}
+											</code>
+										</div>
+										<Button
+											className="text-muted-foreground"
+											onClick={handleCopyCode}
+											size="sm"
+											variant="ghost"
+										>
+											<Copy className="mr-2 size-4" />
+											Copy
+										</Button>
+									</div>
+									<div className="h-[400px]">
+										<CodeEditor
+											height="100%"
+											language={language}
+											options={{
+												readOnly: true,
+												minimap: { enabled: false },
+												scrollBeyondLastLine: false,
+												fontSize: 13,
+												lineNumbers: "on",
+												folding: false,
+												wordWrap: "off",
+												padding: { top: 16, bottom: 16 },
+											}}
+											value={nodeCode}
+										/>
+									</div>
+								</>
+							);
+						})()}
+					</div>
+				)}
 
-        {activeTab === "runs" && isOwner && (
-          <div className="flex h-full flex-col">
-            <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
-              <Button
-                className="text-muted-foreground"
-                disabled={isRefreshing}
-                onClick={handleRefreshRuns}
-                size="sm"
-                variant="ghost"
-              >
-                <RefreshCw
-                  className={`mr-2 size-4 ${isRefreshing ? "animate-spin" : ""}`}
-                />
-                Refresh
-              </Button>
-              <Button
-                className="text-muted-foreground"
-                onClick={handleDeleteAllRuns}
-                size="sm"
-                variant="ghost"
-              >
-                <Eraser className="mr-2 size-4" />
-                Clear All
-              </Button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              <WorkflowRuns
-                isActive={activeTab === "runs"}
-                onRefreshRef={refreshRunsRef}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+				{activeTab === "runs" && isOwner && (
+					<div className="flex h-full flex-col">
+						<div className="flex shrink-0 items-center gap-2 border-b px-4 py-2">
+							<Button
+								className="text-muted-foreground"
+								disabled={isRefreshing}
+								onClick={handleRefreshRuns}
+								size="sm"
+								variant="ghost"
+							>
+								<RefreshCw
+									className={`mr-2 size-4 ${isRefreshing ? "animate-spin" : ""}`}
+								/>
+								Refresh
+							</Button>
+							<Button
+								className="text-muted-foreground"
+								onClick={handleDeleteAllRuns}
+								size="sm"
+								variant="ghost"
+							>
+								<Eraser className="mr-2 size-4" />
+								Clear All
+							</Button>
+						</div>
+						<div className="flex-1 overflow-y-auto p-4">
+							<WorkflowRuns
+								isActive={activeTab === "runs"}
+								onRefreshRef={refreshRunsRef}
+							/>
+						</div>
+					</div>
+				)}
+			</div>
 
-      {/* Bottom tab navigation */}
-      <div className="flex shrink-0 items-center justify-around border-t bg-background pb-safe">
-        <button
-          className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-            activeTab === "properties"
-              ? "text-foreground"
-              : "text-muted-foreground"
-          }`}
-          onClick={() => setActiveTab("properties")}
-          type="button"
-        >
-          <Settings2 className="size-5" />
-          Properties
-        </button>
-        {showCodeTab && (
-          <button
-            className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-              activeTab === "code" ? "text-foreground" : "text-muted-foreground"
-            }`}
-            onClick={() => setActiveTab("code")}
-            type="button"
-          >
-            <Code className="size-5" />
-            Code
-          </button>
-        )}
-        {isOwner && (
-          <button
-            className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
-              activeTab === "runs" ? "text-foreground" : "text-muted-foreground"
-            }`}
-            onClick={() => setActiveTab("runs")}
-            type="button"
-          >
-            <Play className="size-5" />
-            Runs
-          </button>
-        )}
-      </div>
-    </div>
-  );
+			{/* Bottom tab navigation */}
+			<div className="flex shrink-0 items-center justify-around border-t bg-background pb-safe">
+				<button
+					className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+						activeTab === "properties"
+							? "text-foreground"
+							: "text-muted-foreground"
+					}`}
+					onClick={() => setActiveTab("properties")}
+					type="button"
+				>
+					<Settings2 className="size-5" />
+					Properties
+				</button>
+				{showCodeTab && (
+					<button
+						className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+							activeTab === "code" ? "text-foreground" : "text-muted-foreground"
+						}`}
+						onClick={() => setActiveTab("code")}
+						type="button"
+					>
+						<Code className="size-5" />
+						Code
+					</button>
+				)}
+				{isOwner && (
+					<button
+						className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+							activeTab === "runs" ? "text-foreground" : "text-muted-foreground"
+						}`}
+						onClick={() => setActiveTab("runs")}
+						type="button"
+					>
+						<Play className="size-5" />
+						Runs
+					</button>
+				)}
+			</div>
+		</div>
+	);
 }

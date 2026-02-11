@@ -50,6 +50,12 @@ importers:
       '@activepieces/piece-microsoft-excel-365':
         specifier: 0.4.4
         version: 0.4.4
+      '@activepieces/piece-microsoft-onedrive':
+        specifier: 0.1.3
+        version: 0.1.3
+      '@activepieces/piece-microsoft-onenote':
+        specifier: 0.1.2
+        version: 0.1.2
       '@activepieces/piece-microsoft-outlook':
         specifier: 0.2.6
         version: 0.2.6
@@ -161,6 +167,12 @@ packages:
 
   '@activepieces/piece-microsoft-excel-365@0.4.4':
     resolution: {integrity: sha512-hTobjX5j9Zd7qKGMLF8veUCcSTwM9uVt7aN/AVonYasycNwmDaUNoUbMmhQQHMNDi8/hOvqRKqQb/ZiB7dcyqg==}
+
+  '@activepieces/piece-microsoft-onedrive@0.1.3':
+    resolution: {integrity: sha512-J7j+K7wKOrd0AIKf91JhmsSN+oHRiJcdTpvZn8KMTpI3iIpSR4RykdwxKjXHLzAZxGLKEZ5SowbSZuksYQnd5g==}
+
+  '@activepieces/piece-microsoft-onenote@0.1.2':
+    resolution: {integrity: sha512-PcqxuerZb3ifRbVFCqGkIQEXZXLlg9XJFhgUmdnjBU/uL9/6Q5HCoIV370/4nLpDQ/zXMxv0zNPx6P7kXyLi1A==}
 
   '@activepieces/piece-microsoft-outlook@0.2.6':
     resolution: {integrity: sha512-lpSD5438xakcV0OkuJCnnh10YWEovIPLTgyVFy8GHRj6fM/OWxMlEfMqnwZrQALm1a6H/JAy5vvZpwWfdtaabQ==}
@@ -2083,6 +2095,67 @@ snapshots:
       '@activepieces/shared': 0.34.0
       '@microsoft/microsoft-graph-client': 3.0.7
       '@microsoft/microsoft-graph-types': 2.40.0
+      '@sinclair/typebox': 0.34.11
+      ai: 6.0.77(zod@4.1.13)
+      axios: 1.13.1
+      axios-retry: 4.4.1(axios@1.13.1)
+      dayjs: 1.11.9
+      deepmerge-ts: 7.1.0
+      form-data: 4.0.4
+      i18next: 23.13.0
+      mime-types: 2.1.35
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+      zod: 4.1.13
+    transitivePeerDependencies:
+      - '@azure/identity'
+      - '@azure/msal-browser'
+      - buffer
+      - bufferutil
+      - debug
+      - stream-browserify
+      - supports-color
+      - utf-8-validate
+
+  '@activepieces/piece-microsoft-onedrive@0.1.3':
+    dependencies:
+      '@activepieces/pieces-common': 0.11.5
+      '@activepieces/pieces-framework': 0.25.2(zod@4.1.13)
+      '@activepieces/shared': 0.34.0
+      '@microsoft/microsoft-graph-client': 3.0.7
+      '@microsoft/microsoft-graph-types': 2.40.0
+      '@sinclair/typebox': 0.34.11
+      ai: 6.0.77(zod@4.1.13)
+      axios: 1.13.1
+      axios-retry: 4.4.1(axios@1.13.1)
+      dayjs: 1.11.9
+      deepmerge-ts: 7.1.0
+      form-data: 4.0.4
+      i18next: 23.13.0
+      mime-types: 2.1.35
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+      zod: 4.1.13
+    transitivePeerDependencies:
+      - '@azure/identity'
+      - '@azure/msal-browser'
+      - buffer
+      - bufferutil
+      - debug
+      - stream-browserify
+      - supports-color
+      - utf-8-validate
+
+  '@activepieces/piece-microsoft-onenote@0.1.2':
+    dependencies:
+      '@activepieces/pieces-common': 0.11.5
+      '@activepieces/pieces-framework': 0.25.2(zod@4.1.13)
+      '@activepieces/shared': 0.34.0
+      '@microsoft/microsoft-graph-client': 3.0.7
       '@sinclair/typebox': 0.34.11
       ai: 6.0.77(zod@4.1.13)
       axios: 1.13.1

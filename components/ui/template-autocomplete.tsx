@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { edgesAtom, nodesAtom, type WorkflowNode } from "@/lib/workflow-store";
-import { findActionById } from "@/plugins";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 type TemplateAutocompleteProps = {
   isOpen: boolean;
@@ -23,32 +23,6 @@ type SchemaField = {
   itemType?: "string" | "number" | "boolean" | "object";
   fields?: SchemaField[];
   description?: string;
-};
-
-// Helper to get a display name for a node
-const getNodeDisplayName = (node: WorkflowNode): string => {
-  if (node.data.label) {
-    return node.data.label;
-  }
-
-  if (node.data.type === "action") {
-    const actionType = node.data.config?.actionType as string | undefined;
-    if (actionType) {
-      // Look up human-readable label from plugin registry
-      const action = findActionById(actionType);
-      if (action?.label) {
-        return action.label;
-      }
-    }
-    return actionType || "HTTP Request";
-  }
-
-  if (node.data.type === "trigger") {
-    const triggerType = node.data.config?.triggerType as string | undefined;
-    return triggerType || "Manual";
-  }
-
-  return "Node";
 };
 
 // Convert schema fields to field descriptions
@@ -107,19 +81,49 @@ const isActionType = (
   );
 };
 
+function getNodeDisplayNameForNode(
+  node: WorkflowNode,
+  findActionById: ReturnType<typeof usePiecesCatalog>["findActionById"]
+): string {
+  if (node.data.label) {
+    return node.data.label;
+  }
+
+  if (node.data.type === "action") {
+    const actionType = node.data.config?.actionType as string | undefined;
+    if (actionType) {
+      const action = findActionById(actionType);
+      if (action?.label) {
+        return action.label;
+      }
+    }
+    return actionType || "Action";
+  }
+
+  if (node.data.type === "trigger") {
+    const triggerType = node.data.config?.triggerType as string | undefined;
+    return triggerType || "Manual";
+  }
+
+  return "Node";
+}
+
 // Get common fields based on node action type
-const getCommonFields = (node: WorkflowNode) => {
+function getCommonFieldsForNode(
+  node: WorkflowNode,
+  findActionById: ReturnType<typeof usePiecesCatalog>["findActionById"]
+) {
   const actionType = node.data.config?.actionType as string | undefined;
 
   // Special handling for dynamic outputs (system actions and schema-based)
-  if (actionType === "HTTP Request") {
+  if (actionType === "system/http-request") {
     return [
       { field: "data", description: "Response data" },
       { field: "status", description: "HTTP status code" },
     ];
   }
 
-  if (actionType === "Database Query") {
+  if (actionType === "system/database-query") {
     const dbSchema = node.data.config?.dbSchema as string | undefined;
     if (dbSchema) {
       try {
@@ -187,7 +191,7 @@ const getCommonFields = (node: WorkflowNode) => {
   }
 
   return [{ field: "data", description: "Output data" }];
-};
+}
 
 export function TemplateAutocomplete({
   isOpen,
@@ -197,6 +201,7 @@ export function TemplateAutocomplete({
   currentNodeId,
   filter = "",
 }: TemplateAutocompleteProps) {
+  const { findActionById } = usePiecesCatalog();
   const [nodes] = useAtom(nodesAtom);
   const [edges] = useAtom(edgesAtom);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -249,8 +254,8 @@ export function TemplateAutocomplete({
   }> = [];
 
   for (const node of upstreamNodes) {
-    const nodeName = getNodeDisplayName(node);
-    const fields = getCommonFields(node);
+    const nodeName = getNodeDisplayNameForNode(node, findActionById);
+    const fields = getCommonFieldsForNode(node, findActionById);
 
     // Add node itself
     options.push({
@@ -393,4 +398,3 @@ export function TemplateAutocomplete({
   // Use portal to render at document root to avoid clipping issues
   return createPortal(menuContent, document.body);
 }
-

@@ -11,6 +11,7 @@ import type {
 	UpdateConnectionValueRequestBody,
 	UpsertAppConnectionRequestBody,
 } from "./types/app-connection";
+import type { IntegrationDefinition } from "./actions/types";
 import type { McpInputProperty } from "./mcp/types";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
@@ -373,7 +374,16 @@ export const workflowApi = {
 	getAll: () => apiCall<SavedWorkflow[]>("/api/workflows"),
 
 	// Get a specific workflow
-	getById: (id: string) => apiCall<SavedWorkflow>(`/api/workflows/${id}`),
+	getById: async (id: string): Promise<SavedWorkflow | null> => {
+		try {
+			return await apiCall<SavedWorkflow>(`/api/workflows/${id}`);
+		} catch (error) {
+			if (error instanceof ApiError && error.status === 404) {
+				return null;
+			}
+			throw error;
+		}
+	},
 
 	// Create a new workflow
 	create: (workflow: Omit<WorkflowData, "id">) =>
@@ -872,6 +882,26 @@ export const pieceApi = {
 				version ? `?version=${encodeURIComponent(version)}` : ""
 			}`,
 		),
+
+	/**
+	 * Returns ActivePieces actions for the action picker.
+	 * - Default: installed pieces only
+	 * - With searchQuery: searches across all synced pieces
+	 */
+	actions: (params?: {
+		searchQuery?: string;
+		limit?: number;
+		scope?: "installed" | "all";
+	}) => {
+		const search = new URLSearchParams();
+		if (params?.searchQuery) search.set("searchQuery", params.searchQuery);
+		if (params?.limit) search.set("limit", String(params.limit));
+		if (params?.scope) search.set("scope", params.scope);
+		const query = search.toString();
+		return apiCall<{ pieces: IntegrationDefinition[] }>(
+			`/api/pieces/actions${query ? `?${query}` : ""}`,
+		);
+	},
 };
 
 // Activepieces-style app connections API

@@ -12,61 +12,77 @@
  * 4. Rebuild and deploy fn-activepieces
  */
 export const INSTALLED_PIECES: readonly string[] = [
-  // Google Suite
-  "google-sheets",
-  "google-calendar",
-  "google-docs",
-  "gmail",
-  "google-drive",
+	// Google Suite
+	"google-sheets",
+	"google-calendar",
+	"google-docs",
+	"gmail",
+	"google-drive",
 
-  // Productivity
-  "notion",
-  "airtable",
-  "todoist",
-  "monday",
+	// Productivity
+	"notion",
+	"airtable",
+	"todoist",
+	"monday",
 
-  // Communication
-  "discord",
-  "microsoft-teams",
-  "telegram-bot",
+	// Communication
+	"discord",
+	"microsoft-teams",
+	"telegram-bot",
 
-  // Microsoft Office
-  "microsoft-outlook",
-  "microsoft-excel-365",
-  "microsoft-todo",
+	// Microsoft Office
+	"microsoft-outlook",
+	"microsoft-excel-365",
+	"microsoft-todo",
+	"microsoft-onedrive",
+	"microsoft-onenote",
 
-  // Project Management
-  "jira-cloud",
-  "asana",
-  "trello",
-  "clickup",
+	// Project Management
+	"jira-cloud",
+	"asana",
+	"trello",
+	"clickup",
 
-  // CRM & Marketing
-  "hubspot",
-  "salesforce",
-  "mailchimp",
+	// CRM & Marketing
+	"hubspot",
+	"salesforce",
+	"mailchimp",
 
-  // E-commerce & Support
-  "shopify",
-  "zendesk",
+	// E-commerce & Support
+	"shopify",
+	"zendesk",
 
-  // Email
-  "sendgrid",
+	// Email
+	"sendgrid",
 
-  // Storage
-  "dropbox",
+	// Storage
+	"dropbox",
 ];
 
-const INSTALLED_SET = new Set(INSTALLED_PIECES);
+const INSTALLED_SET = new Set(
+	INSTALLED_PIECES.map((name) => name.toLowerCase()),
+);
 
-const AP_PACKAGE_PREFIX = "@activepieces/piece-";
+/**
+ * Normalize AP piece names to a canonical short slug.
+ * Handles:
+ * - full package names: "@activepieces/piece-google-sheets"
+ * - short names: "google-sheets"
+ * - underscore variants: "google_sheets"
+ */
+export function normalizePieceName(name: string): string {
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/^@activepieces\/piece-/, "")
+		.replace(/[_\s]+/g, "-")
+		.replace(/-+/g, "-");
+}
 
 /**
  * Check if a piece name (raw or with @activepieces/piece- prefix) is installed.
  */
 export function isPieceInstalled(name: string): boolean {
-  const normalized = name.startsWith(AP_PACKAGE_PREFIX)
-    ? name.slice(AP_PACKAGE_PREFIX.length)
-    : name;
-  return INSTALLED_SET.has(normalized);
+	const normalized = normalizePieceName(name);
+	return INSTALLED_SET.has(normalized);
 }

@@ -1,139 +1,187 @@
 import { streamText } from "ai";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
-import { generateAIActionPrompts } from "@/plugins";
+import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
+import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { flattenConfigFields } from "@/lib/actions/utils";
+import type { IntegrationDefinition } from "@/lib/actions/types";
+import { listPieceMetadata } from "@/lib/db/piece-metadata";
 
 // Simple type for operations
 type Operation = {
-  op:
-    | "setName"
-    | "setDescription"
-    | "addNode"
-    | "addEdge"
-    | "removeNode"
-    | "removeEdge"
-    | "updateNode";
-  name?: string;
-  description?: string;
-  node?: unknown;
-  edge?: unknown;
-  nodeId?: string;
-  edgeId?: string;
-  updates?: {
-    position?: { x: number; y: number };
-    data?: unknown;
-  };
+	op:
+		| "setName"
+		| "setDescription"
+		| "addNode"
+		| "addEdge"
+		| "removeNode"
+		| "removeEdge"
+		| "updateNode";
+	name?: string;
+	description?: string;
+	node?: unknown;
+	edge?: unknown;
+	nodeId?: string;
+	edgeId?: string;
+	updates?: {
+		position?: { x: number; y: number };
+		data?: unknown;
+	};
 };
 
 function encodeMessage(encoder: TextEncoder, message: object): Uint8Array {
-  return encoder.encode(`${JSON.stringify(message)}\n`);
+	return encoder.encode(`${JSON.stringify(message)}\n`);
 }
 
 function shouldSkipLine(line: string): boolean {
-  const trimmed = line.trim();
-  return !trimmed || trimmed.startsWith("```");
+	const trimmed = line.trim();
+	return !trimmed || trimmed.startsWith("```");
 }
 
 function tryParseAndEnqueueOperation(
-  line: string,
-  encoder: TextEncoder,
-  controller: ReadableStreamDefaultController,
-  operationCount: number
+	line: string,
+	encoder: TextEncoder,
+	controller: ReadableStreamDefaultController,
+	operationCount: number,
 ): number {
-  const trimmed = line.trim();
+	const trimmed = line.trim();
 
-  if (shouldSkipLine(line)) {
-    return operationCount;
-  }
+	if (shouldSkipLine(line)) {
+		return operationCount;
+	}
 
-  try {
-    const operation = JSON.parse(trimmed) as Operation;
-    const newCount = operationCount + 1;
+	try {
+		const operation = JSON.parse(trimmed) as Operation;
+		const newCount = operationCount + 1;
 
-    console.log(`[API] Operation ${newCount}:`, operation.op);
+		console.log(`[API] Operation ${newCount}:`, operation.op);
 
-    controller.enqueue(
-      encodeMessage(encoder, {
-        type: "operation",
-        operation,
-      })
-    );
+		controller.enqueue(
+			encodeMessage(encoder, {
+				type: "operation",
+				operation,
+			}),
+		);
 
-    return newCount;
-  } catch {
-    console.warn("[API] Skipping invalid JSON line:", trimmed.substring(0, 50));
-    return operationCount;
-  }
+		return newCount;
+	} catch {
+		console.warn("[API] Skipping invalid JSON line:", trimmed.substring(0, 50));
+		return operationCount;
+	}
 }
 
 function processBufferLines(
-  buffer: string,
-  encoder: TextEncoder,
-  controller: ReadableStreamDefaultController,
-  operationCount: number
+	buffer: string,
+	encoder: TextEncoder,
+	controller: ReadableStreamDefaultController,
+	operationCount: number,
 ): { remainingBuffer: string; newOperationCount: number } {
-  const lines = buffer.split("\n");
-  const remainingBuffer = lines.pop() || "";
-  let newOperationCount = operationCount;
+	const lines = buffer.split("\n");
+	const remainingBuffer = lines.pop() || "";
+	let newOperationCount = operationCount;
 
-  for (const line of lines) {
-    newOperationCount = tryParseAndEnqueueOperation(
-      line,
-      encoder,
-      controller,
-      newOperationCount
-    );
-  }
+	for (const line of lines) {
+		newOperationCount = tryParseAndEnqueueOperation(
+			line,
+			encoder,
+			controller,
+			newOperationCount,
+		);
+	}
 
-  return { remainingBuffer, newOperationCount };
+	return { remainingBuffer, newOperationCount };
 }
 
 async function processOperationStream(
-  textStream: AsyncIterable<string>,
-  encoder: TextEncoder,
-  controller: ReadableStreamDefaultController
+	textStream: AsyncIterable<string>,
+	encoder: TextEncoder,
+	controller: ReadableStreamDefaultController,
 ): Promise<void> {
-  let buffer = "";
-  let operationCount = 0;
-  let chunkCount = 0;
+	let buffer = "";
+	let operationCount = 0;
+	let chunkCount = 0;
 
-  for await (const chunk of textStream) {
-    chunkCount += 1;
-    buffer += chunk;
+	for await (const chunk of textStream) {
+		chunkCount += 1;
+		buffer += chunk;
 
-    const result = processBufferLines(
-      buffer,
-      encoder,
-      controller,
-      operationCount
-    );
-    buffer = result.remainingBuffer;
-    operationCount = result.newOperationCount;
-  }
+		const result = processBufferLines(
+			buffer,
+			encoder,
+			controller,
+			operationCount,
+		);
+		buffer = result.remainingBuffer;
+		operationCount = result.newOperationCount;
+	}
 
-  // Process any remaining buffer content
-  operationCount = tryParseAndEnqueueOperation(
-    buffer,
-    encoder,
-    controller,
-    operationCount
-  );
+	// Process any remaining buffer content
+	operationCount = tryParseAndEnqueueOperation(
+		buffer,
+		encoder,
+		controller,
+		operationCount,
+	);
 
-  console.log(
-    `[API] Stream complete. Chunks: ${chunkCount}, Operations: ${operationCount}`
-  );
+	console.log(
+		`[API] Stream complete. Chunks: ${chunkCount}, Operations: ${operationCount}`,
+	);
 
-  // Send completion
-  controller.enqueue(
-    encodeMessage(encoder, {
-      type: "complete",
-    })
-  );
+	// Send completion
+	controller.enqueue(
+		encodeMessage(encoder, {
+			type: "complete",
+		}),
+	);
 }
 
-function getSystemPrompt(): string {
-  const pluginActionPrompts = generateAIActionPrompts();
-  return `You are a workflow automation expert. Generate a workflow based on the user's description.
+async function generateAIPieceActionPrompts(): Promise<string> {
+	const allPieces = await listPieceMetadata({});
+	const pieces = allPieces.filter((p) => isPieceInstalled(p.name));
+	const integrations = convertApPiecesToIntegrations(
+		pieces,
+	) as IntegrationDefinition[];
+
+	const lines: string[] = [];
+
+	for (const piece of integrations) {
+		for (const action of piece.actions) {
+			const fullId = `${piece.type}/${action.slug}`;
+
+			const exampleConfig: Record<string, string | number> = {
+				actionType: fullId,
+			};
+
+			const flatFields = flattenConfigFields(action.configFields);
+
+			for (const field of flatFields) {
+				// Skip conditional fields in the example
+				if (field.showWhen) continue;
+
+				if (field.example !== undefined) {
+					exampleConfig[field.key] = field.example;
+				} else if (field.defaultValue !== undefined) {
+					exampleConfig[field.key] = field.defaultValue;
+				} else if (field.type === "number") {
+					exampleConfig[field.key] = 10;
+				} else if (field.type === "select" && field.options?.[0]) {
+					exampleConfig[field.key] = field.options[0].value;
+				} else {
+					exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
+				}
+			}
+
+			lines.push(
+				`- ${action.label} (${fullId}): ${JSON.stringify(exampleConfig)}`,
+			);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function getSystemPrompt(pluginActionPrompts: string): string {
+	return `You are a workflow automation expert. Generate a workflow based on the user's description.
 
 CRITICAL: Output your workflow as INDIVIDUAL OPERATIONS, one per line in JSONL format.
 Each line must be a complete, separate JSON object.
@@ -189,9 +237,9 @@ Trigger types:
 - Schedule: {"triggerType": "Schedule", "scheduleCron": "0 9 * * *", ...}
 
 System action types (built-in):
-- Database Query: {"actionType": "Database Query", "dbQuery": "SELECT * FROM table", "dbTable": "table"}
-- HTTP Request: {"actionType": "HTTP Request", "httpMethod": "POST", "endpoint": "https://api.example.com", "httpHeaders": "{}", "httpBody": "{}"}
-- Condition: {"actionType": "Condition", "condition": "{{@nodeId:Label.field}} === 'value'"}
+- Database Query: {"actionType": "system/database-query", "dbQuery": "SELECT * FROM table"}
+- HTTP Request: {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com", "httpHeaders": "{}", "httpBody": "{}"}
+- Condition: {"actionType": "system/condition", "condition": "{{@nodeId:Label.field}} === 'value'"}
 
 Plugin action types (from integrations):
 ${pluginActionPrompts}
@@ -231,15 +279,15 @@ Example output (linear workflow with 250px horizontal spacing):
 {"op": "setName", "name": "Contact Form Workflow"}
 {"op": "setDescription", "description": "Processes contact form submissions"}
 {"op": "addNode", "node": {"id": "trigger-1", "type": "trigger", "position": {"x": 100, "y": 200}, "data": {"label": "Contact Form", "type": "trigger", "config": {"triggerType": "Manual"}, "status": "idle"}}}
-{"op": "addNode", "node": {"id": "send-email", "type": "action", "position": {"x": 350, "y": 200}, "data": {"label": "Send Email", "type": "action", "config": {"actionType": "Send Email", "emailTo": "admin@example.com", "emailSubject": "New Contact", "emailBody": "New contact form submission"}, "status": "idle"}}}
-{"op": "addNode", "node": {"id": "log-action", "type": "action", "position": {"x": 600, "y": 200}, "data": {"label": "Log Result", "type": "action", "config": {"actionType": "HTTP Request", "httpMethod": "POST", "endpoint": "https://api.example.com/log"}, "status": "idle"}}}
+{"op": "addNode", "node": {"id": "send-email", "type": "action", "position": {"x": 350, "y": 200}, "data": {"label": "Send Email", "type": "action", "config": {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com/send-email", "httpHeaders": "{}", "httpBody": "{}"}, "status": "idle"}}}
+{"op": "addNode", "node": {"id": "log-action", "type": "action", "position": {"x": 600, "y": 200}, "data": {"label": "Log Result", "type": "action", "config": {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com/log", "httpHeaders": "{}", "httpBody": "{}"}, "status": "idle"}}}
 {"op": "addEdge", "edge": {"id": "e1", "source": "trigger-1", "target": "send-email", "type": "default"}}
 {"op": "addEdge", "edge": {"id": "e2", "source": "send-email", "target": "log-action", "type": "default"}}
 
 Example output (branching workflow with 250px vertical spacing):
 {"op": "addNode", "node": {"id": "trigger-1", "type": "trigger", "position": {"x": 100, "y": 200}, "data": {"label": "Webhook", "type": "trigger", "config": {"triggerType": "Webhook"}, "status": "idle"}}}
-{"op": "addNode", "node": {"id": "branch-a", "type": "action", "position": {"x": 350, "y": 75}, "data": {"label": "Branch A", "type": "action", "config": {"actionType": "Send Email"}, "status": "idle"}}}
-{"op": "addNode", "node": {"id": "branch-b", "type": "action", "position": {"x": 350, "y": 325}, "data": {"label": "Branch B", "type": "action", "config": {"actionType": "Send Slack Message"}, "status": "idle"}}}
+{"op": "addNode", "node": {"id": "branch-a", "type": "action", "position": {"x": 350, "y": 75}, "data": {"label": "Branch A", "type": "action", "config": {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com/branch-a", "httpHeaders": "{}", "httpBody": "{}"}, "status": "idle"}}}
+{"op": "addNode", "node": {"id": "branch-b", "type": "action", "position": {"x": 350, "y": 325}, "data": {"label": "Branch B", "type": "action", "config": {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com/branch-b", "httpHeaders": "{}", "httpBody": "{}"}, "status": "idle"}}}
 {"op": "addEdge", "edge": {"id": "e1", "source": "trigger-1", "target": "branch-a", "type": "default"}}
 {"op": "addEdge", "edge": {"id": "e2", "source": "trigger-1", "target": "branch-b", "type": "default"}}
 
@@ -247,53 +295,53 @@ REMEMBER: After adding all nodes, you MUST add edges to connect them! Every node
 }
 
 export async function POST(request: Request) {
-  try {
-    const session = await getSession(request);
+	try {
+		const session = await getSession(request);
 
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+		if (!session?.user) {
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
 
-    const body = await request.json();
-    const { prompt, existingWorkflow } = body;
+		const body = await request.json();
+		const { prompt, existingWorkflow } = body;
 
-    if (!prompt) {
-      return NextResponse.json(
-        { error: "Prompt is required" },
-        { status: 400 }
-      );
-    }
+		if (!prompt) {
+			return NextResponse.json(
+				{ error: "Prompt is required" },
+				{ status: 400 },
+			);
+		}
 
-    const apiKey = process.env.AI_GATEWAY_API_KEY || process.env.OPENAI_API_KEY;
+		const apiKey = process.env.AI_GATEWAY_API_KEY || process.env.OPENAI_API_KEY;
 
-    if (!apiKey) {
-      return NextResponse.json(
-        {
-          error: "AI API key not configured on server. Please contact support.",
-        },
-        { status: 500 }
-      );
-    }
+		if (!apiKey) {
+			return NextResponse.json(
+				{
+					error: "AI API key not configured on server. Please contact support.",
+				},
+				{ status: 500 },
+			);
+		}
 
-    // Build the user prompt
-    let userPrompt = prompt;
-    if (existingWorkflow) {
-      // Identify nodes and their labels for context
-      const nodesList = (existingWorkflow.nodes || [])
-        .map(
-          (n: { id: string; data?: { label?: string } }) =>
-            `- ${n.id} (${n.data?.label || "Unlabeled"})`
-        )
-        .join("\n");
+		// Build the user prompt
+		let userPrompt = prompt;
+		if (existingWorkflow) {
+			// Identify nodes and their labels for context
+			const nodesList = (existingWorkflow.nodes || [])
+				.map(
+					(n: { id: string; data?: { label?: string } }) =>
+						`- ${n.id} (${n.data?.label || "Unlabeled"})`,
+				)
+				.join("\n");
 
-      const edgesList = (existingWorkflow.edges || [])
-        .map(
-          (e: { id: string; source: string; target: string }) =>
-            `- ${e.id}: ${e.source} -> ${e.target}`
-        )
-        .join("\n");
+			const edgesList = (existingWorkflow.edges || [])
+				.map(
+					(e: { id: string; source: string; target: string }) =>
+						`- ${e.id}: ${e.source} -> ${e.target}`,
+				)
+				.join("\n");
 
-      userPrompt = `I have an existing workflow. I want you to make ONLY the changes I request.
+			userPrompt = `I have an existing workflow. I want you to make ONLY the changes I request.
 
 Current workflow nodes:
 ${nodesList}
@@ -320,53 +368,55 @@ IMPORTANT: Output ONLY the operations needed to make the requested changes.
 
 Example: If user says "connect node A to node B", output:
 {"op": "addEdge", "edge": {"id": "e-new", "source": "A", "target": "B", "type": "default"}}`;
-    }
+		}
 
-    const result = streamText({
-      model: "openai/gpt-5.1-instant",
-      system: getSystemPrompt(),
-      prompt: userPrompt,
-    });
+		const pieceActionPrompts = await generateAIPieceActionPrompts();
 
-    // Create a streaming response
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          await processOperationStream(result.textStream, encoder, controller);
-          controller.close();
-        } catch (error) {
-          controller.enqueue(
-            encodeMessage(encoder, {
-              type: "error",
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Failed to generate workflow",
-            })
-          );
-          controller.close();
-        }
-      },
-    });
+		const result = streamText({
+			model: "openai/gpt-5.1-instant",
+			system: getSystemPrompt(pieceActionPrompts),
+			prompt: userPrompt,
+		});
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "application/x-ndjson",
-        "Cache-Control": "no-cache",
-        Connection: "keep-alive",
-      },
-    });
-  } catch (error) {
-    console.error("Failed to generate workflow:", error);
-    return NextResponse.json(
-      {
-        error:
-          error instanceof Error
-            ? error.message
-            : "Failed to generate workflow",
-      },
-      { status: 500 }
-    );
-  }
+		// Create a streaming response
+		const encoder = new TextEncoder();
+		const stream = new ReadableStream({
+			async start(controller) {
+				try {
+					await processOperationStream(result.textStream, encoder, controller);
+					controller.close();
+				} catch (error) {
+					controller.enqueue(
+						encodeMessage(encoder, {
+							type: "error",
+							error:
+								error instanceof Error
+									? error.message
+									: "Failed to generate workflow",
+						}),
+					);
+					controller.close();
+				}
+			},
+		});
+
+		return new Response(stream, {
+			headers: {
+				"Content-Type": "application/x-ndjson",
+				"Cache-Control": "no-cache",
+				Connection: "keep-alive",
+			},
+		});
+	} catch (error) {
+		console.error("Failed to generate workflow:", error);
+		return NextResponse.json(
+			{
+				error:
+					error instanceof Error
+						? error.message
+						: "Failed to generate workflow",
+			},
+			{ status: 500 },
+		);
+	}
 }

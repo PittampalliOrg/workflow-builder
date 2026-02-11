@@ -1,7 +1,7 @@
 /**
  * Piece Registry
  *
- * Static imports of all 26 AP piece packages.
+ * Static imports of all AP piece packages used by workflow-builder.
  * Each piece exports a Piece object with getAction(name) method.
  */
 
@@ -24,6 +24,8 @@ import { hubspot } from "@activepieces/piece-hubspot";
 import { jiraCloud } from "@activepieces/piece-jira-cloud";
 import { mailchimp } from "@activepieces/piece-mailchimp";
 import { microsoftExcel365 } from "@activepieces/piece-microsoft-excel-365";
+import { microsoftOneDrive } from "@activepieces/piece-microsoft-onedrive";
+import { microsoftOnenote } from "@activepieces/piece-microsoft-onenote";
 // Microsoft Office
 import { microsoftOutlook } from "@activepieces/piece-microsoft-outlook";
 import { microsoftTeams } from "@activepieces/piece-microsoft-teams";
@@ -49,45 +51,56 @@ import { mcp } from "./custom-pieces/mcp.js";
  * Map of piece name (normalized, without @activepieces/piece- prefix) to Piece instance.
  */
 export const PIECES: Record<string, Piece> = {
-  "google-sheets": googleSheets as unknown as Piece,
-  "google-calendar": googleCalendar as unknown as Piece,
-  "google-docs": googleDocs as unknown as Piece,
-  gmail: gmail as unknown as Piece,
-  "google-drive": googleDrive as unknown as Piece,
-  notion: notion as unknown as Piece,
-  airtable: airtable as unknown as Piece,
-  discord: discord as unknown as Piece,
-  "microsoft-teams": microsoftTeams as unknown as Piece,
-  "microsoft-outlook": microsoftOutlook as unknown as Piece,
-  "microsoft-excel-365": microsoftExcel365 as unknown as Piece,
-  "microsoft-todo": microsoftTodo as unknown as Piece,
-  "jira-cloud": jiraCloud as unknown as Piece,
-  asana: asana as unknown as Piece,
-  trello: trello as unknown as Piece,
-  clickup: clickup as unknown as Piece,
-  todoist: todoist as unknown as Piece,
-  monday: monday as unknown as Piece,
-  hubspot: hubspot as unknown as Piece,
-  salesforce: salesforce as unknown as Piece,
-  mailchimp: mailchimp as unknown as Piece,
-  shopify: shopify as unknown as Piece,
-  zendesk: zendesk as unknown as Piece,
-  sendgrid: sendgrid as unknown as Piece,
-  dropbox: dropbox as unknown as Piece,
-  "telegram-bot": telegramBot as unknown as Piece,
-  mcp: mcp as unknown as Piece,
+	"google-sheets": googleSheets as unknown as Piece,
+	"google-calendar": googleCalendar as unknown as Piece,
+	"google-docs": googleDocs as unknown as Piece,
+	gmail: gmail as unknown as Piece,
+	"google-drive": googleDrive as unknown as Piece,
+	notion: notion as unknown as Piece,
+	airtable: airtable as unknown as Piece,
+	discord: discord as unknown as Piece,
+	"microsoft-teams": microsoftTeams as unknown as Piece,
+	"microsoft-outlook": microsoftOutlook as unknown as Piece,
+	"microsoft-excel-365": microsoftExcel365 as unknown as Piece,
+	"microsoft-todo": microsoftTodo as unknown as Piece,
+	"microsoft-onedrive": microsoftOneDrive as unknown as Piece,
+	"microsoft-onenote": microsoftOnenote as unknown as Piece,
+	"jira-cloud": jiraCloud as unknown as Piece,
+	asana: asana as unknown as Piece,
+	trello: trello as unknown as Piece,
+	clickup: clickup as unknown as Piece,
+	todoist: todoist as unknown as Piece,
+	monday: monday as unknown as Piece,
+	hubspot: hubspot as unknown as Piece,
+	salesforce: salesforce as unknown as Piece,
+	mailchimp: mailchimp as unknown as Piece,
+	shopify: shopify as unknown as Piece,
+	zendesk: zendesk as unknown as Piece,
+	sendgrid: sendgrid as unknown as Piece,
+	dropbox: dropbox as unknown as Piece,
+	"telegram-bot": telegramBot as unknown as Piece,
+	mcp: mcp as unknown as Piece,
 };
+
+function normalizePieceName(name: string): string {
+	return name
+		.trim()
+		.toLowerCase()
+		.replace(/^@activepieces\/piece-/, "")
+		.replace(/[_\s]+/g, "-")
+		.replace(/-+/g, "-");
+}
 
 /**
  * Get a piece by normalized name.
  */
 export function getPiece(name: string): Piece | undefined {
-  return PIECES[name];
+	return PIECES[normalizePieceName(name)];
 }
 
 /**
  * List all registered piece names.
  */
 export function listPieceNames(): string[] {
-  return Object.keys(PIECES);
+	return Object.keys(PIECES);
 }
