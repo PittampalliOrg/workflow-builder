@@ -124,6 +124,15 @@ type StreamState = {
 	currentData: WorkflowData;
 };
 
+export type WorkflowAiChatMessage = {
+	id: string;
+	role: "user" | "assistant" | "system";
+	content: string;
+	operations: Array<Record<string, unknown>> | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
 type OperationHandler = (
 	op: StreamMessage["operation"],
 	state: StreamState,
@@ -261,6 +270,9 @@ function processStreamLine(
 		}
 	} catch (error) {
 		console.error("[API Client] Failed to parse JSONL line:", error);
+		throw error instanceof Error
+			? error
+			: new Error("Failed to parse workflow stream");
 	}
 }
 
@@ -278,6 +290,88 @@ function processStreamChunk(
 
 	for (const line of lines) {
 		processStreamLine(line, onUpdate, state);
+	}
+}
+
+async function streamWorkflowOperations(
+	endpoint: string,
+	body: Record<string, unknown>,
+	onUpdate: (data: WorkflowData) => void,
+	existingWorkflow?: {
+		nodes: WorkflowNode[];
+		edges: WorkflowEdge[];
+		name?: string;
+	},
+): Promise<WorkflowData> {
+	const response = await fetch(endpoint, {
+		method: "POST",
+		headers: {
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(body),
+	});
+
+	if (!response.ok) {
+		let message = `HTTP error! status: ${response.status}`;
+		try {
+			const payload = (await response.json()) as unknown;
+			if (
+				typeof payload === "object" &&
+				payload !== null &&
+				"error" in payload &&
+				typeof (payload as { error?: unknown }).error === "string"
+			) {
+				message = (payload as { error: string }).error;
+			} else if (
+				typeof payload === "object" &&
+				payload !== null &&
+				"message" in payload &&
+				typeof (payload as { message?: unknown }).message === "string"
+			) {
+				message = (payload as { message: string }).message;
+			}
+		} catch {
+			// Best effort: some routes might return plain text on failure.
+			const text = await response.text().catch(() => "");
+			if (text.trim()) {
+				message = `${message}: ${text.trim()}`;
+			}
+		}
+
+		throw new ApiError(response.status, message);
+	}
+
+	if (!response.body) {
+		throw new Error("No response body");
+	}
+
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	const state: StreamState = {
+		buffer: "",
+		currentData: existingWorkflow
+			? {
+					nodes: existingWorkflow.nodes || [],
+					edges: existingWorkflow.edges || [],
+					name: existingWorkflow.name,
+				}
+			: { nodes: [], edges: [] },
+	};
+
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+
+			if (done) {
+				break;
+			}
+
+			processStreamChunk(value, decoder, onUpdate, state);
+		}
+
+		return state.currentData;
+	} finally {
+		reader.releaseLock();
 	}
 }
 
@@ -302,52 +396,37 @@ export const aiApi = {
 			edges: WorkflowEdge[];
 			name?: string;
 		},
-	): Promise<WorkflowData> => {
-		const response = await fetch("/api/ai/generate", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ prompt, existingWorkflow }),
-		});
+	): Promise<WorkflowData> =>
+		streamWorkflowOperations(
+			"/api/ai/generate",
+			{ prompt, existingWorkflow },
+			onUpdate,
+			existingWorkflow,
+		),
+};
 
-		if (!response.ok) {
-			throw new Error(`HTTP error! status: ${response.status}`);
-		}
+export const aiChatApi = {
+	getMessages: (workflowId: string) =>
+		apiCall<{ messages: WorkflowAiChatMessage[] }>(
+			`/api/workflows/${workflowId}/ai-chat/messages`,
+		),
 
-		if (!response.body) {
-			throw new Error("No response body");
-		}
-
-		const reader = response.body.getReader();
-		const decoder = new TextDecoder();
-		const state: StreamState = {
-			buffer: "",
-			currentData: existingWorkflow
-				? {
-						nodes: existingWorkflow.nodes || [],
-						edges: existingWorkflow.edges || [],
-						name: existingWorkflow.name,
-					}
-				: { nodes: [], edges: [] },
-		};
-
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-
-				if (done) {
-					break;
-				}
-
-				processStreamChunk(value, decoder, onUpdate, state);
-			}
-
-			return state.currentData;
-		} finally {
-			reader.releaseLock();
-		}
-	},
+	generateStream: (
+		workflowId: string,
+		message: string,
+		onUpdate: (data: WorkflowData) => void,
+		existingWorkflow?: {
+			nodes: WorkflowNode[];
+			edges: WorkflowEdge[];
+			name?: string;
+		},
+	): Promise<WorkflowData> =>
+		streamWorkflowOperations(
+			`/api/workflows/${workflowId}/ai-chat/stream`,
+			{ message, existingWorkflow },
+			onUpdate,
+			existingWorkflow,
+		),
 };
 
 // User API
@@ -1074,6 +1153,7 @@ const mcpServerApi = {
 // Export all APIs as a single object
 export const api = {
 	ai: aiApi,
+	aiChat: aiChatApi,
 	appConnection: appConnectionApi,
 	dapr: daprApi,
 	functions: functionsApi,

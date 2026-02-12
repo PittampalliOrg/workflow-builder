@@ -2,6 +2,7 @@
 
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
+	Bot,
 	Code,
 	Copy,
 	Eraser,
@@ -27,11 +28,7 @@ import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
 } from "@/lib/actions/planner-actions";
-import {
-	generateNodeCode,
-	generateWorkflowCode,
-	getDaprNodeCodeFiles,
-} from "@/lib/code-generation";
+import { generateWorkflowCode, getNodeCodeFile } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
 import {
 	clearNodeStatusesAtom,
@@ -62,6 +59,7 @@ import { ActivityConfig } from "../workflow/config/activity-config";
 import { ApprovalGateConfig } from "../workflow/config/approval-gate-config";
 import { TimerConfig } from "../workflow/config/timer-config";
 import { TriggerConfig } from "../workflow/config/trigger-config";
+import { AiChatPanel } from "../workflow/ai-chat-panel";
 import { WorkflowRuns } from "../workflow/workflow-runs";
 import type { OverlayComponentProps } from "./types";
 
@@ -118,6 +116,12 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 
 	const selectedNode = nodes.find((node) => node.id === selectedNodeId);
 	const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
+
+	useEffect(() => {
+		if (selectedNode && activeTab === "ai") {
+			setActiveTab("properties");
+		}
+	}, [selectedNode, activeTab, setActiveTab]);
 
 	// Auto-fix invalid integration references
 	const globalIntegrations = useAtomValue(connectionsAtom);
@@ -281,6 +285,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 			const validTab =
 				activeTab === "properties" ||
 				activeTab === "code" ||
+				(activeTab === "ai" && isOwner) ||
 				(activeTab === "runs" && isOwner)
 					? activeTab
 					: "properties";
@@ -289,6 +294,8 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 					return "Workflow";
 				case "code":
 					return "Code";
+				case "ai":
+					return "AI";
 				case "runs":
 					return "Runs";
 				default:
@@ -324,7 +331,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 		if (!selectedNode) {
 			return;
 		}
-		navigator.clipboard.writeText(generateNodeCode(selectedNode));
+		navigator.clipboard.writeText(getNodeCodeFile(selectedNode).content);
 		toast.success("Code copied to clipboard");
 	}, [selectedNode]);
 
@@ -432,10 +439,11 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 
 	// If no node is selected, show workflow-level configuration
 	if (!selectedNode) {
-		// For workflow view, only properties, code, and runs (if owner) are valid tabs
+		// For workflow view, only properties, code, AI and runs (if owner) are valid tabs
 		const validWorkflowTab =
 			activeTab === "properties" ||
 			activeTab === "code" ||
+			(activeTab === "ai" && isOwner) ||
 			(activeTab === "runs" && isOwner)
 				? activeTab
 				: "properties";
@@ -555,6 +563,17 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 							</div>
 						</div>
 					)}
+					{validWorkflowTab === "ai" && isOwner && (
+						<div className="flex h-full flex-col">
+							{currentWorkflowId ? (
+								<AiChatPanel workflowId={currentWorkflowId} />
+							) : (
+								<div className="p-4 text-muted-foreground text-sm">
+									Save this workflow to enable AI chat.
+								</div>
+							)}
+						</div>
+					)}
 				</div>
 
 				{/* Bottom tab navigation */}
@@ -583,6 +602,20 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 						<Code className="size-5" />
 						Code
 					</button>
+					{isOwner && (
+						<button
+							className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
+								validWorkflowTab === "ai"
+									? "text-foreground"
+									: "text-muted-foreground"
+							}`}
+							onClick={() => setActiveTab("ai")}
+							type="button"
+						>
+							<Bot className="size-5" />
+							AI
+						</button>
+					)}
 					{isOwner && (
 						<button
 							className={`flex flex-1 flex-col items-center gap-1 py-3 font-medium text-xs transition-colors ${
@@ -768,88 +801,9 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 						className={`flex flex-col ${activeTab === "code" ? "" : "invisible absolute -z-10"}`}
 					>
 						{(() => {
-							// Dapr node types
-							const isDaprNode =
-								selectedNode.type === "activity" ||
-								selectedNode.type === "approval-gate" ||
-								selectedNode.type === "timer" ||
-								selectedNode.type === "publish-event";
-
-							if (isDaprNode) {
-								const codeFiles = getDaprNodeCodeFiles(selectedNode);
-								const file = codeFiles[0];
-								if (!file) {
-									return null;
-								}
-
-								return (
-									<>
-										<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 py-2">
-											<div className="flex items-center gap-2">
-												<FileCode className="size-3.5 text-muted-foreground" />
-												<code className="text-muted-foreground text-xs">
-													{file.filename}
-												</code>
-											</div>
-											<Button
-												className="text-muted-foreground"
-												onClick={() => {
-													navigator.clipboard.writeText(file.content);
-													toast.success("Code copied to clipboard");
-												}}
-												size="sm"
-												variant="ghost"
-											>
-												<Copy className="mr-2 size-4" />
-												Copy
-											</Button>
-										</div>
-										<div className="h-[400px]">
-											<CodeEditor
-												height="100%"
-												language={file.language}
-												options={{
-													readOnly: true,
-													minimap: { enabled: false },
-													scrollBeyondLastLine: false,
-													fontSize: 13,
-													lineNumbers: "on",
-													folding: false,
-													wordWrap: "off",
-													padding: { top: 16, bottom: 16 },
-												}}
-												value={file.content}
-											/>
-										</div>
-									</>
-								);
-							}
-
-							// Action and trigger nodes
-							const nodeCode = generateNodeCode(selectedNode);
-							const triggerType = selectedNode.data.config
-								?.triggerType as string;
-							let filename = "";
-							let language = "typescript";
-
-							if (selectedNode.data.type === "trigger") {
-								if (triggerType === "Schedule") {
-									filename = "vercel.json";
-									language = "json";
-								} else if (triggerType === "Webhook") {
-									const webhookPath =
-										(selectedNode.data.config?.webhookPath as string) ||
-										"/webhook";
-									filename = `webhook${webhookPath}.ts`;
-								} else {
-									filename = "trigger.ts";
-								}
-							} else {
-								const actionType = selectedNode.data.config
-									?.actionType as string;
-								filename = actionType
-									? `${actionType.replace(/\//g, "-")}.ts`
-									: "action.ts";
+							const file = getNodeCodeFile(selectedNode);
+							if (!file) {
+								return null;
 							}
 
 							return (
@@ -858,7 +812,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 										<div className="flex items-center gap-2">
 											<FileCode className="size-3.5 text-muted-foreground" />
 											<code className="text-muted-foreground text-xs">
-												{filename}
+												{file.filename}
 											</code>
 										</div>
 										<Button
@@ -874,7 +828,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 									<div className="h-[400px]">
 										<CodeEditor
 											height="100%"
-											language={language}
+											language={file.language}
 											options={{
 												readOnly: true,
 												minimap: { enabled: false },
@@ -885,7 +839,7 @@ export function ConfigurationOverlay({ overlayId }: ConfigurationOverlayProps) {
 												wordWrap: "off",
 												padding: { top: 16, bottom: 16 },
 											}}
-											value={nodeCode}
+											value={file.content}
 										/>
 									</div>
 								</>

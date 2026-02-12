@@ -1,0 +1,405 @@
+import { streamText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
+import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { withPlannerPiece } from "@/lib/actions/planner-actions";
+import type { IntegrationDefinition } from "@/lib/actions/types";
+import { flattenConfigFields } from "@/lib/actions/utils";
+import { listPieceMetadata } from "@/lib/db/piece-metadata";
+
+export type Operation = {
+	op:
+		| "setName"
+		| "setDescription"
+		| "addNode"
+		| "addEdge"
+		| "removeNode"
+		| "removeEdge"
+		| "updateNode";
+	name?: string;
+	description?: string;
+	node?: unknown;
+	edge?: unknown;
+	nodeId?: string;
+	edgeId?: string;
+	updates?: {
+		position?: { x: number; y: number };
+		data?: unknown;
+	};
+};
+
+type ExistingWorkflow = {
+	nodes?: Array<{ id: string; data?: { label?: string } }>;
+	edges?: Array<{ id: string; source: string; target: string }>;
+	name?: string;
+};
+
+export type WorkflowMessageContext = {
+	role: "user" | "assistant" | "system";
+	content: string;
+};
+
+type CreateWorkflowOperationStreamInput = {
+	prompt: string;
+	existingWorkflow?: ExistingWorkflow;
+	messageHistory?: WorkflowMessageContext[];
+};
+
+type CreateWorkflowOperationStreamOptions = {
+	onOperation?: (operation: Operation) => void;
+};
+
+function encodeMessage(encoder: TextEncoder, message: object): Uint8Array {
+	return encoder.encode(`${JSON.stringify(message)}\n`);
+}
+
+function shouldSkipLine(line: string): boolean {
+	const trimmed = line.trim();
+	return !trimmed || trimmed.startsWith("```");
+}
+
+function parseOperationLine(line: string): Operation | null {
+	const trimmed = line.trim();
+
+	if (shouldSkipLine(line)) {
+		return null;
+	}
+
+	try {
+		return JSON.parse(trimmed) as Operation;
+	} catch {
+		console.warn("[AI] Skipping invalid JSON line:", trimmed.substring(0, 80));
+		return null;
+	}
+}
+
+function processBufferLines(
+	buffer: string,
+	controller: ReadableStreamDefaultController<Uint8Array>,
+	encoder: TextEncoder,
+	operationCount: number,
+	onOperation?: (operation: Operation) => void,
+): { remainingBuffer: string; newOperationCount: number } {
+	const lines = buffer.split("\n");
+	const remainingBuffer = lines.pop() || "";
+	let newOperationCount = operationCount;
+
+	for (const line of lines) {
+		const operation = parseOperationLine(line);
+		if (!operation) {
+			continue;
+		}
+
+		newOperationCount += 1;
+		onOperation?.(operation);
+		controller.enqueue(
+			encodeMessage(encoder, {
+				type: "operation",
+				operation,
+			}),
+		);
+	}
+
+	return { remainingBuffer, newOperationCount };
+}
+
+async function processOperationStream(
+	textStream: AsyncIterable<string>,
+	controller: ReadableStreamDefaultController<Uint8Array>,
+	encoder: TextEncoder,
+	onOperation?: (operation: Operation) => void,
+): Promise<void> {
+	let buffer = "";
+	let operationCount = 0;
+
+	for await (const chunk of textStream) {
+		buffer += chunk;
+		const result = processBufferLines(
+			buffer,
+			controller,
+			encoder,
+			operationCount,
+			onOperation,
+		);
+		buffer = result.remainingBuffer;
+		operationCount = result.newOperationCount;
+	}
+
+	const finalOperation = parseOperationLine(buffer);
+	if (finalOperation) {
+		operationCount += 1;
+		onOperation?.(finalOperation);
+		controller.enqueue(
+			encodeMessage(encoder, {
+				type: "operation",
+				operation: finalOperation,
+			}),
+		);
+	}
+
+	console.log(`[AI] Stream complete. Operations: ${operationCount}`);
+	controller.enqueue(encodeMessage(encoder, { type: "complete" }));
+}
+
+async function generateAIPieceActionPrompts(): Promise<string> {
+	const allPieces = await listPieceMetadata({});
+	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
+	const integrations = withPlannerPiece(
+		convertApPiecesToIntegrations(pieces) as IntegrationDefinition[],
+	);
+
+	const lines: string[] = [];
+
+	for (const piece of integrations) {
+		for (const action of piece.actions) {
+			const fullId = `${piece.type}/${action.slug}`;
+			const exampleConfig: Record<string, string | number> = {
+				actionType: fullId,
+			};
+
+			for (const field of flattenConfigFields(action.configFields)) {
+				if (field.showWhen) {
+					continue;
+				}
+				if (field.example !== undefined) {
+					exampleConfig[field.key] = field.example;
+				} else if (field.defaultValue !== undefined) {
+					exampleConfig[field.key] = field.defaultValue;
+				} else if (field.type === "number") {
+					exampleConfig[field.key] = 10;
+				} else if (field.type === "select" && field.options?.[0]) {
+					exampleConfig[field.key] = field.options[0].value;
+				} else {
+					exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
+				}
+			}
+
+			lines.push(
+				`- ${action.label} (${fullId}): ${JSON.stringify(exampleConfig)}`,
+			);
+		}
+	}
+
+	return lines.join("\n");
+}
+
+function getSystemPrompt(pluginActionPrompts: string): string {
+	return `You are a workflow automation expert. Generate a workflow based on the user's description.
+
+CRITICAL: Output your workflow as INDIVIDUAL OPERATIONS, one per line in JSONL format.
+Each line must be a complete, separate JSON object.
+
+Operations you can output:
+1. {"op": "setName", "name": "Workflow Name"}
+2. {"op": "setDescription", "description": "Brief description"}
+3. {"op": "addNode", "node": {COMPLETE_NODE_OBJECT}}
+4. {"op": "addEdge", "edge": {COMPLETE_EDGE_OBJECT}}
+5. {"op": "removeNode", "nodeId": "node-id-to-remove"}
+6. {"op": "removeEdge", "edgeId": "edge-id-to-remove"}
+7. {"op": "updateNode", "nodeId": "node-id", "updates": {"position": {"x": 100, "y": 200}}}
+
+IMPORTANT RULES:
+- Every workflow must have EXACTLY ONE trigger node
+- Output ONE operation per line
+- Each line must be complete, valid JSON
+- Start with setName and setDescription
+- Then add nodes one at a time
+- Finally add edges one at a time to CONNECT ALL NODES
+- CRITICAL: Every node (except the last) MUST be connected to at least one other node
+- To update node positions or properties, use updateNode operation
+- NEVER output explanatory text - ONLY JSON operations
+- Do NOT wrap in markdown code blocks
+- Do NOT add explanatory text
+
+Node structure:
+{
+  "id": "unique-id",
+  "type": "trigger" or "action",
+  "position": {"x": number, "y": number},
+  "data": {
+    "label": "Node Label",
+    "description": "Node description",
+    "type": "trigger" or "action",
+    "config": {...},
+    "status": "idle"
+  }
+}
+
+NODE POSITIONING RULES:
+- Nodes are squares, so use equal spacing in both directions
+- Horizontal spacing between sequential nodes: 250px (e.g., x: 100, then x: 350, then x: 600)
+- Vertical spacing for parallel branches: 250px (e.g., y: 75, y: 325, y: 575)
+- Start trigger node at position {"x": 100, "y": 200}
+- For linear workflows: increment x by 250 for each subsequent node, keep y constant
+- For branching workflows: keep x the same for parallel branches, space y by 250px per branch
+- When adding nodes to existing workflows, position new nodes 250px away from existing nodes
+
+Trigger types:
+- Manual: {"triggerType": "Manual"}
+- Webhook: {"triggerType": "Webhook", "webhookPath": "/webhooks/name", ...}
+- Schedule: {"triggerType": "Schedule", "scheduleCron": "0 9 * * *", ...}
+
+System action types (built-in):
+- Database Query: {"actionType": "system/database-query", "dbQuery": "SELECT * FROM table"}
+- HTTP Request: {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com", "httpHeaders": "{}", "httpBody": "{}"}
+- Condition: {"actionType": "system/condition", "condition": "{{@nodeId:Label.field}} === 'value'"}
+
+Plugin action types (from integrations):
+${pluginActionPrompts}
+
+CRITICAL ABOUT CONDITION NODES:
+- Condition nodes evaluate a boolean expression
+- When TRUE: ALL connected nodes execute
+- When FALSE: ALL connected nodes are SKIPPED
+- For if/else logic, CREATE MULTIPLE SEPARATE condition nodes (one per branch)
+- NEVER connect multiple different outcome paths to a single condition node
+- Each condition should check for ONE specific case
+
+Edge structure:
+{
+  "id": "edge-id",
+  "source": "source-node-id",
+  "target": "target-node-id",
+  "type": "default"
+}
+
+WORKFLOW FLOW:
+- Trigger connects to first action
+- Actions connect in sequence or to multiple branches
+- ALWAYS create edges to connect the workflow flow
+- For linear workflows: trigger -> action1 -> action2 -> etc
+- For branching (conditions): one source can connect to multiple targets
+
+REMEMBER: After adding all nodes, you MUST add edges to connect them! Every node should be reachable from the trigger.`;
+}
+
+function formatMessageHistory(messages: WorkflowMessageContext[]): string {
+	if (messages.length === 0) {
+		return "";
+	}
+
+	const lines = messages
+		.slice(-20)
+		.map(
+			(message) => `${message.role.toUpperCase()}: ${message.content.trim()}`,
+		);
+
+	return `Previous conversation context (most recent last):
+${lines.join("\n")}
+
+`;
+}
+
+function buildUserPrompt({
+	prompt,
+	existingWorkflow,
+	messageHistory = [],
+}: CreateWorkflowOperationStreamInput): string {
+	const historyBlock = formatMessageHistory(messageHistory);
+	const contextualPrompt = `${historyBlock}Current request: ${prompt}`;
+
+	if (!existingWorkflow) {
+		return contextualPrompt;
+	}
+
+	const nodesList = (existingWorkflow.nodes || [])
+		.map((node) => `- ${node.id} (${node.data?.label || "Unlabeled"})`)
+		.join("\n");
+
+	const edgesList = (existingWorkflow.edges || [])
+		.map((edge) => `- ${edge.id}: ${edge.source} -> ${edge.target}`)
+		.join("\n");
+
+	return `I have an existing workflow. I want you to make ONLY the changes I request.
+
+Current workflow nodes:
+${nodesList}
+
+Current workflow edges:
+${edgesList}
+
+Full workflow data (DO NOT recreate these, they already exist):
+${JSON.stringify(existingWorkflow, null, 2)}
+
+${contextualPrompt}
+
+IMPORTANT: Output ONLY the operations needed to make the requested changes.
+- If adding new nodes: output "addNode" operations for NEW nodes only, then IMMEDIATELY output "addEdge" operations to connect them to the workflow
+- If adding new edges: output "addEdge" operations for NEW edges only
+- If removing nodes: output "removeNode" operations with the nodeId to remove
+- If removing edges: output "removeEdge" operations with the edgeId to remove
+- If changing name/description: output "setName"/"setDescription" only if changed
+- CRITICAL: New nodes MUST be connected with edges - always add edges after adding nodes
+- When connecting nodes, look at the node IDs in the current workflow list above
+- DO NOT output operations for existing nodes/edges unless specifically modifying them
+- Keep the existing workflow structure and only add/modify/remove what was requested
+- POSITIONING: When adding new nodes, look at existing node positions and place new nodes 250px away (horizontally or vertically) from existing nodes. Never overlap nodes.`;
+}
+
+function getAiModel() {
+	const openaiKey = process.env.OPENAI_API_KEY;
+	const gatewayKey = process.env.AI_GATEWAY_API_KEY;
+	const gatewayBaseURL = process.env.AI_GATEWAY_BASE_URL;
+
+	// If a gateway base URL is provided, prefer the gateway key. Otherwise, prefer
+	// a plain OpenAI key (common in Kubernetes deployments).
+	const apiKey = gatewayBaseURL
+		? (gatewayKey ?? openaiKey)
+		: (openaiKey ?? gatewayKey);
+	if (!apiKey) {
+		throw new Error(
+			"Missing AI API key (set OPENAI_API_KEY or AI_GATEWAY_API_KEY).",
+		);
+	}
+
+	const modelId =
+		process.env.AI_MODEL ??
+		(gatewayBaseURL ? "openai/gpt-5.1-instant" : "gpt-4o-mini");
+
+	const provider = createOpenAI({
+		apiKey,
+		...(gatewayBaseURL ? { baseURL: gatewayBaseURL } : {}),
+	});
+
+	return provider.chat(modelId);
+}
+
+export async function createWorkflowOperationStream(
+	input: CreateWorkflowOperationStreamInput,
+	options: CreateWorkflowOperationStreamOptions = {},
+): Promise<ReadableStream<Uint8Array>> {
+	const pieceActionPrompts = await generateAIPieceActionPrompts();
+	const userPrompt = buildUserPrompt(input);
+
+	const result = streamText({
+		model: getAiModel(),
+		system: getSystemPrompt(pieceActionPrompts),
+		prompt: userPrompt,
+	});
+
+	const encoder = new TextEncoder();
+	return new ReadableStream({
+		async start(controller) {
+			try {
+				await processOperationStream(
+					result.textStream,
+					controller,
+					encoder,
+					options.onOperation,
+				);
+			} catch (error) {
+				controller.enqueue(
+					encodeMessage(encoder, {
+						type: "error",
+						error:
+							error instanceof Error
+								? error.message
+								: "Failed to generate workflow",
+					}),
+				);
+			} finally {
+				controller.close();
+			}
+		},
+	});
+}

@@ -29,7 +29,7 @@ import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
 } from "@/lib/actions/planner-actions";
-import { generateNodeCode, getDaprNodeCodeFiles } from "@/lib/code-generation";
+import { getNodeCodeFile } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
 import {
 	clearNodeStatusesAtom,
@@ -55,6 +55,7 @@ import {
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { IntegrationType } from "@/lib/actions/types";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
+import { AiChatPanel } from "./ai-chat-panel";
 import { ActionConfig } from "./config/action-config";
 import { ActionGrid, type ActionSelection } from "./config/action-grid";
 import { ActivityConfig } from "./config/activity-config";
@@ -227,6 +228,27 @@ export const PanelInner = () => {
 			selectedNode.data.config?.triggerType === "Manual";
 
 		if (isConditionAction || isManualTrigger) {
+			setActiveTab("properties");
+		}
+	}, [selectedNode, activeTab, setActiveTab]);
+
+	// Workflow-level tabs only support properties/ai/runs.
+	useEffect(() => {
+		if (selectedNode) {
+			return;
+		}
+
+		const valid =
+			activeTab === "properties" ||
+			(isOwner && (activeTab === "ai" || activeTab === "runs"));
+
+		if (!valid) {
+			setActiveTab("properties");
+		}
+	}, [selectedNode, activeTab, isOwner, setActiveTab]);
+
+	useEffect(() => {
+		if (selectedNode && activeTab === "ai") {
 			setActiveTab("properties");
 		}
 	}, [selectedNode, activeTab, setActiveTab]);
@@ -583,6 +605,14 @@ export const PanelInner = () => {
 						{isOwner && (
 							<TabsTrigger
 								className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
+								value="ai"
+							>
+								AI
+							</TabsTrigger>
+						)}
+						{isOwner && (
+							<TabsTrigger
+								className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
 								value="runs"
 							>
 								Runs
@@ -647,6 +677,19 @@ export const PanelInner = () => {
 							)}
 						</div>
 					</TabsContent>
+					{isOwner && (
+						<TabsContent className="flex flex-col overflow-hidden" value="ai">
+							<div className="flex-1 min-h-0">
+								{currentWorkflowId ? (
+									<AiChatPanel workflowId={currentWorkflowId} />
+								) : (
+									<div className="p-4 text-muted-foreground text-sm">
+										Save this workflow to enable AI chat.
+									</div>
+								)}
+							</div>
+						</TabsContent>
+					)}
 					{isOwner && (
 						<TabsContent className="flex flex-col overflow-hidden" value="runs">
 							{/* Actions in content header */}
@@ -932,117 +975,37 @@ export const PanelInner = () => {
 					value="code"
 				>
 					{(() => {
-						// Dapr node types use Python/YAML code generation
-						const isDaprNode =
-							selectedNode.type === "activity" ||
-							selectedNode.type === "approval-gate" ||
-							selectedNode.type === "timer" ||
-							selectedNode.type === "publish-event";
-
-						if (isDaprNode) {
-							const codeFiles = getDaprNodeCodeFiles(selectedNode);
-							const file = codeFiles[0];
-							if (!file) {
-								return null;
-							}
-
-							return (
-								<>
-									<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 pb-2">
-										<div className="flex items-center gap-2">
-											<FileCode className="size-3.5 text-muted-foreground" />
-											<code className="text-muted-foreground text-xs">
-												{file.filename}
-											</code>
-										</div>
-										<Button
-											className="text-muted-foreground"
-											onClick={() => {
-												navigator.clipboard.writeText(file.content);
-												toast.success("Code copied to clipboard");
-											}}
-											size="sm"
-											variant="ghost"
-										>
-											<Copy className="mr-2 size-4" />
-											Copy
-										</Button>
-									</div>
-									<div className="flex-1 overflow-hidden">
-										<CodeEditor
-											height="100%"
-											language={file.language}
-											options={{
-												readOnly: true,
-												minimap: { enabled: false },
-												scrollBeyondLastLine: false,
-												fontSize: 13,
-												lineNumbers: "on",
-												folding: false,
-												wordWrap: "off",
-												padding: { top: 16, bottom: 16 },
-											}}
-											value={file.content}
-										/>
-									</div>
-								</>
-							);
-						}
-
-						// Action and trigger nodes
-						const nodeCode = generateNodeCode(selectedNode);
-						const triggerType = selectedNode.data.config?.triggerType as string;
-						let filename = "";
-						let language = "typescript";
-
-						if (selectedNode.data.type === "trigger") {
-							if (triggerType === "Schedule") {
-								filename = "vercel.json";
-								language = "json";
-							} else if (triggerType === "Webhook") {
-								const webhookPath =
-									(selectedNode.data.config?.webhookPath as string) ||
-									"/webhook";
-								filename = `webhook${webhookPath}.ts`;
-								language = "typescript";
-							} else {
-								filename = "trigger.ts";
-							}
-						} else {
-							const actionType = selectedNode.data.config?.actionType as string;
-							filename = actionType
-								? `${actionType.replace(/\//g, "-")}.ts`
-								: "action.ts";
+						const file = getNodeCodeFile(selectedNode);
+						if (!file) {
+							return null;
 						}
 
 						return (
 							<>
-								{filename && (
-									<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 pb-2">
-										<div className="flex items-center gap-2">
-											<FileCode className="size-3.5 text-muted-foreground" />
-											<code className="text-muted-foreground text-xs">
-												{filename}
-											</code>
-										</div>
-										<Button
-											className="text-muted-foreground"
-											onClick={() => {
-												navigator.clipboard.writeText(nodeCode);
-												toast.success("Code copied to clipboard");
-											}}
-											size="sm"
-											variant="ghost"
-										>
-											<Copy className="mr-2 size-4" />
-											Copy
-										</Button>
+								<div className="flex shrink-0 items-center justify-between border-b bg-muted/30 px-3 pb-2">
+									<div className="flex items-center gap-2">
+										<FileCode className="size-3.5 text-muted-foreground" />
+										<code className="text-muted-foreground text-xs">
+											{file.filename}
+										</code>
 									</div>
-								)}
+									<Button
+										className="text-muted-foreground"
+										onClick={() => {
+											navigator.clipboard.writeText(file.content);
+											toast.success("Code copied to clipboard");
+										}}
+										size="sm"
+										variant="ghost"
+									>
+										<Copy className="mr-2 size-4" />
+										Copy
+									</Button>
+								</div>
 								<div className="flex-1 overflow-hidden">
 									<CodeEditor
 										height="100%"
-										language={language}
+										language={file.language}
 										options={{
 											readOnly: true,
 											minimap: { enabled: false },
@@ -1053,7 +1016,7 @@ export const PanelInner = () => {
 											wordWrap: "off",
 											padding: { top: 16, bottom: 16 },
 										}}
-										value={nodeCode}
+										value={file.content}
 									/>
 								</div>
 							</>

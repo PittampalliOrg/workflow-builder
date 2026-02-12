@@ -7,6 +7,7 @@ This allows nodes to reference outputs from previous nodes in the workflow.
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -105,12 +106,15 @@ def resolve_string_templates(s: str, node_outputs: NodeOutputs) -> str:
     single_match = re.fullmatch(r"\{\{([^}]+)\}\}", s)
     if single_match:
         resolved = resolve_template(s, node_outputs)
-        # If resolved to a non-string value, convert to string for this context
+        if isinstance(resolved, (dict, list)):
+            return json.dumps(resolved)
         return str(resolved)
 
     # Replace all templates in the string
     def replace_match(match: re.Match) -> str:
         resolved = resolve_template(match.group(0), node_outputs)
+        if isinstance(resolved, (dict, list)):
+            return json.dumps(resolved)
         return str(resolved)
 
     return TEMPLATE_REGEX.sub(replace_match, s)
@@ -131,10 +135,16 @@ def resolve_templates(value: Any, node_outputs: NodeOutputs) -> Any:
         return value
 
     if isinstance(value, str):
-        # Check if entire string is a template - return the actual type
+        # Check if entire string is a single template
         single_match = re.fullmatch(r"\{\{([^}]+)\}\}", value)
         if single_match:
-            return resolve_template(value, node_outputs)
+            resolved = resolve_template(value, node_outputs)
+            # JSON-serialize complex objects so downstream consumers
+            # (e.g. fn-activepieces Property.LongText) receive valid JSON
+            # strings instead of raw objects that stringify to [object Object].
+            if isinstance(resolved, (dict, list)):
+                return json.dumps(resolved)
+            return resolved
         # Otherwise, do string replacement
         return resolve_string_templates(value, node_outputs)
 

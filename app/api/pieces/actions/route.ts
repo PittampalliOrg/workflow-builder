@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
 import { withPlannerPiece } from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { getSession } from "@/lib/auth-helpers";
@@ -55,10 +56,14 @@ async function getCatalog(): Promise<CatalogCache> {
 
 	const allMetadata = await listPieceMetadata({});
 	const apPieces = convertApPiecesToIntegrations(allMetadata);
-	const allPieces = withPlannerPiece(apPieces);
-	const installedPieces = withPlannerPiece(
-		apPieces.filter((piece) => isPieceInstalled(piece.pieceName || piece.type)),
-	);
+	const builtinPieces = getBuiltinPieces();
+	const allPieces = withPlannerPiece([...builtinPieces, ...apPieces]);
+	const installedPieces = withPlannerPiece([
+		...builtinPieces,
+		...apPieces.filter((piece) =>
+			isPieceInstalled(piece.pieceName || piece.type),
+		),
+	]);
 
 	cache = {
 		allPieces,
