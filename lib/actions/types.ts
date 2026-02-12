@@ -37,6 +37,7 @@ export type ActionConfigFieldBase = {
 		| "text" // Regular text input
 		| "number" // Number input
 		| "select" // Dropdown select
+		| "model-selector" // Vercel AI Elements ModelSelector (specialized dropdown UX)
 		| "dynamic-select" // Async dropdown loaded from external API
 		| "dynamic-multi-select" // Async multi-select dropdown
 		| "schema-builder"; // Schema builder for structured output

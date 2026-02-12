@@ -1,8 +1,18 @@
 """
 Template Resolver
 
-Resolves {{node.field}} template variables in workflow node configurations.
-This allows nodes to reference outputs from previous nodes in the workflow.
+Resolves template variables inside workflow node configurations.
+
+Supported syntaxes:
+- New (ID + display name): {{@nodeId:DisplayName.field}} or {{@nodeId:DisplayName}}
+- Legacy (node ID): {{$nodeId.field}} or {{$nodeId}}
+- Legacy (label / actionType / node ID): {{NodeLabel.field}} or {{nodeId.field}}
+
+This mirrors the template format used in the Workflow Builder UI and keeps
+runtime resolution compatible with standardized step outputs:
+  { success: boolean, data: {...}, error?: string }
+When the output is standardized, field access automatically unwraps into the
+inner `data` object unless explicitly accessing `success`, `data`, or `error`.
 """
 
 from __future__ import annotations
@@ -17,19 +27,51 @@ NodeOutputs = dict[str, dict[str, Any]]
 # Regular expression to match template variables: {{nodeId.field}} or {{nodeId.field.nested}}
 TEMPLATE_REGEX = re.compile(r"\{\{([^}]+)\}\}")
 
+ARRAY_ACCESS_PATTERN = re.compile(r"^([^\[\]]+)\[(\d+)\]$")
+
+
+def _is_standardized_output(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("success"), bool)
+        and "data" in value
+    )
+
 
 def get_nested_value(obj: Any, path: str) -> Any:
-    """Get a nested value from an object using dot notation."""
-    parts = path.split(".")
-    current = obj
+    """Get a nested value from an object using dot notation + `[index]` arrays."""
+    parts = [p for p in path.split(".") if p.strip()]
+    current: Any = obj
+
+    # Auto-unwrap standardized outputs unless explicitly accessing wrapper fields.
+    if parts:
+        first = parts[0]
+        if _is_standardized_output(current) and first not in ("success", "data", "error"):
+            current = current.get("data")
 
     for part in parts:
         if current is None:
             return None
         if isinstance(current, dict):
-            current = current.get(part)
+            m = ARRAY_ACCESS_PATTERN.match(part)
+            if m:
+                field, index_s = m.group(1), m.group(2)
+                arr = current.get(field)
+                if isinstance(arr, list):
+                    idx = int(index_s)
+                    current = arr[idx] if 0 <= idx < len(arr) else None
+                else:
+                    return None
+            else:
+                current = current.get(part)
         elif hasattr(current, part):
             current = getattr(current, part)
+        elif isinstance(current, list):
+            # If current is a list and we access a field, map it over elements.
+            current = [
+                item.get(part) if isinstance(item, dict) else getattr(item, part, None)
+                for item in current
+            ]
         else:
             return None
 
@@ -57,15 +99,53 @@ def resolve_template(template: str, node_outputs: NodeOutputs) -> Any:
     Returns:
         The resolved value or the original template if not found
     """
-    # Extract the path from the template (remove {{ and }})
-    path = template[2:-2].strip()
-    parts = path.split(".")
+    # Extract the expression from the template (remove {{ and }})
+    expr = template[2:-2].strip()
 
+    # New format: @nodeId:DisplayName.field
+    if expr.startswith("@"):
+        without_at = expr[1:]
+        colon_index = without_at.find(":")
+        if colon_index == -1:
+            return template
+        node_id = without_at[:colon_index].strip()
+        rest = without_at[colon_index + 1 :].strip()
+        dot_index = rest.find(".")
+        field_path = rest[dot_index + 1 :].strip() if dot_index != -1 else ""
+
+        node_output = node_outputs.get(node_id)
+        if not node_output:
+            return template
+        if not field_path:
+            return node_output.get("data")
+        value = get_nested_value(node_output.get("data"), field_path)
+        return value if value is not None else template
+
+    # Legacy ID format: $nodeId.field
+    if expr.startswith("$"):
+        without_dollar = expr[1:].strip()
+        if not without_dollar:
+            return template
+        if "." in without_dollar:
+            node_id, field_path = without_dollar.split(".", 1)
+        else:
+            node_id, field_path = without_dollar, ""
+
+        node_output = node_outputs.get(node_id)
+        if not node_output:
+            return template
+        if not field_path:
+            return node_output.get("data")
+        value = get_nested_value(node_output.get("data"), field_path)
+        return value if value is not None else template
+
+    # Legacy label/actionType/nodeId format: NodeLabel.field (or nodeId.field)
+    parts = expr.split(".")
     if len(parts) < 2:
-        return template  # Invalid template, return as-is
+        return template
 
-    node_id = parts[0]
-    field_path = ".".join(parts[1:])
+    node_id = parts[0].strip()
+    field_path = ".".join(parts[1:]).strip()
 
     # 1. Exact node ID match
     node_output = node_outputs.get(node_id)

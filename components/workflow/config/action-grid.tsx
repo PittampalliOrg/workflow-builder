@@ -3,20 +3,24 @@
 import {
 	Bell,
 	Bot,
+	Braces,
 	ChevronRight,
 	Clock,
 	Database,
 	Eye,
 	EyeOff,
+	GitBranch,
 	Globe,
 	Grid3X3,
 	List,
 	MoreHorizontal,
 	Radio,
+	Repeat,
 	Search,
 	Settings,
 	ShieldCheck,
 	Sparkles,
+	StickyNote,
 	Zap,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -100,6 +104,46 @@ const DAPR_CONTROL_FLOW: ActionType[] = [
 		isDaprActivity: true,
 		nodeType: "timer",
 	},
+	{
+		id: "dapr:loop-until",
+		label: "Loop Until",
+		description: "Repeat a section until a condition is met",
+		category: "Control Flow",
+		isDaprActivity: true,
+		nodeType: "loop-until",
+	},
+	{
+		id: "dapr:if-else",
+		label: "If / Else",
+		description: "Branch based on a condition",
+		category: "Control Flow",
+		isDaprActivity: true,
+		nodeType: "if-else",
+	},
+	{
+		id: "dapr:set-state",
+		label: "Set State",
+		description: "Set a workflow-scoped variable",
+		category: "State",
+		isDaprActivity: true,
+		nodeType: "set-state",
+	},
+	{
+		id: "dapr:transform",
+		label: "Transform",
+		description: "Build structured output from a JSON template",
+		category: "State",
+		isDaprActivity: true,
+		nodeType: "transform",
+	},
+	{
+		id: "dapr:note",
+		label: "Note",
+		description: "Add a non-executing annotation",
+		category: "Core",
+		isDaprActivity: true,
+		nodeType: "note",
+	},
 ];
 
 // Combine System actions with Dapr activities and ActivePieces actions
@@ -162,6 +206,7 @@ const DAPR_CATEGORY_ICONS: Record<string, typeof Zap> = {
 	Events: Radio,
 	"Control Flow": Clock,
 	AI: Sparkles,
+	Core: List,
 	[PLANNER_CATEGORY_LABEL]: Bot,
 	Notifications: Bell,
 	Integration: Globe,
@@ -225,6 +270,21 @@ function ActionIcon({
 	}
 	if (action.nodeType === "timer") {
 		return <Clock className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "loop-until") {
+		return <Repeat className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "if-else") {
+		return <GitBranch className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "set-state") {
+		return <Database className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "transform") {
+		return <Braces className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "note") {
+		return <StickyNote className={cn(className, "text-muted-foreground")} />;
 	}
 	return <Zap className={cn(className, "text-muted-foreground")} />;
 }

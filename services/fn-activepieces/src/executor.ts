@@ -9,16 +9,120 @@ import { getPiece } from "./piece-registry.js";
 import type { ExecuteRequest } from "./types.js";
 
 export type ExecutionResult = {
-  success: boolean;
-  data?: unknown;
-  error?: string;
-  pause?: {
-    type: "DELAY" | "WEBHOOK";
-    resumeDateTime?: string;
-    requestId?: string;
-    response?: unknown;
-  };
+	success: boolean;
+	data?: unknown;
+	error?: string;
+	pause?: {
+		type: "DELAY" | "WEBHOOK";
+		resumeDateTime?: string;
+		requestId?: string;
+		response?: unknown;
+	};
 };
+
+type ApActionProp = {
+	type?: string;
+	displayName?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function looksLikePlaceholderSelection(
+	value: string,
+	displayName?: string,
+): boolean {
+	const normalized = value.trim().toLowerCase();
+	if (!normalized) {
+		return true;
+	}
+
+	const normalizedDisplayName = displayName?.trim().toLowerCase();
+	if (normalizedDisplayName) {
+		if (
+			normalized === `your ${normalizedDisplayName}` ||
+			normalized === `select ${normalizedDisplayName}` ||
+			normalized === `enter ${normalizedDisplayName}`
+		) {
+			return true;
+		}
+	}
+
+	// AI-generated placeholder fallback, e.g. "Your parent folder".
+	return normalized.startsWith("your ");
+}
+
+function normalizeActionInput(
+	action: { props?: unknown },
+	input: Record<string, unknown>,
+): Record<string, unknown> {
+	const normalizedInput: Record<string, unknown> = { ...input };
+	if (!isRecord(action.props)) {
+		return normalizedInput;
+	}
+
+	for (const [propKey, propDefUnknown] of Object.entries(action.props)) {
+		if (!isRecord(propDefUnknown)) {
+			continue;
+		}
+
+		const propDef = propDefUnknown as ApActionProp;
+		const propType = propDef.type;
+		const currentValue = normalizedInput[propKey];
+
+		if (propType === "DROPDOWN") {
+			if (isRecord(currentValue) && "value" in currentValue) {
+				normalizedInput[propKey] = currentValue.value;
+			}
+
+			const normalizedValue = normalizedInput[propKey];
+			if (typeof normalizedValue !== "string") {
+				continue;
+			}
+
+			const trimmed = normalizedValue.trim();
+			if (looksLikePlaceholderSelection(trimmed, propDef.displayName)) {
+				delete normalizedInput[propKey];
+				continue;
+			}
+
+			if (trimmed !== normalizedValue) {
+				normalizedInput[propKey] = trimmed;
+			}
+			continue;
+		}
+
+		if (propType === "MULTI_SELECT_DROPDOWN") {
+			if (typeof currentValue === "string") {
+				const trimmed = currentValue.trim();
+				if (looksLikePlaceholderSelection(trimmed, propDef.displayName)) {
+					delete normalizedInput[propKey];
+					continue;
+				}
+
+				try {
+					const parsed = JSON.parse(trimmed) as unknown;
+					if (Array.isArray(parsed)) {
+						normalizedInput[propKey] = parsed;
+						continue;
+					}
+				} catch {
+					// Fall back to a singleton array.
+				}
+
+				normalizedInput[propKey] = [trimmed];
+				continue;
+			}
+
+			if (isRecord(currentValue) && "value" in currentValue) {
+				normalizedInput[propKey] = [currentValue.value];
+			}
+		}
+	}
+
+	return normalizedInput;
+}
 
 /**
  * Resolve pieceName and actionName from the request.
@@ -29,37 +133,37 @@ export type ExecutionResult = {
  * 3. Fall back to step as actionName (requires metadata.pieceName)
  */
 function resolveNames(request: ExecuteRequest): {
-  pieceName: string;
-  actionName: string;
+	pieceName: string;
+	actionName: string;
 } {
-  if (request.metadata?.pieceName && request.metadata?.actionName) {
-    return {
-      pieceName: request.metadata.pieceName,
-      actionName: request.metadata.actionName,
-    };
-  }
+	if (request.metadata?.pieceName && request.metadata?.actionName) {
+		return {
+			pieceName: request.metadata.pieceName,
+			actionName: request.metadata.actionName,
+		};
+	}
 
-  // The step name might be in "pieceName/actionName" format
-  const slashIdx = request.step.indexOf("/");
-  if (slashIdx > 0) {
-    return {
-      pieceName: request.step.slice(0, slashIdx),
-      actionName: request.step.slice(slashIdx + 1),
-    };
-  }
+	// The step name might be in "pieceName/actionName" format
+	const slashIdx = request.step.indexOf("/");
+	if (slashIdx > 0) {
+		return {
+			pieceName: request.step.slice(0, slashIdx),
+			actionName: request.step.slice(slashIdx + 1),
+		};
+	}
 
-  // Fall back to metadata.pieceName + step as action
-  if (request.metadata?.pieceName) {
-    return {
-      pieceName: request.metadata.pieceName,
-      actionName: request.step,
-    };
-  }
+	// Fall back to metadata.pieceName + step as action
+	if (request.metadata?.pieceName) {
+		return {
+			pieceName: request.metadata.pieceName,
+			actionName: request.step,
+		};
+	}
 
-  throw new Error(
-    `Cannot resolve piece and action names from step "${request.step}". ` +
-      `Provide metadata.pieceName/actionName or use "pieceName/actionName" format.`
-  );
+	throw new Error(
+		`Cannot resolve piece and action names from step "${request.step}". ` +
+			`Provide metadata.pieceName/actionName or use "pieceName/actionName" format.`,
+	);
 }
 
 /**
@@ -70,24 +174,24 @@ function resolveNames(request: ExecuteRequest): {
  * 2. credentials — env-var-mapped credentials (legacy, less useful for AP)
  */
 function resolveAuth(request: ExecuteRequest): unknown {
-  if (request.credentials_raw != null) {
-    return request.credentials_raw;
-  }
+	if (request.credentials_raw != null) {
+		return request.credentials_raw;
+	}
 
-  // Legacy: if we have env-var credentials, wrap as SECRET_TEXT if only one key
-  if (request.credentials && Object.keys(request.credentials).length > 0) {
-    const values = Object.values(request.credentials);
-    if (values.length === 1) {
-      return {
-        type: "SECRET_TEXT",
-        secret_text: values[0],
-      };
-    }
-    // Return as-is, let the piece handle it
-    return request.credentials;
-  }
+	// Legacy: if we have env-var credentials, wrap as SECRET_TEXT if only one key
+	if (request.credentials && Object.keys(request.credentials).length > 0) {
+		const values = Object.values(request.credentials);
+		if (values.length === 1) {
+			return {
+				type: "SECRET_TEXT",
+				secret_text: values[0],
+			};
+		}
+		// Return as-is, let the piece handle it
+		return request.credentials;
+	}
 
-  return;
+	return;
 }
 
 /**
@@ -97,127 +201,145 @@ function resolveAuth(request: ExecuteRequest): unknown {
  *   export const code = async (inputs) => { ... return result; }
  */
 async function executeCodeStep(
-  request: ExecuteRequest
+	request: ExecuteRequest,
 ): Promise<ExecutionResult> {
-  const sourceCode = request.input?.sourceCode as
-    | { code?: string; packageJson?: string }
-    | undefined;
-  const codeInput = request.input?.input ?? {};
+	const sourceCode = request.input?.sourceCode as
+		| { code?: string; packageJson?: string }
+		| undefined;
+	const codeInput = request.input?.input ?? {};
 
-  if (!sourceCode?.code) {
-    return {
-      success: false,
-      error: "No source code provided for CODE step",
-    };
-  }
+	if (!sourceCode?.code) {
+		return {
+			success: false,
+			error: "No source code provided for CODE step",
+		};
+	}
 
-  console.log("[fn-activepieces] Executing CODE step");
+	console.log("[fn-activepieces] Executing CODE step");
 
-  try {
-    // Wrap the AP code: it exports `code` as an async function
-    // Strip `export` keywords — AsyncFunction body is not an ES module
-    const strippedCode = sourceCode.code.replace(/\bexport\s+/g, "");
+	try {
+		// Wrap the AP code: it exports `code` as an async function
+		// Strip `export` keywords — AsyncFunction body is not an ES module
+		const strippedCode = sourceCode.code.replace(/\bexport\s+/g, "");
 
-    const wrappedCode = `
+		const wrappedCode = `
       ${strippedCode}
       ;return typeof code === 'function' ? code(inputs) : undefined;
     `;
 
-    const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-    const fn = new AsyncFunction("inputs", wrappedCode);
-    const result = await fn(codeInput);
+		const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
+		const fn = new AsyncFunction("inputs", wrappedCode);
+		const result = await fn(codeInput);
 
-    return {
-      success: true,
-      data: result,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error("[fn-activepieces] CODE step failed:", error);
-    return {
-      success: false,
-      error: `Code execution failed: ${message}`,
-    };
-  }
+		return {
+			success: true,
+			data: result,
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error("[fn-activepieces] CODE step failed:", error);
+		return {
+			success: false,
+			error: `Code execution failed: ${message}`,
+		};
+	}
 }
 
 /**
  * Execute an Activepieces action.
  */
 export async function executeAction(
-  request: ExecuteRequest
+	request: ExecuteRequest,
 ): Promise<ExecutionResult> {
-  // Handle CODE steps specially — they don't use AP pieces
-  if (request.step === "_code/execute" || request.step.startsWith("_code/")) {
-    return executeCodeStep(request);
-  }
+	// Handle CODE steps specially — they don't use AP pieces
+	if (request.step === "_code/execute" || request.step.startsWith("_code/")) {
+		return executeCodeStep(request);
+	}
 
-  const { pieceName, actionName } = resolveNames(request);
+	const { pieceName, actionName } = resolveNames(request);
 
-  console.log(`[fn-activepieces] Executing ${pieceName}/${actionName}`);
+	console.log(`[fn-activepieces] Executing ${pieceName}/${actionName}`);
 
-  // Look up piece
-  const piece = getPiece(pieceName);
-  if (!piece) {
-    return {
-      success: false,
-      error:
-        `Piece "${pieceName}" is not installed in fn-activepieces. ` +
-        `Available pieces: ${(await import("./piece-registry.js")).listPieceNames().join(", ")}`,
-    };
-  }
+	// Look up piece
+	const piece = getPiece(pieceName);
+	if (!piece) {
+		return {
+			success: false,
+			error:
+				`Piece "${pieceName}" is not installed in fn-activepieces. ` +
+				`Available pieces: ${(await import("./piece-registry.js")).listPieceNames().join(", ")}`,
+		};
+	}
 
-  // Look up action
-  const action = piece.getAction(actionName);
-  if (!action) {
-    return {
-      success: false,
-      error:
-        `Action "${actionName}" not found in piece "${pieceName}". ` +
-        "Check the piece metadata for available action names.",
-    };
-  }
+	// Look up action
+	const action = piece.getAction(actionName);
+	if (!action) {
+		return {
+			success: false,
+			error:
+				`Action "${actionName}" not found in piece "${pieceName}". ` +
+				"Check the piece metadata for available action names.",
+		};
+	}
 
-  // Resolve auth
-  const auth = resolveAuth(request);
+	// Resolve auth
+	const auth = resolveAuth(request);
 
-  // Build context (includes pauseRef to capture pause requests)
-  const { context, pauseRef } = buildActionContext({
-    auth,
-    propsValue: request.input,
-    executionId: request.execution_id,
-    actionName,
-  });
+	// If this action requires auth, fail fast with a clear message instead of
+	// letting pieces crash with "Cannot read properties of undefined".
+	// Activepieces actions default `requireAuth` to true.
+	if (
+		auth == null &&
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		(action as any).requireAuth !== false
+	) {
+		return {
+			success: false,
+			error:
+				`Missing credentials for "${pieceName}/${actionName}". ` +
+				"Select a Connection for this step (or provide required secrets) and retry.",
+		};
+	}
 
-  // Execute the action
-  try {
-    const result = await action.run(context);
+	const normalizedInput = normalizeActionInput(action, request.input);
 
-    // Check if the action requested a pause (DELAY or WEBHOOK)
-    if (pauseRef.value) {
-      console.log(
-        `[fn-activepieces] Action ${pieceName}/${actionName} requested pause: type=${pauseRef.value.type}`
-      );
-      return {
-        success: true,
-        data: result,
-        pause: pauseRef.value,
-      };
-    }
+	// Build context (includes pauseRef to capture pause requests)
+	const { context, pauseRef } = buildActionContext({
+		auth,
+		propsValue: normalizedInput,
+		executionId: request.execution_id,
+		actionName,
+	});
 
-    return {
-      success: true,
-      data: result,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[fn-activepieces] Action ${pieceName}/${actionName} failed:`,
-      error
-    );
-    return {
-      success: false,
-      error: `Action execution failed: ${message}`,
-    };
-  }
+	// Execute the action
+	try {
+		const result = await action.run(context);
+
+		// Check if the action requested a pause (DELAY or WEBHOOK)
+		if (pauseRef.value) {
+			console.log(
+				`[fn-activepieces] Action ${pieceName}/${actionName} requested pause: type=${pauseRef.value.type}`,
+			);
+			return {
+				success: true,
+				data: result,
+				pause: pauseRef.value,
+			};
+		}
+
+		return {
+			success: true,
+			data: result,
+		};
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error(
+			`[fn-activepieces] Action ${pieceName}/${actionName} failed:`,
+			error,
+		);
+		return {
+			success: false,
+			error: `Action execution failed: ${message}`,
+		};
+	}
 }

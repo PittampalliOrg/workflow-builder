@@ -60,7 +60,12 @@ import { ActionConfig } from "./config/action-config";
 import { ActionGrid, type ActionSelection } from "./config/action-grid";
 import { ActivityConfig } from "./config/activity-config";
 import { ApprovalGateConfig } from "./config/approval-gate-config";
+import { IfElseConfig } from "./config/if-else-config";
+import { LoopUntilConfig } from "./config/loop-until-config";
+import { NoteConfig } from "./config/note-config";
+import { SetStateConfig } from "./config/set-state-config";
 import { TimerConfig } from "./config/timer-config";
+import { TransformConfig } from "./config/transform-config";
 import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
 
@@ -71,6 +76,14 @@ const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
 
 function buildConnectionAuthTemplate(externalId: string): string {
 	return `{{connections['${externalId}']}}`;
+}
+
+function getExternalIdFromAuthTemplate(
+	auth: string | undefined,
+): string | undefined {
+	if (!auth) return undefined;
+	const match = auth.match(/\{\{connections\['([^']+)'\]\}\}/);
+	return match?.[1];
 }
 
 function applyConnectionConfig(
@@ -266,9 +279,11 @@ export const PanelInner = () => {
 		const currentIntegrationId = selectedNode.data.config?.integrationId as
 			| string
 			| undefined;
+		const currentAuth = selectedNode.data.config?.auth as string | undefined;
+		const authExternalId = getExternalIdFromAuthTemplate(currentAuth);
 
-		// Skip if no action type or no integration configured
-		if (!(actionType && currentIntegrationId)) {
+		// Skip if no action type
+		if (!actionType) {
 			return;
 		}
 
@@ -288,19 +303,69 @@ export const PanelInner = () => {
 			return;
 		}
 
-		// Check if current integration still exists
-		const integrationExists = globalIntegrations.some(
-			(i) => i.id === currentIntegrationId,
-		);
-
-		if (integrationExists) {
-			return;
-		}
-
-		// Current integration was deleted - find a replacement
 		const availableIntegrations = globalIntegrations.filter(
 			(i) => i.pieceName === integrationType,
 		);
+
+		const hasAnyConnectionConfig =
+			!!currentIntegrationId || !!authExternalId || !!currentAuth;
+
+		// If there is no connection configured yet, only auto-select when there is
+		// exactly one available connection. Never clear an already-empty config,
+		// since that creates an infinite update loop.
+		if (!hasAnyConnectionConfig) {
+			if (availableIntegrations.length === 1) {
+				const newConfig = applyConnectionConfig(
+					selectedNode.data.config,
+					availableIntegrations[0],
+				);
+				updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+			}
+			return;
+		}
+
+		// 1) If auth points at an existing connection, ensure integrationId matches it.
+		if (authExternalId) {
+			const byExternalId = availableIntegrations.find(
+				(i) => i.externalId === authExternalId,
+			);
+			if (byExternalId) {
+				if (currentIntegrationId !== byExternalId.id) {
+					const newConfig = applyConnectionConfig(
+						selectedNode.data.config,
+						byExternalId,
+					);
+					updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+				}
+				return;
+			}
+
+			// Auth references a deleted/unknown connection. Clear it once.
+			const newConfig = clearConnectionConfig(selectedNode.data.config);
+			updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+			return;
+		}
+
+		// 2) If integrationId is set but no longer exists, replace or clear it.
+		if (currentIntegrationId) {
+			const integrationExists = globalIntegrations.some(
+				(i) => i.id === currentIntegrationId,
+			);
+			if (integrationExists) {
+				// Ensure auth is present for runtime execution.
+				const selected = globalIntegrations.find(
+					(i) => i.id === currentIntegrationId,
+				);
+				if (selected?.externalId && !authExternalId) {
+					const newConfig = applyConnectionConfig(
+						selectedNode.data.config,
+						selected,
+					);
+					updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+				}
+				return;
+			}
+		}
 
 		if (availableIntegrations.length === 1) {
 			// Auto-select the only available integration
@@ -311,8 +376,10 @@ export const PanelInner = () => {
 			updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
 		} else if (availableIntegrations.length === 0) {
 			// No integrations available - clear the invalid reference
-			const newConfig = clearConnectionConfig(selectedNode.data.config);
-			updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+			if (currentIntegrationId || currentAuth) {
+				const newConfig = clearConnectionConfig(selectedNode.data.config);
+				updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+			}
 		}
 		// If multiple integrations exist, let the user choose manually
 	}, [selectedNode, globalIntegrations, isOwner, updateNodeData]);
@@ -438,7 +505,13 @@ export const PanelInner = () => {
 
 	const handleUpdateConfig = (key: string, value: string) => {
 		if (selectedNode) {
-			let newConfig = { ...selectedNode.data.config, [key]: value };
+			let newConfig: Record<string, unknown> = {
+				...selectedNode.data.config,
+				[key]:
+					value === "" && (key === "integrationId" || key === "auth")
+						? undefined
+						: value,
+			};
 
 			// When action type changes, clear the integrationId since it may not be valid for the new action
 			if (key === "actionType" && selectedNode.data.config?.integrationId) {
@@ -811,10 +884,43 @@ export const PanelInner = () => {
 																? "Approval Gate"
 																: selection.nodeType === "timer"
 																	? "Timer"
-																	: "Step",
-													config: {
-														activityName: selection.activityName,
-													},
+																	: selection.nodeType === "loop-until"
+																		? "Loop Until"
+																		: selection.nodeType === "if-else"
+																			? "If / Else"
+																			: selection.nodeType === "note"
+																				? "Note"
+																				: selection.nodeType === "set-state"
+																					? "Set State"
+																					: selection.nodeType === "transform"
+																						? "Transform"
+																						: "Step",
+													config:
+														selection.nodeType === "activity"
+															? { activityName: selection.activityName }
+															: selection.nodeType === "loop-until"
+																? {
+																		loopStartNodeId: "",
+																		maxIterations: 10,
+																		delaySeconds: 0,
+																		onMaxIterations: "fail",
+																		operator: "EXISTS",
+																		left: "",
+																		right: "",
+																	}
+																: selection.nodeType === "if-else"
+																	? {
+																			operator: "EXISTS",
+																			left: "",
+																			right: "",
+																		}
+																	: selection.nodeType === "note"
+																		? { text: "" }
+																		: selection.nodeType === "set-state"
+																			? { key: "", value: "" }
+																			: selection.nodeType === "transform"
+																				? { templateJson: "{\n  \n}" }
+																				: {},
 												},
 											});
 										} else {
@@ -887,6 +993,51 @@ export const PanelInner = () => {
 							{/* Dapr Timer Config */}
 							{selectedNode.type === "timer" && (
 								<TimerConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* Dapr Loop Until Config */}
+							{selectedNode.type === "loop-until" && (
+								<LoopUntilConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* If/Else Config */}
+							{selectedNode.type === "if-else" && (
+								<IfElseConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* Note Config */}
+							{selectedNode.type === "note" && (
+								<NoteConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* Set State Config */}
+							{selectedNode.type === "set-state" && (
+								<SetStateConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* Transform Config */}
+							{selectedNode.type === "transform" && (
+								<TransformConfig
 									config={selectedNode.data.config || {}}
 									disabled={isGenerating || !isOwner}
 									onUpdateConfig={handleUpdateConfig}

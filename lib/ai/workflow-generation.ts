@@ -2,6 +2,7 @@ import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
 import { withPlannerPiece } from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
@@ -144,9 +145,11 @@ async function processOperationStream(
 async function generateAIPieceActionPrompts(): Promise<string> {
 	const allPieces = await listPieceMetadata({});
 	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
-	const integrations = withPlannerPiece(
-		convertApPiecesToIntegrations(pieces) as IntegrationDefinition[],
-	);
+	const builtinPieces = getBuiltinPieces();
+	const integrations = withPlannerPiece([
+		...builtinPieces,
+		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
+	]);
 
 	const lines: string[] = [];
 
@@ -169,6 +172,12 @@ async function generateAIPieceActionPrompts(): Promise<string> {
 					exampleConfig[field.key] = 10;
 				} else if (field.type === "select" && field.options?.[0]) {
 					exampleConfig[field.key] = field.options[0].value;
+				} else if (field.type === "dynamic-select") {
+					// Dynamic dropdown values are connector-specific IDs; placeholder text
+					// (e.g. "Your parent folder") causes invalid runtime requests.
+					exampleConfig[field.key] = "";
+				} else if (field.type === "dynamic-multi-select") {
+					exampleConfig[field.key] = "[]";
 				} else {
 					exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
 				}
@@ -214,12 +223,12 @@ IMPORTANT RULES:
 Node structure:
 {
   "id": "unique-id",
-  "type": "trigger" or "action",
+  "type": "trigger" | "action" | "loop-until" | "if-else" | "set-state" | "transform" | "note",
   "position": {"x": number, "y": number},
   "data": {
     "label": "Node Label",
     "description": "Node description",
-    "type": "trigger" or "action",
+    "type": "trigger" | "action" | "loop-until" | "if-else" | "set-state" | "transform" | "note",
     "config": {...},
     "status": "idle"
   }
@@ -239,27 +248,70 @@ Trigger types:
 - Webhook: {"triggerType": "Webhook", "webhookPath": "/webhooks/name", ...}
 - Schedule: {"triggerType": "Schedule", "scheduleCron": "0 9 * * *", ...}
 
+Loop Until node type:
+- Node type is "loop-until" (NOT an actionType)
+- Used to repeat a section of the workflow without creating graph cycles
+- Config example:
+  {
+    "loopStartNodeId": "node-id-to-jump-back-to",
+    "maxIterations": 10,
+    "delaySeconds": 0,
+    "onMaxIterations": "fail" or "continue",
+    "operator": "EXISTS" | "TEXT_CONTAINS" | "TEXT_EXACTLY_MATCHES" | "NUMBER_IS_GREATER_THAN" | "NUMBER_IS_LESS_THAN" | "NUMBER_IS_EQUAL_TO" | "BOOLEAN_IS_TRUE" | "BOOLEAN_IS_FALSE",
+    "left": "{{@nodeId:Label.field}}",
+    "right": "expected value (optional)"
+  }
+
+If / Else node type:
+- Node type is "if-else" (NOT an actionType)
+- Creates a true/false branch based on an AP-style operator comparison
+- Config example:
+  {
+    "operator": "EXISTS" | "DOES_NOT_EXIST" | "TEXT_CONTAINS" | "TEXT_EXACTLY_MATCHES" | "NUMBER_IS_GREATER_THAN" | "NUMBER_IS_LESS_THAN" | "NUMBER_IS_EQUAL_TO" | "BOOLEAN_IS_TRUE" | "BOOLEAN_IS_FALSE",
+    "left": "{{@nodeId:Label.field}}",
+    "right": "expected value (optional)"
+  }
+- When connecting edges out of an if-else node:
+  - Use "sourceHandle": "true" for the true branch
+  - Use "sourceHandle": "false" for the false branch
+
+Set State node type:
+- Node type is "set-state"
+- Sets a workflow-scoped variable accessible via {{state.key}} later
+- Config example:
+  { "key": "customerId", "value": "{{@nodeId:Label.id}}" }
+
+Transform node type:
+- Node type is "transform"
+- Builds structured output from a JSON template (must be valid JSON after templates resolve)
+- Config example:
+  { "templateJson": "{\\n  \\"id\\": \\"{{@nodeId:Label.id}}\\"\\n}" }
+
+Note node type:
+- Node type is "note"
+- Notes do not execute and should NOT be used for control flow
+- Config example:
+  { "text": "Explain why this workflow exists" }
+
 System action types (built-in):
 - Database Query: {"actionType": "system/database-query", "dbQuery": "SELECT * FROM table"}
 - HTTP Request: {"actionType": "system/http-request", "httpMethod": "POST", "endpoint": "https://api.example.com", "httpHeaders": "{}", "httpBody": "{}"}
-- Condition: {"actionType": "system/condition", "condition": "{{@nodeId:Label.field}} === 'value'"}
 
 Plugin action types (from integrations):
 ${pluginActionPrompts}
 
-CRITICAL ABOUT CONDITION NODES:
-- Condition nodes evaluate a boolean expression
-- When TRUE: ALL connected nodes execute
-- When FALSE: ALL connected nodes are SKIPPED
-- For if/else logic, CREATE MULTIPLE SEPARATE condition nodes (one per branch)
-- NEVER connect multiple different outcome paths to a single condition node
-- Each condition should check for ONE specific case
+CRITICAL ABOUT IF/ELSE NODES:
+- Use exactly one if-else node per branching decision
+- Always connect both branches when possible (true and false)
+- Use edge.sourceHandle = "true" or "false" (no other values)
 
 Edge structure:
 {
   "id": "edge-id",
   "source": "source-node-id",
   "target": "target-node-id",
+  "sourceHandle": "true" | "false" (optional),
+  "targetHandle": string (optional),
   "type": "default"
 }
 

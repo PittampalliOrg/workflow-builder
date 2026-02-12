@@ -74,12 +74,13 @@ function getRequiredPieceName(
 // Helper to check and fix a single node's connection
 type ConnectionFixResult = {
 	nodeId: string;
+	newConnectionId?: string;
 	newConnectionExternalId?: string;
 };
 
 function checkNodeConnection(
 	node: WorkflowNode,
-	connectionsByPiece: Map<string, { externalId: string }[]>,
+	connectionsByPiece: Map<string, { id: string; externalId: string }[]>,
 	findActionById: ReturnType<typeof usePiecesCatalog>["findActionById"],
 ): ConnectionFixResult | null {
 	const actionType = node.data.config?.actionType as string | undefined;
@@ -104,6 +105,7 @@ function checkNodeConnection(
 	if (available.length === 1) {
 		return {
 			nodeId: node.id,
+			newConnectionId: available[0].id,
 			newConnectionExternalId: available[0].externalId,
 		};
 	}
@@ -476,10 +478,10 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				setConnectionsLoaded(true);
 
 				// Group connections by pieceName
-				const byPiece = new Map<string, { externalId: string }[]>();
+				const byPiece = new Map<string, { id: string; externalId: string }[]>();
 				for (const conn of allConnections) {
 					const list = byPiece.get(conn.pieceName) ?? [];
-					list.push({ externalId: conn.externalId });
+					list.push({ id: conn.id, externalId: conn.externalId });
 					byPiece.set(conn.pieceName, list);
 				}
 
@@ -495,6 +497,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 							data: {
 								config: {
 									...node.data.config,
+									...(fix.newConnectionId
+										? { integrationId: fix.newConnectionId }
+										: {}),
 									auth: fix.newConnectionExternalId
 										? buildConnectionAuthTemplate(fix.newConnectionExternalId)
 										: undefined,

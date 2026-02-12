@@ -473,23 +473,41 @@ export function ActionConfig({
 
 	// Derive the selected connection ID from the auth template
 	const selectedConnectionId = useMemo(() => {
+		const configuredIntegrationId = config?.integrationId as string | undefined;
+		if (configuredIntegrationId) {
+			return configuredIntegrationId;
+		}
+
 		const authTemplate = config?.auth as string | undefined;
 		const externalId = getExternalIdFromAuthTemplate(authTemplate);
-		if (!externalId) return "";
+		if (!externalId) {
+			return "";
+		}
+
 		const conn = globalIntegrations.find((i) => i.externalId === externalId);
 		return conn?.id || "";
-	}, [config?.auth, globalIntegrations]);
+	}, [config?.integrationId, config?.auth, globalIntegrations]);
 
 	const applySelectedConnection = (
 		connectionId: string,
 		externalId?: string,
 	) => {
+		// Always persist integrationId for UI validation and node warnings.
+		// Runtime execution uses auth template -> externalId.
+		onUpdateConfig("integrationId", connectionId || "");
+
 		// If externalId is provided directly (e.g., from overlay creation),
 		// use it immediately to avoid race condition with stale integrations list
 		if (externalId) {
 			onUpdateConfig("auth", buildConnectionAuthTemplate(externalId));
 			return;
 		}
+
+		if (!connectionId) {
+			onUpdateConfig("auth", "");
+			return;
+		}
+
 		const selectedConnection = globalIntegrations.find(
 			(i) => i.id === connectionId,
 		);
@@ -498,7 +516,12 @@ export function ActionConfig({
 				"auth",
 				buildConnectionAuthTemplate(selectedConnection.externalId),
 			);
+			return;
 		}
+
+		// Defensive: if we can't resolve externalId, clear auth so execution doesn't
+		// accidentally use a stale connection template.
+		onUpdateConfig("auth", "");
 	};
 
 	const openConnectionOverlay = () => {
@@ -585,7 +608,7 @@ export function ActionConfig({
 			</div>
 
 			{integrationType && isOwner && (
-				<div className="space-y-2">
+				<div className="space-y-2" id="connection" tabIndex={-1}>
 					<div className="ml-1 flex items-center justify-between">
 						<div className="flex items-center gap-1">
 							<Label>Connection</Label>

@@ -78,6 +78,30 @@ const ExecuteRequestSchema = z.object({
 	ap_platform_id: z.string().nullable().optional(),
 });
 
+function parseConnectionExternalIdFromAuthTemplate(
+	auth: unknown,
+): string | undefined {
+	if (typeof auth !== "string") {
+		return undefined;
+	}
+	const trimmed = auth.trim();
+	if (!trimmed) {
+		return undefined;
+	}
+
+	const match = trimmed.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
+	if (match?.[1]) {
+		return match[1];
+	}
+
+	// Back-compat: some callers may pass the external ID directly.
+	if (!trimmed.includes("{{") && !trimmed.includes("}}")) {
+		return trimmed;
+	}
+
+	return undefined;
+}
+
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
 	/**
 	 * POST /execute - Route function execution to appropriate service
@@ -161,6 +185,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const pluginId = functionSlug.split("/")[0];
 
 				const isApRoute = target.appId === "fn-activepieces";
+				const parsedConnectionExternalId =
+					parseConnectionExternalIdFromAuthTemplate(body.input?.auth);
+				const connectionExternalId =
+					body.connection_external_id || parsedConnectionExternalId;
 
 				// Pre-fetch credentials
 				const credentialStartTime = Date.now();
@@ -174,10 +202,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						: undefined;
 
-				if (isApRoute && body.connection_external_id) {
+				if (isApRoute && connectionExternalId) {
 					// For AP actions: fetch raw connection value (passes directly to context.auth)
 					credentialsRaw = await fetchRawConnectionValue(
-						body.connection_external_id,
+						connectionExternalId,
 						apContext,
 					);
 				}
@@ -192,7 +220,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								nodeId: body.node_id,
 							}
 						: undefined,
-					body.connection_external_id,
+					connectionExternalId,
 					apContext,
 				);
 				timing.credentialFetchMs = Date.now() - credentialStartTime;
@@ -242,13 +270,36 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 					clearTimeout(timeoutId);
 					timing.executionMs = Date.now() - executionStartTime;
 
-					if (!httpResponse.ok) {
-						const errorText = await httpResponse.text();
-						throw new Error(`HTTP ${httpResponse.status}: ${errorText}`);
+					// IMPORTANT:
+					// OpenFunctions use HTTP status codes inconsistently (some return 5xx
+					// for a handled action failure). We always try to parse the JSON
+					// response and propagate it back to the orchestrator as a normal
+					// (HTTP 200) function-router response, so the orchestrator can surface
+					// `error` instead of failing with RequestException.
+					const responseText = await httpResponse.text();
+					let parsed: unknown = null;
+					try {
+						parsed = responseText
+							? (JSON.parse(responseText) as unknown)
+							: null;
+					} catch {
+						parsed = null;
 					}
 
-					const result = await httpResponse.json();
-					response = result as ExecuteResponse;
+					if (
+						parsed &&
+						typeof parsed === "object" &&
+						"success" in parsed &&
+						typeof (parsed as { success?: unknown }).success === "boolean"
+					) {
+						response = parsed as ExecuteResponse;
+					} else if (httpResponse.ok) {
+						throw new Error(
+							`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
+						);
+					} else {
+						throw new Error(`HTTP ${httpResponse.status}: ${responseText}`);
+					}
 
 					// Cold start detection
 					const avgResponseTime = getResponseTimeAverage(target.appId);
@@ -324,8 +375,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				}
 			}
 
-			const statusCode = response.success ? 200 : 500;
-			return reply.status(statusCode).send(response);
+			// Always return 200 for a successfully routed call, even when the function
+			// reports `success: false`. The workflow-orchestrator uses `raise_for_status`
+			// and would otherwise drop the actionable error message.
+			return reply.status(200).send(response);
 		} catch (error) {
 			const duration_ms = Date.now() - startTime;
 			const errorMessage =

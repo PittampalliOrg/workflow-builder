@@ -9,13 +9,22 @@ import {
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { Handle, Position } from "@xyflow/react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, CSSProperties } from "react";
 import { AnimatedBorder } from "@/components/ui/animated-border";
+
+export type NodeHandleSpec = {
+	id?: string;
+	position?: Position;
+	className?: string;
+	style?: CSSProperties;
+};
 
 export type NodeProps = ComponentProps<typeof Card> & {
   handles: {
-    target: boolean;
-    source: boolean;
+    target?: boolean;
+    source?: boolean;
+    targets?: NodeHandleSpec[];
+    sources?: NodeHandleSpec[];
   };
   status?: "idle" | "running" | "success" | "error";
 };
@@ -32,7 +41,27 @@ export const Node = ({ handles, className, status, ...props }: NodeProps) => (
   >
     {status === "running" && <AnimatedBorder />}
     {handles.target && <Handle position={Position.Left} type="target" />}
+    {(handles.targets || []).map((h) => (
+      <Handle
+        className={h.className}
+        id={h.id}
+        key={h.id || "target"}
+        position={h.position ?? Position.Left}
+        style={h.style}
+        type="target"
+      />
+    ))}
     {handles.source && <Handle position={Position.Right} type="source" />}
+    {(handles.sources || []).map((h) => (
+      <Handle
+        className={h.className}
+        id={h.id}
+        key={h.id || "source"}
+        position={h.position ?? Position.Right}
+        style={h.style}
+        type="source"
+      />
+    ))}
     {props.children}
   </Card>
 );

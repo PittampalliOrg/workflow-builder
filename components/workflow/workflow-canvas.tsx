@@ -48,7 +48,12 @@ import { ActionNode } from "./nodes/action-node";
 import { ActivityNode } from "./nodes/activity-node";
 import { AddNode } from "./nodes/add-node";
 import { ApprovalGateNode } from "./nodes/approval-gate-node";
+import { IfElseNode } from "./nodes/if-else-node";
+import { LoopUntilNode } from "./nodes/loop-until-node";
+import { NoteNode } from "./nodes/note-node";
+import { SetStateNode } from "./nodes/set-state-node";
 import { TimerNode } from "./nodes/timer-node";
+import { TransformNode } from "./nodes/transform-node";
 import { TriggerNode } from "./nodes/trigger-node";
 import {
 	type ContextMenuState,
@@ -106,6 +111,7 @@ export function WorkflowCanvas() {
 
 	const connectingNodeId = useRef<string | null>(null);
 	const connectingHandleType = useRef<"source" | "target" | null>(null);
+	const connectingHandleId = useRef<string | null>(null);
 	const justCreatedNodeFromConnection = useRef(false);
 	const viewportInitialized = useRef(false);
 	const [isCanvasReady, setIsCanvasReady] = useState(false);
@@ -254,6 +260,11 @@ export function WorkflowCanvas() {
 			activity: ActivityNode,
 			"approval-gate": ApprovalGateNode,
 			timer: TimerNode,
+			"loop-until": LoopUntilNode,
+			"if-else": IfElseNode,
+			note: NoteNode,
+			"set-state": SetStateNode,
+			transform: TransformNode,
 		}),
 		[],
 	);
@@ -267,6 +278,9 @@ export function WorkflowCanvas() {
 			}
 
 			if (node.type === "add") {
+				return false;
+			}
+			if (node.type === "note") {
 				return false;
 			}
 
@@ -325,6 +339,7 @@ export function WorkflowCanvas() {
 		(_event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
 			connectingNodeId.current = params.nodeId;
 			connectingHandleType.current = params.handleType;
+			connectingHandleId.current = params.handleId ?? null;
 		},
 		[],
 	);
@@ -377,8 +392,8 @@ export function WorkflowCanvas() {
 				onConnect({
 					source: sourceId,
 					target: targetId,
-					sourceHandle: null,
-					targetHandle: null,
+					sourceHandle: fromSource ? connectingHandleId.current : null,
+					targetHandle: fromSource ? null : connectingHandleId.current,
 				});
 			}
 		},
@@ -451,6 +466,8 @@ export function WorkflowCanvas() {
 				id: nanoid(),
 				source: fromSource ? sourceNodeId : newNode.id,
 				target: fromSource ? newNode.id : sourceNodeId,
+				sourceHandle: fromSource ? connectingHandleId.current : null,
+				targetHandle: fromSource ? null : connectingHandleId.current,
 				type: "animated",
 			};
 			setEdges([...edges, newEdge]);
@@ -496,6 +513,8 @@ export function WorkflowCanvas() {
 
 			if (!target) {
 				connectingNodeId.current = null;
+				connectingHandleType.current = null;
+				connectingHandleId.current = null;
 				return;
 			}
 
@@ -507,6 +526,7 @@ export function WorkflowCanvas() {
 				handleConnectionToExistingNode(nodeElement);
 				connectingNodeId.current = null;
 				connectingHandleType.current = null;
+				connectingHandleId.current = null;
 				return;
 			}
 
@@ -516,6 +536,7 @@ export function WorkflowCanvas() {
 
 			connectingNodeId.current = null;
 			connectingHandleType.current = null;
+			connectingHandleId.current = null;
 		},
 		[
 			getClientPosition,

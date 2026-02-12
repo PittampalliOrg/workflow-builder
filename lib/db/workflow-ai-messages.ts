@@ -26,7 +26,18 @@ export function isWorkflowAiMessagesTableMissing(error: unknown): boolean {
 		const message = err.message.toLowerCase();
 		if (
 			message.includes("workflow_ai_messages") &&
+			// Postgres (direct) or indirect "relation does not exist" wording.
 			(message.includes("does not exist") || message.includes("relation"))
+		) {
+			return true;
+		}
+
+		// Some DrizzleQueryError instances only include the SQL with no underlying
+		// Postgres error message/cause accessible. Treat queries that explicitly
+		// reference the table as "missing table" for graceful degradation.
+		if (
+			message.includes("failed query") &&
+			message.includes("workflow_ai_messages")
 		) {
 			return true;
 		}

@@ -56,6 +56,102 @@ const MCP_PIECE: IntegrationDefinition = {
 	],
 };
 
+const AGENT_PIECE: IntegrationDefinition = {
+	type: "agent",
+	label: "Agent",
+	pieceName: "agent",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Run Agent",
+			description:
+				"Run a durable LLM agent with tool-calling inside a workflow step",
+			category: "Agent",
+			configFields: [
+				{
+					key: "prompt",
+					label: "Prompt",
+					type: "template-textarea",
+					placeholder:
+						"Describe the task for the agent. You can reference previous outputs like {{@nodeId:Label.field}}.",
+					rows: 6,
+					required: true,
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "model-selector",
+					placeholder: "Select a model",
+					defaultValue: "gpt-5.2-codex",
+					dynamicOptions: {
+						provider: "planner",
+						pieceName: "agent",
+						actionName: "agent/run",
+						propName: "model",
+						refreshers: [],
+					},
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					defaultValue: "20",
+				},
+				{
+					key: "stopCondition",
+					label: "Stop Condition (optional)",
+					type: "template-textarea",
+					placeholder:
+						"Describe what 'done' means. Example: Stop when the API returns status 200 and the response contains an id.",
+					rows: 4,
+					required: false,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					defaultValue: "30",
+				},
+				{
+					key: "allowedActionsJson",
+					label: "Allowed Actions",
+					type: "dynamic-multi-select",
+					placeholder: "Select allowed actions",
+					defaultValue: "[]",
+					dynamicOptions: {
+						provider: "planner",
+						pieceName: "agent",
+						actionName: "agent/run",
+						propName: "allowedActionsJson",
+						refreshers: [],
+					},
+				},
+				{
+					key: "agentToolsJson",
+					label: "Agent Tools (JSON, optional)",
+					type: "template-textarea",
+					placeholder:
+						'[{"type":"ACTION","toolName":"HttpRequest","actionType":"system/http-request"}]',
+					rows: 6,
+					defaultValue: "[]",
+				},
+			],
+			outputFields: [
+				{ field: "summary", description: "Agent summary" },
+				{
+					field: "result",
+					description: "Agent structured result payload (best-effort)",
+				},
+				{
+					field: "agentWorkflowId",
+					description: "Dapr workflow instance ID for this agent run",
+				},
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE];
+	return [MCP_PIECE, AGENT_PIECE];
 }

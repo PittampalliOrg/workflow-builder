@@ -57,7 +57,12 @@ def handle_planner_event(event_type: str, event_data: dict[str, Any]) -> dict[st
     logger.info(f"[Planner Events] Received event: {actual_event_type} (envelope: {event_type})")
 
     # Only process completion events that have parent workflow routing info
-    completion_event_types = {"execution_completed", "planning_completed", "phase_completed"}
+    completion_event_types = {
+        "execution_completed",
+        "planning_completed",
+        "phase_completed",
+        "agent_completed",
+    }
     if actual_event_type not in completion_event_types:
         logger.debug(f"[Planner Events] Ignoring non-completion event: {actual_event_type}")
         return {
@@ -103,6 +108,7 @@ def handle_planner_event(event_type: str, event_data: dict[str, Any]) -> dict[st
             "execution_completed": f"planner_execution_{event.workflow_id}",
             "planning_completed": f"planner_planning_{event.workflow_id}",
             "phase_completed": f"planner_phase_{event.workflow_id}",
+            "agent_completed": f"agent_completed_{event.workflow_id}",
             # planner-dapr-agent uses these event types
             "planner_planning_completed": f"planner_planning_{event.workflow_id}",
             "planner_execution_completed": f"planner_execution_{event.workflow_id}",

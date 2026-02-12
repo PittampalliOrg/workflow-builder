@@ -80,12 +80,14 @@ from workflow_agent import run_workflow as run_multi_step_workflow, Plan, Execut
 # Import Dapr multi-step workflow (proper Dapr workflow with activities)
 try:
     from dapr_multi_step_workflow import get_workflow_runtime, multi_step_workflow
+    from workflow_builder_agent_workflow import workflow_builder_agent_workflow
     from dapr.ext.workflow import DaprWorkflowClient
     DAPR_MULTI_STEP_WORKFLOW_AVAILABLE = True
 except ImportError as e:
     DAPR_MULTI_STEP_WORKFLOW_AVAILABLE = False
     get_workflow_runtime = None
     multi_step_workflow = None
+    workflow_builder_agent_workflow = None
     DaprWorkflowClient = None
     logger.warning(f"Dapr multi-step workflow not available: {e}")
 
@@ -3260,6 +3262,89 @@ async def run_dapr_multi_step(request: MultiStepWorkflowRequest, background_task
                 "status": "failed",
                 "error": str(e),
             },
+        )
+
+
+class WorkflowBuilderAgentRunRequest(BaseModel):
+    """Start a workflow-builder agent run as a durable Dapr workflow."""
+
+    prompt: str
+    model: Optional[str] = "gpt-5.2-codex"
+    maxTurns: Optional[int] = 20
+    allowedActionsJson: Optional[str] = "[]"
+    agentToolsJson: Optional[str] = "[]"
+    stopCondition: Optional[str] = ""
+
+    integrations: Optional[dict] = None
+    dbExecutionId: Optional[str] = None
+    connectionExternalId: Optional[str] = None
+
+    parentExecutionId: Optional[str] = None
+    executionId: Optional[str] = None
+    workflowId: Optional[str] = None
+    nodeId: Optional[str] = None
+    nodeName: Optional[str] = None
+
+
+@app.post("/workflow-builder/agent/dapr")
+async def run_workflow_builder_agent(request: WorkflowBuilderAgentRunRequest):
+    """Run the workflow-builder "agent/run" primitive via planner-dapr-agent.
+
+    Returns immediately with the agent workflow instance ID. Completion is
+    delivered asynchronously via pub/sub as an `agent_completed` event.
+    """
+    if not DAPR_MULTI_STEP_WORKFLOW_AVAILABLE or not workflow_builder_agent_workflow:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "success": False,
+                "error": "Dapr workflow runtime not available",
+            },
+        )
+
+    api_key = get_secret_value("OPENAI_API_KEY")
+    if not api_key:
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "OPENAI_API_KEY not configured"},
+        )
+
+    os.environ["OPENAI_API_KEY"] = api_key
+
+    agent_workflow_id = f"agent-{uuid.uuid4().hex[:12]}"
+
+    workflow_input = {
+        "prompt": request.prompt,
+        "model": request.model or "gpt-5.2-codex",
+        "max_turns": int(request.maxTurns or 20),
+        "allowed_actions_json": request.allowedActionsJson,
+        "agent_tools_json": request.agentToolsJson,
+        "stop_condition": request.stopCondition,
+        "integrations": request.integrations,
+        "db_execution_id": request.dbExecutionId,
+        "connection_external_id": request.connectionExternalId,
+        "parent_execution_id": request.parentExecutionId,
+        "execution_id": request.executionId,
+        "workflow_id": request.workflowId,
+        "node_id": request.nodeId,
+        "node_name": request.nodeName,
+    }
+
+    try:
+        client = DaprWorkflowClient()
+        instance_id = client.schedule_new_workflow(
+            workflow=workflow_builder_agent_workflow,
+            instance_id=agent_workflow_id,
+            input=workflow_input,
+        )
+
+        logger.info(f"Started workflow-builder agent workflow: {instance_id}")
+        return {"success": True, "workflow_id": instance_id}
+    except Exception as e:
+        logger.error(f"Failed to start workflow-builder agent workflow: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": str(e)},
         )
 
 

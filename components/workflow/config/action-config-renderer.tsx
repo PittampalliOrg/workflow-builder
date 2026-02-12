@@ -19,6 +19,7 @@ import type {
 } from "@/lib/actions/types";
 import { isFieldGroup } from "@/lib/actions/utils";
 import { DynamicSelectField } from "./fields/dynamic-select-field";
+import { ModelSelectorField } from "./fields/model-selector-field";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
 type FieldProps = {
@@ -150,6 +151,7 @@ const FIELD_RENDERERS: Record<
 	text: TextInputField,
 	number: NumberInputField,
 	select: SelectField,
+	"model-selector": ModelSelectorField,
 	"dynamic-select": DynamicSelectFieldWrapper,
 	"dynamic-multi-select": DynamicMultiSelectFieldWrapper,
 	"schema-builder": SchemaBuilderField,

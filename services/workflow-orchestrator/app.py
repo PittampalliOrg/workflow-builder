@@ -55,6 +55,7 @@ from activities.call_planner_service import (
     call_planner_status,
     call_planner_multi_step,
 )
+from activities.call_agent_service import call_agent_run
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
@@ -111,6 +112,8 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_planner_approve)
     wfr.register_activity(call_planner_status)
     wfr.register_activity(call_planner_multi_step)
+    # Agent service activities (planner-dapr-agent)
+    wfr.register_activity(call_agent_run)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)
@@ -697,21 +700,37 @@ def subscribe():
     return [
         {
             "pubsubname": PUBSUB_NAME,
-            "topic": "workflow.events",
+            # Must match PUBSUB_TOPIC in planner-dapr-agent (default: workflow.stream).
+            "topic": "workflow.stream",
             "route": "/subscriptions/planner-events",
             "routes": {
                 "rules": [
+                    # Legacy planner completion events
                     {
                         "match": "event.type == \"planner_planning_completed\"",
-                        "path": "/subscriptions/planner-events"
+                        "path": "/subscriptions/planner-events",
                     },
                     {
                         "match": "event.type == \"planner_execution_completed\"",
-                        "path": "/subscriptions/planner-events"
+                        "path": "/subscriptions/planner-events",
+                    },
+                    # Current completion event types
+                    {
+                        "match": "event.type == \"planning_completed\"",
+                        "path": "/subscriptions/planner-events",
+                    },
+                    {
+                        "match": "event.type == \"execution_completed\"",
+                        "path": "/subscriptions/planner-events",
+                    },
+                    # Workflow-builder agent primitive
+                    {
+                        "match": "event.type == \"agent_completed\"",
+                        "path": "/subscriptions/planner-events",
                     },
                 ],
-                "default": "/subscriptions/planner-events"
-            }
+                "default": "/subscriptions/planner-events",
+            },
         }
     ]
 

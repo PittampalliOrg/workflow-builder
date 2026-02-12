@@ -38,10 +38,18 @@ type MissingIntegration = {
 	nodeNames: string[];
 };
 
+type MissingNodeConnection = {
+	nodeId: string;
+	nodeLabel: string;
+	integrationType: IntegrationType;
+	integrationLabel: string;
+};
+
 type WorkflowIssues = {
 	brokenReferences: BrokenReference[];
 	missingRequiredFields: MissingRequiredField[];
 	missingIntegrations: MissingIntegration[];
+	missingNodeConnections: MissingNodeConnection[];
 };
 
 type WorkflowIssuesOverlayProps = OverlayComponentProps<{
@@ -62,11 +70,13 @@ export function WorkflowIssuesOverlay({
 
 	const { brokenReferences, missingRequiredFields, missingIntegrations } =
 		issues;
+	const missingNodeConnections = issues.missingNodeConnections || [];
 
 	const totalIssues =
 		brokenReferences.length +
 		missingRequiredFields.length +
-		missingIntegrations.length;
+		missingIntegrations.length +
+		missingNodeConnections.length;
 
 	const handleGoToStep = (nodeId: string, fieldKey?: string) => {
 		// Select the node and set tab (this is handled by onGoToStep)
@@ -113,6 +123,41 @@ export function WorkflowIssuesOverlay({
 			</div>
 
 			<div className="mt-4 space-y-4">
+				{/* Missing Connection Selections */}
+				{missingNodeConnections.length > 0 && (
+					<div className="space-y-1">
+						<h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+							Select A Connection
+						</h4>
+						{missingNodeConnections.map((missing) => (
+							<div
+								className="flex items-center gap-3 py-1"
+								key={`${missing.nodeId}-${missing.integrationType}`}
+							>
+								<IntegrationIcon
+									className="size-4 shrink-0"
+									integration={missing.integrationType}
+								/>
+								<p className="min-w-0 flex-1 text-sm">
+									<span className="font-medium">{missing.nodeLabel}</span>
+									<span className="text-muted-foreground">
+										{" — "}
+										{missing.integrationLabel}
+									</span>
+								</p>
+								<Button
+									className="shrink-0"
+									onClick={() => handleGoToStep(missing.nodeId, "connection")}
+									size="sm"
+									variant="outline"
+								>
+									Select
+								</Button>
+							</div>
+						))}
+					</div>
+				)}
+
 				{/* Missing Connections Section */}
 				{missingIntegrations.length > 0 && (
 					<div className="space-y-1">

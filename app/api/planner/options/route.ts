@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
+import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
+import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
+import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
 import { normalizePlannerActionType } from "@/lib/actions/planner-actions";
+import type { IntegrationDefinition } from "@/lib/actions/types";
+import { flattenConfigFields } from "@/lib/actions/utils";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
+import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import {
 	AppConnectionType,
 	type AppConnectionValue,
@@ -53,10 +59,110 @@ function buildDisabledResponse(placeholder: string): PlannerOptionsResponse {
 }
 
 function normalizeActionName(actionName: string): string {
-	const fullActionName = actionName.startsWith("planner/")
-		? actionName
-		: `planner/${actionName}`;
-	return normalizePlannerActionType(fullActionName);
+	// This endpoint historically served only planner/* actions and would prefix
+	// non-namespaced action names with "planner/". We now also serve internal
+	// workflow-builder option providers (e.g. agent/run), so:
+	// - If a name is already namespaced (contains "/"), leave it as-is.
+	// - Otherwise, assume it is a planner action slug and prefix with "planner/".
+	const trimmed = actionName.trim();
+	if (trimmed.includes("/")) {
+		return normalizePlannerActionType(trimmed);
+	}
+	return normalizePlannerActionType(`planner/${trimmed}`);
+}
+
+function buildModelsResponse(searchValue?: string): PlannerOptionsResponse {
+	const envList = process.env.AGENT_MODELS_JSON || process.env.AI_MODELS_JSON;
+	let models: string[] = [];
+
+	if (envList) {
+		try {
+			const parsed = JSON.parse(envList) as unknown;
+			if (Array.isArray(parsed)) {
+				models = parsed.filter((m): m is string => typeof m === "string");
+			}
+		} catch {
+			// ignore malformed env JSON
+		}
+	}
+
+	if (models.length === 0) {
+		models = [
+			"gpt-5.2-codex",
+			"gpt-4o-mini",
+			"gpt-4o",
+			"claude-sonnet-4-5",
+			"claude-sonnet-4-6",
+			"claude-opus-4-6",
+			"openai/gpt-5.1-instant",
+			"openai/gpt-4o-mini",
+		];
+	}
+
+	return {
+		options: filterOptions(
+			models.map((m) => ({ label: getModelDisplayLabel(m), value: m })),
+			searchValue,
+		),
+	};
+}
+
+function getModelDisplayLabel(modelId: string): string {
+	const labels: Record<string, string> = {
+		"gpt-5.2-codex": "GPT-5.2 Codex",
+		"gpt-4o": "GPT-4o",
+		"gpt-4o-mini": "GPT-4o mini",
+		"openai/gpt-5.1-instant": "OpenAI GPT-5.1 Instant (Gateway)",
+		"openai/gpt-4o-mini": "OpenAI GPT-4o mini (Gateway)",
+		"claude-sonnet-4-5": "Claude Sonnet 4.5",
+		"claude-sonnet-4-6": "Claude Sonnet 4.6",
+		"claude-opus-4-6": "Claude Opus 4.6",
+	};
+
+	return labels[modelId] || modelId;
+}
+
+async function buildAllowedActionsResponse(
+	searchValue?: string,
+): Promise<PlannerOptionsResponse> {
+	const allPieces = await listPieceMetadata({});
+	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
+	const builtinPieces = getBuiltinPieces();
+
+	const integrations: IntegrationDefinition[] = [
+		...builtinPieces,
+		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
+	];
+
+	const rawOptions: DropdownOption[] = [];
+
+	for (const piece of integrations) {
+		for (const action of piece.actions) {
+			const actionType = `${piece.type}/${action.slug}`;
+
+			// Force field flattening to validate "actionType" is selectable even when
+			// actions have nested field groups; also keeps parity with AI prompting.
+			void flattenConfigFields(action.configFields);
+
+			rawOptions.push({
+				label: `${piece.label}: ${action.label}`,
+				value: actionType,
+			});
+		}
+	}
+
+	// Deduplicate by value, then filter.
+	const seen = new Set<string>();
+	const deduped: DropdownOption[] = [];
+	for (const opt of rawOptions) {
+		if (seen.has(opt.value)) continue;
+		seen.add(opt.value);
+		deduped.push(opt);
+	}
+
+	return {
+		options: filterOptions(deduped, searchValue),
+	};
 }
 
 function filterOptions(
@@ -280,7 +386,18 @@ export async function POST(request: Request) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
 
-		const rawBody = await request.json();
+		let rawBody: unknown;
+		try {
+			rawBody = await request.json();
+		} catch {
+			return NextResponse.json(
+				{
+					error:
+						"Invalid request body. Expected JSON with actionName and propertyName.",
+				},
+				{ status: 400 },
+			);
+		}
 		if (!isValidBody(rawBody)) {
 			return NextResponse.json(
 				{ error: "Invalid request body. Required: actionName, propertyName" },
@@ -289,6 +406,23 @@ export async function POST(request: Request) {
 		}
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
+
+		// workflow-builder internal dropdowns (not AP planner actions)
+		if (
+			normalizedActionName === "agent/run" &&
+			rawBody.propertyName === "model"
+		) {
+			return NextResponse.json(buildModelsResponse(rawBody.searchValue));
+		}
+		if (
+			normalizedActionName === "agent/run" &&
+			rawBody.propertyName === "allowedActionsJson"
+		) {
+			return NextResponse.json(
+				await buildAllowedActionsResponse(rawBody.searchValue),
+			);
+		}
+
 		if (
 			!(
 				normalizedActionName === "planner/clone" ||

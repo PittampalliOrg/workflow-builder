@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import {
 	connectionIdsAtom,
 	connectionsLoadedAtom,
+	connectionsAtom,
 } from "@/lib/connections-store";
 import { cn } from "@/lib/utils";
 import {
@@ -41,6 +42,7 @@ import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 const getModelDisplayName = (modelId: string): string => {
 	const modelNames: Record<string, string> = {
 		"gpt-5": "GPT-5",
+		"gpt-5.2-codex": "GPT-5.2 Codex",
 		"openai/gpt-5.1-instant": "GPT-5.1 Instant",
 		"openai/gpt-5.1-codex": "GPT-5.1 Codex",
 		"openai/gpt-5.1-codex-mini": "GPT-5.1 Codex Mini",
@@ -50,6 +52,8 @@ const getModelDisplayName = (modelId: string): string => {
 		"gpt-4o-mini": "GPT-4o Mini",
 		"claude-3-5-sonnet": "Claude 3.5",
 		"claude-3-opus": "Claude 3 Opus",
+		"claude-sonnet-4-5": "Claude Sonnet 4.5",
+		"claude-opus-4-6": "Claude Opus 4.6",
 		"anthropic/claude-opus-4.5": "Claude Opus 4.5",
 		"anthropic/claude-sonnet-4.5": "Claude Sonnet 4.5",
 		"anthropic/claude-haiku-4.5": "Claude Haiku 4.5",
@@ -271,6 +275,7 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
 	const executionLogs = useAtomValue(executionLogsAtom);
 	const pendingIntegrationNodes = useAtomValue(pendingIntegrationNodesAtom);
 	const availableIntegrationIds = useAtomValue(connectionIdsAtom);
+	const allConnections = useAtomValue(connectionsAtom);
 	const integrationsLoaded = useAtomValue(connectionsLoadedAtom);
 
 	if (!data) {
@@ -339,11 +344,19 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
 	const hasValidIntegration =
 		configuredIntegrationId &&
 		availableIntegrationIds.has(configuredIntegrationId);
+	const authTemplate = data.config?.auth as string | undefined;
+	const authExternalId = authTemplate?.match(
+		/\{\{connections\[['"]([^'"]+)['"]\]\}\}/,
+	)?.[1];
+	const hasValidAuthConnection =
+		!!authExternalId &&
+		allConnections.some((c) => c.externalId === authExternalId);
 	// Only show missing indicator after integrations have been loaded
 	const integrationMissing =
 		integrationsLoaded &&
 		needsIntegration &&
 		!hasValidIntegration &&
+		!hasValidAuthConnection &&
 		!isPendingIntegrationCheck;
 
 	// Get model for AI nodes

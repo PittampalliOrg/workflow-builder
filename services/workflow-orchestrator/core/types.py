@@ -21,6 +21,11 @@ class WorkflowNodeType(str, Enum):
     ACTIVITY = "activity"
     APPROVAL_GATE = "approval-gate"
     TIMER = "timer"
+    LOOP_UNTIL = "loop-until"
+    IF_ELSE = "if-else"
+    NOTE = "note"
+    SET_STATE = "set-state"
+    TRANSFORM = "transform"
     PUBLISH_EVENT = "publish-event"
     ADD = "add"
 

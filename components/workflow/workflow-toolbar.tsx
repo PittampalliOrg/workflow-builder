@@ -112,6 +112,13 @@ type MissingIntegrationInfo = {
 	nodeNames: string[];
 };
 
+type MissingNodeConnectionInfo = {
+	nodeId: string;
+	nodeLabel: string;
+	integrationType: IntegrationType;
+	integrationLabel: string;
+};
+
 // Built-in actions that require integrations but aren't in the plugin registry
 const BUILTIN_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
 	"system/database-query": "database",
@@ -331,7 +338,11 @@ function getMissingRequiredFields(
 // Also handles built-in actions that aren't in the plugin registry
 function getMissingIntegrations(
 	nodes: WorkflowNode[],
-	userIntegrations: Array<{ id: string; pieceName: IntegrationType }>,
+	userIntegrations: Array<{
+		id: string;
+		externalId?: string;
+		pieceName: IntegrationType;
+	}>,
 	findActionById: (
 		actionId: string | undefined | null,
 	) => ActionDefinition | undefined,
@@ -399,6 +410,97 @@ function getMissingIntegrations(
 			nodeNames,
 		}),
 	);
+}
+
+function parseExternalIdFromAuthTemplate(
+	auth: string | undefined,
+): string | undefined {
+	if (!auth) return undefined;
+	const match = auth.match(/\{\{connections\[['"]([^'"]+)['"]\]\}\}/);
+	return match?.[1];
+}
+
+function getMissingNodeConnections(
+	nodes: WorkflowNode[],
+	userIntegrations: Array<{
+		id: string;
+		externalId?: string;
+		pieceName: IntegrationType;
+	}>,
+	findActionById: (
+		actionId: string | undefined | null,
+	) => ActionDefinition | undefined,
+	integrationLabels: Record<string, string>,
+): MissingNodeConnectionInfo[] {
+	const missing: MissingNodeConnectionInfo[] = [];
+
+	for (const node of nodes) {
+		if (node.data.enabled === false) {
+			continue;
+		}
+
+		const actionType = node.data.config?.actionType as string | undefined;
+		if (!actionType) {
+			continue;
+		}
+
+		const action = findActionById(actionType);
+		const actionRequiredIntegration =
+			getRequiredConnectionForAction(actionType);
+		const requiredPluginType =
+			actionRequiredIntegration ||
+			action?.integration ||
+			BUILTIN_ACTION_INTEGRATIONS[actionType];
+
+		if (
+			!requiredPluginType ||
+			!requiresConnectionForIntegration(requiredPluginType)
+		) {
+			continue;
+		}
+
+		const available = userIntegrations.filter(
+			(i) => i.pieceName === requiredPluginType,
+		);
+		if (available.length === 0) {
+			// This is handled by getMissingIntegrations (missing global connections).
+			continue;
+		}
+
+		const configuredIntegrationId = node.data.config?.integrationId as
+			| string
+			| undefined;
+		if (
+			configuredIntegrationId &&
+			available.some((i) => i.id === configuredIntegrationId)
+		) {
+			continue;
+		}
+
+		const authTemplate = node.data.config?.auth as string | undefined;
+		const authExternalId = parseExternalIdFromAuthTemplate(authTemplate);
+		if (
+			authExternalId &&
+			available.some((i) => i.externalId === authExternalId)
+		) {
+			continue;
+		}
+
+		const actionInfo = findActionById(actionType);
+		const nodeLabel = node.data.label || actionInfo?.label || actionType;
+
+		missing.push({
+			nodeId: node.id,
+			nodeLabel,
+			integrationType: requiredPluginType,
+			integrationLabel:
+				integrationLabels[requiredPluginType] ||
+				BUILTIN_INTEGRATION_LABELS[requiredPluginType] ||
+				requiredPluginType,
+		});
+	}
+
+	return missing;
 }
 
 type ExecuteTestWorkflowParams = {
@@ -647,18 +749,26 @@ function useWorkflowHandlers({
 			findActionById,
 			integrationLabels,
 		);
+		const missingNodeConnections = getMissingNodeConnections(
+			nodes,
+			userIntegrations,
+			findActionById,
+			integrationLabels,
+		);
 
 		// If there are any issues, show the workflow issues overlay
 		if (
 			brokenRefs.length > 0 ||
 			missingFields.length > 0 ||
-			missingIntegrations.length > 0
+			missingIntegrations.length > 0 ||
+			missingNodeConnections.length > 0
 		) {
 			openOverlay(WorkflowIssuesOverlay, {
 				issues: {
 					brokenReferences: brokenRefs,
 					missingRequiredFields: missingFields,
 					missingIntegrations,
+					missingNodeConnections,
 				},
 				onGoToStep: handleGoToStep,
 				onRunAnyway: promptAndExecute,
