@@ -14,6 +14,15 @@ COPY package.json pnpm-lock.yaml ./
 # Install dependencies
 RUN pnpm install --frozen-lockfile
 
+# Stage 1b: Production-only dependencies for runtime (standalone tracing is not
+# reliable with Turbopack + pnpm symlinks for some packages, so we vendor prod deps).
+FROM node:22-alpine AS prod-deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+RUN npm install -g pnpm
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+
 # Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
@@ -76,6 +85,9 @@ RUN apk add --no-cache curl ca-certificates && \
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+# Ensure runtime can resolve external dependencies required by server chunks.
+COPY --from=prod-deps --chown=nextjs:nodejs /app/node_modules ./node_modules
 
 # Copy Atlas migrations/config and bundled scripts
 COPY --from=builder /app/atlas.hcl ./atlas.hcl
