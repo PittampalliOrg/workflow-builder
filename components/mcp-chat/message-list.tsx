@@ -169,6 +169,7 @@ export function MessageList({
 											text?: string;
 											uiHtml?: string | null;
 											toolName?: string;
+											serverUrl?: string;
 										} | null;
 
 										if (result?.uiHtml) {
@@ -181,6 +182,7 @@ export function MessageList({
 													}
 													toolResult={{ text: result.text ?? "" }}
 													uiHtml={result.uiHtml}
+													serverUrl={result.serverUrl}
 													onSendMessage={onSendMessage}
 												/>
 											);

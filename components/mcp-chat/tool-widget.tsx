@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ type ToolWidgetProps = {
 	toolArgs: Record<string, unknown>;
 	toolResult: { text: string };
 	uiHtml: string;
+	serverUrl?: string;
 	onSendMessage?: (text: string) => void;
 };
 
@@ -19,12 +20,18 @@ type ToolWidgetProps = {
  * Renders an MCP App UI inside a sandboxed iframe.
  * Implements the MCP Apps JSON-RPC protocol for host↔guest communication.
  * Also supports the legacy postMessage protocol (weather dashboard).
+ *
+ * The message handler is registered in useEffect, which correctly handles
+ * React Strict Mode's mount/unmount/remount cycle. The srcDoc iframe's
+ * scripts always execute asynchronously after useEffect fires, so no
+ * race condition is possible.
  */
 export function ToolWidget({
 	toolName,
 	toolArgs,
 	toolResult,
 	uiHtml,
+	serverUrl,
 	onSendMessage,
 }: ToolWidgetProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
@@ -33,32 +40,61 @@ export function ToolWidget({
 	const { resolvedTheme } = useTheme();
 	const initializedRef = useRef(false);
 
+	// Store latest props in refs so the handler always has current values
+	const toolArgsRef = useRef(toolArgs);
+	const toolResultRef = useRef(toolResult);
+	const resolvedThemeRef = useRef(resolvedTheme);
+	const serverUrlRef = useRef(serverUrl);
+	const onSendMessageRef = useRef(onSendMessage);
+	toolArgsRef.current = toolArgs;
+	toolResultRef.current = toolResult;
+	resolvedThemeRef.current = resolvedTheme;
+	serverUrlRef.current = serverUrl;
+	onSendMessageRef.current = onSendMessage;
+
 	const handleMessage = useCallback(
 		(event: MessageEvent) => {
 			const data = event.data;
-			if (!data) return;
+			if (!data || typeof data !== "object") return;
 
 			const iframe = iframeRef.current;
-			if (!iframe || event.source !== iframe.contentWindow) return;
+			if (!iframe) return;
 
-			// === JSON-RPC Protocol (new MCP Apps widgets) ===
+			// Sandboxed iframes (without allow-same-origin) have opaque
+			// contentWindow refs. Use both source check and origin check.
+			const isFromIframe =
+				event.source === iframe.contentWindow ||
+				event.origin === "null"; // Sandboxed iframes have "null" origin
+
+			if (!isFromIframe) return;
+
+			// === JSON-RPC Protocol (MCP Apps widgets) ===
 			if (data.jsonrpc === "2.0") {
-				// Handle initialize request from guest
-				if (data.method === "ui/initialize" && data.id) {
+				if (data.method === "ui/initialize" && data.id != null) {
 					iframe.contentWindow?.postMessage(
 						{
 							jsonrpc: "2.0",
 							id: data.id,
 							result: {
-								protocolVersion: "2025-03-26",
+								protocolVersion: "2026-01-26",
 								hostInfo: {
 									name: "workflow-builder-mcp-chat",
 									version: "1.0.0",
 								},
-								capabilities: { openLinks: {}, logging: {} },
+								hostCapabilities: {
+									openLinks: {},
+									logging: {},
+									serverTools: {},
+								},
 								hostContext: {
-									theme: resolvedTheme === "dark" ? "dark" : "light",
-									availableDisplayModes: ["inline", "fullscreen"],
+									theme:
+										resolvedThemeRef.current === "dark"
+											? "dark"
+											: "light",
+									availableDisplayModes: [
+										"inline",
+										"fullscreen",
+									],
 								},
 							},
 						},
@@ -67,7 +103,6 @@ export function ToolWidget({
 					return;
 				}
 
-				// Handle initialized notification → send tool data
 				if (data.method === "ui/notifications/initialized") {
 					if (!initializedRef.current) {
 						initializedRef.current = true;
@@ -75,7 +110,9 @@ export function ToolWidget({
 							{
 								jsonrpc: "2.0",
 								method: "ui/notifications/tool-input",
-								params: { arguments: toolArgs },
+								params: {
+									arguments: toolArgsRef.current,
+								},
 							},
 							"*",
 						);
@@ -84,7 +121,12 @@ export function ToolWidget({
 								jsonrpc: "2.0",
 								method: "ui/notifications/tool-result",
 								params: {
-									content: [{ type: "text", text: toolResult.text }],
+									content: [
+										{
+											type: "text",
+											text: toolResultRef.current.text,
+										},
+									],
 								},
 							},
 							"*",
@@ -93,19 +135,20 @@ export function ToolWidget({
 					return;
 				}
 
-				// Handle size change
 				if (data.method === "ui/notifications/size-changed") {
 					const { height } = data.params || {};
 					if (height && typeof height === "number") {
-						setIframeHeight(Math.min(Math.max(height, 100), 800));
+						setIframeHeight(
+							Math.min(Math.max(height, 100), 800),
+						);
 					}
 					return;
 				}
 
-				// Handle open link request
 				if (data.method === "ui/open-link" && data.id) {
 					const { url } = data.params || {};
-					if (url) window.open(url, "_blank", "noopener,noreferrer");
+					if (url)
+						window.open(url, "_blank", "noopener,noreferrer");
 					iframe.contentWindow?.postMessage(
 						{ jsonrpc: "2.0", id: data.id, result: {} },
 						"*",
@@ -113,13 +156,15 @@ export function ToolWidget({
 					return;
 				}
 
-				// Handle message request (inject into chat)
 				if (data.method === "ui/message" && data.id) {
 					const content = data.params?.content as
 						| Array<{ type: string; text?: string }>
 						| undefined;
-					const text = content?.find((c) => c.type === "text")?.text;
-					if (text && onSendMessage) onSendMessage(text);
+					const text = content?.find(
+						(c) => c.type === "text",
+					)?.text;
+					if (text && onSendMessageRef.current)
+						onSendMessageRef.current(text);
 					iframe.contentWindow?.postMessage(
 						{ jsonrpc: "2.0", id: data.id, result: {} },
 						"*",
@@ -127,8 +172,69 @@ export function ToolWidget({
 					return;
 				}
 
-				// Handle logging
+				if (data.method === "tools/call" && data.id) {
+					if (!serverUrlRef.current) {
+						iframe.contentWindow?.postMessage(
+							{
+								jsonrpc: "2.0",
+								id: data.id,
+								error: {
+									code: -1,
+									message:
+										"Server URL not available for tool proxy",
+								},
+							},
+							"*",
+						);
+						return;
+					}
+					const { name, arguments: toolCallArgs } =
+						data.params ?? {};
+					if (name) {
+						fetch("/api/mcp-chat/tools/call", {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({
+								serverUrl: serverUrlRef.current,
+								toolName: name,
+								arguments: toolCallArgs ?? {},
+							}),
+						})
+							.then((r) => r.json())
+							.then((result) => {
+								iframe.contentWindow?.postMessage(
+									{
+										jsonrpc: "2.0",
+										id: data.id,
+										result,
+									},
+									"*",
+								);
+							})
+							.catch((err) => {
+								iframe.contentWindow?.postMessage(
+									{
+										jsonrpc: "2.0",
+										id: data.id,
+										error: {
+											code: -1,
+											message: err.message,
+										},
+									},
+									"*",
+								);
+							});
+					}
+					return;
+				}
+
 				if (data.method === "notifications/message") {
+					return;
+				}
+
+				if (data.method === "notifications/cancelled") {
 					return;
 				}
 
@@ -145,8 +251,10 @@ export function ToolWidget({
 						type: "ui-lifecycle-iframe-render-data",
 						payload: {
 							renderData: {
-								toolInput: toolArgs,
-								toolOutput: { text: toolResult.text },
+								toolInput: toolArgsRef.current,
+								toolOutput: {
+									text: toolResultRef.current.text,
+								},
 							},
 						},
 					},
@@ -161,8 +269,10 @@ export function ToolWidget({
 						type: "ui-lifecycle-iframe-render-data",
 						payload: {
 							renderData: {
-								toolInput: toolArgs,
-								toolOutput: { text: toolResult.text },
+								toolInput: toolArgsRef.current,
+								toolOutput: {
+									text: toolResultRef.current.text,
+								},
 							},
 						},
 					},
@@ -187,16 +297,20 @@ export function ToolWidget({
 
 			if (data.type === "prompt") {
 				const text = data.payload?.prompt;
-				if (text && onSendMessage) onSendMessage(text);
+				if (text && onSendMessageRef.current)
+					onSendMessageRef.current(text);
 				return;
 			}
 		},
-		[toolArgs, toolResult, resolvedTheme, onSendMessage],
+		[], // Stable - all mutable state accessed via refs
 	);
 
+	// Register message listener in useEffect (handles Strict Mode properly)
 	useEffect(() => {
 		window.addEventListener("message", handleMessage);
-		return () => window.removeEventListener("message", handleMessage);
+		return () => {
+			window.removeEventListener("message", handleMessage);
+		};
 	}, [handleMessage]);
 
 	// Send theme updates to initialized widgets
@@ -220,7 +334,9 @@ export function ToolWidget({
 	const content = (
 		<Card
 			className={
-				isFullscreen ? "fixed inset-4 z-50 flex flex-col overflow-hidden" : ""
+				isFullscreen
+					? "fixed inset-4 z-50 flex flex-col overflow-hidden"
+					: ""
 			}
 		>
 			<CardHeader className="flex flex-row items-center justify-between py-2 px-4">
@@ -244,9 +360,11 @@ export function ToolWidget({
 				<iframe
 					ref={iframeRef}
 					srcDoc={uiHtml}
-					sandbox="allow-scripts"
+					sandbox="allow-scripts allow-same-origin"
 					className="w-full border-0"
-					style={{ height: isFullscreen ? "100%" : `${iframeHeight}px` }}
+					style={{
+						height: isFullscreen ? "100%" : `${iframeHeight}px`,
+					}}
 					title={`${label} widget`}
 				/>
 			</CardContent>

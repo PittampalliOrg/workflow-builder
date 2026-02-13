@@ -52,6 +52,7 @@ type McpToolResult = {
 	text: string;
 	uiHtml: string | null;
 	toolName: string;
+	serverUrl: string;
 };
 
 /**
@@ -120,7 +121,35 @@ export async function callExternalMcpTool(
 				}>
 			)?.find((c) => c.type === "text")?.text ?? "";
 
-		return { text: textContent, uiHtml, toolName };
+		return { text: textContent, uiHtml, toolName, serverUrl };
+	} finally {
+		await client.close();
+	}
+}
+
+/**
+ * Call a tool on an external MCP server and return the raw result.
+ * Used for subsequent interactive calls from iframe UIs (no UI extraction needed).
+ */
+export async function callExternalMcpToolDirect(
+	serverUrl: string,
+	toolName: string,
+	args: Record<string, unknown>,
+): Promise<{ content: Array<{ type: string; text?: string }> }> {
+	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
+	const client = new Client({ name: "mcp-chat-direct", version: "1.0.0" });
+
+	try {
+		await client.connect(transport);
+		const toolResult = await client.callTool({
+			name: toolName,
+			arguments: args,
+		});
+
+		return {
+			content:
+				(toolResult.content as Array<{ type: string; text?: string }>) ?? [],
+		};
 	} finally {
 		await client.close();
 	}
