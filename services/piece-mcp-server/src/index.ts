@@ -8,13 +8,17 @@
  */
 
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import pg from "pg";
-import { getPiece } from "./piece-registry.js";
+import { getPiece, normalizePieceName } from "./piece-registry.js";
 import {
 	registerPieceTools,
+	registerPieceToolsWithUI,
 	type PieceMetadataRow,
 	type RegisteredTool,
 } from "./piece-to-mcp.js";
@@ -31,6 +35,8 @@ let piece: Piece;
 let metadata: PieceMetadataRow;
 let pieceName: string;
 let registeredTools: RegisteredTool[] = [];
+let hasUI = false;
+let uiHtmlPath: string | undefined;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -68,6 +74,15 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
 
 /** Create a new MCP Server instance with all piece tools registered. */
 function createMcpServer(): Server {
+	if (hasUI && uiHtmlPath) {
+		const mcpServer = new McpServer(
+			{ name: `piece-${pieceName}`, version: "1.0.0" },
+			{ capabilities: { tools: {}, resources: {} } },
+		);
+		registerPieceToolsWithUI(mcpServer, piece, metadata, uiHtmlPath, normalizePieceName(pieceName));
+		return mcpServer.server; // Return underlying Server for transport
+	}
+
 	const server = new Server(
 		{
 			name: `piece-${pieceName}`,
@@ -92,6 +107,7 @@ async function fetchPieceMetadata(
 		throw new Error("DATABASE_URL is required");
 	}
 
+	const normalizedName = normalizePieceName(name);
 	const client = new pg.Client(databaseUrl);
 	await client.connect();
 
@@ -103,7 +119,7 @@ async function fetchPieceMetadata(
 		}>(
 			`SELECT actions, auth, display_name FROM piece_metadata
 			 WHERE name = $1 ORDER BY created_at DESC LIMIT 1`,
-			[name],
+			[normalizedName],
 		);
 
 		if (result.rows.length === 0) {
@@ -148,6 +164,7 @@ async function handleRequest(
 			piece: pieceName,
 			tools: registeredTools.length,
 			toolNames: registeredTools.map((t) => t.name),
+			hasUI,
 		});
 		return;
 	}
@@ -266,12 +283,34 @@ async function main(): Promise<void> {
 		`[piece-mcp] Loaded metadata: ${metadata.displayName ?? pieceName}`,
 	);
 
+	// Check for UI HTML file (Vite outputs to dist/ui/{name}/index.html)
+	const normalizedName = normalizePieceName(pieceName);
+	uiHtmlPath = path.join(__dirname, "ui", normalizedName, "index.html");
+	hasUI = fs.existsSync(uiHtmlPath);
+	if (!hasUI) {
+		// Fallback: check for flat file (dist/ui/{name}.html)
+		uiHtmlPath = path.join(__dirname, "ui", `${normalizedName}.html`);
+		hasUI = fs.existsSync(uiHtmlPath);
+	}
+	if (!hasUI) {
+		uiHtmlPath = undefined;
+	}
+	console.log(`[piece-mcp] UI file: ${hasUI ? uiHtmlPath : "not found"}`);
+
 	// Do a dry-run registration to count tools for startup log
-	const dryServer = new Server(
-		{ name: "dry-run", version: "0.0.0" },
-		{ capabilities: { tools: {} } },
-	);
-	registeredTools = registerPieceTools(dryServer, piece, metadata);
+	if (hasUI && uiHtmlPath) {
+		const dryMcpServer = new McpServer(
+			{ name: "dry-run", version: "0.0.0" },
+			{ capabilities: { tools: {}, resources: {} } },
+		);
+		registeredTools = registerPieceToolsWithUI(dryMcpServer, piece, metadata, uiHtmlPath);
+	} else {
+		const dryServer = new Server(
+			{ name: "dry-run", version: "0.0.0" },
+			{ capabilities: { tools: {} } },
+		);
+		registeredTools = registerPieceTools(dryServer, piece, metadata);
+	}
 
 	// Start HTTP server
 	const httpServer = http.createServer(async (req, res) => {

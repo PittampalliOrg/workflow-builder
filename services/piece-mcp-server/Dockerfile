@@ -32,8 +32,8 @@ COPY services/piece-mcp-server/ ./
 # Set build-time environment variables
 ENV NODE_ENV=production
 
-# Build the server using esbuild (bundles our code, externals all packages)
-RUN pnpm build
+# Build UI bundles (Vite single-file HTML) then server (esbuild)
+RUN pnpm build:all
 
 # Stage 3: Runner
 FROM node:22-alpine AS runner

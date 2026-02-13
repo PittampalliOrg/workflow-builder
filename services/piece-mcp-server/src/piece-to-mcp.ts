@@ -6,15 +6,65 @@
  */
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
 	CallToolRequestSchema,
 	ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import {
+	registerAppResource,
+	RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
+import { z } from "zod";
 import type { Piece } from "@activepieces/pieces-framework";
-import { actionPropsToSchema } from "./prop-schema.js";
+import { actionPropsToSchema, type JsonSchema } from "./prop-schema.js";
 import { normalizeActionInput } from "./normalize-input.js";
 import { buildActionContext } from "./context-factory.js";
 import { resolveAuth } from "./auth-resolver.js";
+
+/**
+ * Convert a JSON Schema object to a Zod raw shape for use with McpServer.registerTool().
+ * Maps each property to a basic Zod type. This allows the MCP SDK to validate inputs.
+ */
+function jsonSchemaToZodShape(
+	schema: JsonSchema,
+): Record<string, z.ZodTypeAny> {
+	const shape: Record<string, z.ZodTypeAny> = {};
+	const requiredSet = new Set(schema.required ?? []);
+
+	for (const [key, prop] of Object.entries(schema.properties)) {
+		let zodType: z.ZodTypeAny;
+
+		switch (prop.type) {
+			case "number":
+				zodType = z.number();
+				break;
+			case "boolean":
+				zodType = z.boolean();
+				break;
+			case "array":
+				zodType = z.array(z.any());
+				break;
+			case "object":
+				zodType = z.record(z.any());
+				break;
+			default:
+				zodType = z.string();
+		}
+
+		if (prop.description) {
+			zodType = zodType.describe(prop.description);
+		}
+
+		if (!requiredSet.has(key)) {
+			zodType = zodType.optional();
+		}
+
+		shape[key] = zodType;
+	}
+
+	return shape;
+}
 
 /** Shape of a single action definition from piece_metadata.actions JSONB. */
 type ActionDef = {
@@ -184,6 +234,140 @@ export function registerPieceTools(
 			};
 		}
 	});
+
+	return registeredTools;
+}
+
+/**
+ * Register all actions from an AP piece as MCP App tools on an McpServer,
+ * with a shared UI resource. Used when an HTML UI file exists for the piece.
+ *
+ * Returns the list of registered tools (for health endpoint reporting).
+ */
+export function registerPieceToolsWithUI(
+	server: McpServer,
+	piece: Piece,
+	metadata: PieceMetadataRow,
+	uiHtmlPath: string,
+	pieceName: string,
+): RegisteredTool[] {
+	const fs = require("fs") as typeof import("fs");
+	const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+
+	const resourceUri = `ui://piece-mcp-${pieceName}/app.html`;
+
+	// Register the shared UI resource (name, uri, config, callback)
+	registerAppResource(
+		server,
+		`${pieceName} UI`,
+		resourceUri,
+		{ mimeType: RESOURCE_MIME_TYPE },
+		async () => ({
+			contents: [
+				{ uri: resourceUri, mimeType: RESOURCE_MIME_TYPE, text: htmlContent },
+			],
+		}),
+	);
+
+	const actions = metadata.actions ?? {};
+	const registeredTools: RegisteredTool[] = [];
+
+	for (const [actionKey, actionDef] of Object.entries(actions)) {
+		// Get runtime action from the piece
+		const action = piece.getAction(actionKey);
+		if (!action) {
+			console.warn(
+				`[piece-mcp] Skipping action "${actionKey}" — not found in piece runtime`,
+			);
+			continue;
+		}
+
+		// Build description
+		const displayName = actionDef.displayName || actionKey;
+		const description = actionDef.description
+			? `${displayName}: ${actionDef.description}`
+			: displayName;
+
+		// Convert props to JSON Schema, then to Zod shape
+		const props = (actionDef.props ?? {}) as Record<string, Record<string, unknown>>;
+		const jsonSchema = actionPropsToSchema(props);
+		const zodShape = jsonSchemaToZodShape(jsonSchema);
+
+		// Register as an MCP App tool with UI metadata using server.registerTool directly
+		// (registerAppTool expects Zod shapes but we need to pass _meta for UI)
+		const uiMeta = {
+			ui: { resourceUri },
+			"ui/resourceUri": resourceUri,
+		};
+
+		server.registerTool(
+			actionKey,
+			{
+				title: displayName,
+				description,
+				inputSchema: zodShape,
+				_meta: uiMeta,
+			},
+			async (args: Record<string, unknown>) => {
+				const requireAuth = actionDef.requireAuth !== false;
+
+				try {
+					let auth: unknown = undefined;
+					if (requireAuth) {
+						auth = await resolveAuth();
+						if (auth == null) {
+							return {
+								content: [
+									{
+										type: "text" as const,
+										text: `Missing credentials for "${actionKey}". Set CONNECTION_EXTERNAL_ID or CREDENTIALS_JSON env var.`,
+									},
+								],
+								isError: true,
+							};
+						}
+					}
+
+					const runtimeAction = piece.getAction(actionKey)!;
+					const normalizedInput = normalizeActionInput(runtimeAction, args);
+
+					const executionId = `mcp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+					const { context } = buildActionContext({
+						auth,
+						propsValue: normalizedInput,
+						executionId,
+						actionName: actionKey,
+					});
+
+					const result = await runtimeAction.run(context);
+
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: JSON.stringify(result, null, 2),
+							},
+						],
+					};
+				} catch (error) {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					console.error(`[piece-mcp] Tool "${actionKey}" failed:`, error);
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Action "${actionKey}" failed: ${message}`,
+							},
+						],
+						isError: true,
+					};
+				}
+			},
+		);
+
+		registeredTools.push({ name: actionKey, description });
+	}
 
 	return registeredTools;
 }

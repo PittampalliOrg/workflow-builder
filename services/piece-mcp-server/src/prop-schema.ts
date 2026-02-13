@@ -14,7 +14,7 @@ type JsonSchemaProperty = {
 	default?: unknown;
 };
 
-type JsonSchema = {
+export type JsonSchema = {
 	type: "object";
 	properties: Record<string, JsonSchemaProperty>;
 	required?: string[];

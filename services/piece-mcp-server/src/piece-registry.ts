@@ -103,7 +103,7 @@ export const PIECES: Record<string, Piece> = {
 	youtube: youtube as unknown as Piece,
 };
 
-function normalizePieceName(name: string): string {
+export function normalizePieceName(name: string): string {
 	return name
 		.trim()
 		.toLowerCase()
