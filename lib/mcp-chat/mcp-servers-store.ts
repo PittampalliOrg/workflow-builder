@@ -18,17 +18,22 @@ export type McpServerState = McpServerConfig & {
 
 const STORAGE_KEY = "mcp-chat-servers";
 
+type StoredServerConfig = McpServerConfig & {
+	toolCount?: number;
+	tools?: { name: string; description?: string }[];
+};
+
 function loadFromStorage(): McpServerState[] {
 	if (typeof window === "undefined") return [];
 	try {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (!raw) return [];
-		const configs: McpServerConfig[] = JSON.parse(raw);
+		const configs: StoredServerConfig[] = JSON.parse(raw);
 		return configs.map((c) => ({
 			...c,
-			status: "disconnected" as const,
-			toolCount: 0,
-			tools: [],
+			status: (c.toolCount ? "connected" : "disconnected") as McpServerState["status"],
+			toolCount: c.toolCount ?? 0,
+			tools: c.tools ?? [],
 		}));
 	} catch {
 		return [];
@@ -37,12 +42,14 @@ function loadFromStorage(): McpServerState[] {
 
 function saveToStorage(servers: McpServerState[]) {
 	if (typeof window === "undefined") return;
-	const configs: McpServerConfig[] = servers.map(
-		({ id, name, url, enabled }) => ({
+	const configs: StoredServerConfig[] = servers.map(
+		({ id, name, url, enabled, toolCount, tools }) => ({
 			id,
 			name,
 			url,
 			enabled,
+			toolCount,
+			tools,
 		}),
 	);
 	localStorage.setItem(STORAGE_KEY, JSON.stringify(configs));
