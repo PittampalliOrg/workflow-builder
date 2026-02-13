@@ -20,6 +20,7 @@ import "./fal";
 import "./firecrawl";
 import "./github";
 import "./linear";
+import "./mastra-agent";
 import "./mcp";
 import "./openai";
 import "./perplexity";

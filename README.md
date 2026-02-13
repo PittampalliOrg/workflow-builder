@@ -85,6 +85,7 @@ Visit [http://localhost:3000](http://localhost:3000) to get started.
 - **Firecrawl**: Scrape URL, Search Web
 - **GitHub**: Create Issue, List Issues, Get Issue, Update Issue
 - **Linear**: Create Ticket, Find Issues
+- **Mastra Agent**: Run Mastra Agent
 - **MCP**: Reply to MCP Client
 - **OpenAI**: Generate Text, Generate Image
 - **Perplexity**: Search Web, Ask Question, Research Topic

@@ -55,7 +55,7 @@ from activities.call_planner_service import (
     call_planner_status,
     call_planner_multi_step,
 )
-from activities.call_agent_service import call_agent_run
+from activities.call_agent_service import call_agent_run, call_mastra_agent_run
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
@@ -112,8 +112,9 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_planner_approve)
     wfr.register_activity(call_planner_status)
     wfr.register_activity(call_planner_multi_step)
-    # Agent service activities (planner-dapr-agent)
+    # Agent service activities (planner-dapr-agent + mastra-agent-mcp)
     wfr.register_activity(call_agent_run)
+    wfr.register_activity(call_mastra_agent_run)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)

@@ -1481,10 +1481,15 @@ def process_agent_child_workflow(
 
     timeout_minutes = int(resolved_config.get("timeoutMinutes", 30) or 30)
 
-    from activities.call_agent_service import call_agent_run
+    if action_type == "agent/mastra-run":
+        from activities.call_agent_service import call_mastra_agent_run
+        call_activity_fn = call_mastra_agent_run
+    else:
+        from activities.call_agent_service import call_agent_run
+        call_activity_fn = call_agent_run
 
     start_result = yield ctx.call_activity(
-        call_agent_run,
+        call_activity_fn,
         input={
             "prompt": prompt,
             "model": resolved_config.get("model"),

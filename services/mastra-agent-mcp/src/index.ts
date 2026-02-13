@@ -15,22 +15,43 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { eventBus } from "./event-bus.js";
-import { TOOL_NAMES } from "./agent.js";
-import { registerAgentTools, type RegisteredTool } from "./agent-tools.js";
+import { TOOL_NAMES, runAgent } from "./agent.js";
+import { registerAgentTools, preloadUiHtml, type RegisteredTool } from "./agent-tools.js";
 import {
 	startDaprPublisher,
 	handleDaprSubscriptionEvent,
 	getDaprSubscriptions,
+	publishCompletionEvent,
 } from "./dapr-publisher.js";
+import { nanoid } from "nanoid";
 
 const PORT = parseInt(process.env.PORT || "3300", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 const sessions = new Map<string, StreamableHTTPServerTransport>();
+const sessionLastSeen = new Map<string, number>();
+
+const SESSION_TTL_MS = 30_000; // 30 seconds
+const SESSION_CLEANUP_INTERVAL_MS = 10_000; // check every 10 seconds
 
 let registeredTools: RegisteredTool[] = [];
 let uiHtmlPath: string | undefined;
 let hasUI = false;
+
+// Periodically evict stale sessions to prevent OOM
+setInterval(() => {
+	const now = Date.now();
+	for (const [sid, lastSeen] of sessionLastSeen) {
+		if (now - lastSeen > SESSION_TTL_MS) {
+			const transport = sessions.get(sid);
+			if (transport) {
+				transport.close?.();
+				sessions.delete(sid);
+			}
+			sessionLastSeen.delete(sid);
+		}
+	}
+}, SESSION_CLEANUP_INTERVAL_MS);
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -116,10 +137,11 @@ async function handleRequest(
 		return;
 	}
 
-	// Dapr event delivery
+	// Dapr event delivery — read body then respond immediately to avoid slow-consumer backpressure
 	if (url === "/dapr/sub" && method === "POST") {
+		const body = (await parseBody(req)) as Record<string, unknown>;
+		sendJson(res, 200, { status: "SUCCESS" });
 		try {
-			const body = (await parseBody(req)) as Record<string, unknown>;
 			handleDaprSubscriptionEvent({
 				id: (body.id as string) ?? "",
 				source: (body.source as string) ?? "",
@@ -129,9 +151,72 @@ async function handleRequest(
 					(body.datacontenttype as string) ?? "application/json",
 				data: (body.data as Record<string, unknown>) ?? {},
 			});
-			sendJson(res, 200, { status: "SUCCESS" });
+		} catch {
+			// Fire-and-forget: subscription events are best-effort
+		}
+		return;
+	}
+
+	// Workflow orchestrator invocation endpoint (Dapr service invocation)
+	if (url === "/run" && method === "POST") {
+		try {
+			const body = (await parseBody(req)) as Record<string, unknown>;
+			const prompt = String(body.prompt ?? "").trim();
+			if (!prompt) {
+				sendJson(res, 400, { error: "prompt is required" });
+				return;
+			}
+
+			const parentExecutionId = String(body.parentExecutionId ?? "");
+			const workflowId = String(body.workflowId ?? "");
+			const nodeId = String(body.nodeId ?? "");
+			const nodeName = String(body.nodeName ?? "");
+
+			const agentWorkflowId = `mastra-run-${nanoid(12)}`;
+
+			// Store workflow context on event bus
+			eventBus.setWorkflowContext({
+				workflowId: agentWorkflowId,
+				nodeId: nodeId || null,
+				stepIndex: 0,
+			});
+
+			console.log(
+				`[mastra-mcp] /run invoked: agentWorkflowId=${agentWorkflowId}, ` +
+				`parentExecutionId=${parentExecutionId}, nodeId=${nodeId}`,
+			);
+
+			// Return immediately, run agent asynchronously
+			sendJson(res, 200, {
+				success: true,
+				workflow_id: agentWorkflowId,
+			});
+
+			// Run agent in background and publish completion event
+			runAgent(prompt)
+				.then((result) => {
+					publishCompletionEvent({
+						agentWorkflowId,
+						parentExecutionId,
+						success: true,
+						result: {
+							text: result.text,
+							toolCalls: result.toolCalls as unknown as Record<string, unknown>[],
+							usage: result.usage as unknown as Record<string, unknown>,
+						},
+					});
+				})
+				.catch((err) => {
+					const errorMsg = err instanceof Error ? err.message : String(err);
+					publishCompletionEvent({
+						agentWorkflowId,
+						parentExecutionId,
+						success: false,
+						error: errorMsg,
+					});
+				});
 		} catch (err) {
-			sendJson(res, 400, { error: String(err) });
+			sendJson(res, 500, { error: String(err) });
 		}
 		return;
 	}
@@ -166,19 +251,20 @@ async function handleMcpPost(
 
 	if (sessionId && sessions.has(sessionId)) {
 		transport = sessions.get(sessionId)!;
+		sessionLastSeen.set(sessionId, Date.now());
 	} else if (!sessionId && isInitializeRequest(body)) {
 		transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => crypto.randomUUID(),
 			onsessioninitialized: (sid) => {
 				sessions.set(sid, transport);
-				console.log(`[mastra-mcp] New session: ${sid}`);
+				sessionLastSeen.set(sid, Date.now());
 			},
 		});
 
 		transport.onclose = () => {
 			if (transport.sessionId) {
 				sessions.delete(transport.sessionId);
-				console.log(`[mastra-mcp] Session closed: ${transport.sessionId}`);
+				sessionLastSeen.delete(transport.sessionId);
 			}
 		};
 
@@ -226,7 +312,7 @@ async function main(): Promise<void> {
 	// Initialize event bus with agent tool names
 	eventBus.setState({ toolNames: TOOL_NAMES });
 
-	// Check for UI HTML file
+	// Check for UI HTML file and preload into memory
 	uiHtmlPath = path.join(__dirname, "ui", "agent-monitor", "index.html");
 	hasUI = fs.existsSync(uiHtmlPath);
 	if (!hasUI) {
@@ -235,7 +321,8 @@ async function main(): Promise<void> {
 			"[mastra-mcp] UI HTML not found — tools will work without interactive UI",
 		);
 	} else {
-		console.log(`[mastra-mcp] UI file: ${uiHtmlPath}`);
+		preloadUiHtml(uiHtmlPath);
+		console.log(`[mastra-mcp] UI file preloaded: ${uiHtmlPath}`);
 	}
 
 	// Dry-run registration to count tools

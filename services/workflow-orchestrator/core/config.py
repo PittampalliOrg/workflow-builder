@@ -50,6 +50,7 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     PLANNER_APP_ID: str = "planner-dapr-agent"
+    MASTRA_AGENT_APP_ID: str = "mastra-agent-mcp"
 
     # Tracks whether Dapr Configuration was used
     _loaded_from_dapr: bool = field(default=False, repr=False)
@@ -121,6 +122,7 @@ class OrchestratorConfig:
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "PLANNER_APP_ID": ("PLANNER_APP_ID", "planner-dapr-agent"),
+            "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-mcp"),
         }
 
         for attr, (env_var, default) in field_map.items():

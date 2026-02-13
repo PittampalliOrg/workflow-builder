@@ -19,6 +19,13 @@ export type RegisteredTool = {
 	description: string;
 };
 
+// Cache UI HTML at module level to avoid re-reading per session
+let cachedHtmlContent: string | null = null;
+
+export function preloadUiHtml(uiHtmlPath: string): void {
+	cachedHtmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+}
+
 function textResult(data: unknown) {
 	return {
 		content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -36,7 +43,7 @@ export function registerAgentTools(
 	server: McpServer,
 	uiHtmlPath: string,
 ): RegisteredTool[] {
-	const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+	const htmlContent = cachedHtmlContent ?? fs.readFileSync(uiHtmlPath, "utf-8");
 	const resourceUri = "ui://mastra-agent-mcp/app.html";
 
 	registerAppResource(
