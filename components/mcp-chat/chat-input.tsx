@@ -12,6 +12,7 @@ type ChatInputProps = {
 	placeholder?: string;
 	onKeyDown?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
 	prefix?: React.ReactNode;
+	canSubmitEmpty?: boolean;
 };
 
 export function ChatInput({
@@ -22,6 +23,7 @@ export function ChatInput({
 	placeholder = "Type a message...",
 	onKeyDown: externalKeyDown,
 	prefix,
+	canSubmitEmpty,
 }: ChatInputProps) {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -38,7 +40,7 @@ export function ChatInput({
 
 		if (e.key === "Enter" && !e.shiftKey) {
 			e.preventDefault();
-			if (!isDisabled && value.trim()) {
+			if (!isDisabled && (value.trim() || canSubmitEmpty)) {
 				onSubmit();
 				// Reset height after submit
 				setTimeout(() => {
@@ -71,7 +73,7 @@ export function ChatInput({
 					size="icon"
 					className="h-8 w-8 shrink-0 rounded-lg"
 					onClick={onSubmit}
-					disabled={isDisabled || !value.trim()}
+					disabled={isDisabled || (!value.trim() && !canSubmitEmpty)}
 				>
 					<ArrowUp className="h-4 w-4" />
 				</Button>

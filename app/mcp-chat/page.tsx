@@ -108,10 +108,16 @@ export default function McpChatPage() {
 	const isLoading = status === "streaming" || status === "submitted";
 
 	const handleSubmit = useCallback(() => {
+		if (isLoading) return;
 		const trimmed = input.trim();
-		if (!trimmed || isLoading) return;
+		// Allow empty text when scopes are active (tool-directed message)
+		const hasScopes = scopesRef.current.length > 0;
+		if (!trimmed && !hasScopes) return;
+		const text =
+			trimmed ||
+			`Use the scoped tools: ${scopesRef.current.map((s) => s.label).join(", ")}`;
 		setInput("");
-		sendMessage({ text: trimmed });
+		sendMessage({ text });
 	}, [input, isLoading, sendMessage]);
 
 	const handleSuggestedPrompt = useCallback(

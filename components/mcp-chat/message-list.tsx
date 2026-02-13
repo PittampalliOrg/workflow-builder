@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { UIMessage } from "ai";
 import { ToolWidget } from "./tool-widget";
 import { cn } from "@/lib/utils";
-import { User, Bot, Loader2 } from "lucide-react";
+import { User, Bot, Loader2, ChevronDown, ChevronRight } from "lucide-react";
 
 /** Lightweight markdown-to-HTML for chat messages (no external deps). */
 function renderMarkdown(text: string): string {
@@ -58,6 +58,39 @@ function renderMarkdown(text: string): string {
 		.replace(/(<\/ul>)<\/p>/g, "$1");
 }
 
+function CollapsibleText({
+	html,
+	defaultCollapsed = false,
+}: {
+	html: string;
+	defaultCollapsed?: boolean;
+}) {
+	const [collapsed, setCollapsed] = useState(defaultCollapsed);
+
+	return (
+		<div className="rounded-2xl rounded-tl-sm bg-muted">
+			<button
+				type="button"
+				onClick={() => setCollapsed((c) => !c)}
+				className="flex w-full items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground hover:text-foreground transition-colors"
+			>
+				{collapsed ? (
+					<ChevronRight className="h-3 w-3 shrink-0" />
+				) : (
+					<ChevronDown className="h-3 w-3 shrink-0" />
+				)}
+				<span>{collapsed ? "Show message" : "Hide message"}</span>
+			</button>
+			{!collapsed && (
+				<div
+					className="prose prose-xs dark:prose-invert max-w-none px-4 pb-3 text-xs leading-relaxed break-words [&_pre]:overflow-x-auto [&_pre]:text-[11px] [&_code]:text-[11px]"
+					dangerouslySetInnerHTML={{ __html: html }}
+				/>
+			)}
+		</div>
+	);
+}
+
 type MessageListProps = {
 	messages: UIMessage[];
 	isLoading: boolean;
@@ -95,8 +128,10 @@ export function MessageList({
 
 					<div
 						className={cn(
-							"max-w-[80%] space-y-3",
-							message.role === "user" ? "order-first" : "",
+							"min-w-0 space-y-3",
+							message.role === "user"
+								? "order-first max-w-[80%]"
+								: "flex-1",
 						)}
 					>
 						{message.role === "user" ? (
@@ -115,12 +150,9 @@ export function MessageList({
 								{message.parts?.map((part, i) => {
 									if (part.type === "text" && part.text) {
 										return (
-											<div
+											<CollapsibleText
 												key={i}
-												className="prose prose-sm dark:prose-invert max-w-none rounded-2xl rounded-tl-sm bg-muted px-4 py-2.5"
-												dangerouslySetInnerHTML={{
-													__html: renderMarkdown(part.text),
-												}}
+												html={renderMarkdown(part.text)}
 											/>
 										);
 									}

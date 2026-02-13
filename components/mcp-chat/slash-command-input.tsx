@@ -293,6 +293,7 @@ export function SlashCommandInput({
 				placeholder={placeholder}
 				onKeyDown={handleKeyDown}
 				prefix={badgeBar}
+				canSubmitEmpty={scopes.length > 0}
 			/>
 		</div>
 	);
