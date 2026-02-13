@@ -89,7 +89,7 @@ function sanitizeSchema(schema: any): any {
 
 export async function POST(req: Request) {
 	try {
-		const { messages: uiMessages, mcpServers } = await req.json();
+		const { messages: uiMessages, mcpServers, slashScopes } = await req.json();
 
 		// Discover external tools in parallel
 		const externalServers: McpServerEntry[] = mcpServers ?? [];
@@ -112,18 +112,27 @@ export async function POST(req: Request) {
 				for (const mcpTool of tools) {
 					const namespacedName = `${server.name.replace(/\s+/g, "_")}__${mcpTool.name}`;
 
-					externalTools[namespacedName] = tool({
-						description: `[${server.name}] ${mcpTool.description ?? mcpTool.name}`,
-						inputSchema: jsonSchema(
-							sanitizeSchema(mcpTool.inputSchema) as Record<string, unknown>,
-						),
-						execute: async (args) =>
-							callExternalMcpTool(
-								server.url,
-								mcpTool.name,
-								args as Record<string, unknown>,
+					externalTools[namespacedName] = {
+						...tool({
+							description: `[${server.name}] ${mcpTool.description ?? mcpTool.name}`,
+							inputSchema: jsonSchema(
+								sanitizeSchema(mcpTool.inputSchema) as Record<string, unknown>,
 							),
-					});
+							execute: async (args) => {
+								return callExternalMcpTool(
+									server.url,
+									mcpTool.name,
+									args as Record<string, unknown>,
+								);
+							},
+						}),
+						// Send only text to the model, not the UI HTML (can be 500KB+).
+						// The full result (with uiHtml) still streams to the client for ToolWidget rendering.
+						toModelOutput: async ({ output }: { output: unknown }) => {
+							const r = output as { text?: string } | null;
+							return { type: "text" as const, value: r?.text || "Tool executed successfully" };
+						},
+					};
 
 					externalDescriptions.push(
 						`- **${namespacedName}**: [${server.name}] ${mcpTool.description ?? mcpTool.name}`,
@@ -143,6 +152,66 @@ export async function POST(req: Request) {
 			...getMcpChatTools(),
 			...externalTools,
 		};
+
+		// Augment system prompt with slash command scopes
+		type SlashScope = {
+			type: "server" | "tool";
+			serverName: string;
+			toolName?: string;
+		};
+		const parsedScopes: SlashScope[] = Array.isArray(slashScopes)
+			? slashScopes
+			: [];
+		if (parsedScopes.length > 0) {
+			const scopeLines: string[] = [];
+			for (const scope of parsedScopes) {
+				if (scope.type === "tool") {
+					const toolId =
+						scope.serverName === "Built-in"
+							? scope.toolName
+							: `${scope.serverName.replace(/\s+/g, "_")}__${scope.toolName}`;
+					scopeLines.push(`- MUST use tool **${toolId}**`);
+				} else {
+					const prefix =
+						scope.serverName === "Built-in"
+							? ""
+							: `${scope.serverName.replace(/\s+/g, "_")}__`;
+					const serverToolNames = Object.keys(allTools).filter(
+						(name) =>
+							scope.serverName === "Built-in"
+								? !name.includes("__")
+								: name.startsWith(prefix),
+					);
+					if (serverToolNames.length > 0) {
+						scopeLines.push(
+							`- PREFER tools from **${scope.serverName}**: ${serverToolNames.join(", ")}`,
+						);
+					}
+				}
+			}
+			if (scopeLines.length > 0) {
+				systemPrompt += `\n\n**User has scoped this request to specific tools:**\n${scopeLines.join("\n")}`;
+			}
+		}
+
+		// Strip uiHtml from tool outputs before converting to model messages.
+		// The client retains uiHtml in local React state for ToolWidget rendering,
+		// but the AI model doesn't need it (569KB+ HTML causes token overflow).
+		for (const msg of uiMessages) {
+			if (msg.parts) {
+				for (const part of msg.parts) {
+					if (
+						(part.type?.startsWith("tool-") || part.type === "dynamic-tool") &&
+						part.output &&
+						typeof part.output === "object" &&
+						"uiHtml" in part.output
+					) {
+						const { uiHtml: _uiHtml, ...rest } = part.output as Record<string, unknown>;
+						part.output = rest;
+					}
+				}
+			}
+		}
 
 		// Convert UIMessage[] (parts format) to ModelMessage[] (content format)
 		const modelMessages = await convertToModelMessages(uiMessages);

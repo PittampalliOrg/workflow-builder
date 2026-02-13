@@ -1,17 +1,20 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
-import { useAtomValue } from "jotai";
+import { useState, useCallback, useRef, useEffect } from "react";
+import { useAtom, useAtomValue } from "jotai";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageList } from "@/components/mcp-chat/message-list";
-import { ChatInput } from "@/components/mcp-chat/chat-input";
+import { SlashCommandInput } from "@/components/mcp-chat/slash-command-input";
 import { ServerManager } from "@/components/mcp-chat/server-manager";
+import type { SlashCommandScope } from "@/lib/mcp-chat/slash-command-types";
 import { useMcpChat } from "@/lib/mcp-chat/use-mcp-chat";
 import {
 	mcpServerConfigsAtom,
 	enabledMcpServersAtom,
+	mcpServersAtom,
+	updateServerStatus,
 } from "@/lib/mcp-chat/mcp-servers-store";
 import { RotateCcw, Sparkles } from "lucide-react";
 
@@ -37,16 +40,68 @@ const SUGGESTED_PROMPTS = [
 
 export default function McpChatPage() {
 	const [input, setInput] = useState("");
+	const [scopes, setScopes] = useState<SlashCommandScope[]>([]);
 
+	const [servers, setServers] = useAtom(mcpServersAtom);
 	const mcpServerConfigs = useAtomValue(mcpServerConfigsAtom);
 	const enabledServers = useAtomValue(enabledMcpServersAtom);
 	const configsRef = useRef(mcpServerConfigs);
 	configsRef.current = mcpServerConfigs;
+	const scopesRef = useRef(scopes);
+	scopesRef.current = scopes;
+
+	// Auto-reconnect enabled servers that have no tools (e.g. after page reload)
+	useEffect(() => {
+		const stale = servers.filter((s) => s.enabled && s.toolCount === 0);
+		if (stale.length === 0) return;
+
+		for (const server of stale) {
+			updateServerStatus(setServers, server.id, "connecting");
+			fetch("/api/mcp-chat/servers/test", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ url: server.url }),
+			})
+				.then((res) => res.json())
+				.then((data) => {
+					if (data.tools) {
+						updateServerStatus(setServers, server.id, "connected", {
+							toolCount: data.tools.length,
+							tools: data.tools,
+						});
+					} else {
+						updateServerStatus(setServers, server.id, "error", {
+							error: data.error || "Failed to discover tools",
+						});
+					}
+				})
+				.catch(() => {
+					updateServerStatus(setServers, server.id, "error", {
+						error: "Connection failed",
+					});
+				});
+		}
+		// Run only once on mount
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const handleAddScope = useCallback((scope: SlashCommandScope) => {
+		setScopes((prev) =>
+			prev.some((s) => s.id === scope.id) ? prev : [...prev, scope],
+		);
+	}, []);
+
+	const handleRemoveScope = useCallback((id: string) => {
+		setScopes((prev) => prev.filter((s) => s.id !== id));
+	}, []);
 
 	const { messages, sendMessage, clearMessages, status, error } = useMcpChat(
 		"/api/mcp-chat",
 		{
-			body: () => ({ mcpServers: configsRef.current }),
+			body: () => ({
+				mcpServers: configsRef.current,
+				slashScopes: scopesRef.current,
+			}),
 		},
 	);
 
@@ -164,12 +219,16 @@ export default function McpChatPage() {
 
 			{/* Input */}
 			<div className="mx-auto w-full max-w-3xl px-4 pb-4">
-				<ChatInput
+				<SlashCommandInput
 					value={input}
 					onChange={setInput}
 					onSubmit={handleSubmit}
 					isDisabled={isLoading}
-					placeholder="Ask about weather, colors, metrics, or code..."
+					placeholder="Type / for commands, or ask anything..."
+					scopes={scopes}
+					onAddScope={handleAddScope}
+					onRemoveScope={handleRemoveScope}
+					enabledServers={enabledServers}
 				/>
 			</div>
 		</div>
