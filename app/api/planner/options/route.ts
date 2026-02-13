@@ -20,6 +20,13 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
+const MASTRA_AGENT_API_BASE_URL =
+	process.env.MASTRA_AGENT_API_BASE_URL ||
+	"http://mastra-agent.dapr-agents.svc.cluster.local:3000";
+const MASTRA_OPTIONS_TIMEOUT_MS = Number.parseInt(
+	process.env.MASTRA_OPTIONS_TIMEOUT_MS || "5000",
+	10,
+);
 
 type DropdownOption = {
 	label: string;
@@ -260,6 +267,79 @@ type GithubBranch = {
 	name: string;
 };
 
+type MastraToolsResponse = {
+	tools?: Array<{
+		id?: unknown;
+		description?: unknown;
+	}>;
+};
+
+function getMastraFallbackOptions(): DropdownOption[] {
+	return [
+		{
+			label: "greet - Generate a personalized greeting in different styles",
+			value: "greet",
+		},
+		{
+			label: "summarize_text - Summarize text into concise bullet points",
+			value: "summarize_text",
+		},
+		{
+			label:
+				"current_time - Get the current time in various formats and timezones",
+			value: "current_time",
+		},
+	];
+}
+
+async function getMastraToolOptions(
+	searchValue?: string,
+): Promise<PlannerOptionsResponse> {
+	try {
+		const response = await fetch(`${MASTRA_AGENT_API_BASE_URL}/api/tools`, {
+			signal: AbortSignal.timeout(MASTRA_OPTIONS_TIMEOUT_MS),
+		});
+
+		if (!response.ok) {
+			throw new Error(
+				`Mastra tools request failed with HTTP ${response.status}`,
+			);
+		}
+
+		const payload = (await response.json()) as MastraToolsResponse;
+		const options: DropdownOption[] = Array.isArray(payload.tools)
+			? payload.tools
+					.map((tool) => {
+						const id = typeof tool.id === "string" ? tool.id.trim() : undefined;
+						if (!id) {
+							return undefined;
+						}
+						const description =
+							typeof tool.description === "string"
+								? tool.description.trim()
+								: "";
+						return {
+							label: description ? `${id} - ${description}` : id,
+							value: id,
+						} satisfies DropdownOption;
+					})
+					.filter((option): option is DropdownOption => Boolean(option))
+			: [];
+
+		if (options.length === 0) {
+			return buildDisabledResponse("No tools available from mastra-agent");
+		}
+
+		return { options: filterOptions(options, searchValue) };
+	} catch (error) {
+		console.warn("[planner/options] Mastra tool lookup failed:", error);
+		return {
+			options: filterOptions(getMastraFallbackOptions(), searchValue),
+			placeholder: "Mastra service unavailable; showing fallback tools",
+		};
+	}
+}
+
 async function getOwnerOptions(token: string): Promise<DropdownOption[]> {
 	const [{ data: user }, { data: orgs }] = await Promise.all([
 		githubRequest<GithubUser>("/user", token),
@@ -421,6 +501,12 @@ export async function POST(request: Request) {
 			return NextResponse.json(
 				await buildAllowedActionsResponse(rawBody.searchValue),
 			);
+		}
+		if (
+			normalizedActionName === "mastra/run-tool" &&
+			rawBody.propertyName === "toolId"
+		) {
+			return NextResponse.json(await getMastraToolOptions(rawBody.searchValue));
 		}
 
 		if (

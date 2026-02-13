@@ -1,12 +1,18 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
+import { useAtomValue } from "jotai";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageList } from "@/components/mcp-chat/message-list";
 import { ChatInput } from "@/components/mcp-chat/chat-input";
+import { ServerManager } from "@/components/mcp-chat/server-manager";
 import { useMcpChat } from "@/lib/mcp-chat/use-mcp-chat";
+import {
+	mcpServerConfigsAtom,
+	enabledMcpServersAtom,
+} from "@/lib/mcp-chat/mcp-servers-store";
 import { RotateCcw, Sparkles } from "lucide-react";
 
 const SUGGESTED_PROMPTS = [
@@ -25,16 +31,24 @@ const SUGGESTED_PROMPTS = [
 	},
 	{
 		label: "Code Example",
-		prompt:
-			"Show me a TypeScript function that implements a debounce utility",
+		prompt: "Show me a TypeScript function that implements a debounce utility",
 	},
 ];
 
 export default function McpChatPage() {
 	const [input, setInput] = useState("");
 
-	const { messages, sendMessage, clearMessages, status, error } =
-		useMcpChat("/api/mcp-chat");
+	const mcpServerConfigs = useAtomValue(mcpServerConfigsAtom);
+	const enabledServers = useAtomValue(enabledMcpServersAtom);
+	const configsRef = useRef(mcpServerConfigs);
+	configsRef.current = mcpServerConfigs;
+
+	const { messages, sendMessage, clearMessages, status, error } = useMcpChat(
+		"/api/mcp-chat",
+		{
+			body: () => ({ mcpServers: configsRef.current }),
+		},
+	);
 
 	const isLoading = status === "streaming" || status === "submitted";
 
@@ -72,6 +86,7 @@ export default function McpChatPage() {
 					</Badge>
 				</div>
 				<div className="flex-1" />
+				<ServerManager />
 				{messages.length > 0 && (
 					<Button
 						variant="ghost"
@@ -93,15 +108,24 @@ export default function McpChatPage() {
 							<Sparkles className="h-8 w-8 text-primary" />
 						</div>
 						<div>
-							<h2 className="mb-2 text-xl font-semibold">
-								MCP Apps Chat
-							</h2>
+							<h2 className="mb-2 text-xl font-semibold">MCP Apps Chat</h2>
 							<p className="text-sm text-muted-foreground">
 								Chat with an AI that has access to interactive MCP tool widgets.
 								Try one of the suggestions below to see rich tool UIs rendered
 								inline.
 							</p>
 						</div>
+						{enabledServers.length > 0 && (
+							<div className="flex flex-wrap justify-center gap-2">
+								{enabledServers.map((s) => (
+									<Badge key={s.id} variant="outline" className="text-xs gap-1">
+										<span className="h-1.5 w-1.5 rounded-full bg-green-500" />
+										{s.name}
+										{s.toolCount > 0 && ` (${s.toolCount} tools)`}
+									</Badge>
+								))}
+							</div>
+						)}
 						<div className="grid w-full grid-cols-2 gap-3">
 							{SUGGESTED_PROMPTS.map((sp) => (
 								<button

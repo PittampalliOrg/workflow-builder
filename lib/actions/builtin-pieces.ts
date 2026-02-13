@@ -152,6 +152,55 @@ const AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const MASTRA_AGENT_PIECE: IntegrationDefinition = {
+	type: "mastra",
+	label: "Mastra Agent",
+	pieceName: "mastra",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run-tool",
+			label: "Run Tool",
+			description:
+				"Execute a Mastra tool through the Dapr-native mastra-agent service",
+			category: "Mastra Agent",
+			configFields: [
+				{
+					key: "toolId",
+					label: "Tool",
+					type: "dynamic-select",
+					required: true,
+					placeholder: "Select a tool",
+					dynamicOptions: {
+						provider: "planner",
+						pieceName: "mastra",
+						actionName: "mastra/run-tool",
+						propName: "toolId",
+						refreshers: [],
+					},
+				},
+				{
+					key: "argsJson",
+					label: "Tool Args (JSON)",
+					type: "template-textarea",
+					placeholder: '{\n  "name": "Ada"\n}',
+					rows: 6,
+					defaultValue: "{}",
+				},
+			],
+			outputFields: [
+				{ field: "toolId", description: "The tool that was executed" },
+				{ field: "result", description: "Tool execution result payload" },
+				{
+					field: "workflowId",
+					description: "Durable workflow instance ID (if returned)",
+				},
+				{ field: "status", description: "Workflow status (if returned)" },
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, AGENT_PIECE];
+	return [MCP_PIECE, AGENT_PIECE, MASTRA_AGENT_PIECE];
 }

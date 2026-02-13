@@ -17,8 +17,17 @@ const REGISTRY_FILE_PATH =
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
 	"planner/*": { appId: "planner-dapr-agent", type: "knative" },
+	"mastra/*": { appId: "mastra-agent", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
+};
+
+/**
+ * Built-in fallback routes that should apply even when the mounted registry
+ * only defines a broad "_default" mapping.
+ */
+const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
+	"mastra/*": { appId: "mastra-agent", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;
@@ -101,6 +110,14 @@ export async function lookupFunction(
 	const wildcardKey = `${pluginId}/*`;
 	if (registry[wildcardKey]) {
 		return registry[wildcardKey];
+	}
+
+	// Built-in fallbacks before the broad "_default" catch-all
+	if (BUILTIN_FALLBACK_REGISTRY[slug]) {
+		return BUILTIN_FALLBACK_REGISTRY[slug];
+	}
+	if (BUILTIN_FALLBACK_REGISTRY[wildcardKey]) {
+		return BUILTIN_FALLBACK_REGISTRY[wildcardKey];
 	}
 
 	// Fallback to default (if configured)

@@ -6,13 +6,16 @@ import { DefaultChatTransport, readUIMessageStream, generateId } from "ai";
 
 export type ChatStatus = "ready" | "submitted" | "streaming" | "error";
 
-export function useMcpChat(apiUrl: string) {
+export function useMcpChat(
+	apiUrl: string,
+	opts?: { body?: () => Record<string, unknown> },
+) {
 	const [messages, setMessages] = useState<UIMessage[]>([]);
 	const [status, setStatus] = useState<ChatStatus>("ready");
 	const [error, setError] = useState<string | null>(null);
 	const abortRef = useRef<AbortController | null>(null);
 	const transportRef = useRef(
-		new DefaultChatTransport({ api: apiUrl }),
+		new DefaultChatTransport({ api: apiUrl, body: opts?.body }),
 	);
 
 	const sendMessage = useCallback(
@@ -32,14 +35,13 @@ export function useMcpChat(apiUrl: string) {
 			abortRef.current = abortController;
 
 			try {
-				const chunkStream =
-					await transportRef.current.sendMessages({
-						chatId: "mcp-chat",
-						messageId: undefined,
-						messages: updatedMessages,
-						abortSignal: abortController.signal,
-						trigger: "submit-message",
-					});
+				const chunkStream = await transportRef.current.sendMessages({
+					chatId: "mcp-chat",
+					messageId: undefined,
+					messages: updatedMessages,
+					abortSignal: abortController.signal,
+					trigger: "submit-message",
+				});
 
 				setStatus("streaming");
 
@@ -68,8 +70,7 @@ export function useMcpChat(apiUrl: string) {
 			} catch (err) {
 				if ((err as Error).name !== "AbortError") {
 					console.error("Chat error:", err);
-					const msg =
-						err instanceof Error ? err.message : "Unknown error";
+					const msg = err instanceof Error ? err.message : "Unknown error";
 					setError(msg);
 					setStatus("error");
 				}

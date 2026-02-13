@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { eq, and } from "drizzle-orm";
 import { getSession } from "@/lib/auth-helpers";
 import {
   deleteAppConnection,
@@ -7,11 +8,15 @@ import {
   updateAppConnection,
   updateAppConnectionSecretValue,
 } from "@/lib/db/app-connections";
+import { db } from "@/lib/db";
+import { appConnections } from "@/lib/db/schema";
 import {
   AppConnectionType,
+  AppConnectionStatus,
   type AppConnectionValue,
   type UpdateConnectionValueRequestBody,
 } from "@/lib/types/app-connection";
+import { deletePieceMcpServer } from "@/lib/k8s/piece-mcp-provisioner";
 
 type CompatibleUpdateBody = UpdateConnectionValueRequestBody & {
   config?: Record<string, string | undefined>;
@@ -166,14 +171,48 @@ export async function DELETE(
     }
 
     const { connectionId } = await context.params;
-    const deleted = await deleteAppConnection(connectionId, session.user.id);
 
-    if (!deleted) {
+    // Fetch connection first to get pieceName for cleanup
+    const connection = await getAppConnectionById(connectionId, session.user.id);
+    if (!connection) {
       return NextResponse.json(
         { error: "Connection not found" },
         { status: 404 }
       );
     }
+
+    const deleted = await deleteAppConnection(connectionId, session.user.id);
+    if (!deleted) {
+      return NextResponse.json(
+        { error: "Failed to delete connection" },
+        { status: 500 }
+      );
+    }
+
+    // Fire-and-forget: if no more active connections for this piece, remove the MCP server
+    (async () => {
+      try {
+        const remaining = await db
+          .select({ id: appConnections.id })
+          .from(appConnections)
+          .where(
+            and(
+              eq(appConnections.pieceName, connection.pieceName),
+              eq(appConnections.status, AppConnectionStatus.ACTIVE),
+            ),
+          )
+          .limit(1);
+
+        if (remaining.length === 0) {
+          await deletePieceMcpServer(connection.pieceName);
+        }
+      } catch (err) {
+        console.error(
+          `[auto-cleanup] Failed for ${connection.pieceName}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    })();
 
     return NextResponse.json({ success: true });
   } catch (error) {
