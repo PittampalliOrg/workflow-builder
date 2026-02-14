@@ -95,11 +95,11 @@ class SandboxExecutor:
             from agentic_sandbox import SandboxClient
         except ImportError as e:
             logger.error(
-                "agentic-sandbox-client not installed. "
-                "Install with: pip install agentic-sandbox-client"
+                "k8s-agent-sandbox not installed. "
+                "Install with: pip install k8s-agent-sandbox"
             )
             raise ImportError(
-                "agentic-sandbox-client is required for sandbox execution. "
+                "k8s-agent-sandbox is required for sandbox execution. "
                 "Add it to requirements.txt or install manually."
             ) from e
 

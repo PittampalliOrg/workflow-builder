@@ -38,4 +38,4 @@ opentelemetry-instrumentation-httpx>=0.41b0
 opentelemetry-instrumentation-logging>=0.41b0
 
 # Kubernetes Agent Sandbox client for isolated execution
-agentic-sandbox @ git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdirectory=clients/python/agentic-sandbox-client
+k8s-agent-sandbox @ git+https://github.com/kubernetes-sigs/agent-sandbox.git@main#subdirectory=clients/python/agentic-sandbox-client
