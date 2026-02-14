@@ -16,7 +16,6 @@ const REGISTRY_FILE_PATH =
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
-	"planner/*": { appId: "planner-dapr-agent", type: "knative" },
 	"mastra/*": { appId: "mastra-agent-tanstack", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },

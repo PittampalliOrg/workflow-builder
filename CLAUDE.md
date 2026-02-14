@@ -1,49 +1,54 @@
 # Workflow Builder
 
-Visual workflow builder with Dapr workflow orchestration and AI planner agents. The Next.js app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
+Visual workflow builder with Dapr workflow orchestration, Mastra AI agents, and MCP server integration. The Next.js app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                            │
-│                                                                      │
-│  ┌─────────────────┐    ┌──────────────────────────────────────────┐│
-│  │  Next.js App    │    │  workflow-orchestrator (Python/Dapr)     ││
-│  │  (no sidecar)   │───▶│  - Dynamic workflow interpreter          ││
-│  │                 │    │  - Topological node execution             ││
-│  │  Port 3000      │    │  - Approval gates, timers, pub/sub       ││
-│  └─────────────────┘    │  - Calls planner-dapr-agent for AI tasks ││
-│         │               │  - AP flow walker (linked-list execution) ││
-│         │               └──────────┬───────────────┬───────────────┘│
-│         │                          │               │                 │
-│  OAuth2 PKCE +          Dapr svc invoke           │ Dapr svc invoke │
-│  App Connections                   ▼               ▼                 │
-│         │               ┌─────────────────────────────┐             │
-│         │               │  function-router             │             │
-│         │               │  - Registry-based routing    │             │
-│         │               │  - Credential pre-fetch      │             │
-│         │               │  - AP credential decrypt     │             │
-│         │               └──────────┬──────────────────┘             │
-│         │                          │                                 │
-│         │               ┌──────────┼──────────────────────┐         │
-│         │               │          │                      │         │
-│         │               ▼          ▼                      ▼         │
-│  ┌──────────────┐  ┌──────────┐  ┌──────────────┐  ┌───────────┐  │
-│  │ planner-     │  │ fn-      │  │ OpenFunctions │  │ fn-openai │  │
-│  │ dapr-agent   │  │ active-  │  │ fn-slack, ... │  │ fn-github │  │
-│  │ (AI planner) │  │ pieces   │  │ (8 Knative)  │  │ etc.      │  │
-│  └──────────────┘  │ (26 AP   │  └──────────────┘  └───────────┘  │
-│                     │  pieces) │                                     │
-│                     └──────────┘                                     │
-│                                                                      │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐               │
-│  │    Redis     │  │  PostgreSQL  │  │   Jaeger     │               │
-│  │  (Dapr state)│  │  (workflows, │  │  (tracing)   │               │
-│  │              │  │   functions,  │  │              │               │
-│  │              │  │   app_conns)  │  │              │               │
-│  └──────────────┘  └──────────────┘  └──────────────┘               │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                          Kubernetes Cluster                               │
+│                                                                           │
+│  ┌─────────────────┐    ┌──────────────────────────────────────────────┐ │
+│  │  Next.js App    │    │  workflow-orchestrator (Python/Dapr)         │ │
+│  │  (no sidecar)   │───▶│  - Dynamic workflow interpreter              │ │
+│  │                 │    │  - Topological node execution                │ │
+│  │  Port 3000      │    │  - Approval gates, timers, pub/sub          │ │
+│  └─────────────────┘    │  - Routes to agents & function services     │ │
+│         │               │  - AP flow walker (linked-list execution)    │ │
+│         │               └──────────┬──────────────┬───────────────────┘ │
+│         │                          │              │                      │
+│  OAuth2 PKCE +          Dapr svc invoke          │ Dapr svc invoke      │
+│  App Connections                   ▼              ▼                      │
+│         │               ┌──────────────────────────────┐                │
+│         │               │  function-router              │                │
+│         │               │  - Registry-based routing     │                │
+│         │               │  - Credential pre-fetch       │                │
+│         │               │  - AP credential decrypt      │                │
+│         │               └──────────┬───────────────────┘                │
+│         │                          │                                     │
+│         │          ┌───────────────┼───────────────────┐                │
+│         │          │               │                   │                │
+│         │          ▼               ▼                   ▼                │
+│  ┌──────────────┐  ┌────────────┐  ┌──────────────┐                   │
+│  │ mastra-agent │  │ fn-active  │  │  fn-system    │                   │
+│  │ -tanstack    │  │ -pieces    │  │  (http-req,   │                   │
+│  │ (Mastra AI)  │  │ (42 AP    │  │   db-query,   │                   │
+│  │              │  │  pieces)   │  │   condition)  │                   │
+│  └──────────────┘  └────────────┘  └──────────────┘                   │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+│  │ workflow-mcp │  │ piece-mcp-   │  │ mcp-gateway  │                  │
+│  │ -server      │  │ server       │  │ (hosted MCP) │                  │
+│  │ (13 tools)   │  │ (AP pieces)  │  │              │                  │
+│  └──────────────┘  └──────────────┘  └──────────────┘                  │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
+│  │    Redis     │  │  PostgreSQL  │  │ OTEL Collector│                  │
+│  │  (Dapr state)│  │  (workflows, │  │  (Jaeger,     │                  │
+│  │              │  │   functions,  │  │   traces)     │                  │
+│  │              │  │   app_conns)  │  │              │                  │
+│  └──────────────┘  └──────────────┘  └──────────────┘                  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 The Next.js app makes direct HTTP calls to the orchestrator service. No Dapr sidecar is needed on the Next.js side.
@@ -53,11 +58,13 @@ The Next.js app makes direct HTTP calls to the orchestrator service. No Dapr sid
 - **Frontend**: Next.js 16, React 19, React Flow (@xyflow/react), Jotai state management, shadcn/ui
 - **Backend**: Next.js API routes (BFF proxy to Dapr orchestrator)
 - **Database**: PostgreSQL via Drizzle ORM
-- **Auth**: Better Auth (email/password, anonymous users)
+- **Auth**: Better Auth (email/password, social login via GitHub/Google, JWT API keys)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
-- **AI Planner**: OpenAI Agents SDK (Python) via planner-dapr-agent
-- **Function Execution**: function-router service → OpenFunctions (Knative serverless)
-- **Activepieces Integration**: 26 installed AP pieces via fn-activepieces, OAuth2 PKCE, encrypted app connections
+- **AI Agent**: Mastra SDK (@mastra/core) via mastra-agent-tanstack — workspace tools, sandbox, planning
+- **Function Execution**: function-router → fn-system, fn-activepieces, mastra-agent-tanstack (registry-based)
+- **MCP Integration**: workflow-mcp-server (workflow tools), piece-mcp-server (AP piece tools), mcp-gateway (hosted MCP)
+- **Activepieces Integration**: 42 AP piece packages via piece-mcp-server + fn-activepieces, OAuth2 PKCE, encrypted app connections
+- **Observability**: OpenTelemetry across all services → OTEL Collector → Jaeger
 - **Deployment**: Docker (multi-stage), Kind cluster, ingress-nginx
 
 ## Key Commands
@@ -67,9 +74,12 @@ pnpm dev              # Start dev server
 pnpm build            # Production build (runs discover-plugins first)
 pnpm db:generate      # Generate Drizzle migrations
 pnpm db:push          # Push schema to DB
-pnpm db:migrate       # Run migrations
+pnpm db:migrate       # Run migrations (safe wrapper)
 pnpm discover-plugins # Generate plugin manifest
 pnpm seed-functions   # Seed builtin functions to DB
+pnpm sync:activepieces-pieces  # Fetch AP piece metadata from cloud API → DB
+pnpm sync-oauth-apps  # Sync OAuth app configs
+pnpm test:e2e         # Run Playwright E2E tests
 ```
 
 ## Project Structure
@@ -77,122 +87,144 @@ pnpm seed-functions   # Seed builtin functions to DB
 ```
 app/
   api/
-    workflows/[workflowId]/
-      execute/route.ts           # Session-auth execution
-      webhook/route.ts           # API-key-auth webhook execution
-    dapr/workflows/              # Proxy to planner-dapr-agent
-      route.ts                   # Start planner workflow
-      [id]/approve/route.ts      # Approve/reject plan
-      [id]/tasks/route.ts        # Get planner tasks
-    app-connections/             # App connection CRUD + OAuth2
-      route.ts                   # List/create connections
-      [connectionId]/route.ts    # Get/update/delete connection
-      [connectionId]/test/route.ts  # Test connection
-      oauth2/start/route.ts      # Start OAuth2 PKCE flow
-      oauth2/callback/route.ts   # OAuth2 callback handler
+    workflow/[workflowId]/
+      execute/route.ts             # Session-auth execution
+    orchestrator/workflows/        # Proxy to workflow-orchestrator
+      route.ts                     # Start workflow
+      [id]/status/route.ts         # Get workflow status
+      [id]/events/route.ts         # Raise external event
+    dapr/workflows/                # Dapr workflow status + events
+      [id]/status/route.ts         # Poll orchestrator status
+      [id]/events/route.ts         # SSE event stream
+    app-connections/               # App connection CRUD + OAuth2
+      route.ts                     # List/create connections
+      [connectionId]/route.ts      # Get/update/delete connection
+      oauth2/start/route.ts        # Start OAuth2 PKCE flow
+      oauth2/callback/route.ts     # OAuth2 callback handler
     internal/
       connections/[externalId]/
-        decrypt/route.ts         # Internal credential decrypt (service-to-service)
-    pieces/                      # Activepieces piece metadata
-      route.ts                   # List all pieces
-      [pieceName]/route.ts       # Get piece details
-      actions/route.ts           # List actions from installed pieces
-      options/route.ts           # Dynamic dropdown option resolution
+        decrypt/route.ts           # Internal credential decrypt (service-to-service)
+      mcp/                         # Internal MCP gateway endpoints
+        projects/[projectId]/
+          server/route.ts          # Get MCP server config
+          tools/[workflowId]/execute/route.ts  # Execute MCP tool
+        runs/[runId]/route.ts      # Get MCP run status
+        runs/[runId]/respond/route.ts  # Respond to MCP run
+    v1/
+      auth/                        # JWT auth API (sign-in, sign-up, social, refresh)
+      projects/[projectId]/
+        mcp-server/route.ts        # Hosted MCP server management
+    mcp-chat/                      # MCP Chat API
+      route.ts                     # Chat endpoint
+      servers/discover/route.ts    # Discover MCP servers
+      servers/provision/route.ts   # Provision MCP server
+      tools/call/route.ts          # Proxy tool calls to MCP servers
+    mcp-apps/route.ts              # MCP Apps endpoint
+    pieces/                        # Activepieces piece metadata
+      route.ts                     # List all pieces
+      [pieceName]/route.ts         # Get piece details
+      actions/route.ts             # List actions from installed pieces
+      options/route.ts             # Dynamic dropdown option resolution
+    api-keys/route.ts              # API key management
+    oauth-apps/route.ts            # OAuth app configuration
+    monitor/route.ts               # Workflow execution monitoring
+    ai/generate/route.ts           # AI generation endpoint
   workflows/[workflowId]/page.tsx  # Workflow editor page
-  (auth)/                        # Sign-in/sign-up pages
+  connections/page.tsx             # Connections management page
+  mcp-chat/page.tsx                # MCP Chat page
+  mcp-apps/page.tsx                # MCP Apps page
+  functions/page.tsx               # Functions management page
+  monitor/page.tsx                 # Execution monitor page
+  settings/page.tsx                # Settings page
 
 lib/
-  workflow-definition.ts         # Shared types for workflow definitions
-  workflow-store.ts              # Jotai atoms, node/edge types
-  dapr-activity-registry.ts      # Dapr workflow primitives (approval gates, timers)
-  dapr-client.ts                 # Dapr orchestrator API clients (planner + generic)
-  workflow-executor.ts           # Direct execution path via activity-executor
-  connections-store.ts           # Jotai atoms for app connections
-  db/schema.ts                   # Drizzle ORM schema (PostgreSQL)
-  db/migrate.ts                  # Migration runner (bundled with esbuild for Docker)
-  db/app-connections.ts          # App connection data layer (encrypt/decrypt)
-  db/piece-metadata.ts           # Piece metadata data layer
-  security/encryption.ts         # AES-256-CBC encryption (AP-compatible)
+  api-client.ts                    # Client-side API client (api.workflow.*, api.piece.*, etc.)
+  workflow-store.ts                # Jotai atoms, node/edge types
+  dapr-activity-registry.ts        # Dapr workflow primitives (approval gates, timers)
+  dapr-client.ts                   # Dapr orchestrator API client (generic)
+  auth-service.ts                  # Auth service (Better Auth + JWT API keys)
+  auth-client.ts                   # Client-side auth helpers
+  connections-store.ts             # Jotai atoms for app connections
+  code-generation.ts               # Workflow code generation
+  codegen-registry.ts              # Code generation templates
+  config-service.ts                # Dapr Configuration building block client
+  platform-service.ts              # Platform/project management
+  db/
+    schema.ts                      # Drizzle ORM schema (PostgreSQL)
+    migrate.ts                     # Migration runner
+    app-connections.ts             # App connection data layer (encrypt/decrypt)
+    piece-metadata.ts              # Piece metadata data layer
+  security/encryption.ts           # AES-256-CBC encryption (AP-compatible)
   app-connections/
-    oauth2.ts                    # OAuth2 PKCE flow (authorization + token exchange)
-    oauth2-refresh.ts            # OAuth2 token refresh with 15-min buffer
+    oauth2.ts                      # OAuth2 PKCE flow (authorization + token exchange)
+    oauth2-refresh.ts              # OAuth2 token refresh with 15-min buffer
   activepieces/
-    installed-pieces.ts          # Single source of truth for 26 installed AP pieces
-    action-adapter.ts            # AP props → WB ActionConfigField converter
+    installed-pieces.ts            # Single source of truth for installed AP pieces
+    action-adapter.ts              # AP props → WB ActionConfigField converter
+  actions/
+    builtin-pieces.ts              # Builtin piece definitions (agent, mastra)
+    connection-utils.ts            # Action-to-connection mapping utilities
+  mcp-chat/tools.ts                # MCP Chat tool definitions
   types/
-    app-connection.ts            # AppConnection types, enums (OAuth2, SecretText, etc.)
-    piece-auth.ts                # Piece auth types (mirrors AP PieceAuth framework)
+    app-connection.ts              # AppConnection types, enums
+    piece-auth.ts                  # Piece auth types
 
 services/
-  workflow-orchestrator/         # Python Dapr workflow orchestrator
-    app.py                       # FastAPI + Dapr workflow runtime
-    core/config.py               # Configuration (env vars, service URLs)
-    core/ap_variable_resolver.py # AP {{steps.x.output.y}} template resolution
-    core/ap_condition_evaluator.py # AP branch condition evaluation
-    workflows/
-      dynamic_workflow.py        # WB node-graph interpreter workflow
-      ap_workflow.py             # AP linked-list flow walker workflow
-    activities/
-      execute_action.py          # Calls function-router via Dapr
-      call_planner_service.py    # Calls planner-dapr-agent via Dapr
-      send_ap_callback.py        # AP flow-run callback + step progress
-      persist_state.py           # Dapr state store operations
-      publish_event.py           # Dapr pub/sub event publishing
-      log_node_execution.py      # Execution log persistence
-      log_external_event.py      # External event audit trail
-  planner-dapr-agent/            # AI planner agent service
-    app.py                       # FastAPI endpoints + workflow orchestration
-    agent.py                     # OpenAI Agents SDK agent definition
-    dapr_multi_step_workflow.py  # Multi-step: clone→plan→approve→execute
-    dapr_openai_runner.py        # Streamed agent execution with event publishing
-    durable_runner.py            # Interceptor-based durability
-    planning_agents.py           # Planning/execution sub-agents
-    sandbox_executor.py          # Isolated sandbox execution
-    workflow_context.py          # Activity tracking and state management
-  function-router/               # Routes function execution to OpenFunctions
-    src/
-      index.ts                   # Fastify server
-      routes/execute.ts          # POST /execute endpoint
-      core/registry.ts           # Function slug → OpenFunction mapping
-      core/credential-service.ts # Dapr secrets + DB credential + AP decrypt
-      core/openfunction-resolver.ts  # Knative + standalone service URL resolution
-  fn-activepieces/               # AP piece action executor (Knative service)
-    src/
-      index.ts                   # Fastify server (POST /execute, POST /options)
-      executor.ts                # Piece action execution engine
-      context-factory.ts         # AP execution context builder (stubbed store/files)
-      piece-registry.ts          # Static imports of 26 AP piece packages
-      options-executor.ts        # Dynamic dropdown option resolution
-    package.json                 # 26 AP piece npm dependencies (pinned versions)
+  workflow-orchestrator/           # Python Dapr workflow orchestrator (ACTIVE)
+  mastra-agent-tanstack/           # Mastra AI agent with TanStack Start (ACTIVE)
+  mastra-agent-mcp/                # Mastra agent MCP server variant (ACTIVE)
+  function-router/                 # Function execution router (ACTIVE)
+  fn-activepieces/                 # AP piece action executor (ACTIVE)
+  fn-system/                       # System functions - http-request, db-query, condition (ACTIVE)
+  workflow-mcp-server/             # Workflow MCP tools + React UI (ACTIVE)
+  piece-mcp-server/                # AP piece MCP server + MCP Apps UI (ACTIVE)
+  mcp-gateway/                     # Hosted MCP server gateway (ACTIVE)
+  shared/                          # Shared utilities (logger)
 
 components/
   workflow/
-    workflow-canvas.tsx          # React Flow canvas with node types
-    node-config-panel.tsx        # Properties/Code/Runs tabs
-    nodes/                       # Node components (trigger, action, etc.)
+    workflow-canvas.tsx            # React Flow canvas with node types
+    node-config-panel.tsx          # Properties/Code/Runs tabs
+    nodes/                         # Node components (trigger, action, etc.)
     config/
-      action-config.tsx          # Action node configuration (builtin + AP)
-      action-grid.tsx            # Action palette (plugins + AP pieces)
-      activity-config.tsx        # Activity node configuration (Dapr primitives)
+      action-config.tsx            # Action node configuration (builtin + AP)
+      action-grid.tsx              # Action palette (plugins + AP pieces)
+      activity-config.tsx          # Activity node configuration (Dapr primitives)
       fields/
-        dynamic-select-field.tsx # AP dynamic dropdown (fetches options at runtime)
+        dynamic-select-field.tsx   # AP dynamic dropdown (fetches options at runtime)
   connections/
-    auth-form-renderer.tsx       # Dynamic auth forms from piece metadata
+    auth-form-renderer.tsx         # Dynamic auth forms from piece metadata
+  mcp-chat/
+    tool-widget.tsx                # MCP Apps protocol handler (ToolWidget)
   overlays/
-    add-connection-overlay.tsx   # Create connection (OAuth2 PKCE + secret text)
+    add-connection-overlay.tsx     # Create connection (OAuth2 PKCE + secret text)
 
-plugins/                         # Plugin registry (OpenAI, Slack, GitHub, etc.)
-  registry.ts                    # Plugin registration and discovery
-  planner/                       # AI Planner plugin (clone, plan, execute, multi-step)
-  openai/                        # OpenAI plugin (text/image generation)
-  slack/                         # Slack plugin (send messages)
-  github/                        # GitHub plugin (create issues, etc.)
-  resend/                        # Resend plugin (send emails)
-  ...
+plugins/                           # Plugin registry
+  registry.ts                      # Plugin registration and discovery
+  mastra-agent/                    # Mastra Agent plugin (mastra-run action)
+  openai/                          # OpenAI plugin (text/image generation)
+  mcp/                             # MCP plugin
+  slack/                           # Slack plugin
+  github/                          # GitHub plugin
+  resend/                          # Resend plugin
+  linear/                          # Linear plugin
+  firecrawl/                       # Firecrawl plugin
+  perplexity/                      # Perplexity plugin
+  stripe/                          # Stripe plugin
+  fal/                             # Fal plugin
+  blob/                            # Blob storage plugin
+  v0/                              # v0 plugin
+  clerk/                           # Clerk plugin
+  webflow/                         # Webflow plugin
+  superagent/                      # Superagent plugin
 
 scripts/
-  sync-activepieces-pieces.ts    # Fetch AP piece metadata from cloud API → DB
-  discover-plugins.ts            # Generate plugin manifest (plugins/index.ts)
+  sync-activepieces-pieces.ts      # Fetch AP piece metadata from cloud API → DB
+  discover-plugins.ts              # Generate plugin manifest (plugins/index.ts)
+  seed-functions.ts                # Seed builtin functions to DB
+  sync-oauth-apps.ts               # Sync OAuth app configurations
+  db-migrate-safe.ts               # Safe migration runner
+  db-baseline-drizzle.ts           # Baseline Drizzle migrations
 ```
 
 ## Services
@@ -200,447 +232,253 @@ scripts/
 ### workflow-orchestrator (Python)
 
 The generic workflow engine. Interprets workflow definitions from the visual builder,
-executing nodes in topological order via Dapr activities. Also runs Activepieces flows
-via a linked-list step walker.
+executing nodes in topological order via Dapr activities. Routes agent actions to
+mastra-agent-tanstack. Also runs Activepieces flows via a linked-list step walker.
 
 - **Port**: 8080
 - **Dapr app-id**: `workflow-orchestrator`
-- **Calls**: function-router (for action nodes), planner-dapr-agent (for planner/* actions), fn-activepieces (for AP piece actions)
+- **Calls**: function-router (for sync action nodes including mastra/clone, mastra/plan), mastra-agent-tanstack (for async agent/* and mastra/execute actions), fn-activepieces (for AP piece actions)
 - **Key endpoints**:
-  - `POST /api/v2/workflows` - Start a WB workflow instance
+  - `POST /api/v2/workflows` - Start a WB workflow instance (expects pre-serialized nodes)
+  - `POST /api/v2/workflows/execute-by-id` - Start workflow by DB ID (fetches + serializes nodes automatically)
   - `POST /api/v2/ap-workflows` - Start an AP flow instance
   - `GET /api/v2/workflows/{id}/status` - Get workflow status
   - `POST /api/v2/workflows/{id}/events` - Raise external event (approvals)
   - `POST /api/v2/workflows/{id}/terminate` - Terminate workflow
-- **AP workflow** (`ap_workflow.py`): Walks AP's linked-list flow format natively with step handlers for PIECE, CODE, ROUTER (condition branching), and LOOP_ON_ITEMS. Uses `{{steps.x.output.y}}` variable resolution and `{{connections['externalId']}}` credential extraction.
+- **Routing split** (`workflows/dynamic_workflow.py:303`): Only `agent/*` and `mastra/execute` go through the async `process_agent_child_workflow` handler (fire-and-forget + external event completion). All other `mastra/*` actions (clone, plan) go through `execute_action` → function-router synchronously.
+- **Agent routing** (`activities/call_agent_service.py`):
+  - `agent/mastra-run` → `call_mastra_agent_run()` → mastra-agent-tanstack `/api/run`
+  - `mastra/execute` → `call_mastra_execute_plan()` → mastra-agent-tanstack `/api/execute-plan`
+- **Config** (`core/config.py`): `MASTRA_AGENT_APP_ID=mastra-agent-tanstack`, `FUNCTION_ROUTER_APP_ID=function-router`
+- **AP workflow** (`workflows/ap_workflow.py`): Walks AP's linked-list flow format natively with step handlers for PIECE, CODE, ROUTER (condition branching), and LOOP_ON_ITEMS.
 
-### planner-dapr-agent (Python)
+### mastra-agent-tanstack (TypeScript/TanStack Start)
 
-AI planner agent using OpenAI Agents SDK. Handles feature planning, code execution,
-and testing in sandboxed environments. Streams activity events via Dapr pub/sub.
+Primary AI agent service using Mastra SDK with workspace tools and sandboxed execution.
+Runs as a full-stack TanStack Start application with SSR UI for monitoring.
 
-- **Port**: 8000
-- **Dapr app-id**: `planner-dapr-agent`
+- **Port**: 3000 (TanStack Start)
+- **Dapr app-id**: `mastra-agent-tanstack`
+- **Framework**: TanStack Start 1.x (React Router + Nitro SSR)
+- **Agent SDK**: @mastra/core ^1.4.0 with @ai-sdk/openai
 - **Key endpoints**:
-  - `POST /run` - Start planning (returns tasks)
-  - `POST /workflow/dapr` - Multi-step workflow (clone→plan→approve→execute)
-  - `POST /workflow/{id}/approve` - Approve/reject a plan
-  - `GET /status/{id}` - Get workflow status
-  - `GET /workflows/{id}` - Get detailed workflow state
-- **Event streaming**: Publishes `tool_call`, `tool_result`, `phase_started`, `phase_completed`,
-  `llm_start`, `llm_end`, `agent_started`, `agent_completed` events to Dapr pub/sub.
-  These flow through the ai-chatbot webhook → Redis event store → SSE → Activity Tab UI.
+  - `POST /api/run` - Run agent with prompt (fire-and-forget, publishes completion via Dapr)
+  - `POST /api/plan` - Generate structured execution plan (synchronous)
+  - `POST /api/execute-plan` - Execute a pre-generated plan (fire-and-forget)
+  - `GET /api/tools` - List available workspace tools
+  - `POST /api/tools/{toolId}` - Execute a workspace tool directly
+  - `POST /api/mcp` - MCP endpoint (Streamable HTTP)
+  - `GET /api/health` - Health check with agent status
+  - `GET /api/dapr/subscribe` - Dapr subscription discovery
+- **Workspace tools**: `read_file`, `write_file`, `edit_file`, `list_files`, `delete`, `mkdir`, `file_stat`, `execute_command` (auto-injected by Mastra Workspace)
+- **Sandbox**: Auto-detects K8s (KubernetesSandbox) or local (LocalSandbox with bwrap/seatbelt). Network disabled by default.
+- **Planning**: Separate planner agent generates structured plans (goal + steps), execution agent follows them step-by-step
+- **Events**: Publishes `agent_started`, `agent_completed`, `tool_call`, `tool_result`, `planning_started`, `planning_completed`, `llm_end` via Dapr pub/sub
+- **Build**: `pnpm run build` (UI via vite → dist-ui/, app via vite → .output/)
+- **UI**: React 19 + TanStack Router (single-file bundle for MCP Apps iframe)
+
+### mastra-agent-mcp (TypeScript)
+
+Secondary Mastra agent exposed as a pure MCP server with monitoring UI.
+Uses older @mastra/core ^0.10.0.
+
+- **Port**: 3300
+- **Dapr app-id**: `mastra-agent-mcp`
+- **Key endpoints**:
+  - `POST /mcp` - MCP Streamable HTTP endpoint (POST/GET/DELETE)
+  - `POST /run` - Agent execution (Dapr service invocation)
+  - `GET /health` - Health check
+  - `GET /dapr/subscribe` - Dapr subscription discovery
+- **Sessions**: Stateful per-session MCP transport with 30s TTL auto-cleanup
+- **UI**: Preloaded HTML for agent monitoring (embedded in MCP Apps)
+- **Build**: `pnpm run build:all` (UI via vite → dist/ui/, server via esbuild → dist/index.js)
 
 ### function-router (TypeScript)
 
-Routes function execution to the appropriate OpenFunction (Knative service).
+Routes function execution to the appropriate service based on a registry.
 
 - **Port**: 8080
 - **Dapr app-id**: `function-router`
 - **Key endpoint**: `POST /execute`
-- **Routing**: Registry-based lookup (exact match → wildcard → default → fn-activepieces fallback)
+- **Registry** (`core/registry.ts`): Loaded from ConfigMap file, env var, or hardcoded defaults:
+  - `system/*` → `fn-system` (http-request, database-query, condition)
+  - `mastra/*` → `mastra-agent-tanstack`
+  - `_default` → `fn-activepieces` (all other slugs)
+- **Routing**: Exact match → wildcard match → builtin fallback → `_default`
 - **Credentials**: Pre-fetches from Dapr secret store (Azure Key Vault) or decrypts AP app connections via internal API
-- **AP credential flow**: For AP piece slugs, calls `/api/internal/connections/{externalId}/decrypt` to get decrypted credentials, passes as `credentials_raw` to fn-activepieces
+- **External events**: `POST /external-event` route for raising Dapr workflow events
+
+### fn-system (TypeScript)
+
+Built-in system actions executed as a Knative service.
+
+- **Port**: 8080
+- **Steps**: `http-request`, `database-query`, `condition`
+- **Key endpoint**: `POST /execute`
 
 ### fn-activepieces (TypeScript)
 
-Executes Activepieces piece actions. Ships with 26 AP piece npm packages pre-installed.
+Executes Activepieces piece actions. Ships with AP piece npm packages pre-installed.
 
 - **Port**: 8080
 - **Key endpoints**:
   - `POST /execute` - Execute a piece action
   - `POST /options` - Resolve dynamic dropdown options
   - `GET /health` - Health check
-- **Pieces**: 26 installed (Google Suite, Microsoft Office, Slack, Notion, etc.)
 - **Context**: Stubbed AP execution context (no-op store/files, real auth)
-- **Adding a new piece**: See `lib/activepieces/installed-pieces.ts` for the 4-step process
+
+### workflow-mcp-server (TypeScript)
+
+MCP server exposing workflow CRUD, node/edge manipulation, execution, and approval tools.
+Includes embedded React Flow UI for MCP Apps integration.
+
+- **Port**: 3200
+- **MCP endpoint**: `/mcp` (Streamable HTTP)
+- **13+ tools**: `list_workflows`, `get_workflow`, `create_workflow`, `update_workflow`, `delete_workflow`, `duplicate_workflow`, `add_node`, `update_node`, `delete_node`, `connect_nodes`, `disconnect_nodes`, `list_available_actions`, `execute_workflow`
+- **Execution**: `execute_workflow` calls orchestrator's `POST /api/v2/workflows/execute-by-id` which properly serializes React Flow nodes (flattening `data.config` to top-level `config`)
+- **DB**: Raw `pg.Pool` (NOT Drizzle) — direct SQL against `workflows`, `functions`, `piece_metadata` tables
+- **UI**: React 19 + @xyflow/react bundled as single-file HTML via `vite-plugin-singlefile`
+- **Build**: `pnpm run build:all` (UI via vite → dist/ui/, server via esbuild → dist/index.js)
+
+### piece-mcp-server (TypeScript)
+
+MCP server that exposes Activepieces piece actions as MCP tools with interactive UI.
+Ships with 42 AP piece npm packages for broader coverage than fn-activepieces.
+
+- **Port**: Dynamic
+- **MCP endpoint**: `/mcp`
+- **Features**: Per-piece tool registration, MCP Apps UI support, auth resolution from DB
+- **DB**: Raw `pg.Pool` for credential lookup and piece metadata
+- **Build**: `pnpm run build:all`
+
+### mcp-gateway (TypeScript)
+
+Public Streamable HTTP MCP endpoint for hosted MCP servers. Authenticates with Bearer tokens
+and delegates execution to the workflow-builder Next.js app via internal endpoints.
+
+- **Port**: 8080
+- **Key endpoint**: `POST /api/v1/projects/:projectId/mcp-server/http`
+- **Auth**: Bearer token validated against per-project MCP server config
+- **Flow**: Fetch MCP server config → register enabled workflow tools → execute workflow on tool call → poll for response
+- **Internal calls**: Uses `X-Internal-Token` to call workflow-builder `/api/internal/mcp/*` endpoints
 
 ## Node Types
 
-The workflow builder supports two node types:
+The workflow builder supports these node types:
 
-### Action Nodes (Function Execution)
+| Node Type | Purpose |
+|-----------|---------|
+| `trigger` | Workflow start node |
+| `action` | Function execution (plugins + AP pieces + agents) |
+| `activity` | Dapr call_activity() primitives |
+| `approval-gate` | Wait for external event with timeout |
+| `timer` | Dapr create_timer() delay |
+| `loop-until` | Repeat until condition |
+| `if-else` | Conditional branching |
+| `set-state` | Set workflow variable |
+| `transform` | JSON template output |
+| `publish-event` | Dapr pub/sub publish |
+| `note` | Non-executing annotation |
 
-**Purpose**: Execute serverless functions from the plugin registry
+### Action Routing
 
-**Configuration**:
-```typescript
-{
-  type: "action",
-  config: {
-    actionType: "openai/generate-text",  // Function slug (canonical)
-    prompt: "Write a haiku",
-    // ... function-specific config
-  }
-}
-```
+Actions are routed by `actionType` slug prefix. Sync actions go through function-router; async actions use `process_agent_child_workflow` (fire-and-forget + Dapr pub/sub completion event).
 
-**Execution Flow**:
-1. Orchestrator calls `executeAction` activity
-2. Activity invokes function-router via Dapr
-3. Function-router looks up OpenFunction by `actionType` slug
-4. Routes to Knative service (e.g., fn-openai, fn-slack)
-5. Returns result to orchestrator
+| Prefix | Service | Sync/Async | Examples |
+|--------|---------|------------|----------|
+| `system/*` | fn-system (via function-router) | Sync | `system/http-request`, `system/database-query`, `system/condition` |
+| `mastra/clone` | mastra-agent-tanstack (via function-router) | Sync | Clone a git repo |
+| `mastra/plan` | mastra-agent-tanstack (via function-router) | Sync | Generate execution plan |
+| `mastra/execute` | mastra-agent-tanstack (direct) | Async | Execute a plan (fire-and-forget) |
+| `agent/mastra-run` | mastra-agent-tanstack (direct) | Async | Agent run with prompt |
+| `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
 
-**Examples**:
-- `openai/generate-text` - AI text generation
-- `openai/generate-image` - AI image generation
-- `slack/send-message` - Send Slack message
-- `github/create-issue` - Create GitHub issue
-- `resend/send-email` - Send email
-- `system/http-request` - HTTP client
+## Plugin Registry
 
-**Planner actions** (routed to planner-dapr-agent, not function-router):
-- `planner/clone` - Clone a Git repository into workspace
-- `planner/plan` - Planning phase only (create tasks)
-- `planner/execute` - Execution phase only (implement tasks)
-- `planner/run-workflow` - Full planning → approval → execution
-- `planner/multi-step` - Clone → plan → approve → execute in sandbox
+Functions are defined in `plugins/*/index.ts` files and seeded to the `functions` table:
 
-### Activity Nodes (Workflow Primitives)
-
-**Purpose**: Dapr workflow control flow primitives
-
-**Types**:
-- `approval-gate` - Wait for external event with timeout
-- `timer` - Delay execution for specified duration
-- `publish-event` - Publish to Dapr pub/sub
-
-**Configuration**:
-```typescript
-{
-  type: "approval-gate",
-  config: {
-    eventName: "plan-approval",
-    timeoutSeconds: 86400,  // 24 hours
-  }
-}
-```
-
-**Note**: Activity nodes are for workflow control flow only, NOT for function execution. All function execution uses action nodes.
-
-## Function System
-
-### Plugin Registry
-
-Functions are defined in `plugins/*/index.ts` files:
-
-```typescript
-export const openai: IntegrationDefinition = {
-  id: "openai",
-  label: "OpenAI",
-  category: "AI",
-  actions: [
-    {
-      id: "openai/generate-text",  // Function slug (canonical ID)
-      label: "Generate Text",
-      description: "Generate text using OpenAI models",
-      configFields: [
-        {
-          key: "prompt",
-          label: "Prompt",
-          type: "template-textarea",
-          required: true,
-        },
-      ],
-      outputFields: [
-        { field: "text", description: "Generated text" },
-      ],
-    },
-  ],
-};
-```
-
-### Function Execution
-
-**Database-driven**: Functions are seeded from plugins to PostgreSQL:
-```sql
-SELECT * FROM functions WHERE slug = 'openai/generate-text';
-```
-
-**Execution types** (from `execution_type` column):
-- `builtin` - TypeScript handlers in `plugins/*/steps/`
-- `oci` - Container images executed as Kubernetes Jobs (future)
-- `http` - External HTTP webhooks (future)
-
-**Builtin handler location**:
-```
-plugins/openai/steps/generate-text.ts
-```
-
-### Function Discovery
-
-**On build**:
 ```bash
 pnpm discover-plugins  # Generates plugins/index.ts
-```
-
-**On cluster deploy**:
-```bash
 pnpm seed-functions    # Seeds functions table from plugins
 ```
 
-**Auto-seeding**: The `Job-seed-functions` Kubernetes job runs automatically on cluster deploy (ArgoCD sync wave 25).
+**Current plugins**: `openai`, `mastra-agent`, `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
 
-## Workflow Execution Flow
+## MCP Integration
 
-### 1. User Creates Workflow
+### Three MCP Server Types
 
-**UI** → Visual workflow builder with React Flow:
-- Drag action nodes from palette
-- Configure with `actionType` field
-- Connect nodes with edges
-- Auto-save to PostgreSQL
+1. **workflow-mcp-server** (Port 3200): Workflow CRUD + node manipulation tools with React Flow UI
+2. **piece-mcp-server**: Per-piece AP action tools with MCP Apps UI
+3. **mcp-gateway**: Hosted MCP endpoint — exposes workflows as MCP tools for external AI clients
 
-### 2. User Runs Workflow
+### MCP Chat
 
-**UI** → `POST /api/workflows/{workflowId}/execute`:
-```typescript
-{
-  triggerData: { /* user input */ },
-  integrations: { /* API keys */ }
-}
-```
+The `/mcp-chat` page provides an AI chat interface that can discover and call MCP server tools:
+- Server discovery via `/api/mcp-chat/servers/discover`
+- Tool calls proxied via `/api/mcp-chat/tools/call`
+- Interactive MCP Apps rendered in ToolWidget iframe
 
-### 3. Orchestrator Executes
+### MCP Apps Protocol
 
-**Orchestrator** → Dynamic workflow interpreter:
-```python
-for node_id in definition["executionOrder"]:
-    node = nodes_by_id[node_id]
-
-    if node["type"] == "action":
-        # Execute function (or planner action)
-        yield ctx.call_activity(execute_action, input={
-            "node": node,
-            "node_outputs": node_outputs,
-            "integrations": integrations,
-        })
-
-    if node["type"] == "approval-gate":
-        # Wait for external event
-        event = ctx.wait_for_external_event(event_name)
-        timeout = ctx.create_timer(timeout_seconds)
-        yield when_any([event, timeout])
-```
-
-### 4. Function Execution
-
-**For standard actions** (openai/*, slack/*, etc.):
-Orchestrator → function-router (Dapr invoke) → OpenFunction (Knative)
-
-**For planner actions** (planner/*):
-Orchestrator → planner-dapr-agent (Dapr invoke) → OpenAI Agents SDK → tool execution
-
-### 5. Result Returned
-
-**OpenFunction** → **function-router** → **orchestrator** → **database** → **UI**
-
-## Event Streaming Pipeline
-
-The planner-dapr-agent streams real-time activity events for the agent UI:
-
-```
-planner-dapr-agent
-  → Dapr pub/sub (workflowpubsub)
-  → ai-chatbot webhook (/api/webhooks/dapr/workflow-stream)
-  → Redis event store
-  → SSE stream (/api/workflows/{id}/stream)
-  → Agent Activity Tab UI
-```
-
-**Event types**: `tool_call`, `tool_result`, `phase_started`, `phase_completed`,
-`phase_failed`, `llm_start`, `llm_end`, `agent_started`, `agent_completed`,
-`execution_started`, `execution_completed`, `activity_started`, `activity_completed`
-
-Tool events include `callId` for correlating `tool_call` ↔ `tool_result` pairs.
-
-## Activepieces Integration
-
-### Overview
-
-The workflow builder integrates with [Activepieces](https://www.activepieces.com/) to provide 26 pre-installed connector pieces (Google Sheets, Microsoft To Do, Slack, etc.) alongside the native plugin registry. AP pieces use OAuth2 PKCE and encrypted app connections instead of the legacy integrations system.
-
-### App Connections (Credentials)
-
-Replaces the legacy `integrations` table. Credentials are AES-256-CBC encrypted at rest.
-
-**Supported auth types**:
-- `OAUTH2` - OAuth2 PKCE flow with auto token refresh (15-min buffer)
-- `SECRET_TEXT` - API keys
-- `BASIC_AUTH` - Username/password
-- `CUSTOM_AUTH` - Piece-specific multi-field auth
-
-**Connection flow**:
-1. User clicks "Add Connection" in UI
-2. For OAuth2: redirects to provider via PKCE, callback stores encrypted tokens
-3. For SECRET_TEXT: user enters API key, encrypted and stored
-4. Stored in `app_connections` table with `{ iv, data }` JSONB encryption format
-5. At execution time: function-router calls internal decrypt API → passes raw credentials to fn-activepieces
-
-**Key files**:
-- `lib/security/encryption.ts` - AES-256-CBC encrypt/decrypt (requires `AP_ENCRYPTION_KEY`)
-- `lib/app-connections/oauth2.ts` - PKCE flow (verifier, challenge, token exchange)
-- `lib/db/app-connections.ts` - CRUD with automatic encrypt/decrypt
-
-### Installed Pieces (26)
-
-Defined in `lib/activepieces/installed-pieces.ts` (single source of truth):
-
-| Category | Pieces |
-|----------|--------|
-| Google Suite | Sheets, Calendar, Docs, Gmail, Drive |
-| Productivity | Notion, Airtable, Todoist, Monday |
-| Communication | Discord, Microsoft Teams, Telegram Bot |
-| Microsoft Office | Outlook, Excel 365, To Do |
-| Project Management | Jira Cloud, Asana, Trello, ClickUp |
-| CRM & Marketing | HubSpot, Salesforce, Mailchimp |
-| E-commerce & Support | Shopify, Zendesk |
-| Email | SendGrid |
-| Storage | Dropbox |
-
-**Adding a new piece**:
-1. Add normalized name to `lib/activepieces/installed-pieces.ts`
-2. Add npm dependency to `services/fn-activepieces/package.json`
-3. Add import + PIECES entry to `services/fn-activepieces/src/piece-registry.ts`
-4. Rebuild and deploy fn-activepieces
-
-### Piece Metadata Sync
-
-```bash
-npx tsx scripts/sync-activepieces-pieces.ts   # Fetch from AP cloud API → piece_metadata table
-```
-
-Fetches piece definitions (actions, triggers, auth config) from the Activepieces cloud API and stores them in the `piece_metadata` table. The UI reads from this table to render action palettes and auth forms.
-
-### AP Workflow Execution
-
-When `AP_EXECUTION_ENGINE=dapr`, Activepieces flows are executed via the workflow-orchestrator instead of AP's BullMQ queue:
-
-```
-AP Flow → POST /api/v2/ap-workflows → ap_workflow.py (Dapr workflow)
-  → Walk linked-list action chain
-  → For each step: resolve variables → fetch credentials → call fn-activepieces
-  → Handle ROUTER (conditions), LOOP_ON_ITEMS, DELAY (timers), WEBHOOK (external events)
-  → Send step updates + final callback to AP
-```
-
-**Step types supported**: PIECE, CODE, ROUTER, LOOP_ON_ITEMS, DELAY (via Dapr timers), WEBHOOK (via external events with 24h timeout)
+MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI in chat:
+- ToolWidget (`components/mcp-chat/tool-widget.tsx`) handles host-side protocol
+- Protocol flow: `ui/initialize` → host response → `ui/notifications/initialized` → `tool-input`/`tool-result` → interactive `tools/call`
+- Sandbox: `sandbox="allow-scripts allow-same-origin"` required
 
 ## Database Schema
 
 ### Key Tables
 
+**platforms**, **users**, **user_identities**, **projects**, **project_members** — Multi-tenant platform with roles
+
 **workflows**:
-- `id` - Workflow ID
-- `name` - Workflow name
-- `nodes` - JSONB array of workflow nodes
-- `edges` - JSONB array of workflow edges
-- `engine_type` - Always "dapr"
+- `id`, `name`, `nodes` (JSONB), `edges` (JSONB), `engine_type`
+- `user_id`, `project_id` — ownership
+- `mcp_trigger_tool_name`, `mcp_trigger_tool_description`, `mcp_trigger_input_schema`, `mcp_trigger_returns_response` — MCP trigger config
 
-**workflow_executions**:
-- `id` - Execution ID
-- `workflow_id` - FK to workflows
-- `dapr_instance_id` - Dapr workflow instance ID
-- `status` - running, completed, failed
-- `phase` - Custom phase from Dapr workflow
-- `trigger_data` - JSONB input data
-- `result` - JSONB output data
+**workflow_executions**: `id`, `workflow_id`, `dapr_instance_id`, `status`, `phase`, `trigger_data`, `result`
 
-**functions**:
-- `id` - Function ID
-- `slug` - Canonical slug (e.g., "openai/generate-text")
-- `name` - Display name
-- `plugin_id` - Plugin ID (e.g., "openai")
-- `execution_type` - builtin, oci, http
-- `is_builtin` - true for plugin functions
-- `is_enabled` - true if function is active
+**functions**: `id`, `slug`, `name`, `plugin_id`, `execution_type` (builtin/oci/http), `is_builtin`, `is_enabled`
 
-**app_connections** (replaces legacy `integrations`):
-- `id` - Connection ID
-- `externalId` - AP-compatible external identifier
-- `displayName` - User-facing name
-- `pieceName` - AP piece name (e.g., "@activepieces/piece-google-sheets")
-- `type` - OAUTH2, SECRET_TEXT, BASIC_AUTH, CUSTOM_AUTH
-- `status` - ACTIVE, MISSING, ERROR
-- `value` - JSONB encrypted credentials (`{ iv, data }` AES-256-CBC)
-- `owner_id` - FK to users (ON DELETE set null)
-- `scope` - PROJECT or PLATFORM
-- `platformId` - Platform identifier
+**app_connections**: `id`, `externalId`, `displayName`, `pieceName`, `type` (OAUTH2/SECRET_TEXT/BASIC_AUTH/CUSTOM_AUTH), `status`, `value` (encrypted JSONB), `owner_id`, `scope`, `platformId`
 
-**piece_metadata** (cached from AP cloud API):
-- `id` - Metadata ID
-- `name` - Package name (e.g., "@activepieces/piece-google-sheets")
-- `displayName` - Human-readable name
-- `version` - Piece version
-- `auth` - JSONB auth configuration (OAuth2 scopes, fields, etc.)
-- `actions` - JSONB action definitions
-- `triggers` - JSONB trigger definitions
-- `logoUrl` - Piece icon URL
-- `categories` - Text array of categories
-- Composite index on `(name, version, platformId)`
+**piece_metadata**: `id`, `name`, `displayName`, `version`, `auth` (JSONB), `actions` (JSONB), `triggers` (JSONB), `logoUrl`, `categories`
 
-**workflow_connection_refs** (workflow → connection mapping):
-- `workflow_id` - FK to workflows (ON DELETE cascade)
-- `node_id` - Node that uses the connection
-- `connection_external_id` - Reference to app_connection.externalId
-- `piece_name` - AP piece name for this connection
+**mcp_servers**: Per-project MCP server configuration with token auth
 
-### Node Format in Database
+**mcp_runs**: MCP tool execution tracking (status, input, response)
 
-**Action node** (stored in `workflows.nodes` JSONB):
-```json
-{
-  "id": "node-1",
-  "type": "action",
-  "data": {
-    "type": "action",
-    "label": "Generate Text",
-    "config": {
-      "actionType": "openai/generate-text",
-      "prompt": "Write a haiku about serverless"
-    }
-  },
-  "position": { "x": 100, "y": 100 }
-}
-```
+**api_keys**: JWT API keys for programmatic access
 
-**Key field**: `config.actionType` - This is the canonical function slug used by the orchestrator and function-router to identify functions.
+**platform_oauth_apps**: OAuth app configurations (client IDs, secrets)
+
+**signing_keys**: RSA key pairs for JWT signing
 
 ### Observability Tables
 
-**workflow_execution_logs** (extended with timing breakdown):
-- `id` - Log entry ID
-- `execution_id` - FK to workflow_executions
-- `node_id`, `node_name`, `node_type` - Node identification
-- `activity_name` - Function slug (actionType)
-- `status` - pending, running, success, error
-- `input`, `output`, `error` - JSONB data
-- `credential_fetch_ms` - Time to resolve credentials
-- `routing_ms` - Time to resolve OpenFunction URL
-- `execution_ms` - Actual function execution time
-- `routed_to` - Service that handled execution (e.g., "fn-openai")
-- `was_cold_start` - Boolean flag for cold start detection
+**workflow_execution_logs**: Timing breakdown (`credential_fetch_ms`, `routing_ms`, `execution_ms`, `routed_to`, `was_cold_start`)
 
-**credential_access_logs** (compliance/debugging):
-- `id` - Log entry ID
-- `execution_id` - FK to workflow_executions
-- `node_id` - Node that requested credentials
-- `integration_type` - e.g., "openai", "slack"
-- `credential_keys` - JSONB array of resolved keys
-- `source` - `dapr_secret`, `request_body`, or `not_found`
-- `fallback_attempted` - Boolean
-- `fallback_reason` - Why fallback was needed
+**credential_access_logs**: Compliance audit (`source`: dapr_secret, request_body, not_found)
 
-**workflow_external_events** (approval audit trail):
-- `id` - Event ID
-- `execution_id` - FK to workflow_executions
-- `node_id` - Approval gate node ID
-- `event_name` - e.g., "plan-approval"
-- `event_type` - `approval_request`, `approval_response`, `timeout`
-- `timeout_seconds`, `expires_at` - Timeout configuration
-- `approved`, `reason`, `responded_by` - Response details
-- `payload` - JSONB event payload
+**workflow_external_events**: Approval audit trail
+
+## Activepieces Integration
+
+### App Connections (Credentials)
+
+Credentials are AES-256-CBC encrypted at rest. Supported auth types: `OAUTH2`, `SECRET_TEXT`, `BASIC_AUTH`, `CUSTOM_AUTH`.
+
+**Connection flow**: User creates connection → (OAuth2 PKCE or manual entry) → encrypted in `app_connections` table → function-router calls internal decrypt API at execution time
+
+**Key files**: `lib/security/encryption.ts`, `lib/app-connections/oauth2.ts`, `lib/db/app-connections.ts`
+
+### Adding a New Piece
+
+1. Add normalized name to `lib/activepieces/installed-pieces.ts`
+2. Add npm dependency to `services/fn-activepieces/package.json` (and/or `services/piece-mcp-server/package.json`)
+3. Add import + PIECES entry to respective `piece-registry.ts`
+4. Rebuild and deploy
 
 ## Environment Variables
 
@@ -650,23 +488,29 @@ AP Flow → POST /api/v2/ap-workflows → ap_workflow.py (Dapr workflow)
 | `BETTER_AUTH_SECRET` | Auth encryption secret | (required) |
 | `NEXT_PUBLIC_APP_URL` | Public app URL | `http://localhost:3000` |
 | `WORKFLOW_ORCHESTRATOR_URL` | Orchestrator service URL | `http://workflow-orchestrator:8080` |
-| `DAPR_ORCHESTRATOR_URL` | Planner-dapr-agent proxy URL | `http://planner-dapr-agent:8000` |
 | `FUNCTION_RUNNER_APP_ID` | Function router Dapr app-id | `function-router` |
 | `DAPR_HOST` | Dapr sidecar host | `localhost` |
 | `DAPR_HTTP_PORT` | Dapr HTTP port | `3500` |
 | `DAPR_SECRETS_STORE` | Dapr secret store name | `azure-keyvault` |
 | `AP_ENCRYPTION_KEY` | AES-256 key for app connection encryption (32-char hex) | (required for AP) |
-| `INTERNAL_API_TOKEN` | Token for internal decrypt API (service-to-service) | (required for AP) |
+| `INTERNAL_API_TOKEN` | Token for internal decrypt API + mcp-gateway (service-to-service) | (required) |
+| `NEXT_PUBLIC_AUTH_PROVIDERS` | Comma-separated auth providers | `email` |
+| `NEXT_PUBLIC_GITHUB_CLIENT_ID` | GitHub OAuth client ID | |
+| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth client ID | |
 
 ## Deployment (Kind Cluster)
 
 The app runs in the `workflow-builder` namespace with:
 - `workflow-builder` Deployment (1 replica, port 3000)
 - `workflow-orchestrator` Deployment (1 replica, port 8080) with Dapr sidecar
-- `planner-dapr-agent` Deployment (1 replica, port 8000) with Dapr sidecar
+- `mastra-agent-tanstack` Deployment (port 3000) with Dapr sidecar
+- `mastra-agent-mcp` Deployment (port 3300) with Dapr sidecar
 - `function-router` Deployment (1 replica, port 8080) with Dapr sidecar
-- `fn-activepieces` Deployment (1 replica, port 8080) - AP piece executor with 26 packages
-- 8 OpenFunctions (fn-openai, fn-slack, fn-github, fn-resend, fn-stripe, fn-linear, fn-firecrawl, fn-perplexity) as Knative Services
+- `fn-activepieces` Deployment (1 replica, port 8080)
+- `fn-system` Deployment (1 replica, port 8080)
+- `workflow-mcp-server` Deployment (port 3200)
+- `piece-mcp-server` Deployment
+- `mcp-gateway` Deployment (port 8080)
 - `postgresql` StatefulSet (1 replica, port 5432)
 - `redis` for Dapr workflow state store
 - Ingress via `ingress-nginx` at `workflow-builder.cnoe.localtest.me:8443`
@@ -676,52 +520,37 @@ Images are pushed to the Gitea registry at `gitea.cnoe.localtest.me:8443/giteaad
 ### Build Images
 
 ```bash
-# Build core images (all use project root as context)
+# Build images (Next.js app uses project root; Python/standalone services use their own directory as context)
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder:latest .
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile .
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent:latest -f services/planner-dapr-agent/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-tanstack:latest -f services/mastra-agent-tanstack/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-mcp:latest -f services/mastra-agent-mcp/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-activepieces:latest -f services/fn-activepieces/Dockerfile .
-
-# Build OpenFunction images (8 total)
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-openai:latest -f services/fn-openai/Dockerfile services/fn-openai
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-slack:latest -f services/fn-slack/Dockerfile services/fn-slack
-# ... (remaining 6 OpenFunctions)
-
-# Push images
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder:latest
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent:latest
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/fn-activepieces:latest
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-system:latest -f services/fn-system/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-mcp-server:latest -f services/workflow-mcp-server/Dockerfile services/workflow-mcp-server/
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/piece-mcp-server:latest -f services/piece-mcp-server/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f services/mcp-gateway/Dockerfile .
 ```
 
-### Automatic Setup on Cluster Deploy
+## Dapr Integration
 
-The following happens automatically during `cluster-recreate`:
+### Service App IDs
 
-1. **PostgreSQL deployed** (ArgoCD sync wave 10)
-2. **Admin user seeded** (wave 20): `admin@example.com` / `developer`
-3. **Functions seeded** (wave 25): 37 builtin functions from plugin registry
-4. **Services deployed** (wave 30+): orchestrator, planner-dapr-agent, function-router, workflow-builder
-5. **OpenFunction infrastructure deployed** (wave 40-45): gateway, shared infra
-6. **OpenFunctions deployed** (wave 50): 8 Knative serverless functions
+| Service | Dapr App ID |
+|---------|-------------|
+| workflow-orchestrator | `workflow-orchestrator` |
+| mastra-agent-tanstack | `mastra-agent-tanstack` |
+| mastra-agent-mcp | `mastra-agent-mcp` |
+| function-router | `function-router` |
 
-See `serverless-functions-auto-setup.md` for details.
+### Component Scoping
 
-## Dapr Secrets Integration
-
-Function-router supports auto-injection of API keys from Azure Key Vault via Dapr secrets.
-
-### Secret Mappings
-
-| Secret Name | Environment Variable | Used By |
-|-------------|---------------------|---------|
-| `openai-api-key` | `OPENAI_API_KEY` | openai/* functions |
-| `anthropic-api-key` | `ANTHROPIC_API_KEY` | anthropic/* functions, planner-dapr-agent |
-| `slack-bot-token` | `SLACK_BOT_TOKEN` | slack/* functions |
-| `github-token` | `GITHUB_TOKEN` | github/* functions, planner-dapr-agent |
-| `resend-api-key` | `RESEND_API_KEY` | resend/* functions |
+| Component | Scoped To |
+|-----------|-----------|
+| `workflowstatestore` (Redis) | workflow-orchestrator |
+| `pubsub` (Redis) | workflow-orchestrator, mastra-agent-tanstack, mastra-agent-mcp |
+| `azure-keyvault` (Secrets) | workflow-orchestrator, function-router |
 
 ### Credential Resolution Priority
 
@@ -729,15 +558,19 @@ Function-router supports auto-injection of API keys from Azure Key Vault via Dap
 2. **App Connections** (encrypted in DB) - AP piece credentials via internal decrypt API
 3. **Request body** - credentials passed directly in execution request (legacy fallback)
 
-## Dapr Component Scoping
+## Event Streaming Pipeline
 
-Dapr components are scoped to specific app-ids:
+Agent services stream real-time events for the UI:
 
-| Component | Scoped To |
-|-----------|-----------|
-| `workflowstatestore` (Redis) | workflow-orchestrator, planner-dapr-agent |
-| `workflowpubsub` (Redis) | workflow-orchestrator, planner-dapr-agent |
-| `azure-keyvault` (Secrets) | workflow-orchestrator, function-router, planner-dapr-agent |
+```
+mastra-agent-tanstack
+  → Dapr pub/sub (pubsub)
+  → workflow-orchestrator subscriptions
+  → Next.js app SSE / webhooks
+  → Activity Tab UI
+```
+
+**Event types**: `tool_call`, `tool_result`, `phase_started`, `phase_completed`, `phase_failed`, `llm_start`, `llm_end`, `agent_started`, `agent_completed`, `planning_started`, `planning_completed`, `execution_started`, `execution_completed`
 
 ## Development Workflow
 
@@ -747,134 +580,67 @@ Dapr components are scoped to specific app-ids:
 devspace dev  # Starts dev mode with file sync
 ```
 
-**What's synced**:
-- `app/`, `components/`, `lib/`, `plugins/` - Hot reload enabled
-- `services/` - Excluded (separate deployments)
+**What's synced**: `app/`, `components/`, `lib/`, `plugins/` — Hot reload enabled
+**Excluded**: `services/` (separate deployments)
 
-**For backend changes**:
+**For service changes**:
 ```bash
-# Rebuild and restart services (use project root as context)
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile .
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest
-kubectl rollout restart deployment/workflow-orchestrator -n workflow-builder
-
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent:latest -f services/planner-dapr-agent/Dockerfile .
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/planner-dapr-agent:latest
-kubectl rollout restart deployment/planner-dapr-agent -n workflow-builder
-
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
-docker push gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest
-kubectl rollout restart deployment/function-router -n workflow-builder
-```
-
-### Testing Workflows
-
-**Via UI**:
-1. Open https://workflow-builder.cnoe.localtest.me:8443
-2. Create workflow with action nodes
-3. Click "Run"
-
-**Via API**:
-```bash
-curl -X POST https://workflow-builder.cnoe.localtest.me:8443/api/workflows/{workflowId}/execute \
-  -H "Content-Type: application/json" \
-  -d '{"triggerData": {}}'
+# Rebuild and restart a service
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/<service>:latest -f services/<service>/Dockerfile .
+docker push gitea.cnoe.localtest.me:8443/giteaadmin/<service>:latest
+kubectl rollout restart deployment/<service> -n workflow-builder
 ```
 
 ## Troubleshooting
 
-### Workflow Execution Fails
+### Common Issues
 
-**Check orchestrator logs**:
-```bash
-kubectl logs -n workflow-builder -l app=workflow-orchestrator -c workflow-orchestrator --tail=50
-```
-
-**Check planner-dapr-agent logs**:
-```bash
-kubectl logs -n workflow-builder -l app=planner-dapr-agent -c planner-dapr-agent --tail=50
-```
-
-**Check function-router logs**:
-```bash
-kubectl logs -n workflow-builder -l app=function-router -c function-router --tail=50
-```
-
-**Check fn-activepieces logs**:
-```bash
-kubectl logs -n workflow-builder -l app=fn-activepieces --tail=50
-```
-
-**Common issues**:
 - Missing `actionType` in node config → UI bug, recreate node
 - Function not found → Check `functions` table, run `pnpm seed-functions`
 - Missing credentials → Add API keys to Azure Key Vault or create app connections
-- Planner timeout → Check planner-dapr-agent logs, increase timeout in node config
-- CallId mismatch in activity tab → ToolCallItem uses Pydantic `.call_id`, ToolCallOutputItem uses dict `['call_id']`
-- AP piece not showing in palette → Check `lib/activepieces/installed-pieces.ts` and re-sync piece metadata
-- OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY` is set correctly
-- AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches between Next.js app and function-router
-- AP dynamic dropdown empty → Check fn-activepieces `/options` endpoint logs, verify connection is active
+- Agent timeout → Check mastra-agent-tanstack logs
+- AP piece not showing → Check `lib/activepieces/installed-pieces.ts`, re-sync piece metadata
+- OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY`
+- AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches across services
+- Mastra tool call extraction → Check payload wrapper extraction in `extractToolCall()`
+- MCP session stale → Sessions auto-cleanup after 30s TTL; check `/health` endpoint
 
-### Database Issues
+### Service Logs
 
-**Check function seeding**:
 ```bash
-kubectl exec -n workflow-builder postgresql-0 -- \
-  psql -U postgres -d workflow_builder -c "SELECT COUNT(*) FROM functions;"
-```
-
-**Re-seed functions**:
-```bash
-kubectl delete job seed-functions -n workflow-builder
-kubectl apply -f packages/components/active-development/manifests/workflow-builder/Job-seed-functions.yaml
+kubectl logs -n workflow-builder -l app=workflow-orchestrator -c workflow-orchestrator --tail=50
+kubectl logs -n workflow-builder -l app=mastra-agent-tanstack --tail=50
+kubectl logs -n workflow-builder -l app=function-router -c function-router --tail=50
+kubectl logs -n workflow-builder -l app=fn-activepieces --tail=50
+kubectl logs -n workflow-builder -l app=fn-system --tail=50
 ```
 
 ## Migration Notes
 
-### Vercel → Dapr Migration (Complete)
+### Standalone fn-* Services → Consolidated (Complete)
 
-The codebase was fully migrated from Vercel Workflow DevKit to Dapr:
-- Removed: `"use workflow"`, `"use step"` directives, `withWorkflow()` wrapper
-- Added: Dapr workflow orchestrator, function-router, dynamic workflow interpreter
+8 legacy standalone Knative services (fn-openai, fn-slack, fn-github, fn-resend, fn-stripe, fn-linear, fn-firecrawl, fn-perplexity) were removed. All function execution now routes through:
+- `fn-system` for system/* actions (http-request, database-query, condition)
+- `fn-activepieces` for all AP piece actions (default fallback)
+- `mastra-agent-tanstack` for mastra/* agent actions
 
-### Legacy Field Migration (Complete)
+### Planner → Mastra Agent Migration (Complete)
 
-All workflows use `actionType` only:
-- Removed: `functionSlug`, `activityName` fields
-- Canonical: `actionType` field (current)
+`planner-dapr-agent` (OpenAI Agents SDK, Python) has been fully replaced by `mastra-agent-tanstack` (Mastra SDK, TypeScript). The planner service, its API routes, and all `planner/*` action types have been removed. All agent actions now route through mastra-agent-tanstack:
+- `agent/mastra-run` action type for agent runs
+- `mastra/clone`, `mastra/execute` for plan-based execution
+- `mastra-agent-mcp` provides MCP-native access to the same Mastra agent
 
-### Planner Service Consolidation (Complete)
+### Workflow Orchestrator TS → Python (Complete)
 
-All planner functionality consolidated into `planner-dapr-agent`:
-- Removed: `planner-orchestrator` (legacy Python orchestrator)
-- Removed: `planner-sdk-agent` (Claude Code SDK wrapper)
-- Active: `planner-dapr-agent` (OpenAI Agents SDK with Dapr durability)
+TypeScript orchestrator was archived and has been deleted. Python version is the active implementation.
 
-### Integrations → App Connections Migration (Complete)
+### Legacy Service Cleanup (Complete)
 
-Legacy `integrations` table replaced with Activepieces-aligned `app_connections`:
-- Removed: `integrations` table, `lib/db/integrations.ts`, `lib/credential-fetcher.ts`, `/api/integrations/*` routes
-- Added: `app_connections` table with AES-256-CBC encryption, `piece_metadata` table, `workflow_connection_refs` table
-- Added: OAuth2 PKCE flow, auto token refresh, internal decrypt API
-- Added: `fn-activepieces` service with 26 pre-installed AP piece packages
-- Added: AP workflow walker in orchestrator (`ap_workflow.py`) for Dapr-native AP flow execution
-- UI: Action palette shows both builtin plugins and installed AP pieces
-
-### Duplicate Activities Removed (Complete)
-
-Legacy Dapr activity registrations removed from `dapr-activity-registry.ts`:
-- Removed: `generate_text`, `generate_image`, `send_email`, `send_slack_message`, `http_request`
-- All function execution now uses plugin registry + action nodes
-
-**Remaining Dapr activities** are for workflow control flow only:
-- Planner: `call_planner_clone`, `call_planner_plan`, `call_planner_execute`, `call_planner_multi_step`
-- Events: `publish_event`, `publish_phase_changed`, `publish_workflow_started`, `publish_workflow_completed`
-- Control flow: `approval-gate`, `timer`
-- Observability: `log_external_event`, `log_approval_request`, `log_approval_response`, `log_approval_timeout`
+Removed `activity-executor/` (empty legacy service with no source code) and `workflow-orchestrator-ts-archived/` (replaced by Python orchestrator).
 
 ---
 
-**Last Updated**: 2026-02-08
-**Architecture**: Dapr workflow orchestration + OpenAI Agents SDK planner + Knative serverless functions + Activepieces integration
-**Status**: Production-ready with event streaming, credential audit, sandbox execution, and 26 AP piece connectors
+**Last Updated**: 2026-02-14
+**Architecture**: Dapr workflow orchestration + Mastra AI agents + MCP server integration + Activepieces connectors
+**Status**: Production-ready with OpenTelemetry observability, sandbox execution, MCP Apps, and hosted MCP servers

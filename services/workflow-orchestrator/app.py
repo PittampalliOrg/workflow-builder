@@ -11,7 +11,7 @@ Architecture:
 - Dapr state store for workflow state persistence
 - Dapr pub/sub for event publishing
 
-KEY FEATURE: Native multi-app child workflow support for planner/* actions.
+KEY FEATURE: Native multi-app child workflow support for agent actions via mastra-agent-tanstack.
 """
 
 from __future__ import annotations
@@ -45,20 +45,9 @@ from activities.log_external_event import (
     log_approval_response,
     log_approval_timeout,
 )
-from activities.call_planner_service import (
-    call_planner_clone,
-    call_planner_plan,
-    call_planner_execute,
-    call_planner_execute_standalone,
-    call_planner_workflow,
-    call_planner_approve,
-    call_planner_status,
-    call_planner_multi_step,
-)
-from activities.call_agent_service import call_agent_run, call_mastra_agent_run, call_mastra_execute_plan
+from activities.call_agent_service import call_mastra_agent_run, call_mastra_execute_plan
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
-from subscriptions.planner_events import handle_planner_event
 
 # OpenTelemetry
 from tracing import setup_tracing, inject_current_context
@@ -106,20 +95,10 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_approval_request)
     wfr.register_activity(log_approval_response)
     wfr.register_activity(log_approval_timeout)
-    # Node execution logging (planner/* nodes that bypass function-router)
+    # Node execution logging
     wfr.register_activity(log_node_start)
     wfr.register_activity(log_node_complete)
-    # Planner service activities (planner-dapr-agent)
-    wfr.register_activity(call_planner_clone)
-    wfr.register_activity(call_planner_plan)
-    wfr.register_activity(call_planner_execute)
-    wfr.register_activity(call_planner_execute_standalone)
-    wfr.register_activity(call_planner_workflow)
-    wfr.register_activity(call_planner_approve)
-    wfr.register_activity(call_planner_status)
-    wfr.register_activity(call_planner_multi_step)
-    # Agent service activities (planner-dapr-agent + mastra-agent-mcp)
-    wfr.register_activity(call_agent_run)
+    # Agent service activities (mastra-agent-tanstack)
     wfr.register_activity(call_mastra_agent_run)
     wfr.register_activity(call_mastra_execute_plan)
     # AP workflow callback activities
@@ -870,36 +849,65 @@ def resume_workflow(instance_id: str):
 
 # --- Pub/Sub Subscription Routes ---
 
-@app.post("/subscriptions/planner-events")
-def planner_events_subscription(event: CloudEvent):
+@app.post("/subscriptions/agent-events")
+def agent_events_subscription(event: CloudEvent):
     """
-    Handle planner completion events from pub/sub.
+    Handle agent completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when planner-dapr-agent
+    This endpoint receives CloudEvents from Dapr pub/sub when mastra-agent-tanstack
     publishes completion events. It forwards the events as external events to
     waiting parent workflows.
-
-    Subscribed topics (configured via Dapr Subscription resource):
-    - workflow.events (filtered by event type: planner_planning_completed, planner_execution_completed)
     """
-    logger.info(f"[Subscription] Received planner event: {event.type}")
+    logger.info(f"[Subscription] Received agent event: {event.type}")
 
-    result = handle_planner_event(event.type, event.data)
+    # Forward agent completion events to parent workflows
+    from dapr.ext.workflow import DaprWorkflowClient
 
-    # Return success even on logical failures to acknowledge the message
-    # (prevents Dapr from retrying indefinitely)
-    return {"status": "SUCCESS", "result": result}
+    event_data = event.data
+    actual_event_type = event_data.get("type", event.type)
+
+    completion_event_types = {"agent_completed", "execution_completed"}
+    if actual_event_type not in completion_event_types:
+        return {"status": "SUCCESS", "result": {"status": "ignored", "event_type": actual_event_type}}
+
+    try:
+        inner_data = event_data.get("data", {})
+        parent_execution_id = inner_data.get("parent_execution_id")
+
+        if not parent_execution_id:
+            return {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
+
+        workflow_id = event_data.get("workflowId", "")
+        external_event_name = f"agent_completed_{workflow_id}"
+
+        event_payload = {
+            "workflow_id": workflow_id,
+            "phase": inner_data.get("phase", actual_event_type.replace("_completed", "")),
+            "success": inner_data.get("success", True),
+            "result": inner_data.get("result", {}),
+            "error": inner_data.get("error"),
+            "timestamp": event_data.get("timestamp"),
+        }
+
+        client = DaprWorkflowClient()
+        client.raise_workflow_event(
+            instance_id=parent_execution_id,
+            event_name=external_event_name,
+            data=event_payload,
+        )
+
+        return {"status": "SUCCESS", "result": {"status": "forwarded", "event_type": actual_event_type}}
+    except Exception as e:
+        logger.error(f"[Agent Events] Failed to handle event: {e}")
+        return {"status": "SUCCESS", "result": {"status": "error", "error": str(e)}}
 
 
-@app.options("/subscriptions/planner-events")
-def planner_events_subscription_options():
+@app.options("/subscriptions/agent-events")
+def agent_events_subscription_options():
     """CORS preflight handler for Dapr subscription endpoint."""
     return {}
 
 
-# Programmatic subscription declaration (alternative to Subscription YAML)
-# Note: This is a fallback - we prefer declarative Subscription CRD in stacks/main
-# Dapr will call this endpoint to discover subscriptions
 PUBSUB_NAME = config.PUBSUB_NAME
 
 @app.get("/dapr/subscribe")
@@ -908,44 +916,24 @@ def subscribe():
     Declare pub/sub subscriptions for Dapr.
 
     This endpoint tells Dapr which topics this service subscribes to.
-    Alternative to declarative Subscription CRD.
-
-    Note: The declarative Subscription-planner-events.yaml is preferred
-    and should take precedence when deployed to Kubernetes.
     """
     return [
         {
             "pubsubname": PUBSUB_NAME,
-            # Must match PUBSUB_TOPIC in planner-dapr-agent (default: workflow.stream).
             "topic": "workflow.stream",
-            "route": "/subscriptions/planner-events",
+            "route": "/subscriptions/agent-events",
             "routes": {
                 "rules": [
-                    # Legacy planner completion events
                     {
-                        "match": "event.type == \"planner_planning_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    {
-                        "match": "event.type == \"planner_execution_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    # Current completion event types
-                    {
-                        "match": "event.type == \"planning_completed\"",
-                        "path": "/subscriptions/planner-events",
+                        "match": "event.type == \"agent_completed\"",
+                        "path": "/subscriptions/agent-events",
                     },
                     {
                         "match": "event.type == \"execution_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    # Workflow-builder agent primitive
-                    {
-                        "match": "event.type == \"agent_completed\"",
-                        "path": "/subscriptions/planner-events",
+                        "path": "/subscriptions/agent-events",
                     },
                 ],
-                "default": "/subscriptions/planner-events",
+                "default": "/subscriptions/agent-events",
             },
         }
     ]

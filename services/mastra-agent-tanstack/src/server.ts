@@ -197,7 +197,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 
 			eventBus.emitEvent("planning_started", { prompt });
 
-			// Give planner directory context so it generates path-specific steps
+			// Give planning agent directory context so it generates path-specific steps
 			let contextPrefix = "";
 			if (cwd) {
 				try {

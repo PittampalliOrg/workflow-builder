@@ -85,7 +85,7 @@ const AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Select a model",
 					defaultValue: "gpt-5.2-codex",
 					dynamicOptions: {
-						provider: "planner",
+						provider: "builtin",
 						pieceName: "agent",
 						actionName: "agent/run",
 						propName: "model",
@@ -120,7 +120,7 @@ const AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Select allowed actions",
 					defaultValue: "[]",
 					dynamicOptions: {
-						provider: "planner",
+						provider: "builtin",
 						pieceName: "agent",
 						actionName: "agent/run",
 						propName: "allowedActionsJson",
@@ -171,7 +171,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Select owner",
 					required: true,
 					dynamicOptions: {
-						provider: "planner",
+						provider: "builtin",
 						pieceName: "mastra",
 						actionName: "mastra/clone",
 						propName: "repositoryOwner",
@@ -185,7 +185,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Select repository",
 					required: true,
 					dynamicOptions: {
-						provider: "planner",
+						provider: "builtin",
 						pieceName: "mastra",
 						actionName: "mastra/clone",
 						propName: "repositoryRepo",
@@ -199,7 +199,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					defaultValue: "main",
 					placeholder: "Select branch",
 					dynamicOptions: {
-						provider: "planner",
+						provider: "builtin",
 						pieceName: "mastra",
 						actionName: "mastra/clone",
 						propName: "repositoryBranch",

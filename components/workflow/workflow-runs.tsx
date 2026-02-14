@@ -453,14 +453,13 @@ function DaprExecutionDetails({
 		setIsApproving(true);
 		try {
 			if (execution.approvalEventName) {
-				// Generic workflow approval gate — raise the named external event
+				// Workflow approval gate — raise the named external event
 				await api.dapr.raiseEvent(execution.id, execution.approvalEventName, {
 					approved,
 					reason: approved ? "Approved" : "Rejected",
 				});
 			} else {
-				// Legacy planner workflow approval
-				await api.dapr.approve(execution.id, approved);
+				throw new Error("No approval event name configured for this execution");
 			}
 			toast.success(approved ? "Approved" : "Rejected");
 			onRefresh?.();

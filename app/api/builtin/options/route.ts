@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import { normalizePlannerActionType } from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
@@ -16,7 +15,7 @@ import {
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GITHUB_TIMEOUT_MS = Number.parseInt(
-	process.env.PLANNER_OPTIONS_TIMEOUT_MS || "15000",
+	process.env.BUILTIN_OPTIONS_TIMEOUT_MS || "15000",
 	10,
 );
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
@@ -33,13 +32,13 @@ type DropdownOption = {
 	value: string;
 };
 
-type PlannerOptionsResponse = {
+type OptionsResponse = {
 	options: DropdownOption[];
 	disabled?: boolean;
 	placeholder?: string;
 };
 
-type PlannerOptionsRequestBody = {
+type OptionsRequestBody = {
 	actionName: string;
 	propertyName: string;
 	connectionExternalId?: string;
@@ -47,7 +46,7 @@ type PlannerOptionsRequestBody = {
 	searchValue?: string;
 };
 
-function isValidBody(value: unknown): value is PlannerOptionsRequestBody {
+function isValidBody(value: unknown): value is OptionsRequestBody {
 	if (typeof value !== "object" || value === null) {
 		return false;
 	}
@@ -57,7 +56,7 @@ function isValidBody(value: unknown): value is PlannerOptionsRequestBody {
 	);
 }
 
-function buildDisabledResponse(placeholder: string): PlannerOptionsResponse {
+function buildDisabledResponse(placeholder: string): OptionsResponse {
 	return {
 		options: [],
 		disabled: true,
@@ -66,19 +65,10 @@ function buildDisabledResponse(placeholder: string): PlannerOptionsResponse {
 }
 
 function normalizeActionName(actionName: string): string {
-	// This endpoint historically served only planner/* actions and would prefix
-	// non-namespaced action names with "planner/". We now also serve internal
-	// workflow-builder option providers (e.g. agent/run), so:
-	// - If a name is already namespaced (contains "/"), leave it as-is.
-	// - Otherwise, assume it is a planner action slug and prefix with "planner/".
-	const trimmed = actionName.trim();
-	if (trimmed.includes("/")) {
-		return normalizePlannerActionType(trimmed);
-	}
-	return normalizePlannerActionType(`planner/${trimmed}`);
+	return actionName.trim();
 }
 
-function buildModelsResponse(searchValue?: string): PlannerOptionsResponse {
+function buildModelsResponse(searchValue?: string): OptionsResponse {
 	const envList = process.env.AGENT_MODELS_JSON || process.env.AI_MODELS_JSON;
 	let models: string[] = [];
 
@@ -131,7 +121,7 @@ function getModelDisplayLabel(modelId: string): string {
 
 async function buildAllowedActionsResponse(
 	searchValue?: string,
-): Promise<PlannerOptionsResponse> {
+): Promise<OptionsResponse> {
 	const allPieces = await listPieceMetadata({});
 	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
 	const builtinPieces = getBuiltinPieces();
@@ -229,7 +219,7 @@ async function githubRequest<T>(
 		headers: {
 			Accept: GITHUB_ACCEPT_HEADER,
 			Authorization: `Bearer ${token}`,
-			"User-Agent": "workflow-builder-planner-options",
+			"User-Agent": "workflow-builder-builtin-options",
 			"X-GitHub-Api-Version": "2022-11-28",
 		},
 		signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
@@ -294,7 +284,7 @@ function getMastraFallbackOptions(): DropdownOption[] {
 
 async function getMastraToolOptions(
 	searchValue?: string,
-): Promise<PlannerOptionsResponse> {
+): Promise<OptionsResponse> {
 	try {
 		const response = await fetch(`${MASTRA_AGENT_API_BASE_URL}/api/tools`, {
 			signal: AbortSignal.timeout(MASTRA_OPTIONS_TIMEOUT_MS),
@@ -332,7 +322,7 @@ async function getMastraToolOptions(
 
 		return { options: filterOptions(options, searchValue) };
 	} catch (error) {
-		console.warn("[planner/options] Mastra tool lookup failed:", error);
+		console.warn("[builtin/options] Mastra tool lookup failed:", error);
 		return {
 			options: filterOptions(getMastraFallbackOptions(), searchValue),
 			placeholder: "Mastra service unavailable; showing fallback tools",
@@ -454,10 +444,11 @@ async function getBranchOptions(
 }
 
 /**
- * POST /api/planner/options
+ * POST /api/builtin/options
  *
- * Fetch dynamic dropdown options for planner clone-style actions.
- * Session-authenticated. Uses the user's GitHub connection token.
+ * Fetch dynamic dropdown options for builtin action config fields.
+ * Handles model selection, allowed actions, GitHub repos/branches, and Mastra tools.
+ * Session-authenticated.
  */
 export async function POST(request: Request) {
 	try {
@@ -487,13 +478,15 @@ export async function POST(request: Request) {
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
 
-		// workflow-builder internal dropdowns (not AP planner actions)
+		// Model selector for agent/run
 		if (
 			normalizedActionName === "agent/run" &&
 			rawBody.propertyName === "model"
 		) {
 			return NextResponse.json(buildModelsResponse(rawBody.searchValue));
 		}
+
+		// Allowed actions multi-select for agent/run
 		if (
 			normalizedActionName === "agent/run" &&
 			rawBody.propertyName === "allowedActionsJson"
@@ -502,6 +495,8 @@ export async function POST(request: Request) {
 				await buildAllowedActionsResponse(rawBody.searchValue),
 			);
 		}
+
+		// Mastra tool selector
 		if (
 			normalizedActionName === "mastra/run-tool" &&
 			rawBody.propertyName === "toolId"
@@ -509,15 +504,10 @@ export async function POST(request: Request) {
 			return NextResponse.json(await getMastraToolOptions(rawBody.searchValue));
 		}
 
-		if (
-			!(
-				normalizedActionName === "planner/clone" ||
-				normalizedActionName === "planner/multi-step" ||
-				normalizedActionName === "mastra/clone"
-			)
-		) {
+		// GitHub repo/branch selectors for mastra/clone
+		if (normalizedActionName !== "mastra/clone") {
 			return NextResponse.json(
-				{ error: `Unsupported planner action: ${rawBody.actionName}` },
+				{ error: `Unsupported action: ${rawBody.actionName}` },
 				{ status: 400 },
 			);
 		}
@@ -544,7 +534,7 @@ export async function POST(request: Request) {
 			return NextResponse.json(
 				{
 					error:
-						"Planner options require a GitHub connection for Clone Repository actions",
+						"Clone Repository options require a GitHub connection",
 				},
 				{ status: 400 },
 			);
@@ -564,7 +554,7 @@ export async function POST(request: Request) {
 		}
 
 		const input = rawBody.input || {};
-		let response: PlannerOptionsResponse;
+		let response: OptionsResponse;
 
 		switch (rawBody.propertyName) {
 			case "repositoryOwner": {
@@ -612,7 +602,7 @@ export async function POST(request: Request) {
 			}
 			default: {
 				return NextResponse.json(
-					{ error: `Unsupported planner property: ${rawBody.propertyName}` },
+					{ error: `Unsupported property: ${rawBody.propertyName}` },
 					{ status: 400 },
 				);
 			}
@@ -620,11 +610,11 @@ export async function POST(request: Request) {
 
 		return NextResponse.json(response);
 	} catch (error) {
-		console.error("[planner/options] Error:", error);
+		console.error("[builtin/options] Error:", error);
 		const message = error instanceof Error ? error.message : "Unknown error";
 		return NextResponse.json(
 			{
-				error: "Failed to fetch planner dropdown options",
+				error: "Failed to fetch dropdown options",
 				details: message,
 			},
 			{ status: 500 },

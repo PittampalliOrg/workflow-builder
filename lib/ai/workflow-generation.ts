@@ -3,7 +3,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import { withPlannerPiece } from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
@@ -146,10 +145,10 @@ async function generateAIPieceActionPrompts(): Promise<string> {
 	const allPieces = await listPieceMetadata({});
 	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
 	const builtinPieces = getBuiltinPieces();
-	const integrations = withPlannerPiece([
+	const integrations: IntegrationDefinition[] = [
 		...builtinPieces,
 		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
-	]);
+	];
 
 	const lines: string[] = [];
 

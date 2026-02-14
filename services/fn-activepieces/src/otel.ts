@@ -49,6 +49,25 @@ function parseOtelHeaders(
 	return Object.keys(out).length ? out : undefined;
 }
 
+function parseResourceAttributes(
+	value: string | undefined,
+): Record<string, string> | undefined {
+	if (!value) return undefined;
+	const out: Record<string, string> = {};
+	for (const part of value.split(",")) {
+		const trimmed = part.trim();
+		if (!trimmed) continue;
+		const eq = trimmed.indexOf("=");
+		if (eq <= 0) continue;
+		const k = trimmed.slice(0, eq).trim();
+		const v = trimmed.slice(eq + 1).trim();
+		if (!k) continue;
+		if (k === "service.name") continue;
+		out[k] = v;
+	}
+	return Object.keys(out).length ? out : undefined;
+}
+
 function buildOtlpSignalUrl(
 	base: string,
 	signal: "traces" | "metrics",
@@ -89,6 +108,7 @@ export function initOtel(serviceName: string): void {
 		resourceFromAttributes({
 			[SemanticResourceAttributes.SERVICE_NAME]:
 				process.env.OTEL_SERVICE_NAME?.trim() || serviceName,
+			...(parseResourceAttributes(process.env.OTEL_RESOURCE_ATTRIBUTES) ?? {}),
 		}),
 	);
 

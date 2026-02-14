@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { daprClient } from "@/lib/dapr-client";
+import { getGenericOrchestratorUrl } from "@/lib/config-service";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
+import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
-import type { WorkflowNode } from "@/lib/workflow-store";
+import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 // Validate API key and return the user ID if valid
 async function validateApiKey(
@@ -71,39 +73,45 @@ async function executeDaprWorkflowBackground(
   executionId: string,
   workflow: {
     id: string;
+    name: string;
     userId: string;
     nodes: unknown;
     edges: unknown;
+    description: string | null;
   } & Record<string, unknown>,
   input: Record<string, unknown>
 ) {
   try {
     const orchestratorUrl =
       (workflow.daprOrchestratorUrl as string) ||
-      process.env.DAPR_ORCHESTRATOR_URL ||
-      "http://planner-dapr-agent:8000";
+      (await getGenericOrchestratorUrl());
 
     console.log("[Webhook] Starting Dapr execution:", executionId);
 
-    // Extract feature_request and cwd from input for the orchestrator
-    const featureRequest =
-      (input.feature_request as string) ||
-      (input.featureRequest as string) ||
-      "";
-    const cwd = (input.cwd as string) || "";
+    const nodes = workflow.nodes as WorkflowNode[];
+    const edges = workflow.edges as WorkflowEdge[];
 
-    const daprResult = await daprClient.startWorkflow(
+    // Generate workflow definition from the visual graph
+    const definition = generateWorkflowDefinition(
+      nodes,
+      edges,
+      workflow.id,
+      workflow.name,
+      { description: workflow.description || undefined },
+    );
+
+    const genericResult = await genericOrchestratorClient.startWorkflow(
       orchestratorUrl,
-      featureRequest,
-      cwd
+      definition,
+      input,
     );
 
     await db
       .update(workflowExecutions)
-      .set({ daprInstanceId: daprResult.workflow_id })
+      .set({ daprInstanceId: genericResult.instanceId })
       .where(eq(workflowExecutions.id, executionId));
 
-    console.log("[Webhook] Dapr workflow started:", daprResult.workflow_id);
+    console.log("[Webhook] Dapr workflow started:", genericResult.instanceId);
   } catch (error) {
     console.error("[Webhook] Error during Dapr execution:", error);
 
@@ -213,7 +221,7 @@ export async function POST(
         .set({
           status: "error",
           error:
-            "Legacy Vercel workflow execution is no longer supported. Please migrate to Dapr.",
+            "Legacy workflow execution is no longer supported. Please migrate to Dapr.",
           completedAt: new Date(),
         })
         .where(eq(workflowExecutions.id, execution.id));

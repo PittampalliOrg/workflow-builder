@@ -5,7 +5,7 @@
  * Creates a SandboxClaim CR, waits for the pod to be provisioned (from the warm pool),
  * and routes commands via HTTP to the sandbox pod's /execute endpoint (port 8888).
  *
- * Mirrors the pattern from planner-dapr-agent/sandbox_executor.py but in TypeScript.
+ * Implements the sandbox pattern in TypeScript for Mastra agent execution.
  *
  * Prerequisites:
  * - agent-sandbox controller + CRDs deployed in cluster

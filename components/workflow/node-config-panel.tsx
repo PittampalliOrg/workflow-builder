@@ -28,7 +28,7 @@ import { api } from "@/lib/api-client";
 import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
-} from "@/lib/actions/planner-actions";
+} from "@/lib/actions/connection-utils";
 import { getNodeCodeFile } from "@/lib/code-generation";
 import { connectionsAtom } from "@/lib/connections-store";
 import {

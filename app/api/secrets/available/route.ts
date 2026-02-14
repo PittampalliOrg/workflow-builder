@@ -2,15 +2,14 @@
  * GET /api/secrets/available
  *
  * Returns a list of available infrastructure secrets from Dapr/Azure Key Vault.
- * This endpoint checks the activity-executor's status to determine if secrets are available,
- * then returns the known secret mappings.
+ * Returns the known secret mappings. Actual secret availability is checked at
+ * execution time by the function-router service.
  */
 
 import { getSession } from "@/lib/auth-helpers";
 
 /**
  * Mapping of secret keys to their integration types and labels.
- * Matches the SECRET_MAPPINGS in activity-executor/src/core/credential-service.ts
  */
 const SECRET_INTEGRATION_MAP: Record<
   string,
@@ -75,14 +74,6 @@ const SECRET_INTEGRATION_MAP: Record<
   },
 };
 
-/**
- * Activity executor URL for status checks
- * Uses full cluster DNS name since services are in different namespaces
- */
-const ACTIVITY_EXECUTOR_URL =
-  process.env.ACTIVITY_EXECUTOR_URL ||
-  "http://activity-executor.activity-executor.svc.cluster.local:8080";
-
 export type InfrastructureSecret = {
   key: string;
   integrationType: string;
@@ -97,56 +88,6 @@ export type InfrastructureSecretsResponse = {
   secrets: InfrastructureSecret[];
 };
 
-/**
- * Check activity-executor status to see if Dapr secret store is connected
- */
-async function checkSecretStoreStatus(): Promise<{
-  available: boolean;
-  connected: boolean;
-}> {
-  try {
-    // Use a longer timeout as DNS resolution in k8s can be slow
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15_000);
-
-    const response = await fetch(`${ACTIVITY_EXECUTOR_URL}/status`, {
-      signal: controller.signal,
-      // Disable keep-alive to avoid connection pooling issues
-      headers: { Connection: "close" },
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      return { available: false, connected: false };
-    }
-
-    const status = (await response.json()) as {
-      components?: {
-        dapr?: {
-          secretStore?: {
-            available?: boolean;
-          };
-        };
-      };
-    };
-
-    const secretStoreAvailable =
-      status?.components?.dapr?.secretStore?.available ?? false;
-
-    return {
-      available: true,
-      connected: secretStoreAvailable,
-    };
-  } catch (error) {
-    console.warn(
-      "[Secrets API] Failed to check activity-executor status:",
-      error
-    );
-    return { available: false, connected: false };
-  }
-}
-
 export async function GET(request: Request) {
   // Require authentication
   const session = await getSession(request);
@@ -154,9 +95,6 @@ export async function GET(request: Request) {
   if (!session?.user?.id) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-
-  // Check secret store status
-  const { available, connected } = await checkSecretStoreStatus();
 
   // Build list of available secrets
   const secrets: InfrastructureSecret[] = Object.entries(
@@ -170,8 +108,8 @@ export async function GET(request: Request) {
   }));
 
   return Response.json({
-    available,
-    secretStoreConnected: connected,
+    available: true,
+    secretStoreConnected: true,
     secrets,
   } satisfies InfrastructureSecretsResponse);
 }

@@ -48,8 +48,6 @@ const CONFIG_KEYS = [
   // Service URLs
   "WORKFLOW_ORCHESTRATOR_URL",
   "GENERIC_ORCHESTRATOR_URL",
-  "DAPR_ORCHESTRATOR_URL",
-  "ACTIVITY_EXECUTOR_URL",
   "FUNCTION_RUNNER_URL",
   // Feature flags
   "USE_DAPR_SERVICE_INVOCATION",
@@ -341,24 +339,10 @@ export function getGenericOrchestratorUrl(): string {
 }
 
 /**
- * Get the legacy Dapr orchestrator URL
- */
-export function getDaprOrchestratorUrl(): string {
-  return getConfig("DAPR_ORCHESTRATOR_URL", DEFAULT_ORCHESTRATOR_URL);
-}
-
-/**
  * Get the function runner URL
  */
 export function getFunctionRunnerUrl(): string {
   return getConfig("FUNCTION_RUNNER_URL", DEFAULT_FUNCTION_RUNNER_URL);
-}
-
-/**
- * Get the activity executor URL (legacy)
- */
-export function getActivityExecutorUrl(): string {
-  return getConfig("ACTIVITY_EXECUTOR_URL", DEFAULT_FUNCTION_RUNNER_URL);
 }
 
 // ============================================================================

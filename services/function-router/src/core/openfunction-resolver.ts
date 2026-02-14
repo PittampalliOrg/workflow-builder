@@ -24,7 +24,6 @@ const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
  * These are regular K8s Deployments with a ClusterIP Service.
  */
 const STANDALONE_SERVICES: Record<string, string> = {
-	"planner-dapr-agent": `http://planner-dapr-agent.${NAMESPACE}.svc.cluster.local:8000`,
 	"mastra-agent-tanstack":
 		process.env.MASTRA_AGENT_TANSTACK_URL ||
 		`http://mastra-agent-tanstack.${NAMESPACE}.svc.cluster.local:3400`,

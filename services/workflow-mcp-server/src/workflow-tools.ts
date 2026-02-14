@@ -1,8 +1,8 @@
 /**
  * Workflow MCP Tool Registration
  *
- * Registers 13 MCP tools for workflow CRUD, node/edge manipulation,
- * and execution, with optional UI resource.
+ * Registers MCP tools for workflow CRUD, node/edge manipulation,
+ * execution, approval, and observability, with optional UI resource.
  */
 
 import fs from "node:fs";
@@ -554,25 +554,17 @@ export function registerWorkflowTools(
 			trigger_data?: Record<string, unknown>;
 		}) => {
 			try {
-				// Fetch workflow to build execution payload
-				const wf = await db.getWorkflow(args.workflow_id);
-				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
-
-				const payload = {
-					workflowId: wf.id,
-					definition: {
-						nodes: wf.nodes,
-						edges: wf.edges,
+				const resp = await fetch(
+					`${ORCHESTRATOR_URL}/api/v2/workflows/execute-by-id`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							workflowId: args.workflow_id,
+							triggerData: args.trigger_data ?? {},
+						}),
 					},
-					triggerData: args.trigger_data ?? {},
-					integrations: {},
-				};
-
-				const resp = await fetch(`${ORCHESTRATOR_URL}/api/v2/workflows`, {
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify(payload),
-				});
+				);
 
 				if (!resp.ok) {
 					const text = await resp.text();
@@ -589,6 +581,108 @@ export function registerWorkflowTools(
 	tools.push({
 		name: "execute_workflow",
 		description: "Run workflow via orchestrator",
+	});
+
+	// ── get_execution_status ──────────────────────────────
+	(server as any).registerTool(
+		"get_execution_status",
+		{
+			title: "Get Execution Status",
+			description:
+				"Poll the orchestrator for workflow execution status. Returns status, phase, and approvalEventName when awaiting approval.",
+			inputSchema: {
+				instance_id: z
+					.string()
+					.describe(
+						"Dapr workflow instanceId (from execute_workflow result)",
+					),
+			},
+			_meta: uiMeta,
+		},
+		async (args: { instance_id: string }) => {
+			try {
+				const resp = await fetch(
+					`${ORCHESTRATOR_URL}/api/v2/workflows/${encodeURIComponent(args.instance_id)}/status`,
+				);
+				if (!resp.ok) {
+					const text = await resp.text();
+					return errorResult(
+						`Orchestrator returned ${resp.status}: ${text}`,
+					);
+				}
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to get execution status: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "get_execution_status",
+		description: "Poll workflow execution status",
+	});
+
+	// ── approve_workflow ───────────────────────────────────
+	(server as any).registerTool(
+		"approve_workflow",
+		{
+			title: "Approve Workflow",
+			description:
+				"Raise an approval or rejection event on a running workflow that is awaiting an approval gate.",
+			inputSchema: {
+				instance_id: z.string().describe("Dapr workflow instanceId"),
+				event_name: z
+					.string()
+					.describe(
+						"The approval event name (from approvalEventName in status)",
+					),
+				approved: z
+					.boolean()
+					.describe("true to approve, false to reject"),
+				reason: z
+					.string()
+					.optional()
+					.describe("Optional reason for the approval/rejection"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: {
+			instance_id: string;
+			event_name: string;
+			approved: boolean;
+			reason?: string;
+		}) => {
+			try {
+				const resp = await fetch(
+					`${ORCHESTRATOR_URL}/api/v2/workflows/${encodeURIComponent(args.instance_id)}/events`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							eventName: args.event_name,
+							eventData: {
+								approved: args.approved,
+								reason: args.reason,
+							},
+						}),
+					},
+				);
+				if (!resp.ok) {
+					const text = await resp.text();
+					return errorResult(
+						`Orchestrator returned ${resp.status}: ${text}`,
+					);
+				}
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to send approval event: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "approve_workflow",
+		description: "Approve or reject a workflow approval gate",
 	});
 
 	// ── get_workflow_observability ─────────────────────────

@@ -671,6 +671,76 @@ body {
   to { transform: translateX(-50%) translateY(0); opacity: 1; }
 }
 
+/* ── Execution Status & Approval ──────────────── */
+
+.execution-phase {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-accent-primary, #0078d4);
+  padding: 4px 10px;
+  background: var(--color-accent-primary-alpha-10, rgba(0, 120, 212, 0.08));
+  border-radius: var(--border-radius-sm, 4px);
+  white-space: nowrap;
+}
+
+.approval-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: #fef3c7;
+  border-bottom: 1px solid #f59e0b;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.approval-text {
+  font-size: 11px;
+  color: #92400e;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-approve {
+  padding: 4px 12px;
+  background: #059669;
+  color: #fff;
+  border: none;
+  border-radius: var(--border-radius-sm, 4px);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: opacity 0.15s;
+}
+
+.btn-approve:hover { opacity: 0.9; }
+.btn-approve:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-reject {
+  padding: 4px 12px;
+  background: transparent;
+  color: #dc2626;
+  border: 1px solid #dc2626;
+  border-radius: var(--border-radius-sm, 4px);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.btn-reject:hover { background: #fde8e8; }
+.btn-reject:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* ── ReactFlow overrides ──────────────────────── */
 
 .react-flow__edge-path {

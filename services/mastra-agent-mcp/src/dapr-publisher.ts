@@ -39,7 +39,7 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 
 /**
  * Publish an agent_completed event in the format the orchestrator's
- * subscription handler (planner_events.py) expects.
+ * subscription handler (agent_events) expects.
  *
  * The handler extracts:
  *   event_data.get("type")          → "agent_completed"
