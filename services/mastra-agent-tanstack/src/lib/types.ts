@@ -37,6 +37,9 @@ export type AgentState = {
 
 export type WorkflowContext = {
 	workflowId: string | null;
+	instanceId: string | null;
+	status: string | null;
+	traceId: string | null;
 	nodeId: string | null;
 	stepIndex: number | null;
 	receivedEvents: number;

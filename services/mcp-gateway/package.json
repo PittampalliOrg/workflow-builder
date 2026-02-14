@@ -1,24 +1,32 @@
 {
-  "name": "mcp-gateway",
-  "version": "1.0.0",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "node build.mjs",
-    "start": "node dist/index.js",
-    "type-check": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@fastify/cors": "^10.0.2",
-    "@modelcontextprotocol/sdk": "^1.12.0",
-    "fastify": "^5.2.2",
-    "zod": "^4.1.12"
-  },
-  "devDependencies": {
-    "@types/node": "^24",
-    "esbuild": "^0.24.0",
-    "tsx": "^4.19.0",
-    "typescript": "^5"
-  }
+	"name": "mcp-gateway",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "tsx watch src/index.ts",
+		"build": "node build.mjs",
+		"start": "node dist/index.js",
+		"type-check": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@fastify/cors": "^10.0.2",
+		"@modelcontextprotocol/sdk": "^1.12.0",
+		"@opentelemetry/api": "^1.9.0",
+		"@opentelemetry/auto-instrumentations-node": "^0.69.0",
+		"@opentelemetry/exporter-metrics-otlp-http": "^0.212.0",
+		"@opentelemetry/exporter-trace-otlp-http": "^0.212.0",
+		"@opentelemetry/resources": "^2.5.1",
+		"@opentelemetry/sdk-metrics": "^2.5.1",
+		"@opentelemetry/sdk-node": "^0.212.0",
+		"@opentelemetry/semantic-conventions": "^1.39.0",
+		"fastify": "^5.2.2",
+		"zod": "^4.1.12"
+	},
+	"devDependencies": {
+		"@types/node": "^24",
+		"esbuild": "^0.24.0",
+		"tsx": "^4.19.0",
+		"typescript": "^5"
+	}
 }

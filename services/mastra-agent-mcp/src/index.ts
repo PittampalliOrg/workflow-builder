@@ -7,16 +7,22 @@
  * ENV: PORT (default 3300), OPENAI_API_KEY (required)
  */
 
+import "./otel.js";
+
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { eventBus } from "./event-bus.js";
 import { TOOL_NAMES, runAgent } from "./agent.js";
-import { registerAgentTools, preloadUiHtml, type RegisteredTool } from "./agent-tools.js";
+import {
+	registerAgentTools,
+	preloadUiHtml,
+	type RegisteredTool,
+} from "./agent-tools.js";
 import {
 	startDaprPublisher,
 	handleDaprSubscriptionEvent,
@@ -147,8 +153,7 @@ async function handleRequest(
 				source: (body.source as string) ?? "",
 				type: (body.type as string) ?? "",
 				specversion: (body.specversion as string) ?? "1.0",
-				datacontenttype:
-					(body.datacontenttype as string) ?? "application/json",
+				datacontenttype: (body.datacontenttype as string) ?? "application/json",
 				data: (body.data as Record<string, unknown>) ?? {},
 			});
 		} catch {
@@ -183,7 +188,7 @@ async function handleRequest(
 
 			console.log(
 				`[mastra-mcp] /run invoked: agentWorkflowId=${agentWorkflowId}, ` +
-				`parentExecutionId=${parentExecutionId}, nodeId=${nodeId}`,
+					`parentExecutionId=${parentExecutionId}, nodeId=${nodeId}`,
 			);
 
 			// Return immediately, run agent asynchronously
@@ -201,7 +206,10 @@ async function handleRequest(
 						success: true,
 						result: {
 							text: result.text,
-							toolCalls: result.toolCalls as unknown as Record<string, unknown>[],
+							toolCalls: result.toolCalls as unknown as Record<
+								string,
+								unknown
+							>[],
 							usage: result.usage as unknown as Record<string, unknown>,
 						},
 					});
@@ -350,9 +358,7 @@ async function main(): Promise<void> {
 	});
 
 	httpServer.listen(PORT, HOST, () => {
-		console.log(
-			`[mastra-mcp] mastra-agent-mcp listening on ${HOST}:${PORT}`,
-		);
+		console.log(`[mastra-mcp] mastra-agent-mcp listening on ${HOST}:${PORT}`);
 		console.log(
 			`[mastra-mcp] Registered ${registeredTools.length} tools: ${registeredTools.map((t) => t.name).join(", ")}`,
 		);

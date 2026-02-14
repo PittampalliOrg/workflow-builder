@@ -60,6 +60,9 @@ from activities.log_node_execution import log_node_start, log_node_complete
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
 
+# OpenTelemetry
+from tracing import setup_tracing, inject_current_context
+
 # Configuration from centralized config module
 PORT = config.PORT
 HOST = config.HOST
@@ -84,6 +87,9 @@ async def lifespan(app: FastAPI):
     """
     logger.info("=== Workflow Orchestrator Service (Python) ===")
     logger.info(f"Log Level: {LOG_LEVEL}")
+
+    # Initialize OpenTelemetry (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
+    setup_tracing("workflow-orchestrator", app)
 
     # Register activities
     wfr.register_activity(execute_action)
@@ -249,6 +255,7 @@ class WorkflowStatusResponse(BaseModel):
     instanceId: str
     workflowId: str
     runtimeStatus: str
+    traceId: str | None = None
     phase: str | None = None
     progress: int = 0
     message: str | None = None
@@ -417,6 +424,7 @@ def start_workflow(request: StartWorkflowRequest):
             "integrations": integrations,
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
+            "_otel": inject_current_context(),
         }
 
         # Generate a unique instance ID
@@ -507,6 +515,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "nodeConnectionMap": request.nodeConnectionMap,
+            "_otel": inject_current_context(),
         }
 
         import time
@@ -646,6 +655,7 @@ def get_workflow_status(instance_id: str):
         current_node_id = None
         current_node_name = None
         approval_event_name = None
+        trace_id = None
         outputs = None
         error = None
         started_at = None
@@ -668,6 +678,7 @@ def get_workflow_status(instance_id: str):
                             current_node_id = parsed.get("currentNodeId")
                             current_node_name = parsed.get("currentNodeName")
                             approval_event_name = parsed.get("approvalEventName")
+                            trace_id = parsed.get("traceId") or parsed.get("trace_id")
                     except (json.JSONDecodeError, TypeError):
                         pass
 
@@ -707,6 +718,7 @@ def get_workflow_status(instance_id: str):
             instanceId=instance_id,
             workflowId=instance_id.split("-")[0],
             runtimeStatus=runtime_status,
+            traceId=trace_id,
             phase=phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
             progress=progress,
             message=message,

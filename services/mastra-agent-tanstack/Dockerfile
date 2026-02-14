@@ -5,14 +5,14 @@ FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install --legacy-peer-deps
+RUN npm install -g pnpm && pnpm install
 
 COPY . ./
 
 ENV NODE_ENV=production
 
 # Build UI single-file HTML then TanStack Start app (Nitro output)
-RUN npm run build
+RUN pnpm run build
 
 # Stage 2: Runner
 FROM node:22-alpine AS runner

@@ -16,10 +16,12 @@ import json
 import logging
 import os
 import time
+from typing import Any
 
 import httpx
 
 from core.config import config
+from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -159,74 +161,88 @@ def call_planner_clone(ctx, input_data: dict) -> dict:
     token = input_data.get("token", "")
     connection_external_id = input_data.get("connection_external_id", "")
     execution_id = input_data.get("execution_id", "")
+    otel = input_data.get("_otel") or {}
 
-    if not owner or not repo:
-        return {
-            "success": False,
-            "error": "Both 'owner' and 'repo' are required for cloning",
-        }
+    attrs = {
+        "workflow.instance_id": execution_id,
+        "action.type": "planner/clone",
+        "repo.owner": owner,
+        "repo.name": repo,
+        "repo.branch": branch,
+    }
 
-    token_source = "config/integrations" if token else "none"
+    with start_activity_span("activity.call_planner_clone", otel, attrs):
+        if not owner or not repo:
+            return {
+                "success": False,
+                "error": "Both 'owner' and 'repo' are required for cloning",
+            }
 
-    # Fallback: resolve token from selected node connection
-    if not token and connection_external_id:
-        token = _fetch_github_token_from_connection(connection_external_id)
-        if token:
-            token_source = "selected-connection"
+        token_source = "config/integrations" if token else "none"
 
-    # Fallback: try Dapr secret store if no token from config/connection
-    if not token:
-        token = _fetch_github_token_from_dapr()
-        if token:
-            token_source = "dapr-secrets"
+        # Fallback: resolve token from selected node connection
+        if not token and connection_external_id:
+            token = _fetch_github_token_from_connection(connection_external_id)
+            if token:
+                token_source = "selected-connection"
 
-    logger.info(f"[Call Planner Clone] Cloning {owner}/{repo}@{branch} (token source: {token_source})")
+        # Fallback: try Dapr secret store if no token from config/connection
+        if not token:
+            token = _fetch_github_token_from_dapr()
+            if token:
+                token_source = "dapr-secrets"
 
-    try:
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/clone"
+        logger.info(
+            f"[Call Planner Clone] Cloning {owner}/{repo}@{branch} (token source: {token_source})"
+        )
 
-        payload = {
-            "owner": owner,
-            "repo": repo,
-            "branch": branch,
-            "token": token,
-            "execution_id": execution_id,
-        }
+        try:
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/clone"
 
-        with httpx.Client(timeout=600.0) as client:  # 10 min timeout for large repos
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
+            payload = {
+                "owner": owner,
+                "repo": repo,
+                "branch": branch,
+                "token": token,
+                "execution_id": execution_id,
+            }
 
-            if response.status_code >= 400:
-                error_text = response.text
-                logger.error(f"[Call Planner Clone] Failed: {response.status_code} - {error_text}")
-                return {
-                    "success": False,
-                    "error": f"Clone failed: {response.status_code} - {error_text}",
-                }
+            with httpx.Client(timeout=600.0) as client:  # 10 min timeout for large repos
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
 
-            result = response.json()
-            logger.info(
-                f"[Call Planner Clone] Success: path={result.get('clonePath')}, "
-                f"files={result.get('file_count')}"
-            )
-            return result
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(
+                        f"[Call Planner Clone] Failed: {response.status_code} - {error_text}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Clone failed: {response.status_code} - {error_text}",
+                    }
 
-    except httpx.TimeoutException as e:
-        logger.error(f"[Call Planner Clone] Timeout: {e}")
-        return {
-            "success": False,
-            "error": f"Clone timed out: {e}",
-        }
-    except Exception as e:
-        logger.error(f"[Call Planner Clone] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Clone failed: {e}",
-        }
+                result = response.json()
+                logger.info(
+                    f"[Call Planner Clone] Success: path={result.get('clonePath')}, "
+                    f"files={result.get('file_count')}"
+                )
+                return result
+
+        except httpx.TimeoutException as e:
+            logger.error(f"[Call Planner Clone] Timeout: {e}")
+            return {
+                "success": False,
+                "error": f"Clone timed out: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[Call Planner Clone] Error: {e}")
+            return {
+                "success": False,
+                "error": f"Clone failed: {e}",
+            }
 
 
 def call_planner_plan(ctx, input_data: dict) -> dict:
@@ -255,6 +271,7 @@ def call_planner_plan(ctx, input_data: dict) -> dict:
     cwd = input_data.get("cwd", "/workspace")
     repo_url = input_data.get("repo_url", "")
     parent_execution_id = input_data.get("parent_execution_id")
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Call Planner Plan] Invoking planner-dapr-agent /plan")
     logger.info(f"[Call Planner Plan] Task: {feature_request[:100]}...")
@@ -262,53 +279,67 @@ def call_planner_plan(ctx, input_data: dict) -> dict:
     if parent_execution_id:
         logger.info(f"[Call Planner Plan] Parent execution ID: {parent_execution_id}")
 
-    try:
-        # Try standalone /plan endpoint first (synchronous, supports cwd)
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/plan"
+    attrs = {
+        "workflow.instance_id": workflow_id,
+        "action.type": "planner/plan",
+        "repo.url": repo_url,
+        "cwd": cwd,
+    }
 
-        payload = {
-            "task": feature_request,
-            "cwd": cwd,
-            "workflow_id": workflow_id,
-        }
+    with start_activity_span("activity.call_planner_plan", otel, attrs):
+        try:
+            # Try standalone /plan endpoint first (synchronous, supports cwd)
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/plan"
 
-        with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for planning
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-
-            # If /plan endpoint exists and succeeded
-            if response.status_code < 400:
-                result = response.json()
-                logger.info(f"[Call Planner Plan] Standalone plan completed: success={result.get('success')}")
-                return result
-
-            # If /plan doesn't exist (404), fall back to /run + polling
-            if response.status_code == 404:
-                logger.info("[Call Planner Plan] /plan not found, falling back to /run")
-                return _call_planner_plan_via_run(client, feature_request, parent_execution_id)
-
-            error_text = response.text
-            logger.error(f"[Call Planner Plan] Failed: {response.status_code} - {error_text}")
-            return {
-                "success": False,
-                "error": f"Planner plan failed: {response.status_code} - {error_text}",
+            payload = {
+                "task": feature_request,
+                "cwd": cwd,
+                "workflow_id": workflow_id,
             }
 
-    except httpx.TimeoutException as e:
-        logger.error(f"[Call Planner Plan] Timeout: {e}")
-        return {
-            "success": False,
-            "error": f"Planner plan timed out: {e}",
-        }
-    except Exception as e:
-        logger.error(f"[Call Planner Plan] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Planner plan failed: {e}",
-        }
+            with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for planning
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                # If /plan endpoint exists and succeeded
+                if response.status_code < 400:
+                    result = response.json()
+                    logger.info(
+                        f"[Call Planner Plan] Standalone plan completed: success={result.get('success')}"
+                    )
+                    return result
+
+                # If /plan doesn't exist (404), fall back to /run + polling
+                if response.status_code == 404:
+                    logger.info("[Call Planner Plan] /plan not found, falling back to /run")
+                    return _call_planner_plan_via_run(
+                        client, feature_request, parent_execution_id
+                    )
+
+                error_text = response.text
+                logger.error(
+                    f"[Call Planner Plan] Failed: {response.status_code} - {error_text}"
+                )
+                return {
+                    "success": False,
+                    "error": f"Planner plan failed: {response.status_code} - {error_text}",
+                }
+
+        except httpx.TimeoutException as e:
+            logger.error(f"[Call Planner Plan] Timeout: {e}")
+            return {
+                "success": False,
+                "error": f"Planner plan timed out: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[Call Planner Plan] Error: {e}")
+            return {
+                "success": False,
+                "error": f"Planner plan failed: {e}",
+            }
 
 
 def _call_planner_plan_via_run(client: httpx.Client, feature_request: str, parent_execution_id: str | None) -> dict:
@@ -361,6 +392,15 @@ def call_planner_workflow(ctx, input_data: dict) -> dict:
     repo_url = input_data.get("repo_url", "")
     auto_approve = input_data.get("auto_approve", False)
     parent_execution_id = input_data.get("parent_execution_id")
+    otel = input_data.get("_otel") or {}
+
+    attrs = {
+        "workflow.instance_id": workflow_id,
+        "action.type": "planner/run-workflow",
+        "cwd": cwd,
+        "repo.url": repo_url,
+        "auto_approve": bool(auto_approve),
+    }
 
     logger.info(f"[Call Planner Workflow] Invoking planner-dapr-agent /run")
     logger.info(f"[Call Planner Workflow] Task: {feature_request[:100]}...")
@@ -369,45 +409,46 @@ def call_planner_workflow(ctx, input_data: dict) -> dict:
         logger.info(f"[Call Planner Workflow] Parent execution ID: {parent_execution_id}")
 
     try:
-        # Dapr service invocation URL - calls planner-dapr-agent /run endpoint
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/run"
+        with start_activity_span("activity.call_planner_workflow", otel, attrs):
+            # Dapr service invocation URL - calls planner-dapr-agent /run endpoint
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/run"
 
-        payload = {
-            "task": feature_request,  # /run expects 'task' field
-            "mode": "standard",  # Use standard mode (most reliable)
-        }
+            payload = {
+                "task": feature_request,  # /run expects 'task' field
+                "mode": "standard",  # Use standard mode (most reliable)
+            }
 
-        with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for full workflow
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
+            with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for full workflow
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
 
-            if response.status_code >= 400:
-                error_text = response.text
-                logger.error(f"[Call Planner Workflow] Failed: {response.status_code} - {error_text}")
-                return {
-                    "success": False,
-                    "error": f"Planner workflow failed: {response.status_code} - {error_text}",
-                }
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(f"[Call Planner Workflow] Failed: {response.status_code} - {error_text}")
+                    return {
+                        "success": False,
+                        "error": f"Planner workflow failed: {response.status_code} - {error_text}",
+                    }
 
-            result = response.json()
-            planner_workflow_id = result.get("workflow_id", "")
-            logger.info(f"[Call Planner Workflow] Started workflow: {planner_workflow_id}")
+                result = response.json()
+                planner_workflow_id = result.get("workflow_id", "")
+                logger.info(f"[Call Planner Workflow] Started workflow: {planner_workflow_id}")
 
-            # If auto_approve is False, we need to handle approval externally
-            if not auto_approve:
-                return {
-                    "success": True,
-                    "workflow_id": planner_workflow_id,
-                    "status": result.get("status", "started"),
-                    "requires_approval": True,
-                    "message": "Workflow started. Waiting for plan approval.",
-                }
+                # If auto_approve is False, we need to handle approval externally
+                if not auto_approve:
+                    return {
+                        "success": True,
+                        "workflow_id": planner_workflow_id,
+                        "status": result.get("status", "started"),
+                        "requires_approval": True,
+                        "message": "Workflow started. Waiting for plan approval.",
+                    }
 
-            # If auto_approve, poll for completion
-            return _poll_workflow_completion(client, planner_workflow_id, timeout=1800)
+                # If auto_approve, poll for completion
+                return _poll_workflow_completion(client, planner_workflow_id, timeout=1800)
 
     except httpx.TimeoutException as e:
         logger.error(f"[Call Planner Workflow] Timeout: {e}")
@@ -439,7 +480,7 @@ def call_planner_execute(ctx, input_data: dict) -> dict:
         Result from planner execution
     """
     planner_workflow_id = input_data.get("planner_workflow_id", "")
-    tasks = input_data.get("tasks", [])
+    otel = input_data.get("_otel") or {}
 
     if not planner_workflow_id:
         return {
@@ -449,43 +490,53 @@ def call_planner_execute(ctx, input_data: dict) -> dict:
 
     logger.info(f"[Call Planner Execute] Continuing workflow: {planner_workflow_id}")
 
-    try:
-        # Dapr service invocation URL
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/continue/{planner_workflow_id}"
+    attrs = {
+        "action.type": "planner/execute",
+        "planner.workflow_id": planner_workflow_id,
+    }
 
-        with httpx.Client(timeout=600.0) as client:  # 10 min timeout for execution
-            response = client.post(
-                url,
-                json={},
-                headers={"Content-Type": "application/json"},
+    with start_activity_span("activity.call_planner_execute", otel, attrs):
+        try:
+            # Dapr service invocation URL
+            url = (
+                f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+                f"{PLANNER_APP_ID}/method/continue/{planner_workflow_id}"
             )
 
-            if response.status_code >= 400:
-                error_text = response.text
-                logger.error(f"[Call Planner Execute] Failed: {response.status_code} - {error_text}")
-                return {
-                    "success": False,
-                    "error": f"Planner execute failed: {response.status_code} - {error_text}",
-                }
+            with httpx.Client(timeout=600.0) as client:  # 10 min timeout for execution
+                response = client.post(
+                    url,
+                    json={},
+                    headers={"Content-Type": "application/json"},
+                )
 
-            result = response.json()
-            logger.info(f"[Call Planner Execute] Continued workflow")
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(
+                        f"[Call Planner Execute] Failed: {response.status_code} - {error_text}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Planner execute failed: {response.status_code} - {error_text}",
+                    }
 
-            # Poll for completion
-            return _poll_workflow_completion(client, planner_workflow_id, timeout=600)
+                logger.info("[Call Planner Execute] Continued workflow")
 
-    except httpx.TimeoutException as e:
-        logger.error(f"[Call Planner Execute] Timeout: {e}")
-        return {
-            "success": False,
-            "error": f"Planner execute timed out: {e}",
-        }
-    except Exception as e:
-        logger.error(f"[Call Planner Execute] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Planner execute failed: {e}",
-        }
+                # Poll for completion
+                return _poll_workflow_completion(client, planner_workflow_id, timeout=600)
+
+        except httpx.TimeoutException as e:
+            logger.error(f"[Call Planner Execute] Timeout: {e}")
+            return {
+                "success": False,
+                "error": f"Planner execute timed out: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[Call Planner Execute] Error: {e}")
+            return {
+                "success": False,
+                "error": f"Planner execute failed: {e}",
+            }
 
 
 def call_planner_approve(ctx, input_data: dict) -> dict:
@@ -505,6 +556,7 @@ def call_planner_approve(ctx, input_data: dict) -> dict:
     planner_workflow_id = input_data.get("planner_workflow_id", "")
     approved = input_data.get("approved", True)
     reason = input_data.get("reason", "")
+    otel = input_data.get("_otel") or {}
 
     if not planner_workflow_id:
         return {
@@ -512,48 +564,58 @@ def call_planner_approve(ctx, input_data: dict) -> dict:
             "error": "planner_workflow_id is required for approval",
         }
 
-    logger.info(f"[Call Planner Approve] {'Approving' if approved else 'Rejecting'} workflow: {planner_workflow_id}")
+    logger.info(
+        f"[Call Planner Approve] {'Approving' if approved else 'Rejecting'} workflow: {planner_workflow_id}"
+    )
 
-    try:
-        # Dapr service invocation URL
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/workflow/{planner_workflow_id}/approve"
+    attrs = {
+        "action.type": "planner/approve",
+        "planner.workflow_id": planner_workflow_id,
+        "planner.approved": bool(approved),
+    }
 
-        payload = {
-            "approved": approved,
-        }
-        if reason:
-            payload["reason"] = reason
-
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
+    with start_activity_span("activity.call_planner_approve", otel, attrs):
+        try:
+            # Dapr service invocation URL
+            url = (
+                f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}"
+                f"/method/workflow/{planner_workflow_id}/approve"
             )
 
-            if response.status_code >= 400:
-                error_text = response.text
-                logger.error(f"[Call Planner Approve] Failed: {response.status_code} - {error_text}")
+            payload: dict[str, Any] = {"approved": approved}
+            if reason:
+                payload["reason"] = reason
+
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(
+                        f"[Call Planner Approve] Failed: {response.status_code} - {error_text}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Planner approve failed: {response.status_code} - {error_text}",
+                    }
+
+                logger.info(f"[Call Planner Approve] Success: approved={approved}")
                 return {
-                    "success": False,
-                    "error": f"Planner approve failed: {response.status_code} - {error_text}",
+                    "success": True,
+                    "approved": approved,
+                    "workflow_id": planner_workflow_id,
                 }
 
-            result = response.json()
-            logger.info(f"[Call Planner Approve] Success: approved={approved}")
-
+        except Exception as e:
+            logger.error(f"[Call Planner Approve] Error: {e}")
             return {
-                "success": True,
-                "approved": approved,
-                "workflow_id": planner_workflow_id,
+                "success": False,
+                "error": f"Planner approve failed: {e}",
             }
-
-    except Exception as e:
-        logger.error(f"[Call Planner Approve] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Planner approve failed: {e}",
-        }
 
 
 def call_planner_execute_standalone(ctx, input_data: dict) -> dict:
@@ -577,51 +639,63 @@ def call_planner_execute_standalone(ctx, input_data: dict) -> dict:
     plan = input_data.get("plan", {})
     cwd = input_data.get("cwd", "/workspace")
     workflow_id = input_data.get("workflow_id", "")
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Call Planner Execute] Invoking planner-dapr-agent /execute")
     logger.info(f"[Call Planner Execute] Tasks: {len(tasks)}, cwd: {cwd}")
 
-    try:
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/execute"
+    attrs = {
+        "workflow.instance_id": workflow_id,
+        "action.type": "planner/execute-standalone",
+        "cwd": cwd,
+    }
 
-        payload = {
-            "tasks": tasks,
-            "plan": plan,
-            "cwd": cwd,
-            "workflow_id": workflow_id,
-        }
+    with start_activity_span("activity.call_planner_execute_standalone", otel, attrs):
+        try:
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/execute"
 
-        with httpx.Client(timeout=7200.0) as client:  # 2 hour timeout for execution
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
-            )
-
-            if response.status_code < 400:
-                result = response.json()
-                logger.info(f"[Call Planner Execute] Completed: success={result.get('success')}")
-                return result
-
-            error_text = response.text
-            logger.error(f"[Call Planner Execute] Failed: {response.status_code} - {error_text}")
-            return {
-                "success": False,
-                "error": f"Planner execute failed: {response.status_code} - {error_text}",
+            payload = {
+                "tasks": tasks,
+                "plan": plan,
+                "cwd": cwd,
+                "workflow_id": workflow_id,
             }
 
-    except httpx.TimeoutException as e:
-        logger.error(f"[Call Planner Execute] Timeout: {e}")
-        return {
-            "success": False,
-            "error": f"Planner execute timed out: {e}",
-        }
-    except Exception as e:
-        logger.error(f"[Call Planner Execute] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Planner execute failed: {e}",
-        }
+            with httpx.Client(timeout=7200.0) as client:  # 2 hour timeout for execution
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                if response.status_code < 400:
+                    result = response.json()
+                    logger.info(
+                        f"[Call Planner Execute] Completed: success={result.get('success')}"
+                    )
+                    return result
+
+                error_text = response.text
+                logger.error(
+                    f"[Call Planner Execute] Failed: {response.status_code} - {error_text}"
+                )
+                return {
+                    "success": False,
+                    "error": f"Planner execute failed: {response.status_code} - {error_text}",
+                }
+
+        except httpx.TimeoutException as e:
+            logger.error(f"[Call Planner Execute] Timeout: {e}")
+            return {
+                "success": False,
+                "error": f"Planner execute timed out: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[Call Planner Execute] Error: {e}")
+            return {
+                "success": False,
+                "error": f"Planner execute failed: {e}",
+            }
 
 
 def call_planner_status(ctx, input_data: dict) -> dict:
@@ -636,6 +710,7 @@ def call_planner_status(ctx, input_data: dict) -> dict:
         Workflow status and details
     """
     planner_workflow_id = input_data.get("planner_workflow_id", "")
+    otel = input_data.get("_otel") or {}
 
     if not planner_workflow_id:
         return {
@@ -643,31 +718,37 @@ def call_planner_status(ctx, input_data: dict) -> dict:
             "error": "planner_workflow_id is required",
         }
 
-    try:
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/workflows/{planner_workflow_id}"
+    attrs = {
+        "action.type": "planner/status",
+        "planner.workflow_id": planner_workflow_id,
+    }
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(url)
+    with start_activity_span("activity.call_planner_status", otel, attrs):
+        try:
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/workflows/{planner_workflow_id}"
 
-            if response.status_code >= 400:
-                error_text = response.text
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(url)
+
+                if response.status_code >= 400:
+                    error_text = response.text
+                    return {
+                        "success": False,
+                        "error": f"Failed to get status: {response.status_code} - {error_text}",
+                    }
+
+                result = response.json()
                 return {
-                    "success": False,
-                    "error": f"Failed to get status: {response.status_code} - {error_text}",
+                    "success": True,
+                    **result,
                 }
 
-            result = response.json()
+        except Exception as e:
+            logger.error(f"[Call Planner Status] Error: {e}")
             return {
-                "success": True,
-                **result,
+                "success": False,
+                "error": f"Failed to get status: {e}",
             }
-
-    except Exception as e:
-        logger.error(f"[Call Planner Status] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Failed to get status: {e}",
-        }
 
 
 def call_planner_multi_step(ctx, input_data: dict) -> dict:
@@ -705,12 +786,15 @@ def call_planner_multi_step(ctx, input_data: dict) -> dict:
     repository = input_data.get("repository")
     connection_external_id = input_data.get("connection_external_id", "")
     parent_execution_id = input_data.get("parent_execution_id")
+    otel = input_data.get("_otel") or {}
 
-    logger.info(f"[Call Planner Multi-Step] Invoking planner-dapr-agent /workflow/dapr")
+    logger.info("[Call Planner Multi-Step] Invoking planner-dapr-agent /workflow/dapr")
     logger.info(f"[Call Planner Multi-Step] Task: {feature_request[:100]}...")
     logger.info(f"[Call Planner Multi-Step] Model: {model}, auto_approve: {auto_approve}")
-    if repository:
-        logger.info(f"[Call Planner Multi-Step] Repository: {repository.get('owner')}/{repository.get('repo')}")
+    if isinstance(repository, dict):
+        logger.info(
+            f"[Call Planner Multi-Step] Repository: {repository.get('owner')}/{repository.get('repo')}"
+        )
     if parent_execution_id:
         logger.info(f"[Call Planner Multi-Step] Parent execution ID: {parent_execution_id}")
 
@@ -733,68 +817,76 @@ def call_planner_multi_step(ctx, input_data: dict) -> dict:
 
         if repo_token:
             repo_payload["token"] = repo_token
-        logger.info(
-            f"[Call Planner Multi-Step] Repository token source: {token_source}"
-        )
 
-    try:
-        # Dapr service invocation URL - calls planner-dapr-agent /workflow/dapr endpoint
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{PLANNER_APP_ID}/method/workflow/dapr"
+        logger.info(f"[Call Planner Multi-Step] Repository token source: {token_source}")
 
-        payload = {
-            "task": feature_request,
-            "model": model,
-            "max_turns": max_turns,
-            "max_test_retries": max_test_retries,
-            "auto_approve": auto_approve,
-        }
+    attrs = {
+        "workflow.instance_id": workflow_id,
+        "action.type": "planner/multi-step",
+        "model": model,
+        "auto_approve": bool(auto_approve),
+    }
 
-        # Include repository config only when owner and repo are both provided
-        if (
-            isinstance(repo_payload, dict)
-            and repo_payload.get("owner")
-            and repo_payload.get("repo")
-        ):
-            payload["repository"] = repo_payload
-
-        # Include parent_execution_id for event routing back to parent workflow
-        if parent_execution_id:
-            payload["parent_execution_id"] = parent_execution_id
-
-        with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for full workflow
-            response = client.post(
-                url,
-                json=payload,
-                headers={"Content-Type": "application/json"},
+    with start_activity_span("activity.call_planner_multi_step", otel, attrs):
+        try:
+            url = (
+                f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+                f"{PLANNER_APP_ID}/method/workflow/dapr"
             )
 
-            if response.status_code >= 400:
-                error_text = response.text
-                logger.error(f"[Call Planner Multi-Step] Failed: {response.status_code} - {error_text}")
-                return {
-                    "success": False,
-                    "error": f"Planner multi-step failed: {response.status_code} - {error_text}",
-                }
+            payload: dict[str, Any] = {
+                "task": feature_request,
+                "model": model,
+                "max_turns": max_turns,
+                "max_test_retries": max_test_retries,
+                "auto_approve": auto_approve,
+            }
 
-            result = response.json()
-            planner_workflow_id = result.get("workflow_id", result.get("instance_id", ""))
-            logger.info(f"[Call Planner Multi-Step] Started workflow: {planner_workflow_id}")
+            if (
+                isinstance(repo_payload, dict)
+                and repo_payload.get("owner")
+                and repo_payload.get("repo")
+            ):
+                payload["repository"] = repo_payload
 
-            # Poll for completion (full workflow may take a while)
-            return _poll_workflow_completion(client, planner_workflow_id, timeout=1800)
+            if parent_execution_id:
+                payload["parent_execution_id"] = parent_execution_id
 
-    except httpx.TimeoutException as e:
-        logger.error(f"[Call Planner Multi-Step] Timeout: {e}")
-        return {
-            "success": False,
-            "error": f"Planner multi-step timed out: {e}",
-        }
-    except Exception as e:
-        logger.error(f"[Call Planner Multi-Step] Error: {e}")
-        return {
-            "success": False,
-            "error": f"Planner multi-step failed: {e}",
-        }
+            with httpx.Client(timeout=1800.0) as client:  # 30 min timeout for full workflow
+                response = client.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+
+                if response.status_code >= 400:
+                    error_text = response.text
+                    logger.error(
+                        f"[Call Planner Multi-Step] Failed: {response.status_code} - {error_text}"
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Planner multi-step failed: {response.status_code} - {error_text}",
+                    }
+
+                result = response.json()
+                planner_workflow_id = result.get("workflow_id", result.get("instance_id", ""))
+                logger.info(f"[Call Planner Multi-Step] Started workflow: {planner_workflow_id}")
+
+                return _poll_workflow_completion(client, planner_workflow_id, timeout=1800)
+
+        except httpx.TimeoutException as e:
+            logger.error(f"[Call Planner Multi-Step] Timeout: {e}")
+            return {
+                "success": False,
+                "error": f"Planner multi-step timed out: {e}",
+            }
+        except Exception as e:
+            logger.error(f"[Call Planner Multi-Step] Error: {e}")
+            return {
+                "success": False,
+                "error": f"Planner multi-step failed: {e}",
+            }
 
 
 def _poll_workflow_completion(client: httpx.Client, instance_id: str, timeout: int = 300) -> dict:

@@ -5,21 +5,21 @@ FROM node:22-alpine AS deps
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install --omit=dev
+RUN npm install -g pnpm && pnpm install --prod
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package.json ./
-RUN npm install
+RUN npm install -g pnpm && pnpm install
 
 COPY . ./
 
 ENV NODE_ENV=production
 
 # Build UI bundles (Vite single-file HTML) then server (esbuild)
-RUN npm run build:all
+RUN pnpm run build:all
 
 # Stage 3: Runner
 FROM node:22-alpine AS runner

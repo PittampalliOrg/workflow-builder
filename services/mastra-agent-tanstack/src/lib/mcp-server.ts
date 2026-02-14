@@ -52,10 +52,14 @@ function getUiHtml(): string | null {
 	const htmlPath = resolveUiHtml();
 	if (htmlPath) {
 		_cachedUiHtml = fs.readFileSync(htmlPath, "utf-8");
-		console.log(`[mastra-tanstack] UI resource loaded from: ${htmlPath} (${(_cachedUiHtml.length / 1024).toFixed(0)}KB, cached globally)`);
+		console.log(
+			`[mastra-tanstack] UI resource loaded from: ${htmlPath} (${(_cachedUiHtml.length / 1024).toFixed(0)}KB, cached globally)`,
+		);
 	} else {
 		_cachedUiHtml = null;
-		console.warn("[mastra-tanstack] UI HTML not found — tools will work without interactive UI");
+		console.warn(
+			"[mastra-tanstack] UI HTML not found — tools will work without interactive UI",
+		);
 	}
 	return _cachedUiHtml;
 }
@@ -223,7 +227,10 @@ export function createMcpServer(): Server {
 					.default("yptntuid5sk3cqjymg8kw")
 					.describe("Workflow database ID"),
 				prompt: z.string().describe("The prompt/instructions for the workflow"),
-				repo_owner: z.string().optional().describe("Repository owner (GitHub org/user)"),
+				repo_owner: z
+					.string()
+					.optional()
+					.describe("Repository owner (GitHub org/user)"),
 				repo_name: z.string().optional().describe("Repository name"),
 				branch: z.string().optional().default("main").describe("Git branch"),
 			},
@@ -259,7 +266,9 @@ export function createMcpServer(): Server {
 
 				if (!resp.ok) {
 					const errText = await resp.text();
-					return errorResult(`Workflow execution failed (${resp.status}): ${errText}`);
+					return errorResult(
+						`Workflow execution failed (${resp.status}): ${errText}`,
+					);
 				}
 
 				const result = await resp.json();
@@ -267,8 +276,9 @@ export function createMcpServer(): Server {
 				// Set workflow context on eventBus for monitoring
 				eventBus.setWorkflowContext({
 					workflowId: args.workflowId,
-					instanceId: result.instanceId,
-					status: result.status,
+					instanceId: (result.instanceId as string) ?? null,
+					status: (result.status as string) ?? null,
+					traceId: (result.traceId as string) ?? null,
 				});
 
 				return textResult(result);
@@ -303,7 +313,9 @@ export function createMcpServer(): Server {
 
 				if (!resp.ok) {
 					const errText = await resp.text();
-					return errorResult(`Status check failed (${resp.status}): ${errText}`);
+					return errorResult(
+						`Status check failed (${resp.status}): ${errText}`,
+					);
 				}
 
 				const result = await resp.json();
@@ -323,9 +335,14 @@ export function createMcpServer(): Server {
 				"Approve or reject a workflow that is waiting at an approval gate. Raises the named external event.",
 			inputSchema: {
 				instanceId: z.string().describe("The Dapr workflow instance ID"),
-				eventName: z.string().describe("The approval event name (from status.approvalEventName)"),
+				eventName: z
+					.string()
+					.describe("The approval event name (from status.approvalEventName)"),
 				approved: z.boolean().describe("true to approve, false to reject"),
-				reason: z.string().optional().describe("Optional reason for approval/rejection"),
+				reason: z
+					.string()
+					.optional()
+					.describe("Optional reason for approval/rejection"),
 			},
 			_meta: uiMeta,
 		},

@@ -107,11 +107,10 @@ const replyToMcpClient = createAction({
 });
 
 export const mcp = createPiece({
-	name: "mcp",
 	displayName: "MCP",
 	description: "Hosted MCP server utilities",
 	logoUrl: "",
-	version: "0.1.0",
+	authors: ["workflow-builder"],
 	auth: PieceAuth.None(),
 	actions: [replyToMcpClient],
 	triggers: [],

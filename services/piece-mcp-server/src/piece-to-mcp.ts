@@ -133,7 +133,10 @@ export function registerPieceTools(
 			: displayName;
 
 		// Convert props to JSON Schema
-		const props = (actionDef.props ?? {}) as Record<string, Record<string, unknown>>;
+		const props = (actionDef.props ?? {}) as Record<
+			string,
+			Record<string, unknown>
+		>;
 		const inputSchema = actionPropsToSchema(props);
 
 		toolDefs.push({
@@ -175,7 +178,7 @@ export function registerPieceTools(
 
 		try {
 			// Resolve auth if needed
-			let auth: unknown = undefined;
+			let auth: unknown;
 			if (requireAuth) {
 				auth = await resolveAuth();
 				if (auth == null) {
@@ -212,16 +215,13 @@ export function registerPieceTools(
 
 			// Format result as MCP text content
 			const resultText =
-				typeof result === "string"
-					? result
-					: JSON.stringify(result, null, 2);
+				typeof result === "string" ? result : JSON.stringify(result, null, 2);
 
 			return {
 				content: [{ type: "text" as const, text: resultText }],
 			};
 		} catch (error) {
-			const message =
-				error instanceof Error ? error.message : String(error);
+			const message = error instanceof Error ? error.message : String(error);
 			console.error(`[piece-mcp] Tool "${name}" failed:`, error);
 			return {
 				content: [
@@ -289,7 +289,10 @@ export function registerPieceToolsWithUI(
 			: displayName;
 
 		// Convert props to JSON Schema, then to Zod shape
-		const props = (actionDef.props ?? {}) as Record<string, Record<string, unknown>>;
+		const props = (actionDef.props ?? {}) as Record<
+			string,
+			Record<string, unknown>
+		>;
 		const jsonSchema = actionPropsToSchema(props);
 		const zodShape = jsonSchemaToZodShape(jsonSchema);
 
@@ -300,19 +303,20 @@ export function registerPieceToolsWithUI(
 			"ui/resourceUri": resourceUri,
 		};
 
-		server.registerTool(
+		(server as any).registerTool(
 			actionKey,
 			{
 				title: displayName,
 				description,
-				inputSchema: zodShape,
+				// Avoid pathological type instantiation in the MCP SDK generics.
+				inputSchema: zodShape as any,
 				_meta: uiMeta,
-			},
+			} as any,
 			async (args: Record<string, unknown>) => {
 				const requireAuth = actionDef.requireAuth !== false;
 
 				try {
-					let auth: unknown = undefined;
+					let auth: unknown;
 					if (requireAuth) {
 						auth = await resolveAuth();
 						if (auth == null) {

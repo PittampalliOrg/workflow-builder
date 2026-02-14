@@ -2230,8 +2230,10 @@ async def lifespan(app: FastAPI):
     # Initialize OpenTelemetry tracing with OpenInference instrumentation (optional)
     try:
         from tracing import setup_tracing
+
         tracer = setup_tracing(
             project_name="planner-dapr-agent",
+            app=app,
             enable_openai_instrumentation=True,
             trace_include_sensitive_data=True,
         )

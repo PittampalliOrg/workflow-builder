@@ -12,6 +12,7 @@ import logging
 import httpx
 
 from core.config import config
+from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -45,18 +46,27 @@ def call_agent_run(ctx, input_data: dict) -> dict:
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
         f"{PLANNER_APP_ID}/method/workflow-builder/agent/dapr"
     )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "agent/run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
 
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url, json=input_data)
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                return {"success": False, "error": "Invalid response from agent service"}
-            return data
-    except Exception as e:
-        logger.error(f"[Call Agent Run] Failed: {e}")
-        return {"success": False, "error": str(e)}
+    with start_activity_span("activity.call_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, json=input_data)
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "error": "Invalid response from agent service"}
+                return data
+        except Exception as e:
+            logger.error(f"[Call Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
 
 
 def call_mastra_agent_run(ctx, input_data: dict) -> dict:
@@ -77,18 +87,27 @@ def call_mastra_agent_run(ctx, input_data: dict) -> dict:
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
         f"{MASTRA_AGENT_APP_ID}/method/api/run"
     )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "agent/mastra-run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
 
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url, json=input_data)
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                return {"success": False, "error": "Invalid response from mastra agent service"}
-            return data
-    except Exception as e:
-        logger.error(f"[Call Mastra Agent Run] Failed: {e}")
-        return {"success": False, "error": str(e)}
+    with start_activity_span("activity.call_mastra_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, json=input_data)
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "error": "Invalid response from mastra agent service"}
+                return data
+        except Exception as e:
+            logger.error(f"[Call Mastra Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
 
 
 def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
@@ -108,6 +127,14 @@ def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
         f"{MASTRA_AGENT_APP_ID}/method/api/execute-plan"
     )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "mastra/execute",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
 
     plan = input_data.get("planJson") or input_data.get("plan")
     if isinstance(plan, str):
@@ -117,22 +144,23 @@ def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
         except Exception:
             pass
 
-    try:
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.post(url, json={
-                "prompt": input_data.get("prompt", ""),
-                "plan": plan,
-                "cwd": input_data.get("cwd", ""),
-                "parentExecutionId": input_data.get("parentExecutionId", ""),
-                "workflowId": input_data.get("workflowId", ""),
-                "nodeId": input_data.get("nodeId", ""),
-                "nodeName": input_data.get("nodeName", ""),
-            })
-            resp.raise_for_status()
-            data = resp.json()
-            if not isinstance(data, dict):
-                return {"success": False, "error": "Invalid response"}
-            return data
-    except Exception as e:
-        logger.error(f"[Call Mastra Execute Plan] Failed: {e}")
-        return {"success": False, "error": str(e)}
+    with start_activity_span("activity.call_mastra_execute_plan", otel, attrs):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, json={
+                    "prompt": input_data.get("prompt", ""),
+                    "plan": plan,
+                    "cwd": input_data.get("cwd", ""),
+                    "parentExecutionId": input_data.get("parentExecutionId", ""),
+                    "workflowId": input_data.get("workflowId", ""),
+                    "nodeId": input_data.get("nodeId", ""),
+                    "nodeName": input_data.get("nodeName", ""),
+                })
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "error": "Invalid response"}
+                return data
+        except Exception as e:
+            logger.error(f"[Call Mastra Execute Plan] Failed: {e}")
+            return {"success": False, "error": str(e)}

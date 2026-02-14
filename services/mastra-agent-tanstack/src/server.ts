@@ -6,6 +6,7 @@
  * which doesn't have built-in API file routes.
  */
 
+import "./lib/otel";
 import { interceptConsole } from "./lib/event-bus";
 interceptConsole();
 
@@ -18,7 +19,10 @@ import { eventBus } from "./lib/event-bus";
 import { runAgent, initAgent, generatePlan, TOOL_NAMES } from "./lib/agent";
 import type { Plan } from "./lib/agent";
 import { executeTool, listTools } from "./lib/tool-executor";
-import { startDaprPublisher, publishCompletionEvent } from "./lib/dapr-publisher";
+import {
+	startDaprPublisher,
+	publishCompletionEvent,
+} from "./lib/dapr-publisher";
 import {
 	handleDaprSubscriptionEvent,
 	getDaprSubscriptions,
@@ -95,9 +99,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 			return Response.json({ success: true, toolId, result });
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
-			console.error(
-				`[mastra-tanstack] Tool ${toolId} failed: ${errorMsg}`,
-			);
+			console.error(`[mastra-tanstack] Tool ${toolId} failed: ${errorMsg}`);
 			return Response.json(
 				{ success: false, toolId, error: errorMsg },
 				{ status: 400 },
@@ -156,9 +158,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 				})
 				.catch((err) => {
 					const errorMsg = err instanceof Error ? err.message : String(err);
-					console.error(
-						`[mastra-tanstack] Agent run failed: ${errorMsg}`,
-					);
+					console.error(`[mastra-tanstack] Agent run failed: ${errorMsg}`);
 					return publishCompletionEvent({
 						agentWorkflowId,
 						parentExecutionId,
@@ -251,9 +251,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 
 			// Build execution prompt with plan injected
 			const planText = plan.steps
-				.map(
-					(s) => `${s.step}. [${s.tool}] ${s.action} — ${s.reasoning}`,
-				)
+				.map((s) => `${s.step}. [${s.tool}] ${s.action} — ${s.reasoning}`)
 				.join("\n");
 			const cwdContext = cwd ? `Working directory: ${cwd}\n\n` : "";
 			const executionPrompt = `${cwdContext}## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nExecute each step in order. If a step fails, note the error and continue.`;
@@ -278,8 +276,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 						agentWorkflowId,
 						parentExecutionId,
 						success: false,
-						error:
-							err instanceof Error ? err.message : String(err),
+						error: err instanceof Error ? err.message : String(err),
 					}),
 				);
 
@@ -304,8 +301,7 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 				source: (body.source as string) ?? "",
 				type: (body.type as string) ?? "",
 				specversion: (body.specversion as string) ?? "1.0",
-				datacontenttype:
-					(body.datacontenttype as string) ?? "application/json",
+				datacontenttype: (body.datacontenttype as string) ?? "application/json",
 				data: (body.data as Record<string, unknown>) ?? {},
 			});
 			return Response.json({ status: "SUCCESS" });

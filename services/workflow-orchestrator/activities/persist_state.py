@@ -14,6 +14,7 @@ from typing import Any
 from dapr.clients import DaprClient
 
 from core.config import config
+from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -34,38 +35,42 @@ def persist_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     key = input_data.get("key", "")
     value = input_data.get("value")
     metadata = input_data.get("metadata")
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Persist State] Saving state with key: {key}")
 
-    try:
-        # Dapr state store requires string values - JSON-serialize dicts/lists
-        if not isinstance(value, str):
-            value = json.dumps(value)
+    attrs = {"state.key": key, "action.type": "state/save"}
 
-        with DaprClient() as client:
-            client.save_state(
-                store_name=STATE_STORE_NAME,
-                key=key,
-                value=value,
-                state_metadata=metadata,
-            )
+    with start_activity_span("activity.persist_state", otel, attrs):
+        try:
+            # Dapr state store requires string values - JSON-serialize dicts/lists
+            if not isinstance(value, str):
+                value = json.dumps(value)
 
-        logger.info(f"[Persist State] Successfully saved state: {key}")
+            with DaprClient() as client:
+                client.save_state(
+                    store_name=STATE_STORE_NAME,
+                    key=key,
+                    value=value,
+                    state_metadata=metadata,
+                )
 
-        return {
-            "success": True,
-            "key": key,
-        }
+            logger.info(f"[Persist State] Successfully saved state: {key}")
 
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[Persist State] Failed to save state {key}: {e}")
+            return {
+                "success": True,
+                "key": key,
+            }
 
-        return {
-            "success": False,
-            "key": key,
-            "error": f"Failed to persist state: {error_msg}",
-        }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[Persist State] Failed to save state {key}: {e}")
+
+            return {
+                "success": False,
+                "key": key,
+                "error": f"Failed to persist state: {error_msg}",
+            }
 
 
 def get_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -80,30 +85,34 @@ def get_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         Dict with success status, key, and value
     """
     key = input_data.get("key", "")
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Get State] Retrieving state with key: {key}")
 
-    try:
-        with DaprClient() as client:
-            result = client.get_state(store_name=STATE_STORE_NAME, key=key)
+    attrs = {"state.key": key, "action.type": "state/get"}
 
-        logger.info(f"[Get State] Successfully retrieved state: {key}")
+    with start_activity_span("activity.get_state", otel, attrs):
+        try:
+            with DaprClient() as client:
+                result = client.get_state(store_name=STATE_STORE_NAME, key=key)
 
-        return {
-            "success": True,
-            "key": key,
-            "value": result.data if result.data else None,
-        }
+            logger.info(f"[Get State] Successfully retrieved state: {key}")
 
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[Get State] Failed to get state {key}: {e}")
+            return {
+                "success": True,
+                "key": key,
+                "value": result.data if result.data else None,
+            }
 
-        return {
-            "success": False,
-            "key": key,
-            "error": f"Failed to get state: {error_msg}",
-        }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[Get State] Failed to get state {key}: {e}")
+
+            return {
+                "success": False,
+                "key": key,
+                "error": f"Failed to get state: {error_msg}",
+            }
 
 
 def delete_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -118,26 +127,30 @@ def delete_state(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         Dict with success status and key
     """
     key = input_data.get("key", "")
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Delete State] Deleting state with key: {key}")
 
-    try:
-        with DaprClient() as client:
-            client.delete_state(store_name=STATE_STORE_NAME, key=key)
+    attrs = {"state.key": key, "action.type": "state/delete"}
 
-        logger.info(f"[Delete State] Successfully deleted state: {key}")
+    with start_activity_span("activity.delete_state", otel, attrs):
+        try:
+            with DaprClient() as client:
+                client.delete_state(store_name=STATE_STORE_NAME, key=key)
 
-        return {
-            "success": True,
-            "key": key,
-        }
+            logger.info(f"[Delete State] Successfully deleted state: {key}")
 
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[Delete State] Failed to delete state {key}: {e}")
+            return {
+                "success": True,
+                "key": key,
+            }
 
-        return {
-            "success": False,
-            "key": key,
-            "error": f"Failed to delete state: {error_msg}",
-        }
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[Delete State] Failed to delete state {key}: {e}")
+
+            return {
+                "success": False,
+                "key": key,
+                "error": f"Failed to delete state: {error_msg}",
+            }

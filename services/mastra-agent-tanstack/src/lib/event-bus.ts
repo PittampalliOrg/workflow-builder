@@ -7,7 +7,13 @@
 
 import { EventEmitter } from "node:events";
 import { nanoid } from "nanoid";
-import type { AgentEvent, AgentEventType, AgentState, LogEntry, WorkflowContext } from "./types";
+import type {
+	AgentEvent,
+	AgentEventType,
+	AgentState,
+	LogEntry,
+	WorkflowContext,
+} from "./types";
 
 const MAX_EVENTS = 200;
 const MAX_LOGS = 500;
@@ -29,6 +35,9 @@ class AgentEventBus extends EventEmitter {
 
 	private workflowContext: WorkflowContext = {
 		workflowId: null,
+		instanceId: null,
+		status: null,
+		traceId: null,
 		nodeId: null,
 		stepIndex: null,
 		receivedEvents: 0,

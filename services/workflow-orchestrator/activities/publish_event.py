@@ -14,6 +14,7 @@ from typing import Any
 from dapr.clients import DaprClient
 
 from core.config import config
+from tracing import start_activity_span, inject_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -49,45 +50,54 @@ def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     event_type = input_data.get("eventType", "custom")
     data = input_data.get("data", {})
     metadata = input_data.get("metadata", {})
+    otel = input_data.get("_otel") or {}
 
     logger.info(f"[Publish Event] Publishing {event_type} to topic: {topic}")
 
-    try:
-        with DaprClient() as client:
-            event_payload = {
-                "type": event_type,
-                "source": "workflow-orchestrator",
-                "data": data,
-                "time": datetime.now(timezone.utc).isoformat(),
-                "specversion": "1.0",
-                "datacontenttype": "application/json",
-                **metadata,
+    attrs = {"action.type": "pubsub/publish", "pubsub.topic": topic, "event.type": event_type}
+
+    with start_activity_span("activity.publish_event", otel, attrs):
+        try:
+            with DaprClient() as client:
+                # Propagate trace context via CloudEvent extensions so downstream
+                # consumers can join traces even if they are not HTTP-invoked.
+                trace_ctx = inject_current_context()
+
+                event_payload = {
+                    "type": event_type,
+                    "source": "workflow-orchestrator",
+                    "data": data,
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "specversion": "1.0",
+                    "datacontenttype": "application/json",
+                    **(trace_ctx or {}),
+                    **metadata,
+                }
+
+                client.publish_event(
+                    pubsub_name=PUBSUB_NAME,
+                    topic_name=topic,
+                    data=event_payload,
+                )
+
+            logger.info(f"[Publish Event] Successfully published {event_type} to {topic}")
+
+            return {
+                "success": True,
+                "topic": topic,
+                "eventType": event_type,
             }
 
-            client.publish_event(
-                pubsub_name=PUBSUB_NAME,
-                topic_name=topic,
-                data=event_payload,
-            )
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"[Publish Event] Failed to publish {event_type} to {topic}: {e}")
 
-        logger.info(f"[Publish Event] Successfully published {event_type} to {topic}")
-
-        return {
-            "success": True,
-            "topic": topic,
-            "eventType": event_type,
-        }
-
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"[Publish Event] Failed to publish {event_type} to {topic}: {e}")
-
-        return {
-            "success": False,
-            "topic": topic,
-            "eventType": event_type,
-            "error": f"Failed to publish event: {error_msg}",
-        }
+            return {
+                "success": False,
+                "topic": topic,
+                "eventType": event_type,
+                "error": f"Failed to publish event: {error_msg}",
+            }
 
 
 def publish_workflow_started(ctx, input_data: dict[str, Any]) -> dict[str, Any]:

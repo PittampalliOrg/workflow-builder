@@ -100,6 +100,20 @@ def calculate_progress(completed_nodes: int, total_nodes: int) -> int:
     return min(99, round((completed_nodes / total_nodes) * 100))
 
 
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    """
+    Extract trace-id from W3C traceparent header.
+    Format: version-traceid-spanid-flags
+    """
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1]
+    return trace_id if trace_id else None
+
+
 def get_timeout_seconds(config: dict[str, Any]) -> int:
     """Get timeout in seconds from various config formats."""
     if config.get("timeoutSeconds"):
@@ -230,6 +244,8 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
     node_connection_map = input_data.get("nodeConnectionMap") or {}
+    otel_ctx = input_data.get("_otel") or {}
+    trace_id = _trace_id_from_traceparent(otel_ctx.get("traceparent"))
 
     start_time = time.time()
     execution_id = ctx.instance_id
@@ -257,6 +273,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         "phase": "running",
         "progress": 0,
         "message": "Workflow started",
+        "traceId": trace_id,
     }))
 
     # Create a map of nodes for quick lookup
@@ -325,6 +342,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 "message": f"Executing: {node.get('label')}",
                 "currentNodeId": node.get("id"),
                 "currentNodeName": node.get("label"),
+                "traceId": trace_id,
             }))
 
             logger.info(f"[Dynamic Workflow] Processing node: {node.get('label')} ({node.get('type')})")
@@ -360,6 +378,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 "nodeType": node_type,
                                 "actionType": action_type,
                                 "input": resolved_for_log,
+                                "_otel": otel_ctx,
                             },
                         )
                         log_id = start_result.get("logId")
@@ -374,6 +393,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         connection_external_id=node_connection_map.get(node.get("id")),
                         workflow_id=workflow_id,
                         execution_id=execution_id,
+                        otel_ctx=otel_ctx,
                     )
 
                     if db_execution_id and log_id:
@@ -387,6 +407,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 "output": node_result if isinstance(node_result, dict) else {"raw": str(node_result)},
                                 "error": node_result.get("error") if isinstance(node_result, dict) and not agent_success else None,
                                 "durationMs": node_duration_ms,
+                                "_otel": otel_ctx,
                             },
                         )
 
@@ -414,6 +435,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 "nodeType": node_type,
                                 "actionType": action_type,
                                 "input": resolved_for_log,
+                                "_otel": otel_ctx,
                             },
                         )
                         log_id = start_result.get("logId")
@@ -426,6 +448,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         integrations,
                         db_execution_id,
                         node_connection_map.get(node.get("id")),
+                        otel_ctx=otel_ctx,
                     )
 
                     # Log node completion for planner/* nodes
@@ -440,6 +463,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 "output": node_result if isinstance(node_result, dict) else {"raw": str(node_result)},
                                 "error": node_result.get("error") if isinstance(node_result, dict) and not planner_success else None,
                                 "durationMs": node_duration_ms,
+                                "_otel": otel_ctx,
                             },
                         )
 
@@ -464,6 +488,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "integrations": integrations,
                             "dbExecutionId": db_execution_id,
                             "connectionExternalId": node_connection_map.get(node.get("id")),
+                            "_otel": otel_ctx,
                         }
                     )
 
@@ -494,12 +519,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "nodeType": node_type,
                             "actionType": "approval-gate",
                             "input": config,
+                            "_otel": otel_ctx,
                         },
                     )
                     gate_log_id = start_result.get("logId")
 
                 result = yield from process_approval_gate(
-                    ctx, node, execution_id, workflow_id, db_execution_id
+                    ctx, node, execution_id, workflow_id, db_execution_id, otel_ctx
                 )
                 node_result = result
 
@@ -515,6 +541,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "output": result,
                             "error": result.get("reason") if not gate_success else None,
                             "durationMs": gate_duration_ms,
+                            "_otel": otel_ctx,
                         },
                     )
 
@@ -523,6 +550,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         "phase": "rejected",
                         "progress": calculate_progress(len(completed_node_ids), total_nodes),
                         "message": f"Rejected: {result.get('reason', 'No reason provided')}",
+                        "traceId": trace_id,
                     }))
 
                     duration_ms = int((time.time() - start_time) * 1000)
@@ -550,6 +578,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "nodeType": node_type,
                             "actionType": "loop-until",
                             "input": resolved_for_log,
+                            "_otel": otel_ctx,
                         },
                     )
                     loop_log_id = start_result.get("logId")
@@ -614,6 +643,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "output": node_result,
                                     "error": node_result.get("error"),
                                     "durationMs": loop_duration_ms,
+                                    "_otel": otel_ctx,
                                 },
                             )
                         duration_ms = int((time.time() - start_time) * 1000)
@@ -644,6 +674,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "output": node_result,
                                     "error": err,
                                     "durationMs": loop_duration_ms,
+                                    "_otel": otel_ctx,
                                 },
                             )
                         return {
@@ -675,6 +706,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "output": node_result,
                                     "error": err,
                                     "durationMs": loop_duration_ms,
+                                    "_otel": otel_ctx,
                                 },
                             )
                         return {
@@ -708,6 +740,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "output": node_result,
                                     "error": None if on_max_iterations == "continue" else "Max iterations exceeded",
                                     "durationMs": loop_duration_ms,
+                                    "_otel": otel_ctx,
                                 },
                             )
 
@@ -751,6 +784,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "output": node_result,
                                     "error": None,
                                     "durationMs": loop_duration_ms,
+                                    "_otel": otel_ctx,
                                 },
                             )
 
@@ -775,6 +809,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "output": node_result,
                             "error": None,
                             "durationMs": loop_duration_ms,
+                            "_otel": otel_ctx,
                         },
                     )
 
@@ -796,6 +831,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "nodeType": node_type,
                             "actionType": "timer",
                             "input": config,
+                            "_otel": otel_ctx,
                         },
                     )
                     timer_log_id = start_result.get("logId")
@@ -816,6 +852,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "output": node_result,
                             "error": None,
                             "durationMs": timer_duration_ms,
+                            "_otel": otel_ctx,
                         },
                     )
 
@@ -957,6 +994,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "phase": "running",
                     "progress": calculate_progress(len(completed_node_ids), total_nodes),
                     "message": f"Published event: {event_type}",
+                    "_otel": otel_ctx,
                 })
 
                 node_result = {"published": True, "topic": topic, "eventType": event_type}
@@ -1020,12 +1058,14 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             "message": "Workflow completed successfully",
             "currentNodeId": None,
             "currentNodeName": None,
+            "traceId": trace_id,
         }))
 
         # Persist final outputs
         yield ctx.call_activity(persist_state, input={
             "key": f"workflow:{workflow_id}:{execution_id}:outputs",
             "value": node_outputs,
+            "_otel": otel_ctx,
         })
 
         logger.info(f"[Dynamic Workflow] Completed workflow: {definition.get('name')} ({duration_ms}ms)")
@@ -1050,6 +1090,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             "phase": "failed",
             "progress": calculate_progress(len(completed_node_ids), total_nodes),
             "message": f"Error: {error_message}",
+            "traceId": trace_id,
         }))
 
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
@@ -1071,6 +1112,7 @@ def process_planner_child_workflow(
     integrations: dict | None,
     db_execution_id: str | None,
     connection_external_id: str | None = None,
+    otel_ctx: dict | None = None,
 ):
     """
     Invoke planner-dapr-agent workflow via Dapr service invocation with event-based completion.
@@ -1109,6 +1151,7 @@ def process_planner_child_workflow(
         Result from planner workflow
     """
     config = node.get("config") or {}
+    otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
 
     # Get timeout settings from config (default: 30 min for planning, 2 hours for execution)
@@ -1142,6 +1185,7 @@ def process_planner_child_workflow(
                 "token": token,
                 "connection_external_id": connection_external_id,
                 "execution_id": ctx.instance_id,
+                "_otel": otel_ctx,
             },
         )
 
@@ -1164,6 +1208,7 @@ def process_planner_child_workflow(
                 "repo_url": resolved_config.get("repoUrl", ""),
                 "auto_approve": resolved_config.get("autoApprove", False),
                 "parent_execution_id": ctx.instance_id,  # For event routing (Dapr workflow ID)
+                "_otel": otel_ctx,
             }
         )
 
@@ -1191,6 +1236,7 @@ def process_planner_child_workflow(
                 "cwd": resolved_config.get("cwd", "/workspace"),
                 "repo_url": resolved_config.get("repoUrl", ""),
                 "parent_execution_id": ctx.instance_id,  # For event routing (Dapr workflow ID)
+                "_otel": otel_ctx,
             }
         )
 
@@ -1239,7 +1285,7 @@ def process_planner_child_workflow(
         # Check if the workflow already completed (standard mode runs everything)
         status_result = yield ctx.call_activity(
             call_planner_status,
-            input={"planner_workflow_id": planner_workflow_id},
+            input={"planner_workflow_id": planner_workflow_id, "_otel": otel_ctx},
         )
 
         status = (status_result.get("status", "") or "").upper()
@@ -1284,6 +1330,7 @@ def process_planner_child_workflow(
                         "plan": plan_data,
                         "cwd": cwd,
                         "workflow_id": planner_workflow_id,
+                        "_otel": otel_ctx,
                     },
                 )
                 return result
@@ -1297,6 +1344,7 @@ def process_planner_child_workflow(
                 "planner_workflow_id": planner_workflow_id,
                 "approved": True,
                 "reason": "Approved by workflow builder",
+                "_otel": otel_ctx,
             }
         )
 
@@ -1366,7 +1414,7 @@ def process_planner_child_workflow(
         # or if no Dapr workflow instance exists (standalone /plan was used)
         status_result = yield ctx.call_activity(
             call_planner_status,
-            input={"planner_workflow_id": planner_workflow_id},
+            input={"planner_workflow_id": planner_workflow_id, "_otel": otel_ctx},
         )
 
         status = (status_result.get("status", "") or "").upper()
@@ -1400,6 +1448,7 @@ def process_planner_child_workflow(
                 "planner_workflow_id": planner_workflow_id,
                 "approved": approved,
                 "reason": reason,
+                "_otel": otel_ctx,
             }
         )
 
@@ -1438,6 +1487,7 @@ def process_planner_child_workflow(
                 "repository": repository,
                 "connection_external_id": connection_external_id,
                 "parent_execution_id": ctx.instance_id,
+                "_otel": otel_ctx,
             },
         )
 
@@ -1455,6 +1505,7 @@ def process_planner_child_workflow(
             call_planner_status,
             input={
                 "planner_workflow_id": planner_workflow_id,
+                "_otel": otel_ctx,
             }
         )
 
@@ -1478,6 +1529,7 @@ def process_agent_child_workflow(
     connection_external_id: str | None,
     workflow_id: str,
     execution_id: str,
+    otel_ctx: dict | None = None,
 ):
     """
     Invoke a workflow-builder "agent/*" action via planner-dapr-agent and wait for completion.
@@ -1488,6 +1540,7 @@ def process_agent_child_workflow(
       agent_completed_{agent_workflow_id}
     """
     config = node.get("config") or {}
+    otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
 
     prompt = str(resolved_config.get("prompt", "") or "").strip()
@@ -1523,6 +1576,7 @@ def process_agent_child_workflow(
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),
+        "_otel": otel_ctx,
     }
 
     if action_type == "mastra/execute":
@@ -1595,6 +1649,7 @@ def process_approval_gate(
     execution_id: str,
     workflow_id: str,
     db_execution_id: str | None,
+    otel_ctx: dict | None = None,
 ):
     """
     Process an approval gate node.
@@ -1615,6 +1670,7 @@ def process_approval_gate(
         Approval result dict
     """
     config = node.get("config") or {}
+    otel_ctx = otel_ctx or {}
     event_name = config.get("eventName") or f"approval_{node.get('id')}"
     timeout_seconds = get_timeout_seconds(config)
 
@@ -1629,6 +1685,7 @@ def process_approval_gate(
             "nodeId": node.get("id"),
             "eventName": event_name,
             "timeoutSeconds": timeout_seconds,
+            "_otel": otel_ctx,
         })
 
     # Update custom status so the status API reflects awaiting_approval
@@ -1640,6 +1697,7 @@ def process_approval_gate(
         "currentNodeId": node.get("id"),
         "currentNodeName": node.get("label") or node.get("id"),
         "approvalEventName": event_name,
+        "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
     }))
 
     # Publish that we're waiting for approval
@@ -1649,6 +1707,7 @@ def process_approval_gate(
         "phase": "awaiting_approval",
         "progress": 50,
         "message": f"Waiting for approval: {node.get('label')}",
+        "_otel": otel_ctx,
     })
 
     # Wait for approval event or timeout
@@ -1667,6 +1726,7 @@ def process_approval_gate(
                 "nodeId": node.get("id"),
                 "eventName": event_name,
                 "timeoutSeconds": timeout_seconds,
+                "_otel": otel_ctx,
             })
 
         return {
@@ -1689,6 +1749,7 @@ def process_approval_gate(
             "reason": approval_result.get("reason") if approval_result else None,
             "respondedBy": approval_result.get("respondedBy") if approval_result else None,
             "payload": approval_result,
+            "_otel": otel_ctx,
         })
 
     return {
