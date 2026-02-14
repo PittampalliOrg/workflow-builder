@@ -69,6 +69,7 @@ function evictPoolEntry(serverUrl: string) {
 /**
  * Connect to an external MCP server, list its tools, return their definitions.
  * Results are cached for 30 seconds. Uses the persistent client pool.
+ * If the pooled session is stale, evicts and retries once.
  */
 export async function discoverTools(
 	serverUrl: string,
@@ -79,8 +80,16 @@ export async function discoverTools(
 		return cached.tools;
 	}
 
-	const client = await getPooledClient(serverUrl);
-	const result = await client.listTools();
+	let result: Awaited<ReturnType<Client["listTools"]>>;
+	try {
+		const client = await getPooledClient(serverUrl);
+		result = await client.listTools();
+	} catch {
+		// Session may have been reaped server-side — evict and retry once
+		evictPoolEntry(serverUrl);
+		const client = await getPooledClient(serverUrl);
+		result = await client.listTools();
+	}
 
 	const tools: ToolDef[] = result.tools.map((t) => ({
 		name: t.name,
@@ -109,60 +118,72 @@ export async function callExternalMcpTool(
 	toolName: string,
 	args: Record<string, unknown>,
 ): Promise<McpToolResult> {
-	const client = await getPooledClient(serverUrl);
+	async function doCall(client: Client) {
+		const toolResult = await client.callTool({
+			name: toolName,
+			arguments: args,
+		});
 
-	const toolResult = await client.callTool({
-		name: toolName,
-		arguments: args,
-	});
+		// Try to get UI HTML from tool metadata
+		let uiHtml: string | null = null;
 
-	// Try to get UI HTML from tool metadata
-	let uiHtml: string | null = null;
+		const toolsList = await client.listTools();
+		const toolDef = toolsList.tools.find((t) => t.name === toolName);
+		const meta = toolDef?._meta as
+			| { ui?: { resourceUri?: string } }
+			| undefined;
+		const resourceUri = meta?.ui?.resourceUri;
 
-	const toolsList = await client.listTools();
-	const toolDef = toolsList.tools.find((t) => t.name === toolName);
-	const meta = toolDef?._meta as
-		| { ui?: { resourceUri?: string } }
-		| undefined;
-	const resourceUri = meta?.ui?.resourceUri;
-
-	if (resourceUri) {
-		try {
-			const resourceResult = await client.readResource({ uri: resourceUri });
-			const content = resourceResult.contents[0];
-			if (content && "text" in content) {
-				uiHtml = content.text;
+		if (resourceUri) {
+			try {
+				const resourceResult = await client.readResource({
+					uri: resourceUri,
+				});
+				const content = resourceResult.contents[0];
+				if (content && "text" in content) {
+					uiHtml = content.text;
+				}
+			} catch {
+				// Resource read failed — no UI, fall through
 			}
-		} catch {
-			// Resource read failed — no UI, fall through
 		}
-	}
 
-	// Also check for inline resource content in the tool result
-	if (!uiHtml) {
-		const contents = toolResult.content as Array<{
-			type: string;
-			text?: string;
-			resource?: { text?: string; mimeType?: string };
-		}>;
-		const resourceContent = contents?.find(
-			(c) => c.type === "resource" && c.resource?.mimeType === "text/html",
-		);
-		if (resourceContent?.resource?.text) {
-			uiHtml = resourceContent.resource.text;
-		}
-	}
-
-	// Extract text from tool result
-	const textContent =
-		(
-			toolResult.content as Array<{
+		// Also check for inline resource content in the tool result
+		if (!uiHtml) {
+			const contents = toolResult.content as Array<{
 				type: string;
 				text?: string;
-			}>
-		)?.find((c) => c.type === "text")?.text ?? "";
+				resource?: { text?: string; mimeType?: string };
+			}>;
+			const resourceContent = contents?.find(
+				(c) => c.type === "resource" && c.resource?.mimeType === "text/html",
+			);
+			if (resourceContent?.resource?.text) {
+				uiHtml = resourceContent.resource.text;
+			}
+		}
 
-	return { text: textContent, uiHtml, toolName, serverUrl };
+		// Extract text from tool result
+		const textContent =
+			(
+				toolResult.content as Array<{
+					type: string;
+					text?: string;
+				}>
+			)?.find((c) => c.type === "text")?.text ?? "";
+
+		return { text: textContent, uiHtml, toolName, serverUrl };
+	}
+
+	try {
+		const client = await getPooledClient(serverUrl);
+		return await doCall(client);
+	} catch {
+		// Session may have been reaped server-side — evict and retry once
+		evictPoolEntry(serverUrl);
+		const client = await getPooledClient(serverUrl);
+		return await doCall(client);
+	}
 }
 
 /**

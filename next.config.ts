@@ -2,10 +2,6 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
 	output: "standalone",
-	experimental: {
-		// @ts-expect-error Next.js runtime supports instrumentation.ts; type may lag.
-		instrumentationHook: true,
-	},
 	serverExternalPackages: [
 		"@mcp-ui/server",
 		"@modelcontextprotocol/sdk",
