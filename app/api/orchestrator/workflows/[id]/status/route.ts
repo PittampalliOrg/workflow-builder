@@ -113,6 +113,7 @@ export async function GET(
           message: status.message,
           currentNodeId: status.currentNodeId,
           currentNodeName: status.currentNodeName,
+          approvalEventName: status.approvalEventName,
           outputs: status.outputs,
           error: status.error,
           startedAt: execution.startedAt,

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { runAgent } from "~/lib/agent";
 
 export const runAgentFn = createServerFn({ method: "POST" })
-	.validator(z.object({ prompt: z.string() }))
-	.handler(async ({ data }) => {
+	.inputValidator(z.object({ prompt: z.string() }))
+	.handler(async ({ data }: { data: { prompt: string } }) => {
 		return runAgent(data.prompt);
 	});

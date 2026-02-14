@@ -104,6 +104,8 @@ def get_timeout_seconds(config: dict[str, Any]) -> int:
     """Get timeout in seconds from various config formats."""
     if config.get("timeoutSeconds"):
         return int(config["timeoutSeconds"])
+    if config.get("timeoutMinutes"):
+        return int(config["timeoutMinutes"]) * 60
     if config.get("timeoutHours"):
         return int(config["timeoutHours"]) * 3600
     if config.get("durationSeconds"):
@@ -343,7 +345,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     )
 
                 # Long-running child workflows (bypass function-router)
-                if action_type.startswith("agent/"):
+                if action_type.startswith("agent/") or action_type == "mastra/execute":
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
                     node_start_time = time.time()
@@ -970,8 +972,21 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             elif not output_action_type:
                 output_action_type = node_type or ""
 
+            # Derive display label for template matching.
+            # React Flow nodes store label at node.data.label, not top-level.
+            # If still empty, derive from actionType slug so templates like
+            # {{Plan.plan}} or {{Clone.result.clonePath}} resolve correctly.
+            node_label = node.get("label") or ""
+            if not node_label and isinstance(node.get("data"), dict):
+                node_label = node["data"].get("label", "")
+            if not node_label and config.get("actionType"):
+                slug = config["actionType"].rsplit("/", 1)[-1]
+                node_label = slug.replace("-", " ").replace("_", " ").title()
+            if not node_label:
+                node_label = node.get("id", "")
+
             node_outputs[node.get("id")] = {
-                "label": node.get("label"),
+                "label": node_label,
                 "actionType": output_action_type,
                 "data": node_result,
             }
@@ -1476,6 +1491,8 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
 
     prompt = str(resolved_config.get("prompt", "") or "").strip()
+    if not prompt and action_type == "mastra/execute":
+        prompt = "Execute the provided plan"
     if not prompt:
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
 
@@ -1484,28 +1501,38 @@ def process_agent_child_workflow(
     if action_type == "agent/mastra-run":
         from activities.call_agent_service import call_mastra_agent_run
         call_activity_fn = call_mastra_agent_run
+    elif action_type == "mastra/execute":
+        from activities.call_agent_service import call_mastra_execute_plan
+        call_activity_fn = call_mastra_execute_plan
     else:
         from activities.call_agent_service import call_agent_run
         call_activity_fn = call_agent_run
 
+    activity_input = {
+        "prompt": prompt,
+        "model": resolved_config.get("model"),
+        "maxTurns": resolved_config.get("maxTurns"),
+        "allowedActionsJson": resolved_config.get("allowedActionsJson"),
+        "agentToolsJson": resolved_config.get("agentToolsJson"),
+        "stopCondition": resolved_config.get("stopCondition"),
+        "integrations": integrations,
+        "dbExecutionId": db_execution_id,
+        "connectionExternalId": connection_external_id,
+        "parentExecutionId": ctx.instance_id,
+        "executionId": execution_id,
+        "workflowId": workflow_id,
+        "nodeId": node.get("id"),
+        "nodeName": node.get("label") or node.get("id"),
+    }
+
+    if action_type == "mastra/execute":
+        activity_input["planJson"] = resolved_config.get("planJson")
+        activity_input["cwd"] = resolved_config.get("cwd", "")
+        activity_input["timeoutMinutes"] = resolved_config.get("timeoutMinutes", 30)
+
     start_result = yield ctx.call_activity(
         call_activity_fn,
-        input={
-            "prompt": prompt,
-            "model": resolved_config.get("model"),
-            "maxTurns": resolved_config.get("maxTurns"),
-            "allowedActionsJson": resolved_config.get("allowedActionsJson"),
-            "agentToolsJson": resolved_config.get("agentToolsJson"),
-            "stopCondition": resolved_config.get("stopCondition"),
-            "integrations": integrations,
-            "dbExecutionId": db_execution_id,
-            "connectionExternalId": connection_external_id,
-            "parentExecutionId": ctx.instance_id,
-            "executionId": execution_id,
-            "workflowId": workflow_id,
-            "nodeId": node.get("id"),
-            "nodeName": node.get("label") or node.get("id"),
-        },
+        input=activity_input,
     )
 
     if not isinstance(start_result, dict) or not start_result.get("success", False):

@@ -512,7 +512,8 @@ export async function POST(request: Request) {
 		if (
 			!(
 				normalizedActionName === "planner/clone" ||
-				normalizedActionName === "planner/multi-step"
+				normalizedActionName === "planner/multi-step" ||
+				normalizedActionName === "mastra/clone"
 			)
 		) {
 			return NextResponse.json(

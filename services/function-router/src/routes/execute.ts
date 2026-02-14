@@ -106,11 +106,22 @@ type MastraToolResponse = {
 	success?: unknown;
 	toolId?: unknown;
 	result?: unknown;
+	plan?: unknown;
 	error?: unknown;
 	workflowId?: unknown;
+	workflow_id?: unknown;
 	status?: unknown;
 	message?: unknown;
 };
+
+
+
+
+
+
+
+
+
 
 function parseJsonResponse(responseText: string): unknown {
 	if (!responseText) {
@@ -122,6 +133,9 @@ function parseJsonResponse(responseText: string): unknown {
 		return null;
 	}
 }
+
+/** Keys that are metadata, not tool arguments. */
+const MASTRA_META_KEYS = new Set(["toolId", "argsJson", "auth"]);
 
 function parseMastraToolInput(
 	input: Record<string, unknown>,
@@ -137,35 +151,34 @@ function parseMastraToolInput(
 		);
 	}
 
+	// If argsJson is provided, parse it (legacy run-tool format).
 	const argsRaw = input.argsJson;
-	if (typeof argsRaw === "undefined" || argsRaw === null || argsRaw === "") {
-		return { toolId, args: {} };
+	if (typeof argsRaw === "string" && argsRaw.trim()) {
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(argsRaw.trim());
+		} catch (error) {
+			throw new Error(
+				`Invalid Mastra args JSON: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("Mastra args JSON must be an object.");
+		}
+
+		return { toolId, args: parsed as Record<string, unknown> };
 	}
 
-	if (typeof argsRaw !== "string") {
-		throw new Error(
-			"Mastra tool args must be a JSON object string in argsJson.",
-		);
+	// Otherwise collect individual input fields as tool args
+	// (used by per-tool actions like mastra/read-file, mastra/write-file, etc.)
+	const args: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(input)) {
+		if (!MASTRA_META_KEYS.has(key) && value !== undefined && value !== null) {
+			args[key] = value;
+		}
 	}
-	const normalizedArgs = argsRaw.trim();
-	if (!normalizedArgs) {
-		return { toolId, args: {} };
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(normalizedArgs);
-	} catch (error) {
-		throw new Error(
-			`Invalid Mastra args JSON: ${error instanceof Error ? error.message : String(error)}`,
-		);
-	}
-
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error("Mastra args JSON must be an object.");
-	}
-
-	return { toolId, args: parsed as Record<string, unknown> };
+	return { toolId, args };
 }
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
@@ -255,7 +268,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const functionUrl = await resolveOpenFunctionUrl(target.appId);
 				timing.routingMs = Date.now() - routingStartTime;
 
-				if (target.appId === "mastra-agent") {
+				if (target.appId === "mastra-agent-tanstack") {
 					console.log(
 						`[Execute Route] Invoking Mastra agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
@@ -273,14 +286,101 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							stepName,
 						);
 
+						// Credential resolution for clone operations
+						if (
+							toolId === "clone" &&
+							!args.githubToken &&
+							!args.repositoryToken
+						) {
+							const authValue = (body.input as Record<string, unknown>)?.auth;
+							const parsedConnectionId =
+								parseConnectionExternalIdFromAuthTemplate(authValue) ||
+								body.connection_external_id;
+
+							if (parsedConnectionId) {
+								try {
+									const credResult = await fetchCredentialsWithAudit(
+										"github",
+										body.integrations,
+										body.db_execution_id
+											? {
+													executionId: body.db_execution_id,
+													nodeId: body.node_id,
+												}
+											: undefined,
+										parsedConnectionId,
+									);
+									if (credResult.credentials.GITHUB_TOKEN) {
+										args.githubToken = credResult.credentials.GITHUB_TOKEN;
+									}
+								} catch (err) {
+									console.warn(
+										"[Execute Route] GitHub credential resolution failed for mastra/clone:",
+										err,
+									);
+								}
+							}
+						}
+
+						// Route to the appropriate mastra-agent-tanstack endpoint
+						const isAgentRun = toolId === "run";
+						const isPlan = toolId === "plan";
+						const isExecutePlan = toolId === "execute";
+
+						let targetUrl: string;
+						let requestBody: string;
+
+						if (isAgentRun) {
+							targetUrl = `${functionUrl}/api/run`;
+							requestBody = JSON.stringify({
+								prompt: args.prompt ?? "",
+								parentExecutionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isPlan) {
+							targetUrl = `${functionUrl}/api/plan`;
+							requestBody = JSON.stringify({
+								prompt: args.prompt ?? "",
+								cwd: args.cwd ?? "",
+								parentExecutionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isExecutePlan) {
+							let plan = args.planJson;
+							if (typeof plan === "string") {
+								try {
+									plan = JSON.parse(plan);
+								} catch {
+									/* pass as-is */
+								}
+							}
+							targetUrl = `${functionUrl}/api/execute-plan`;
+							requestBody = JSON.stringify({
+								prompt: args.prompt ?? "",
+								plan,
+								cwd: args.cwd ?? "",
+								parentExecutionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else {
+							targetUrl = `${functionUrl}/api/tools/${encodeURIComponent(toolId)}`;
+							requestBody = JSON.stringify({ args });
+						}
+
 						const httpResponse = await fetch(
-							`${functionUrl}/api/tools/${encodeURIComponent(toolId)}`,
+							targetUrl,
 							{
 								method: "POST",
 								headers: {
 									"Content-Type": "application/json",
 								},
-								body: JSON.stringify({ args }),
+								body: requestBody,
 								signal: controller.signal,
 							},
 						);
@@ -324,10 +424,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 												? parsedMastra.toolId
 												: toolId,
 										result: parsedMastra.result,
+										plan: parsedMastra.plan,
 										workflowId:
 											typeof parsedMastra.workflowId === "string"
 												? parsedMastra.workflowId
-												: undefined,
+												: typeof parsedMastra.workflow_id === "string"
+													? parsedMastra.workflow_id
+													: undefined,
 										status:
 											typeof parsedMastra.status === "string"
 												? parsedMastra.status
@@ -342,13 +445,19 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						} else if (
 							parsedMastra &&
-							typeof parsedMastra.workflowId === "string"
+							(typeof parsedMastra.workflowId === "string" || typeof parsedMastra.workflow_id === "string")
 						) {
 							response = {
 								success: true,
 								data: {
 									toolId,
-									workflowId: parsedMastra.workflowId,
+									workflowId:
+										typeof parsedMastra.workflowId === "string"
+											? parsedMastra.workflowId
+											: typeof parsedMastra.workflow_id === "string"
+												? parsedMastra.workflow_id
+												: undefined,
+									plan: parsedMastra.plan,
 									status:
 										typeof parsedMastra.status === "string"
 											? parsedMastra.status
@@ -362,7 +471,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							};
 						} else {
 							throw new Error(
-								`Invalid response from mastra-agent: ${responseText.slice(0, 300)}`,
+								`Invalid response from mastra-agent-tanstack: ${responseText.slice(0, 300)}`,
 							);
 						}
 					} catch (httpError) {

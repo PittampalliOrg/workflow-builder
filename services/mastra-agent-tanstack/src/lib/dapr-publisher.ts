@@ -37,6 +37,52 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 	}
 }
 
+/**
+ * Publish an agent_completed event in the format the orchestrator's
+ * subscription handler (planner_events.py) expects.
+ *
+ * The handler extracts:
+ *   event_data.get("type")          → "agent_completed"
+ *   event_data.get("workflowId")    → maps to external event name
+ *   inner_data.get("parent_execution_id") → routes to parent workflow
+ *   inner_data.get("success"), inner_data.get("result") → forwarded as payload
+ */
+export async function publishCompletionEvent(opts: {
+	agentWorkflowId: string;
+	parentExecutionId: string;
+	success: boolean;
+	result?: Record<string, unknown>;
+	error?: string;
+}): Promise<void> {
+	try {
+		const resp = await fetch(publishUrl, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				source: "mastra-agent-tanstack",
+				type: "agent_completed",
+				workflowId: opts.agentWorkflowId,
+				data: {
+					parent_execution_id: opts.parentExecutionId,
+					success: opts.success,
+					result: opts.result ?? {},
+					error: opts.error,
+				},
+				timestamp: new Date().toISOString(),
+			}),
+		});
+		if (!resp.ok) {
+			console.warn(`[dapr] Publish completion failed: ${resp.status}`);
+		} else {
+			console.log(
+				`[dapr] Published agent_completed for ${opts.agentWorkflowId} (success=${opts.success})`,
+			);
+		}
+	} catch (err) {
+		console.error(`[dapr] Failed to publish completion event: ${err}`);
+	}
+}
+
 export function startDaprPublisher(): void {
 	eventBus.on("event", (event: AgentEvent) => {
 		publishEvent(event);

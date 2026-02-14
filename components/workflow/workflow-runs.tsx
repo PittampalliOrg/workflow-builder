@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import {
 	Check,
 	ChevronDown,
@@ -25,6 +25,8 @@ import {
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
+	approvalEventNameAtom,
+	approvalExecutionIdAtom,
 	currentRunningNodeIdAtom,
 	currentWorkflowIdAtom,
 	executionLogsAtom,
@@ -63,6 +65,7 @@ type WorkflowExecution = {
 	progress: number | null;
 	currentNodeId?: string | null;
 	currentNodeName?: string | null;
+	approvalEventName?: string | null;
 	input?: Record<string, unknown>;
 };
 
@@ -449,8 +452,17 @@ function DaprExecutionDetails({
 	const handleApprove = async (approved: boolean) => {
 		setIsApproving(true);
 		try {
-			await api.dapr.approve(execution.id, approved);
-			toast.success(approved ? "Plan approved" : "Plan rejected");
+			if (execution.approvalEventName) {
+				// Generic workflow approval gate — raise the named external event
+				await api.dapr.raiseEvent(execution.id, execution.approvalEventName, {
+					approved,
+					reason: approved ? "Approved" : "Rejected",
+				});
+			} else {
+				// Legacy planner workflow approval
+				await api.dapr.approve(execution.id, approved);
+			}
+			toast.success(approved ? "Approved" : "Rejected");
 			onRefresh?.();
 		} catch (error) {
 			console.error("Failed to submit approval:", error);
@@ -697,6 +709,8 @@ export function WorkflowRuns({
 	);
 	const [, setExecutionLogs] = useAtom(executionLogsAtom);
 	const [, setCurrentRunningNodeId] = useAtom(currentRunningNodeIdAtom);
+	const setApprovalEventName = useSetAtom(approvalEventNameAtom);
+	const setApprovalExecutionId = useSetAtom(approvalExecutionIdAtom);
 	const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
 	const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
 	const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
@@ -904,6 +918,7 @@ export function WorkflowRuns({
 						progress: number | null;
 						currentNodeId?: string | null;
 						currentNodeName?: string | null;
+						approvalEventName?: string | null;
 					}
 				> = {};
 
@@ -925,7 +940,17 @@ export function WorkflowRuns({
 								progress: statusResponse.progress,
 								currentNodeId: statusResponse.currentNodeId,
 								currentNodeName: statusResponse.currentNodeName,
+								approvalEventName: statusResponse.approvalEventName,
 							};
+						}
+
+						// Update approval atoms when awaiting approval
+						if (statusResponse.phase === "awaiting_approval" && statusResponse.approvalEventName) {
+							setApprovalEventName(statusResponse.approvalEventName);
+							setApprovalExecutionId(execution.id);
+						} else if (statusResponse.phase !== "awaiting_approval") {
+							setApprovalEventName(null);
+							setApprovalExecutionId(null);
 						}
 
 						// Update the running node ID atom if this is the selected execution
@@ -990,6 +1015,8 @@ export function WorkflowRuns({
 		refreshExecutionLogs,
 		selectedExecutionId,
 		setCurrentRunningNodeId,
+		setApprovalEventName,
+		setApprovalExecutionId,
 	]);
 
 	const toggleRun = async (executionId: string) => {

@@ -61,7 +61,7 @@ def call_agent_run(ctx, input_data: dict) -> dict:
 
 def call_mastra_agent_run(ctx, input_data: dict) -> dict:
     """
-    Start a Mastra agent run on mastra-agent-mcp.
+    Start a Mastra agent run on mastra-agent-tanstack.
 
     Expected input_data:
       - prompt: str
@@ -75,7 +75,7 @@ def call_mastra_agent_run(ctx, input_data: dict) -> dict:
     """
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{MASTRA_AGENT_APP_ID}/method/run"
+        f"{MASTRA_AGENT_APP_ID}/method/api/run"
     )
 
     try:
@@ -88,4 +88,51 @@ def call_mastra_agent_run(ctx, input_data: dict) -> dict:
             return data
     except Exception as e:
         logger.error(f"[Call Mastra Agent Run] Failed: {e}")
+        return {"success": False, "error": str(e)}
+
+
+def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
+    """
+    Start a Mastra plan execution on mastra-agent-tanstack.
+
+    Expected input_data:
+      - prompt: str
+      - planJson: dict | str (the plan object with steps)
+      - cwd: str (working directory)
+      - parentExecutionId: str (Dapr parent workflow instance id)
+      - workflowId: str (workflow definition id)
+      - nodeId: str (agent node id)
+      - nodeName: str (agent node label)
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{MASTRA_AGENT_APP_ID}/method/api/execute-plan"
+    )
+
+    plan = input_data.get("planJson") or input_data.get("plan")
+    if isinstance(plan, str):
+        import json as _json
+        try:
+            plan = _json.loads(plan)
+        except Exception:
+            pass
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(url, json={
+                "prompt": input_data.get("prompt", ""),
+                "plan": plan,
+                "cwd": input_data.get("cwd", ""),
+                "parentExecutionId": input_data.get("parentExecutionId", ""),
+                "workflowId": input_data.get("workflowId", ""),
+                "nodeId": input_data.get("nodeId", ""),
+                "nodeName": input_data.get("nodeName", ""),
+            })
+            resp.raise_for_status()
+            data = resp.json()
+            if not isinstance(data, dict):
+                return {"success": False, "error": "Invalid response"}
+            return data
+    except Exception as e:
+        logger.error(f"[Call Mastra Execute Plan] Failed: {e}")
         return {"success": False, "error": str(e)}

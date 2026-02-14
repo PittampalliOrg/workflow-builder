@@ -55,7 +55,7 @@ from activities.call_planner_service import (
     call_planner_status,
     call_planner_multi_step,
 )
-from activities.call_agent_service import call_agent_run, call_mastra_agent_run
+from activities.call_agent_service import call_agent_run, call_mastra_agent_run, call_mastra_execute_plan
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from subscriptions.planner_events import handle_planner_event
@@ -115,6 +115,7 @@ async def lifespan(app: FastAPI):
     # Agent service activities (planner-dapr-agent + mastra-agent-mcp)
     wfr.register_activity(call_agent_run)
     wfr.register_activity(call_mastra_agent_run)
+    wfr.register_activity(call_mastra_execute_plan)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)
@@ -235,6 +236,14 @@ class StartAPWorkflowResponse(BaseModel):
     status: str = "started"
 
 
+class ExecuteByIdRequest(BaseModel):
+    """Request to execute a workflow by its database ID."""
+    workflowId: str
+    triggerData: dict[str, Any] = Field(default_factory=dict)
+    integrations: dict[str, dict[str, str]] | None = None
+    nodeConnectionMap: dict[str, str] | None = None
+
+
 class WorkflowStatusResponse(BaseModel):
     """Workflow status response."""
     instanceId: str
@@ -257,6 +266,110 @@ class WorkflowStatusResponse(BaseModel):
 def get_workflow_client() -> DaprWorkflowClient:
     """Get a Dapr workflow client."""
     return DaprWorkflowClient()
+
+
+# --- Database helpers for execute-by-id ---
+
+_database_url: str | None = None
+
+
+def _get_database_url() -> str:
+    """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
+    global _database_url
+    if _database_url is not None:
+        return _database_url
+
+    import requests as req
+    dapr_host = config.DAPR_HOST
+    dapr_port = config.DAPR_HTTP_PORT
+    url = f"http://{dapr_host}:{dapr_port}/v1.0/secrets/kubernetes-secrets/workflow-builder-secrets"
+
+    try:
+        response = req.get(url, timeout=10)
+        response.raise_for_status()
+        secrets = response.json()
+        db_url = secrets.get("DATABASE_URL")
+        if not db_url:
+            raise RuntimeError("DATABASE_URL not found in Dapr secrets")
+        _database_url = db_url
+        logger.info("[Execute-By-Id] Fetched DATABASE_URL from Dapr secrets")
+        return db_url
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch DATABASE_URL: {e}")
+
+
+def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
+    """Fetch a workflow definition from the database by ID."""
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, nodes, edges FROM workflows WHERE id = %s",
+            (workflow_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        wf_id, wf_name, nodes_json, edges_json = row
+        # JSONB columns may already be dicts/lists, or may need parsing
+        nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
+        edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
+
+        return {"id": wf_id, "name": wf_name, "nodes": nodes, "edges": edges}
+    finally:
+        conn.close()
+
+
+def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Kahn's algorithm – returns node IDs in execution order (skips trigger/add/note)."""
+    edges_by_source: dict[str, list[str]] = {}
+    in_degree: dict[str, int] = {}
+
+    for node in nodes:
+        nid = node["id"]
+        in_degree[nid] = 0
+        edges_by_source[nid] = []
+
+    for edge in edges:
+        src, tgt = edge["source"], edge["target"]
+        edges_by_source.setdefault(src, []).append(tgt)
+        in_degree[tgt] = in_degree.get(tgt, 0) + 1
+
+    from collections import deque
+    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
+    result: list[str] = []
+
+    while queue:
+        nid = queue.popleft()
+        node = next((n for n in nodes if n["id"] == nid), None)
+        if node:
+            ntype = node.get("type", "")
+            if ntype not in ("trigger", "add", "note"):
+                result.append(nid)
+        for neighbor in edges_by_source.get(nid, []):
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    return result
+
+
+def _serialize_node(node: dict) -> dict[str, Any]:
+    """Flatten React Flow node format to orchestrator SerializedNode format."""
+    data = node.get("data", {})
+    return {
+        "id": node["id"],
+        "type": data.get("type", node.get("type", "action")),
+        "label": data.get("label", ""),
+        "description": data.get("description"),
+        "enabled": data.get("enabled", True),
+        "position": node.get("position", {"x": 0, "y": 0}),
+        "config": data.get("config", {}),
+    }
 
 
 def map_runtime_status(dapr_status: str) -> str:
@@ -332,6 +445,96 @@ def start_workflow(request: StartWorkflowRequest):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
+def execute_workflow_by_id(request: ExecuteByIdRequest):
+    """
+    Execute a workflow by its database ID.
+
+    POST /api/v2/workflows/execute-by-id
+
+    Fetches the workflow definition from PostgreSQL, serializes it,
+    computes execution order, and delegates to the dynamic workflow runtime.
+    Intended for service-to-service invocation (e.g., MCP tools via Dapr).
+    """
+    try:
+        # 1. Fetch workflow from DB
+        wf = _fetch_workflow_from_db(request.workflowId)
+        raw_nodes = wf["nodes"]
+        raw_edges = wf["edges"]
+
+        # 2. Filter out 'add' placeholder nodes
+        exec_nodes = [n for n in raw_nodes if n.get("type") != "add" and n.get("data", {}).get("type") != "add"]
+
+        # 3. Serialize nodes
+        serialized_nodes = [_serialize_node(n) for n in exec_nodes]
+
+        # 4. Filter edges to only reference existing nodes
+        node_ids = {n["id"] for n in exec_nodes}
+        serialized_edges = [
+            {"id": e["id"], "source": e["source"], "target": e["target"],
+             "sourceHandle": e.get("sourceHandle"), "targetHandle": e.get("targetHandle")}
+            for e in raw_edges
+            if e["source"] in node_ids and e["target"] in node_ids
+        ]
+
+        # 5. Compute execution order
+        execution_order = _topological_sort(
+            [{"id": n["id"], "type": n["type"]} for n in serialized_nodes],
+            serialized_edges,
+        )
+
+        # 6. Build definition
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        definition = {
+            "id": wf["id"],
+            "name": wf["name"],
+            "version": "1.0.0",
+            "nodes": serialized_nodes,
+            "edges": serialized_edges,
+            "executionOrder": execution_order,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+
+        # 7. Schedule via the existing start_workflow logic
+        client = get_workflow_client()
+        workflow_input = {
+            "definition": definition,
+            "triggerData": request.triggerData,
+            "integrations": request.integrations,
+            "nodeConnectionMap": request.nodeConnectionMap,
+        }
+
+        import time
+        import random
+        import string
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
+        instance_id = f"{wf['id']}-{int(time.time() * 1000)}-{random_suffix}"
+
+        logger.info(f"[Execute-By-Id] Starting workflow: {wf['name']} ({instance_id})")
+
+        result_id = client.schedule_new_workflow(
+            workflow=dynamic_workflow,
+            input=workflow_input,
+            instance_id=instance_id,
+        )
+
+        logger.info(f"[Execute-By-Id] Workflow scheduled: {result_id}")
+
+        return StartWorkflowResponse(
+            instanceId=result_id,
+            workflowId=wf["id"],
+            status="started",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

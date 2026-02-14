@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -9,11 +10,24 @@ type ApprovalGateConfigProps = {
   disabled?: boolean;
 };
 
+const DEFAULT_EVENT_NAME = "approval_event";
+const DEFAULT_TIMEOUT_MINUTES = "5";
+
 export function ApprovalGateConfig({
   config,
   onUpdateConfig,
   disabled,
 }: ApprovalGateConfigProps) {
+  // Persist defaults on mount so the orchestrator always gets them
+  useEffect(() => {
+    if (!config.eventName) {
+      onUpdateConfig("eventName", DEFAULT_EVENT_NAME);
+    }
+    if (!config.timeoutMinutes && !config.timeoutHours && !config.timeoutSeconds) {
+      onUpdateConfig("timeoutMinutes", DEFAULT_TIMEOUT_MINUTES);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <>
       {/* Event Name */}
@@ -26,7 +40,7 @@ export function ApprovalGateConfig({
           id="eventName"
           onChange={(e) => onUpdateConfig("eventName", e.target.value)}
           placeholder="approval_event"
-          value={(config.eventName as string) || "approval_event"}
+          value={(config.eventName as string) || DEFAULT_EVENT_NAME}
         />
         <p className="text-muted-foreground text-xs">
           The external event name that the workflow will wait for. Use{" "}
@@ -37,23 +51,23 @@ export function ApprovalGateConfig({
         </p>
       </div>
 
-      {/* Timeout Hours */}
+      {/* Timeout Minutes */}
       <div className="space-y-2">
-        <Label className="ml-1" htmlFor="timeoutHours">
-          Timeout (hours)
+        <Label className="ml-1" htmlFor="timeoutMinutes">
+          Timeout (minutes)
         </Label>
         <Input
           disabled={disabled}
-          id="timeoutHours"
-          max={168}
+          id="timeoutMinutes"
           min={1}
-          onChange={(e) => onUpdateConfig("timeoutHours", e.target.value)}
-          placeholder="24"
+          max={10080}
+          onChange={(e) => onUpdateConfig("timeoutMinutes", e.target.value)}
+          placeholder="5"
           type="number"
-          value={(config.timeoutHours as string) || "24"}
+          value={(config.timeoutMinutes as string) || DEFAULT_TIMEOUT_MINUTES}
         />
         <p className="text-muted-foreground text-xs">
-          Maximum time to wait for approval before timing out (1-168 hours)
+          Maximum time to wait for approval before timing out
         </p>
       </div>
 

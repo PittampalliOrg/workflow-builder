@@ -88,6 +88,7 @@ const PLANNER_ACTION_ALIAS_INDEX = new Map<string, string>(
 const PLANNER_ACTION_REQUIRED_INTEGRATIONS: Record<string, IntegrationType> = {
 	"planner/clone": "github",
 	"planner/multi-step": "github",
+	"mastra/clone": "github",
 };
 
 export function normalizePlannerActionType(actionType: string): string {

@@ -639,6 +639,10 @@ export const daprProgressAtom = atom<number>(0); // 0-100
 export const daprMessageAtom = atom<string>(""); // Human-readable status message
 export const daprInstanceIdAtom = atom<string | null>(null);
 
+// Approval gate context — set when a workflow reaches awaiting_approval phase
+export const approvalEventNameAtom = atom<string | null>(null);
+export const approvalExecutionIdAtom = atom<string | null>(null);
+
 // Engine type for the current workflow
 export type WorkflowEngineType = "vercel" | "dapr";
 export const currentWorkflowEngineTypeAtom = atom<WorkflowEngineType>("dapr");

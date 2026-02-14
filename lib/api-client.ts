@@ -683,6 +683,7 @@ export type DaprWorkflowStatusResponse = {
 	currentActivity: string | null;
 	currentNodeId: string | null;
 	currentNodeName: string | null;
+	approvalEventName: string | null;
 	createdAt?: string;
 	lastUpdatedAt?: string;
 };
@@ -728,6 +729,20 @@ export const daprApi = {
 			{
 				method: "POST",
 				body: JSON.stringify({ approved, reason }),
+			},
+		),
+
+	// Raise an external event on a workflow execution (approval gates)
+	raiseEvent: (
+		executionId: string,
+		eventName: string,
+		eventData: unknown,
+	) =>
+		apiCall<{ success: boolean }>(
+			`/api/orchestrator/workflows/${executionId}/events`,
+			{
+				method: "POST",
+				body: JSON.stringify({ eventName, eventData }),
 			},
 		),
 };

@@ -171,6 +171,7 @@ export type GenericWorkflowStatus = {
   message?: string;
   currentNodeId?: string;
   currentNodeName?: string;
+  approvalEventName?: string;
   outputs?: Record<string, unknown>;
   error?: string;
   startedAt?: string;

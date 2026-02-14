@@ -139,6 +139,7 @@ export async function GET(
       message,
       currentNodeId: orchestratorStatus.currentNodeId || null,
       currentNodeName: orchestratorStatus.currentNodeName || null,
+      approvalEventName: orchestratorStatus.approvalEventName || null,
       output: orchestratorStatus.outputs,
     });
   } catch (error) {
