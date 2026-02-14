@@ -122,6 +122,45 @@ export type RunOptions = {
 	skipPlanning?: boolean;
 };
 
+/**
+ * Extract a plain-object copy of a tool call from Mastra step data.
+ *
+ * Mastra wraps AI SDK tool calls in an envelope:
+ *   { type: "tool-call", runId, from, payload: { toolCallId, toolName, args } }
+ * We unwrap from payload first, then fall back to direct properties.
+ */
+function extractToolCall(tc: any): { name: string; args: any; toolCallId: string } {
+	const p = tc.payload ?? tc;
+	const toolName = p.toolName ?? p.name ?? p.tool_name ?? "";
+	const args = p.args ?? p.arguments ?? p.input ?? {};
+	const toolCallId = p.toolCallId ?? p.id ?? "";
+
+	try {
+		return {
+			name: String(toolName),
+			args: JSON.parse(JSON.stringify(args)),
+			toolCallId: String(toolCallId),
+		};
+	} catch {
+		return { name: String(toolName), args: {}, toolCallId: String(toolCallId) };
+	}
+}
+
+function extractToolResult(tr: any): any {
+	const p = tr.payload ?? tr;
+	const result = p.result ?? p.output ?? p.content ?? null;
+	try {
+		return JSON.parse(JSON.stringify(result));
+	} catch {
+		return String(result);
+	}
+}
+
+function extractToolCallId(tr: any): string {
+	const p = tr.payload ?? tr;
+	return String(p.toolCallId ?? p.id ?? "");
+}
+
 export async function runAgent(prompt: string, options?: RunOptions): Promise<RunResult> {
 	await initAgent();
 
@@ -167,27 +206,36 @@ export async function runAgent(prompt: string, options?: RunOptions): Promise<Ru
 		const result = await mastraAgent.generate(executionPrompt, {
 			maxSteps: 10,
 			onStepFinish: (step: any) => {
+				// Process tool calls (Mastra wraps in { type, payload: { toolName, args } })
 				if (step.toolCalls && step.toolCalls.length > 0) {
+					// Build a map of tool results by toolCallId for correlation
+					const resultMap = new Map<string, any>();
+					if (step.toolResults) {
+						for (const tr of step.toolResults) {
+							resultMap.set(extractToolCallId(tr), extractToolResult(tr));
+						}
+					}
+
 					for (const tc of step.toolCalls) {
 						const callId = nanoid(8);
-						// Force plain serialization — AI SDK tool call objects may use
-						// getter properties or class instances that don't survive JSON.stringify
-						const toolName = String(tc.toolName ?? "");
-						const args = JSON.parse(JSON.stringify(tc.args ?? {}));
-						const tcResult = JSON.parse(JSON.stringify(tc.result ?? null));
+						const extracted = extractToolCall(tc);
+						const tcResult = resultMap.get(extracted.toolCallId) ?? null;
+
+						console.log(`[agent] tool: ${extracted.name} args=${JSON.stringify(extracted.args).slice(0, 100)}`);
+
 						eventBus.emitEvent(
 							"tool_call",
-							{ toolName, args },
+							{ toolName: extracted.name, args: extracted.args },
 							callId,
 						);
 						toolCalls.push({
-							name: toolName,
-							args,
+							name: extracted.name,
+							args: extracted.args,
 							result: tcResult,
 						});
 						eventBus.emitEvent(
 							"tool_result",
-							{ toolName, result: tcResult },
+							{ toolName: extracted.name, result: tcResult },
 							callId,
 						);
 					}
