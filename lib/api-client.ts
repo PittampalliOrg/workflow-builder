@@ -615,6 +615,20 @@ export const workflowApi = {
 			error?: string;
 		}>(`/api/workflows/${id}/download`),
 
+	// Create workflow from WorkflowSpec JSON
+	createFromSpec: (input: {
+		name?: string;
+		description?: string;
+		spec: unknown;
+	}) =>
+		apiCall<{
+			workflow: SavedWorkflow;
+			issues: { errors: unknown[]; warnings: unknown[] };
+		}>("/api/workflows/create-from-spec", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+
 	// Auto-save with debouncing (kept for backwards compatibility)
 	autoSaveCurrent: (() => {
 		let autosaveTimeout: NodeJS.Timeout | null = null;
@@ -685,11 +699,7 @@ export const daprApi = {
 		),
 
 	// Raise an external event on a workflow execution (approval gates)
-	raiseEvent: (
-		executionId: string,
-		eventName: string,
-		eventData: unknown,
-	) =>
+	raiseEvent: (executionId: string, eventName: string, eventData: unknown) =>
 		apiCall<{ success: boolean }>(
 			`/api/orchestrator/workflows/${executionId}/events`,
 			{

@@ -83,6 +83,8 @@ import {
 import { ExportWorkflowOverlay } from "../overlays/export-workflow-overlay";
 import { MakePublicOverlay } from "../overlays/make-public-overlay";
 import { useOverlay } from "../overlays/overlay-provider";
+import { WorkflowJsonExportOverlay } from "../overlays/workflow-json-export-overlay";
+import { WorkflowJsonImportOverlay } from "../overlays/workflow-json-import-overlay";
 import { WorkflowIssuesOverlay } from "../overlays/workflow-issues-overlay";
 import { SidebarToggle } from "../sidebar-toggle";
 import { WorkflowIcon } from "../ui/workflow-icon";
@@ -1543,6 +1545,8 @@ function WorkflowMenuComponent({
 	state: ReturnType<typeof useWorkflowState>;
 	actions: ReturnType<typeof useWorkflowActions>;
 }) {
+	const { open: openOverlay } = useOverlay();
+
 	return (
 		<div className="flex flex-col gap-1">
 			<div className="flex h-9 max-w-[160px] items-center overflow-hidden rounded-md border bg-secondary text-secondary-foreground sm:max-w-none">
@@ -1571,6 +1575,30 @@ function WorkflowMenuComponent({
 								{!workflowId && <Check className="size-4 shrink-0" />}
 							</a>
 						</DropdownMenuItem>
+						<DropdownMenuItem
+							className="flex items-center justify-between"
+							onClick={() =>
+								openOverlay(WorkflowJsonImportOverlay, {
+									mode: workflowId ? "replace" : "create",
+								})
+							}
+						>
+							<span>Import JSON</span>
+						</DropdownMenuItem>
+						{workflowId && (
+							<DropdownMenuItem
+								className="flex items-center justify-between"
+								onClick={() =>
+									openOverlay(WorkflowJsonExportOverlay, {
+										name: state.workflowName,
+										nodes: state.nodes,
+										edges: state.edges,
+									})
+								}
+							>
+								<span>Export JSON</span>
+							</DropdownMenuItem>
+						)}
 						<DropdownMenuSeparator />
 						{state.allWorkflows.length === 0 ? (
 							<DropdownMenuItem disabled>No workflows found</DropdownMenuItem>
