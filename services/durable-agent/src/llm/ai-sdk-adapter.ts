@@ -3,7 +3,7 @@
  * Mirrors Python call_llm activity at durable.py:1224-1325.
  */
 
-import { generateText, type LanguageModelV1 } from "ai";
+import { generateText, type LanguageModel } from "ai";
 import type { AgentWorkflowMessage } from "../types/state.js";
 import type { ToolCall } from "../types/tool.js";
 import type { DurableAgentTool } from "../types/tool.js";
@@ -25,7 +25,7 @@ export interface LlmCallResult {
  * @param tools - Available tools (schema-only declarations)
  */
 export async function callLlmAdapter(
-  model: LanguageModelV1,
+  model: LanguageModel,
   systemPrompt: string,
   messages: AgentWorkflowMessage[],
   tools: Record<string, DurableAgentTool>,
@@ -39,19 +39,18 @@ export async function callLlmAdapter(
     model,
     system: systemPrompt,
     messages: coreMessages,
-    tools: hasTools ? (toolDecls as any) : undefined,
-    maxSteps: 1,
+    tools: hasTools ? toolDecls : undefined,
   });
 
   // Build tool_calls array in OpenAI format
   let toolCalls: ToolCall[] | undefined;
   if (result.toolCalls && result.toolCalls.length > 0) {
-    toolCalls = result.toolCalls.map((tc) => ({
+    toolCalls = result.toolCalls.map((tc: any) => ({
       id: tc.toolCallId,
       type: "function" as const,
       function: {
         name: tc.toolName,
-        arguments: JSON.stringify(tc.args),
+        arguments: JSON.stringify(tc.args ?? tc.input ?? {}),
       },
     }));
   }

@@ -14,7 +14,7 @@ import {
   WorkflowRuntime,
   type WorkflowActivityContext,
 } from "@dapr/dapr";
-import type { LanguageModelV1 } from "ai";
+import type { LanguageModel } from "ai";
 
 import type { DurableAgentOptions } from "./config/agent-options.js";
 import { OrchestrationMode } from "./config/execution-config.js";
@@ -52,7 +52,7 @@ export class DurableAgent {
   readonly role: string;
   readonly goal: string;
   readonly instructions: string;
-  readonly model: LanguageModelV1;
+  readonly model: LanguageModel;
   readonly tools: Record<string, DurableAgentTool>;
   readonly maxIterations: number;
 

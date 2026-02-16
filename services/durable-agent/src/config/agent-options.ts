@@ -2,7 +2,7 @@
  * Main configuration interface for DurableAgent.
  */
 
-import type { LanguageModelV1 } from "ai";
+import type { LanguageModel } from "ai";
 import type { DurableAgentTool } from "../types/tool.js";
 import type { AgentStateConfig } from "./state-config.js";
 import type { AgentPubSubConfig } from "./pubsub-config.js";
@@ -22,7 +22,7 @@ export interface DurableAgentOptions {
   instructions?: string;
 
   /** AI SDK model instance (e.g., openai("gpt-4o")). */
-  model: LanguageModelV1;
+  model: LanguageModel;
 
   /** Tool registry: name -> tool object with execute() + inputSchema. */
   tools?: Record<string, DurableAgentTool>;

@@ -5,7 +5,7 @@
  * Replaces the Mastra planner agent.
  */
 
-import { generateObject, type LanguageModelV1 } from "ai";
+import { generateObject } from "ai";
 import { openai } from "@ai-sdk/openai";
 import { z } from "zod";
 
@@ -53,7 +53,7 @@ Rules:
 
 export async function generatePlan(prompt: string): Promise<Plan> {
 	const result = await generateObject({
-		model: openai(process.env.AI_MODEL ?? "gpt-4o") as unknown as LanguageModelV1,
+		model: openai.chat(process.env.AI_MODEL ?? "gpt-4o"),
 		schema: PlanSchema,
 		system: SYSTEM_PROMPT,
 		prompt: `Create an execution plan for this task:\n\n${prompt}`,

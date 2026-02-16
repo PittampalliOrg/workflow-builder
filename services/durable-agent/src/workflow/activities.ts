@@ -9,7 +9,7 @@
 
 import type { WorkflowActivityContext } from "@dapr/dapr";
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV1 } from "ai";
+import type { LanguageModel } from "ai";
 
 import type {
   AgentWorkflowMessage,
@@ -122,7 +122,7 @@ export function createRecordInitialEntry(stateManager: DaprAgentState) {
  */
 export function createCallLlm(
   stateManager: DaprAgentState,
-  model: LanguageModelV1,
+  model: LanguageModel,
   systemPrompt: string,
   tools: Record<string, DurableAgentTool>,
   memory: MemoryProvider,

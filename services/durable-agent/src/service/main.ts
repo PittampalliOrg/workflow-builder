@@ -22,8 +22,6 @@ import express from "express";
 import { DaprWorkflowClient } from "@dapr/dapr";
 import { nanoid } from "nanoid";
 import { openai } from "@ai-sdk/openai";
-import type { LanguageModelV1 } from "ai";
-
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
 import { sandbox, filesystem } from "./sandbox-config.js";
@@ -69,7 +67,7 @@ Use workspace tools to help users with file operations and command execution:
 - Create and delete files and directories
 
 Be concise and direct. Use the appropriate tool for each task.`,
-		model: openai(process.env.AI_MODEL ?? "gpt-4o") as unknown as LanguageModelV1,
+		model: openai.chat(process.env.AI_MODEL ?? "gpt-4o"),
 		tools: workspaceTools,
 		state: {
 			storeName: process.env.STATE_STORE_NAME || "statestore",
@@ -150,55 +148,58 @@ function extractFileChanges(
 
 async function waitForWorkflowCompletion(
 	instanceId: string,
-	timeoutMs = 30 * 60 * 1000,
+	timeoutSeconds = 30 * 60,
 ): Promise<{
 	success: boolean;
 	result?: Record<string, unknown>;
 	error?: string;
 }> {
-	const start = Date.now();
-	const pollInterval = 2_000;
+	console.log(`[durable-agent] Waiting for workflow completion: ${instanceId} (timeout=${timeoutSeconds}s)`);
 
-	while (Date.now() - start < timeoutMs) {
-		try {
-			const state = await workflowClient!.getWorkflowState(instanceId, true);
-			if (!state) {
-				return { success: false, error: "Workflow state not found" };
-			}
+	try {
+		// Use Dapr SDK's built-in wait (more reliable than custom polling)
+		const state = await workflowClient!.waitForWorkflowCompletion(
+			instanceId,
+			true, // fetchPayloads
+			timeoutSeconds,
+		);
 
-			const status = String(
-				state.runtimeStatus ?? "",
-			).toUpperCase();
-
-			if (status.includes("COMPLETED")) {
-				let result: Record<string, unknown> = {};
-				if (state.serializedOutput) {
-					try {
-						result = JSON.parse(state.serializedOutput);
-					} catch {
-						result = { raw: state.serializedOutput };
-					}
-				}
-				return { success: true, result };
-			}
-
-			if (status.includes("FAILED") || status.includes("TERMINATED")) {
-				let error = "Workflow failed";
-				if ((state as any).failureDetails?.message) {
-					error = (state as any).failureDetails.message;
-				}
-				return { success: false, error };
-			}
-
-			// Still running — wait and poll again
-		} catch (err) {
-			console.warn(`[durable-agent] Poll error for ${instanceId}: ${err}`);
+		if (!state) {
+			console.warn(`[durable-agent] Workflow state not found: ${instanceId}`);
+			return { success: false, error: "Workflow state not found" };
 		}
 
-		await new Promise((r) => setTimeout(r, pollInterval));
-	}
+		// WorkflowRuntimeStatus enum: RUNNING=0, COMPLETED=1, FAILED=3, TERMINATED=5
+		const statusNum = state.runtimeStatus;
+		console.log(`[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`);
 
-	return { success: false, error: `Workflow timed out after ${timeoutMs}ms` };
+		if (statusNum === 1) {
+			// COMPLETED
+			let result: Record<string, unknown> = {};
+			if (state.serializedOutput) {
+				try {
+					result = JSON.parse(state.serializedOutput);
+				} catch {
+					result = { raw: state.serializedOutput };
+				}
+			}
+			return { success: true, result };
+		}
+
+		if (statusNum === 3 || statusNum === 5) {
+			// FAILED or TERMINATED
+			let error = "Workflow failed";
+			if ((state as any).failureDetails?.message) {
+				error = (state as any).failureDetails.message;
+			}
+			return { success: false, error };
+		}
+
+		return { success: false, error: `Unexpected status: ${statusNum}` };
+	} catch (err) {
+		console.error(`[durable-agent] waitForWorkflowCompletion error: ${err}`);
+		return { success: false, error: String(err) };
+	}
 }
 
 // ── Express Server ────────────────────────────────────────────
@@ -280,6 +281,7 @@ app.post("/api/run", async (req, res) => {
 
 		// Fire-and-forget: wait for completion in background, then publish
 		(async () => {
+			console.log(`[durable-agent] Background: starting completion wait for ${instanceId} (parent=${parentExecutionId})`);
 			try {
 				const completion = await waitForWorkflowCompletion(instanceId);
 

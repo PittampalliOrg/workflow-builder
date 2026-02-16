@@ -38,8 +38,11 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 }
 
 /**
- * Publish an agent_completed event in the format the orchestrator's
- * subscription handler (agent_events) expects.
+ * Publish an agent_completed event by directly raising an external event
+ * on the orchestrator's parent workflow via Dapr service invocation.
+ *
+ * This bypasses pub/sub (which requires matching component scoping) and
+ * instead calls the orchestrator's raise_event API directly.
  */
 export async function publishCompletionEvent(opts: {
 	agentWorkflowId: string;
@@ -48,32 +51,44 @@ export async function publishCompletionEvent(opts: {
 	result?: Record<string, unknown>;
 	error?: string;
 }): Promise<void> {
+	if (!opts.parentExecutionId) {
+		console.warn("[dapr] No parentExecutionId, skipping completion event");
+		return;
+	}
+
+	const orchestratorAppId = process.env.ORCHESTRATOR_APP_ID ?? "workflow-orchestrator";
+	const eventName = `agent_completed_${opts.agentWorkflowId}`;
+	const eventData = {
+		workflow_id: opts.agentWorkflowId,
+		phase: "agent",
+		success: opts.success,
+		result: opts.result ?? {},
+		error: opts.error,
+		timestamp: new Date().toISOString(),
+	};
+
+	// Raise external event on the orchestrator's parent workflow via Dapr service invocation
+	const url = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/invoke/${orchestratorAppId}/method/api/v2/workflows/${opts.parentExecutionId}/events`;
+
 	try {
-		const resp = await fetch(publishUrl, {
+		const resp = await fetch(url, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				source: "durable-agent",
-				type: "agent_completed",
-				workflowId: opts.agentWorkflowId,
-				data: {
-					parent_execution_id: opts.parentExecutionId,
-					success: opts.success,
-					result: opts.result ?? {},
-					error: opts.error,
-				},
-				timestamp: new Date().toISOString(),
+				eventName,
+				eventData,
 			}),
 		});
 		if (!resp.ok) {
-			console.warn(`[dapr] Publish completion failed: ${resp.status}`);
+			const body = await resp.text();
+			console.warn(`[dapr] Raise event failed: ${resp.status} ${body}`);
 		} else {
 			console.log(
-				`[dapr] Published agent_completed for ${opts.agentWorkflowId} (success=${opts.success})`,
+				`[dapr] Raised external event "${eventName}" on parent ${opts.parentExecutionId} (success=${opts.success})`,
 			);
 		}
 	} catch (err) {
-		console.error(`[dapr] Failed to publish completion event: ${err}`);
+		console.error(`[dapr] Failed to raise completion event: ${err}`);
 	}
 }
 

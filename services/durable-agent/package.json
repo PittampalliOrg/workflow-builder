@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@dapr/dapr": "^3.4.0",
-    "@ai-sdk/openai": "^2.0.91",
-    "ai": "^4.0.0",
+    "@ai-sdk/openai": "^3.0.0",
+    "ai": "^6.0.0",
     "express": "^4.21.0",
     "nanoid": "^5.0.0",
     "zod": "^3.23.0"
