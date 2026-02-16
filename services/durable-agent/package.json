@@ -1,0 +1,29 @@
+{
+  "name": "durable-agent-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Durable agent service — Dapr Workflow-backed ReAct agent with workspace tools, K8s sandbox, and planning",
+  "main": "dist/service/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/service/main.js",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@dapr/dapr": "^3.4.0",
+    "@ai-sdk/openai": "^2.0.91",
+    "ai": "^4.0.0",
+    "express": "^4.21.0",
+    "nanoid": "^5.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.0.18"
+  }
+}

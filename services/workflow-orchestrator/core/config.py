@@ -50,6 +50,7 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     MASTRA_AGENT_APP_ID: str = "mastra-agent-tanstack"
+    DURABLE_AGENT_APP_ID: str = "durable-agent"
 
     # Tracks whether Dapr Configuration was used
     _loaded_from_dapr: bool = field(default=False, repr=False)
@@ -67,6 +68,7 @@ class OrchestratorConfig:
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
             f"MASTRA_AGENT_APP_ID={self.MASTRA_AGENT_APP_ID}, "
+            f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
 
@@ -78,6 +80,7 @@ class OrchestratorConfig:
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
                 "MASTRA_AGENT_APP_ID",
+                "DURABLE_AGENT_APP_ID",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -121,6 +124,7 @@ class OrchestratorConfig:
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-tanstack"),
+            "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
         }
 
         for attr, (env_var, default) in field_map.items():

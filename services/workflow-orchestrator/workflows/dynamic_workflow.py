@@ -300,7 +300,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 action_type = config.get("actionType", "")
 
                 # Long-running child workflows (bypass function-router)
-                if action_type.startswith("agent/") or action_type == "mastra/execute":
+                if action_type.startswith("agent/") or action_type == "mastra/execute" or action_type.startswith("durable/"):
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
                     node_start_time = time.time()
@@ -1018,6 +1018,9 @@ def process_agent_child_workflow(
     if action_type == "mastra/execute":
         from activities.call_agent_service import call_mastra_execute_plan
         call_activity_fn = call_mastra_execute_plan
+    elif action_type.startswith("durable/"):
+        from activities.call_agent_service import call_durable_agent_run
+        call_activity_fn = call_durable_agent_run
     else:
         # All agent/* action types route to mastra-agent-tanstack
         from activities.call_agent_service import call_mastra_agent_run

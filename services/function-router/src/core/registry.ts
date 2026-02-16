@@ -17,6 +17,7 @@ const REGISTRY_FILE_PATH =
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
 	"mastra/*": { appId: "mastra-agent-tanstack", type: "knative" },
+	"durable/*": { appId: "durable-agent", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -27,6 +28,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
 	"mastra/*": { appId: "mastra-agent-tanstack", type: "knative" },
+	"durable/*": { appId: "durable-agent", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

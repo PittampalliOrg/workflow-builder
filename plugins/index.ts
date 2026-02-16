@@ -16,6 +16,7 @@
 
 import "./blob";
 import "./clerk";
+import "./durable-agent";
 import "./fal";
 import "./firecrawl";
 import "./github";

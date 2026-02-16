@@ -114,15 +114,6 @@ type MastraToolResponse = {
 	message?: unknown;
 };
 
-
-
-
-
-
-
-
-
-
 function parseJsonResponse(responseText: string): unknown {
 	if (!responseText) {
 		return null;
@@ -132,6 +123,62 @@ function parseJsonResponse(responseText: string): unknown {
 	} catch {
 		return null;
 	}
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeSystemHttpRequestInput(input: Record<string, unknown>): {
+	input: Record<string, unknown>;
+	error?: string;
+} {
+	// Some callers persist params under `configFields`; merge them so runtime always
+	// sees the canonical shape expected by fn-system.
+	const merged = {
+		...input,
+		...(isPlainObject(input.configFields) ? input.configFields : {}),
+	};
+
+	// Back-compat: older schema used { url, method, headers, body }.
+	const endpoint =
+		typeof merged.endpoint === "string"
+			? merged.endpoint
+			: typeof merged.url === "string"
+				? merged.url
+				: merged.endpoint;
+	const httpMethod =
+		typeof merged.httpMethod === "string"
+			? merged.httpMethod
+			: typeof merged.method === "string"
+				? merged.method
+				: merged.httpMethod;
+	const httpHeaders = merged.httpHeaders ?? merged.headers;
+	const httpBody = merged.httpBody ?? merged.body;
+
+	const normalized = {
+		...merged,
+		endpoint,
+		httpMethod,
+		httpHeaders,
+		httpBody,
+		// Keep legacy keys around as well (harmless, helps old templates).
+		url: merged.url ?? endpoint,
+		method: merged.method ?? httpMethod,
+		headers: merged.headers ?? httpHeaders,
+		body: merged.body ?? httpBody,
+	};
+
+	if (typeof normalized.endpoint !== "string" || !normalized.endpoint.trim()) {
+		return {
+			input: normalized,
+			error:
+				"system/http-request: missing required `endpoint` (or legacy `url`). " +
+				"Set `endpoint` to a non-empty URL string.",
+		};
+	}
+
+	return { input: normalized };
 }
 
 /** Keys that are metadata, not tool arguments. */
@@ -373,17 +420,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({ args });
 						}
 
-						const httpResponse = await fetch(
-							targetUrl,
-							{
-								method: "POST",
-								headers: {
-									"Content-Type": "application/json",
-								},
-								body: requestBody,
-								signal: controller.signal,
+						const httpResponse = await fetch(targetUrl, {
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
 							},
-						);
+							body: requestBody,
+							signal: controller.signal,
+						});
 
 						clearTimeout(timeoutId);
 						timing.executionMs = Date.now() - executionStartTime;
@@ -445,7 +489,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						} else if (
 							parsedMastra &&
-							(typeof parsedMastra.workflowId === "string" || typeof parsedMastra.workflow_id === "string")
+							(typeof parsedMastra.workflowId === "string" ||
+								typeof parsedMastra.workflow_id === "string")
 						) {
 							response = {
 								success: true,
@@ -484,12 +529,154 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						}
 						throw httpError;
 					}
+				} else if (target.appId === "durable-agent") {
+					console.log(
+						`[Execute Route] Invoking durable-agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
+					);
+
+					const controller = new AbortController();
+					const timeoutId = setTimeout(
+						() => controller.abort(),
+						HTTP_TIMEOUT_MS,
+					);
+					const executionStartTime = Date.now();
+
+					try {
+						const resolvedInput = body.input as Record<string, unknown>;
+						const toolId = stepName;
+						let targetUrl: string;
+						let requestBody: string;
+
+						if (toolId === "run") {
+							targetUrl = `${functionUrl}/api/run`;
+							requestBody = JSON.stringify({
+								prompt: resolvedInput.prompt || resolvedInput.input || "",
+								parentExecutionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (toolId === "plan") {
+							targetUrl = `${functionUrl}/api/plan`;
+							requestBody = JSON.stringify({
+								prompt: resolvedInput.prompt || resolvedInput.input || "",
+								cwd: resolvedInput.cwd || "",
+							});
+						} else if (toolId === "execute") {
+							targetUrl = `${functionUrl}/api/execute-plan`;
+							requestBody = JSON.stringify({
+								prompt: resolvedInput.prompt || "",
+								plan: resolvedInput.planJson || resolvedInput.plan || null,
+								cwd: resolvedInput.cwd || "",
+								parentExecutionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else {
+							// Direct tool call
+							targetUrl = `${functionUrl}/api/tools/${encodeURIComponent(toolId)}`;
+							requestBody = JSON.stringify({
+								args: resolvedInput,
+							});
+						}
+
+						const httpResponse = await fetch(targetUrl, {
+							method: "POST",
+							headers: { "Content-Type": "application/json" },
+							body: requestBody,
+							signal: controller.signal,
+						});
+						clearTimeout(timeoutId);
+						timing.executionMs = Date.now() - executionStartTime;
+
+						const responseText = await httpResponse.text();
+						let parsedResponse: Record<string, unknown>;
+						try {
+							parsedResponse = JSON.parse(responseText) as Record<string, unknown>;
+						} catch {
+							parsedResponse = { raw: responseText };
+						}
+
+						if (!httpResponse.ok) {
+							throw new Error(
+								`durable-agent returned ${httpResponse.status}: ${responseText.slice(0, 300)}`,
+							);
+						}
+
+						response = {
+							success: parsedResponse.success !== false,
+							data: {
+								toolId,
+								result: parsedResponse.result || parsedResponse,
+								workflow_id: parsedResponse.workflow_id,
+							},
+							duration_ms: timing.executionMs,
+						};
+					} catch (httpError) {
+						clearTimeout(timeoutId);
+						timing.executionMs = Date.now() - executionStartTime;
+						if (httpError instanceof Error && httpError.name === "AbortError") {
+							throw new Error(
+								`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
+							);
+						}
+						throw httpError;
+					}
 				} else {
 					const isApRoute = target.appId === "fn-activepieces";
 					const parsedConnectionExternalId =
 						parseConnectionExternalIdFromAuthTemplate(body.input?.auth);
 					const connectionExternalId =
 						body.connection_external_id || parsedConnectionExternalId;
+
+					// Normalize system/* inputs so older saved workflows and/or AI-generated
+					// configs don't fail strict fn-system validation.
+					let normalizedInput = body.input as Record<string, unknown>;
+					if (pluginId === "system" && stepName === "http-request") {
+						const normalized = normalizeSystemHttpRequestInput(normalizedInput);
+						normalizedInput = normalized.input;
+
+						if (normalized.error) {
+							const duration_ms = Date.now() - startTime;
+							const response: ExecuteResponse = {
+								success: false,
+								error: normalized.error,
+								duration_ms,
+								routed_to: target.appId,
+							};
+
+							console.warn(
+								`[Execute Route] Validation failed before invoking fn-system: ${normalized.error}`,
+							);
+
+							if (logId && body.db_execution_id) {
+								try {
+									await logExecutionComplete(logId, {
+										success: false,
+										error: normalized.error,
+										durationMs: duration_ms,
+										timing,
+									});
+								} catch (logError) {
+									console.error(
+										"[Execute Route] Failed to log execution completion:",
+										logError,
+									);
+								}
+							}
+
+							return reply.status(200).send(response);
+						}
+					} else if (
+						pluginId === "system" &&
+						isPlainObject(normalizedInput.configFields)
+					) {
+						normalizedInput = {
+							...normalizedInput,
+							...normalizedInput.configFields,
+						};
+					}
 
 					// Pre-fetch credentials
 					const credentialStartTime = Date.now();
@@ -535,7 +722,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						execution_id: body.execution_id,
 						workflow_id: body.workflow_id,
 						node_id: body.node_id,
-						input: body.input as Record<string, unknown>,
+						input: normalizedInput,
 						node_outputs: body.node_outputs,
 						credentials: credentialResult.credentials,
 						...(isApRoute && {
