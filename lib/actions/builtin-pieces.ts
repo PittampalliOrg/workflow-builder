@@ -299,6 +299,14 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "{{Clone.result.clonePath}}",
 				},
 				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					defaultValue: "50",
+					placeholder: "50",
+					min: 1,
+				},
+				{
 					key: "timeoutMinutes",
 					label: "Timeout (minutes)",
 					type: "number",
@@ -332,6 +340,14 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 						"Describe the task. The agent will use workspace tools autonomously.",
 					rows: 4,
 					required: true,
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					defaultValue: "50",
+					placeholder: "50",
+					min: 1,
 				},
 			],
 			outputFields: [
@@ -496,6 +512,56 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const DURABLE_AGENT_PIECE: IntegrationDefinition = {
+	type: "durable",
+	label: "Durable Agent",
+	pieceName: "durable",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Durable Agent Run",
+			description:
+				"Run the durable agent with a prompt — survives restarts, has built-in retries",
+			category: "Durable Agent",
+			configFields: [
+				{
+					key: "prompt",
+					label: "Prompt",
+					type: "template-textarea",
+					placeholder: "What should the agent do?",
+					required: true,
+					rows: 4,
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					defaultValue: "50",
+					placeholder: "50",
+					min: 1,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					defaultValue: "30",
+					placeholder: "30",
+					min: 1,
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Agent response text" },
+				{ field: "toolCalls", description: "Tools called during execution" },
+				{ field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
+				{ field: "patch", description: "Unified diff patch of all file changes" },
+				{ field: "usage", description: "Token usage statistics" },
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, AGENT_PIECE, MASTRA_AGENT_PIECE];
+	return [MCP_PIECE, AGENT_PIECE, MASTRA_AGENT_PIECE, DURABLE_AGENT_PIECE];
 }

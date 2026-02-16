@@ -1,6 +1,7 @@
 import type { IntegrationPlugin } from "../registry";
 import { registerIntegration } from "../registry";
 import { MastraAgentIcon } from "./icon";
+import { MastraAgentResult } from "./result-component";
 
 const mastraAgentPlugin: IntegrationPlugin = {
   type: "agent",
@@ -30,6 +31,15 @@ const mastraAgentPlugin: IntegrationPlugin = {
           rows: 4,
         },
         {
+          key: "maxTurns",
+          label: "Max Turns",
+          type: "number",
+          defaultValue: "50",
+          placeholder: "50",
+          min: 1,
+          required: false,
+        },
+        {
           key: "timeoutMinutes",
           label: "Timeout (minutes)",
           type: "number",
@@ -42,8 +52,14 @@ const mastraAgentPlugin: IntegrationPlugin = {
       outputFields: [
         { field: "text", description: "Agent response text" },
         { field: "toolCalls", description: "Tools called during execution" },
+        { field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
+        { field: "patch", description: "Unified diff patch of all file changes" },
         { field: "usage", description: "Token usage statistics" },
       ],
+      outputConfig: {
+        type: "component",
+        component: MastraAgentResult,
+      },
     },
   ],
 };

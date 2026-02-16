@@ -1,6 +1,6 @@
 # Workflow Builder
 
-Visual workflow builder with Dapr workflow orchestration, Mastra AI agents, and MCP server integration. The Next.js app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
+Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. The Next.js app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
 
 ## Architecture
 
@@ -17,18 +17,17 @@ Visual workflow builder with Dapr workflow orchestration, Mastra AI agents, and 
 │         │               │  - AP flow walker (linked-list execution)    │ │
 │         │               └──────────┬──────────────┬───────────────────┘ │
 │         │                          │              │                      │
-│  OAuth2 PKCE +          Dapr svc invoke          │ Dapr svc invoke      │
-│  App Connections                   ▼              ▼                      │
-│         │               ┌──────────────────────────────┐                │
-│         │               │  function-router              │                │
-│         │               │  - Registry-based routing     │                │
-│         │               │  - Credential pre-fetch       │                │
-│         │               │  - AP credential decrypt      │                │
-│         │               └──────────┬───────────────────┘                │
-│         │                          │                                     │
-│         │          ┌───────────────┼───────────────────┐                │
-│         │          │               │                   │                │
-│         │          ▼               ▼                   ▼                │
+│  OAuth2 PKCE +          Dapr svc invoke    Dapr svc invoke              │
+│  App Connections                   │              │                      │
+│         │               ┌─────────▼──┐    ┌──────▼──────────────┐      │
+│         │               │ function-  │    │  durable-agent       │      │
+│         │               │ router     │    │  (Dapr Workflow      │      │
+│         │               │ (registry) │    │   ReAct loop, AI     │      │
+│         │               └─────┬──────┘    │   SDK 6, sandbox)    │      │
+│         │                     │           └─────────────────────┘      │
+│         │          ┌──────────┼────────────────┐                       │
+│         │          │          │                │                        │
+│         │          ▼          ▼                ▼                        │
 │  ┌──────────────┐  ┌────────────┐  ┌──────────────┐                   │
 │  │ mastra-agent │  │ fn-active  │  │  fn-system    │                   │
 │  │ -tanstack    │  │ -pieces    │  │  (http-req,   │                   │
@@ -60,8 +59,9 @@ The Next.js app makes direct HTTP calls to the orchestrator service. No Dapr sid
 - **Database**: PostgreSQL via Drizzle ORM
 - **Auth**: Better Auth (email/password, social login via GitHub/Google, JWT API keys)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
-- **AI Agent**: Mastra SDK (@mastra/core) via mastra-agent-tanstack — workspace tools, sandbox, planning
-- **Function Execution**: function-router → fn-system, fn-activepieces, mastra-agent-tanstack (registry-based)
+- **Durable AI Agent**: durable-agent (Dapr Workflow-backed ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service for all agent/*, durable/*, and mastra/execute actions
+- **Mastra Agent** (legacy): mastra-agent-tanstack (Mastra SDK, TanStack Start) — still deployed for MCP/monitoring, no longer primary for agent routing
+- **Function Execution**: function-router → fn-system, fn-activepieces, durable-agent (registry-based)
 - **MCP Integration**: workflow-mcp-server (workflow tools), piece-mcp-server (AP piece tools), mcp-gateway (hosted MCP)
 - **Activepieces Integration**: 42 AP piece packages via piece-mcp-server + fn-activepieces, OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry across all services → OTEL Collector → Jaeger
@@ -94,7 +94,7 @@ app/
       [id]/status/route.ts         # Get workflow status
       [id]/events/route.ts         # Raise external event
     dapr/workflows/                # Dapr workflow status + events
-      [id]/status/route.ts         # Poll orchestrator status
+      [id]/status/route.ts         # Poll orchestrator status (writes output to DB on terminal)
       [id]/events/route.ts         # SSE event stream
     app-connections/               # App connection CRUD + OAuth2
       route.ts                     # List/create connections
@@ -140,6 +140,7 @@ app/
 lib/
   api-client.ts                    # Client-side API client (api.workflow.*, api.piece.*, etc.)
   workflow-store.ts                # Jotai atoms, node/edge types
+  workflow-definition.ts           # Workflow serialization (serializeNode, serializeWorkflow)
   dapr-activity-registry.ts        # Dapr workflow primitives (approval gates, timers)
   dapr-client.ts                   # Dapr orchestrator API client (generic)
   auth-service.ts                  # Auth service (Better Auth + JWT API keys)
@@ -149,6 +150,18 @@ lib/
   codegen-registry.ts              # Code generation templates
   config-service.ts                # Dapr Configuration building block client
   platform-service.ts              # Platform/project management
+  workflow-spec/                   # WorkflowSpec v1 JSON import/export and lint
+    types.ts                       # WorkflowSpec type definitions
+    lint.ts                        # Workflow spec linter
+    decompile.ts                   # Decompile workflow to spec
+    action-config-zod.ts           # Action config Zod schemas
+    system-actions.ts              # System action definitions
+    catalog-server.ts              # Catalog server for spec tools
+  ai/
+    workflow-generation.ts         # AI workflow generation
+    workflow-spec-generation.ts    # AI spec generation
+    action-list-prompt.ts          # Action list prompt builder
+    validated-operation-stream.ts  # Validated operation streaming
   db/
     schema.ts                      # Drizzle ORM schema (PostgreSQL)
     migrate.ts                     # Migration runner
@@ -162,7 +175,7 @@ lib/
     installed-pieces.ts            # Single source of truth for installed AP pieces
     action-adapter.ts              # AP props → WB ActionConfigField converter
   actions/
-    builtin-pieces.ts              # Builtin piece definitions (agent, mastra)
+    builtin-pieces.ts              # Builtin piece definitions (agent, mastra, durable, mcp)
     connection-utils.ts            # Action-to-connection mapping utilities
   mcp-chat/tools.ts                # MCP Chat tool definitions
   types/
@@ -171,7 +184,8 @@ lib/
 
 services/
   workflow-orchestrator/           # Python Dapr workflow orchestrator (ACTIVE)
-  mastra-agent-tanstack/           # Mastra AI agent with TanStack Start (ACTIVE)
+  durable-agent/                   # Durable AI agent — Dapr Workflow ReAct loop (ACTIVE, PRIMARY)
+  mastra-agent-tanstack/           # Mastra AI agent with TanStack Start (ACTIVE, SECONDARY)
   mastra-agent-mcp/                # Mastra agent MCP server variant (ACTIVE)
   function-router/                 # Function execution router (ACTIVE)
   fn-activepieces/                 # AP piece action executor (ACTIVE)
@@ -179,12 +193,16 @@ services/
   workflow-mcp-server/             # Workflow MCP tools + React UI (ACTIVE)
   piece-mcp-server/                # AP piece MCP server + MCP Apps UI (ACTIVE)
   mcp-gateway/                     # Hosted MCP server gateway (ACTIVE)
+  node-sandbox/                    # Node.js runtime sandbox (drop-in replacement)
   shared/                          # Shared utilities (logger)
 
 components/
   workflow/
     workflow-canvas.tsx            # React Flow canvas with node types
     node-config-panel.tsx          # Properties/Code/Runs tabs
+    workflow-runs.tsx              # Runs tab — execution history and output
+    ai-chat-panel.tsx              # AI chat panel for workflow generation
+    approval-banner.tsx            # Approval gate banner
     nodes/                         # Node components (trigger, action, etc.)
     config/
       action-config.tsx            # Action node configuration (builtin + AP)
@@ -202,6 +220,7 @@ components/
 plugins/                           # Plugin registry
   registry.ts                      # Plugin registration and discovery
   mastra-agent/                    # Mastra Agent plugin (mastra-run action)
+  durable-agent/                   # Durable Agent plugin (durable/run action)
   openai/                          # OpenAI plugin (text/image generation)
   mcp/                             # MCP plugin
   slack/                           # Slack plugin
@@ -225,6 +244,9 @@ scripts/
   sync-oauth-apps.ts               # Sync OAuth app configurations
   db-migrate-safe.ts               # Safe migration runner
   db-baseline-drizzle.ts           # Baseline Drizzle migrations
+  migrate-system-http-request-input.ts  # Data migration for http-request input schema
+  workflow-spec-lint.ts            # CLI for linting workflow specs
+  test-llm-create-and-execute.ts   # E2E test: LLM-generated workflow + execution
 ```
 
 ## Services
@@ -233,11 +255,11 @@ scripts/
 
 The generic workflow engine. Interprets workflow definitions from the visual builder,
 executing nodes in topological order via Dapr activities. Routes agent actions to
-mastra-agent-tanstack. Also runs Activepieces flows via a linked-list step walker.
+durable-agent. Also runs Activepieces flows via a linked-list step walker.
 
 - **Port**: 8080
 - **Dapr app-id**: `workflow-orchestrator`
-- **Calls**: function-router (for sync action nodes including mastra/clone, mastra/plan), mastra-agent-tanstack (for async agent/* and mastra/execute actions), fn-activepieces (for AP piece actions)
+- **Calls**: function-router (for sync action nodes including mastra/clone, mastra/plan), durable-agent (for async agent/*, durable/*, and mastra/execute actions), fn-activepieces (for AP piece actions)
 - **Key endpoints**:
   - `POST /api/v2/workflows` - Start a WB workflow instance (expects pre-serialized nodes)
   - `POST /api/v2/workflows/execute-by-id` - Start workflow by DB ID (fetches + serializes nodes automatically)
@@ -245,17 +267,42 @@ mastra-agent-tanstack. Also runs Activepieces flows via a linked-list step walke
   - `GET /api/v2/workflows/{id}/status` - Get workflow status
   - `POST /api/v2/workflows/{id}/events` - Raise external event (approvals)
   - `POST /api/v2/workflows/{id}/terminate` - Terminate workflow
-- **Routing split** (`workflows/dynamic_workflow.py:303`): Only `agent/*` and `mastra/execute` go through the async `process_agent_child_workflow` handler (fire-and-forget + external event completion). All other `mastra/*` actions (clone, plan) go through `execute_action` → function-router synchronously.
+- **Routing split** (`workflows/dynamic_workflow.py:304`): `agent/*`, `durable/*`, and `mastra/execute` go through the async `process_agent_child_workflow` handler (fire-and-forget + external event completion). All other `mastra/*` actions (clone, plan) go through `execute_action` → function-router synchronously.
 - **Agent routing** (`activities/call_agent_service.py`):
-  - `agent/mastra-run` → `call_mastra_agent_run()` → mastra-agent-tanstack `/api/run`
-  - `mastra/execute` → `call_mastra_execute_plan()` → mastra-agent-tanstack `/api/execute-plan`
-- **Config** (`core/config.py`): `MASTRA_AGENT_APP_ID=mastra-agent-tanstack`, `FUNCTION_ROUTER_APP_ID=function-router`
+  - `agent/*`, `durable/*` → `call_durable_agent_run()` → durable-agent `/api/run`
+  - `mastra/execute` → `call_durable_execute_plan()` → durable-agent `/api/execute-plan`
+- **Output persistence** (`activities/persist_results_to_db.py`): At workflow completion (success or error), persists final output to `workflow_executions.output` in PostgreSQL. Belt-and-suspenders with the status polling endpoint.
+- **Config** (`core/config.py`): `DURABLE_AGENT_APP_ID=durable-agent`, `MASTRA_AGENT_APP_ID=mastra-agent-tanstack`, `FUNCTION_ROUTER_APP_ID=function-router`
 - **AP workflow** (`workflows/ap_workflow.py`): Walks AP's linked-list flow format natively with step handlers for PIECE, CODE, ROUTER (condition branching), and LOOP_ON_ITEMS.
+
+### durable-agent (TypeScript/Express)
+
+Primary AI agent service using a Dapr Workflow-backed ReAct loop. Survives pod restarts,
+has built-in retries, and uses deterministic replay for durability.
+
+- **Port**: 8001
+- **Dapr app-id**: `durable-agent`
+- **Framework**: Express + @dapr/dapr ^3.4.0 + AI SDK 6 (@ai-sdk/openai)
+- **Key endpoints**:
+  - `POST /api/run` - Fire-and-forget agent run (schedules Dapr workflow)
+  - `POST /api/plan` - Synchronous planning (generates structured plan)
+  - `POST /api/execute-plan` - Fire-and-forget plan execution (schedules Dapr workflow)
+  - `GET /api/tools` - List available workspace tools
+  - `POST /api/tools/:toolId` - Execute a workspace tool directly
+  - `GET /api/health` - Health check with agent status
+  - `GET /api/dapr/subscribe` - Dapr subscription discovery
+- **Workspace tools**: `read_file`, `write_file`, `edit_file`, `list_files`, `delete`, `mkdir`, `file_stat`, `execute_command`
+- **ReAct loop** (`workflow/agent-workflow.ts`): Dapr workflow generator — LLM call → tool execution → LLM call → ... → final text answer. Accumulates all tool calls across turns in `AgentWorkflowResult.all_tool_calls`.
+- **Per-request maxTurns**: Accepts `maxTurns` in request body, passed as `maxIterations` in workflow trigger. Default: 50 (configurable via `MAX_ITERATIONS` env var).
+- **Sandbox**: K8s (KubernetesSandbox) with bubblewrap fallback for local dev
+- **Completion**: Waits for Dapr workflow completion in background, extracts tool calls + file changes + git diff, publishes completion event via direct service invocation to orchestrator `/api/v2/workflows/{id}/events`
+- **Dapr components**: `durable-statestore` (Redis, actorStateStore), `durable-pubsub` (NATS JetStream) — separate from orchestrator's components due to ArgoCD scoping
+- **Build**: `docker build -f services/durable-agent/Dockerfile services/durable-agent/` (context is service dir, NOT project root)
 
 ### mastra-agent-tanstack (TypeScript/TanStack Start)
 
-Primary AI agent service using Mastra SDK with workspace tools and sandboxed execution.
-Runs as a full-stack TanStack Start application with SSR UI for monitoring.
+Secondary AI agent service using Mastra SDK. Still deployed for MCP endpoint access and
+monitoring UI, but no longer primary for agent routing (durable-agent handles that).
 
 - **Port**: 3000 (TanStack Start)
 - **Dapr app-id**: `mastra-agent-tanstack`
@@ -302,7 +349,8 @@ Routes function execution to the appropriate service based on a registry.
 - **Key endpoint**: `POST /execute`
 - **Registry** (`core/registry.ts`): Loaded from ConfigMap file, env var, or hardcoded defaults:
   - `system/*` → `fn-system` (http-request, database-query, condition)
-  - `mastra/*` → `mastra-agent-tanstack`
+  - `mastra/*` → `durable-agent`
+  - `durable/*` → `durable-agent`
   - `_default` → `fn-activepieces` (all other slugs)
 - **Routing**: Exact match → wildcard match → builtin fallback → `_default`
 - **Credentials**: Pre-fetches from Dapr secret store (Azure Key Vault) or decrypts AP app connections via internal API
@@ -362,6 +410,14 @@ and delegates execution to the workflow-builder Next.js app via internal endpoin
 - **Flow**: Fetch MCP server config → register enabled workflow tools → execute workflow on tool call → poll for response
 - **Internal calls**: Uses `X-Internal-Token` to call workflow-builder `/api/internal/mcp/*` endpoints
 
+### node-sandbox (Node.js)
+
+Simple HTTP runtime sandbox. Drop-in replacement for python-runtime-sandbox.
+
+- **Port**: 8888
+- **Endpoints**: `GET /` (readiness), `GET /health`, `POST /execute` (shell command), `POST /upload` (file upload)
+- **Runtime**: Node.js 22-slim, git/curl installed, runs as non-root
+
 ## Node Types
 
 The workflow builder supports these node types:
@@ -382,16 +438,28 @@ The workflow builder supports these node types:
 
 ### Action Routing
 
-Actions are routed by `actionType` slug prefix. Sync actions go through function-router; async actions use `process_agent_child_workflow` (fire-and-forget + Dapr pub/sub completion event).
+Actions are routed by `actionType` slug prefix. Sync actions go through function-router; async actions use `process_agent_child_workflow` (fire-and-forget + Dapr external event completion).
 
 | Prefix | Service | Sync/Async | Examples |
 |--------|---------|------------|----------|
 | `system/*` | fn-system (via function-router) | Sync | `system/http-request`, `system/database-query`, `system/condition` |
-| `mastra/clone` | mastra-agent-tanstack (via function-router) | Sync | Clone a git repo |
-| `mastra/plan` | mastra-agent-tanstack (via function-router) | Sync | Generate execution plan |
-| `mastra/execute` | mastra-agent-tanstack (direct) | Async | Execute a plan (fire-and-forget) |
-| `agent/mastra-run` | mastra-agent-tanstack (direct) | Async | Agent run with prompt |
+| `mastra/clone` | durable-agent (via function-router) | Sync | Clone a git repo |
+| `mastra/plan` | durable-agent (via function-router) | Sync | Generate execution plan |
+| `mastra/execute` | durable-agent (direct) | Async | Execute a plan (fire-and-forget) |
+| `agent/*` | durable-agent (direct) | Async | Agent run with prompt |
+| `durable/*` | durable-agent (direct) | Async | Durable agent run with prompt |
 | `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
+
+### Builtin Action Pieces
+
+Defined in `lib/actions/builtin-pieces.ts` and exported via `getBuiltinPieces()`:
+
+| Piece | Type | Actions |
+|-------|------|---------|
+| **Agent** | `agent` | `agent/run` — durable LLM agent with configurable model, maxTurns, stopCondition, allowedActions |
+| **Mastra Agent** | `mastra` | `mastra/clone`, `mastra/plan`, `mastra/execute`, `mastra/run`, `mastra/read-file`, `mastra/write-file`, `mastra/edit-file`, `mastra/list-files`, `mastra/execute-command`, `mastra/delete`, `mastra/mkdir` |
+| **Durable Agent** | `durable` | `durable/run` — durable agent with prompt, maxTurns, timeout |
+| **MCP** | `mcp` | `mcp/reply-to-client` — return response to MCP client |
 
 ## Plugin Registry
 
@@ -402,7 +470,7 @@ pnpm discover-plugins  # Generates plugins/index.ts
 pnpm seed-functions    # Seeds functions table from plugins
 ```
 
-**Current plugins**: `openai`, `mastra-agent`, `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
+**Current plugins**: `openai`, `mastra-agent`, `durable-agent`, `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
 
 ## MCP Integration
 
@@ -437,7 +505,8 @@ MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI in chat:
 - `user_id`, `project_id` — ownership
 - `mcp_trigger_tool_name`, `mcp_trigger_tool_description`, `mcp_trigger_input_schema`, `mcp_trigger_returns_response` — MCP trigger config
 
-**workflow_executions**: `id`, `workflow_id`, `dapr_instance_id`, `status`, `phase`, `trigger_data`, `result`
+**workflow_executions**: `id`, `workflow_id`, `dapr_instance_id`, `status`, `phase`, `trigger_data`, `output` (JSONB), `error`, `started_at`, `completed_at`, `duration`
+- `output` is written via two complementary paths: (1) status polling endpoint on terminal status, (2) `persist_results_to_db` orchestrator activity at workflow completion
 
 **functions**: `id`, `slug`, `name`, `plugin_id`, `execution_type` (builtin/oci/http), `is_builtin`, `is_enabled`
 
@@ -489,6 +558,7 @@ Credentials are AES-256-CBC encrypted at rest. Supported auth types: `OAUTH2`, `
 | `NEXT_PUBLIC_APP_URL` | Public app URL | `http://localhost:3000` |
 | `WORKFLOW_ORCHESTRATOR_URL` | Orchestrator service URL | `http://workflow-orchestrator:8080` |
 | `FUNCTION_RUNNER_APP_ID` | Function router Dapr app-id | `function-router` |
+| `DURABLE_AGENT_APP_ID` | Durable agent Dapr app-id | `durable-agent` |
 | `DAPR_HOST` | Dapr sidecar host | `localhost` |
 | `DAPR_HTTP_PORT` | Dapr HTTP port | `3500` |
 | `DAPR_SECRETS_STORE` | Dapr secret store name | `azure-keyvault` |
@@ -497,12 +567,15 @@ Credentials are AES-256-CBC encrypted at rest. Supported auth types: `OAUTH2`, `
 | `NEXT_PUBLIC_AUTH_PROVIDERS` | Comma-separated auth providers | `email` |
 | `NEXT_PUBLIC_GITHUB_CLIENT_ID` | GitHub OAuth client ID | |
 | `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Google OAuth client ID | |
+| `MAX_ITERATIONS` | Durable agent default max ReAct turns | `50` |
+| `AI_MODEL` | Durable agent LLM model | `gpt-4o` |
 
 ## Deployment (Kind Cluster)
 
 The app runs in the `workflow-builder` namespace with:
 - `workflow-builder` Deployment (1 replica, port 3000)
 - `workflow-orchestrator` Deployment (1 replica, port 8080) with Dapr sidecar
+- `durable-agent` Deployment (port 8001) with Dapr sidecar
 - `mastra-agent-tanstack` Deployment (port 3000) with Dapr sidecar
 - `mastra-agent-mcp` Deployment (port 3300) with Dapr sidecar
 - `function-router` Deployment (1 replica, port 8080) with Dapr sidecar
@@ -523,6 +596,7 @@ Images are pushed to the Gitea registry at `gitea.cnoe.localtest.me:8443/giteaad
 # Build images (Next.js app uses project root; Python/standalone services use their own directory as context)
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder:latest .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/durable-agent:latest -f services/durable-agent/Dockerfile services/durable-agent/
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-tanstack:latest -f services/mastra-agent-tanstack/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-mcp:latest -f services/mastra-agent-mcp/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
@@ -540,6 +614,7 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f se
 | Service | Dapr App ID |
 |---------|-------------|
 | workflow-orchestrator | `workflow-orchestrator` |
+| durable-agent | `durable-agent` |
 | mastra-agent-tanstack | `mastra-agent-tanstack` |
 | mastra-agent-mcp | `mastra-agent-mcp` |
 | function-router | `function-router` |
@@ -550,7 +625,10 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f se
 |-----------|-----------|
 | `workflowstatestore` (Redis) | workflow-orchestrator |
 | `pubsub` (Redis) | workflow-orchestrator, mastra-agent-tanstack, mastra-agent-mcp |
+| `durable-statestore` (Redis, actorStateStore) | durable-agent |
+| `durable-pubsub` (NATS JetStream) | durable-agent |
 | `azure-keyvault` (Secrets) | workflow-orchestrator, function-router |
+| `kubernetes-secrets` (Secrets) | workflow-orchestrator (for DATABASE_URL in persist_results_to_db) |
 
 ### Credential Resolution Priority
 
@@ -563,12 +641,14 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f se
 Agent services stream real-time events for the UI:
 
 ```
-mastra-agent-tanstack
-  → Dapr pub/sub (pubsub)
-  → workflow-orchestrator subscriptions
+durable-agent / mastra-agent-tanstack
+  → Dapr pub/sub (pubsub / durable-pubsub)
+  → workflow-orchestrator subscriptions (or direct service invocation)
   → Next.js app SSE / webhooks
   → Activity Tab UI
 ```
+
+**Completion event delivery**: durable-agent uses direct Dapr service invocation to orchestrator `/api/v2/workflows/{id}/events` (NOT pub/sub — component scoping mismatch between durable-pubsub and orchestrator's pubsub).
 
 **Event types**: `tool_call`, `tool_result`, `phase_started`, `phase_completed`, `phase_failed`, `llm_start`, `llm_end`, `agent_started`, `agent_completed`, `planning_started`, `planning_completed`, `execution_started`, `execution_completed`
 
@@ -589,6 +669,9 @@ devspace dev  # Starts dev mode with file sync
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/<service>:latest -f services/<service>/Dockerfile .
 docker push gitea.cnoe.localtest.me:8443/giteaadmin/<service>:latest
 kubectl rollout restart deployment/<service> -n workflow-builder
+
+# Special case: durable-agent uses service dir as context (not project root)
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/durable-agent:latest -f services/durable-agent/Dockerfile services/durable-agent/
 ```
 
 ## Troubleshooting
@@ -598,17 +681,22 @@ kubectl rollout restart deployment/<service> -n workflow-builder
 - Missing `actionType` in node config → UI bug, recreate node
 - Function not found → Check `functions` table, run `pnpm seed-functions`
 - Missing credentials → Add API keys to Azure Key Vault or create app connections
-- Agent timeout → Check mastra-agent-tanstack logs
+- Agent timeout → Check durable-agent logs (`kubectl logs -l app=durable-agent`)
+- Agent stops before completing plan → Check `maxTurns` setting (default: 50, configurable per-node in UI)
 - AP piece not showing → Check `lib/activepieces/installed-pieces.ts`, re-sync piece metadata
 - OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY`
 - AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches across services
-- Mastra tool call extraction → Check payload wrapper extraction in `extractToolCall()`
+- Tool call extraction → durable-agent returns `all_tool_calls` accumulated across all ReAct turns
 - MCP session stale → Sessions auto-cleanup after 30s TTL; check `/health` endpoint
+- Dapr pub/sub scoping → durable-agent uses `durable-pubsub` (NATS); orchestrator uses `pubsub` (Redis) — they're isolated. Completion events use direct service invocation instead.
+- ArgoCD reverts patches → `automated.prune + ServerSideApply` reverts manual `kubectl patch` on managed resources — create separate resources instead
+- Workflow output lost on navigation → Verify both persistence paths: status polling endpoint writes `output` on terminal status, and `persist_results_to_db` activity writes at completion
 
 ### Service Logs
 
 ```bash
 kubectl logs -n workflow-builder -l app=workflow-orchestrator -c workflow-orchestrator --tail=50
+kubectl logs -n workflow-builder -l app=durable-agent -c durable-agent --tail=50
 kubectl logs -n workflow-builder -l app=mastra-agent-tanstack --tail=50
 kubectl logs -n workflow-builder -l app=function-router -c function-router --tail=50
 kubectl logs -n workflow-builder -l app=fn-activepieces --tail=50
@@ -617,19 +705,25 @@ kubectl logs -n workflow-builder -l app=fn-system --tail=50
 
 ## Migration Notes
 
+### Mastra Agent → Durable Agent (Complete)
+
+Agent routing has been migrated from mastra-agent-tanstack to durable-agent:
+- `agent/*` actions → durable-agent `/api/run` (was mastra-agent-tanstack)
+- `mastra/execute` → durable-agent `/api/execute-plan` (was mastra-agent-tanstack)
+- `durable/*` → new action type family, routes to durable-agent
+- function-router registry: `mastra/*` now routes to durable-agent (was mastra-agent-tanstack)
+- mastra-agent-tanstack remains deployed for MCP endpoint and monitoring UI but is no longer the primary agent
+
 ### Standalone fn-* Services → Consolidated (Complete)
 
 8 legacy standalone Knative services (fn-openai, fn-slack, fn-github, fn-resend, fn-stripe, fn-linear, fn-firecrawl, fn-perplexity) were removed. All function execution now routes through:
 - `fn-system` for system/* actions (http-request, database-query, condition)
 - `fn-activepieces` for all AP piece actions (default fallback)
-- `mastra-agent-tanstack` for mastra/* agent actions
+- `durable-agent` for agent/mastra/durable actions
 
-### Planner → Mastra Agent Migration (Complete)
+### Planner → Mastra Agent → Durable Agent (Complete)
 
-`planner-dapr-agent` (OpenAI Agents SDK, Python) has been fully replaced by `mastra-agent-tanstack` (Mastra SDK, TypeScript). The planner service, its API routes, and all `planner/*` action types have been removed. All agent actions now route through mastra-agent-tanstack:
-- `agent/mastra-run` action type for agent runs
-- `mastra/clone`, `mastra/execute` for plan-based execution
-- `mastra-agent-mcp` provides MCP-native access to the same Mastra agent
+`planner-dapr-agent` (OpenAI Agents SDK, Python) was replaced by `mastra-agent-tanstack` (Mastra SDK), which was then superseded by `durable-agent` (Dapr Workflow + AI SDK 6) as the primary agent service. The planner service, its API routes, and all `planner/*` action types have been removed.
 
 ### Workflow Orchestrator TS → Python (Complete)
 
@@ -641,6 +735,6 @@ Removed `activity-executor/` (empty legacy service with no source code) and `wor
 
 ---
 
-**Last Updated**: 2026-02-14
-**Architecture**: Dapr workflow orchestration + Mastra AI agents + MCP server integration + Activepieces connectors
+**Last Updated**: 2026-02-16
+**Architecture**: Dapr workflow orchestration + durable AI agents + MCP server integration + Activepieces connectors
 **Status**: Production-ready with OpenTelemetry observability, sandbox execution, MCP Apps, and hosted MCP servers

@@ -7,6 +7,8 @@
 export interface TriggerAction {
   task?: string;
   workflow_instance_id?: string;
+  /** Per-request max iterations override (falls back to agent default). */
+  maxIterations?: number;
   /** Message metadata propagated through pub/sub. */
   _message_metadata?: {
     source?: string;

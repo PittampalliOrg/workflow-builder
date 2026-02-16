@@ -9,6 +9,7 @@
 import type { WorkflowContext } from "@dapr/dapr";
 import type { TriggerAction } from "../types/trigger.js";
 import type { LlmCallResult } from "../llm/ai-sdk-adapter.js";
+import type { ToolCall } from "../types/tool.js";
 import type {
   RecordInitialEntryPayload,
   CallLlmPayload,
@@ -16,6 +17,22 @@ import type {
   SaveToolResultsPayload,
   FinalizeWorkflowPayload,
 } from "./activities.js";
+
+/** Return type from the agent workflow, including accumulated tool history. */
+export interface AgentWorkflowResult {
+  role: "assistant";
+  content: string | null;
+  /** Final message's tool_calls (usually empty — final turn is text). */
+  tool_calls?: ToolCall[];
+  /** All tool calls accumulated across every turn. */
+  all_tool_calls: Array<{
+    tool_name: string;
+    tool_args: Record<string, unknown>;
+    execution_result: unknown;
+  }>;
+  /** Final text answer extracted for convenience. */
+  final_answer: string;
+}
 
 /** Type for the bound activity functions passed from DurableAgent. */
 export interface AgentActivities {
@@ -59,6 +76,8 @@ export function createAgentWorkflow(
   ): AsyncGenerator<unknown, unknown, any> {
     const instanceId = ctx.getWorkflowInstanceId();
     const task = input.task ?? "Triggered without input.";
+    // Per-request override, fall back to closure default
+    const effectiveMaxIterations = input.maxIterations ?? maxIterations;
 
     // Extract metadata from trigger
     const metadata = input._message_metadata ?? {};
@@ -82,8 +101,11 @@ export function createAgentWorkflow(
     let finalMessage: LlmCallResult | undefined;
     let turn = 0;
 
+    // Accumulate all tool calls across every turn
+    const allToolCalls: AgentWorkflowResult["all_tool_calls"] = [];
+
     try {
-      for (turn = 1; turn <= maxIterations; turn++) {
+      for (turn = 1; turn <= effectiveMaxIterations; turn++) {
         const assistantResponse: LlmCallResult = yield ctx.callActivity(
           activities.callLlm,
           {
@@ -110,6 +132,29 @@ export function createAgentWorkflow(
             tool_call_id: string;
             name: string;
           }> = yield ctx.whenAll(tasks);
+
+          // Accumulate tool calls with their results for the workflow output
+          for (let j = 0; j < toolCalls.length; j++) {
+            const tc = toolCalls[j];
+            const tr = toolResults[j];
+            let parsedArgs: Record<string, unknown> = {};
+            try {
+              parsedArgs = JSON.parse(tc.function.arguments);
+            } catch { /* keep empty */ }
+
+            let parsedResult: unknown;
+            try {
+              parsedResult = JSON.parse(tr?.content ?? "null");
+            } catch {
+              parsedResult = tr?.content ?? null;
+            }
+
+            allToolCalls.push({
+              tool_name: tc.function.name,
+              tool_args: parsedArgs,
+              execution_result: parsedResult,
+            });
+          }
 
           // Persist all tool results
           yield ctx.callActivity(activities.saveToolResults, {
@@ -151,6 +196,14 @@ export function createAgentWorkflow(
       triggeringWorkflowInstanceId,
     } satisfies FinalizeWorkflowPayload);
 
-    return finalMessage;
+    // Return full result including accumulated tool history
+    const result: AgentWorkflowResult = {
+      role: finalMessage.role,
+      content: finalMessage.content,
+      tool_calls: finalMessage.tool_calls,
+      all_tool_calls: allToolCalls,
+      final_answer: finalMessage.content ?? "",
+    };
+    return result;
   };
 }

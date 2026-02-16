@@ -104,9 +104,9 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
-def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
+def call_durable_execute_plan(ctx, input_data: dict) -> dict:
     """
-    Start a Mastra plan execution on mastra-agent-tanstack.
+    Start a plan execution on durable-agent service.
 
     Expected input_data:
       - prompt: str
@@ -119,7 +119,7 @@ def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
     """
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{MASTRA_AGENT_APP_ID}/method/api/execute-plan"
+        f"{DURABLE_AGENT_APP_ID}/method/api/execute-plan"
     )
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -138,10 +138,10 @@ def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
         except Exception:
             pass
 
-    with start_activity_span("activity.call_mastra_execute_plan", otel, attrs):
+    with start_activity_span("activity.call_durable_execute_plan", otel, attrs):
         try:
             with httpx.Client(timeout=30.0) as client:
-                resp = client.post(url, json={
+                payload = {
                     "prompt": input_data.get("prompt", ""),
                     "plan": plan,
                     "cwd": input_data.get("cwd", ""),
@@ -149,7 +149,10 @@ def call_mastra_execute_plan(ctx, input_data: dict) -> dict:
                     "workflowId": input_data.get("workflowId", ""),
                     "nodeId": input_data.get("nodeId", ""),
                     "nodeName": input_data.get("nodeName", ""),
-                })
+                }
+                if input_data.get("maxTurns"):
+                    payload["maxTurns"] = input_data["maxTurns"]
+                resp = client.post(url, json=payload)
                 resp.raise_for_status()
                 data = resp.json()
                 if not isinstance(data, dict):

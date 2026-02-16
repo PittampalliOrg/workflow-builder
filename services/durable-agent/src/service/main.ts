@@ -73,7 +73,7 @@ Be concise and direct. Use the appropriate tool for each task.`,
 			storeName: process.env.STATE_STORE_NAME || "statestore",
 		},
 		execution: {
-			maxIterations: parseInt(process.env.MAX_ITERATIONS || "10", 10),
+			maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
 		},
 	});
 
@@ -89,11 +89,52 @@ Be concise and direct. Use the appropriate tool for each task.`,
 
 // ── File Change Extraction ────────────────────────────────────
 
+type ToolCallRecord = { name: string; args: any; result: any };
+
 type FileChange = {
 	path: string;
 	operation: "created" | "modified" | "deleted";
 	content?: string;
 };
+
+/**
+ * Extract tool calls from the workflow completion result.
+ *
+ * The agent workflow returns `all_tool_calls` (accumulated across all turns)
+ * and `tool_calls` (from the final message only, usually empty).
+ */
+function extractToolCalls(result: Record<string, unknown> | undefined): ToolCallRecord[] {
+	if (!result) return [];
+
+	const toolCalls: ToolCallRecord[] = [];
+
+	// Primary: use all_tool_calls accumulated across all turns
+	const allTc = result.all_tool_calls;
+	if (Array.isArray(allTc) && allTc.length > 0) {
+		for (const tc of allTc) {
+			toolCalls.push({
+				name: (tc as any).tool_name || (tc as any).name || "",
+				args: (tc as any).tool_args || (tc as any).args || {},
+				result: (tc as any).execution_result || (tc as any).result || null,
+			});
+		}
+		return toolCalls;
+	}
+
+	// Fallback: check tool_calls on the result (legacy / final message only)
+	const legacyTc = result.tool_calls;
+	if (Array.isArray(legacyTc)) {
+		for (const tc of legacyTc) {
+			toolCalls.push({
+				name: (tc as any).tool_name || (tc as any).name || "",
+				args: (tc as any).tool_args || (tc as any).args || {},
+				result: (tc as any).execution_result || (tc as any).result || null,
+			});
+		}
+	}
+
+	return toolCalls;
+}
 
 function extractFileChanges(
 	toolCalls: Array<{ name: string; args: any; result: any }>,
@@ -269,14 +310,19 @@ app.post("/api/run", async (req, res) => {
 		// Git baseline — snapshot workspace for diff
 		const hasBaseline = await gitBaseline();
 
+		// Per-request maxTurns override
+		const maxTurns = req.body?.maxTurns
+			? parseInt(String(req.body.maxTurns), 10)
+			: undefined;
+
 		// Schedule the durable agent workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
 			agent!.agentWorkflow,
-			{ task: prompt },
+			{ task: prompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
 
 		console.log(
-			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId}`,
+			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
 		);
 
 		// Fire-and-forget: wait for completion in background, then publish
@@ -288,24 +334,15 @@ app.post("/api/run", async (req, res) => {
 				// Generate git diff
 				const patch = hasBaseline ? await gitDiff() : undefined;
 
-				// Extract tool calls from result if available
-				const toolCalls: Array<{ name: string; args: any; result: any }> = [];
-				if (completion.result?.tool_calls && Array.isArray(completion.result.tool_calls)) {
-					for (const tc of completion.result.tool_calls) {
-						toolCalls.push({
-							name: tc.tool_name || tc.name || "",
-							args: tc.tool_args || tc.args || {},
-							result: tc.execution_result || tc.result || null,
-						});
-					}
-				}
-
+				// Extract tool calls from all turns
+				const toolCalls = extractToolCalls(completion.result);
 				const fileChanges = extractFileChanges(toolCalls);
 
 				// Extract text from the final message
 				const text =
 					(completion.result?.final_answer as string) ??
 					(completion.result?.last_message as string) ??
+					(completion.result?.content as string) ??
 					JSON.stringify(completion.result ?? {});
 
 				await publishCompletionEvent({
@@ -415,7 +452,12 @@ app.post("/api/execute-plan", async (req, res) => {
 			)
 			.join("\n");
 		const cwdContext = cwd ? `Working directory: ${cwd}\n\n` : "";
-		const executionPrompt = `${cwdContext}## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nExecute each step in order. If a step fails, note the error and continue.`;
+		const executionPrompt = `${cwdContext}## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: You MUST execute ALL steps using tools. Do NOT stop after reading files — you must also write/edit files as specified in the plan. Complete every step before giving your final answer. If a step fails, note the error and continue with the next step.`;
+
+		// Per-request maxTurns override
+		const maxTurns = req.body?.maxTurns
+			? parseInt(String(req.body.maxTurns), 10)
+			: undefined;
 
 		// Git baseline
 		const hasBaseline = await gitBaseline();
@@ -423,7 +465,7 @@ app.post("/api/execute-plan", async (req, res) => {
 		// Schedule workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
 			agent!.agentWorkflow,
-			{ task: executionPrompt },
+			{ task: executionPrompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
 
 		// Fire-and-forget
@@ -432,16 +474,21 @@ app.post("/api/execute-plan", async (req, res) => {
 				const completion = await waitForWorkflowCompletion(instanceId);
 				const patch = hasBaseline ? await gitDiff() : undefined;
 
+				// Extract tool calls from all turns
+				const toolCalls = extractToolCalls(completion.result);
+				const fileChanges = extractFileChanges(toolCalls);
+
 				const text =
 					(completion.result?.final_answer as string) ??
 					(completion.result?.last_message as string) ??
+					(completion.result?.content as string) ??
 					JSON.stringify(completion.result ?? {});
 
 				await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
 					success: completion.success,
-					result: { text, plan, patch, daprInstanceId: instanceId },
+					result: { text, toolCalls, fileChanges, patch, plan, daprInstanceId: instanceId },
 					error: completion.error,
 				});
 			} catch (err) {
