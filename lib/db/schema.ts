@@ -587,6 +587,77 @@ export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;
 export type NewPlatformOauthApp = typeof platformOauthApps.$inferInsert;
 
 // ============================================================================
+// Agents (Persistent Agent Configurations)
+// ============================================================================
+
+export type AgentType =
+	| "general"
+	| "code-assistant"
+	| "research"
+	| "planning"
+	| "custom";
+
+/**
+ * Model specification stored as JSONB.
+ * Supports both simple string format ("openai/gpt-4o") and structured format.
+ */
+export type AgentModelSpec = {
+	provider: string;
+	name: string;
+};
+
+/**
+ * Tool reference stored in the tools JSONB array.
+ */
+export type AgentToolRef = {
+	type: "workspace" | "mcp" | "action";
+	ref: string;
+};
+
+/**
+ * Agents table — persistent agent configurations modeled on Mastra's StorageAgentType.
+ * Users create agent configs in the UI; these are resolved at execution time and
+ * passed to durable-agent via HTTP request body.
+ */
+export const agents = pgTable(
+	"agents",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		name: text("name").notNull(),
+		description: text("description"),
+		agentType: text("agent_type")
+			.notNull()
+			.default("general")
+			.$type<AgentType>(),
+		instructions: text("instructions").notNull(),
+		model: jsonb("model").notNull().$type<AgentModelSpec>(),
+		tools: jsonb("tools").notNull().$type<AgentToolRef[]>().default([]),
+		maxTurns: integer("max_turns").notNull().default(50),
+		timeoutMinutes: integer("timeout_minutes").notNull().default(30),
+		defaultOptions: jsonb("default_options").$type<Record<string, unknown>>(),
+		memoryConfig: jsonb("memory_config").$type<Record<string, unknown>>(),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userIdx: index("idx_agents_user_id").on(table.userId),
+		projectIdx: index("idx_agents_project_id").on(table.projectId),
+		typeIdx: index("idx_agents_agent_type").on(table.agentType),
+	}),
+);
+
+// ============================================================================
 // Functions & Function Executions (Dynamic Function Registry)
 // ============================================================================
 
@@ -764,3 +835,5 @@ export type NewCredentialAccessLog = typeof credentialAccessLogs.$inferInsert;
 export type WorkflowExternalEvent = typeof workflowExternalEvents.$inferSelect;
 export type NewWorkflowExternalEvent =
 	typeof workflowExternalEvents.$inferInsert;
+export type Agent = typeof agents.$inferSelect;
+export type NewAgent = typeof agents.$inferInsert;

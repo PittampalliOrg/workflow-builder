@@ -24,6 +24,7 @@
 		"atlas:hash": "atlas migrate hash --dir file://atlas/migrations",
 		"discover-plugins": "tsx scripts/discover-plugins.ts",
 		"create-plugin": "tsx scripts/create-plugin.ts",
+		"seed-agents": "tsx scripts/seed-agents.ts",
 		"seed-functions": "tsx scripts/seed-functions.ts",
 		"sync:activepieces-pieces": "tsx scripts/sync-activepieces-pieces.ts",
 		"sync-oauth-apps": "tsx scripts/sync-oauth-apps.ts",

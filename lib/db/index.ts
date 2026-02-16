@@ -2,6 +2,7 @@ import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
+  agents,
   apiKeys,
   appConnections,
   mcpRuns,
@@ -40,6 +41,7 @@ const schema = {
   pieceMetadata,
   appConnections,
   workflowConnectionRefs,
+  agents,
 };
 
 const envUrl = process.env.DATABASE_URL;

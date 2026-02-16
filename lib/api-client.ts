@@ -1191,8 +1191,91 @@ const mcpServerApi = {
 		),
 };
 
+// ── Agent API ─────────────────────────────────────────────────
+
+export type AgentModelSpec = {
+	provider: string;
+	name: string;
+};
+
+export type AgentToolRef = {
+	type: "workspace" | "mcp" | "action";
+	ref: string;
+};
+
+export type AgentData = {
+	id: string;
+	name: string;
+	description: string | null;
+	agentType: string;
+	instructions: string;
+	model: AgentModelSpec;
+	tools: AgentToolRef[];
+	maxTurns: number;
+	timeoutMinutes: number;
+	defaultOptions: Record<string, unknown> | null;
+	memoryConfig: Record<string, unknown> | null;
+	metadata: Record<string, unknown> | null;
+	isDefault: boolean;
+	isEnabled: boolean;
+	userId: string;
+	projectId: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type CreateAgentBody = {
+	name: string;
+	description?: string;
+	agentType?: string;
+	instructions: string;
+	model: AgentModelSpec;
+	tools?: AgentToolRef[];
+	maxTurns?: number;
+	timeoutMinutes?: number;
+	defaultOptions?: Record<string, unknown>;
+	memoryConfig?: Record<string, unknown>;
+	metadata?: Record<string, unknown>;
+	isDefault?: boolean;
+	isEnabled?: boolean;
+	projectId?: string;
+};
+
+export type UpdateAgentBody = Partial<CreateAgentBody>;
+
+const agentApi = {
+	list: () =>
+		apiCall<{ data: AgentData[] }>("/api/agents").then((res) => res.data),
+
+	get: (agentId: string) =>
+		apiCall<AgentData>(`/api/agents/${agentId}`),
+
+	create: (body: CreateAgentBody) =>
+		apiCall<AgentData>("/api/agents", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	update: (agentId: string, body: UpdateAgentBody) =>
+		apiCall<AgentData>(`/api/agents/${agentId}`, {
+			method: "PATCH",
+			body: JSON.stringify(body),
+		}),
+
+	delete: (agentId: string) =>
+		apiCall<{ success: boolean }>(`/api/agents/${agentId}`, {
+			method: "DELETE",
+		}),
+
+	duplicate: (agentId: string) =>
+		apiCall<AgentData>(`/api/agents/${agentId}/duplicate`, {
+			method: "POST",
+		}),
+};
+
 // Export all APIs as a single object
 export const api = {
+	agent: agentApi,
 	ai: aiApi,
 	aiChat: aiChatApi,
 	appConnection: appConnectionApi,

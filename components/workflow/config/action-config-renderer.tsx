@@ -166,9 +166,9 @@ function renderField(
 	onUpdateConfig: (key: string, value: unknown) => void,
 	disabled?: boolean,
 ) {
-	// Check conditional rendering
+	// Check conditional rendering (coerce to string so undefined matches "")
 	if (field.showWhen) {
-		const dependentValue = config[field.showWhen.field];
+		const dependentValue = String(config[field.showWhen.field] ?? "");
 		if (dependentValue !== field.showWhen.equals) {
 			return null;
 		}

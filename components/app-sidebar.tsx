@@ -6,6 +6,7 @@ import { useState } from "react";
 import {
 	Workflow,
 	Activity,
+	Bot,
 	Plug,
 	ChevronRight,
 	PenTool,
@@ -40,6 +41,7 @@ const navigationLinks = [
 	{ href: "/", label: "Builder", icon: PenTool },
 	{ href: "/monitor", label: "Monitor", icon: Activity },
 	{ href: "/observability", label: "Observability", icon: Eye },
+	{ href: "/agents", label: "Agents", icon: Bot },
 	{ href: "/connections", label: "Connections", icon: Plug },
 	{ href: "/mcp-apps", label: "MCP Apps", icon: AppWindow },
 	{ href: "/mcp-chat", label: "MCP Chat", icon: MessageSquare },

@@ -1,11 +1,9 @@
+import { eq, and } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
-import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
-import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import type { IntegrationDefinition } from "@/lib/actions/types";
-import { flattenConfigFields } from "@/lib/actions/utils";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
+import { db } from "@/lib/db";
+import { agents } from "@/lib/db/schema";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import {
@@ -19,11 +17,11 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
-const MASTRA_AGENT_API_BASE_URL =
-	process.env.MASTRA_AGENT_API_BASE_URL ||
-	"http://mastra-agent.dapr-agents.svc.cluster.local:3000";
-const MASTRA_OPTIONS_TIMEOUT_MS = Number.parseInt(
-	process.env.MASTRA_OPTIONS_TIMEOUT_MS || "5000",
+const DURABLE_AGENT_API_BASE_URL =
+	process.env.DURABLE_AGENT_API_BASE_URL ||
+	"http://durable-agent.dapr-agents.svc.cluster.local:8001";
+const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
+	process.env.DURABLE_AGENT_OPTIONS_TIMEOUT_MS || "5000",
 	10,
 );
 
@@ -123,47 +121,25 @@ function getModelDisplayLabel(modelId: string): string {
 	return labels[modelId] || modelId;
 }
 
-async function buildAllowedActionsResponse(
+async function buildAgentListResponse(
+	userId: string,
 	searchValue?: string,
 ): Promise<OptionsResponse> {
-	const allPieces = await listPieceMetadata({});
-	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
-	const builtinPieces = getBuiltinPieces();
+	const userAgents = await db
+		.select({ id: agents.id, name: agents.name, agentType: agents.agentType })
+		.from(agents)
+		.where(and(eq(agents.userId, userId), eq(agents.isEnabled, true)));
 
-	const integrations: IntegrationDefinition[] = [
-		...builtinPieces,
-		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
-	];
+	const options: DropdownOption[] = userAgents.map((a) => ({
+		label: `${a.name} (${a.agentType})`,
+		value: a.id,
+	}));
 
-	const rawOptions: DropdownOption[] = [];
-
-	for (const piece of integrations) {
-		for (const action of piece.actions) {
-			const actionType = `${piece.type}/${action.slug}`;
-
-			// Force field flattening to validate "actionType" is selectable even when
-			// actions have nested field groups; also keeps parity with AI prompting.
-			void flattenConfigFields(action.configFields);
-
-			rawOptions.push({
-				label: `${piece.label}: ${action.label}`,
-				value: actionType,
-			});
-		}
+	if (options.length === 0) {
+		return buildDisabledResponse("No saved agents — create one in Agents page");
 	}
 
-	// Deduplicate by value, then filter.
-	const seen = new Set<string>();
-	const deduped: DropdownOption[] = [];
-	for (const opt of rawOptions) {
-		if (seen.has(opt.value)) continue;
-		seen.add(opt.value);
-		deduped.push(opt);
-	}
-
-	return {
-		options: filterOptions(deduped, searchValue),
-	};
+	return { options: filterOptions(options, searchValue) };
 }
 
 function filterOptions(
@@ -261,53 +237,46 @@ type GithubBranch = {
 	name: string;
 };
 
-type MastraToolsResponse = {
+type DurableToolsResponse = {
+	success?: boolean;
 	tools?: Array<{
 		id?: unknown;
 		description?: unknown;
 	}>;
 };
 
-function getMastraFallbackOptions(): DropdownOption[] {
-	return [
-		{
-			label: "greet - Generate a personalized greeting in different styles",
-			value: "greet",
-		},
-		{
-			label: "summarize_text - Summarize text into concise bullet points",
-			value: "summarize_text",
-		},
-		{
-			label:
-				"current_time - Get the current time in various formats and timezones",
-			value: "current_time",
-		},
-	];
-}
+const DURABLE_AGENT_FALLBACK_TOOLS = [
+	"read_file",
+	"write_file",
+	"edit_file",
+	"list_files",
+	"delete_file",
+	"mkdir",
+	"file_stat",
+	"execute_command",
+];
 
-async function getMastraToolOptions(
+async function getDurableToolOptions(
 	searchValue?: string,
 ): Promise<OptionsResponse> {
 	try {
-		const response = await fetch(`${MASTRA_AGENT_API_BASE_URL}/api/tools`, {
-			signal: AbortSignal.timeout(MASTRA_OPTIONS_TIMEOUT_MS),
-		});
+		const response = await fetch(
+			`${DURABLE_AGENT_API_BASE_URL}/api/tools`,
+			{ signal: AbortSignal.timeout(DURABLE_AGENT_OPTIONS_TIMEOUT_MS) },
+		);
 
 		if (!response.ok) {
 			throw new Error(
-				`Mastra tools request failed with HTTP ${response.status}`,
+				`Durable agent tools request failed with HTTP ${response.status}`,
 			);
 		}
 
-		const payload = (await response.json()) as MastraToolsResponse;
+		const payload = (await response.json()) as DurableToolsResponse;
 		const options: DropdownOption[] = Array.isArray(payload.tools)
 			? payload.tools
 					.map((tool) => {
 						const id = typeof tool.id === "string" ? tool.id.trim() : undefined;
-						if (!id) {
-							return undefined;
-						}
+						if (!id) return undefined;
 						const description =
 							typeof tool.description === "string"
 								? tool.description.trim()
@@ -321,15 +290,18 @@ async function getMastraToolOptions(
 			: [];
 
 		if (options.length === 0) {
-			return buildDisabledResponse("No tools available from mastra-agent");
+			return buildDisabledResponse("No tools available from durable-agent");
 		}
 
 		return { options: filterOptions(options, searchValue) };
 	} catch (error) {
-		console.warn("[builtin/options] Mastra tool lookup failed:", error);
+		console.warn("[builtin/options] Durable agent tool lookup failed:", error);
 		return {
-			options: filterOptions(getMastraFallbackOptions(), searchValue),
-			placeholder: "Mastra service unavailable; showing fallback tools",
+			options: filterOptions(
+				DURABLE_AGENT_FALLBACK_TOOLS.map((t) => ({ label: t, value: t })),
+				searchValue,
+			),
+			placeholder: "Durable agent unavailable; showing default tools",
 		};
 	}
 }
@@ -482,33 +454,35 @@ export async function POST(request: Request) {
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
 
-		// Model selector for agent/run
+		// Agent selector for durable/run
 		if (
-			normalizedActionName === "agent/run" &&
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "agentId"
+		) {
+			return NextResponse.json(
+				await buildAgentListResponse(session.user.id, rawBody.searchValue),
+			);
+		}
+
+		// Model selector for durable/run
+		if (
+			normalizedActionName === "durable/run" &&
 			rawBody.propertyName === "model"
 		) {
 			return NextResponse.json(buildModelsResponse(rawBody.searchValue));
 		}
 
-		// Allowed actions multi-select for agent/run
+		// Tools multi-select for durable/run
 		if (
-			normalizedActionName === "agent/run" &&
-			rawBody.propertyName === "allowedActionsJson"
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "tools"
 		) {
 			return NextResponse.json(
-				await buildAllowedActionsResponse(rawBody.searchValue),
+				await getDurableToolOptions(rawBody.searchValue),
 			);
 		}
 
-		// Mastra tool selector
-		if (
-			normalizedActionName === "mastra/run-tool" &&
-			rawBody.propertyName === "toolId"
-		) {
-			return NextResponse.json(await getMastraToolOptions(rawBody.searchValue));
-		}
-
-		// GitHub repo/branch selectors for mastra/clone
+		// GitHub repo/branch selectors for mastra/clone (kept for backward compat)
 		if (normalizedActionName !== "mastra/clone") {
 			return NextResponse.json(
 				{ error: `Unsupported action: ${rawBody.actionName}` },

@@ -55,6 +55,21 @@ import { runScorers, createScorers, type ScorerLike } from "../mastra/eval-score
 const PORT = parseInt(process.env.PORT || "8001", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
+// ── Agent Config Types ────────────────────────────────────────
+
+/**
+ * Per-request agent configuration passed from the BFF.
+ * When present in /api/run body, overrides the default agent.
+ */
+type AgentConfigPayload = {
+	name: string;
+	instructions: string;
+	modelSpec: string; // "provider/model" format, e.g., "openai/gpt-4o"
+	maxTurns?: number;
+	timeoutMinutes?: number;
+	tools?: string[]; // List of tool names to enable (subset of workspace tools)
+};
+
 // ── Agent Setup ───────────────────────────────────────────────
 
 let agent: DurableAgent | null = null;
@@ -62,6 +77,103 @@ let workflowClient: DaprWorkflowClient | null = null;
 let initialized = false;
 let mcpDisconnect: (() => Promise<void>) | null = null;
 let scorers: ScorerLike[] = [];
+
+// Merged tools from all sources (populated in initAgent)
+let allMergedTools: Record<string, import("../types/tool.js").DurableAgentTool> = {};
+
+// LRU cache for per-request agent instances (keyed by config hash)
+const agentCache = new Map<string, { agent: DurableAgent; lastUsed: number }>();
+const AGENT_CACHE_MAX = 10;
+const AGENT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+function agentConfigHash(config: AgentConfigPayload): string {
+	const key = JSON.stringify({
+		n: config.name,
+		i: config.instructions.slice(0, 200),
+		m: config.modelSpec,
+		t: config.tools?.sort(),
+	});
+	// Simple string hash
+	let hash = 0;
+	for (let i = 0; i < key.length; i++) {
+		hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+	}
+	return `agent-${hash.toString(36)}`;
+}
+
+function evictStaleAgents(): void {
+	const now = Date.now();
+	for (const [key, entry] of agentCache) {
+		if (now - entry.lastUsed > AGENT_CACHE_TTL_MS) {
+			agentCache.delete(key);
+		}
+	}
+	// If still over max, remove oldest
+	while (agentCache.size > AGENT_CACHE_MAX) {
+		let oldestKey = "";
+		let oldestTime = Infinity;
+		for (const [key, entry] of agentCache) {
+			if (entry.lastUsed < oldestTime) {
+				oldestTime = entry.lastUsed;
+				oldestKey = key;
+			}
+		}
+		if (oldestKey) agentCache.delete(oldestKey);
+	}
+}
+
+/**
+ * Create a DurableAgent from per-request config, or return cached instance.
+ */
+async function getOrCreateConfiguredAgent(config: AgentConfigPayload): Promise<DurableAgent> {
+	const hash = agentConfigHash(config);
+	const cached = agentCache.get(hash);
+	if (cached) {
+		cached.lastUsed = Date.now();
+		return cached.agent;
+	}
+
+	evictStaleAgents();
+
+	// Resolve model
+	const model = resolveModel(config.modelSpec);
+
+	// Filter tools if specified
+	let tools = allMergedTools;
+	if (config.tools && config.tools.length > 0) {
+		const allowed = new Set(config.tools);
+		tools = {};
+		for (const [name, tool] of Object.entries(allMergedTools)) {
+			if (allowed.has(name)) {
+				tools[name] = tool;
+			}
+		}
+	}
+
+	console.log(
+		`[durable-agent] Creating configured agent: name=${config.name} model=${config.modelSpec} tools=${Object.keys(tools).length}`,
+	);
+
+	const configuredAgent = new DurableAgent({
+		name: config.name,
+		role: "Configured agent",
+		goal: "Execute task according to custom instructions",
+		instructions: config.instructions,
+		model,
+		tools,
+		state: {
+			storeName: process.env.STATE_STORE_NAME || "statestore",
+		},
+		execution: {
+			maxIterations: config.maxTurns ?? 50,
+		},
+	});
+
+	await configuredAgent.start();
+
+	agentCache.set(hash, { agent: configuredAgent, lastUsed: Date.now() });
+	return configuredAgent;
+}
 
 async function initAgent(): Promise<void> {
 	if (initialized) return;
@@ -82,7 +194,7 @@ async function initAgent(): Promise<void> {
 		console.log(`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpec}`);
 	}
 
-	// Merge all tool sources into a single record
+	// Merge all tool sources into the module-level record (used by agent factory too)
 	const mergedTools: Record<string, import("../types/tool.js").DurableAgentTool> = {
 		...workspaceTools,
 	};
@@ -120,6 +232,9 @@ async function initAgent(): Promise<void> {
 	console.log(
 		`[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
 	);
+
+	// Store merged tools for agent factory (per-request config agents)
+	allMergedTools = mergedTools;
 
 	// Create durable agent with all tool sources and optional Mastra integrations
 	agent = new DurableAgent({
@@ -386,9 +501,49 @@ app.post("/api/run", async (req, res) => {
 			? parseInt(String(req.body.maxTurns), 10)
 			: undefined;
 
+		// Resolve agent: use per-request agentConfig if provided, otherwise default
+		const agentConfig = req.body?.agentConfig as AgentConfigPayload | undefined;
+		let activeAgent = agent!;
+		let activeAgentOverridden = false;
+		if (agentConfig?.name && agentConfig?.instructions && agentConfig?.modelSpec) {
+			try {
+				activeAgent = await getOrCreateConfiguredAgent(agentConfig);
+				activeAgentOverridden = true;
+				console.log(`[durable-agent] Using configured agent: ${agentConfig.name}`);
+			} catch (err) {
+				console.warn(`[durable-agent] Failed to create configured agent, falling back to default:`, err);
+			}
+		}
+
+		// Inline config fallback: when no saved agent but model/instructions provided inline
+		if (!activeAgentOverridden && req.body?.model) {
+			const toolsRaw = req.body.tools;
+			let toolsList: string[] = [];
+			if (typeof toolsRaw === "string") {
+				try { toolsList = JSON.parse(toolsRaw) as string[]; } catch { /* ignore */ }
+			} else if (Array.isArray(toolsRaw)) {
+				toolsList = toolsRaw.filter((t): t is string => typeof t === "string");
+			}
+
+			const inlineConfig: AgentConfigPayload = {
+				name: "inline-agent",
+				instructions: (req.body.instructions as string) || "",
+				modelSpec: req.body.model as string,
+				tools: toolsList.length > 0 ? toolsList : undefined,
+			};
+			if (inlineConfig.modelSpec) {
+				try {
+					activeAgent = await getOrCreateConfiguredAgent(inlineConfig);
+					console.log(`[durable-agent] Using inline agent config: model=${inlineConfig.modelSpec}`);
+				} catch (err) {
+					console.warn(`[durable-agent] Failed to create inline agent, falling back to default:`, err);
+				}
+			}
+		}
+
 		// Schedule the durable agent workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
-			agent!.agentWorkflow,
+			activeAgent.agentWorkflow,
 			{ task: prompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
 

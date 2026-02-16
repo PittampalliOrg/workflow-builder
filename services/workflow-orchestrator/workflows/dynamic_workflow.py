@@ -301,7 +301,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 action_type = config.get("actionType", "")
 
                 # Long-running child workflows (bypass function-router)
-                if action_type.startswith("agent/") or action_type == "mastra/execute" or action_type.startswith("durable/"):
+                if action_type.startswith("durable/") or action_type == "mastra/execute":
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
                     node_start_time = time.time()
@@ -1021,9 +1021,9 @@ def process_agent_child_workflow(
     otel_ctx: dict | None = None,
 ):
     """
-    Invoke an agent/* or mastra/* action via mastra-agent-tanstack and wait for completion.
+    Invoke a durable/* or mastra/execute action via durable-agent and wait for completion.
 
-    The mastra-agent-tanstack service runs the agent and publishes an
+    The durable-agent service runs the agent workflow and publishes an
     `agent_completed` event containing `parent_execution_id`. The workflow-orchestrator
     subscription handler forwards that to this parent workflow as an external event:
       agent_completed_{agent_workflow_id}
@@ -1044,7 +1044,7 @@ def process_agent_child_workflow(
         from activities.call_agent_service import call_durable_execute_plan
         call_activity_fn = call_durable_execute_plan
     else:
-        # All agent/* and durable/* action types route to durable-agent
+        # All durable/* action types route to durable-agent
         from activities.call_agent_service import call_durable_agent_run
         call_activity_fn = call_durable_agent_run
 
@@ -1052,9 +1052,10 @@ def process_agent_child_workflow(
         "prompt": prompt,
         "model": resolved_config.get("model"),
         "maxTurns": resolved_config.get("maxTurns"),
-        "allowedActionsJson": resolved_config.get("allowedActionsJson"),
-        "agentToolsJson": resolved_config.get("agentToolsJson"),
         "stopCondition": resolved_config.get("stopCondition"),
+        "agentConfig": resolved_config.get("agentConfig"),
+        "instructions": resolved_config.get("instructions"),
+        "tools": resolved_config.get("tools"),
         "integrations": integrations,
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
