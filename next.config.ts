@@ -6,6 +6,14 @@ const nextConfig: NextConfig = {
 		"@mcp-ui/server",
 		"@modelcontextprotocol/sdk",
 		"@modelcontextprotocol/ext-apps",
+		"@opentelemetry/api",
+		"@opentelemetry/auto-instrumentations-node",
+		"@opentelemetry/exporter-metrics-otlp-http",
+		"@opentelemetry/exporter-trace-otlp-http",
+		"@opentelemetry/resources",
+		"@opentelemetry/sdk-metrics",
+		"@opentelemetry/sdk-node",
+		"@opentelemetry/semantic-conventions",
 	],
 	images: {
 		remotePatterns: [

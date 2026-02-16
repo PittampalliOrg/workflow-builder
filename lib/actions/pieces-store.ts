@@ -4,10 +4,6 @@ import { atom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo } from "react";
 import { api } from "@/lib/api-client";
 import { LEGACY_ACTION_MAPPINGS } from "@/lib/actions/legacy-action-mappings";
-import {
-	normalizePlannerActionType,
-	withPlannerPiece,
-} from "@/lib/actions/planner-actions";
 import type {
 	ActionDefinition,
 	IntegrationDefinition,
@@ -43,7 +39,7 @@ async function loadPiecesCatalog(): Promise<IntegrationDefinition[]> {
 		try {
 			const response = await pieceApi.actions();
 			const pieces = Array.isArray(response?.pieces) ? response.pieces : [];
-			return withPlannerPiece(pieces);
+			return pieces;
 		} catch (error) {
 			primaryError = error;
 		}
@@ -60,7 +56,7 @@ async function loadPiecesCatalog(): Promise<IntegrationDefinition[]> {
 			pieces?: IntegrationDefinition[];
 		};
 		const pieces = Array.isArray(data?.pieces) ? data.pieces : [];
-		return withPlannerPiece(pieces);
+		return pieces;
 	} catch {
 		if (primaryError instanceof Error) {
 			throw primaryError;
@@ -174,7 +170,7 @@ export function usePiecesCatalog() {
 			if (!actionId) return;
 
 			const legacyMapped = LEGACY_ACTION_MAPPINGS[actionId] ?? actionId;
-			const normalized = normalizePlannerActionType(legacyMapped);
+			const normalized = legacyMapped;
 			return actionsById.get(normalized);
 		},
 		[actionsById],
@@ -205,7 +201,7 @@ export function usePiecesCatalog() {
 			}
 			setState((s) => ({
 				...s,
-				pieces: withPlannerPiece(mergeCatalogPieces(s.pieces, pieces)),
+				pieces: mergeCatalogPieces(s.pieces, pieces),
 			}));
 		},
 		[setState],

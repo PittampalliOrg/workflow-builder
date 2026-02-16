@@ -90,7 +90,7 @@ def resolve_template(template: str, node_outputs: NodeOutputs) -> Any:
     Lookup order:
     1. Exact node ID match
     2. Label match (case-insensitive, spaces/special chars → underscores)
-    3. ActionType match (e.g., "planner/plan" matches "planner_plan" or "PlannerPlan")
+    3. ActionType match (e.g., "mastra/clone" matches "mastra_clone" or "MastraClone")
 
     Args:
         template: The full template string (e.g., "{{node1.output.message}}")
@@ -161,7 +161,7 @@ def resolve_template(template: str, node_outputs: NodeOutputs) -> Any:
             value = get_nested_value(output.get("data"), field_path)
             return value if value is not None else template
 
-    # 3. ActionType match - normalize "planner/plan" → "planner_plan" and compare
+    # 3. ActionType match - normalize "mastra/clone" → "mastra_clone" and compare
     for output in node_outputs.values():
         action_type = output.get("actionType", "")
         if action_type and _normalize_key(action_type) == normalized_id:

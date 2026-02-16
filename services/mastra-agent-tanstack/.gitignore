@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-ui/
 .output/
+.nitro/
 .vinxi/
 app.config.timestamp_*
 *.tsbuildinfo

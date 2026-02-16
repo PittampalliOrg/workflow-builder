@@ -89,7 +89,7 @@ export function registerAgentTools(
 	});
 
 	// ── run_agent ──────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"run_agent",
 		{
 			title: "Run Agent",
@@ -99,10 +99,14 @@ export function registerAgentTools(
 				prompt: z.string().describe("The prompt to send to the agent"),
 			},
 			_meta: uiMeta,
-		},
-		async (args: { prompt: string }) => {
+		} as any,
+		async (args: any) => {
 			try {
-				const result = await runAgent(args.prompt);
+				const prompt = args?.prompt;
+				if (typeof prompt !== "string" || !prompt.trim()) {
+					return errorResult("prompt is required");
+				}
+				const result = await runAgent(prompt);
 				return textResult(result);
 			} catch (err) {
 				return errorResult(`Agent run failed: ${err}`);

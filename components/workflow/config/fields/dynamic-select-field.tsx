@@ -148,8 +148,8 @@ export function DynamicSelectField({
 			}
 
 			const optionsEndpoint =
-				dynamicOpts.provider === "planner"
-					? "/api/planner/options"
+				dynamicOpts.provider === "builtin"
+					? "/api/builtin/options"
 					: "/api/pieces/options";
 
 			const requestBody: Record<string, unknown> = {
@@ -158,7 +158,7 @@ export function DynamicSelectField({
 				connectionExternalId,
 				input,
 			};
-			if (dynamicOpts.provider !== "planner") {
+			if (dynamicOpts.provider !== "builtin") {
 				requestBody.pieceName = dynamicOpts.pieceName;
 			}
 

@@ -16,6 +16,7 @@ export type WorkflowNodeType =
 	| "note" // Non-executing annotation
 	| "set-state" // Data: set a workflow-scoped variable
 	| "transform" // Data: build structured output from a JSON template
+	| "workflow-control" // Explicit control step (stop/continue workflow)
 	| "publish-event"; // publish to pub/sub
 
 export type WorkflowNodeData = {
@@ -638,6 +639,10 @@ export const daprPhaseAtom = atom<DaprPhase>(null);
 export const daprProgressAtom = atom<number>(0); // 0-100
 export const daprMessageAtom = atom<string>(""); // Human-readable status message
 export const daprInstanceIdAtom = atom<string | null>(null);
+
+// Approval gate context — set when a workflow reaches awaiting_approval phase
+export const approvalEventNameAtom = atom<string | null>(null);
+export const approvalExecutionIdAtom = atom<string | null>(null);
 
 // Engine type for the current workflow
 export type WorkflowEngineType = "vercel" | "dapr";

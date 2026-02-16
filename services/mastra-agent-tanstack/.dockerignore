@@ -1,4 +1,6 @@
 node_modules
-.output
+dist
 dist-ui
+.output
+.tanstack
 *.md

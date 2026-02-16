@@ -19,17 +19,17 @@ const responseTimeHistory = new Map<string, number[]>();
 const MAX_HISTORY_SIZE = 10; // Keep last 10 response times
 
 const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
-const MASTRA_AGENT_URL =
-	process.env.MASTRA_AGENT_URL ||
-	"http://mastra-agent.dapr-agents.svc.cluster.local:3000";
-
 /**
  * Standalone service URL mappings (non-Knative).
  * These are regular K8s Deployments with a ClusterIP Service.
  */
 const STANDALONE_SERVICES: Record<string, string> = {
-	"planner-dapr-agent": `http://planner-dapr-agent.${NAMESPACE}.svc.cluster.local:8000`,
-	"mastra-agent": MASTRA_AGENT_URL,
+	"mastra-agent-tanstack":
+		process.env.MASTRA_AGENT_TANSTACK_URL ||
+		`http://mastra-agent-tanstack.${NAMESPACE}.svc.cluster.local:3400`,
+	"durable-agent":
+		process.env.DURABLE_AGENT_URL ||
+		`http://durable-agent.${NAMESPACE}.svc.cluster.local:8001`,
 };
 
 /**

@@ -11,7 +11,7 @@ Architecture:
 - Dapr state store for workflow state persistence
 - Dapr pub/sub for event publishing
 
-KEY FEATURE: Native multi-app child workflow support for planner/* actions.
+KEY FEATURE: Native multi-app child workflow support for agent actions via mastra-agent-tanstack.
 """
 
 from __future__ import annotations
@@ -45,20 +45,13 @@ from activities.log_external_event import (
     log_approval_response,
     log_approval_timeout,
 )
-from activities.call_planner_service import (
-    call_planner_clone,
-    call_planner_plan,
-    call_planner_execute,
-    call_planner_execute_standalone,
-    call_planner_workflow,
-    call_planner_approve,
-    call_planner_status,
-    call_planner_multi_step,
-)
-from activities.call_agent_service import call_agent_run, call_mastra_agent_run
+from activities.call_agent_service import call_mastra_agent_run, call_durable_agent_run, call_durable_execute_plan
 from activities.log_node_execution import log_node_start, log_node_complete
+from activities.persist_results_to_db import persist_results_to_db
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
-from subscriptions.planner_events import handle_planner_event
+
+# OpenTelemetry
+from tracing import setup_tracing, inject_current_context
 
 # Configuration from centralized config module
 PORT = config.PORT
@@ -85,6 +78,9 @@ async def lifespan(app: FastAPI):
     logger.info("=== Workflow Orchestrator Service (Python) ===")
     logger.info(f"Log Level: {LOG_LEVEL}")
 
+    # Initialize OpenTelemetry (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
+    setup_tracing("workflow-orchestrator", app)
+
     # Register activities
     wfr.register_activity(execute_action)
     wfr.register_activity(persist_state)
@@ -100,21 +96,15 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_approval_request)
     wfr.register_activity(log_approval_response)
     wfr.register_activity(log_approval_timeout)
-    # Node execution logging (planner/* nodes that bypass function-router)
+    # Node execution logging
     wfr.register_activity(log_node_start)
     wfr.register_activity(log_node_complete)
-    # Planner service activities (planner-dapr-agent)
-    wfr.register_activity(call_planner_clone)
-    wfr.register_activity(call_planner_plan)
-    wfr.register_activity(call_planner_execute)
-    wfr.register_activity(call_planner_execute_standalone)
-    wfr.register_activity(call_planner_workflow)
-    wfr.register_activity(call_planner_approve)
-    wfr.register_activity(call_planner_status)
-    wfr.register_activity(call_planner_multi_step)
-    # Agent service activities (planner-dapr-agent + mastra-agent-mcp)
-    wfr.register_activity(call_agent_run)
+    # Persist final results to PostgreSQL
+    wfr.register_activity(persist_results_to_db)
+    # Agent service activities (mastra-agent-tanstack)
     wfr.register_activity(call_mastra_agent_run)
+    wfr.register_activity(call_durable_agent_run)
+    wfr.register_activity(call_durable_execute_plan)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)
@@ -235,11 +225,20 @@ class StartAPWorkflowResponse(BaseModel):
     status: str = "started"
 
 
+class ExecuteByIdRequest(BaseModel):
+    """Request to execute a workflow by its database ID."""
+    workflowId: str
+    triggerData: dict[str, Any] = Field(default_factory=dict)
+    integrations: dict[str, dict[str, str]] | None = None
+    nodeConnectionMap: dict[str, str] | None = None
+
+
 class WorkflowStatusResponse(BaseModel):
     """Workflow status response."""
     instanceId: str
     workflowId: str
     runtimeStatus: str
+    traceId: str | None = None
     phase: str | None = None
     progress: int = 0
     message: str | None = None
@@ -257,6 +256,110 @@ class WorkflowStatusResponse(BaseModel):
 def get_workflow_client() -> DaprWorkflowClient:
     """Get a Dapr workflow client."""
     return DaprWorkflowClient()
+
+
+# --- Database helpers for execute-by-id ---
+
+_database_url: str | None = None
+
+
+def _get_database_url() -> str:
+    """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
+    global _database_url
+    if _database_url is not None:
+        return _database_url
+
+    import requests as req
+    dapr_host = config.DAPR_HOST
+    dapr_port = config.DAPR_HTTP_PORT
+    url = f"http://{dapr_host}:{dapr_port}/v1.0/secrets/kubernetes-secrets/workflow-builder-secrets"
+
+    try:
+        response = req.get(url, timeout=10)
+        response.raise_for_status()
+        secrets = response.json()
+        db_url = secrets.get("DATABASE_URL")
+        if not db_url:
+            raise RuntimeError("DATABASE_URL not found in Dapr secrets")
+        _database_url = db_url
+        logger.info("[Execute-By-Id] Fetched DATABASE_URL from Dapr secrets")
+        return db_url
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch DATABASE_URL: {e}")
+
+
+def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
+    """Fetch a workflow definition from the database by ID."""
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, nodes, edges FROM workflows WHERE id = %s",
+            (workflow_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        wf_id, wf_name, nodes_json, edges_json = row
+        # JSONB columns may already be dicts/lists, or may need parsing
+        nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
+        edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
+
+        return {"id": wf_id, "name": wf_name, "nodes": nodes, "edges": edges}
+    finally:
+        conn.close()
+
+
+def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
+    """Kahn's algorithm – returns node IDs in execution order (skips trigger/add/note)."""
+    edges_by_source: dict[str, list[str]] = {}
+    in_degree: dict[str, int] = {}
+
+    for node in nodes:
+        nid = node["id"]
+        in_degree[nid] = 0
+        edges_by_source[nid] = []
+
+    for edge in edges:
+        src, tgt = edge["source"], edge["target"]
+        edges_by_source.setdefault(src, []).append(tgt)
+        in_degree[tgt] = in_degree.get(tgt, 0) + 1
+
+    from collections import deque
+    queue = deque(nid for nid, deg in in_degree.items() if deg == 0)
+    result: list[str] = []
+
+    while queue:
+        nid = queue.popleft()
+        node = next((n for n in nodes if n["id"] == nid), None)
+        if node:
+            ntype = node.get("type", "")
+            if ntype not in ("trigger", "add", "note"):
+                result.append(nid)
+        for neighbor in edges_by_source.get(nid, []):
+            in_degree[neighbor] -= 1
+            if in_degree[neighbor] == 0:
+                queue.append(neighbor)
+
+    return result
+
+
+def _serialize_node(node: dict) -> dict[str, Any]:
+    """Flatten React Flow node format to orchestrator SerializedNode format."""
+    data = node.get("data", {})
+    return {
+        "id": node["id"],
+        "type": data.get("type", node.get("type", "action")),
+        "label": data.get("label", ""),
+        "description": data.get("description"),
+        "enabled": data.get("enabled", True),
+        "position": node.get("position", {"x": 0, "y": 0}),
+        "config": data.get("config", {}),
+    }
 
 
 def map_runtime_status(dapr_status: str) -> str:
@@ -304,6 +407,7 @@ def start_workflow(request: StartWorkflowRequest):
             "integrations": integrations,
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
+            "_otel": inject_current_context(),
         }
 
         # Generate a unique instance ID
@@ -332,6 +436,97 @@ def start_workflow(request: StartWorkflowRequest):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
+def execute_workflow_by_id(request: ExecuteByIdRequest):
+    """
+    Execute a workflow by its database ID.
+
+    POST /api/v2/workflows/execute-by-id
+
+    Fetches the workflow definition from PostgreSQL, serializes it,
+    computes execution order, and delegates to the dynamic workflow runtime.
+    Intended for service-to-service invocation (e.g., MCP tools via Dapr).
+    """
+    try:
+        # 1. Fetch workflow from DB
+        wf = _fetch_workflow_from_db(request.workflowId)
+        raw_nodes = wf["nodes"]
+        raw_edges = wf["edges"]
+
+        # 2. Filter out 'add' placeholder nodes
+        exec_nodes = [n for n in raw_nodes if n.get("type") != "add" and n.get("data", {}).get("type") != "add"]
+
+        # 3. Serialize nodes
+        serialized_nodes = [_serialize_node(n) for n in exec_nodes]
+
+        # 4. Filter edges to only reference existing nodes
+        node_ids = {n["id"] for n in exec_nodes}
+        serialized_edges = [
+            {"id": e["id"], "source": e["source"], "target": e["target"],
+             "sourceHandle": e.get("sourceHandle"), "targetHandle": e.get("targetHandle")}
+            for e in raw_edges
+            if e["source"] in node_ids and e["target"] in node_ids
+        ]
+
+        # 5. Compute execution order
+        execution_order = _topological_sort(
+            [{"id": n["id"], "type": n["type"]} for n in serialized_nodes],
+            serialized_edges,
+        )
+
+        # 6. Build definition
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        definition = {
+            "id": wf["id"],
+            "name": wf["name"],
+            "version": "1.0.0",
+            "nodes": serialized_nodes,
+            "edges": serialized_edges,
+            "executionOrder": execution_order,
+            "createdAt": now,
+            "updatedAt": now,
+        }
+
+        # 7. Schedule via the existing start_workflow logic
+        client = get_workflow_client()
+        workflow_input = {
+            "definition": definition,
+            "triggerData": request.triggerData,
+            "integrations": request.integrations,
+            "nodeConnectionMap": request.nodeConnectionMap,
+            "_otel": inject_current_context(),
+        }
+
+        import time
+        import random
+        import string
+        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
+        instance_id = f"{wf['id']}-{int(time.time() * 1000)}-{random_suffix}"
+
+        logger.info(f"[Execute-By-Id] Starting workflow: {wf['name']} ({instance_id})")
+
+        result_id = client.schedule_new_workflow(
+            workflow=dynamic_workflow,
+            input=workflow_input,
+            instance_id=instance_id,
+        )
+
+        logger.info(f"[Execute-By-Id] Workflow scheduled: {result_id}")
+
+        return StartWorkflowResponse(
+            instanceId=result_id,
+            workflowId=wf["id"],
+            status="started",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -443,6 +638,7 @@ def get_workflow_status(instance_id: str):
         current_node_id = None
         current_node_name = None
         approval_event_name = None
+        trace_id = None
         outputs = None
         error = None
         started_at = None
@@ -465,6 +661,7 @@ def get_workflow_status(instance_id: str):
                             current_node_id = parsed.get("currentNodeId")
                             current_node_name = parsed.get("currentNodeName")
                             approval_event_name = parsed.get("approvalEventName")
+                            trace_id = parsed.get("traceId") or parsed.get("trace_id")
                     except (json.JSONDecodeError, TypeError):
                         pass
 
@@ -504,6 +701,7 @@ def get_workflow_status(instance_id: str):
             instanceId=instance_id,
             workflowId=instance_id.split("-")[0],
             runtimeStatus=runtime_status,
+            traceId=trace_id,
             phase=phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
             progress=progress,
             message=message,
@@ -655,36 +853,65 @@ def resume_workflow(instance_id: str):
 
 # --- Pub/Sub Subscription Routes ---
 
-@app.post("/subscriptions/planner-events")
-def planner_events_subscription(event: CloudEvent):
+@app.post("/subscriptions/agent-events")
+def agent_events_subscription(event: CloudEvent):
     """
-    Handle planner completion events from pub/sub.
+    Handle agent completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when planner-dapr-agent
+    This endpoint receives CloudEvents from Dapr pub/sub when mastra-agent-tanstack
     publishes completion events. It forwards the events as external events to
     waiting parent workflows.
-
-    Subscribed topics (configured via Dapr Subscription resource):
-    - workflow.events (filtered by event type: planner_planning_completed, planner_execution_completed)
     """
-    logger.info(f"[Subscription] Received planner event: {event.type}")
+    logger.info(f"[Subscription] Received agent event: {event.type}")
 
-    result = handle_planner_event(event.type, event.data)
+    # Forward agent completion events to parent workflows
+    from dapr.ext.workflow import DaprWorkflowClient
 
-    # Return success even on logical failures to acknowledge the message
-    # (prevents Dapr from retrying indefinitely)
-    return {"status": "SUCCESS", "result": result}
+    event_data = event.data
+    actual_event_type = event_data.get("type", event.type)
+
+    completion_event_types = {"agent_completed", "execution_completed"}
+    if actual_event_type not in completion_event_types:
+        return {"status": "SUCCESS", "result": {"status": "ignored", "event_type": actual_event_type}}
+
+    try:
+        inner_data = event_data.get("data", {})
+        parent_execution_id = inner_data.get("parent_execution_id")
+
+        if not parent_execution_id:
+            return {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
+
+        workflow_id = event_data.get("workflowId", "")
+        external_event_name = f"agent_completed_{workflow_id}"
+
+        event_payload = {
+            "workflow_id": workflow_id,
+            "phase": inner_data.get("phase", actual_event_type.replace("_completed", "")),
+            "success": inner_data.get("success", True),
+            "result": inner_data.get("result", {}),
+            "error": inner_data.get("error"),
+            "timestamp": event_data.get("timestamp"),
+        }
+
+        client = DaprWorkflowClient()
+        client.raise_workflow_event(
+            instance_id=parent_execution_id,
+            event_name=external_event_name,
+            data=event_payload,
+        )
+
+        return {"status": "SUCCESS", "result": {"status": "forwarded", "event_type": actual_event_type}}
+    except Exception as e:
+        logger.error(f"[Agent Events] Failed to handle event: {e}")
+        return {"status": "SUCCESS", "result": {"status": "error", "error": str(e)}}
 
 
-@app.options("/subscriptions/planner-events")
-def planner_events_subscription_options():
+@app.options("/subscriptions/agent-events")
+def agent_events_subscription_options():
     """CORS preflight handler for Dapr subscription endpoint."""
     return {}
 
 
-# Programmatic subscription declaration (alternative to Subscription YAML)
-# Note: This is a fallback - we prefer declarative Subscription CRD in stacks/main
-# Dapr will call this endpoint to discover subscriptions
 PUBSUB_NAME = config.PUBSUB_NAME
 
 @app.get("/dapr/subscribe")
@@ -693,44 +920,24 @@ def subscribe():
     Declare pub/sub subscriptions for Dapr.
 
     This endpoint tells Dapr which topics this service subscribes to.
-    Alternative to declarative Subscription CRD.
-
-    Note: The declarative Subscription-planner-events.yaml is preferred
-    and should take precedence when deployed to Kubernetes.
     """
     return [
         {
             "pubsubname": PUBSUB_NAME,
-            # Must match PUBSUB_TOPIC in planner-dapr-agent (default: workflow.stream).
             "topic": "workflow.stream",
-            "route": "/subscriptions/planner-events",
+            "route": "/subscriptions/agent-events",
             "routes": {
                 "rules": [
-                    # Legacy planner completion events
                     {
-                        "match": "event.type == \"planner_planning_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    {
-                        "match": "event.type == \"planner_execution_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    # Current completion event types
-                    {
-                        "match": "event.type == \"planning_completed\"",
-                        "path": "/subscriptions/planner-events",
+                        "match": "event.type == \"agent_completed\"",
+                        "path": "/subscriptions/agent-events",
                     },
                     {
                         "match": "event.type == \"execution_completed\"",
-                        "path": "/subscriptions/planner-events",
-                    },
-                    # Workflow-builder agent primitive
-                    {
-                        "match": "event.type == \"agent_completed\"",
-                        "path": "/subscriptions/planner-events",
+                        "path": "/subscriptions/agent-events",
                     },
                 ],
-                "default": "/subscriptions/planner-events",
+                "default": "/subscriptions/agent-events",
             },
         }
     ]

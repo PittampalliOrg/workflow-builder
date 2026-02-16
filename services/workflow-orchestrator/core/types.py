@@ -26,6 +26,7 @@ class WorkflowNodeType(str, Enum):
     NOTE = "note"
     SET_STATE = "set-state"
     TRANSFORM = "transform"
+    WORKFLOW_CONTROL = "workflow-control"
     PUBLISH_EVENT = "publish-event"
     ADD = "add"
 

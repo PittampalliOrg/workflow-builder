@@ -13,7 +13,7 @@ RUN npm install -g pnpm
 COPY services/function-router/package.json ./
 
 # Install dependencies
-RUN pnpm install
+RUN pnpm install --prod=false
 
 # Stage 2: Builder
 FROM node:22-alpine AS builder

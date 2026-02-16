@@ -16,6 +16,7 @@
 
 import "./blob";
 import "./clerk";
+import "./durable-agent";
 import "./fal";
 import "./firecrawl";
 import "./github";
@@ -24,7 +25,6 @@ import "./mastra-agent";
 import "./mcp";
 import "./openai";
 import "./perplexity";
-import "./planner";
 import "./resend";
 import "./slack";
 import "./stripe";

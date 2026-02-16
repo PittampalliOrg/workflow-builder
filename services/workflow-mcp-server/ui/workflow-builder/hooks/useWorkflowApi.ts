@@ -91,6 +91,22 @@ export function useWorkflowApi(app: App | null) {
         workflow_id: workflowId,
         trigger_data: triggerData,
       }),
+
+    getExecutionStatus: (instanceId: string) =>
+      callTool("get_execution_status", { instance_id: instanceId }),
+
+    approveWorkflow: (
+      instanceId: string,
+      eventName: string,
+      approved: boolean,
+      reason?: string,
+    ) =>
+      callTool("approve_workflow", {
+        instance_id: instanceId,
+        event_name: eventName,
+        approved,
+        ...(reason ? { reason } : {}),
+      }),
   };
 }
 

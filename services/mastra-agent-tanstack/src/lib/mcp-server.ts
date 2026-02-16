@@ -45,6 +45,25 @@ function resolveUiHtml(): string | null {
 	return null;
 }
 
+// ── Global UI HTML cache (read once, shared across all sessions) ──
+let _cachedUiHtml: string | null | undefined;
+function getUiHtml(): string | null {
+	if (_cachedUiHtml !== undefined) return _cachedUiHtml;
+	const htmlPath = resolveUiHtml();
+	if (htmlPath) {
+		_cachedUiHtml = fs.readFileSync(htmlPath, "utf-8");
+		console.log(
+			`[mastra-tanstack] UI resource loaded from: ${htmlPath} (${(_cachedUiHtml.length / 1024).toFixed(0)}KB, cached globally)`,
+		);
+	} else {
+		_cachedUiHtml = null;
+		console.warn(
+			"[mastra-tanstack] UI HTML not found — tools will work without interactive UI",
+		);
+	}
+	return _cachedUiHtml;
+}
+
 /**
  * Create a fully configured MCP server instance.
  * Returns the low-level Server (not McpServer) for use with transports.
@@ -55,12 +74,11 @@ export function createMcpServer(): Server {
 		{ capabilities: { tools: {}, resources: {} } },
 	);
 
-	const uiHtmlPath = resolveUiHtml();
+	const htmlContent = getUiHtml();
 
 	const uiMeta: Record<string, unknown> = {};
 
-	if (uiHtmlPath) {
-		const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
+	if (htmlContent) {
 		const resourceUri = "ui://mastra-agent-tanstack/app.html";
 
 		registerAppResource(
@@ -77,11 +95,6 @@ export function createMcpServer(): Server {
 
 		uiMeta.ui = { resourceUri };
 		uiMeta["ui/resourceUri"] = resourceUri;
-		console.log(`[mastra-tanstack] UI resource loaded from: ${uiHtmlPath}`);
-	} else {
-		console.warn(
-			"[mastra-tanstack] UI HTML not found — tools will work without interactive UI",
-		);
 	}
 
 	// ── get_agent_status ───────────────────────────────
@@ -165,6 +178,206 @@ export function createMcpServer(): Server {
 				return textResult(events);
 			} catch (err) {
 				return errorResult(`Failed to get event history: ${err}`);
+			}
+		},
+	);
+
+	// ── get_logs ─────────────────────────────────
+	mcpServer.registerTool(
+		"get_logs",
+		{
+			title: "Get Server Logs",
+			description:
+				"Get recent server console logs (log, warn, error, info). Oldest first.",
+			inputSchema: {
+				limit: z
+					.number()
+					.optional()
+					.describe("Max logs to return (default 100)"),
+				level: z
+					.string()
+					.optional()
+					.describe("Filter by level: log, warn, error, info"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: { limit?: number; level?: string }) => {
+			try {
+				let logs = eventBus.getRecentLogs(args.limit ?? 100);
+				if (args.level) {
+					logs = logs.filter((l) => l.level === args.level);
+				}
+				return textResult(logs);
+			} catch (err) {
+				return errorResult(`Failed to get logs: ${err}`);
+			}
+		},
+	);
+
+	// ── run_workflow ─────────────────────────────
+	mcpServer.registerTool(
+		"run_workflow",
+		{
+			title: "Run Workflow",
+			description:
+				"Run a workflow by its database ID via the Dapr workflow orchestrator. Passes prompt and optional repo info as triggerData.",
+			inputSchema: {
+				workflowId: z
+					.string()
+					.default("yptntuid5sk3cqjymg8kw")
+					.describe("Workflow database ID"),
+				prompt: z.string().describe("The prompt/instructions for the workflow"),
+				repo_owner: z
+					.string()
+					.optional()
+					.describe("Repository owner (GitHub org/user)"),
+				repo_name: z.string().optional().describe("Repository name"),
+				branch: z.string().optional().default("main").describe("Git branch"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: {
+			workflowId: string;
+			prompt: string;
+			repo_owner?: string;
+			repo_name?: string;
+			branch?: string;
+		}) => {
+			try {
+				const daprHost = process.env.DAPR_HOST || "localhost";
+				const daprPort = process.env.DAPR_HTTP_PORT || "3500";
+				const url = `http://${daprHost}:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/workflows/execute-by-id`;
+
+				const body = {
+					workflowId: args.workflowId,
+					triggerData: {
+						prompt: args.prompt,
+						...(args.repo_owner && { repo_owner: args.repo_owner }),
+						...(args.repo_name && { repo_name: args.repo_name }),
+						...(args.branch && { branch: args.branch }),
+					},
+				};
+
+				const resp = await fetch(url, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				});
+
+				if (!resp.ok) {
+					const errText = await resp.text();
+					return errorResult(
+						`Workflow execution failed (${resp.status}): ${errText}`,
+					);
+				}
+
+				const result = await resp.json();
+
+				// Set workflow context on eventBus for monitoring
+				eventBus.setWorkflowContext({
+					workflowId: args.workflowId,
+					instanceId: (result.instanceId as string) ?? null,
+					status: (result.status as string) ?? null,
+					traceId: (result.traceId as string) ?? null,
+				});
+
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to run workflow: ${err}`);
+			}
+		},
+	);
+
+	// ── get_workflow_execution_status ─────────────
+	mcpServer.registerTool(
+		"get_workflow_execution_status",
+		{
+			title: "Get Workflow Execution Status",
+			description:
+				"Get the status of a running workflow execution by its instance ID.",
+			inputSchema: {
+				instanceId: z.string().describe("The Dapr workflow instance ID"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: { instanceId: string }) => {
+			try {
+				const daprHost = process.env.DAPR_HOST || "localhost";
+				const daprPort = process.env.DAPR_HTTP_PORT || "3500";
+				const url = `http://${daprHost}:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/workflows/${encodeURIComponent(args.instanceId)}/status`;
+
+				const resp = await fetch(url, {
+					method: "GET",
+					headers: { "Content-Type": "application/json" },
+				});
+
+				if (!resp.ok) {
+					const errText = await resp.text();
+					return errorResult(
+						`Status check failed (${resp.status}): ${errText}`,
+					);
+				}
+
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to get workflow status: ${err}`);
+			}
+		},
+	);
+
+	// ── approve_workflow ─────────────────────────
+	mcpServer.registerTool(
+		"approve_workflow",
+		{
+			title: "Approve or Reject Workflow",
+			description:
+				"Approve or reject a workflow that is waiting at an approval gate. Raises the named external event.",
+			inputSchema: {
+				instanceId: z.string().describe("The Dapr workflow instance ID"),
+				eventName: z
+					.string()
+					.describe("The approval event name (from status.approvalEventName)"),
+				approved: z.boolean().describe("true to approve, false to reject"),
+				reason: z
+					.string()
+					.optional()
+					.describe("Optional reason for approval/rejection"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: {
+			instanceId: string;
+			eventName: string;
+			approved: boolean;
+			reason?: string;
+		}) => {
+			try {
+				const daprHost = process.env.DAPR_HOST || "localhost";
+				const daprPort = process.env.DAPR_HTTP_PORT || "3500";
+				const url = `http://${daprHost}:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/workflows/${encodeURIComponent(args.instanceId)}/events`;
+
+				const resp = await fetch(url, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						eventName: args.eventName,
+						eventData: {
+							approved: args.approved,
+							reason: args.reason || (args.approved ? "Approved" : "Rejected"),
+						},
+					}),
+				});
+
+				if (!resp.ok) {
+					const errText = await resp.text();
+					return errorResult(`Approval failed (${resp.status}): ${errText}`);
+				}
+
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to approve workflow: ${err}`);
 			}
 		},
 	);

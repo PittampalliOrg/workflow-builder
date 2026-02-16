@@ -33,7 +33,7 @@ import { jiraCloud } from "@activepieces/piece-jira-cloud";
 import { linear } from "@activepieces/piece-linear";
 import { linkedin } from "@activepieces/piece-linkedin";
 import { mailchimp } from "@activepieces/piece-mailchimp";
-import { microsoftExcel365 } from "@activepieces/piece-microsoft-excel-365";
+import { microsoftExcel } from "@activepieces/piece-microsoft-excel-365";
 import { microsoftOneDrive } from "@activepieces/piece-microsoft-onedrive";
 import { microsoftOnenote } from "@activepieces/piece-microsoft-onenote";
 // Microsoft Office
@@ -77,7 +77,7 @@ export const PIECES: Record<string, Piece> = {
 	discord: discord as unknown as Piece,
 	"microsoft-teams": microsoftTeams as unknown as Piece,
 	"microsoft-outlook": microsoftOutlook as unknown as Piece,
-	"microsoft-excel-365": microsoftExcel365 as unknown as Piece,
+	"microsoft-excel-365": microsoftExcel as unknown as Piece,
 	"microsoft-todo": microsoftTodo as unknown as Piece,
 	"microsoft-onedrive": microsoftOneDrive as unknown as Piece,
 	"microsoft-onenote": microsoftOnenote as unknown as Piece,

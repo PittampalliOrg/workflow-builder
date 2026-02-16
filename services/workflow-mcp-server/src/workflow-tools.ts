@@ -1,8 +1,8 @@
 /**
  * Workflow MCP Tool Registration
  *
- * Registers 13 MCP tools for workflow CRUD, node/edge manipulation,
- * and execution, with optional UI resource.
+ * Registers MCP tools for workflow CRUD, node/edge manipulation,
+ * execution, approval, and observability, with optional UI resource.
  */
 
 import fs from "node:fs";
@@ -37,8 +37,7 @@ const NODE_TYPES = [
 type NodeTypeEnum = (typeof NODE_TYPES)[number];
 
 const ORCHESTRATOR_URL =
-	process.env.WORKFLOW_ORCHESTRATOR_URL ??
-	"http://workflow-orchestrator:8080";
+	process.env.WORKFLOW_ORCHESTRATOR_URL ?? "http://workflow-orchestrator:8080";
 
 /** Helper: JSON text response */
 function textResult(data: unknown) {
@@ -85,7 +84,7 @@ export function registerWorkflowTools(
 	const tools: RegisteredTool[] = [];
 
 	// ── list_workflows ─────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"list_workflows",
 		{
 			title: "List Workflows",
@@ -109,12 +108,11 @@ export function registerWorkflowTools(
 	});
 
 	// ── get_workflow ────────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"get_workflow",
 		{
 			title: "Get Workflow",
-			description:
-				"Get a workflow by ID, including full nodes and edges data.",
+			description: "Get a workflow by ID, including full nodes and edges data.",
 			inputSchema: {
 				workflow_id: z.string().describe("The workflow ID"),
 			},
@@ -133,12 +131,11 @@ export function registerWorkflowTools(
 	tools.push({ name: "get_workflow", description: "Get full workflow by ID" });
 
 	// ── create_workflow ────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"create_workflow",
 		{
 			title: "Create Workflow",
-			description:
-				"Create a new workflow with a default manual trigger node.",
+			description: "Create a new workflow with a default manual trigger node.",
 			inputSchema: {
 				name: z.string().describe("Workflow name"),
 				description: z.string().optional().describe("Workflow description"),
@@ -160,7 +157,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── update_workflow ────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"update_workflow",
 		{
 			title: "Update Workflow",
@@ -198,7 +195,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── delete_workflow ────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"delete_workflow",
 		{
 			title: "Delete Workflow",
@@ -211,8 +208,7 @@ export function registerWorkflowTools(
 		async (args: { workflow_id: string }) => {
 			try {
 				const ok = await db.deleteWorkflow(args.workflow_id);
-				if (!ok)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				if (!ok) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult({ deleted: true, id: args.workflow_id });
 			} catch (err) {
 				return errorResult(`Failed to delete workflow: ${err}`);
@@ -222,24 +218,21 @@ export function registerWorkflowTools(
 	tools.push({ name: "delete_workflow", description: "Delete a workflow" });
 
 	// ── duplicate_workflow ─────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"duplicate_workflow",
 		{
 			title: "Duplicate Workflow",
 			description:
 				"Clone a workflow with new IDs for all nodes and edges. Integration references are stripped.",
 			inputSchema: {
-				workflow_id: z
-					.string()
-					.describe("The workflow ID to duplicate"),
+				workflow_id: z.string().describe("The workflow ID to duplicate"),
 			},
 			_meta: uiMeta,
 		},
 		async (args: { workflow_id: string }) => {
 			try {
 				const wf = await db.duplicateWorkflow(args.workflow_id);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
 				return errorResult(`Failed to duplicate workflow: ${err}`);
@@ -252,7 +245,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── add_node ──────────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"add_node",
 		{
 			title: "Add Node",
@@ -260,9 +253,7 @@ export function registerWorkflowTools(
 				"Add a new node to a workflow. Auto-positions below existing nodes if position not specified. Use connect_from_node_id to auto-connect from an existing node.",
 			inputSchema: {
 				workflow_id: z.string().describe("The workflow ID"),
-				type: z
-					.enum(NODE_TYPES)
-					.describe("Node type"),
+				type: z.enum(NODE_TYPES).describe("Node type"),
 				label: z.string().describe("Display label for the node"),
 				position_x: z
 					.number()
@@ -279,7 +270,9 @@ export function registerWorkflowTools(
 				connect_from_node_id: z
 					.string()
 					.optional()
-					.describe("If provided, automatically creates an edge from this node to the new node"),
+					.describe(
+						"If provided, automatically creates an edge from this node to the new node",
+					),
 			},
 			_meta: uiMeta,
 		},
@@ -301,7 +294,8 @@ export function registerWorkflowTools(
 					if (existing && existing.nodes.length > 0) {
 						const nodes = existing.nodes;
 						const maxY = Math.max(...nodes.map((n) => n.position.y));
-						const avgX = nodes.reduce((sum, n) => sum + n.position.x, 0) / nodes.length;
+						const avgX =
+							nodes.reduce((sum, n) => sum + n.position.x, 0) / nodes.length;
 						posX = posX ?? Math.round(avgX);
 						posY = posY ?? maxY + 120;
 					} else {
@@ -323,8 +317,7 @@ export function registerWorkflowTools(
 					},
 				};
 				let wf = await db.addNode(args.workflow_id, node);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 
 				// Auto-connect if requested
 				let addedEdge: db.EdgeData | undefined;
@@ -341,7 +334,11 @@ export function registerWorkflowTools(
 					}
 				}
 
-				return textResult({ added_node: node, added_edge: addedEdge ?? null, workflow: wf });
+				return textResult({
+					added_node: node,
+					added_edge: addedEdge ?? null,
+					workflow: wf,
+				});
 			} catch (err) {
 				return errorResult(`Failed to add node: ${err}`);
 			}
@@ -350,7 +347,7 @@ export function registerWorkflowTools(
 	tools.push({ name: "add_node", description: "Add a node to a workflow" });
 
 	// ── update_node ───────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"update_node",
 		{
 			title: "Update Node",
@@ -363,10 +360,7 @@ export function registerWorkflowTools(
 				description: z.string().optional().describe("New description"),
 				position_x: z.number().optional().describe("New X position"),
 				position_y: z.number().optional().describe("New Y position"),
-				config: z
-					.record(z.any())
-					.optional()
-					.describe("Config fields to merge"),
+				config: z.record(z.any()).optional().describe("Config fields to merge"),
 				enabled: z.boolean().optional().describe("Enable/disable the node"),
 			},
 			_meta: uiMeta,
@@ -389,7 +383,9 @@ export function registerWorkflowTools(
 				if (args.position_x !== undefined || args.position_y !== undefined) {
 					// Fetch current position to preserve unspecified axis
 					const current = await db.getWorkflow(args.workflow_id);
-					const existingNode = current?.nodes.find((n) => n.id === args.node_id);
+					const existingNode = current?.nodes.find(
+						(n) => n.id === args.node_id,
+					);
 					updates.position = {
 						x: args.position_x ?? existingNode?.position.x ?? 0,
 						y: args.position_y ?? existingNode?.position.y ?? 0,
@@ -398,28 +394,25 @@ export function registerWorkflowTools(
 				if (args.config !== undefined) updates.config = args.config;
 				if (args.enabled !== undefined) updates.enabled = args.enabled;
 
-				const wf = await db.updateNode(
-					args.workflow_id,
-					args.node_id,
-					updates,
-				);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				const wf = await db.updateNode(args.workflow_id, args.node_id, updates);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
 				return errorResult(`Failed to update node: ${err}`);
 			}
 		},
 	);
-	tools.push({ name: "update_node", description: "Update a node's properties" });
+	tools.push({
+		name: "update_node",
+		description: "Update a node's properties",
+	});
 
 	// ── delete_node ───────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"delete_node",
 		{
 			title: "Delete Node",
-			description:
-				"Remove a node and all connected edges from a workflow.",
+			description: "Remove a node and all connected edges from a workflow.",
 			inputSchema: {
 				workflow_id: z.string().describe("The workflow ID"),
 				node_id: z.string().describe("The node ID to delete"),
@@ -429,8 +422,7 @@ export function registerWorkflowTools(
 		async (args: { workflow_id: string; node_id: string }) => {
 			try {
 				const wf = await db.deleteNode(args.workflow_id, args.node_id);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
 				return errorResult(`Failed to delete node: ${err}`);
@@ -443,7 +435,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── connect_nodes ─────────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"connect_nodes",
 		{
 			title: "Connect Nodes",
@@ -452,14 +444,8 @@ export function registerWorkflowTools(
 				workflow_id: z.string().describe("The workflow ID"),
 				source_node_id: z.string().describe("Source node ID"),
 				target_node_id: z.string().describe("Target node ID"),
-				source_handle: z
-					.string()
-					.optional()
-					.describe("Source handle ID"),
-				target_handle: z
-					.string()
-					.optional()
-					.describe("Target handle ID"),
+				source_handle: z.string().optional().describe("Source handle ID"),
+				target_handle: z.string().optional().describe("Target handle ID"),
 			},
 			_meta: uiMeta,
 		},
@@ -479,8 +465,7 @@ export function registerWorkflowTools(
 					targetHandle: args.target_handle,
 				};
 				const wf = await db.connectNodes(args.workflow_id, edge);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult({ added_edge: edge, workflow: wf });
 			} catch (err) {
 				return errorResult(`Failed to connect nodes: ${err}`);
@@ -493,7 +478,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── disconnect_nodes ──────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"disconnect_nodes",
 		{
 			title: "Disconnect Nodes",
@@ -506,12 +491,8 @@ export function registerWorkflowTools(
 		},
 		async (args: { workflow_id: string; edge_id: string }) => {
 			try {
-				const wf = await db.disconnectNodes(
-					args.workflow_id,
-					args.edge_id,
-				);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
+				const wf = await db.disconnectNodes(args.workflow_id, args.edge_id);
+				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
 				return errorResult(`Failed to disconnect nodes: ${err}`);
@@ -524,7 +505,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── list_available_actions ─────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"list_available_actions",
 		{
 			title: "List Available Actions",
@@ -553,7 +534,7 @@ export function registerWorkflowTools(
 	});
 
 	// ── execute_workflow ───────────────────────────────────
-	server.registerTool(
+	(server as any).registerTool(
 		"execute_workflow",
 		{
 			title: "Execute Workflow",
@@ -573,35 +554,21 @@ export function registerWorkflowTools(
 			trigger_data?: Record<string, unknown>;
 		}) => {
 			try {
-				// Fetch workflow to build execution payload
-				const wf = await db.getWorkflow(args.workflow_id);
-				if (!wf)
-					return errorResult(`Workflow "${args.workflow_id}" not found`);
-
-				const payload = {
-					workflowId: wf.id,
-					definition: {
-						nodes: wf.nodes,
-						edges: wf.edges,
-					},
-					triggerData: args.trigger_data ?? {},
-					integrations: {},
-				};
-
 				const resp = await fetch(
-					`${ORCHESTRATOR_URL}/api/v2/workflows`,
+					`${ORCHESTRATOR_URL}/api/v2/workflows/execute-by-id`,
 					{
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify(payload),
+						body: JSON.stringify({
+							workflowId: args.workflow_id,
+							triggerData: args.trigger_data ?? {},
+						}),
 					},
 				);
 
 				if (!resp.ok) {
 					const text = await resp.text();
-					return errorResult(
-						`Orchestrator returned ${resp.status}: ${text}`,
-					);
+					return errorResult(`Orchestrator returned ${resp.status}: ${text}`);
 				}
 
 				const result = await resp.json();
@@ -614,6 +581,245 @@ export function registerWorkflowTools(
 	tools.push({
 		name: "execute_workflow",
 		description: "Run workflow via orchestrator",
+	});
+
+	// ── get_execution_status ──────────────────────────────
+	(server as any).registerTool(
+		"get_execution_status",
+		{
+			title: "Get Execution Status",
+			description:
+				"Poll the orchestrator for workflow execution status. Returns status, phase, and approvalEventName when awaiting approval.",
+			inputSchema: {
+				instance_id: z
+					.string()
+					.describe(
+						"Dapr workflow instanceId (from execute_workflow result)",
+					),
+			},
+			_meta: uiMeta,
+		},
+		async (args: { instance_id: string }) => {
+			try {
+				const resp = await fetch(
+					`${ORCHESTRATOR_URL}/api/v2/workflows/${encodeURIComponent(args.instance_id)}/status`,
+				);
+				if (!resp.ok) {
+					const text = await resp.text();
+					return errorResult(
+						`Orchestrator returned ${resp.status}: ${text}`,
+					);
+				}
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to get execution status: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "get_execution_status",
+		description: "Poll workflow execution status",
+	});
+
+	// ── approve_workflow ───────────────────────────────────
+	(server as any).registerTool(
+		"approve_workflow",
+		{
+			title: "Approve Workflow",
+			description:
+				"Raise an approval or rejection event on a running workflow that is awaiting an approval gate.",
+			inputSchema: {
+				instance_id: z.string().describe("Dapr workflow instanceId"),
+				event_name: z
+					.string()
+					.describe(
+						"The approval event name (from approvalEventName in status)",
+					),
+				approved: z
+					.boolean()
+					.describe("true to approve, false to reject"),
+				reason: z
+					.string()
+					.optional()
+					.describe("Optional reason for the approval/rejection"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: {
+			instance_id: string;
+			event_name: string;
+			approved: boolean;
+			reason?: string;
+		}) => {
+			try {
+				const resp = await fetch(
+					`${ORCHESTRATOR_URL}/api/v2/workflows/${encodeURIComponent(args.instance_id)}/events`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							eventName: args.event_name,
+							eventData: {
+								approved: args.approved,
+								reason: args.reason,
+							},
+						}),
+					},
+				);
+				if (!resp.ok) {
+					const text = await resp.text();
+					return errorResult(
+						`Orchestrator returned ${resp.status}: ${text}`,
+					);
+				}
+				const result = await resp.json();
+				return textResult(result);
+			} catch (err) {
+				return errorResult(`Failed to send approval event: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "approve_workflow",
+		description: "Approve or reject a workflow approval gate",
+	});
+
+	// ── get_workflow_observability ─────────────────────────
+	(server as any).registerTool(
+		"get_workflow_observability",
+		{
+			title: "Get Workflow Observability",
+			description:
+				"Generate TraceQL/LogQL/PromQL helpers (and optional Grafana Explore links) for a workflow instance.",
+			inputSchema: {
+				instance_id: z
+					.string()
+					.describe("Dapr workflow instanceId (from execute_workflow result)"),
+				workflow_id: z
+					.string()
+					.optional()
+					.describe("Workflow definition/database ID (optional)"),
+				db_execution_id: z
+					.string()
+					.optional()
+					.describe("workflow_executions.id (optional)"),
+				trace_id: z
+					.string()
+					.optional()
+					.describe(
+						"OpenTelemetry trace_id (optional; preferred for log correlation)",
+					),
+				minutes: z
+					.number()
+					.optional()
+					.describe("Time range in minutes for Explore links (default 60)"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: {
+			instance_id: string;
+			workflow_id?: string;
+			db_execution_id?: string;
+			trace_id?: string;
+			minutes?: number;
+		}) => {
+			try {
+				const minutes = args.minutes ?? 60;
+
+				let traceId = args.trace_id;
+				if (!traceId) {
+					// Best-effort: ask orchestrator for its custom status traceId field.
+					try {
+						const resp = await fetch(
+							`${ORCHESTRATOR_URL}/api/v2/workflows/${encodeURIComponent(args.instance_id)}/status`,
+						);
+						if (resp.ok) {
+							const status = (await resp.json()) as { traceId?: string };
+							if (status?.traceId) traceId = status.traceId;
+						}
+					} catch {
+						// non-fatal
+					}
+				}
+
+				const serviceName = "workflow-orchestrator";
+
+				const traceql = traceId
+					? [
+							`{ resource.service.name = "${serviceName}" } | trace_id = "${traceId}"`,
+						]
+					: [
+							`{ resource.service.name = "${serviceName}" } | span.workflow.instance_id = "${args.instance_id}"`,
+						];
+
+				const logql = traceId
+					? [
+							`{service="${serviceName}"} | json | trace_id="${traceId}"`,
+							`{service="${serviceName}"} |= "${traceId}"`,
+						]
+					: [`{service="${serviceName}"} |= "${args.instance_id}"`];
+
+				const promql = [
+					`sum(rate(http_server_request_duration_seconds_count{service_name="${serviceName}"}[5m]))`,
+					`sum(rate(http_server_request_duration_seconds_sum{service_name="${serviceName}"}[5m])) / sum(rate(http_server_request_duration_seconds_count{service_name="${serviceName}"}[5m]))`,
+				];
+
+				const grafanaBaseUrl = process.env.GRAFANA_BASE_URL;
+				const tempoUid = process.env.GRAFANA_TEMPO_DS_UID;
+				const lokiUid = process.env.GRAFANA_LOKI_DS_UID;
+				const promUid = process.env.GRAFANA_PROM_DS_UID;
+
+				function exploreLink(params: {
+					dsUid: string | undefined;
+					query: string;
+					queryType?: string;
+				}): string | null {
+					if (!grafanaBaseUrl || !params.dsUid) return null;
+					const left = {
+						datasource: params.dsUid,
+						queries: [
+							{
+								refId: "A",
+								query: params.query,
+								queryType: params.queryType,
+							},
+						],
+						range: { from: `now-${minutes}m`, to: "now" },
+					};
+					return `${grafanaBaseUrl.replace(/\/$/, "")}/explore?left=${encodeURIComponent(JSON.stringify(left))}`;
+				}
+
+				return textResult({
+					input: args,
+					resolved: {
+						traceId: traceId ?? null,
+					},
+					queries: { traceql, logql, promql },
+					links: {
+						traces: exploreLink({
+							dsUid: tempoUid,
+							query: traceql[0] ?? "",
+							queryType: "traceql",
+						}),
+						logs: exploreLink({
+							dsUid: lokiUid,
+							query: logql[0] ?? "",
+						}),
+						metrics: exploreLink({
+							dsUid: promUid,
+							query: promql[0] ?? "",
+						}),
+					},
+				});
+			} catch (err) {
+				return errorResult(`Failed to build observability helpers: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "get_workflow_observability",
+		description: "Generate traces/logs/metrics queries and Explore links",
 	});
 
 	return tools;

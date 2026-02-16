@@ -615,6 +615,20 @@ export const workflowApi = {
 			error?: string;
 		}>(`/api/workflows/${id}/download`),
 
+	// Create workflow from WorkflowSpec JSON
+	createFromSpec: (input: {
+		name?: string;
+		description?: string;
+		spec: unknown;
+	}) =>
+		apiCall<{
+			workflow: SavedWorkflow;
+			issues: { errors: unknown[]; warnings: unknown[] };
+		}>("/api/workflows/create-from-spec", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+
 	// Auto-save with debouncing (kept for backwards compatibility)
 	autoSaveCurrent: (() => {
 		let autosaveTimeout: NodeJS.Timeout | null = null;
@@ -661,17 +675,6 @@ export const workflowApi = {
 };
 
 // Dapr Workflow API
-export type DaprExecution = {
-	id: string;
-	workflowId: string;
-	daprInstanceId: string;
-	status: string;
-	phase: string | null;
-	progress: number | null;
-	startedAt: string;
-	completedAt: string | null;
-};
-
 export type DaprWorkflowStatusResponse = {
 	executionId: string;
 	daprInstanceId: string;
@@ -683,51 +686,25 @@ export type DaprWorkflowStatusResponse = {
 	currentActivity: string | null;
 	currentNodeId: string | null;
 	currentNodeName: string | null;
+	approvalEventName: string | null;
 	createdAt?: string;
 	lastUpdatedAt?: string;
 };
 
-export type DaprWorkflowTask = {
-	id: string;
-	title: string;
-	description?: string;
-	status?: string;
-	priority?: string;
-	created_at?: string;
-};
-
 export const daprApi = {
-	// List Dapr workflow executions
-	listExecutions: () => apiCall<DaprExecution[]>("/api/dapr/workflows"),
-
-	// Start a Dapr workflow
-	startWorkflow: (workflowId: string, input: Record<string, unknown> = {}) =>
-		apiCall<{
-			executionId: string;
-			daprInstanceId: string;
-			status: string;
-		}>("/api/dapr/workflows", {
-			method: "POST",
-			body: JSON.stringify({ workflowId, input }),
-		}),
-
 	// Get Dapr workflow status
 	getStatus: (executionId: string) =>
 		apiCall<DaprWorkflowStatusResponse>(
 			`/api/dapr/workflows/${executionId}/status`,
 		),
 
-	// Get tasks from Dapr statestore
-	getTasks: (executionId: string) =>
-		apiCall<DaprWorkflowTask[]>(`/api/dapr/workflows/${executionId}/tasks`),
-
-	// Approve or reject a Dapr workflow
-	approve: (executionId: string, approved: boolean, reason?: string) =>
-		apiCall<{ success: boolean; message?: string }>(
-			`/api/dapr/workflows/${executionId}/approve`,
+	// Raise an external event on a workflow execution (approval gates)
+	raiseEvent: (executionId: string, eventName: string, eventData: unknown) =>
+		apiCall<{ success: boolean }>(
+			`/api/orchestrator/workflows/${executionId}/events`,
 			{
 				method: "POST",
-				body: JSON.stringify({ approved, reason }),
+				body: JSON.stringify({ eventName, eventData }),
 			},
 		),
 };

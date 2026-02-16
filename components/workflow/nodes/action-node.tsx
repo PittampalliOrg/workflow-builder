@@ -35,7 +35,7 @@ import {
 import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
-} from "@/lib/actions/planner-actions";
+} from "@/lib/actions/connection-utils";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 // Helper to get display name for AI model

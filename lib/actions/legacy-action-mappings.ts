@@ -44,18 +44,6 @@ export const LEGACY_ACTION_MAPPINGS: Record<string, string> = {
 	// Slack
 	"Send Slack Message": "slack/send-message",
 
-	// AI Planner
-	"Run Planner Workflow": "planner/run-workflow",
-	"Plan Tasks Only": "planner/plan",
-	"Execute Tasks Only": "planner/execute",
-	"Execute Plan Tasks Only": "planner/execute",
-	"Clone Repository": "planner/clone",
-	"Clone, Plan & Execute in Sandbox": "planner/multi-step",
-	"Approve Plan": "planner/approve",
-	"Check Plan Status": "planner/status",
-	"Run Planning Agent": "planner/plan",
-	"Run Execution Agent": "planner/execute",
-
 	// v0
 	"Create Chat": "v0/create-chat",
 	"Send Message": "v0/send-message",

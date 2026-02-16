@@ -71,7 +71,7 @@ export type ActionConfigFieldBase = {
 
 	// For dynamic-select / dynamic-multi-select: async options metadata
 	dynamicOptions?: {
-		provider?: "pieces" | "planner";
+		provider?: "pieces" | "builtin";
 		pieceName: string;
 		actionName: string;
 		propName: string;

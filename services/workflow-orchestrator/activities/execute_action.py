@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
+from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     connection_external_id = input_data.get("connectionExternalId")
     ap_project_id = input_data.get("apProjectId")
     ap_platform_id = input_data.get("apPlatformId")
+    otel = input_data.get("_otel") or {}
 
     # Ensure config is never None
     # Support both flat (node.config) and nested (node.data.config) formats
@@ -132,37 +134,47 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     start_time = time.time()
 
+    attrs = {
+        "workflow.instance_id": execution_id,
+        "workflow.id": workflow_id,
+        "workflow.db_execution_id": db_execution_id,
+        "node.id": node.get("id"),
+        "node.name": node_name,
+        "action.type": action_type,
+    }
+
     try:
-        # Invoke function-router via Dapr service invocation
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{FUNCTION_ROUTER_APP_ID}/method/execute"
+        with start_activity_span("activity.execute_action", otel, attrs):
+            # Invoke function-router via Dapr service invocation
+            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{FUNCTION_ROUTER_APP_ID}/method/execute"
 
-        response = requests.post(
-            url,
-            json=request_payload,
-            timeout=300,  # 5 minute timeout for long-running functions
-        )
-        response.raise_for_status()
+            response = requests.post(
+                url,
+                json=request_payload,
+                timeout=300,  # 5 minute timeout for long-running functions
+            )
+            response.raise_for_status()
 
-        duration_ms = int((time.time() - start_time) * 1000)
-        result = response.json()
+            duration_ms = int((time.time() - start_time) * 1000)
+            result = response.json()
 
-        logger.info(
-            f"[Execute Action] Function {action_type} completed "
-            f"(success={result.get('success')}, duration_ms={duration_ms})"
-        )
+            logger.info(
+                f"[Execute Action] Function {action_type} completed "
+                f"(success={result.get('success')}, duration_ms={duration_ms})"
+            )
 
-        activity_result = {
-            "success": result.get("success", False),
-            "data": result.get("data"),
-            "error": result.get("error"),
-            "duration_ms": duration_ms,
-        }
+            activity_result = {
+                "success": result.get("success", False),
+                "data": result.get("data"),
+                "error": result.get("error"),
+                "duration_ms": duration_ms,
+            }
 
-        # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
-        if result.get("pause"):
-            activity_result["pause"] = result["pause"]
+            # Forward pause metadata from fn-activepieces (DELAY/WEBHOOK)
+            if result.get("pause"):
+                activity_result["pause"] = result["pause"]
 
-        return activity_result
+            return activity_result
 
     except requests.Timeout:
         duration_ms = int((time.time() - start_time) * 1000)

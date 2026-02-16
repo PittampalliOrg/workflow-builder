@@ -1,3 +1,5 @@
+import { otelLogMixin } from "./otel.js";
+
 /**
  * Function Router Service
  *
@@ -22,6 +24,7 @@ async function main() {
 	const app = Fastify({
 		logger: {
 			level: process.env.LOG_LEVEL || "info",
+			mixin: otelLogMixin,
 		},
 	});
 

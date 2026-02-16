@@ -13,7 +13,7 @@ Usage:
     from core.config import config
 
     # Access values
-    planner_id = config.PLANNER_APP_ID
+    mastra_id = config.MASTRA_AGENT_APP_ID
     dapr_host = config.DAPR_HOST
 """
 
@@ -49,8 +49,8 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
-    PLANNER_APP_ID: str = "planner-dapr-agent"
-    MASTRA_AGENT_APP_ID: str = "mastra-agent-mcp"
+    MASTRA_AGENT_APP_ID: str = "mastra-agent-tanstack"
+    DURABLE_AGENT_APP_ID: str = "durable-agent"
 
     # Tracks whether Dapr Configuration was used
     _loaded_from_dapr: bool = field(default=False, repr=False)
@@ -66,8 +66,9 @@ class OrchestratorConfig:
         self._apply_values(dapr_values)
         logger.info(
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
-            f"PLANNER_APP_ID={self.PLANNER_APP_ID}, "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
+            f"MASTRA_AGENT_APP_ID={self.MASTRA_AGENT_APP_ID}, "
+            f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
 
@@ -77,8 +78,9 @@ class OrchestratorConfig:
             from dapr.clients import DaprClient
 
             keys = [
-                "PLANNER_APP_ID",
                 "FUNCTION_ROUTER_APP_ID",
+                "MASTRA_AGENT_APP_ID",
+                "DURABLE_AGENT_APP_ID",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -121,8 +123,8 @@ class OrchestratorConfig:
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
-            "PLANNER_APP_ID": ("PLANNER_APP_ID", "planner-dapr-agent"),
-            "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-mcp"),
+            "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-tanstack"),
+            "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
         }
 
         for attr, (env_var, default) in field_map.items():

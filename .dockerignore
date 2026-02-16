@@ -1,9 +1,17 @@
 # Dependencies
 node_modules
+**/node_modules
 
 # Build output
 .next
 out
+services/**/.output
+services/**/.nitro
+services/**/dist
+services/**/dist-ui
+services/**/.tanstack
+services/**/.vinxi
+services/**/app.config.timestamp_*
 
 # Testing
 tests

@@ -7,12 +7,20 @@
 
 import { EventEmitter } from "node:events";
 import { nanoid } from "nanoid";
-import type { AgentEvent, AgentEventType, AgentState, WorkflowContext } from "./types";
+import type {
+	AgentEvent,
+	AgentEventType,
+	AgentState,
+	LogEntry,
+	WorkflowContext,
+} from "./types";
 
 const MAX_EVENTS = 200;
+const MAX_LOGS = 500;
 
 class AgentEventBus extends EventEmitter {
 	private events: AgentEvent[] = [];
+	private logs: LogEntry[] = [];
 
 	private state: AgentState = {
 		status: "idle",
@@ -27,6 +35,9 @@ class AgentEventBus extends EventEmitter {
 
 	private workflowContext: WorkflowContext = {
 		workflowId: null,
+		instanceId: null,
+		status: null,
+		traceId: null,
 		nodeId: null,
 		stepIndex: null,
 		receivedEvents: 0,
@@ -75,6 +86,50 @@ class AgentEventBus extends EventEmitter {
 		const start = Math.max(0, this.events.length - limit);
 		return this.events.slice(start).reverse();
 	}
+
+	addLog(level: LogEntry["level"], message: string): void {
+		const entry: LogEntry = {
+			id: nanoid(),
+			level,
+			timestamp: new Date().toISOString(),
+			message,
+		};
+		this.logs.push(entry);
+		if (this.logs.length > MAX_LOGS) {
+			this.logs = this.logs.slice(-MAX_LOGS);
+		}
+		this.emit("log", entry);
+	}
+
+	getRecentLogs(limit = 100): LogEntry[] {
+		const start = Math.max(0, this.logs.length - limit);
+		return this.logs.slice(start);
+	}
 }
 
 export const eventBus = new AgentEventBus();
+
+/** Intercept console.log/warn/error/info to capture logs in the event bus */
+export function interceptConsole(): void {
+	const origLog = console.log;
+	const origWarn = console.warn;
+	const origError = console.error;
+	const origInfo = console.info;
+
+	console.log = (...args: unknown[]) => {
+		origLog(...args);
+		eventBus.addLog("log", args.map(String).join(" "));
+	};
+	console.warn = (...args: unknown[]) => {
+		origWarn(...args);
+		eventBus.addLog("warn", args.map(String).join(" "));
+	};
+	console.error = (...args: unknown[]) => {
+		origError(...args);
+		eventBus.addLog("error", args.map(String).join(" "));
+	};
+	console.info = (...args: unknown[]) => {
+		origInfo(...args);
+		eventBus.addLog("info", args.map(String).join(" "));
+	};
+}

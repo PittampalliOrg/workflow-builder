@@ -7,6 +7,8 @@
  * ENV: PIECE_NAME (required), DATABASE_URL (required), PORT (default 3100)
  */
 
+import "./otel.js";
+
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -79,7 +81,13 @@ function createMcpServer(): Server {
 			{ name: `piece-${pieceName}`, version: "1.0.0" },
 			{ capabilities: { tools: {}, resources: {} } },
 		);
-		registerPieceToolsWithUI(mcpServer, piece, metadata, uiHtmlPath, normalizePieceName(pieceName));
+		registerPieceToolsWithUI(
+			mcpServer,
+			piece,
+			metadata,
+			uiHtmlPath,
+			normalizePieceName(pieceName),
+		);
 		return mcpServer.server; // Return underlying Server for transport
 	}
 
@@ -99,9 +107,7 @@ function createMcpServer(): Server {
 
 // ── Fetch piece metadata from DB ─────────────────────────────
 
-async function fetchPieceMetadata(
-	name: string,
-): Promise<PieceMetadataRow> {
+async function fetchPieceMetadata(name: string): Promise<PieceMetadataRow> {
 	const databaseUrl = process.env.DATABASE_URL;
 	if (!databaseUrl) {
 		throw new Error("DATABASE_URL is required");
@@ -213,9 +219,7 @@ async function handleMcpPost(
 		transport.onclose = () => {
 			if (transport.sessionId) {
 				sessions.delete(transport.sessionId);
-				console.log(
-					`[piece-mcp] Session closed: ${transport.sessionId}`,
-				);
+				console.log(`[piece-mcp] Session closed: ${transport.sessionId}`);
 			}
 		};
 
@@ -303,7 +307,13 @@ async function main(): Promise<void> {
 			{ name: "dry-run", version: "0.0.0" },
 			{ capabilities: { tools: {}, resources: {} } },
 		);
-		registeredTools = registerPieceToolsWithUI(dryMcpServer, piece, metadata, uiHtmlPath);
+		registeredTools = registerPieceToolsWithUI(
+			dryMcpServer,
+			piece,
+			metadata,
+			uiHtmlPath,
+			normalizedName,
+		);
 	} else {
 		const dryServer = new Server(
 			{ name: "dry-run", version: "0.0.0" },
@@ -325,7 +335,9 @@ async function main(): Promise<void> {
 	});
 
 	httpServer.listen(PORT, HOST, () => {
-		console.log(`[piece-mcp] piece-mcp-server for "${pieceName}" listening on ${HOST}:${PORT}`);
+		console.log(
+			`[piece-mcp] piece-mcp-server for "${pieceName}" listening on ${HOST}:${PORT}`,
+		);
 		console.log(
 			`[piece-mcp] Registered ${registeredTools.length} tools: ${registeredTools.map((t) => t.name).join(", ")}`,
 		);

@@ -41,17 +41,6 @@ const mcpPlugin: IntegrationPlugin = {
           rows: 6,
           required: true,
         },
-        {
-          key: "respond",
-          label: "Flow Execution",
-          type: "select",
-          required: false,
-          options: [
-            { label: "Stop", value: "stop" },
-            { label: "Respond and Continue", value: "respond" },
-          ],
-          defaultValue: "stop",
-        },
       ],
     },
   ],

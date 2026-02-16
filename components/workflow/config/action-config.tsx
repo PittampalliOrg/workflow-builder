@@ -32,9 +32,8 @@ import {
 import type { IntegrationType } from "@/lib/actions/types";
 import {
 	getRequiredConnectionForAction,
-	normalizePlannerActionType,
 	requiresConnectionForIntegration,
-} from "@/lib/actions/planner-actions";
+} from "@/lib/actions/connection-utils";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ApIntegration } from "@/lib/activepieces/action-adapter";
 import { ActionConfigRenderer } from "./action-config-renderer";
@@ -325,7 +324,7 @@ function getCategoryForAction(
 
 // Normalize action type to new ID format (handles legacy labels via findActionById)
 function normalizeActionType(actionType: string): string {
-	const normalizedActionType = normalizePlannerActionType(actionType);
+	const normalizedActionType = actionType;
 
 	// Check system actions first - they use their label as ID
 	if (SYSTEM_ACTION_IDS.includes(normalizedActionType)) {

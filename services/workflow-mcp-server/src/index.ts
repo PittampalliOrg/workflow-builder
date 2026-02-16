@@ -7,10 +7,12 @@
  * ENV: DATABASE_URL (required), PORT (default 3200)
  */
 
+import "./otel.js";
+
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
@@ -230,9 +232,7 @@ async function main(): Promise<void> {
 	});
 
 	httpServer.listen(PORT, HOST, () => {
-		console.log(
-			`[wf-mcp] workflow-mcp-server listening on ${HOST}:${PORT}`,
-		);
+		console.log(`[wf-mcp] workflow-mcp-server listening on ${HOST}:${PORT}`);
 		console.log(
 			`[wf-mcp] Registered ${registeredTools.length} tools: ${registeredTools.map((t) => t.name).join(", ")}`,
 		);

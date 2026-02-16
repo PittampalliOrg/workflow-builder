@@ -13,7 +13,7 @@ import { ApiError, api } from "@/lib/api-client";
 import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
-} from "@/lib/actions/planner-actions";
+} from "@/lib/actions/connection-utils";
 import {
 	connectionsAtom,
 	connectionsLoadedAtom,

@@ -6,6 +6,8 @@
  * Receives requests from the function-router with pre-fetched credentials.
  */
 
+import { otelLogMixin } from "./otel.js";
+
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { z } from "zod";
@@ -74,6 +76,7 @@ async function main() {
 	const app = Fastify({
 		logger: {
 			level: process.env.LOG_LEVEL || "info",
+			mixin: otelLogMixin,
 		},
 	});
 

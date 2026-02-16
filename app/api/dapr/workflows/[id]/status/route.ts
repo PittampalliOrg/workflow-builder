@@ -124,7 +124,10 @@ export async function GET(
         progress,
         ...(errorMessage ? { error: errorMessage } : {}),
         ...(localStatus === "success" || localStatus === "error"
-          ? { completedAt: new Date() }
+          ? {
+              completedAt: new Date(),
+              output: orchestratorStatus.outputs || null,
+            }
           : {}),
       })
       .where(eq(workflowExecutions.id, id));
@@ -139,6 +142,7 @@ export async function GET(
       message,
       currentNodeId: orchestratorStatus.currentNodeId || null,
       currentNodeName: orchestratorStatus.currentNodeName || null,
+      approvalEventName: orchestratorStatus.approvalEventName || null,
       output: orchestratorStatus.outputs,
     });
   } catch (error) {

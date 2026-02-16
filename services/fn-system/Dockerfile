@@ -5,7 +5,7 @@ RUN apk add --no-cache libc6-compat
 WORKDIR /app
 RUN npm install -g pnpm
 COPY services/fn-system/package.json ./
-RUN pnpm install
+RUN pnpm install --prod=false
 
 FROM node:22-alpine AS builder
 WORKDIR /app

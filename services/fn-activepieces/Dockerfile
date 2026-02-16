@@ -24,7 +24,7 @@ RUN npm install -g pnpm
 
 # Copy all deps (including dev for build)
 COPY services/fn-activepieces/package.json ./
-RUN pnpm install
+RUN pnpm install --prod=false
 
 # Copy source code
 COPY services/fn-activepieces/ ./

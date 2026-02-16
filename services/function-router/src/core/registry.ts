@@ -16,8 +16,8 @@ const REGISTRY_FILE_PATH =
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
-	"planner/*": { appId: "planner-dapr-agent", type: "knative" },
-	"mastra/*": { appId: "mastra-agent", type: "knative" },
+	"mastra/*": { appId: "mastra-agent-tanstack", type: "knative" },
+	"durable/*": { appId: "durable-agent", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -27,7 +27,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  * only defines a broad "_default" mapping.
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
-	"mastra/*": { appId: "mastra-agent", type: "knative" },
+	"mastra/*": { appId: "mastra-agent-tanstack", type: "knative" },
+	"durable/*": { appId: "durable-agent", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;
@@ -49,10 +50,12 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
 	if (existsSync(REGISTRY_FILE_PATH)) {
 		try {
 			const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
-			cachedRegistry = JSON.parse(content) as FunctionRegistry;
+			const loaded = JSON.parse(content) as FunctionRegistry;
+			// Merge builtin fallbacks on top so code-defined routes override stale ConfigMap values
+			cachedRegistry = { ...loaded, ...BUILTIN_FALLBACK_REGISTRY };
 			cacheTimestamp = now;
 			console.log(
-				`[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH}`,
+				`[Registry] Loaded ${Object.keys(cachedRegistry).length} entries from ${REGISTRY_FILE_PATH} (with builtin overrides)`,
 			);
 			return cachedRegistry;
 		} catch (error) {

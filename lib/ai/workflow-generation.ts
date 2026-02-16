@@ -3,7 +3,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import { withPlannerPiece } from "@/lib/actions/planner-actions";
 import type { IntegrationDefinition } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
@@ -146,10 +145,10 @@ async function generateAIPieceActionPrompts(): Promise<string> {
 	const allPieces = await listPieceMetadata({});
 	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
 	const builtinPieces = getBuiltinPieces();
-	const integrations = withPlannerPiece([
+	const integrations: IntegrationDefinition[] = [
 		...builtinPieces,
 		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
-	]);
+	];
 
 	const lines: string[] = [];
 
@@ -223,12 +222,12 @@ IMPORTANT RULES:
 Node structure:
 {
   "id": "unique-id",
-  "type": "trigger" | "action" | "loop-until" | "if-else" | "set-state" | "transform" | "note",
+  "type": "trigger" | "action" | "activity" | "approval-gate" | "timer" | "loop-until" | "if-else" | "set-state" | "transform" | "workflow-control" | "publish-event" | "note",
   "position": {"x": number, "y": number},
   "data": {
     "label": "Node Label",
     "description": "Node description",
-    "type": "trigger" | "action" | "loop-until" | "if-else" | "set-state" | "transform" | "note",
+    "type": "trigger" | "action" | "activity" | "approval-gate" | "timer" | "loop-until" | "if-else" | "set-state" | "transform" | "workflow-control" | "publish-event" | "note",
     "config": {...},
     "status": "idle"
   }
@@ -247,6 +246,25 @@ Trigger types:
 - Manual: {"triggerType": "Manual"}
 - Webhook: {"triggerType": "Webhook", "webhookPath": "/webhooks/name", ...}
 - Schedule: {"triggerType": "Schedule", "scheduleCron": "0 9 * * *", ...}
+- MCP: {"triggerType": "MCP", "toolName": "tool_name", "toolDescription": "...", "inputSchema": "[...]", "returnsResponse": "true"}
+
+Activity node type:
+- Node type is "activity"
+- Uses Dapr activity invocation semantics
+- Config example:
+  { "activityName": "execute_plugin_step", "timeout": "30" }
+
+Approval Gate node type:
+- Node type is "approval-gate"
+- Waits for Dapr external event
+- Config example:
+  { "eventName": "approval_event", "timeoutMinutes": 5 }
+
+Timer node type:
+- Node type is "timer"
+- Uses canonical duration + durationUnit format
+- Config example:
+  { "duration": 30, "durationUnit": "seconds" }
 
 Loop Until node type:
 - Node type is "loop-until" (NOT an actionType)
@@ -286,6 +304,19 @@ Transform node type:
 - Builds structured output from a JSON template (must be valid JSON after templates resolve)
 - Config example:
   { "templateJson": "{\\n  \\"id\\": \\"{{@nodeId:Label.id}}\\"\\n}" }
+
+Publish Event node type:
+- Node type is "publish-event"
+- Publishes an event through Dapr pub/sub
+- Config example:
+  { "topic": "workflow.events", "eventType": "custom", "data": {"ok": true} }
+
+Workflow Control node type:
+- Node type is "workflow-control"
+- Explicitly controls workflow continuation in a durable, deterministic way
+- Config example:
+  { "mode": "stop", "reason": "Response already sent to MCP client" }
+- For MCP reply flows, add "Reply to MCP Client" then a "workflow-control" node with mode "stop"
 
 Note node type:
 - Node type is "note"

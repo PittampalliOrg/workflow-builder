@@ -24,7 +24,7 @@ RUN npm install -g pnpm
 
 # Copy all deps (including dev for build)
 COPY services/piece-mcp-server/package.json ./
-RUN pnpm install
+RUN pnpm install --prod=false
 
 # Copy source code
 COPY services/piece-mcp-server/ ./

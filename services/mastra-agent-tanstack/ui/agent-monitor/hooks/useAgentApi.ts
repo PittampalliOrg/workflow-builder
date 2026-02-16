@@ -6,10 +6,19 @@ export function useAgentApi(app: App | null) {
     async (name: string, args: Record<string, unknown> = {}) => {
       if (!app) throw new Error("App not connected");
       const result = await app.callServerTool({ name, arguments: args });
-      const text = (
+      const textItem = (
         result.content as Array<{ type: string; text?: string }>
-      )?.find((c) => c.type === "text")?.text;
-      return text ? JSON.parse(text) : null;
+      )?.find((c) => c.type === "text");
+      const text = textItem?.text;
+      if ((result as any).isError) {
+        throw new Error(text || "Tool call failed");
+      }
+      if (!text) return null;
+      try {
+        return JSON.parse(text);
+      } catch {
+        throw new Error(text);
+      }
     },
     [app],
   );
@@ -23,6 +32,30 @@ export function useAgentApi(app: App | null) {
 
     getEventHistory: (limit?: number) =>
       callTool("get_event_history", limit ? { limit } : {}),
+
+    getLogs: (limit?: number, level?: string) =>
+      callTool("get_logs", {
+        ...(limit ? { limit } : {}),
+        ...(level ? { level } : {}),
+      }),
+
+    runWorkflow: (params: {
+      workflowId: string;
+      prompt: string;
+      repo_owner?: string;
+      repo_name?: string;
+      branch?: string;
+    }) => callTool("run_workflow", params),
+
+    getWorkflowExecutionStatus: (instanceId: string) =>
+      callTool("get_workflow_execution_status", { instanceId }),
+
+    approveWorkflow: (params: {
+      instanceId: string;
+      eventName: string;
+      approved: boolean;
+      reason?: string;
+    }) => callTool("approve_workflow", params),
   };
 }
 

@@ -18,8 +18,6 @@ const CACHE_TTL_MS = 60_000; // 1 minute cache
 // Configuration keys for workflow builder
 const CONFIG_KEYS = {
   WORKFLOW_ORCHESTRATOR_URL: "workflow-orchestrator-url",
-  DAPR_ORCHESTRATOR_URL: "dapr-orchestrator-url",
-  ACTIVITY_EXECUTOR_URL: "activity-executor-url",
   GENERIC_ORCHESTRATOR_URL: "generic-orchestrator-url",
 } as const;
 
@@ -27,16 +25,12 @@ const CONFIG_KEYS = {
 // All workflow services are in the workflow-builder namespace
 const DEFAULTS: Record<string, string> = {
   [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
-  [CONFIG_KEYS.DAPR_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
-  [CONFIG_KEYS.ACTIVITY_EXECUTOR_URL]: "http://activity-executor:8080",
   [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
 };
 
 // Environment variable mappings
 const ENV_MAPPINGS: Record<string, string> = {
   [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "WORKFLOW_ORCHESTRATOR_URL",
-  [CONFIG_KEYS.DAPR_ORCHESTRATOR_URL]: "DAPR_ORCHESTRATOR_URL",
-  [CONFIG_KEYS.ACTIVITY_EXECUTOR_URL]: "ACTIVITY_EXECUTOR_URL",
   [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "GENERIC_ORCHESTRATOR_URL",
 };
 
@@ -127,31 +121,14 @@ export async function getConfig(key: string): Promise<string> {
 }
 
 /**
- * Get the workflow orchestrator URL (for generic TypeScript workflows)
- * Uses hardcoded default to avoid stale env var issues during DevSpace development.
+ * Get the workflow orchestrator URL
  */
 export async function getWorkflowOrchestratorUrl(): Promise<string> {
   return getConfig(CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL);
 }
 
 /**
- * Get the Dapr orchestrator URL (legacy planner workflows)
- * Uses hardcoded default to avoid stale env var issues during DevSpace development.
- */
-export async function getDaprOrchestratorUrl(): Promise<string> {
-  return getConfig(CONFIG_KEYS.DAPR_ORCHESTRATOR_URL);
-}
-
-/**
- * Get the activity executor URL
- */
-export async function getActivityExecutorUrl(): Promise<string> {
-  return getConfig(CONFIG_KEYS.ACTIVITY_EXECUTOR_URL);
-}
-
-/**
  * Get the generic orchestrator URL
- * Uses hardcoded default to avoid stale env var issues during DevSpace development.
  */
 export async function getGenericOrchestratorUrl(): Promise<string> {
   return getConfig(CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL);

@@ -142,7 +142,7 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
           </div>
         </div>
 
-        {/* Phase (for planner-agent workflows) */}
+        {/* Phase (for agent workflows) */}
         {workflow.customStatus?.phase && (
           <div className="flex flex-col gap-1">
             <span className="text-gray-500 text-xs uppercase tracking-wide">
@@ -159,7 +159,7 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
           </div>
         )}
 
-        {/* Progress (for running planner-agent workflows) */}
+        {/* Progress (for running agent workflows) */}
         {workflow.customStatus?.progress != null &&
           workflow.status === "RUNNING" && (
             <div className="flex flex-col gap-1">
@@ -245,7 +245,7 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
           </div>
         )}
 
-      {/* Message (for planner-agent workflows with custom status) */}
+      {/* Message (for agent workflows with custom status) */}
       {workflow.customStatus?.message && (
         <div className="rounded-lg border border-gray-700 bg-[#1e2433]/50 px-4 py-3">
           <span className="text-gray-300 text-sm">

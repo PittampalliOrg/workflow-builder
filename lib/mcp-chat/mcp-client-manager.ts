@@ -15,9 +15,61 @@ type CacheEntry = {
 const CACHE_TTL_MS = 30_000;
 const toolCache = new Map<string, CacheEntry>();
 
+// ── Persistent client pool (one session per server URL) ──
+type PoolEntry = {
+	client: Client;
+	lastUsed: number;
+};
+
+const clientPool = new Map<string, PoolEntry>();
+const POOL_TTL_MS = 5 * 60_000; // 5 minutes idle timeout
+
+// Reap idle pool entries every 60s
+setInterval(() => {
+	const now = Date.now();
+	for (const [url, entry] of clientPool) {
+		if (now - entry.lastUsed > POOL_TTL_MS) {
+			try {
+				entry.client.close();
+			} catch {
+				/* ignore */
+			}
+			clientPool.delete(url);
+		}
+	}
+}, 60_000);
+
+async function getPooledClient(serverUrl: string): Promise<Client> {
+	const existing = clientPool.get(serverUrl);
+	if (existing) {
+		existing.lastUsed = Date.now();
+		return existing.client;
+	}
+
+	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
+	const client = new Client({ name: "mcp-chat-proxy", version: "1.0.0" });
+	await client.connect(transport);
+
+	clientPool.set(serverUrl, { client, lastUsed: Date.now() });
+	return client;
+}
+
+function evictPoolEntry(serverUrl: string) {
+	const entry = clientPool.get(serverUrl);
+	if (entry) {
+		try {
+			entry.client.close();
+		} catch {
+			/* ignore */
+		}
+		clientPool.delete(serverUrl);
+	}
+}
+
 /**
  * Connect to an external MCP server, list its tools, return their definitions.
- * Results are cached for 30 seconds.
+ * Results are cached for 30 seconds. Uses the persistent client pool.
+ * If the pooled session is stale, evicts and retries once.
  */
 export async function discoverTools(
 	serverUrl: string,
@@ -28,24 +80,25 @@ export async function discoverTools(
 		return cached.tools;
 	}
 
-	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
-	const client = new Client({ name: "mcp-chat-discover", version: "1.0.0" });
-
+	let result: Awaited<ReturnType<Client["listTools"]>>;
 	try {
-		await client.connect(transport);
-		const result = await client.listTools();
-
-		const tools: ToolDef[] = result.tools.map((t) => ({
-			name: t.name,
-			description: t.description,
-			inputSchema: t.inputSchema as Record<string, unknown>,
-		}));
-
-		toolCache.set(serverUrl, { tools, ts: Date.now() });
-		return tools;
-	} finally {
-		await client.close();
+		const client = await getPooledClient(serverUrl);
+		result = await client.listTools();
+	} catch {
+		// Session may have been reaped server-side — evict and retry once
+		evictPoolEntry(serverUrl);
+		const client = await getPooledClient(serverUrl);
+		result = await client.listTools();
 	}
+
+	const tools: ToolDef[] = result.tools.map((t) => ({
+		name: t.name,
+		description: t.description,
+		inputSchema: t.inputSchema as Record<string, unknown>,
+	}));
+
+	toolCache.set(serverUrl, { tools, ts: Date.now() });
+	return tools;
 }
 
 type McpToolResult = {
@@ -58,18 +111,14 @@ type McpToolResult = {
 /**
  * Connect to an external MCP server, call a specific tool, and return the result.
  * Handles UI HTML extraction from resource URIs or inline content.
+ * Uses the persistent client pool.
  */
 export async function callExternalMcpTool(
 	serverUrl: string,
 	toolName: string,
 	args: Record<string, unknown>,
 ): Promise<McpToolResult> {
-	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
-	const client = new Client({ name: "mcp-chat-exec", version: "1.0.0" });
-
-	try {
-		await client.connect(transport);
-
+	async function doCall(client: Client) {
 		const toolResult = await client.callTool({
 			name: toolName,
 			arguments: args,
@@ -87,7 +136,9 @@ export async function callExternalMcpTool(
 
 		if (resourceUri) {
 			try {
-				const resourceResult = await client.readResource({ uri: resourceUri });
+				const resourceResult = await client.readResource({
+					uri: resourceUri,
+				});
 				const content = resourceResult.contents[0];
 				if (content && "text" in content) {
 					uiHtml = content.text;
@@ -122,25 +173,31 @@ export async function callExternalMcpTool(
 			)?.find((c) => c.type === "text")?.text ?? "";
 
 		return { text: textContent, uiHtml, toolName, serverUrl };
-	} finally {
-		await client.close();
+	}
+
+	try {
+		const client = await getPooledClient(serverUrl);
+		return await doCall(client);
+	} catch {
+		// Session may have been reaped server-side — evict and retry once
+		evictPoolEntry(serverUrl);
+		const client = await getPooledClient(serverUrl);
+		return await doCall(client);
 	}
 }
 
 /**
  * Call a tool on an external MCP server and return the raw result.
  * Used for subsequent interactive calls from iframe UIs (no UI extraction needed).
+ * Uses a persistent client pool — one MCP session per server URL.
  */
 export async function callExternalMcpToolDirect(
 	serverUrl: string,
 	toolName: string,
 	args: Record<string, unknown>,
 ): Promise<{ content: Array<{ type: string; text?: string }> }> {
-	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
-	const client = new Client({ name: "mcp-chat-direct", version: "1.0.0" });
-
 	try {
-		await client.connect(transport);
+		const client = await getPooledClient(serverUrl);
 		const toolResult = await client.callTool({
 			name: toolName,
 			arguments: args,
@@ -150,7 +207,18 @@ export async function callExternalMcpToolDirect(
 			content:
 				(toolResult.content as Array<{ type: string; text?: string }>) ?? [],
 		};
-	} finally {
-		await client.close();
+	} catch (err) {
+		// Session may have been reaped server-side — evict and retry once
+		evictPoolEntry(serverUrl);
+		const client = await getPooledClient(serverUrl);
+		const toolResult = await client.callTool({
+			name: toolName,
+			arguments: args,
+		});
+
+		return {
+			content:
+				(toolResult.content as Array<{ type: string; text?: string }>) ?? [],
+		};
 	}
 }

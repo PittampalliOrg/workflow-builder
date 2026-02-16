@@ -1,9 +1,9 @@
 """
 Log Node Execution Activity
 
-Writes execution logs for planner/* nodes directly to the workflow_execution_logs
+Writes execution logs for agent nodes directly to the workflow_execution_logs
 table in PostgreSQL. Regular action nodes are already logged by function-router;
-this activity fills the gap for planner nodes that bypass function-router.
+this activity fills the gap for agent nodes that bypass function-router.
 
 Fetches DATABASE_URL from the Dapr kubernetes-secrets store (reading from the
 workflow-builder-secrets K8s secret).
@@ -89,7 +89,7 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Insert a 'running' row into workflow_execution_logs.
 
-    Called before a planner/* node begins execution.
+    Called before an agent node begins execution.
 
     Args:
         ctx: Dapr workflow context (required by Dapr, not used)
@@ -98,7 +98,7 @@ def log_node_start(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             - nodeId: Node ID in the workflow
             - nodeName: Display name of the node
             - nodeType: Node type (e.g., "action")
-            - actionType: Function slug (e.g., "planner/plan")
+            - actionType: Function slug (e.g., "agent/mastra-run")
             - input: Input data (dict) passed to the node
 
     Returns:
@@ -160,7 +160,7 @@ def log_node_complete(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Update the execution log row with completion status, output, and duration.
 
-    Called after a planner/* node finishes (success or error).
+    Called after an agent node finishes (success or error).
 
     Args:
         ctx: Dapr workflow context (required by Dapr, not used)
