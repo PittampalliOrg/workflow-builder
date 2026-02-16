@@ -222,10 +222,6 @@ dev:
         value: ${OTEL_SERVICE_NAME}
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME}-dev,service.version=dev"
-      - name: JAEGER_QUERY_SERVICE
-        value: ${OTEL_SERVICE_NAME}
-      - name: JAEGER_QUERY_URL
-        value: "http://jaeger-query.observability.svc.cluster.local:16686"
       # Dapr sidecar configuration (for SDK access to config/secrets)
       - name: DAPR_HTTP_PORT
         value: "3500"
@@ -244,9 +240,6 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      # Durable agent endpoint for builtin options + agent tool discovery
-      - name: MASTRA_AGENT_API_BASE_URL
-        value: "http://durable-agent.workflow-builder.svc.cluster.local:8001"
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: "https://workflow-builder.cnoe.localtest.me:8443"

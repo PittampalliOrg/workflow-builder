@@ -7,8 +7,6 @@
  * - http-request
  * - database-query
  * - condition
- * - ai-text
- * - ai-structured
  */
 
 import { otelLogMixin } from "./otel.js";
@@ -25,12 +23,6 @@ import {
 	httpRequestStep,
 	HttpRequestInputSchema,
 } from "./steps/http-request.js";
-import { aiTextStep, AiTextInputSchema } from "./steps/ai-text.js";
-import {
-	aiStructuredStep,
-	AiStructuredInputSchema,
-	normalizeSchema,
-} from "./steps/ai-structured.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
@@ -140,44 +132,10 @@ async function main() {
 				break;
 			}
 
-			case "ai-text": {
-				const input = AiTextInputSchema.safeParse(body.input);
-				if (!input.success) {
-					result = { success: false, error: "Invalid input for ai-text" };
-					break;
-				}
-				const r = await aiTextStep(input.data, body.credentials);
-				result = r.success
-					? { success: true, data: r.data }
-					: { success: false, error: r.error };
-				break;
-			}
-
-			case "ai-structured": {
-				// Pre-process: convert schema-builder format to JSON Schema
-				const preprocessed = {
-					...body.input,
-					schema: normalizeSchema(body.input.schema),
-				};
-				const input = AiStructuredInputSchema.safeParse(preprocessed);
-				if (!input.success) {
-					result = {
-						success: false,
-						error: `Invalid input for ai-structured: ${input.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ")}`,
-					};
-					break;
-				}
-				const r = await aiStructuredStep(input.data, body.credentials);
-				result = r.success
-					? { success: true, data: r.data }
-					: { success: false, error: r.error };
-				break;
-			}
-
 			default:
 				result = {
 					success: false,
-					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition, ai-text, ai-structured`,
+					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition`,
 				};
 		}
 

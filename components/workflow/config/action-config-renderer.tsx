@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -17,7 +17,7 @@ import type {
 	ActionConfigField,
 	ActionConfigFieldBase,
 } from "@/lib/actions/types";
-import { flattenConfigFields, isFieldGroup } from "@/lib/actions/utils";
+import { isFieldGroup } from "@/lib/actions/utils";
 import { DynamicSelectField } from "./fields/dynamic-select-field";
 import { ModelSelectorField } from "./fields/model-selector-field";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
@@ -244,7 +244,6 @@ type ActionConfigRendererProps = {
 	fields: ActionConfigField[];
 	config: Record<string, unknown>;
 	onUpdateConfig: (key: string, value: unknown) => void;
-	onBatchUpdateConfig?: (defaults: Record<string, unknown>) => void;
 	disabled?: boolean;
 };
 
@@ -256,32 +255,8 @@ export function ActionConfigRenderer({
 	fields,
 	config,
 	onUpdateConfig,
-	onBatchUpdateConfig,
 	disabled,
 }: ActionConfigRendererProps) {
-	// Persist defaultValues into config for any field that has a defaultValue
-	// but no existing value in config. This ensures defaults are saved to the
-	// node, not just displayed in the UI.
-	useEffect(() => {
-		const allFields = flattenConfigFields(fields);
-		const defaults: Record<string, unknown> = {};
-		for (const field of allFields) {
-			if (field.defaultValue !== undefined && config[field.key] === undefined) {
-				defaults[field.key] = field.defaultValue;
-			}
-		}
-		if (Object.keys(defaults).length > 0) {
-			if (onBatchUpdateConfig) {
-				onBatchUpdateConfig(defaults);
-			} else {
-				// Fallback: apply one-by-one (may have race condition)
-				for (const [key, value] of Object.entries(defaults)) {
-					onUpdateConfig(key, value);
-				}
-			}
-		}
-	}, [fields]); // Only run when fields definition changes (action type change)
-
 	return (
 		<>
 			{fields.map((field) => {

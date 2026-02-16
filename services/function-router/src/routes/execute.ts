@@ -333,22 +333,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							stepName,
 						);
 
-						// Back-compat: older workflows often send clone args as owner/repo.
-						if (toolId === "clone") {
-							if (
-								typeof args.repositoryOwner !== "string" &&
-								typeof args.owner === "string"
-							) {
-								args.repositoryOwner = args.owner;
-							}
-							if (
-								typeof args.repositoryRepo !== "string" &&
-								typeof args.repo === "string"
-							) {
-								args.repositoryRepo = args.repo;
-							}
-						}
-
 						// Credential resolution for clone operations
 						if (
 							toolId === "clone" &&

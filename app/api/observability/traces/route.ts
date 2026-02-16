@@ -22,7 +22,6 @@ const DEFAULT_LIMIT = 25;
 const MAX_LIMIT = 100;
 const MAX_JAEGER_FETCH_LIMIT = 250;
 const TRACE_LOOKBACK_LIMIT = 3000;
-const DEFAULT_JAEGER_QUERY_SERVICE = "workflow-builder";
 
 function parseDate(raw: string | null): Date | undefined {
 	if (!raw) {
@@ -115,28 +114,6 @@ function matchesSearch(
 	);
 }
 
-function resolveJaegerService(searchParams: URLSearchParams): string {
-	const candidates = [
-		searchParams.get("service"),
-		process.env.OTEL_SERVICE_NAME,
-		process.env.JAEGER_QUERY_SERVICE,
-		DEFAULT_JAEGER_QUERY_SERVICE,
-	];
-
-	for (const candidate of candidates) {
-		if (typeof candidate !== "string") {
-			continue;
-		}
-
-		const value = candidate.trim();
-		if (value) {
-			return value;
-		}
-	}
-
-	return DEFAULT_JAEGER_QUERY_SERVICE;
-}
-
 export async function GET(request: Request) {
 	try {
 		const session = await getSession(request);
@@ -166,7 +143,10 @@ export async function GET(request: Request) {
 
 		const from = parseDate(filters.from ?? null);
 		const to = parseDate(filters.to ?? null);
-		const jaegerService = resolveJaegerService(searchParams);
+		const jaegerService =
+			searchParams.get("service") ??
+			process.env.JAEGER_QUERY_SERVICE ??
+			undefined;
 
 		const index = await getProjectExecutionIndex(
 			{

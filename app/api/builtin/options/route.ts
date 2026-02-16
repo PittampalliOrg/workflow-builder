@@ -21,7 +21,7 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 const MASTRA_AGENT_API_BASE_URL =
 	process.env.MASTRA_AGENT_API_BASE_URL ||
-	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
+	"http://mastra-agent.dapr-agents.svc.cluster.local:3000";
 const MASTRA_OPTIONS_TIMEOUT_MS = Number.parseInt(
 	process.env.MASTRA_OPTIONS_TIMEOUT_MS || "5000",
 	10,
@@ -321,7 +321,7 @@ async function getMastraToolOptions(
 			: [];
 
 		if (options.length === 0) {
-			return buildDisabledResponse("No tools available from durable-agent");
+			return buildDisabledResponse("No tools available from mastra-agent");
 		}
 
 		return { options: filterOptions(options, searchValue) };
@@ -329,7 +329,7 @@ async function getMastraToolOptions(
 		console.warn("[builtin/options] Mastra tool lookup failed:", error);
 		return {
 			options: filterOptions(getMastraFallbackOptions(), searchValue),
-			placeholder: "Durable agent unavailable; showing fallback tools",
+			placeholder: "Mastra service unavailable; showing fallback tools",
 		};
 	}
 }

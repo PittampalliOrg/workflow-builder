@@ -230,14 +230,16 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 		{
 			slug: "plan",
 			label: "Plan",
-			description: "Generate a structured execution plan without executing it",
+			description:
+				"Generate a structured execution plan without executing it",
 			category: "Mastra Agent",
 			configFields: [
 				{
 					key: "prompt",
 					label: "Prompt",
 					type: "template-textarea",
-					placeholder: "Describe what the agent should accomplish",
+					placeholder:
+						"Describe what the agent should accomplish",
 					rows: 4,
 					required: true,
 				},
@@ -270,7 +272,8 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 		{
 			slug: "execute",
 			label: "Execute Plan",
-			description: "Execute a previously generated plan using workspace tools",
+			description:
+				"Execute a previously generated plan using workspace tools",
 			category: "Mastra Agent",
 			configFields: [
 				{
@@ -367,7 +370,9 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					required: true,
 				},
 			],
-			outputFields: [{ field: "content", description: "File contents" }],
+			outputFields: [
+				{ field: "content", description: "File contents" },
+			],
 		},
 		{
 			slug: "write-file",
@@ -425,7 +430,9 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					required: true,
 				},
 			],
-			outputFields: [{ field: "path", description: "Path of the edited file" }],
+			outputFields: [
+				{ field: "path", description: "Path of the edited file" },
+			],
 		},
 		{
 			slug: "list-files",
@@ -547,198 +554,14 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 			outputFields: [
 				{ field: "text", description: "Agent response text" },
 				{ field: "toolCalls", description: "Tools called during execution" },
-				{
-					field: "fileChanges",
-					description: "Files created, modified, or deleted by the agent",
-				},
-				{
-					field: "patch",
-					description: "Unified diff patch of all file changes",
-				},
+				{ field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
+				{ field: "patch", description: "Unified diff patch of all file changes" },
 				{ field: "usage", description: "Token usage statistics" },
 			],
 		},
 	],
 };
 
-const AI_SYSTEM_PIECE: IntegrationDefinition = {
-	type: "system",
-	label: "System",
-	pieceName: "system",
-	logoUrl: "",
-	actions: [
-		{
-			slug: "ai-text",
-			label: "AI Text Generation",
-			description:
-				"Generate text using an LLM (OpenAI or Anthropic) with a prompt",
-			category: "System",
-			configFields: [
-				{
-					key: "provider",
-					label: "Provider",
-					type: "select",
-					defaultValue: "openai",
-					options: [
-						{ label: "OpenAI", value: "openai" },
-						{ label: "Anthropic", value: "anthropic" },
-					],
-				},
-				{
-					key: "model",
-					label: "Model",
-					type: "model-selector",
-					required: true,
-					defaultValue: "gpt-4o",
-					example: "gpt-4o",
-				},
-				{
-					key: "systemPrompt",
-					label: "System Prompt",
-					type: "template-textarea",
-					placeholder: "You are a helpful assistant...",
-					rows: 3,
-				},
-				{
-					key: "prompt",
-					label: "Prompt",
-					type: "template-textarea",
-					required: true,
-					placeholder: "Analyze the following data...",
-					rows: 6,
-				},
-				{
-					label: "Advanced",
-					type: "group",
-					defaultExpanded: false,
-					fields: [
-						{
-							key: "temperature",
-							label: "Temperature",
-							type: "number",
-							defaultValue: "0.7",
-							min: 0,
-							placeholder: "0.7",
-						},
-						{
-							key: "maxTokens",
-							label: "Max Tokens",
-							type: "number",
-							placeholder: "4096",
-						},
-					],
-				},
-			],
-			outputFields: [
-				{ field: "text", description: "Generated text response" },
-				{
-					field: "usage.promptTokens",
-					description: "Number of prompt tokens used",
-				},
-				{
-					field: "usage.completionTokens",
-					description: "Number of completion tokens used",
-				},
-			],
-		},
-		{
-			slug: "ai-structured",
-			label: "AI Structured Output",
-			description:
-				"Extract structured data from text using an LLM with a JSON schema",
-			category: "System",
-			configFields: [
-				{
-					key: "provider",
-					label: "Provider",
-					type: "select",
-					defaultValue: "openai",
-					options: [
-						{ label: "OpenAI", value: "openai" },
-						{ label: "Anthropic", value: "anthropic" },
-					],
-				},
-				{
-					key: "model",
-					label: "Model",
-					type: "model-selector",
-					required: true,
-					defaultValue: "gpt-4o",
-					example: "gpt-4o",
-				},
-				{
-					key: "systemPrompt",
-					label: "System Prompt",
-					type: "template-textarea",
-					placeholder: "You are a data extraction assistant...",
-					rows: 3,
-				},
-				{
-					key: "prompt",
-					label: "Prompt",
-					type: "template-textarea",
-					required: true,
-					placeholder: "Extract the following fields from this text...",
-					rows: 6,
-				},
-				{
-					key: "schema",
-					label: "Output Schema",
-					type: "schema-builder",
-					required: true,
-				},
-				{
-					label: "Advanced",
-					type: "group",
-					defaultExpanded: false,
-					fields: [
-						{
-							key: "schemaName",
-							label: "Schema Name",
-							type: "text",
-							placeholder: "extraction_result",
-						},
-						{
-							key: "temperature",
-							label: "Temperature",
-							type: "number",
-							defaultValue: "0.7",
-							min: 0,
-							placeholder: "0.7",
-						},
-						{
-							key: "maxTokens",
-							label: "Max Tokens",
-							type: "number",
-							placeholder: "4096",
-						},
-					],
-				},
-			],
-			outputFields: [
-				{
-					field: "object",
-					description: "Extracted structured data matching the schema",
-				},
-				{
-					field: "usage.promptTokens",
-					description: "Number of prompt tokens used",
-				},
-				{
-					field: "usage.completionTokens",
-					description: "Number of completion tokens used",
-				},
-			],
-		},
-	],
-};
-
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [
-		MCP_PIECE,
-		AGENT_PIECE,
-		MASTRA_AGENT_PIECE,
-		DURABLE_AGENT_PIECE,
-		AI_SYSTEM_PIECE,
-	];
+	return [MCP_PIECE, AGENT_PIECE, MASTRA_AGENT_PIECE, DURABLE_AGENT_PIECE];
 }

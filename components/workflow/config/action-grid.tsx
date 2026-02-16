@@ -80,19 +80,6 @@ const SYSTEM_ACTIONS: ActionType[] = [
 		description: "Branch based on a condition",
 		category: "System",
 	},
-	{
-		id: "system/ai-text",
-		label: "AI Text Generation",
-		description: "Generate text using an LLM (OpenAI or Anthropic)",
-		category: "System",
-	},
-	{
-		id: "system/ai-structured",
-		label: "AI Structured Output",
-		description:
-			"Extract structured data from text using an LLM with a JSON schema",
-		category: "System",
-	},
 ];
 
 // Dapr control flow actions (not regular activities)
