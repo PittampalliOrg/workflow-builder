@@ -82,3 +82,35 @@ export type {
 
 // Observability
 export { initObservability, extractTraceContext, injectTraceContext } from "./observability/index.js";
+
+// Mastra adapters (optional — all graceful fallback if packages not installed)
+export {
+  adaptMastraTool,
+  adaptMastraTools,
+  type MastraToolLike,
+  registerLlmProvider,
+  registerEmbeddingProvider,
+  resolveModel,
+  resolveEmbeddingModel,
+  registerBuiltinProviders,
+  createMastraWorkspaceTools,
+  parseMcpServersConfig,
+  discoverMcpTools,
+  type McpServerConfig,
+  runInputProcessors,
+  createProcessors,
+  ProcessorAbortError,
+  type ProcessorLike,
+  MastraMemoryAdapter,
+  createMastraMemoryAdapter,
+  type MastraMemoryLike,
+  createRagTools,
+  parseRagToolsConfig,
+  type RagToolConfig,
+  runScorers,
+  createScorers,
+  type ScorerLike,
+  type ScoringResult,
+  createVoiceTools,
+  type VoiceProviderLike,
+} from "./mastra/index.js";

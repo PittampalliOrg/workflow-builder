@@ -23,6 +23,8 @@ import type { DurableAgentTool } from "./types/tool.js";
 import { DaprAgentState } from "./state/dapr-state.js";
 import { ConversationListMemory } from "./memory/conversation-list.js";
 import type { MemoryProvider } from "./memory/memory-base.js";
+import { createMastraMemoryAdapter } from "./mastra/memory-adapter.js";
+import type { ProcessorLike } from "./mastra/processor-adapter.js";
 
 import {
   createRecordInitialEntry,
@@ -116,8 +118,16 @@ export class DurableAgent {
       stateKey,
     );
 
-    // Memory (default: in-memory list)
-    this.memory = new ConversationListMemory();
+    // Memory: use Mastra Memory adapter if provided, else in-memory list
+    if (options.mastra?.memory) {
+      const adapter = createMastraMemoryAdapter(options.mastra.memory);
+      this.memory = adapter ?? new ConversationListMemory();
+      if (adapter) {
+        console.log("[DurableAgent] Using Mastra Memory adapter");
+      }
+    } else {
+      this.memory = new ConversationListMemory();
+    }
 
     // Registry
     if (options.registry) {
@@ -154,6 +164,9 @@ export class DurableAgent {
     // Observability
     initObservability(options.observability, this.name);
 
+    // Resolve processors from mastra config
+    const processors = (options.mastra?.processors ?? []) as ProcessorLike[];
+
     // Bind activities via closures (replacing fragile initActivities pattern)
     this.boundRecordInitialEntry = createRecordInitialEntry(this.stateManager);
     this.boundCallLlm = createCallLlm(
@@ -162,6 +175,7 @@ export class DurableAgent {
       this.instructions,
       this.tools,
       this.memory,
+      processors.length > 0 ? processors : undefined,
     );
     this.boundRunTool = createRunTool(this.tools);
     this.boundSaveToolResults = createSaveToolResults(

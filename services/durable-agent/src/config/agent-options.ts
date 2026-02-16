@@ -42,4 +42,30 @@ export interface DurableAgentOptions {
 
   /** Extra metadata to publish to the registry. */
   agentMetadata?: Record<string, unknown>;
+
+  /**
+   * Optional Mastra integration config.
+   * All fields are `unknown` to avoid compile-time Mastra dependencies.
+   * Adapters in src/mastra/ handle type narrowing at runtime.
+   */
+  mastra?: {
+    /** Model spec string, e.g., "openai/gpt-4o". Resolved via model-router. */
+    modelSpec?: string;
+    /** Mastra tools record (createTool objects). Adapted via tool-adapter. */
+    tools?: Record<string, unknown>;
+    /** Mastra Workspace instance. */
+    workspace?: unknown;
+    /** MCP server configs or MCPClient instance. */
+    mcpClient?: unknown;
+    /** Mastra processors for pre-LLM guardrails. */
+    processors?: unknown[];
+    /** Mastra Memory instance. Replaces default ConversationListMemory. */
+    memory?: unknown;
+    /** RAG tool configs or pre-built RAG tools. */
+    ragTools?: Record<string, unknown>;
+    /** Mastra voice provider instance. */
+    voice?: unknown;
+    /** Mastra eval scorers for post-workflow scoring. */
+    scorers?: unknown[];
+  };
 }

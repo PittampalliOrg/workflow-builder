@@ -21,6 +21,7 @@ import type {
 import type { DaprAgentState } from "../state/dapr-state.js";
 import type { MemoryProvider } from "../memory/memory-base.js";
 import { callLlmAdapter, type LlmCallResult } from "../llm/ai-sdk-adapter.js";
+import { runInputProcessors, ProcessorAbortError, type ProcessorLike } from "../mastra/processor-adapter.js";
 
 // --------------------------------------------------------------------------
 // Payload types for activities
@@ -140,6 +141,7 @@ export function createCallLlm(
   systemPrompt: string,
   tools: Record<string, DurableAgentTool>,
   memory: MemoryProvider,
+  processors?: ProcessorLike[],
 ) {
   return async function callLlm(
     _ctx: WorkflowActivityContext,
@@ -241,11 +243,36 @@ export function createCallLlm(
       }
     }
 
+    // Run pre-LLM processors (guardrails) if configured
+    let processedMessages = entry.messages;
+    if (processors && processors.length > 0) {
+      try {
+        processedMessages = await runInputProcessors(processors, entry.messages);
+        if (processedMessages.length !== entry.messages.length) {
+          console.log(
+            `[callLlm] Processors modified message count: ${entry.messages.length} -> ${processedMessages.length}`,
+          );
+        }
+      } catch (err) {
+        if (err instanceof ProcessorAbortError) {
+          console.warn(
+            `[callLlm] Processor "${err.processorId}" aborted: ${err.message}`,
+          );
+          // Return a rejection message instead of calling the LLM
+          return {
+            role: "assistant" as const,
+            content: `Request blocked by safety processor "${err.processorId}": ${err.message}`,
+          };
+        }
+        throw err;
+      }
+    }
+
     // Call LLM with tool declarations (no auto-execute)
     const result = await callLlmAdapter(
       model,
       systemPrompt,
-      entry.messages,
+      processedMessages,
       tools,
     );
 

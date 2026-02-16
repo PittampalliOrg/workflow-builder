@@ -36,6 +36,20 @@ import type { Plan } from "./planner.js";
 import { gitBaseline, gitDiff } from "./git-diff.js";
 import type { DaprEvent } from "./types.js";
 
+// Mastra adapters (all optional — graceful fallback if packages not installed)
+import {
+	registerBuiltinProviders,
+	resolveModel,
+	adaptMastraTools,
+	type MastraToolLike,
+} from "../mastra/index.js";
+import { discoverMcpTools } from "../mastra/mcp-client-setup.js";
+import { createMastraWorkspaceTools } from "../mastra/workspace-setup.js";
+import { createProcessors, type ProcessorLike } from "../mastra/processor-adapter.js";
+import { createRagTools } from "../mastra/rag-tools.js";
+import { createVoiceTools, type VoiceProviderLike } from "../mastra/voice-tools.js";
+import { runScorers, createScorers, type ScorerLike } from "../mastra/eval-scorer.js";
+
 // ── Configuration ─────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || "8001", 10);
@@ -46,14 +60,68 @@ const HOST = process.env.HOST || "0.0.0.0";
 let agent: DurableAgent | null = null;
 let workflowClient: DaprWorkflowClient | null = null;
 let initialized = false;
+let mcpDisconnect: (() => Promise<void>) | null = null;
+let scorers: ScorerLike[] = [];
 
 async function initAgent(): Promise<void> {
 	if (initialized) return;
 
+	// Register built-in model providers (openai)
+	registerBuiltinProviders();
+
 	// Start sandbox
 	await sandbox.start();
 
-	// Create durable agent with workspace tools
+	// Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
+	const modelSpec = process.env.MASTRA_MODEL_SPEC;
+	const model = modelSpec
+		? resolveModel(modelSpec)
+		: openai.chat(process.env.AI_MODEL ?? "gpt-4o");
+
+	if (modelSpec) {
+		console.log(`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpec}`);
+	}
+
+	// Merge all tool sources into a single record
+	const mergedTools: Record<string, import("../types/tool.js").DurableAgentTool> = {
+		...workspaceTools,
+	};
+
+	// Mastra workspace tools (if MASTRA_WORKSPACE=true)
+	if (process.env.MASTRA_WORKSPACE === "true") {
+		const wsTools = await createMastraWorkspaceTools(filesystem, sandbox);
+		Object.assign(mergedTools, wsTools);
+	}
+
+	// MCP tools (if MCP_SERVERS env var set)
+	if (process.env.MCP_SERVERS) {
+		const mcp = await discoverMcpTools();
+		Object.assign(mergedTools, mcp.tools);
+		mcpDisconnect = mcp.disconnect;
+	}
+
+	// RAG tools (if MASTRA_RAG_TOOLS env var set)
+	if (process.env.MASTRA_RAG_TOOLS) {
+		const ragTools = await createRagTools();
+		Object.assign(mergedTools, ragTools);
+	}
+
+	// Processors (if MASTRA_PROCESSORS env var set)
+	let processors: ProcessorLike[] = [];
+	if (process.env.MASTRA_PROCESSORS) {
+		processors = await createProcessors(process.env.MASTRA_PROCESSORS);
+	}
+
+	// Scorers (if MASTRA_SCORERS env var set) — run post-workflow
+	if (process.env.MASTRA_SCORERS) {
+		scorers = await createScorers(process.env.MASTRA_SCORERS);
+	}
+
+	console.log(
+		`[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
+	);
+
+	// Create durable agent with all tool sources and optional Mastra integrations
 	agent = new DurableAgent({
 		name: "durable-dev-agent",
 		role: "Development assistant",
@@ -67,13 +135,16 @@ Use workspace tools to help users with file operations and command execution:
 - Create and delete files and directories
 
 Be concise and direct. Use the appropriate tool for each task.`,
-		model: openai.chat(process.env.AI_MODEL ?? "gpt-4o"),
-		tools: workspaceTools,
+		model,
+		tools: mergedTools,
 		state: {
 			storeName: process.env.STATE_STORE_NAME || "statestore",
 		},
 		execution: {
 			maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
+		},
+		mastra: {
+			processors: processors.length > 0 ? processors : undefined,
 		},
 	});
 
@@ -345,6 +416,12 @@ app.post("/api/run", async (req, res) => {
 					(completion.result?.content as string) ??
 					JSON.stringify(completion.result ?? {});
 
+				// Run post-workflow scorers (outside Dapr generator)
+				let evalResults: unknown[] | undefined;
+				if (scorers.length > 0 && completion.success) {
+					evalResults = await runScorers(scorers, prompt, text, instanceId);
+				}
+
 				await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
@@ -355,6 +432,7 @@ app.post("/api/run", async (req, res) => {
 						fileChanges,
 						patch,
 						daprInstanceId: instanceId,
+						...(evalResults ? { evalResults } : {}),
 					},
 					error: completion.error,
 				});
@@ -544,6 +622,7 @@ startDaprPublisher();
 async function shutdown(signal: string) {
 	console.log(`[durable-agent] Received ${signal}, shutting down...`);
 	try {
+		if (mcpDisconnect) await mcpDisconnect();
 		if (agent) await agent.stop();
 		await sandbox.destroy();
 	} catch (err) {
