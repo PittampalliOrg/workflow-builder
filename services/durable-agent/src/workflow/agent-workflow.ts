@@ -93,7 +93,7 @@ export function createAgentWorkflow(
       inputValue: task,
       source,
       triggeringWorkflowInstanceId,
-      startTime: new Date().toISOString(),
+      startTime: ctx.getCurrentUtcDateTime().toISOString(),
       traceContext,
     } satisfies RecordInitialEntryPayload);
 
@@ -208,7 +208,7 @@ export function createAgentWorkflow(
     yield ctx.callActivity(activities.finalizeWorkflow, {
       instanceId,
       finalOutput: finalMessage.content ?? "",
-      endTime: new Date().toISOString(),
+      endTime: ctx.getCurrentUtcDateTime().toISOString(),
       triggeringWorkflowInstanceId,
     } satisfies FinalizeWorkflowPayload);
 
