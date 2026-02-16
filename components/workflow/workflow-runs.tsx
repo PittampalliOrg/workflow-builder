@@ -18,10 +18,6 @@ import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
-import {
-	OUTPUT_DISPLAY_CONFIGS,
-	type OutputDisplayConfig,
-} from "@/lib/output-display-configs";
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
@@ -35,6 +31,13 @@ import {
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
+
+type OutputDisplayConfig = {
+	type: "image" | "video" | "url";
+	field: string;
+};
+
+const OUTPUT_DISPLAY_CONFIGS: Record<string, OutputDisplayConfig> = {};
 
 type ExecutionLog = {
 	id: string;
@@ -944,7 +947,10 @@ export function WorkflowRuns({
 						}
 
 						// Update approval atoms when awaiting approval
-						if (statusResponse.phase === "awaiting_approval" && statusResponse.approvalEventName) {
+						if (
+							statusResponse.phase === "awaiting_approval" &&
+							statusResponse.approvalEventName
+						) {
 							setApprovalEventName(statusResponse.approvalEventName);
 							setApprovalExecutionId(execution.id);
 						} else if (statusResponse.phase !== "awaiting_approval") {

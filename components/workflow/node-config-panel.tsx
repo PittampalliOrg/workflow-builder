@@ -66,6 +66,7 @@ import { NoteConfig } from "./config/note-config";
 import { SetStateConfig } from "./config/set-state-config";
 import { TimerConfig } from "./config/timer-config";
 import { TransformConfig } from "./config/transform-config";
+import { WorkflowControlConfig } from "./config/workflow-control-config";
 import { TriggerConfig } from "./config/trigger-config";
 import { WorkflowRuns } from "./workflow-runs";
 
@@ -894,7 +895,10 @@ export const PanelInner = () => {
 																					? "Set State"
 																					: selection.nodeType === "transform"
 																						? "Transform"
-																						: "Step",
+																						: selection.nodeType ===
+																								"workflow-control"
+																							? "Workflow Control"
+																							: "Step",
 													config:
 														selection.nodeType === "activity"
 															? { activityName: selection.activityName }
@@ -920,7 +924,10 @@ export const PanelInner = () => {
 																			? { key: "", value: "" }
 																			: selection.nodeType === "transform"
 																				? { templateJson: "{\n  \n}" }
-																				: {},
+																				: selection.nodeType ===
+																						"workflow-control"
+																					? { mode: "stop", reason: "" }
+																					: {},
 												},
 											});
 										} else {
@@ -1038,6 +1045,14 @@ export const PanelInner = () => {
 							{/* Transform Config */}
 							{selectedNode.type === "transform" && (
 								<TransformConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{selectedNode.type === "workflow-control" && (
+								<WorkflowControlConfig
 									config={selectedNode.data.config || {}}
 									disabled={isGenerating || !isOwner}
 									onUpdateConfig={handleUpdateConfig}

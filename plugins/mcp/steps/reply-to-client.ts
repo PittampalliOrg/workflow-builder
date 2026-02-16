@@ -3,11 +3,10 @@ import { getErrorMessageAsync } from "@/lib/utils";
 type ReplyToMcpClientInput = {
   runId: string;
   response: unknown;
-  respond?: "stop" | "respond";
 };
 
 type ReplyToMcpClientOutput =
-  | { success: true; data: { responded: true; runId: string; respond: string } }
+  | { success: true; data: { responded: true; runId: string } }
   | { success: false; error: { message: string } };
 
 const WORKFLOW_BUILDER_URL =
@@ -63,13 +62,11 @@ export async function mcpReplyToClientStep(
       };
     }
 
-    // Stop vs respond-and-continue is enforced by the orchestrator (see dynamic_workflow control key).
     return {
       success: true,
       data: {
         responded: true,
         runId: input.runId,
-        respond: input.respond || "stop",
       },
     };
   } catch (err) {

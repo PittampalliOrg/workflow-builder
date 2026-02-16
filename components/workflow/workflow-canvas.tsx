@@ -55,6 +55,7 @@ import { SetStateNode } from "./nodes/set-state-node";
 import { TimerNode } from "./nodes/timer-node";
 import { TransformNode } from "./nodes/transform-node";
 import { TriggerNode } from "./nodes/trigger-node";
+import { WorkflowControlNode } from "./nodes/workflow-control-node";
 import {
 	type ContextMenuState,
 	useContextMenuHandlers,
@@ -265,6 +266,7 @@ export function WorkflowCanvas() {
 			note: NoteNode,
 			"set-state": SetStateNode,
 			transform: TransformNode,
+			"workflow-control": WorkflowControlNode,
 		}),
 		[],
 	);

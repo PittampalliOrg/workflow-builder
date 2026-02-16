@@ -16,6 +16,7 @@ export type WorkflowNodeType =
 	| "note" // Non-executing annotation
 	| "set-state" // Data: set a workflow-scoped variable
 	| "transform" // Data: build structured output from a JSON template
+	| "workflow-control" // Explicit control step (stop/continue workflow)
 	| "publish-event"; // publish to pub/sub
 
 export type WorkflowNodeData = {

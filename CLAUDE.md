@@ -150,7 +150,7 @@ lib/
   codegen-registry.ts              # Code generation templates
   config-service.ts                # Dapr Configuration building block client
   platform-service.ts              # Platform/project management
-  workflow-spec/                   # WorkflowSpec v1 JSON import/export and lint
+  workflow-spec/                   # WorkflowSpec v2 JSON import/export and lint
     types.ts                       # WorkflowSpec type definitions
     lint.ts                        # Workflow spec linter
     decompile.ts                   # Decompile workflow to spec

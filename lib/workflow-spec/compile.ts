@@ -1,4 +1,4 @@
-import type { WorkflowSpec } from "./types";
+import type { TriggerSpec, WorkflowSpec } from "./types";
 import { layoutDagPositions } from "./layout";
 
 export type WorkflowTableNode = {
@@ -37,6 +37,38 @@ function sortEdgesStable(edges: WorkflowTableEdge[]): WorkflowTableEdge[] {
 	});
 }
 
+function toUiTriggerConfig(trigger: TriggerSpec): Record<string, unknown> {
+	const config = { ...(trigger.config || {}) } as Record<string, unknown>;
+
+	switch (trigger.type) {
+		case "webhook": {
+			const webhookSchema = config.webhookSchema;
+			if (webhookSchema !== undefined && typeof webhookSchema !== "string") {
+				config.webhookSchema = JSON.stringify(webhookSchema);
+			}
+			return { ...config, triggerType: "Webhook" };
+		}
+		case "schedule":
+			return { ...config, triggerType: "Schedule" };
+		case "mcp": {
+			const inputSchema = config.inputSchema;
+			if (inputSchema !== undefined && typeof inputSchema !== "string") {
+				config.inputSchema = JSON.stringify(inputSchema);
+			}
+			if (typeof config.returnsResponse === "boolean") {
+				config.returnsResponse = String(config.returnsResponse);
+			}
+			if (typeof config.enabled === "boolean") {
+				config.enabled = String(config.enabled);
+			}
+			return { ...config, triggerType: "MCP" };
+		}
+		case "manual":
+		default:
+			return { ...config, triggerType: "Manual" };
+	}
+}
+
 export function compileWorkflowSpecToGraph(spec: WorkflowSpec): {
 	nodes: WorkflowTableNode[];
 	edges: WorkflowTableEdge[];
@@ -57,7 +89,6 @@ export function compileWorkflowSpecToGraph(spec: WorkflowSpec): {
 		incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
 	};
 
-	// Step edges (from explicit next).
 	for (const step of spec.steps) {
 		if (step.kind === "if-else") {
 			const nextTrue = normalizeNext(step.next.true);
@@ -82,7 +113,6 @@ export function compileWorkflowSpecToGraph(spec: WorkflowSpec): {
 		}
 	}
 
-	// Trigger edges: explicit trigger.next, else connect to roots.
 	const triggerNext = normalizeNext(spec.trigger.next);
 	const roots =
 		triggerNext.length > 0
@@ -109,21 +139,16 @@ export function compileWorkflowSpecToGraph(spec: WorkflowSpec): {
 		startId: triggerId,
 	});
 
-	const triggerConfig: Record<string, unknown> = {
-		...(spec.trigger.config || {}),
-		triggerType: spec.trigger.type === "webhook" ? "Webhook" : "Manual",
-	};
-
 	const nodes: WorkflowTableNode[] = [
 		{
 			id: triggerId,
 			type: "trigger",
 			position: positions[triggerId] || { x: 0, y: 0 },
 			data: {
-				label: spec.name ? "Trigger" : "Trigger",
+				label: "Trigger",
 				description: spec.description,
 				type: "trigger",
-				config: triggerConfig,
+				config: toUiTriggerConfig(spec.trigger),
 				status: "idle" as const,
 				enabled: true,
 			},

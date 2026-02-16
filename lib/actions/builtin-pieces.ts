@@ -36,17 +36,6 @@ const MCP_PIECE: IntegrationDefinition = {
 					rows: 6,
 					required: true,
 				},
-				{
-					key: "respond",
-					label: "Flow Execution",
-					type: "select",
-					required: false,
-					options: [
-						{ label: "Stop", value: "stop" },
-						{ label: "Respond and Continue", value: "respond" },
-					],
-					defaultValue: "stop",
-				},
 			],
 			outputFields: [
 				{ field: "responded", description: "Whether a response was sent" },
@@ -230,16 +219,14 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 		{
 			slug: "plan",
 			label: "Plan",
-			description:
-				"Generate a structured execution plan without executing it",
+			description: "Generate a structured execution plan without executing it",
 			category: "Mastra Agent",
 			configFields: [
 				{
 					key: "prompt",
 					label: "Prompt",
 					type: "template-textarea",
-					placeholder:
-						"Describe what the agent should accomplish",
+					placeholder: "Describe what the agent should accomplish",
 					rows: 4,
 					required: true,
 				},
@@ -272,8 +259,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 		{
 			slug: "execute",
 			label: "Execute Plan",
-			description:
-				"Execute a previously generated plan using workspace tools",
+			description: "Execute a previously generated plan using workspace tools",
 			category: "Mastra Agent",
 			configFields: [
 				{
@@ -370,9 +356,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					required: true,
 				},
 			],
-			outputFields: [
-				{ field: "content", description: "File contents" },
-			],
+			outputFields: [{ field: "content", description: "File contents" }],
 		},
 		{
 			slug: "write-file",
@@ -430,9 +414,7 @@ const MASTRA_AGENT_PIECE: IntegrationDefinition = {
 					required: true,
 				},
 			],
-			outputFields: [
-				{ field: "path", description: "Path of the edited file" },
-			],
+			outputFields: [{ field: "path", description: "Path of the edited file" }],
 		},
 		{
 			slug: "list-files",
@@ -554,8 +536,14 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 			outputFields: [
 				{ field: "text", description: "Agent response text" },
 				{ field: "toolCalls", description: "Tools called during execution" },
-				{ field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
-				{ field: "patch", description: "Unified diff patch of all file changes" },
+				{
+					field: "fileChanges",
+					description: "Files created, modified, or deleted by the agent",
+				},
+				{
+					field: "patch",
+					description: "Unified diff patch of all file changes",
+				},
 				{ field: "usage", description: "Token usage statistics" },
 			],
 		},

@@ -133,6 +133,14 @@ const DAPR_CONTROL_FLOW: ActionType[] = [
 		nodeType: "transform",
 	},
 	{
+		id: "dapr:workflow-control",
+		label: "Workflow Control",
+		description: "Explicitly stop or continue workflow execution",
+		category: "Control Flow",
+		isDaprActivity: true,
+		nodeType: "workflow-control",
+	},
+	{
 		id: "dapr:note",
 		label: "Note",
 		description: "Add a non-executing annotation",
@@ -278,6 +286,9 @@ function ActionIcon({
 	}
 	if (action.nodeType === "note") {
 		return <StickyNote className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "workflow-control") {
+		return <ShieldCheck className={cn(className, "text-muted-foreground")} />;
 	}
 	return <Zap className={cn(className, "text-muted-foreground")} />;
 }

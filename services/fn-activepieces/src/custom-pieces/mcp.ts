@@ -27,18 +27,6 @@ const replyToMcpClient = createAction({
 				"JSON string returned to the MCP client when the tool waits for response.",
 			required: true,
 		}),
-		respond: Property.StaticDropdown({
-			displayName: "Flow Execution",
-			required: false,
-			defaultValue: "stop",
-			options: {
-				disabled: false,
-				options: [
-					{ label: "Stop", value: "stop" },
-					{ label: "Respond and Continue", value: "respond" },
-				],
-			},
-		}),
 	},
 	async run(context) {
 		if (!INTERNAL_API_TOKEN) {
@@ -91,17 +79,9 @@ const replyToMcpClient = createAction({
 			);
 		}
 
-		// Signal to the workflow orchestrator that it should stop early if requested.
-		// The orchestrator treats this as a reserved key.
-		const respond = String(context.propsValue.respond || "stop");
-
 		return {
 			responded: true,
 			runId,
-			respond,
-			__workflow_builder_control: {
-				stop: respond === "stop",
-			},
 		};
 	},
 });

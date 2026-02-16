@@ -62,7 +62,6 @@ function buildGraph(spec: WorkflowSpec): Graph {
 		preds.get(target)?.push(source);
 	};
 
-	// Step edges
 	for (const step of spec.steps) {
 		if (step.kind === "if-else") {
 			const nextTrue = normalizeNext(step.next.true);
@@ -75,7 +74,6 @@ function buildGraph(spec: WorkflowSpec): Graph {
 		}
 	}
 
-	// Trigger edges: explicit or inferred roots
 	const explicitTriggerNext = normalizeNext(spec.trigger.next);
 	if (explicitTriggerNext.length > 0) {
 		for (const t of explicitTriggerNext) push(startId, t, null);
@@ -94,7 +92,6 @@ function buildGraph(spec: WorkflowSpec): Graph {
 		for (const t of roots) push(startId, t, null);
 	}
 
-	// Stable sort outgoing and predecessors
 	for (const [id, list] of out) {
 		list.sort((a, b) =>
 			`${a.target}\n${a.sourceHandle ?? ""}`.localeCompare(
@@ -169,7 +166,6 @@ function computeDominators(
 		dom.set(id, id === startId ? new Set([startId]) : new Set(all));
 	}
 
-	// DAG-friendly single pass in topo order is enough for stable graphs.
 	for (const id of topo) {
 		if (id === startId) continue;
 		const ps = preds.get(id) || [];
@@ -196,25 +192,60 @@ function computeDominators(
 	return dom;
 }
 
-type TemplateRef = {
-	nodeId: string;
-	fieldPath: string;
-	raw: string;
-};
+type ParsedTemplateRef =
+	| { kind: "node"; nodeId: string; fieldPath: string; raw: string }
+	| { kind: "reserved"; root: "state" | "trigger"; raw: string };
 
-const CANONICAL_REF_PATTERN = /\{\{@([^:}]+):([^}]+)\}\}/g;
+const TEMPLATE_EXPR_PATTERN = /\{\{([^}]+)\}\}/g;
 
-function parseCanonicalRefs(s: string): TemplateRef[] {
-	const refs: TemplateRef[] = [];
-	for (const match of s.matchAll(CANONICAL_REF_PATTERN)) {
-		const nodeId = match[1]?.trim() || "";
-		const rest = match[2]?.trim() || "";
-		if (!nodeId) continue;
-		const dot = rest.indexOf(".");
-		const fieldPath = dot === -1 ? "" : rest.slice(dot + 1).trim();
-		refs.push({ nodeId, fieldPath, raw: match[0] || "" });
+function parseTemplateRefs(s: string): {
+	refs: ParsedTemplateRef[];
+	invalid: string[];
+} {
+	const refs: ParsedTemplateRef[] = [];
+	const invalid: string[] = [];
+
+	for (const match of s.matchAll(TEMPLATE_EXPR_PATTERN)) {
+		const raw = match[0] || "";
+		const expr = (match[1] || "").trim();
+		if (!expr) {
+			invalid.push(raw || "{{}}");
+			continue;
+		}
+
+		if (expr.startsWith("@")) {
+			const withoutAt = expr.slice(1);
+			const colon = withoutAt.indexOf(":");
+			if (colon <= 0) {
+				invalid.push(raw);
+				continue;
+			}
+			const nodeId = withoutAt.slice(0, colon).trim();
+			const rest = withoutAt.slice(colon + 1).trim();
+			if (!nodeId || !rest) {
+				invalid.push(raw);
+				continue;
+			}
+			const dot = rest.indexOf(".");
+			const fieldPath = dot === -1 ? "" : rest.slice(dot + 1).trim();
+			refs.push({ kind: "node", nodeId, fieldPath, raw });
+			continue;
+		}
+
+		if (/^state(?:\.|$)/i.test(expr)) {
+			refs.push({ kind: "reserved", root: "state", raw });
+			continue;
+		}
+
+		if (/^trigger(?:\.|$)/i.test(expr)) {
+			refs.push({ kind: "reserved", root: "trigger", raw });
+			continue;
+		}
+
+		invalid.push(raw);
 	}
-	return refs;
+
+	return { refs, invalid };
 }
 
 function walkStrings(
@@ -300,14 +331,16 @@ function validateFieldTypesForAction(input: {
 		if (isTemplateString(value)) continue;
 
 		if (field.type === "number") {
-			if (typeof value !== "number") {
-				addIssue("errors", result, {
-					code: "INVALID_FIELD_TYPE",
-					message: `Field "${field.label}" (${field.key}) must be a number or template string.`,
-					path: `/steps/${step.id}/config/${field.key}`,
-					nodeId: step.id,
-				});
+			if (typeof value === "number") continue;
+			if (typeof value === "string" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+				continue;
 			}
+			addIssue("errors", result, {
+				code: "INVALID_FIELD_TYPE",
+				message: `Field "${field.label}" (${field.key}) must be a number or template string.`,
+				path: `/steps/${step.id}/config/${field.key}`,
+				nodeId: step.id,
+			});
 		}
 
 		if (field.type === "select" && field.options) {
@@ -335,7 +368,7 @@ function validateFieldTypesForAction(input: {
 
 function validateActionOutputFieldRefs(input: {
 	action: ActionDefinition;
-	ref: TemplateRef;
+	ref: Extract<ParsedTemplateRef, { kind: "node" }>;
 	result: WorkflowSpecLintResult;
 	path: string;
 	nodeId: string;
@@ -353,6 +386,24 @@ function validateActionOutputFieldRefs(input: {
 			message: `Template references unknown output field "${first}" on "${action.id}".`,
 			path,
 			nodeId,
+		});
+	}
+}
+
+function validateApprovalGateTimeouts(
+	step: Extract<StepSpec, { kind: "approval-gate" }>,
+	result: WorkflowSpecLintResult,
+): void {
+	const timeoutFields = ["timeoutSeconds", "timeoutMinutes", "timeoutHours"];
+	const present = timeoutFields.filter(
+		(key) => (step.config as Record<string, unknown>)[key] !== undefined,
+	);
+	if (present.length > 1) {
+		addIssue("errors", result, {
+			code: "MULTIPLE_TIMEOUT_FIELDS",
+			message: `approval-gate "${step.id}" may only set one timeout field.`,
+			path: `/steps/${step.id}/config`,
+			nodeId: step.id,
 		});
 	}
 }
@@ -385,12 +436,36 @@ export function lintWorkflowSpec(
 		addIssue("warnings", result, {
 			code: "CATALOG_UNAVAILABLE",
 			message:
-				"Action catalog is not available; skipping action existence, required field, and output field validation.",
+				"Action catalog is not available; skipping action existence and field validation.",
 			path: "/",
 		});
 	}
 
-	// Uniqueness
+	if (spec.trigger.type === "schedule") {
+		if (!spec.trigger.config.scheduleCron.trim()) {
+			addIssue("errors", result, {
+				code: "INVALID_TRIGGER_CONFIG",
+				message: "schedule trigger requires a non-empty scheduleCron.",
+				path: "/trigger/config/scheduleCron",
+			});
+		}
+		if (!spec.trigger.config.scheduleTimezone.trim()) {
+			addIssue("errors", result, {
+				code: "INVALID_TRIGGER_CONFIG",
+				message: "schedule trigger requires a non-empty scheduleTimezone.",
+				path: "/trigger/config/scheduleTimezone",
+			});
+		}
+	}
+
+	if (spec.trigger.type === "mcp" && !spec.trigger.config.toolName.trim()) {
+		addIssue("errors", result, {
+			code: "INVALID_TRIGGER_CONFIG",
+			message: "mcp trigger requires a non-empty toolName.",
+			path: "/trigger/config/toolName",
+		});
+	}
+
 	const ids = new Set<string>();
 	const allIds = [spec.trigger.id, ...spec.steps.map((s) => s.id)];
 	for (const id of allIds) {
@@ -404,7 +479,6 @@ export function lintWorkflowSpec(
 		ids.add(id);
 	}
 
-	// Graph target existence checks
 	const stepIdSet = new Set(spec.steps.map((s) => s.id));
 	for (const step of spec.steps) {
 		const stepPath = `/steps/${step.id}`;
@@ -446,6 +520,47 @@ export function lintWorkflowSpec(
 				}
 			}
 		}
+
+		if (step.kind === "activity") {
+			const activityName = String(step.config.activityName || "").trim();
+			if (!activityName) {
+				addIssue("errors", result, {
+					code: "MISSING_ACTIVITY_NAME",
+					message: `Activity step "${step.id}" is missing config.activityName.`,
+					path: `/steps/${step.id}/config/activityName`,
+					nodeId: step.id,
+				});
+			}
+		}
+
+		if (step.kind === "approval-gate") {
+			validateApprovalGateTimeouts(step, result);
+		}
+
+		if (step.kind === "workflow-control") {
+			const mode = String(step.config.mode || "stop")
+				.trim()
+				.toLowerCase();
+			if (mode !== "stop" && mode !== "continue") {
+				addIssue("errors", result, {
+					code: "INVALID_WORKFLOW_CONTROL_MODE",
+					message: `workflow-control "${step.id}" mode must be "stop" or "continue".`,
+					path: `/steps/${step.id}/config/mode`,
+					nodeId: step.id,
+				});
+			}
+			if (mode === "stop") {
+				const next = normalizeNext(step.next as string | string[] | undefined);
+				if (next.length > 0) {
+					addIssue("warnings", result, {
+						code: "UNREACHABLE_NEXT",
+						message: `workflow-control "${step.id}" is set to stop; downstream next edges are unreachable.`,
+						path: `/steps/${step.id}/next`,
+						nodeId: step.id,
+					});
+				}
+			}
+		}
 	}
 
 	const graph = buildGraph(spec);
@@ -459,7 +574,6 @@ export function lintWorkflowSpec(
 		return { spec, result };
 	}
 
-	// loop-until consistency (mirrors runtime constraints)
 	const indexById = new Map(topo.order.map((id, idx) => [id, idx]));
 	for (const step of spec.steps) {
 		if (step.kind !== "loop-until") continue;
@@ -488,7 +602,6 @@ export function lintWorkflowSpec(
 	const ancestors = computeAncestors(graph);
 	const dominators = computeDominators(graph, topo.order);
 
-	// Action existence + required fields
 	for (const step of spec.steps) {
 		if (step.kind !== "action") continue;
 		const actionType = String(step.config.actionType || "").trim();
@@ -523,12 +636,28 @@ export function lintWorkflowSpec(
 		}
 	}
 
-	// Template references
 	for (const step of spec.steps) {
 		const stepConfig =
 			(step as { config?: Record<string, unknown> }).config || {};
 		walkStrings(stepConfig, `/steps/${step.id}/config`, (s, path) => {
-			for (const ref of parseCanonicalRefs(s)) {
+			const parsedRefs = parseTemplateRefs(s);
+
+			for (const invalidTemplate of parsedRefs.invalid) {
+				addIssue("errors", result, {
+					code: "INVALID_TEMPLATE_SYNTAX",
+					message:
+						`Unsupported template reference "${invalidTemplate}". ` +
+						`Use {{@nodeId:Label.field}} or reserved roots like {{state.key}}/{{trigger.key}}.`,
+					path,
+					nodeId: step.id,
+				});
+			}
+
+			for (const ref of parsedRefs.refs) {
+				if (ref.kind === "reserved") {
+					continue;
+				}
+
 				if (!ids.has(ref.nodeId)) {
 					addIssue("errors", result, {
 						code: "BROKEN_REFERENCE",
@@ -562,7 +691,6 @@ export function lintWorkflowSpec(
 					});
 				}
 
-				// Output field existence check (warn-only)
 				const producer = spec.steps.find((s2) => s2.id === ref.nodeId);
 				if (producer?.kind === "action" && catalog) {
 					const action = catalog.actionsById.get(

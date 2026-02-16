@@ -27,7 +27,7 @@ from core.template_resolver import resolve_templates, NodeOutputs
 from core.ap_condition_evaluator import evaluate_conditions
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state
-from activities.publish_event import publish_phase_changed
+from activities.publish_event import publish_event, publish_phase_changed
 from activities.log_external_event import (
     log_approval_request,
     log_approval_response,
@@ -68,21 +68,45 @@ def _trace_id_from_traceparent(traceparent: object) -> str | None:
     return trace_id if trace_id else None
 
 
+def _parse_int(value: Any, default: int) -> int:
+    """Best-effort integer parse with fallback."""
+    try:
+        parsed = int(value)
+        return parsed
+    except Exception:
+        return default
+
+
 def get_timeout_seconds(config: dict[str, Any]) -> int:
-    """Get timeout in seconds from various config formats."""
-    if config.get("timeoutSeconds"):
-        return int(config["timeoutSeconds"])
-    if config.get("timeoutMinutes"):
-        return int(config["timeoutMinutes"]) * 60
-    if config.get("timeoutHours"):
-        return int(config["timeoutHours"]) * 3600
-    if config.get("durationSeconds"):
-        return int(config["durationSeconds"])
-    if config.get("durationMinutes"):
-        return int(config["durationMinutes"]) * 60
-    if config.get("durationHours"):
-        return int(config["durationHours"]) * 3600
-    # Default: 24 hours for approval gates, 60 seconds for timers
+    """Get timeout in seconds from canonical config formats."""
+    if config.get("timeoutSeconds") is not None:
+        return max(1, _parse_int(config.get("timeoutSeconds"), 1))
+    if config.get("timeoutMinutes") is not None:
+        return max(1, _parse_int(config.get("timeoutMinutes"), 1) * 60)
+    if config.get("timeoutHours") is not None:
+        return max(1, _parse_int(config.get("timeoutHours"), 1) * 3600)
+
+    # Canonical timer format in workflow-spec/v2.
+    if config.get("duration") is not None:
+        duration = max(1, _parse_int(config.get("duration"), 1))
+        unit = str(config.get("durationUnit") or "seconds").strip().lower()
+        if unit == "minutes":
+            return duration * 60
+        if unit == "hours":
+            return duration * 3600
+        if unit == "days":
+            return duration * 86400
+        return duration
+
+    # Legacy timer format fallback.
+    if config.get("durationSeconds") is not None:
+        return max(1, _parse_int(config.get("durationSeconds"), 1))
+    if config.get("durationMinutes") is not None:
+        return max(1, _parse_int(config.get("durationMinutes"), 1) * 60)
+    if config.get("durationHours") is not None:
+        return max(1, _parse_int(config.get("durationHours"), 1) * 3600)
+
+    # Default: 24 hours for approval gates, 60 seconds for timers.
     return 86400 if "eventName" in config else 60
 
 
@@ -295,6 +319,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             node_type = node.get("type")
             config = node.get("config") or {}
             node_result: Any = None
+            control_stop_requested = False
 
             # --- Action / Activity nodes ---
             if node_type in ("action", "activity"):
@@ -866,20 +891,77 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- Publish event nodes ---
             elif node_type == "publish-event":
-                event_config = config
-                topic = event_config.get("topic", "workflow.events")
-                event_type = event_config.get("eventType", "custom")
+                resolved_event = resolve_templates(config, node_outputs)
+                topic = str(resolved_event.get("topic", "workflow.events"))
+                event_type = str(resolved_event.get("eventType", "custom"))
+                event_data = resolved_event.get("data", {})
+                event_metadata = resolved_event.get("metadata", {})
 
-                yield ctx.call_activity(publish_phase_changed, input={
-                    "workflowId": workflow_id,
-                    "executionId": execution_id,
-                    "phase": "running",
-                    "progress": calculate_progress(len(completed_node_ids), total_nodes),
-                    "message": f"Published event: {event_type}",
-                    "_otel": otel_ctx,
-                })
+                publish_result = yield ctx.call_activity(
+                    publish_event,
+                    input={
+                        "topic": topic,
+                        "eventType": event_type,
+                        "data": event_data,
+                        "metadata": event_metadata,
+                        "_otel": otel_ctx,
+                    },
+                )
 
-                node_result = {"published": True, "topic": topic, "eventType": event_type}
+                node_result = (
+                    publish_result
+                    if isinstance(publish_result, dict)
+                    else {
+                        "success": False,
+                        "topic": topic,
+                        "eventType": event_type,
+                        "error": "publish_event returned invalid result",
+                    }
+                )
+
+                if isinstance(node_result, dict) and not node_result.get("success", False):
+                    if not config.get("continueOnError"):
+                        raise RuntimeError(
+                            node_result.get("error") or f"Publish event failed: {event_type}",
+                        )
+                    logger.warning(
+                        f"[Dynamic Workflow] Publish event failed but continuing: {node_result.get('error')}"
+                    )
+
+            # --- Explicit workflow control nodes ---
+            elif node_type == "workflow-control":
+                resolved_control = resolve_templates(
+                    {
+                        "mode": config.get("mode", "stop"),
+                        "reason": config.get("reason", ""),
+                    },
+                    node_outputs,
+                )
+                mode = str(resolved_control.get("mode", "stop")).strip().lower()
+                reason_raw = resolved_control.get("reason", "")
+                reason = str(reason_raw).strip() if reason_raw is not None else ""
+
+                if mode not in ("stop", "continue"):
+                    node_result = {
+                        "success": False,
+                        "error": {"message": "workflow-control mode must be 'stop' or 'continue'"},
+                    }
+                    if not config.get("continueOnError"):
+                        raise RuntimeError(
+                            node_result.get("error", {}).get("message")
+                            if isinstance(node_result.get("error"), dict)
+                            else "workflow-control failed"
+                        )
+                else:
+                    control_stop_requested = mode == "stop"
+                    node_result = {
+                        "success": True,
+                        "data": {
+                            "mode": mode,
+                            "reason": reason,
+                            "stopped": control_stop_requested,
+                        },
+                    }
 
             else:
                 logger.warning(f"[Dynamic Workflow] Unknown node type: {node_type}, skipping")
@@ -912,22 +994,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             completed_node_ids.add(node.get("id"))
             i += 1
 
-            # Reserved workflow control channel.
-            # Allows specific steps (e.g., MCP "Reply to Client") to request an early stop
-            # without failing the workflow.
-            try:
-                if isinstance(node_result, dict):
-                    data = node_result.get("data")
-                    if isinstance(data, dict):
-                        ctl = data.get("__workflow_builder_control")
-                        if isinstance(ctl, dict) and ctl.get("stop") is True:
-                            logger.info(
-                                f"[Dynamic Workflow] Early stop requested by node: {node.get('label')}"
-                            )
-                            break
-            except Exception:
-                # Never let control parsing break workflow execution.
-                pass
+            if control_stop_requested:
+                logger.info(
+                    f"[Dynamic Workflow] Explicit stop requested by workflow-control node: {node.get('label')}"
+                )
+                break
 
         # Workflow completed successfully
         duration_ms = int((time.time() - start_time) * 1000)
