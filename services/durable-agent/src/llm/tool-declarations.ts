@@ -35,7 +35,16 @@ export function buildToolDeclarations(
  * Handles the common types used by workspace tools.
  */
 function zodToJsonSchema(schema: any): Record<string, unknown> {
-  if (!schema || !schema._def) {
+  if (!schema) {
+    return { type: "object" };
+  }
+
+  // Already a plain JSON Schema object (not a Zod schema) — pass through
+  if (!schema._def && typeof schema.type === "string") {
+    return schema;
+  }
+
+  if (!schema._def) {
     return { type: "object" };
   }
 

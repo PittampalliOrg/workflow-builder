@@ -24,7 +24,9 @@ describe("buildToolDeclarations", () => {
     const decls = buildToolDeclarations(tools);
     expect(Object.keys(decls)).toHaveLength(1);
     expect(decls["get-weather"].description).toBe("Get current weather");
-    expect(decls["get-weather"].parameters).toEqual({
+    // AI SDK 6 uses inputSchema (not parameters)
+    expect(decls["get-weather"].inputSchema).toBeDefined();
+    expect(decls["get-weather"].inputSchema.jsonSchema).toEqual({
       type: "object",
       properties: { location: { type: "string" } },
       required: ["location"],

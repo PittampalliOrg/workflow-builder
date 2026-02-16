@@ -70,7 +70,7 @@ describe("toAiSdkMessages", () => {
       type: "tool-call",
       toolCallId: "tc-1",
       toolName: "get-weather",
-      args: { location: "NYC" },
+      input: { location: "NYC" },
     });
   });
 
@@ -122,7 +122,7 @@ describe("toAiSdkMessages", () => {
       type: "tool-result",
       toolCallId: "tc-1",
       toolName: "get-weather",
-      result: '{"temperature":72}',
+      output: { type: "json", value: { temperature: 72 } },
     });
   });
 
