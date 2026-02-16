@@ -3,8 +3,10 @@
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { TraceSpansTable } from "@/components/observability/trace-spans-table";
+import { useEffect, useMemo, useState } from "react";
+import { SpanDetailsPanel } from "@/components/observability/span-details-panel";
 import { TraceStatusBadge } from "@/components/observability/trace-status-badge";
+import { TraceTimeline } from "@/components/observability/trace-timeline";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Button } from "@/components/ui/button";
 import { useObservabilityTrace } from "@/hooks/use-observability-trace";
@@ -16,6 +18,35 @@ export default function TraceDetailPage() {
 	const { trace, isLoading, isError, error, mutate } = useObservabilityTrace(
 		traceId ?? null,
 	);
+	const [selectedSpanId, setSelectedSpanId] = useState<string | undefined>();
+
+	const selectedSpan = useMemo(() => {
+		if (!trace || !selectedSpanId) {
+			return null;
+		}
+		return trace.spans.find((span) => span.spanId === selectedSpanId) ?? null;
+	}, [selectedSpanId, trace]);
+
+	useEffect(() => {
+		if (!trace || trace.spans.length === 0) {
+			setSelectedSpanId(undefined);
+			return;
+		}
+
+		if (
+			selectedSpanId &&
+			trace.spans.some((s) => s.spanId === selectedSpanId)
+		) {
+			return;
+		}
+
+		const firstSpan =
+			[...trace.spans].sort(
+				(a, b) =>
+					new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime(),
+			)[0]?.spanId ?? trace.spans[0]?.spanId;
+		setSelectedSpanId(firstSpan);
+	}, [selectedSpanId, trace]);
 
 	if (isLoading && !trace) {
 		return (
@@ -137,8 +168,24 @@ export default function TraceDetailPage() {
 			</div>
 
 			<div className="space-y-3">
-				<h2 className="font-semibold text-lg">Spans</h2>
-				<TraceSpansTable spans={trace.spans} />
+				<div className="flex items-center justify-between gap-3">
+					<h2 className="font-semibold text-lg">Trace timeline</h2>
+					<p className="text-muted-foreground text-xs">
+						Select a span to inspect details and attributes
+					</p>
+				</div>
+				<div className="grid grid-cols-1 gap-4 xl:grid-cols-[2fr_1fr]">
+					<TraceTimeline
+						onSelectSpan={setSelectedSpanId}
+						selectedSpanId={selectedSpanId}
+						spans={trace.spans}
+					/>
+					<SpanDetailsPanel
+						fallbackExecutionId={trace.trace.executionId}
+						fallbackWorkflowId={trace.trace.workflowId}
+						span={selectedSpan}
+					/>
+				</div>
 			</div>
 		</div>
 	);
