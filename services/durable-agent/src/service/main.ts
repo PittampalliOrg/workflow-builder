@@ -554,11 +554,21 @@ async function shutdown(signal: string) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-app.listen(PORT, HOST, () => {
+app.listen(PORT, HOST, async () => {
 	console.log(`[durable-agent] Server listening on http://${HOST}:${PORT}`);
 	console.log(`[durable-agent]   POST /api/run          — start agent workflow`);
 	console.log(`[durable-agent]   POST /api/plan         — generate plan`);
 	console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);
 	console.log(`[durable-agent]   POST /api/tools/:id    — direct tool execution`);
 	console.log(`[durable-agent]   GET  /api/health       — health check`);
+
+	// Initialize agent eagerly at startup so the Dapr workflow runtime starts
+	// immediately. This is required for crash recovery: pending workflows in
+	// the Dapr event log need the runtime to be running to replay.
+	try {
+		await initAgent();
+		console.log("[durable-agent] Agent initialized at startup (workflow runtime ready for replay)");
+	} catch (err) {
+		console.error("[durable-agent] Startup initialization failed (will retry on first request):", err);
+	}
 });

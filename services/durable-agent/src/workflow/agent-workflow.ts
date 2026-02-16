@@ -104,6 +104,12 @@ export function createAgentWorkflow(
     // Accumulate all tool calls across every turn
     const allToolCalls: AgentWorkflowResult["all_tool_calls"] = [];
 
+    // Track previous turn's tool results for crash recovery repair.
+    // These are durable (stored in Dapr's event log as activity outputs).
+    let previousToolResults:
+      | Array<{ role: string; content: string; tool_call_id: string; name: string }>
+      | undefined;
+
     try {
       for (turn = 1; turn <= effectiveMaxIterations; turn++) {
         const assistantResponse: LlmCallResult = yield ctx.callActivity(
@@ -112,8 +118,12 @@ export function createAgentWorkflow(
             instanceId,
             // Only pass the user task on the first turn
             task: turn === 1 ? task : undefined,
+            // Pass previous tool results so callLlm can repair state after crashes
+            previousToolResults,
           } satisfies CallLlmPayload,
         );
+        // Clear after passing — only needed for the first callLlm after tool execution
+        previousToolResults = undefined;
 
         const toolCalls = assistantResponse.tool_calls ?? [];
 
@@ -161,6 +171,12 @@ export function createAgentWorkflow(
             toolResults,
             instanceId,
           } satisfies SaveToolResultsPayload);
+
+          // Carry tool results forward for crash recovery repair.
+          // If the pod crashes between saveToolResults and the next callLlm,
+          // the generator will replay with these cached results and pass them
+          // to callLlm to repair the conversation state in Redis.
+          previousToolResults = toolResults;
 
           // Continue to next LLM turn
           continue;

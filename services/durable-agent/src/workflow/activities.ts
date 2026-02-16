@@ -38,6 +38,20 @@ export interface RecordInitialEntryPayload {
 export interface CallLlmPayload {
   instanceId: string;
   task?: string;
+  /**
+   * Tool results from the previous turn, passed from the generator.
+   * These are durably stored in Dapr's event log (activity outputs).
+   * Used to repair conversation state if a crash occurred between
+   * saveToolResults and the next callLlm (the Redis state may be
+   * missing tool results that were persisted by saveToolResults but
+   * lost due to the crash).
+   */
+  previousToolResults?: Array<{
+    role: string;
+    content: string;
+    tool_call_id: string;
+    name: string;
+  }>;
 }
 
 export interface RunToolPayload {
@@ -136,20 +150,95 @@ export function createCallLlm(
 
     // On the first turn, prepend the user's task as a user message
     if (payload.task) {
-      const userMsg: AgentWorkflowMessage = {
-        id: randomUUID(),
-        role: "user",
-        content: payload.task,
-        timestamp: new Date().toISOString(),
-      };
-      entry.messages.push(userMsg);
-      entry.last_message = userMsg;
+      // Guard against duplicate user messages on crash-retry
+      const alreadyHasTask = entry.messages.some(
+        (m) => m.role === "user" && m.content === payload.task,
+      );
+      if (!alreadyHasTask) {
+        const userMsg: AgentWorkflowMessage = {
+          id: randomUUID(),
+          role: "user",
+          content: payload.task,
+          timestamp: new Date().toISOString(),
+        };
+        entry.messages.push(userMsg);
+        entry.last_message = userMsg;
 
-      // Also persist to memory
-      memory.addMessage({
-        role: "user",
-        content: payload.task,
-      });
+        // Also persist to memory
+        memory.addMessage({
+          role: "user",
+          content: payload.task,
+        });
+      }
+    }
+
+    // Repair conversation state after crash recovery.
+    // If any assistant message with tool_calls lacks corresponding tool results,
+    // inject them from the generator's durable activity outputs.
+    if (payload.previousToolResults?.length) {
+      console.log(
+        `[callLlm] previousToolResults provided: ${payload.previousToolResults.length} result(s), ids=[${payload.previousToolResults.map(t => t.tool_call_id).join(",")}]`,
+      );
+
+      const existingToolResultIds = new Set(
+        entry.messages
+          .filter((m) => m.role === "tool" && m.tool_call_id)
+          .map((m) => m.tool_call_id),
+      );
+
+      let repaired = 0;
+      for (const tr of payload.previousToolResults) {
+        if (!existingToolResultIds.has(tr.tool_call_id)) {
+          const msg: AgentWorkflowMessage = {
+            id: randomUUID(),
+            role: "tool",
+            content: tr.content,
+            tool_call_id: tr.tool_call_id,
+            name: tr.name,
+            timestamp: new Date().toISOString(),
+          };
+          entry.messages.push(msg);
+          entry.last_message = msg;
+          repaired++;
+        }
+      }
+
+      if (repaired > 0) {
+        console.log(
+          `[callLlm] Repaired ${repaired} missing tool result(s) from durable activity outputs`,
+        );
+        await stateManager.saveState(state);
+      }
+    }
+
+    // Safety check: detect any assistant messages with tool_calls that lack
+    // corresponding tool results (could happen if repair didn't cover all cases)
+    for (let i = 0; i < entry.messages.length; i++) {
+      const msg = entry.messages[i];
+      if (msg.role === "assistant" && msg.tool_calls?.length) {
+        const expectedIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
+        // Find tool results that follow this assistant message
+        for (let j = i + 1; j < entry.messages.length; j++) {
+          if (entry.messages[j].role === "tool" && entry.messages[j].tool_call_id) {
+            expectedIds.delete(entry.messages[j].tool_call_id!);
+          }
+          if (entry.messages[j].role === "assistant") break; // next turn
+        }
+        if (expectedIds.size > 0) {
+          console.warn(
+            `[callLlm] WARNING: assistant message at index ${i} has ${expectedIds.size} unmatched tool_call_ids: [${[...expectedIds].join(",")}]`,
+          );
+          // Remove the broken assistant message and all following messages
+          // from this point to allow a clean retry
+          console.warn(
+            `[callLlm] Truncating ${entry.messages.length - i} messages from index ${i} to repair conversation`,
+          );
+          entry.messages.length = i;
+          if (i > 0) entry.last_message = entry.messages[i - 1];
+          await stateManager.saveState(state);
+          break;
+        }
+      }
     }
 
     // Call LLM with tool declarations (no auto-execute)
