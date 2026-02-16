@@ -23,7 +23,6 @@ import "./github";
 import "./linear";
 import "./mastra-agent";
 import "./mcp";
-import "./openai";
 import "./perplexity";
 import "./resend";
 import "./slack";
