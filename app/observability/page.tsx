@@ -1,7 +1,7 @@
 "use client";
 
 import { Eye, Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { TracesTable } from "@/components/observability/traces-table";
 import { TracesTools } from "@/components/observability/traces-tools";
@@ -41,6 +41,14 @@ function toDateTimeInput(value: string | null): string {
 }
 
 export default function ObservabilityPage() {
+	return (
+		<Suspense>
+			<ObservabilityPageContent />
+		</Suspense>
+	);
+}
+
+function ObservabilityPageContent() {
 	const router = useRouter();
 	const searchParams = useSearchParams();
 	const [selectedEntityId, setSelectedEntityId] = useState(
