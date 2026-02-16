@@ -14,6 +14,7 @@ import {
 	X,
 } from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -27,8 +28,10 @@ import { getRelativeTime } from "@/lib/utils/time";
 import {
 	approvalEventNameAtom,
 	approvalExecutionIdAtom,
+	approvalRespondedAtom,
 	currentRunningNodeIdAtom,
 	currentWorkflowIdAtom,
+	daprPhaseAtom,
 	executionLogsAtom,
 	selectedExecutionIdAtom,
 } from "@/lib/workflow-store";
@@ -710,6 +713,14 @@ export function WorkflowRuns({
 	const [, setCurrentRunningNodeId] = useAtom(currentRunningNodeIdAtom);
 	const setApprovalEventName = useSetAtom(approvalEventNameAtom);
 	const setApprovalExecutionId = useSetAtom(approvalExecutionIdAtom);
+	const setDaprPhase = useSetAtom(daprPhaseAtom);
+	const setApprovalResponded = useSetAtom(approvalRespondedAtom);
+	const approvalRespondedRef = useRef(false);
+	// Keep ref in sync with atom so the polling closure always sees latest value
+	const approvalRespondedAtomValue = useAtom(approvalRespondedAtom)[0];
+	useEffect(() => {
+		approvalRespondedRef.current = approvalRespondedAtomValue;
+	}, [approvalRespondedAtomValue]);
 	const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
 	const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
 	const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
@@ -944,12 +955,35 @@ export function WorkflowRuns({
 						}
 
 						// Update approval atoms when awaiting approval
-						if (statusResponse.phase === "awaiting_approval" && statusResponse.approvalEventName) {
-							setApprovalEventName(statusResponse.approvalEventName);
-							setApprovalExecutionId(execution.id);
+						if (
+							statusResponse.phase === "awaiting_approval" &&
+							statusResponse.approvalEventName
+						) {
+							// Only set if user hasn't already responded
+							if (!approvalRespondedRef.current) {
+								setDaprPhase("awaiting_approval");
+								setApprovalEventName(statusResponse.approvalEventName);
+								setApprovalExecutionId(execution.id);
+							}
 						} else if (statusResponse.phase !== "awaiting_approval") {
-							setApprovalEventName(null);
-							setApprovalExecutionId(null);
+							// Only clear on definitive phase transitions, not transient polls
+							const clearPhases = ["executing", "completed", "failed"];
+							const isClearPhase =
+								clearPhases.includes(statusResponse.phase ?? "") ||
+								statusResponse.status === "completed" ||
+								statusResponse.status === "error";
+							if (isClearPhase) {
+								setDaprPhase(
+									statusResponse.phase as
+										| "executing"
+										| "completed"
+										| "failed"
+										| null,
+								);
+								setApprovalEventName(null);
+								setApprovalExecutionId(null);
+								setApprovalResponded(false);
+							}
 						}
 
 						// Update the running node ID atom if this is the selected execution
@@ -1016,6 +1050,8 @@ export function WorkflowRuns({
 		setCurrentRunningNodeId,
 		setApprovalEventName,
 		setApprovalExecutionId,
+		setDaprPhase,
+		setApprovalResponded,
 	]);
 
 	const toggleRun = async (executionId: string) => {
@@ -1110,6 +1146,16 @@ export function WorkflowRuns({
 
 	return (
 		<div className="space-y-3">
+			{currentWorkflowId && (
+				<div className="flex justify-end">
+					<Button asChild size="sm" variant="outline">
+						<Link href={`/workflows/${currentWorkflowId}/runs`}>
+							<ExternalLink className="mr-2 h-3.5 w-3.5" />
+							Open runs page
+						</Link>
+					</Button>
+				</div>
+			)}
 			{executions.map((execution, index) => {
 				const isExpanded = expandedRuns.has(execution.id);
 				const isSelected = selectedExecutionId === execution.id;

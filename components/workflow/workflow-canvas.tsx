@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas } from "@/components/ai-elements/canvas";
 import { Connection } from "@/components/ai-elements/connection";
 import { Controls } from "@/components/ai-elements/controls";
+import { ApprovalBanner } from "@/components/workflow/approval-banner";
 import { WorkflowToolbar } from "@/components/workflow/workflow-toolbar";
 import "@xyflow/react/dist/style.css";
 
@@ -587,6 +588,9 @@ export function WorkflowCanvas() {
 			<div className="pointer-events-auto">
 				<WorkflowToolbar workflowId={currentWorkflowId ?? undefined} />
 			</div>
+
+			{/* Approval Banner */}
+			<ApprovalBanner />
 
 			{/* React Flow Canvas */}
 			<Canvas

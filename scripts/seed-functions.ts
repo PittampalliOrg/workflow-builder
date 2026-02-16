@@ -24,142 +24,142 @@ import "../plugins/index.js";
 import { generateId } from "../lib/utils/id.js";
 // Import registry functions
 import {
-  type ActionWithFullId,
-  flattenConfigFields,
-  getAllActions,
-  getAllIntegrations,
+	type ActionWithFullId,
+	flattenConfigFields,
+	getAllActions,
+	getAllIntegrations,
 } from "../plugins/registry.js";
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
+	process.env.DATABASE_URL || "postgres://localhost:5432/workflow";
 
 /**
  * Convert plugin config fields to JSON Schema
  */
 function configFieldsToJsonSchema(
-  action: ActionWithFullId
+	action: ActionWithFullId,
 ): Record<string, unknown> {
-  const flatFields = flattenConfigFields(action.configFields);
+	const flatFields = flattenConfigFields(action.configFields);
 
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
+	const properties: Record<string, unknown> = {};
+	const required: string[] = [];
 
-  for (const field of flatFields) {
-    const prop: Record<string, unknown> = {};
+	for (const field of flatFields) {
+		const prop: Record<string, unknown> = {};
 
-    switch (field.type) {
-      case "number":
-        prop.type = "number";
-        if (field.min !== undefined) {
-          prop.minimum = field.min;
-        }
-        break;
-      case "select":
-        prop.type = "string";
-        if (field.options) {
-          prop.enum = field.options.map((o) => o.value);
-        }
-        break;
-      case "schema-builder":
-        prop.type = "string";
-        prop.description = "JSON Schema definition as a string";
-        break;
-      default:
-        prop.type = "string";
-    }
+		switch (field.type) {
+			case "number":
+				prop.type = "number";
+				if (field.min !== undefined) {
+					prop.minimum = field.min;
+				}
+				break;
+			case "select":
+				prop.type = "string";
+				if (field.options) {
+					prop.enum = field.options.map((o) => o.value);
+				}
+				break;
+			case "schema-builder":
+				prop.type = "string";
+				prop.description = "JSON Schema definition as a string";
+				break;
+			default:
+				prop.type = "string";
+		}
 
-    if (field.placeholder) {
-      prop.description = field.placeholder;
-    }
-    if (field.defaultValue !== undefined) {
-      prop.default = field.defaultValue;
-    }
+		if (field.placeholder) {
+			prop.description = field.placeholder;
+		}
+		if (field.defaultValue !== undefined) {
+			prop.default = field.defaultValue;
+		}
 
-    properties[field.key] = prop;
+		properties[field.key] = prop;
 
-    if (field.required) {
-      required.push(field.key);
-    }
-  }
+		if (field.required) {
+			required.push(field.key);
+		}
+	}
 
-  return {
-    type: "object",
-    properties,
-    required: required.length > 0 ? required : undefined,
-  };
+	return {
+		type: "object",
+		properties,
+		required: required.length > 0 ? required : undefined,
+	};
 }
 
 /**
  * Convert plugin output fields to JSON Schema
  */
 function outputFieldsToJsonSchema(
-  action: ActionWithFullId
+	action: ActionWithFullId,
 ): Record<string, unknown> | null {
-  if (!action.outputFields || action.outputFields.length === 0) {
-    return null;
-  }
+	if (!action.outputFields || action.outputFields.length === 0) {
+		return null;
+	}
 
-  const properties: Record<string, unknown> = {};
+	const properties: Record<string, unknown> = {};
 
-  for (const field of action.outputFields) {
-    properties[field.field] = {
-      type: "string",
-      description: field.description,
-    };
-  }
+	for (const field of action.outputFields) {
+		properties[field.field] = {
+			type: "string",
+			description: field.description,
+		};
+	}
 
-  return {
-    type: "object",
-    properties,
-  };
+	return {
+		type: "object",
+		properties,
+	};
 }
 
 /**
  * Get integration type for credential lookup
  */
 function getIntegrationType(action: ActionWithFullId): string {
-  return action.integration;
+	return action.integration;
 }
 
 /**
  * Main seed function
  */
 async function seedFunctions() {
-  console.log("🌱 Seeding functions table with built-in functions...\n");
+	console.log("🌱 Seeding functions table with built-in functions...\n");
 
-  const queryClient = postgres(DATABASE_URL, { max: 1 });
-  const db = drizzle(queryClient);
+	const queryClient = postgres(DATABASE_URL, { max: 1 });
+	const db = drizzle(queryClient);
 
-  try {
-    // Get all registered actions
-    const actions = getAllActions();
-    const integrations = getAllIntegrations();
+	try {
+		// Get all registered actions
+		const actions = getAllActions();
+		const integrations = getAllIntegrations();
 
-    console.log(
-      `Found ${actions.length} actions across ${integrations.length} integrations\n`
-    );
+		console.log(
+			`Found ${actions.length} actions across ${integrations.length} integrations\n`,
+		);
 
-    // Track stats
-    let inserted = 0;
-    let updated = 0;
-    const skipped = 0;
+		// Track stats
+		let inserted = 0;
+		let updated = 0;
+		const skipped = 0;
 
-    for (const action of actions) {
-      const slug = action.id; // e.g., "openai/generate-text"
-      const pluginId = action.integration;
+		for (const action of actions) {
+			const slug = action.id; // e.g., "openai/generate-text"
+			const pluginId = action.integration;
 
-      // Build JSON schemas from config fields
-      const inputSchema = configFieldsToJsonSchema(action);
-      const outputSchema = outputFieldsToJsonSchema(action);
+			// Build JSON schemas from config fields
+			const inputSchema = configFieldsToJsonSchema(action);
+			const outputSchema = outputFieldsToJsonSchema(action);
 
-      // Check if function already exists
-      const existing = await db.execute<{ id: string }>(sql`
+			// Check if function already exists
+			const existing = await db.execute<{ id: string }>(sql`
         SELECT id FROM functions WHERE slug = ${slug}
       `);
 
-      if (existing.length > 0) {
-        // Update existing record
-        await db.execute(sql`
+			if (existing.length > 0) {
+				// Update existing record
+				await db.execute(sql`
           UPDATE functions
           SET
             name = ${action.label},
@@ -177,12 +177,12 @@ async function seedFunctions() {
             updated_at = NOW()
           WHERE slug = ${slug}
         `);
-        updated++;
-        console.log(`  ✓ Updated: ${slug}`);
-      } else {
-        // Insert new record
-        const id = generateId();
-        await db.execute(sql`
+				updated++;
+				console.log(`  ✓ Updated: ${slug}`);
+			} else {
+				// Insert new record
+				const id = generateId();
+				await db.execute(sql`
           INSERT INTO functions (
             id, name, slug, description, plugin_id, version,
             execution_type, input_schema, output_schema,
@@ -208,47 +208,51 @@ async function seedFunctions() {
             NOW()
           )
         `);
-        inserted++;
-        console.log(`  + Inserted: ${slug}`);
-      }
-    }
+				inserted++;
+				console.log(`  + Inserted: ${slug}`);
+			}
+		}
 
-    // Also add the system HTTP Request function
-    const httpRequestSlug = "system/http-request";
-    const httpExisting = await db.execute<{ id: string }>(sql`
+		// Also add the system HTTP Request function
+		const httpRequestSlug = "system/http-request";
+		const httpExisting = await db.execute<{ id: string }>(sql`
       SELECT id FROM functions WHERE slug = ${httpRequestSlug}
     `);
 
-    const httpInputSchema = {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "URL to send the request to" },
-        method: {
-          type: "string",
-          enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-          default: "GET",
-        },
-        headers: { type: "string", description: "JSON object of headers" },
-        body: {
-          type: "string",
-          description: "Request body (for POST/PUT/PATCH)",
-        },
-      },
-      required: ["url"],
-    };
+		const httpInputSchema = {
+			type: "object",
+			properties: {
+				endpoint: { type: "string", description: "URL to send the request to" },
+				httpMethod: {
+					type: "string",
+					enum: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+					default: "POST",
+				},
+				httpHeaders: {
+					type: "string",
+					description: "JSON object of headers (stringified)",
+					default: "{}",
+				},
+				httpBody: {
+					type: "string",
+					description: "Request body (JSON string, for non-GET methods)",
+					default: "{}",
+				},
+			},
+			required: ["endpoint"],
+		};
 
-    const httpOutputSchema = {
-      type: "object",
-      properties: {
-        success: { type: "boolean" },
-        data: { type: "object", description: "Response data" },
-        status: { type: "number", description: "HTTP status code" },
-        error: { type: "string", description: "Error message if failed" },
-      },
-    };
+		const httpOutputSchema = {
+			type: "object",
+			properties: {
+				status: { type: "number", description: "HTTP status code" },
+				data: { type: "object", description: "Response body (text or JSON)" },
+				headers: { type: "object", description: "Response headers" },
+			},
+		};
 
-    if (httpExisting.length > 0) {
-      await db.execute(sql`
+		if (httpExisting.length > 0) {
+			await db.execute(sql`
         UPDATE functions
         SET
           name = 'HTTP Request',
@@ -266,11 +270,11 @@ async function seedFunctions() {
           updated_at = NOW()
         WHERE slug = ${httpRequestSlug}
       `);
-      updated++;
-      console.log(`  ✓ Updated: ${httpRequestSlug}`);
-    } else {
-      const httpId = generateId();
-      await db.execute(sql`
+			updated++;
+			console.log(`  ✓ Updated: ${httpRequestSlug}`);
+		} else {
+			const httpId = generateId();
+			await db.execute(sql`
         INSERT INTO functions (
           id, name, slug, description, plugin_id, version,
           execution_type, input_schema, output_schema,
@@ -296,24 +300,24 @@ async function seedFunctions() {
           NOW()
         )
       `);
-      inserted++;
-      console.log(`  + Inserted: ${httpRequestSlug}`);
-    }
+			inserted++;
+			console.log(`  + Inserted: ${httpRequestSlug}`);
+		}
 
-    console.log("\n✅ Seed completed!");
-    console.log(`   Inserted: ${inserted}`);
-    console.log(`   Updated:  ${updated}`);
-    console.log(`   Skipped:  ${skipped}`);
-    console.log(`   Total:    ${inserted + updated + skipped}`);
-  } catch (error) {
-    console.error("❌ Seed failed:", error);
-    process.exit(1);
-  } finally {
-    await queryClient.end();
-  }
+		console.log("\n✅ Seed completed!");
+		console.log(`   Inserted: ${inserted}`);
+		console.log(`   Updated:  ${updated}`);
+		console.log(`   Skipped:  ${skipped}`);
+		console.log(`   Total:    ${inserted + updated + skipped}`);
+	} catch (error) {
+		console.error("❌ Seed failed:", error);
+		process.exit(1);
+	} finally {
+		await queryClient.end();
+	}
 }
 
 // Run the seed
 seedFunctions().then(() => {
-  process.exit(0);
+	process.exit(0);
 });

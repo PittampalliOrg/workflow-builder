@@ -152,6 +152,8 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 							text: result.text,
 							plan: result.plan,
 							toolCalls: result.toolCalls,
+							fileChanges: result.fileChanges,
+							patch: result.patch,
 							usage: result.usage,
 						},
 					});
@@ -267,6 +269,8 @@ async function handleApiRoute(request: Request): Promise<Response | null> {
 							text: result.text,
 							plan: result.plan,
 							toolCalls: result.toolCalls,
+							fileChanges: result.fileChanges,
+							patch: result.patch,
 							usage: result.usage,
 						},
 					}),

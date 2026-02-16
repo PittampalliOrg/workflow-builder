@@ -239,7 +239,7 @@ export function topologicalSort(
 function serializeNode(node: WorkflowNode): SerializedNode {
 	return {
 		id: node.id,
-		type: node.data.type,
+		type: node.data.type || (node.type as WorkflowNodeType) || "action",
 		label: node.data.label,
 		description: node.data.description,
 		enabled: node.data.enabled !== false, // Default to true

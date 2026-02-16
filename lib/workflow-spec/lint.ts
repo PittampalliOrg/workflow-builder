@@ -1,6 +1,6 @@
 import type { ActionDefinition } from "@/lib/actions/types";
-import { flattenConfigFields } from "@/lib/actions/utils";
 import type { WorkflowSpecCatalog } from "./catalog";
+import { buildActionConfigSchema } from "./action-config-zod";
 import type { StepSpec, WorkflowSpec } from "./types";
 import { WorkflowSpecSchema } from "./types";
 
@@ -239,97 +239,26 @@ function walkStrings(
 	}
 }
 
-function isEffectivelyEmpty(value: unknown): boolean {
-	if (value == null) return true;
-	if (typeof value === "string" && value.trim() === "") return true;
-	return false;
-}
-
-function shouldShowField(
-	field: { showWhen?: { field: string; equals: string } },
-	config: Record<string, unknown>,
-): boolean {
-	if (!field.showWhen) return true;
-	return config[field.showWhen.field] === field.showWhen.equals;
-}
-
-function isTemplateString(value: unknown): boolean {
-	return (
-		typeof value === "string" && value.includes("{{") && value.includes("}}")
-	);
-}
-
-function validateRequiredFieldsForAction(input: {
+function validateActionConfigWithZod(input: {
 	action: ActionDefinition;
 	step: Extract<StepSpec, { kind: "action" }>;
 	result: WorkflowSpecLintResult;
 }): void {
 	const { action, step, result } = input;
-	const config = (step.config || {}) as Record<string, unknown>;
-
-	const flat = flattenConfigFields(action.configFields);
-	for (const field of flat) {
-		if (!field.required) continue;
-		if (!shouldShowField(field, config)) continue;
-
-		const value = config[field.key];
-		if (isEffectivelyEmpty(value)) {
-			addIssue("errors", result, {
-				code: "MISSING_REQUIRED_FIELD",
-				message: `Missing required field "${field.label}" (${field.key}) for action "${action.id}".`,
-				path: `/steps/${step.id}/config/${field.key}`,
-				nodeId: step.id,
-			});
-		}
+	const schema = buildActionConfigSchema(action);
+	const parsed = schema.safeParse(step.config || {});
+	if (parsed.success) {
+		return;
 	}
-}
 
-function validateFieldTypesForAction(input: {
-	action: ActionDefinition;
-	step: Extract<StepSpec, { kind: "action" }>;
-	result: WorkflowSpecLintResult;
-}): void {
-	const { action, step, result } = input;
-	const config = (step.config || {}) as Record<string, unknown>;
-	const flat = flattenConfigFields(action.configFields);
-
-	for (const field of flat) {
-		if (!shouldShowField(field, config)) continue;
-		const value = config[field.key];
-		if (value === undefined) continue;
-		if (isTemplateString(value)) continue;
-
-		if (field.type === "number") {
-			if (typeof value !== "number") {
-				addIssue("errors", result, {
-					code: "INVALID_FIELD_TYPE",
-					message: `Field "${field.label}" (${field.key}) must be a number or template string.`,
-					path: `/steps/${step.id}/config/${field.key}`,
-					nodeId: step.id,
-				});
-			}
-		}
-
-		if (field.type === "select" && field.options) {
-			if (typeof value !== "string") {
-				addIssue("errors", result, {
-					code: "INVALID_FIELD_TYPE",
-					message: `Field "${field.label}" (${field.key}) must be a string or template string.`,
-					path: `/steps/${step.id}/config/${field.key}`,
-					nodeId: step.id,
-				});
-				continue;
-			}
-			const allowed = new Set(field.options.map((o) => o.value));
-			if (!allowed.has(value)) {
-				addIssue("errors", result, {
-					code: "INVALID_FIELD_VALUE",
-					message: `Field "${field.label}" (${field.key}) has invalid value "${value}".`,
-					path: `/steps/${step.id}/config/${field.key}`,
-					nodeId: step.id,
-				});
-			}
-		}
+	for (const issue of parsed.error.issues) {
+		const key = issue.path.join("/");
+		addIssue("errors", result, {
+			code: "INVALID_ACTION_CONFIG",
+			message: issue.message,
+			path: `/steps/${step.id}/config${key ? `/${key}` : ""}`,
+			nodeId: step.id,
+		});
 	}
 }
 
@@ -518,8 +447,7 @@ export function lintWorkflowSpec(
 				continue;
 			}
 
-			validateRequiredFieldsForAction({ action, step, result });
-			validateFieldTypesForAction({ action, step, result });
+			validateActionConfigWithZod({ action, step, result });
 		}
 	}
 

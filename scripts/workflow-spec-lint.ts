@@ -10,12 +10,10 @@ import process from "node:process";
 import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import type { ActionDefinition } from "@/lib/actions/types";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import { buildCatalogFromIntegrations } from "@/lib/workflow-spec/catalog";
 import { lintWorkflowSpec } from "@/lib/workflow-spec/lint";
-import "@/plugins/index";
-import { getAllActions, getIntegrationLabels } from "@/plugins/registry";
+import { getSystemWorkflowSpecActions } from "@/lib/workflow-spec/system-actions";
 
 async function main() {
 	const files = process.argv.slice(2).filter((a) => !a.startsWith("-"));
@@ -42,27 +40,22 @@ async function main() {
 	}
 
 	const catalog = buildCatalogFromIntegrations(integrations);
-	for (const action of getAllActions()) {
-		const mapped: ActionDefinition = {
-			id: action.id,
-			integration: action.integration,
-			slug: action.slug,
-			label: action.label,
-			description: action.description,
-			category: action.category,
-			configFields: action.configFields as any,
-			outputFields: action.outputFields as any,
-			outputConfig: action.outputConfig as any,
-		};
-		catalog.actionsById.set(action.id, mapped);
+	catalog.integrationLabels.system = "System";
+	for (const action of getSystemWorkflowSpecActions()) {
+		catalog.actionsById.set(action.id, action);
 	}
-	Object.assign(catalog.integrationLabels, getIntegrationLabels());
+	// Note: this script intentionally lints against the same catalog the UI uses
+	// (installed Activepieces pieces + builtin pieces). Plugin registry actions
+	// are not imported here to avoid server/client component boundary issues.
 
 	let hadErrors = false;
 	for (const file of files) {
 		const raw = await readFile(file, "utf-8");
 		const json = JSON.parse(raw) as unknown;
-		const { result } = lintWorkflowSpec(json, { catalog });
+		const { result } = lintWorkflowSpec(json, {
+			catalog,
+			unknownActionType: "warn",
+		});
 
 		if (result.errors.length > 0) {
 			hadErrors = true;

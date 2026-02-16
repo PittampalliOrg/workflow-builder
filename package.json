@@ -32,6 +32,7 @@
 		"test:e2e:ui": "playwright test --ui"
 	},
 	"dependencies": {
+		"@ai-sdk/anthropic": "^3.0.44",
 		"@ai-sdk/openai": "^3.0.25",
 		"@ai-sdk/provider": "^2.0.0",
 		"@linear/sdk": "^63.2.0",

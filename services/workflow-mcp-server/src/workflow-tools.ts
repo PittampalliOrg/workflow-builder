@@ -14,6 +14,8 @@ import {
 import { z } from "zod";
 import { nanoid } from "nanoid";
 import * as db from "./db.js";
+import type { UiSession } from "./ui/session.js";
+import { registerUiTools } from "./ui/tools.js";
 
 export type RegisteredTool = {
 	name: string;
@@ -60,7 +62,10 @@ function errorResult(msg: string) {
 export function registerWorkflowTools(
 	server: McpServer,
 	uiHtmlPath: string,
+	userId?: string,
+	uiSession?: UiSession,
 ): RegisteredTool[] {
+	const effectiveUserId = userId ?? process.env.USER_ID ?? undefined;
 	const htmlContent = fs.readFileSync(uiHtmlPath, "utf-8");
 	const resourceUri = "ui://workflow-builder-mcp/app.html";
 
@@ -80,8 +85,23 @@ export function registerWorkflowTools(
 		ui: { resourceUri },
 		"ui/resourceUri": resourceUri,
 	};
-
 	const tools: RegisteredTool[] = [];
+
+	if (uiSession) {
+		registerUiTools(server, uiSession, uiMeta);
+		tools.push({
+			name: "ui_bootstrap",
+			description: "Bootstrap Remote DOM UI mutations",
+		});
+		tools.push({
+			name: "ui_updates",
+			description: "Poll Remote DOM UI mutations",
+		});
+		tools.push({
+			name: "ui_event",
+			description: "Send UI event to server-owned UI",
+		});
+	}
 
 	// ── list_workflows ─────────────────────────────────────
 	(server as any).registerTool(
@@ -95,7 +115,7 @@ export function registerWorkflowTools(
 		},
 		async () => {
 			try {
-				const workflows = await db.listWorkflows();
+				const workflows = await db.listWorkflows(effectiveUserId);
 				return textResult(workflows);
 			} catch (err) {
 				return errorResult(`Failed to list workflows: ${err}`);
@@ -144,7 +164,11 @@ export function registerWorkflowTools(
 		},
 		async (args: { name: string; description?: string }) => {
 			try {
-				const wf = await db.createWorkflow(args.name, args.description);
+				const wf = await db.createWorkflow(
+					args.name,
+					args.description,
+					effectiveUserId,
+				);
 				return textResult(wf);
 			} catch (err) {
 				return errorResult(`Failed to create workflow: ${err}`);
@@ -231,7 +255,10 @@ export function registerWorkflowTools(
 		},
 		async (args: { workflow_id: string }) => {
 			try {
-				const wf = await db.duplicateWorkflow(args.workflow_id);
+				const wf = await db.duplicateWorkflow(
+					args.workflow_id,
+					effectiveUserId,
+				);
 				if (!wf) return errorResult(`Workflow "${args.workflow_id}" not found`);
 				return textResult(wf);
 			} catch (err) {
@@ -593,9 +620,7 @@ export function registerWorkflowTools(
 			inputSchema: {
 				instance_id: z
 					.string()
-					.describe(
-						"Dapr workflow instanceId (from execute_workflow result)",
-					),
+					.describe("Dapr workflow instanceId (from execute_workflow result)"),
 			},
 			_meta: uiMeta,
 		},
@@ -606,9 +631,7 @@ export function registerWorkflowTools(
 				);
 				if (!resp.ok) {
 					const text = await resp.text();
-					return errorResult(
-						`Orchestrator returned ${resp.status}: ${text}`,
-					);
+					return errorResult(`Orchestrator returned ${resp.status}: ${text}`);
 				}
 				const result = await resp.json();
 				return textResult(result);
@@ -636,9 +659,7 @@ export function registerWorkflowTools(
 					.describe(
 						"The approval event name (from approvalEventName in status)",
 					),
-				approved: z
-					.boolean()
-					.describe("true to approve, false to reject"),
+				approved: z.boolean().describe("true to approve, false to reject"),
 				reason: z
 					.string()
 					.optional()
@@ -669,9 +690,7 @@ export function registerWorkflowTools(
 				);
 				if (!resp.ok) {
 					const text = await resp.text();
-					return errorResult(
-						`Orchestrator returned ${resp.status}: ${text}`,
-					);
+					return errorResult(`Orchestrator returned ${resp.status}: ${text}`);
 				}
 				const result = await resp.json();
 				return textResult(result);
@@ -683,6 +702,39 @@ export function registerWorkflowTools(
 	tools.push({
 		name: "approve_workflow",
 		description: "Approve or reject a workflow approval gate",
+	});
+
+	// ── get_execution_results ─────────────────────────────
+	(server as any).registerTool(
+		"get_execution_results",
+		{
+			title: "Get Execution Results",
+			description:
+				"Get per-node execution results with input/output data for a completed workflow run.",
+			inputSchema: {
+				instance_id: z
+					.string()
+					.describe("Dapr workflow instanceId (from execute_workflow result)"),
+			},
+			_meta: uiMeta,
+		},
+		async (args: { instance_id: string }) => {
+			try {
+				const execution = await db.getExecutionByInstanceId(args.instance_id);
+				if (!execution)
+					return errorResult(
+						`Execution not found for instance "${args.instance_id}"`,
+					);
+				const logs = await db.getExecutionLogs(execution.id);
+				return textResult({ execution, logs });
+			} catch (err) {
+				return errorResult(`Failed to get execution results: ${err}`);
+			}
+		},
+	);
+	tools.push({
+		name: "get_execution_results",
+		description: "Get per-node execution results",
 	});
 
 	// ── get_workflow_observability ─────────────────────────

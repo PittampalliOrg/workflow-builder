@@ -2,18 +2,38 @@ import { z } from "zod";
 
 export const WORKFLOW_SPEC_API_VERSION = "workflow-spec/v1" as const;
 
+export type JsonValue =
+	| string
+	| number
+	| boolean
+	| null
+	| { [key: string]: JsonValue }
+	| JsonValue[];
+
+// Provider-safe JSON value schema for LLM structured output:
+// - Avoids `z.unknown()` which becomes `{}` in JSON Schema (rejected by some providers).
+// - Avoids `z.record()` which emits `propertyNames` (rejected by some providers).
+export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
+	z.union([
+		z.string(),
+		z.number(),
+		z.boolean(),
+		z.null(),
+		z.array(JsonValueSchema),
+		z.object({}).catchall(JsonValueSchema),
+	]),
+);
+
 const IdSchema = z
 	.string()
 	.min(1)
 	.regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/, "Invalid id format");
 
-const RecordUnknownSchema = z.record(z.string(), z.unknown());
-
 export const TriggerSpecSchema = z.object({
 	id: IdSchema.default("trigger"),
 	type: z.enum(["manual", "webhook"]),
-	// Keep flexible: we only normalize what the UI/runtime expects today.
-	config: RecordUnknownSchema.optional().default({}),
+	// Flexible JSON bag (also safe for LLM structured output providers).
+	config: z.object({}).catchall(JsonValueSchema).optional().default({}),
 	next: z.union([IdSchema, z.array(IdSchema).min(1)]).optional(),
 });
 
@@ -38,7 +58,7 @@ export const ActionStepSpecSchema = BaseStepSpecSchema.extend({
 		.object({
 			actionType: z.string().min(1),
 		})
-		.passthrough(),
+		.catchall(JsonValueSchema),
 	next: NextLinearSchema.optional(),
 });
 
@@ -68,8 +88,8 @@ export const IfElseStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("if-else"),
 	config: z.object({
 		operator: z.string().min(1).optional().default("EXISTS"),
-		left: z.unknown(),
-		right: z.unknown().optional(),
+		left: JsonValueSchema,
+		right: JsonValueSchema.optional(),
 	}),
 	next: NextIfElseSchema,
 });
@@ -78,8 +98,8 @@ export const LoopUntilStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("loop-until"),
 	config: z.object({
 		operator: z.string().min(1).optional().default("EXISTS"),
-		left: z.unknown(),
-		right: z.unknown().optional(),
+		left: JsonValueSchema,
+		right: JsonValueSchema.optional(),
 		loopStartNodeId: IdSchema,
 		maxIterations: z.number().int().positive().optional(),
 		delaySeconds: z.number().int().nonnegative().optional(),
@@ -92,7 +112,7 @@ export const SetStateStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("set-state"),
 	config: z.object({
 		key: z.string().min(1),
-		value: z.unknown(),
+		value: JsonValueSchema,
 	}),
 	next: NextLinearSchema.optional(),
 });
@@ -100,7 +120,7 @@ export const SetStateStepSpecSchema = BaseStepSpecSchema.extend({
 export const TransformStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("transform"),
 	config: z.object({
-		template: z.unknown(),
+		template: JsonValueSchema,
 	}),
 	next: NextLinearSchema.optional(),
 });
@@ -110,14 +130,14 @@ export const PublishEventStepSpecSchema = BaseStepSpecSchema.extend({
 	config: z.object({
 		topic: z.string().min(1),
 		eventType: z.string().min(1),
-		data: z.unknown().optional(),
+		data: JsonValueSchema.optional(),
 	}),
 	next: NextLinearSchema.optional(),
 });
 
 export const NoteStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("note"),
-	config: z.object({}).passthrough().optional().default({}),
+	config: z.object({}).catchall(JsonValueSchema).optional().default({}),
 	next: NextLinearSchema.optional(),
 });
 

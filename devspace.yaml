@@ -227,6 +227,12 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
+      - name: DAPR_SECRETS_STORE
+        value: "azure-keyvault"
+      - name: DAPR_CONFIG_STORE
+        value: "azureappconfig-workflow-builder"
+      - name: CONFIG_LABEL
+        value: "workflow-builder"
       # Fallback URLs (Dapr SDK will override if available)
       - name: DAPR_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"

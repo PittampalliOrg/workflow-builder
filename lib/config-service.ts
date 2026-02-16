@@ -17,21 +17,25 @@ const CACHE_TTL_MS = 60_000; // 1 minute cache
 
 // Configuration keys for workflow builder
 const CONFIG_KEYS = {
-  WORKFLOW_ORCHESTRATOR_URL: "workflow-orchestrator-url",
-  GENERIC_ORCHESTRATOR_URL: "generic-orchestrator-url",
+	WORKFLOW_ORCHESTRATOR_URL: "workflow-orchestrator-url",
+	GENERIC_ORCHESTRATOR_URL: "generic-orchestrator-url",
+	JAEGER_QUERY_URL: "jaeger-query-url",
 } as const;
 
 // Default values (fallback when config not available)
 // All workflow services are in the workflow-builder namespace
 const DEFAULTS: Record<string, string> = {
-  [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
-  [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
+	[CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
+	[CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
+	[CONFIG_KEYS.JAEGER_QUERY_URL]:
+		"http://jaeger-query.observability.svc.cluster.local:16686",
 };
 
 // Environment variable mappings
 const ENV_MAPPINGS: Record<string, string> = {
-  [CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "WORKFLOW_ORCHESTRATOR_URL",
-  [CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "GENERIC_ORCHESTRATOR_URL",
+	[CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "WORKFLOW_ORCHESTRATOR_URL",
+	[CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "GENERIC_ORCHESTRATOR_URL",
+	[CONFIG_KEYS.JAEGER_QUERY_URL]: "JAEGER_QUERY_URL",
 };
 
 /**
@@ -41,7 +45,7 @@ const ENV_MAPPINGS: Record<string, string> = {
  * scoped component is not installed.
  */
 const DAPR_CONFIG_STORE =
-  process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-builder";
+	process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-builder";
 const DAPR_CONFIG_LABEL = process.env.CONFIG_LABEL || "workflow-builder";
 
 /**
@@ -51,39 +55,39 @@ let daprHealth: { ok: boolean; checkedAt: number } | null = null;
 const DAPR_HEALTH_TTL_MS = 15_000;
 
 async function isDaprAvailableCached(): Promise<boolean> {
-  if (daprHealth && Date.now() - daprHealth.checkedAt < DAPR_HEALTH_TTL_MS) {
-    return daprHealth.ok;
-  }
-  const ok = await isAvailable();
-  daprHealth = { ok, checkedAt: Date.now() };
-  return ok;
+	if (daprHealth && Date.now() - daprHealth.checkedAt < DAPR_HEALTH_TTL_MS) {
+		return daprHealth.ok;
+	}
+	const ok = await isAvailable();
+	daprHealth = { ok, checkedAt: Date.now() };
+	return ok;
 }
 
 async function fetchConfigFromDapr(key: string): Promise<string | null> {
-  if (!(await isDaprAvailableCached())) {
-    return null;
-  }
+	if (!(await isDaprAvailableCached())) {
+		return null;
+	}
 
-  const stores =
-    DAPR_CONFIG_STORE === "azureappconfig"
-      ? ["azureappconfig"]
-      : [DAPR_CONFIG_STORE, "azureappconfig"];
+	const stores =
+		DAPR_CONFIG_STORE === "azureappconfig"
+			? ["azureappconfig"]
+			: [DAPR_CONFIG_STORE, "azureappconfig"];
 
-  for (const storeName of stores) {
-    try {
-      const cfg = await getConfiguration(storeName, [key], {
-        label: DAPR_CONFIG_LABEL,
-      });
-      const item = cfg[key];
-      if (item?.value !== undefined) {
-        return item.value;
-      }
-    } catch {
-      // Try next store.
-    }
-  }
+	for (const storeName of stores) {
+		try {
+			const cfg = await getConfiguration(storeName, [key], {
+				label: DAPR_CONFIG_LABEL,
+			});
+			const item = cfg[key];
+			if (item?.value !== undefined) {
+				return item.value;
+			}
+		} catch {
+			// Try next store.
+		}
+	}
 
-  return null;
+	return null;
 }
 
 /**
@@ -91,47 +95,54 @@ async function fetchConfigFromDapr(key: string): Promise<string | null> {
  * Priority: Cache -> Dapr Config -> Environment Variable -> Default
  */
 export async function getConfig(key: string): Promise<string> {
-  // Check cache first
-  const cached = configCache.get(key);
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
-    return cached.value;
-  }
+	// Check cache first
+	const cached = configCache.get(key);
+	if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+		return cached.value;
+	}
 
-  // Try to fetch from Dapr config store
-  const daprValue = await fetchConfigFromDapr(key);
-  if (daprValue !== null) {
-    configCache.set(key, { value: daprValue, fetchedAt: Date.now() });
-    return daprValue;
-  }
+	// Try to fetch from Dapr config store
+	const daprValue = await fetchConfigFromDapr(key);
+	if (daprValue !== null) {
+		configCache.set(key, { value: daprValue, fetchedAt: Date.now() });
+		return daprValue;
+	}
 
-  // Fall back to environment variable
-  const envKey = ENV_MAPPINGS[key];
-  const envValue = envKey ? process.env[envKey] : undefined;
-  if (envValue) {
-    configCache.set(key, { value: envValue, fetchedAt: Date.now() });
-    return envValue;
-  }
+	// Fall back to environment variable
+	const envKey = ENV_MAPPINGS[key];
+	const envValue = envKey ? process.env[envKey] : undefined;
+	if (envValue) {
+		configCache.set(key, { value: envValue, fetchedAt: Date.now() });
+		return envValue;
+	}
 
-  // Fall back to default
-  const defaultValue = DEFAULTS[key] || "";
-  if (defaultValue) {
-    configCache.set(key, { value: defaultValue, fetchedAt: Date.now() });
-  }
-  return defaultValue;
+	// Fall back to default
+	const defaultValue = DEFAULTS[key] || "";
+	if (defaultValue) {
+		configCache.set(key, { value: defaultValue, fetchedAt: Date.now() });
+	}
+	return defaultValue;
 }
 
 /**
  * Get the workflow orchestrator URL
  */
 export async function getWorkflowOrchestratorUrl(): Promise<string> {
-  return getConfig(CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL);
+	return getConfig(CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL);
 }
 
 /**
  * Get the generic orchestrator URL
  */
 export async function getGenericOrchestratorUrl(): Promise<string> {
-  return getConfig(CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL);
+	return getConfig(CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL);
+}
+
+/**
+ * Get the Jaeger query URL
+ */
+export async function getJaegerQueryUrl(): Promise<string> {
+	return getConfig(CONFIG_KEYS.JAEGER_QUERY_URL);
 }
 
 /**

@@ -13,6 +13,12 @@ import type {
 } from "./types/app-connection";
 import type { IntegrationDefinition } from "./actions/types";
 import type { McpInputProperty } from "./mcp/types";
+import type {
+	ObservabilityEntitiesResponse,
+	ObservabilityTraceDetailsResponse,
+	ObservabilityTraceFilters,
+	ObservabilityTraceListResponse,
+} from "./types/observability";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -383,10 +389,15 @@ export const aiApi = {
 			edges: WorkflowEdge[];
 			name?: string;
 		},
+		options?: { mode?: "validated" | "classic" },
 	) =>
 		apiCall<WorkflowData>("/api/ai/generate", {
 			method: "POST",
-			body: JSON.stringify({ prompt, existingWorkflow }),
+			body: JSON.stringify({
+				prompt,
+				existingWorkflow,
+				mode: options?.mode,
+			}),
 		}),
 	generateStream: async (
 		prompt: string,
@@ -396,10 +407,11 @@ export const aiApi = {
 			edges: WorkflowEdge[];
 			name?: string;
 		},
+		options?: { mode?: "validated" | "classic" },
 	): Promise<WorkflowData> =>
 		streamWorkflowOperations(
 			"/api/ai/generate",
-			{ prompt, existingWorkflow },
+			{ prompt, existingWorkflow, mode: options?.mode },
 			onUpdate,
 			existingWorkflow,
 		),
@@ -420,10 +432,11 @@ export const aiChatApi = {
 			edges: WorkflowEdge[];
 			name?: string;
 		},
+		options?: { mode?: "validated" | "classic" },
 	): Promise<WorkflowData> =>
 		streamWorkflowOperations(
 			`/api/workflows/${workflowId}/ai-chat/stream`,
-			{ message, existingWorkflow },
+			{ message, existingWorkflow, mode: options?.mode },
 			onUpdate,
 			existingWorkflow,
 		),
@@ -573,6 +586,9 @@ export const workflowApi = {
 				startedAt: Date;
 				completedAt: Date | null;
 				duration: string | null;
+				daprInstanceId: string | null;
+				phase: string | null;
+				progress: number | null;
 				workflow: {
 					id: string;
 					name: string;
@@ -855,6 +871,54 @@ export const secretsApi = {
 		apiCall<InfrastructureSecretsResponse>("/api/secrets/available"),
 };
 
+function buildObservabilityQuery(filters?: ObservabilityTraceFilters): string {
+	if (!filters) {
+		return "";
+	}
+
+	const params = new URLSearchParams();
+
+	if (filters.entityType) {
+		params.set("entityType", filters.entityType);
+	}
+	if (filters.entityId) {
+		params.set("entityId", filters.entityId);
+	}
+	if (filters.from) {
+		params.set("from", filters.from);
+	}
+	if (filters.to) {
+		params.set("to", filters.to);
+	}
+	if (filters.cursor) {
+		params.set("cursor", filters.cursor);
+	}
+	if (filters.limit) {
+		params.set("limit", String(filters.limit));
+	}
+	if (filters.search) {
+		params.set("search", filters.search);
+	}
+
+	const query = params.toString();
+	return query ? `?${query}` : "";
+}
+
+export const observabilityApi = {
+	getEntities: () =>
+		apiCall<ObservabilityEntitiesResponse>("/api/observability/entities"),
+
+	getTraces: (filters?: ObservabilityTraceFilters) =>
+		apiCall<ObservabilityTraceListResponse>(
+			`/api/observability/traces${buildObservabilityQuery(filters)}`,
+		),
+
+	getTrace: (traceId: string) =>
+		apiCall<ObservabilityTraceDetailsResponse>(
+			`/api/observability/traces/${encodeURIComponent(traceId)}`,
+		),
+};
+
 export type AppConnection = AppConnectionWithoutSensitiveData & {
 	createdAt: string;
 	updatedAt: string;
@@ -1135,6 +1199,7 @@ export const api = {
 	dapr: daprApi,
 	functions: functionsApi,
 	mcpServer: mcpServerApi,
+	observability: observabilityApi,
 	oauthApp: oauthAppApi,
 	piece: pieceApi,
 	secrets: secretsApi,

@@ -12,6 +12,7 @@ import {
 	Settings,
 	AppWindow,
 	MessageSquare,
+	Eye,
 } from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
 import {
@@ -38,6 +39,7 @@ import type { User } from "@/lib/db/schema";
 const navigationLinks = [
 	{ href: "/", label: "Builder", icon: PenTool },
 	{ href: "/monitor", label: "Monitor", icon: Activity },
+	{ href: "/observability", label: "Observability", icon: Eye },
 	{ href: "/connections", label: "Connections", icon: Plug },
 	{ href: "/mcp-apps", label: "MCP Apps", icon: AppWindow },
 	{ href: "/mcp-chat", label: "MCP Chat", icon: MessageSquare },

@@ -85,12 +85,14 @@ function buildModelsResponse(searchValue?: string): OptionsResponse {
 
 	if (models.length === 0) {
 		models = [
+			"gpt-5.3-codex",
 			"gpt-5.2-codex",
 			"gpt-4o-mini",
 			"gpt-4o",
 			"claude-sonnet-4-5",
 			"claude-sonnet-4-6",
 			"claude-opus-4-6",
+			"openai/gpt-5.3-codex",
 			"openai/gpt-5.1-instant",
 			"openai/gpt-4o-mini",
 		];
@@ -106,9 +108,11 @@ function buildModelsResponse(searchValue?: string): OptionsResponse {
 
 function getModelDisplayLabel(modelId: string): string {
 	const labels: Record<string, string> = {
+		"gpt-5.3-codex": "GPT-5.3 Codex",
 		"gpt-5.2-codex": "GPT-5.2 Codex",
 		"gpt-4o": "GPT-4o",
 		"gpt-4o-mini": "GPT-4o mini",
+		"openai/gpt-5.3-codex": "OpenAI GPT-5.3 Codex (Gateway)",
 		"openai/gpt-5.1-instant": "OpenAI GPT-5.1 Instant (Gateway)",
 		"openai/gpt-4o-mini": "OpenAI GPT-4o mini (Gateway)",
 		"claude-sonnet-4-5": "Claude Sonnet 4.5",
@@ -533,8 +537,7 @@ export async function POST(request: Request) {
 		if (!connection.pieceName.toLowerCase().includes("github")) {
 			return NextResponse.json(
 				{
-					error:
-						"Clone Repository options require a GitHub connection",
+					error: "Clone Repository options require a GitHub connection",
 				},
 				{ status: 400 },
 			);

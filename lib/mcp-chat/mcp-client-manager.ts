@@ -39,30 +39,43 @@ setInterval(() => {
 	}
 }, 60_000);
 
-async function getPooledClient(serverUrl: string): Promise<Client> {
-	const existing = clientPool.get(serverUrl);
+async function getPooledClient(
+	serverUrl: string,
+	userId?: string,
+): Promise<Client> {
+	const poolKey = userId ? `${serverUrl}::${userId}` : serverUrl;
+	const existing = clientPool.get(poolKey);
 	if (existing) {
 		existing.lastUsed = Date.now();
 		return existing.client;
 	}
 
-	const transport = new StreamableHTTPClientTransport(new URL(serverUrl));
+	const transportOpts: { requestInit?: RequestInit } = {};
+	if (userId) {
+		transportOpts.requestInit = { headers: { "X-User-Id": userId } };
+	}
+
+	const transport = new StreamableHTTPClientTransport(
+		new URL(serverUrl),
+		transportOpts,
+	);
 	const client = new Client({ name: "mcp-chat-proxy", version: "1.0.0" });
 	await client.connect(transport);
 
-	clientPool.set(serverUrl, { client, lastUsed: Date.now() });
+	clientPool.set(poolKey, { client, lastUsed: Date.now() });
 	return client;
 }
 
-function evictPoolEntry(serverUrl: string) {
-	const entry = clientPool.get(serverUrl);
+function evictPoolEntry(serverUrl: string, userId?: string) {
+	const poolKey = userId ? `${serverUrl}::${userId}` : serverUrl;
+	const entry = clientPool.get(poolKey);
 	if (entry) {
 		try {
 			entry.client.close();
 		} catch {
 			/* ignore */
 		}
-		clientPool.delete(serverUrl);
+		clientPool.delete(poolKey);
 	}
 }
 
@@ -74,6 +87,7 @@ function evictPoolEntry(serverUrl: string) {
 export async function discoverTools(
 	serverUrl: string,
 	_serverName: string,
+	userId?: string,
 ): Promise<ToolDef[]> {
 	const cached = toolCache.get(serverUrl);
 	if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
@@ -82,12 +96,12 @@ export async function discoverTools(
 
 	let result: Awaited<ReturnType<Client["listTools"]>>;
 	try {
-		const client = await getPooledClient(serverUrl);
+		const client = await getPooledClient(serverUrl, userId);
 		result = await client.listTools();
 	} catch {
 		// Session may have been reaped server-side — evict and retry once
-		evictPoolEntry(serverUrl);
-		const client = await getPooledClient(serverUrl);
+		evictPoolEntry(serverUrl, userId);
+		const client = await getPooledClient(serverUrl, userId);
 		result = await client.listTools();
 	}
 
@@ -117,6 +131,7 @@ export async function callExternalMcpTool(
 	serverUrl: string,
 	toolName: string,
 	args: Record<string, unknown>,
+	userId?: string,
 ): Promise<McpToolResult> {
 	async function doCall(client: Client) {
 		const toolResult = await client.callTool({
@@ -176,12 +191,12 @@ export async function callExternalMcpTool(
 	}
 
 	try {
-		const client = await getPooledClient(serverUrl);
+		const client = await getPooledClient(serverUrl, userId);
 		return await doCall(client);
 	} catch {
 		// Session may have been reaped server-side — evict and retry once
-		evictPoolEntry(serverUrl);
-		const client = await getPooledClient(serverUrl);
+		evictPoolEntry(serverUrl, userId);
+		const client = await getPooledClient(serverUrl, userId);
 		return await doCall(client);
 	}
 }
@@ -195,9 +210,10 @@ export async function callExternalMcpToolDirect(
 	serverUrl: string,
 	toolName: string,
 	args: Record<string, unknown>,
+	userId?: string,
 ): Promise<{ content: Array<{ type: string; text?: string }> }> {
 	try {
-		const client = await getPooledClient(serverUrl);
+		const client = await getPooledClient(serverUrl, userId);
 		const toolResult = await client.callTool({
 			name: toolName,
 			arguments: args,
@@ -209,8 +225,8 @@ export async function callExternalMcpToolDirect(
 		};
 	} catch (err) {
 		// Session may have been reaped server-side — evict and retry once
-		evictPoolEntry(serverUrl);
-		const client = await getPooledClient(serverUrl);
+		evictPoolEntry(serverUrl, userId);
+		const client = await getPooledClient(serverUrl, userId);
 		const toolResult = await client.callTool({
 			name: toolName,
 			arguments: args,

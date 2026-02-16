@@ -11,6 +11,13 @@ import {
 	PromptInputSubmit,
 	PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import { api, type WorkflowAiChatMessage } from "@/lib/api-client";
 import {
 	currentWorkflowNameAtom,
@@ -25,6 +32,10 @@ import {
 type AiChatPanelProps = {
 	workflowId: string;
 };
+
+type AiMode = "validated" | "classic";
+
+const STORAGE_KEY = "workflow-ai-mode";
 
 function formatTimestamp(iso: string): string {
 	return new Date(iso).toLocaleTimeString([], {
@@ -59,11 +70,33 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 
 	const [messages, setMessages] = useState<WorkflowAiChatMessage[]>([]);
 	const [isLoadingMessages, setIsLoadingMessages] = useState(true);
+	const [mode, setMode] = useState<AiMode>("validated");
 
 	const realNodes = useMemo(
 		() => nodes.filter((node) => node.type !== "add"),
 		[nodes],
 	);
+
+	const isBlankWorkflow = useMemo(() => {
+		// New workflows are created with a default trigger node.
+		// Treat "trigger only + no edges" as blank so we use the validated WorkflowSpec
+		// generation path (deterministic compile + lint + repair).
+		if (edges.length > 0) return false;
+		if (realNodes.length !== 1) return false;
+		const only = realNodes[0];
+		return only?.data?.type === "trigger";
+	}, [edges.length, realNodes]);
+
+	useEffect(() => {
+		try {
+			const raw = window.localStorage.getItem(STORAGE_KEY);
+			if (raw === "classic" || raw === "validated") {
+				setMode(raw);
+			}
+		} catch {
+			/* ignore */
+		}
+	}, []);
 
 	const loadMessages = useCallback(async () => {
 		setIsLoadingMessages(true);
@@ -102,7 +135,7 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 
 			try {
 				const existingWorkflow =
-					realNodes.length > 0
+					realNodes.length > 0 && !isBlankWorkflow
 						? {
 								nodes: realNodes,
 								edges,
@@ -151,6 +184,7 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 						}
 					},
 					existingWorkflow,
+					{ mode },
 				);
 
 				const finalEdges = (workflowData.edges || []).map((edge) => ({
@@ -198,6 +232,7 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 		[
 			isGenerating,
 			realNodes,
+			isBlankWorkflow,
 			edges,
 			currentWorkflowName,
 			workflowId,
@@ -207,6 +242,7 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 			setCurrentWorkflowName,
 			setSelectedNode,
 			loadMessages,
+			mode,
 		],
 	);
 
@@ -256,8 +292,33 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 						/>
 					</PromptInputBody>
 					<PromptInputFooter>
-						<div className="text-muted-foreground text-xs">
-							{isGenerating ? "Generating workflow..." : "Enter to send"}
+						<div className="flex items-center gap-2">
+							<div className="text-muted-foreground text-xs">
+								{isGenerating ? "Generating workflow..." : "Enter to send"}
+							</div>
+							<Select
+								disabled={isGenerating}
+								onValueChange={(value) => {
+									if (value !== "classic" && value !== "validated") {
+										return;
+									}
+									setMode(value);
+									try {
+										window.localStorage.setItem(STORAGE_KEY, value);
+									} catch {
+										/* ignore */
+									}
+								}}
+								value={mode}
+							>
+								<SelectTrigger className="h-7 w-[160px] text-xs">
+									<SelectValue placeholder="Mode" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="validated">Validated</SelectItem>
+									<SelectItem value="classic">Classic</SelectItem>
+								</SelectContent>
+							</Select>
 						</div>
 						<PromptInputSubmit
 							disabled={isGenerating}

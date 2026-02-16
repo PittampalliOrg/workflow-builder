@@ -55,7 +55,7 @@ const mastraAgent = new Agent({
 	name: "mastra-agent",
 	instructions:
 		"You are a helpful assistant. Use the greet tool to greet people and the current_time tool to tell the time. Be concise.",
-	model: openai("gpt-4o-mini"),
+	model: openai(process.env.AI_MODEL ?? "gpt-5.2-codex"),
 	tools: { greet: greetTool, current_time: currentTimeTool },
 });
 
@@ -64,7 +64,11 @@ export const TOOL_NAMES = ["greet", "current_time"];
 export type RunResult = {
 	text: string;
 	toolCalls: Array<{ name: string; args: unknown; result: unknown }>;
-	usage: { promptTokens: number; completionTokens: number; totalTokens: number };
+	usage: {
+		promptTokens: number;
+		completionTokens: number;
+		totalTokens: number;
+	};
 };
 
 export async function runAgent(prompt: string): Promise<RunResult> {

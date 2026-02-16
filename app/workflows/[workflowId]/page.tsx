@@ -362,12 +362,13 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				return;
 			}
 
-			// Reset node statuses to idle and clear selection when loading from database
+			// Reset node statuses to idle, populate data.type from top-level type, and clear selection when loading from database
 			const nodesWithIdleStatus = workflow.nodes.map((node: WorkflowNode) => ({
 				...node,
 				selected: false,
 				data: {
 					...node.data,
+					type: node.data.type || node.type,
 					status: "idle" as const,
 				},
 			}));

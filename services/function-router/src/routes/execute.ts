@@ -315,7 +315,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const functionUrl = await resolveOpenFunctionUrl(target.appId);
 				timing.routingMs = Date.now() - routingStartTime;
 
-				if (target.appId === "mastra-agent-tanstack") {
+				if (target.appId === "durable-agent") {
 					console.log(
 						`[Execute Route] Invoking Mastra agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
@@ -369,7 +369,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						}
 
-						// Route to the appropriate mastra-agent-tanstack endpoint
+						// Route to the appropriate durable-agent endpoint
 						const isAgentRun = toolId === "run";
 						const isPlan = toolId === "plan";
 						const isExecutePlan = toolId === "execute";
@@ -516,7 +516,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							};
 						} else {
 							throw new Error(
-								`Invalid response from mastra-agent-tanstack: ${responseText.slice(0, 300)}`,
+								`Invalid response from durable-agent: ${responseText.slice(0, 300)}`,
 							);
 						}
 					} catch (httpError) {
@@ -593,7 +593,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const responseText = await httpResponse.text();
 						let parsedResponse: Record<string, unknown>;
 						try {
-							parsedResponse = JSON.parse(responseText) as Record<string, unknown>;
+							parsedResponse = JSON.parse(responseText) as Record<
+								string,
+								unknown
+							>;
 						} catch {
 							parsedResponse = { raw: responseText };
 						}

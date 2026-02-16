@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createWorkflowOperationStream } from "@/lib/ai/workflow-generation";
 import { getSession } from "@/lib/auth-helpers";
+import { createValidatedOperationStream } from "@/lib/ai/validated-operation-stream";
 
 export async function POST(request: Request) {
 	try {
@@ -11,7 +12,11 @@ export async function POST(request: Request) {
 		}
 
 		const body = await request.json();
-		const { prompt, existingWorkflow } = body;
+		const { prompt, existingWorkflow, mode } = body as {
+			prompt?: unknown;
+			existingWorkflow?: unknown;
+			mode?: unknown;
+		};
 
 		if (!prompt || typeof prompt !== "string") {
 			return NextResponse.json(
@@ -20,20 +25,24 @@ export async function POST(request: Request) {
 			);
 		}
 
-		const apiKey = process.env.AI_GATEWAY_API_KEY || process.env.OPENAI_API_KEY;
+		const effectiveMode =
+			mode === "classic" || mode === "validated" ? mode : "validated";
 
-		if (!apiKey) {
-			return NextResponse.json(
-				{
-					error: "AI API key not configured on server. Please contact support.",
-				},
-				{ status: 500 },
-			);
-		}
+		const existingWorkflowObj =
+			typeof existingWorkflow === "object" && existingWorkflow
+				? (existingWorkflow as any)
+				: undefined;
 
-		const stream = await createWorkflowOperationStream({
+		const baseStream = await createWorkflowOperationStream({
 			prompt,
-			existingWorkflow,
+			existingWorkflow: existingWorkflowObj,
+		});
+
+		const stream = await createValidatedOperationStream({
+			baseStream,
+			prompt,
+			existingWorkflow: existingWorkflowObj,
+			mode: effectiveMode,
 		});
 
 		return new Response(stream, {

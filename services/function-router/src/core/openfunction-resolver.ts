@@ -24,9 +24,6 @@ const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
  * These are regular K8s Deployments with a ClusterIP Service.
  */
 const STANDALONE_SERVICES: Record<string, string> = {
-	"mastra-agent-tanstack":
-		process.env.MASTRA_AGENT_TANSTACK_URL ||
-		`http://mastra-agent-tanstack.${NAMESPACE}.svc.cluster.local:3400`,
 	"durable-agent":
 		process.env.DURABLE_AGENT_URL ||
 		`http://durable-agent.${NAMESPACE}.svc.cluster.local:8001`,

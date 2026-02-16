@@ -6,12 +6,14 @@ import {
 	tool,
 } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { getMcpChatTools } from "@/lib/mcp-chat/tools";
 import {
 	discoverTools,
 	callExternalMcpTool,
 } from "@/lib/mcp-chat/mcp-client-manager";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
+import { getSession } from "@/lib/auth-helpers";
 import { NextResponse } from "next/server";
 
 async function getModel() {
@@ -23,6 +25,20 @@ async function getModel() {
 	const gatewayKey =
 		(await getSecretValueAsync("AI_GATEWAY_API_KEY")) ||
 		process.env.AI_GATEWAY_API_KEY;
+	const anthropicKey =
+		(await getSecretValueAsync("ANTHROPIC_API_KEY")) ||
+		process.env.ANTHROPIC_API_KEY;
+
+	if (anthropicKey) {
+		const modelId =
+			process.env.ANTHROPIC_MODEL ||
+			(process.env.AI_MODEL?.startsWith("claude-")
+				? process.env.AI_MODEL
+				: "") ||
+			"claude-opus-4-6";
+		const provider = createAnthropic({ apiKey: anthropicKey });
+		return provider.chat(modelId);
+	}
 
 	const apiKey = gatewayBaseURL
 		? (gatewayKey ?? openaiKey)
@@ -30,12 +46,16 @@ async function getModel() {
 
 	if (!apiKey) {
 		throw new Error(
-			"Missing AI API key (set OPENAI_API_KEY or AI_GATEWAY_API_KEY).",
+			"Missing AI API key (set ANTHROPIC_API_KEY or OPENAI_API_KEY or AI_GATEWAY_API_KEY).",
 		);
 	}
 
 	const modelId =
-		process.env.AI_MODEL ?? (gatewayBaseURL ? "openai/gpt-4o" : "gpt-4o");
+		process.env.OPENAI_MODEL ||
+		(!process.env.AI_MODEL?.startsWith("claude-")
+			? process.env.AI_MODEL
+			: "") ||
+		(gatewayBaseURL ? "openai/gpt-5.3-codex" : "gpt-5.3-codex");
 
 	const provider = createOpenAI({
 		apiKey,
@@ -89,6 +109,9 @@ function sanitizeSchema(schema: any): any {
 
 export async function POST(req: Request) {
 	try {
+		const session = await getSession(req);
+		const userId = session?.user?.id;
+
 		const { messages: uiMessages, mcpServers, slashScopes } = await req.json();
 
 		// Discover external tools in parallel
@@ -100,7 +123,7 @@ export async function POST(req: Request) {
 		if (externalServers.length > 0) {
 			const results = await Promise.allSettled(
 				externalServers.map(async (server: McpServerEntry) => {
-					const tools = await discoverTools(server.url, server.name);
+					const tools = await discoverTools(server.url, server.name, userId);
 					return { server, tools };
 				}),
 			);
@@ -123,6 +146,7 @@ export async function POST(req: Request) {
 									server.url,
 									mcpTool.name,
 									args as Record<string, unknown>,
+									userId,
 								);
 							},
 						}),
@@ -130,7 +154,10 @@ export async function POST(req: Request) {
 						// The full result (with uiHtml) still streams to the client for ToolWidget rendering.
 						toModelOutput: async ({ output }: { output: unknown }) => {
 							const r = output as { text?: string } | null;
-							return { type: "text" as const, value: r?.text || "Tool executed successfully" };
+							return {
+								type: "text" as const,
+								value: r?.text || "Tool executed successfully",
+							};
 						},
 					};
 
@@ -176,11 +203,10 @@ export async function POST(req: Request) {
 						scope.serverName === "Built-in"
 							? ""
 							: `${scope.serverName.replace(/\s+/g, "_")}__`;
-					const serverToolNames = Object.keys(allTools).filter(
-						(name) =>
-							scope.serverName === "Built-in"
-								? !name.includes("__")
-								: name.startsWith(prefix),
+					const serverToolNames = Object.keys(allTools).filter((name) =>
+						scope.serverName === "Built-in"
+							? !name.includes("__")
+							: name.startsWith(prefix),
 					);
 					if (serverToolNames.length > 0) {
 						scopeLines.push(
@@ -206,7 +232,10 @@ export async function POST(req: Request) {
 						typeof part.output === "object" &&
 						"uiHtml" in part.output
 					) {
-						const { uiHtml: _uiHtml, ...rest } = part.output as Record<string, unknown>;
+						const { uiHtml: _uiHtml, ...rest } = part.output as Record<
+							string,
+							unknown
+						>;
 						part.output = rest;
 					}
 				}

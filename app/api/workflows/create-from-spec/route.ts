@@ -9,6 +9,7 @@ import { compileWorkflowSpecToGraph } from "@/lib/workflow-spec/compile";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
 import { lintWorkflowSpec } from "@/lib/workflow-spec/lint";
 import type { WorkflowSpec } from "@/lib/workflow-spec/types";
+import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 
 export async function POST(request: Request) {
 	try {
@@ -59,9 +60,10 @@ export async function POST(request: Request) {
 		};
 
 		const { nodes, edges } = compileWorkflowSpecToGraph(effectiveSpec);
+		const normalizedNodes = normalizeWorkflowNodes(nodes) as typeof nodes;
 
 		const validation = await validateWorkflowAppConnections(
-			nodes as unknown[],
+			normalizedNodes as unknown[],
 			session.user.id,
 		);
 		if (!validation.valid) {
@@ -88,7 +90,7 @@ export async function POST(request: Request) {
 				id: workflowId,
 				name: workflowName,
 				description: effectiveSpec.description,
-				nodes,
+				nodes: normalizedNodes,
 				edges,
 				userId: session.user.id,
 				projectId: session.user.projectId,

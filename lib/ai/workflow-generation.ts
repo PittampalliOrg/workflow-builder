@@ -1,11 +1,11 @@
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
-import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter";
-import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
-import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
-import type { IntegrationDefinition } from "@/lib/actions/types";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { flattenConfigFields } from "@/lib/actions/utils";
-import { listPieceMetadata } from "@/lib/db/piece-metadata";
+import { createWorkflowOperationStreamFromSpec } from "@/lib/ai/workflow-spec-generation";
+import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
+import { buildRelevantActionListPrompt } from "@/lib/ai/action-list-prompt";
+import { getSecretValueAsync } from "@/lib/dapr/config-provider";
 
 export type Operation = {
 	op:
@@ -142,50 +142,43 @@ async function processOperationStream(
 }
 
 async function generateAIPieceActionPrompts(): Promise<string> {
-	const allPieces = await listPieceMetadata({});
-	const pieces = allPieces.filter((piece) => isPieceInstalled(piece.name));
-	const builtinPieces = getBuiltinPieces();
-	const integrations: IntegrationDefinition[] = [
-		...builtinPieces,
-		...(convertApPiecesToIntegrations(pieces) as IntegrationDefinition[]),
-	];
+	const catalog = await loadInstalledWorkflowSpecCatalog();
+	const actions = Array.from(catalog.actionsById.values()).sort((a, b) =>
+		a.id.localeCompare(b.id),
+	);
 
 	const lines: string[] = [];
 
-	for (const piece of integrations) {
-		for (const action of piece.actions) {
-			const fullId = `${piece.type}/${action.slug}`;
-			const exampleConfig: Record<string, string | number> = {
-				actionType: fullId,
-			};
+	for (const action of actions) {
+		const fullId = action.id;
+		const exampleConfig: Record<string, string | number> = {
+			actionType: fullId,
+		};
 
-			for (const field of flattenConfigFields(action.configFields)) {
-				if (field.showWhen) {
-					continue;
-				}
-				if (field.example !== undefined) {
-					exampleConfig[field.key] = field.example;
-				} else if (field.defaultValue !== undefined) {
-					exampleConfig[field.key] = field.defaultValue;
-				} else if (field.type === "number") {
-					exampleConfig[field.key] = 10;
-				} else if (field.type === "select" && field.options?.[0]) {
-					exampleConfig[field.key] = field.options[0].value;
-				} else if (field.type === "dynamic-select") {
-					// Dynamic dropdown values are connector-specific IDs; placeholder text
-					// (e.g. "Your parent folder") causes invalid runtime requests.
-					exampleConfig[field.key] = "";
-				} else if (field.type === "dynamic-multi-select") {
-					exampleConfig[field.key] = "[]";
-				} else {
-					exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
-				}
+		for (const field of flattenConfigFields(action.configFields)) {
+			if (field.showWhen) {
+				continue;
 			}
-
-			lines.push(
-				`- ${action.label} (${fullId}): ${JSON.stringify(exampleConfig)}`,
-			);
+			if (field.example !== undefined) {
+				exampleConfig[field.key] = field.example;
+			} else if (field.defaultValue !== undefined) {
+				exampleConfig[field.key] = field.defaultValue;
+			} else if (field.type === "number") {
+				exampleConfig[field.key] = 10;
+			} else if (field.type === "select" && field.options?.[0]) {
+				exampleConfig[field.key] = field.options[0].value;
+			} else if (field.type === "dynamic-select") {
+				exampleConfig[field.key] = "";
+			} else if (field.type === "dynamic-multi-select") {
+				exampleConfig[field.key] = "[]";
+			} else {
+				exampleConfig[field.key] = `Your ${field.label.toLowerCase()}`;
+			}
 		}
+
+		lines.push(
+			`- ${action.label} (${fullId}): ${JSON.stringify(exampleConfig)}`,
+		);
 	}
 
 	return lines.join("\n");
@@ -387,25 +380,49 @@ IMPORTANT: Output ONLY the operations needed to make the requested changes.
 - POSITIONING: When adding new nodes, look at existing node positions and place new nodes 250px away (horizontally or vertically) from existing nodes. Never overlap nodes.`;
 }
 
-function getAiModel() {
-	const openaiKey = process.env.OPENAI_API_KEY;
-	const gatewayKey = process.env.AI_GATEWAY_API_KEY;
+async function getAiModel() {
+	// Prefer Anthropic if configured (Azure Key Vault secret mapping exists).
+	const anthropicKey =
+		(await getSecretValueAsync("ANTHROPIC_API_KEY").catch(() => "")) ||
+		process.env.ANTHROPIC_API_KEY;
+	if (anthropicKey) {
+		const provider = createAnthropic({ apiKey: anthropicKey });
+		const modelId =
+			process.env.ANTHROPIC_MODEL ||
+			(process.env.AI_MODEL?.startsWith("claude-")
+				? process.env.AI_MODEL
+				: "") ||
+			"claude-opus-4-6";
+		return provider.chat(modelId);
+	}
+
 	const gatewayBaseURL = process.env.AI_GATEWAY_BASE_URL;
+
+	// Try Dapr secrets first, then fall back to environment variables.
+	const openaiKey =
+		(await getSecretValueAsync("OPENAI_API_KEY").catch(() => "")) ||
+		process.env.OPENAI_API_KEY;
+	const gatewayKey =
+		(await getSecretValueAsync("AI_GATEWAY_API_KEY").catch(() => "")) ||
+		process.env.AI_GATEWAY_API_KEY;
 
 	// If a gateway base URL is provided, prefer the gateway key. Otherwise, prefer
 	// a plain OpenAI key (common in Kubernetes deployments).
 	const apiKey = gatewayBaseURL
-		? (gatewayKey ?? openaiKey)
-		: (openaiKey ?? gatewayKey);
+		? gatewayKey || openaiKey
+		: openaiKey || gatewayKey;
 	if (!apiKey) {
 		throw new Error(
-			"Missing AI API key (set OPENAI_API_KEY or AI_GATEWAY_API_KEY).",
+			"Missing AI API key (set ANTHROPIC_API_KEY or OPENAI_API_KEY or AI_GATEWAY_API_KEY).",
 		);
 	}
 
 	const modelId =
-		process.env.AI_MODEL ??
-		(gatewayBaseURL ? "openai/gpt-5.1-instant" : "gpt-4o-mini");
+		process.env.OPENAI_MODEL ||
+		(!process.env.AI_MODEL?.startsWith("claude-")
+			? process.env.AI_MODEL
+			: "") ||
+		(gatewayBaseURL ? "openai/gpt-5.3-codex" : "gpt-5.3-codex");
 
 	const provider = createOpenAI({
 		apiKey,
@@ -419,11 +436,44 @@ export async function createWorkflowOperationStream(
 	input: CreateWorkflowOperationStreamInput,
 	options: CreateWorkflowOperationStreamOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
+	const existingNodes = input.existingWorkflow?.nodes || [];
+	const existingEdges = input.existingWorkflow?.edges || [];
+	const nonAddNodes = existingNodes.filter(
+		(n) => (n as { type?: string } | null | undefined)?.type !== "add",
+	);
+	const nonTriggerNodes = nonAddNodes.filter(
+		(n) =>
+			(n as { data?: { type?: string } } | null | undefined)?.data?.type !==
+			"trigger",
+	);
+
+	// Treat "trigger only + no edges" as a blank workflow so we use WorkflowSpec
+	// structured output + deterministic compile/lint/repair for creation.
+	const isBlank =
+		existingEdges.length === 0 &&
+		nonAddNodes.length === 1 &&
+		nonTriggerNodes.length === 0;
+
+	const hasExisting = nonTriggerNodes.length > 0 || existingEdges.length > 0;
+	if (!hasExisting || isBlank) {
+		// New workflow creation: use structured output (WorkflowSpec) + deterministic compiler.
+		const catalog = await loadInstalledWorkflowSpecCatalog();
+		const actionListPrompt = buildRelevantActionListPrompt({
+			catalog,
+			prompt: input.prompt,
+			limit: 80,
+		});
+		return createWorkflowOperationStreamFromSpec({
+			prompt: input.prompt,
+			actionListPrompt,
+		});
+	}
+
 	const pieceActionPrompts = await generateAIPieceActionPrompts();
 	const userPrompt = buildUserPrompt(input);
 
 	const result = streamText({
-		model: getAiModel(),
+		model: await getAiModel(),
 		system: getSystemPrompt(pieceActionPrompts),
 		prompt: userPrompt,
 	});

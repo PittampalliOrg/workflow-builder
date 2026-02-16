@@ -7,6 +7,13 @@
  * ENV: DATABASE_URL (required), PORT (default 3200)
  */
 
+// Remote DOM polyfill MUST be imported before any @remote-dom/core/elements
+// usage. esbuild's CJS bundling can hoist requires out of order, so we
+// import the polyfill at the very top of the entrypoint to guarantee that
+// HTMLElement, document, customElements etc. are defined in Node.js before
+// RemoteElement subclasses are evaluated.
+import "@remote-dom/core/polyfill";
+
 import "./otel.js";
 
 import http from "node:http";
@@ -21,12 +28,14 @@ import {
 	registerWorkflowTools,
 	type RegisteredTool,
 } from "./workflow-tools.js";
+import { UiSession } from "./ui/session.js";
 
 const PORT = parseInt(process.env.PORT || "3200", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 
 // Session-scoped transports
 const sessions = new Map<string, StreamableHTTPServerTransport>();
+const uiSessions = new Map<string, UiSession>();
 
 // Loaded at startup
 let registeredTools: RegisteredTool[] = [];
@@ -68,14 +77,14 @@ function parseBody(req: http.IncomingMessage): Promise<unknown> {
 }
 
 /** Create a new MCP Server instance with workflow tools. */
-function createMcpServer(): Server {
+function createMcpServer(userId?: string, uiSession?: UiSession): Server {
 	const mcpServer = new McpServer(
 		{ name: "workflow-builder-mcp", version: "1.0.0" },
 		{ capabilities: { tools: {}, resources: {} } },
 	);
 
 	if (hasUI && uiHtmlPath) {
-		registerWorkflowTools(mcpServer, uiHtmlPath);
+		registerWorkflowTools(mcpServer, uiHtmlPath, userId, uiSession);
 	}
 
 	return mcpServer.server;
@@ -138,22 +147,33 @@ async function handleMcpPost(
 	if (sessionId && sessions.has(sessionId)) {
 		transport = sessions.get(sessionId)!;
 	} else if (!sessionId && isInitializeRequest(body)) {
+		const userId = (req.headers["x-user-id"] as string) || undefined;
+		const uiSession = hasUI ? new UiSession(userId) : undefined;
+
 		transport = new StreamableHTTPServerTransport({
 			sessionIdGenerator: () => crypto.randomUUID(),
 			onsessioninitialized: (sid) => {
 				sessions.set(sid, transport);
-				console.log(`[wf-mcp] New session: ${sid}`);
+				if (uiSession) uiSessions.set(sid, uiSession);
+				console.log(
+					`[wf-mcp] New session: ${sid}${userId ? ` (user: ${userId})` : ""}`,
+				);
 			},
 		});
 
 		transport.onclose = () => {
 			if (transport.sessionId) {
+				const sessionUi = uiSessions.get(transport.sessionId);
+				if (sessionUi) {
+					sessionUi.dispose();
+					uiSessions.delete(transport.sessionId);
+				}
 				sessions.delete(transport.sessionId);
 				console.log(`[wf-mcp] Session closed: ${transport.sessionId}`);
 			}
 		};
 
-		const server = createMcpServer();
+		const server = createMcpServer(userId, uiSession);
 		await server.connect(transport);
 	} else {
 		sendJson(res, 400, {
@@ -199,15 +219,51 @@ async function main(): Promise<void> {
 	initDb();
 
 	// Check for UI HTML file
-	uiHtmlPath = path.join(__dirname, "ui", "workflow-builder", "index.html");
-	hasUI = fs.existsSync(uiHtmlPath);
-	if (!hasUI) {
-		uiHtmlPath = undefined;
-		console.warn(
-			"[wf-mcp] UI HTML not found — tools will work without interactive UI",
+	{
+		// In production, `__dirname` points at `dist/`, so this path resolves to the
+		// built, single-file UI (`dist/ui/workflow-builder/index.html`).
+		// In dev (`tsx watch`), `__dirname` points at `src/`, so we prefer an already
+		// built UI at `dist/ui/...` if present.
+		const builtUi = path.join(
+			__dirname,
+			"..",
+			"dist",
+			"ui",
+			"workflow-builder",
+			"index.html",
 		);
-	} else {
-		console.log(`[wf-mcp] UI file: ${uiHtmlPath}`);
+		const uiCandidate = path.join(
+			__dirname,
+			"ui",
+			"workflow-builder",
+			"index.html",
+		);
+
+		if (fs.existsSync(builtUi)) {
+			uiHtmlPath = builtUi;
+			hasUI = true;
+		} else if (fs.existsSync(uiCandidate)) {
+			const html = fs.readFileSync(uiCandidate, "utf-8");
+			// Source UI references TS modules and won't work when served as an MCP app resource.
+			if (html.includes("main.tsx")) {
+				uiHtmlPath = undefined;
+				hasUI = false;
+				console.warn(
+					"[wf-mcp] UI source HTML found, but built UI is missing. Run `pnpm -C services/workflow-mcp-server build:ui` to enable interactive UI.",
+				);
+			} else {
+				uiHtmlPath = uiCandidate;
+				hasUI = true;
+			}
+		} else {
+			uiHtmlPath = undefined;
+			hasUI = false;
+			console.warn(
+				"[wf-mcp] UI HTML not found — tools will work without interactive UI",
+			);
+		}
+
+		if (hasUI && uiHtmlPath) console.log(`[wf-mcp] UI file: ${uiHtmlPath}`);
 	}
 
 	// Dry-run registration to count tools

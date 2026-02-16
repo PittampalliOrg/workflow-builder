@@ -1,10 +1,27 @@
 import type { WorkflowTableEdge, WorkflowTableNode } from "./compile";
-import type { WorkflowSpec } from "./types";
-import { WORKFLOW_SPEC_API_VERSION } from "./types";
+import {
+	JsonValueSchema,
+	WORKFLOW_SPEC_API_VERSION,
+	type JsonValue,
+	type WorkflowSpec,
+} from "./types";
 
 function toArray(next: string | string[] | undefined): string[] {
 	if (!next) return [];
 	return Array.isArray(next) ? next : [next];
+}
+
+function coerceJsonValueRecord(
+	input: Record<string, unknown>,
+): Record<string, JsonValue> {
+	const out: Record<string, JsonValue> = {};
+	for (const [k, v] of Object.entries(input)) {
+		const parsed = JsonValueSchema.safeParse(v);
+		if (parsed.success) {
+			out[k] = parsed.data;
+		}
+	}
+	return out;
 }
 
 function topoSortNodeIds(
@@ -168,7 +185,7 @@ export function decompileGraphToWorkflowSpec(input: {
 		trigger: {
 			id: triggerId,
 			type: triggerTypeRaw.toLowerCase() === "webhook" ? "webhook" : "manual",
-			config: triggerConfig,
+			config: coerceJsonValueRecord(triggerConfig),
 			next:
 				triggerNext.length === 0
 					? undefined

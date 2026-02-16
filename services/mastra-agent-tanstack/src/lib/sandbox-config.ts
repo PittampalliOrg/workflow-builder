@@ -11,9 +11,14 @@
  * Both agent.ts and tool-executor.ts use the shared instance exported here.
  */
 
-import { LocalSandbox } from "@mastra/core/workspace";
-import type { WorkspaceSandbox, CommandResult } from "@mastra/core/workspace";
+import { LocalSandbox, LocalFilesystem } from "@mastra/core/workspace";
+import type {
+	WorkspaceSandbox,
+	WorkspaceFilesystem,
+	CommandResult,
+} from "@mastra/core/workspace";
 import { K8sSandbox } from "./k8s-sandbox";
+import { K8sRemoteFilesystem } from "./k8s-remote-filesystem";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 
@@ -60,11 +65,7 @@ function createLocalSandbox(): LocalSandbox {
 	const override = process.env.SANDBOX_ISOLATION;
 	let isolation: "none" | "bwrap" | "seatbelt";
 
-	if (
-		override === "none" ||
-		override === "bwrap" ||
-		override === "seatbelt"
-	) {
+	if (override === "none" || override === "bwrap" || override === "seatbelt") {
 		console.log(
 			`[sandbox] Local isolation forced via SANDBOX_ISOLATION=${override}`,
 		);
@@ -131,10 +132,18 @@ function createK8sSandbox(): K8sSandbox {
 	});
 }
 
-// ── Export Shared Instance ────────────────────────────────────
+// ── Export Shared Instances ───────────────────────────────────
 
 export const sandbox: WorkspaceSandbox =
 	SANDBOX_BACKEND === "k8s" ? createK8sSandbox() : createLocalSandbox();
+
+export const filesystem: WorkspaceFilesystem =
+	SANDBOX_BACKEND === "k8s"
+		? new K8sRemoteFilesystem({
+				sandbox: sandbox as K8sSandbox,
+				basePath: "/app",
+			})
+		: new LocalFilesystem({ basePath: WORKSPACE_PATH });
 
 console.log(`[sandbox] Backend: ${SANDBOX_BACKEND}`);
 
@@ -150,8 +159,7 @@ export async function executeCommandViaSandbox(
 	opts?: { timeout?: number },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const timeout =
-		opts?.timeout ??
-		parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
+		opts?.timeout ?? parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
 
 	const result: CommandResult = await sandbox.executeCommand!(
 		"sh",

@@ -642,6 +642,8 @@ export const daprInstanceIdAtom = atom<string | null>(null);
 // Approval gate context — set when a workflow reaches awaiting_approval phase
 export const approvalEventNameAtom = atom<string | null>(null);
 export const approvalExecutionIdAtom = atom<string | null>(null);
+// Sticky flag: true after user clicks approve/reject, prevents polling from re-clearing atoms
+export const approvalRespondedAtom = atom<boolean>(false);
 
 // Engine type for the current workflow
 export type WorkflowEngineType = "vercel" | "dapr";

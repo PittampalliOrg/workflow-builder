@@ -26,8 +26,7 @@ import { readFileSync, existsSync } from "node:fs";
 
 // ── K8s In-Cluster Auth ───────────────────────────────────────
 
-const K8S_TOKEN_PATH =
-	"/var/run/secrets/kubernetes.io/serviceaccount/token";
+const K8S_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 const K8S_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 
 const K8S_HOST =
@@ -53,11 +52,7 @@ function readK8sCa(): Buffer | undefined {
 }
 
 /** Low-level K8s API request using node:https. */
-function k8sRequest(
-	method: string,
-	path: string,
-	body?: object,
-): Promise<any> {
+function k8sRequest(method: string, path: string, body?: object): Promise<any> {
 	return new Promise((resolve, reject) => {
 		const token = readK8sToken();
 		const ca = readK8sCa();
@@ -83,10 +78,7 @@ function k8sRequest(
 				res.on("end", () => {
 					try {
 						const parsed = JSON.parse(data);
-						if (
-							res.statusCode &&
-							res.statusCode >= 400
-						) {
+						if (res.statusCode && res.statusCode >= 400) {
 							reject(
 								new Error(
 									`K8s API ${method} ${path} returned ${res.statusCode}: ${parsed.message || data}`,
@@ -150,21 +142,20 @@ export class K8sSandbox extends MastraSandbox {
 		return this._workingDirectory;
 	}
 
+	/** Get the sandbox pod's cluster IP (null if not yet provisioned). */
+	getSandboxPodIp(): string | null {
+		return this.podIp;
+	}
+
 	constructor(options: K8sSandboxOptions = {}) {
 		super({ name: "K8sSandbox", ...options });
 		this.id = `k8s-sandbox-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 		this.templateName =
-			options.templateName ||
-			process.env.SANDBOX_TEMPLATE ||
-			"dapr-agent";
+			options.templateName || process.env.SANDBOX_TEMPLATE || "dapr-agent";
 		this.sandboxNamespace =
-			options.namespace ||
-			process.env.SANDBOX_NAMESPACE ||
-			"agent-sandbox";
+			options.namespace || process.env.SANDBOX_NAMESPACE || "agent-sandbox";
 		this._workingDirectory =
-			options.workingDirectory ||
-			process.env.SANDBOX_WORKSPACE_DIR ||
-			"/app";
+			options.workingDirectory || process.env.SANDBOX_WORKSPACE_DIR || "/app";
 		this._timeout = options.timeout
 			? options.timeout
 			: parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
@@ -225,19 +216,13 @@ export class K8sSandbox extends MastraSandbox {
 
 	async destroy(): Promise<void> {
 		if (this.claimName) {
-			console.log(
-				`[k8s-sandbox] Deleting SandboxClaim "${this.claimName}"`,
-			);
+			console.log(`[k8s-sandbox] Deleting SandboxClaim "${this.claimName}"`);
 			try {
 				const claimPath = `/apis/${CLAIM_API_GROUP}/${CLAIM_API_VERSION}/namespaces/${this.sandboxNamespace}/${CLAIM_PLURAL}/${this.claimName}`;
 				await k8sRequest("DELETE", claimPath);
-				console.log(
-					`[k8s-sandbox] SandboxClaim "${this.claimName}" deleted`,
-				);
+				console.log(`[k8s-sandbox] SandboxClaim "${this.claimName}" deleted`);
 			} catch (err) {
-				console.warn(
-					`[k8s-sandbox] Failed to delete SandboxClaim: ${err}`,
-				);
+				console.warn(`[k8s-sandbox] Failed to delete SandboxClaim: ${err}`);
 			}
 			this.claimName = null;
 			this.sandboxPodName = null;
@@ -270,7 +255,7 @@ export class K8sSandbox extends MastraSandbox {
 		return (
 			"Commands execute in an isolated Kubernetes Agent Sandbox pod. " +
 			`The working directory is ${this._workingDirectory}. ` +
-			"The sandbox has its own filesystem — files written locally are not visible to commands."
+			"File operations and commands share the same sandbox filesystem."
 		);
 	}
 
@@ -282,9 +267,7 @@ export class K8sSandbox extends MastraSandbox {
 		options?: ExecuteCommandOptions,
 	): Promise<CommandResult> {
 		if (!this.podIp) {
-			throw new Error(
-				"K8s sandbox not ready — call start() first",
-			);
+			throw new Error("K8s sandbox not ready — call start() first");
 		}
 
 		// Build the full command string
@@ -308,10 +291,7 @@ export class K8sSandbox extends MastraSandbox {
 		const startTime = Date.now();
 
 		try {
-			const result = await this.callSandboxExecute(
-				wrappedCommand,
-				timeout,
-			);
+			const result = await this.callSandboxExecute(wrappedCommand, timeout);
 			const executionTimeMs = Date.now() - startTime;
 
 			return {
@@ -325,18 +305,13 @@ export class K8sSandbox extends MastraSandbox {
 			};
 		} catch (err) {
 			const executionTimeMs = Date.now() - startTime;
-			const isTimeout =
-				err instanceof Error &&
-				err.message.includes("timeout");
+			const isTimeout = err instanceof Error && err.message.includes("timeout");
 
 			return {
 				command,
 				args,
 				stdout: "",
-				stderr:
-					err instanceof Error
-						? err.message
-						: String(err),
+				stderr: err instanceof Error ? err.message : String(err),
 				exitCode: isTimeout ? 124 : 1,
 				success: false,
 				executionTimeMs,
@@ -356,27 +331,19 @@ export class K8sSandbox extends MastraSandbox {
 		timeoutMs: number,
 	): Promise<{ stdout: string; stderr: string; exit_code: number }> {
 		const controller = new AbortController();
-		const timer = setTimeout(
-			() => controller.abort(),
-			timeoutMs,
-		);
+		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		try {
-			const res = await fetch(
-				`http://${this.podIp}:8888/execute`,
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({ command }),
-					signal: controller.signal,
-				},
-			);
+			const res = await fetch(`http://${this.podIp}:8888/execute`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ command }),
+				signal: controller.signal,
+			});
 
 			if (!res.ok) {
 				const text = await res.text();
-				throw new Error(
-					`Sandbox /execute returned ${res.status}: ${text}`,
-				);
+				throw new Error(`Sandbox /execute returned ${res.status}: ${text}`);
 			}
 
 			return (await res.json()) as {
@@ -413,9 +380,7 @@ export class K8sSandbox extends MastraSandbox {
 					cond.status === "False" &&
 					cond.reason === "Failed"
 				) {
-					throw new Error(
-						`SandboxClaim failed: ${cond.message}`,
-					);
+					throw new Error(`SandboxClaim failed: ${cond.message}`);
 				}
 			}
 
@@ -431,36 +396,37 @@ export class K8sSandbox extends MastraSandbox {
 	/**
 	 * Get the cluster IP of the sandbox's pod.
 	 *
-	 * The warm pool reuses existing pods, so the pod name comes from
-	 * the Sandbox resource's `agents.x-k8s.io/pod-name` annotation,
-	 * NOT from the sandbox name itself.
+	 * Tries three strategies:
+	 * 1. Warm pool pods: `agents.x-k8s.io/pod-name` annotation on the Sandbox resource
+	 * 2. Non-pooled pods: `status.selector` label selector to find the pod
+	 * 3. Fallback: pod named after the sandbox itself
 	 */
 	private async getPodIp(sandboxName: string): Promise<string> {
 		const start = Date.now();
-		while (Date.now() - start < 30_000) {
+		while (Date.now() - start < 60_000) {
 			try {
-				// Read the Sandbox resource to get the actual pod name
 				const sandboxPath = `/apis/agents.x-k8s.io/v1alpha1/namespaces/${this.sandboxNamespace}/sandboxes/${sandboxName}`;
-				const sandboxResource = await k8sRequest(
-					"GET",
-					sandboxPath,
-				);
-				const podName =
-					sandboxResource.metadata?.annotations?.[
-						"agents.x-k8s.io/pod-name"
-					];
+				const sandboxResource = await k8sRequest("GET", sandboxPath);
 
+				// Strategy 1: Warm pool — pod name in annotation
+				const podName =
+					sandboxResource.metadata?.annotations?.["agents.x-k8s.io/pod-name"];
 				if (podName) {
-					// Look up the pod IP
-					const podPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods/${podName}`;
-					const pod = await k8sRequest("GET", podPath);
-					const ip = pod.status?.podIP;
-					if (ip && pod.status?.phase === "Running") {
-						console.log(
-							`[k8s-sandbox] Resolved pod: ${podName} → ${ip}`,
-						);
-						return ip;
-					}
+					const ip = await this.getPodIpByName(podName);
+					if (ip) return ip;
+				}
+
+				// Strategy 2: Label selector from status
+				const selector = sandboxResource.status?.selector;
+				if (selector) {
+					const ip = await this.getPodIpBySelector(selector);
+					if (ip) return ip;
+				}
+
+				// Strategy 3: Pod named after the sandbox
+				{
+					const ip = await this.getPodIpByName(sandboxName);
+					if (ip) return ip;
 				}
 			} catch {
 				// Sandbox or pod may not be ready yet
@@ -468,8 +434,41 @@ export class K8sSandbox extends MastraSandbox {
 			await new Promise((r) => setTimeout(r, 1000));
 		}
 
-		throw new Error(
-			`Could not get IP for sandbox "${sandboxName}" after 30s`,
-		);
+		throw new Error(`Could not get IP for sandbox "${sandboxName}" after 60s`);
+	}
+
+	private async getPodIpByName(podName: string): Promise<string | null> {
+		try {
+			const podPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods/${podName}`;
+			const pod = await k8sRequest("GET", podPath);
+			const ip = pod.status?.podIP;
+			if (ip && pod.status?.phase === "Running") {
+				console.log(`[k8s-sandbox] Resolved pod: ${podName} → ${ip}`);
+				return ip;
+			}
+		} catch {
+			// Pod not found or not ready
+		}
+		return null;
+	}
+
+	private async getPodIpBySelector(selector: string): Promise<string | null> {
+		try {
+			const listPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods?labelSelector=${encodeURIComponent(selector)}`;
+			const podList = await k8sRequest("GET", listPath);
+			for (const pod of podList.items || []) {
+				const ip = pod.status?.podIP;
+				if (ip && pod.status?.phase === "Running") {
+					const name = pod.metadata?.name || "unknown";
+					console.log(
+						`[k8s-sandbox] Resolved pod via selector: ${name} → ${ip}`,
+					);
+					return ip;
+				}
+			}
+		} catch {
+			// List failed
+		}
+		return null;
 	}
 }

@@ -1,18 +1,38 @@
 # Multi-stage Dockerfile for mastra-agent-tanstack
+#
+# IMPORTANT: This service lives under services/mastra-agent-tanstack, but we keep
+# the build context at repo root so it can use the workspace lockfile.
 
 # Stage 1: Builder (all deps + build)
 FROM node:22-alpine AS builder
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install -g pnpm && pnpm install --prod=false
+RUN apk add --no-cache libc6-compat
 
-COPY . ./
+# Install deps using the workspace lockfile for deterministic builds.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY services/mastra-agent-tanstack/package.json services/mastra-agent-tanstack/package.json
+COPY services/mastra-agent-tanstack/tsconfig.json services/mastra-agent-tanstack/tsconfig.json
+RUN npm install -g pnpm && pnpm install --frozen-lockfile --prod=false
+
+# Copy only this service's source (avoid pulling the whole repo into the image).
+COPY services/mastra-agent-tanstack/ services/mastra-agent-tanstack/
 
 ENV NODE_ENV=production
 
 # Build UI single-file HTML then TanStack Start app (Nitro output)
+WORKDIR /app/services/mastra-agent-tanstack
 RUN pnpm run build
+
+# @mastra/core uses pnpm alias packages that Nitro doesn't copy.
+# Create symlinks: alias-name -> real-package (skip if Nitro didn't externalize them)
+RUN if [ -d .output/server/node_modules/@ai-sdk ]; then \
+      cd .output/server/node_modules/@ai-sdk && \
+      ln -sf provider provider-v5 && \
+      ln -sf provider-utils provider-utils-v5 && \
+      cd .. && \
+      ln -sf zod-from-json-schema zod-from-json-schema-v3; \
+    else echo "Skipping symlinks — modules bundled inline"; fi
 
 # Stage 2: Runner
 FROM node:22-alpine AS runner
@@ -31,8 +51,8 @@ RUN apk add --no-cache bubblewrap git && \
     mkdir -p /app/workspace && chown mcpserver:nodejs /app/workspace
 
 # Nitro bundles everything into .output (includes node_modules internally)
-COPY --from=builder --chown=mcpserver:nodejs /app/.output ./.output
-COPY --from=builder --chown=mcpserver:nodejs /app/dist-ui ./dist-ui
+COPY --from=builder --chown=mcpserver:nodejs /app/services/mastra-agent-tanstack/.output ./.output
+COPY --from=builder --chown=mcpserver:nodejs /app/services/mastra-agent-tanstack/dist-ui ./dist-ui
 
 USER mcpserver
 

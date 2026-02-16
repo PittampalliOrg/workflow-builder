@@ -1,9 +1,10 @@
 import type { IntegrationPlugin } from "../registry";
 import { registerIntegration } from "../registry";
 import { DurableAgentIcon } from "./icon";
+import { MastraAgentResult } from "../mastra-agent/result-component";
 
 const durableAgentPlugin: IntegrationPlugin = {
-  type: "durable-agent",
+  type: "durable",
   label: "Durable Agent",
   description: "Durable AI agent with workspace tools, backed by Dapr Workflow for reliability",
 
@@ -42,8 +43,14 @@ const durableAgentPlugin: IntegrationPlugin = {
       outputFields: [
         { field: "text", description: "Agent response text" },
         { field: "toolCalls", description: "Tools called during execution" },
+        { field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
+        { field: "patch", description: "Unified diff patch of all file changes" },
         { field: "usage", description: "Token usage statistics" },
       ],
+      outputConfig: {
+        type: "component",
+        component: MastraAgentResult,
+      },
     },
   ],
 };

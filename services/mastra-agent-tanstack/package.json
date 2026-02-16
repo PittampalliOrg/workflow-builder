@@ -13,6 +13,8 @@
 	},
 	"dependencies": {
 		"@ai-sdk/openai": "^2.0.91",
+		"@ai-sdk/provider-v5": "npm:@ai-sdk/provider@^2.0.0",
+		"@ai-sdk/provider-utils-v5": "npm:@ai-sdk/provider-utils@^3.0.20",
 		"@mastra/core": "^1.4.0",
 		"@modelcontextprotocol/ext-apps": "^1.0.1",
 		"@modelcontextprotocol/sdk": "^1.26.0",

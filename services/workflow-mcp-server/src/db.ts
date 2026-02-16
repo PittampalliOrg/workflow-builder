@@ -8,10 +8,7 @@ import pg from "pg";
 import { nanoid } from "nanoid";
 import { customAlphabet } from "nanoid";
 
-const generateId = customAlphabet(
-	"0123456789abcdefghijklmnopqrstuvwxyz",
-	21,
-);
+const generateId = customAlphabet("0123456789abcdefghijklmnopqrstuvwxyz", 21);
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -77,7 +74,9 @@ export function initDb(): void {
 		throw new Error("DATABASE_URL is required");
 	}
 	if (!process.env.USER_ID) {
-		console.warn("[wf-mcp] USER_ID not set — write operations (create/duplicate) will fail");
+		console.warn(
+			"[wf-mcp] USER_ID not set — write operations (create/duplicate) will fail",
+		);
 	}
 	pool = new pg.Pool({ connectionString: databaseUrl, max: 10 });
 }
@@ -105,8 +104,10 @@ function createDefaultTriggerNode(): NodeData {
 
 // ── Query Functions ────────────────────────────────────────
 
-export async function listWorkflows(): Promise<WorkflowSummary[]> {
-	const userIdFilter = process.env.USER_ID;
+export async function listWorkflows(
+	userId?: string,
+): Promise<WorkflowSummary[]> {
+	const userIdFilter = userId ?? process.env.USER_ID;
 	let query = `
 		SELECT id, name, description, visibility, created_at, updated_at,
 			jsonb_array_length(nodes) as node_count,
@@ -128,9 +129,7 @@ export async function listWorkflows(): Promise<WorkflowSummary[]> {
 	}));
 }
 
-export async function getWorkflow(
-	id: string,
-): Promise<WorkflowRow | null> {
+export async function getWorkflow(id: string): Promise<WorkflowRow | null> {
 	const result = await pool.query(
 		`SELECT id, name, description, nodes, edges, visibility, created_at, updated_at
 		 FROM workflows WHERE id = $1`,
@@ -148,16 +147,23 @@ export async function getWorkflow(
 export async function createWorkflow(
 	name: string,
 	description?: string,
+	userId?: string,
 ): Promise<WorkflowRow> {
 	const id = generateId();
 	const triggerNode = createDefaultTriggerNode();
-	const userIdFilter = process.env.USER_ID;
+	const userIdFilter = userId ?? process.env.USER_ID;
 
 	const result = await pool.query(
 		`INSERT INTO workflows (id, name, description, nodes, edges, user_id)
 		 VALUES ($1, $2, $3, $4::jsonb, '[]'::jsonb, $5)
 		 RETURNING id, name, description, nodes, edges, visibility, created_at, updated_at`,
-		[id, name, description ?? null, JSON.stringify([triggerNode]), userIdFilter ?? null],
+		[
+			id,
+			name,
+			description ?? null,
+			JSON.stringify([triggerNode]),
+			userIdFilter ?? null,
+		],
 	);
 	const r = result.rows[0];
 	return {
@@ -222,15 +228,13 @@ export async function updateWorkflow(
 }
 
 export async function deleteWorkflow(id: string): Promise<boolean> {
-	const result = await pool.query(
-		`DELETE FROM workflows WHERE id = $1`,
-		[id],
-	);
+	const result = await pool.query(`DELETE FROM workflows WHERE id = $1`, [id]);
 	return (result.rowCount ?? 0) > 0;
 }
 
 export async function duplicateWorkflow(
 	id: string,
+	userId?: string,
 ): Promise<WorkflowRow | null> {
 	const source = await getWorkflow(id);
 	if (!source) return null;
@@ -249,8 +253,11 @@ export async function duplicateWorkflow(
 				...node.data,
 				config: node.data.config
 					? (() => {
-							const { integrationId: _, auth: _a, ...rest } =
-								node.data.config as Record<string, unknown>;
+							const {
+								integrationId: _,
+								auth: _a,
+								...rest
+							} = node.data.config as Record<string, unknown>;
 							return rest;
 						})()
 					: undefined,
@@ -268,7 +275,7 @@ export async function duplicateWorkflow(
 	}));
 
 	const newId = generateId();
-	const userIdFilter = process.env.USER_ID;
+	const userIdFilter = userId ?? process.env.USER_ID;
 
 	const result = await pool.query(
 		`INSERT INTO workflows (id, name, description, nodes, edges, visibility, user_id)
@@ -506,6 +513,83 @@ export async function disconnectNodes(
 	}
 }
 
+// ── Execution Query Functions ─────────────────────────────
+
+export type ExecutionRow = {
+	id: string;
+	workflowId: string;
+	status: string;
+	phase: string | null;
+	error: string | null;
+	startedAt: string;
+	completedAt: string | null;
+	duration: string | null;
+};
+
+export type ExecutionLogEntry = {
+	id: string;
+	nodeId: string;
+	nodeName: string;
+	nodeType: string;
+	actionType: string | null;
+	status: string;
+	input: unknown;
+	output: unknown;
+	error: string | null;
+	startedAt: string;
+	completedAt: string | null;
+	duration: string | null;
+};
+
+export async function getExecutionByInstanceId(
+	instanceId: string,
+): Promise<ExecutionRow | null> {
+	const result = await pool.query(
+		`SELECT id, workflow_id, status, phase, error, started_at, completed_at, duration
+		 FROM workflow_executions WHERE dapr_instance_id = $1 LIMIT 1`,
+		[instanceId],
+	);
+	if (result.rows.length === 0) return null;
+	const r = result.rows[0];
+	return {
+		id: r.id,
+		workflowId: r.workflow_id,
+		status: r.status,
+		phase: r.phase,
+		error: r.error,
+		startedAt: r.started_at?.toISOString?.() ?? r.started_at,
+		completedAt: r.completed_at?.toISOString?.() ?? r.completed_at ?? null,
+		duration: r.duration,
+	};
+}
+
+export async function getExecutionLogs(
+	executionId: string,
+): Promise<ExecutionLogEntry[]> {
+	const result = await pool.query(
+		`SELECT id, node_id, node_name, node_type, activity_name, status,
+				input, output, error, started_at, completed_at, duration
+		 FROM workflow_execution_logs
+		 WHERE execution_id = $1
+		 ORDER BY started_at ASC`,
+		[executionId],
+	);
+	return result.rows.map((r) => ({
+		id: r.id,
+		nodeId: r.node_id,
+		nodeName: r.node_name,
+		nodeType: r.node_type,
+		actionType: r.activity_name ?? null,
+		status: r.status,
+		input: r.input,
+		output: r.output,
+		error: r.error,
+		startedAt: r.started_at?.toISOString?.() ?? r.started_at,
+		completedAt: r.completed_at?.toISOString?.() ?? r.completed_at ?? null,
+		duration: r.duration,
+	}));
+}
+
 export async function listAvailableActions(
 	search?: string,
 ): Promise<ActionSummary[]> {
@@ -546,9 +630,14 @@ export async function listAvailableActions(
 		>;
 		for (const [key, action] of Object.entries(actions)) {
 			const slug = `${row.name}/${key}`;
-			if (search && !slug.toLowerCase().includes(search.toLowerCase()) &&
-				!(action.displayName ?? "").toLowerCase().includes(search.toLowerCase()) &&
-				!(action.description ?? "").toLowerCase().includes(search.toLowerCase())) {
+			if (
+				search &&
+				!slug.toLowerCase().includes(search.toLowerCase()) &&
+				!(action.displayName ?? "")
+					.toLowerCase()
+					.includes(search.toLowerCase()) &&
+				!(action.description ?? "").toLowerCase().includes(search.toLowerCase())
+			) {
 				continue;
 			}
 			results.push({
