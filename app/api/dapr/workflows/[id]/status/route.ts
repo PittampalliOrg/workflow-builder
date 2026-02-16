@@ -124,7 +124,10 @@ export async function GET(
         progress,
         ...(errorMessage ? { error: errorMessage } : {}),
         ...(localStatus === "success" || localStatus === "error"
-          ? { completedAt: new Date() }
+          ? {
+              completedAt: new Date(),
+              output: orchestratorStatus.outputs || null,
+            }
           : {}),
       })
       .where(eq(workflowExecutions.id, id));

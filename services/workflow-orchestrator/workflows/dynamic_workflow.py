@@ -34,6 +34,7 @@ from activities.log_external_event import (
     log_approval_timeout,
 )
 from activities.log_node_execution import log_node_start, log_node_complete
+from activities.persist_results_to_db import persist_results_to_db
 
 logger = logging.getLogger(__name__)
 
@@ -952,6 +953,16 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         # Convert node_outputs to simple outputs dict
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
 
+        # Persist final results to PostgreSQL (belt-and-suspenders)
+        if db_execution_id:
+            yield ctx.call_activity(persist_results_to_db, input={
+                "dbExecutionId": db_execution_id,
+                "outputs": outputs,
+                "success": True,
+                "durationMs": duration_ms,
+                "_otel": otel_ctx,
+            })
+
         return {
             "success": True,
             "outputs": outputs,
@@ -973,6 +984,20 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         }))
 
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
+
+        # Persist failure results to PostgreSQL (belt-and-suspenders)
+        if db_execution_id:
+            try:
+                yield ctx.call_activity(persist_results_to_db, input={
+                    "dbExecutionId": db_execution_id,
+                    "outputs": outputs,
+                    "success": False,
+                    "error": error_message,
+                    "durationMs": duration_ms,
+                    "_otel": otel_ctx,
+                })
+            except Exception as persist_err:
+                logger.error(f"[Dynamic Workflow] Failed to persist error results: {persist_err}")
 
         return {
             "success": False,
@@ -1016,15 +1041,12 @@ def process_agent_child_workflow(
     timeout_minutes = int(resolved_config.get("timeoutMinutes", 30) or 30)
 
     if action_type == "mastra/execute":
-        from activities.call_agent_service import call_mastra_execute_plan
-        call_activity_fn = call_mastra_execute_plan
-    elif action_type.startswith("durable/"):
+        from activities.call_agent_service import call_durable_execute_plan
+        call_activity_fn = call_durable_execute_plan
+    else:
+        # All agent/* and durable/* action types route to durable-agent
         from activities.call_agent_service import call_durable_agent_run
         call_activity_fn = call_durable_agent_run
-    else:
-        # All agent/* action types route to mastra-agent-tanstack
-        from activities.call_agent_service import call_mastra_agent_run
-        call_activity_fn = call_mastra_agent_run
 
     activity_input = {
         "prompt": prompt,
