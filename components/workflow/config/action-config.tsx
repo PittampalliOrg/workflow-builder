@@ -42,6 +42,7 @@ import { SchemaBuilder, type SchemaField } from "./schema-builder";
 type ActionConfigProps = {
 	config: Record<string, unknown>;
 	onUpdateConfig: (key: string, value: string) => void;
+	onBatchUpdateConfig?: (defaults: Record<string, string>) => void;
 	disabled: boolean;
 	isOwner?: boolean;
 };
@@ -285,15 +286,27 @@ function useCategoryData(apPieces: ApIntegration[]) {
 			string,
 			Array<{ id: string; label: string }>
 		> = {
-			System: SYSTEM_ACTIONS,
+			System: [...SYSTEM_ACTIONS],
 		};
 
 		// Each piece displayName is a category; each action is an item.
 		for (const piece of apPieces) {
-			allCategories[piece.label] = piece.actions.map((action) => ({
+			const mapped = piece.actions.map((action) => ({
 				id: `${piece.type}/${action.slug}`,
 				label: action.label,
 			}));
+			const existing = allCategories[piece.label];
+			if (existing) {
+				// Merge new actions, avoiding duplicates by id
+				const existingIds = new Set(existing.map((a) => a.id));
+				for (const action of mapped) {
+					if (!existingIds.has(action.id)) {
+						existing.push(action);
+					}
+				}
+			} else {
+				allCategories[piece.label] = mapped;
+			}
 		}
 
 		return allCategories;
@@ -366,6 +379,7 @@ function getExternalIdFromAuthTemplate(
 export function ActionConfig({
 	config,
 	onUpdateConfig,
+	onBatchUpdateConfig,
 	disabled,
 	isOwner = true,
 }: ActionConfigProps) {
@@ -419,6 +433,22 @@ export function ActionConfig({
 	// Adapter for plugin config components that expect (key, value: unknown)
 	const handlePluginUpdateConfig = (key: string, value: unknown) => {
 		onUpdateConfig(key, String(value));
+	};
+
+	// Batch update for default values — merges all keys in one call to avoid
+	// stale-state race conditions when multiple defaults are applied at once.
+	const handleBatchUpdateConfig = (defaults: Record<string, unknown>) => {
+		if (onBatchUpdateConfig) {
+			const stringDefaults: Record<string, string> = {};
+			for (const [key, value] of Object.entries(defaults)) {
+				stringDefaults[key] = String(value);
+			}
+			onBatchUpdateConfig(stringDefaults);
+		} else {
+			for (const [key, value] of Object.entries(defaults)) {
+				onUpdateConfig(key, String(value));
+			}
+		}
 	};
 
 	// Get dynamic config fields for plugin actions
@@ -657,6 +687,7 @@ export function ActionConfig({
 					config={config}
 					disabled={disabled}
 					fields={pieceAction.configFields}
+					onBatchUpdateConfig={handleBatchUpdateConfig}
 					onUpdateConfig={handlePluginUpdateConfig}
 				/>
 			)}

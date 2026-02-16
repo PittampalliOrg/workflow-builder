@@ -547,6 +547,18 @@ export const PanelInner = () => {
 		}
 	};
 
+	// Batch update config — merges all key-value pairs into config in a single
+	// updateNodeData call, avoiding stale-state race conditions.
+	const handleBatchUpdateConfig = (defaults: Record<string, string>) => {
+		if (selectedNode) {
+			const newConfig: Record<string, unknown> = {
+				...selectedNode.data.config,
+				...defaults,
+			};
+			updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
+		}
+	};
+
 	const handleUpdateWorkspaceName = async (newName: string) => {
 		setCurrentWorkflowName(newName);
 
@@ -968,6 +980,7 @@ export const PanelInner = () => {
 									config={selectedNode.data.config || {}}
 									disabled={isGenerating || !isOwner}
 									isOwner={isOwner}
+									onBatchUpdateConfig={handleBatchUpdateConfig}
 									onUpdateConfig={handleUpdateConfig}
 								/>
 							) : null}

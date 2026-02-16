@@ -105,4 +105,8 @@ export const SECRET_MAPPINGS: Record<string, Record<string, string>> = {
 	fal: { FAL_KEY: "FAL-API-KEY" },
 	webflow: { WEBFLOW_API_TOKEN: "WEBFLOW-API-TOKEN" },
 	superagent: { SUPERAGENT_API_KEY: "SUPERAGENT-API-KEY" },
+	system: {
+		OPENAI_API_KEY: "OPENAI-API-KEY",
+		ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY",
+	},
 };
