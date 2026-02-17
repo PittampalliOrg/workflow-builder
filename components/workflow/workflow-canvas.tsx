@@ -43,6 +43,8 @@ import {
 	type WorkflowNode,
 	type WorkflowNodeType,
 } from "@/lib/workflow-store";
+import type { DagreLayoutOptions } from "@/lib/workflow-layout/dagre-layout";
+import { layoutWorkflowNodes } from "@/lib/workflow-layout/dagre-layout";
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
 import { ActionNode } from "./nodes/action-node";
@@ -229,6 +231,51 @@ export function WorkflowCanvas() {
 			window.removeEventListener("keydown", handleKeyDown);
 		};
 	}, [fitView]);
+
+	const autoLayoutPreferenceKey = useMemo(
+		() => `workflow-builder:auto-layout:${currentWorkflowId ?? "homepage"}`,
+		[currentWorkflowId],
+	);
+
+	const handleAutoArrange = useCallback(
+		(
+			layoutOptions: Pick<
+				DagreLayoutOptions,
+				"strategy" | "direction" | "maxColumns"
+			>,
+		) => {
+			const flowWrapper = document.querySelector(".react-flow");
+			const wrapperWidth = flowWrapper?.getBoundingClientRect().width;
+			const viewport = getViewport();
+			const viewportWidth =
+				wrapperWidth && viewport.zoom > 0
+					? wrapperWidth / viewport.zoom
+					: undefined;
+
+			const nextNodes = layoutWorkflowNodes(nodes, edges, {
+				strategy: layoutOptions.strategy,
+				direction: layoutOptions.direction,
+				viewportWidth,
+				maxColumns: layoutOptions.maxColumns ?? 3,
+			});
+			setNodes(nextNodes);
+			setHasUnsavedChanges(true);
+			triggerAutosave({ immediate: true });
+
+			setTimeout(() => {
+				fitView({ padding: 0.2, duration: 300, maxZoom: 1 });
+			}, 0);
+		},
+		[
+			nodes,
+			edges,
+			setNodes,
+			setHasUnsavedChanges,
+			triggerAutosave,
+			fitView,
+			getViewport,
+		],
+	);
 
 	// Auto-focus on the currently running node during execution
 	const prevRunningNodeIdRef = useRef<string | null>(null);
@@ -621,7 +668,10 @@ export function WorkflowCanvas() {
 					className="workflow-controls-panel border-none bg-transparent p-0"
 					position="bottom-left"
 				>
-					<Controls />
+					<Controls
+						layoutPreferenceKey={autoLayoutPreferenceKey}
+						onAutoArrange={isGenerating ? undefined : handleAutoArrange}
+					/>
 				</Panel>
 				{showMinimap && (
 					<MiniMap bgColor="var(--sidebar)" nodeStrokeColor="var(--border)" />

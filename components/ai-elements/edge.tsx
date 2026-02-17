@@ -34,8 +34,13 @@ const Temporary = ({
       id={id}
       path={edgePath}
       style={{
-        stroke: selected ? "var(--muted-foreground)" : "var(--border)",
-        strokeDasharray: "5, 5",
+        stroke: selected
+          ? "color-mix(in srgb, var(--primary) 85%, white 15%)"
+          : "color-mix(in srgb, var(--primary) 55%, var(--muted-foreground) 45%)",
+        strokeDasharray: "8, 6",
+        strokeWidth: selected ? 2.8 : 2.2,
+        strokeLinecap: "round",
+        filter: "drop-shadow(0 0 4px color-mix(in srgb, var(--primary) 35%, transparent))",
       }}
     />
   );
@@ -126,18 +131,41 @@ const Animated = ({ id, source, target, style, selected }: EdgeProps) => {
     targetPosition: targetPos,
   });
 
+  const edgeStroke = selected
+    ? "color-mix(in srgb, var(--primary) 88%, white 12%)"
+    : "color-mix(in srgb, var(--primary) 62%, var(--muted-foreground) 38%)";
+  const glowStroke = selected
+    ? "color-mix(in srgb, var(--primary) 80%, white 20%)"
+    : "color-mix(in srgb, var(--primary) 70%, transparent 30%)";
+
   return (
-    <BaseEdge 
-      id={id} 
-      path={edgePath} 
-      style={{
-        ...style,
-        stroke: selected ? "var(--muted-foreground)" : "var(--border)",
-        strokeWidth: 2,
-        animation: "dashdraw 0.5s linear infinite",
-        strokeDasharray: 5,
-      }}
-    />
+    <>
+      <BaseEdge
+        id={`${id}-glow`}
+        path={edgePath}
+        style={{
+          stroke: glowStroke,
+          strokeWidth: selected ? 8 : 6,
+          opacity: selected ? 0.38 : 0.24,
+          filter:
+            "drop-shadow(0 0 6px color-mix(in srgb, var(--primary) 40%, transparent))",
+          pointerEvents: "none",
+        }}
+      />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={{
+          ...style,
+          stroke: edgeStroke,
+          strokeWidth: selected ? 3.2 : 2.6,
+          strokeDasharray: selected ? "10 6" : "8 6",
+          animation: "dashdraw 0.7s linear infinite",
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+        }}
+      />
+    </>
   );
 };
 
