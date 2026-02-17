@@ -1191,6 +1191,313 @@ const mcpServerApi = {
 		),
 };
 
+// ── Resource Library API ─────────────────────────────────────
+
+export type ResourcePromptData = {
+	id: string;
+	name: string;
+	description: string | null;
+	systemPrompt: string;
+	userPrompt: string | null;
+	promptMode: "system" | "system+user";
+	metadata: Record<string, unknown> | null;
+	version: number;
+	isEnabled: boolean;
+	userId: string;
+	projectId: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ResourceSchemaData = {
+	id: string;
+	name: string;
+	description: string | null;
+	schemaType: "json-schema";
+	schema: unknown;
+	metadata: Record<string, unknown> | null;
+	version: number;
+	isEnabled: boolean;
+	userId: string;
+	projectId: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ResourceModelProfileData = {
+	id: string;
+	name: string;
+	description: string | null;
+	model: AgentModelSpec;
+	defaultOptions: Record<string, unknown> | null;
+	maxTurns: number | null;
+	timeoutMinutes: number | null;
+	metadata: Record<string, unknown> | null;
+	version: number;
+	isEnabled: boolean;
+	userId: string;
+	projectId: string | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
+export type ProfileWarningSeverity = "info" | "warning" | "error";
+
+export type ProfileCompatibilityWarningData = {
+	code: string;
+	severity: ProfileWarningSeverity;
+	message: string;
+	field?: string;
+	suggestedAction?: string;
+};
+
+export type AgentProfileSnapshotData = {
+	agentType: string;
+	instructions: string;
+	model: AgentModelSpec;
+	tools: AgentToolRef[];
+	maxTurns: number;
+	timeoutMinutes: number;
+	defaultOptions: Record<string, unknown> | null;
+	memoryConfig: Record<string, unknown> | null;
+};
+
+export type AgentProfileListItemData = {
+	id: string;
+	slug: string;
+	name: string;
+	description: string | null;
+	category: string | null;
+	isEnabled: boolean;
+	sortOrder: number;
+	sourceRepoUrl: string | null;
+	sourcePath: string | null;
+	defaultVersion: number;
+	snapshotPreview: {
+		agentType: string;
+		modelId: string;
+		toolCount: number;
+		maxTurns: number;
+		timeoutMinutes: number;
+	};
+	warnings: ProfileCompatibilityWarningData[];
+};
+
+export type AgentProfileDetailData = {
+	template: {
+		id: string;
+		slug: string;
+		name: string;
+		description: string | null;
+		category: string | null;
+		sourceRepoUrl: string | null;
+		sourcePath: string | null;
+		isEnabled: boolean;
+		sortOrder: number;
+		createdAt: string;
+		updatedAt: string;
+	};
+	templateVersion: {
+		id: string;
+		templateId: string;
+		version: number;
+		instructionFacetVersionId: string | null;
+		modelFacetVersionId: string | null;
+		toolPolicyFacetVersionId: string | null;
+		memoryFacetVersionId: string | null;
+		executionFacetVersionId: string | null;
+		interactionFacetVersionId: string | null;
+		outputFacetVersionId: string | null;
+		capabilityFacetVersionId: string | null;
+		compatibility: ProfileCompatibilityWarningData[] | null;
+		notes: string | null;
+		isDefault: boolean;
+		createdAt: string;
+		updatedAt: string;
+	};
+	snapshot: AgentProfileSnapshotData;
+	warnings: ProfileCompatibilityWarningData[];
+	examples: Array<{
+		id: string;
+		templateId: string;
+		label: string;
+		sourceRepoUrl: string;
+		sourcePath: string;
+		notes: string | null;
+		createdAt: string;
+		updatedAt: string;
+	}>;
+};
+
+export type AgentProfilePreviewData = {
+	templateId: string;
+	templateVersion: number;
+	snapshot: AgentProfileSnapshotData;
+	warnings: ProfileCompatibilityWarningData[];
+};
+
+export type ModelCatalogModelData = {
+	id: string;
+	providerId: string;
+	providerName: string;
+	iconKey: string;
+	modelKey: string;
+	modelId: string;
+	displayName: string;
+	description: string | null;
+};
+
+const resourceApi = {
+	models: {
+		list: () =>
+			apiCall<{ data: ModelCatalogModelData[] }>("/api/resources/models").then(
+				(res) => res.data,
+			),
+	},
+	prompts: {
+		list: () =>
+			apiCall<{ data: ResourcePromptData[] }>("/api/resources/prompts").then(
+				(res) => res.data,
+			),
+		get: (id: string) =>
+			apiCall<ResourcePromptData>(`/api/resources/prompts/${id}`),
+		create: (
+			body: Omit<
+				ResourcePromptData,
+				"id" | "version" | "userId" | "createdAt" | "updatedAt"
+			>,
+		) =>
+			apiCall<ResourcePromptData>("/api/resources/prompts", {
+				method: "POST",
+				body: JSON.stringify(body),
+			}),
+		update: (
+			id: string,
+			body: Partial<
+				Omit<
+					ResourcePromptData,
+					"id" | "version" | "userId" | "createdAt" | "updatedAt" | "projectId"
+				>
+			>,
+		) =>
+			apiCall<ResourcePromptData>(`/api/resources/prompts/${id}`, {
+				method: "PATCH",
+				body: JSON.stringify(body),
+			}),
+		delete: (id: string) =>
+			apiCall<{ success: boolean }>(`/api/resources/prompts/${id}`, {
+				method: "DELETE",
+			}),
+	},
+	schemas: {
+		list: () =>
+			apiCall<{ data: ResourceSchemaData[] }>("/api/resources/schemas").then(
+				(res) => res.data,
+			),
+		get: (id: string) =>
+			apiCall<ResourceSchemaData>(`/api/resources/schemas/${id}`),
+		create: (
+			body: Omit<
+				ResourceSchemaData,
+				"id" | "version" | "userId" | "createdAt" | "updatedAt"
+			>,
+		) =>
+			apiCall<ResourceSchemaData>("/api/resources/schemas", {
+				method: "POST",
+				body: JSON.stringify(body),
+			}),
+		update: (
+			id: string,
+			body: Partial<
+				Omit<
+					ResourceSchemaData,
+					"id" | "version" | "userId" | "createdAt" | "updatedAt" | "projectId"
+				>
+			>,
+		) =>
+			apiCall<ResourceSchemaData>(`/api/resources/schemas/${id}`, {
+				method: "PATCH",
+				body: JSON.stringify(body),
+			}),
+		delete: (id: string) =>
+			apiCall<{ success: boolean }>(`/api/resources/schemas/${id}`, {
+				method: "DELETE",
+			}),
+	},
+	modelProfiles: {
+		list: () =>
+			apiCall<{ data: ResourceModelProfileData[] }>(
+				"/api/resources/model-profiles",
+			).then((res) => res.data),
+		get: (id: string) =>
+			apiCall<ResourceModelProfileData>(`/api/resources/model-profiles/${id}`),
+		create: (
+			body: Omit<
+				ResourceModelProfileData,
+				"id" | "version" | "userId" | "createdAt" | "updatedAt"
+			>,
+		) =>
+			apiCall<ResourceModelProfileData>("/api/resources/model-profiles", {
+				method: "POST",
+				body: JSON.stringify(body),
+			}),
+		update: (
+			id: string,
+			body: Partial<
+				Omit<
+					ResourceModelProfileData,
+					"id" | "version" | "userId" | "createdAt" | "updatedAt" | "projectId"
+				>
+			>,
+		) =>
+			apiCall<ResourceModelProfileData>(`/api/resources/model-profiles/${id}`, {
+				method: "PATCH",
+				body: JSON.stringify(body),
+			}),
+		delete: (id: string) =>
+			apiCall<{ success: boolean }>(`/api/resources/model-profiles/${id}`, {
+				method: "DELETE",
+			}),
+	},
+	agentProfiles: {
+		list: () =>
+			apiCall<{ data: AgentProfileListItemData[] }>(
+				"/api/resources/agent-profiles",
+			).then((res) => res.data),
+		get: (id: string, version?: number) => {
+			const query =
+				version === undefined
+					? ""
+					: `?${new URLSearchParams({ version: String(version) }).toString()}`;
+			return apiCall<AgentProfileDetailData>(
+				`/api/resources/agent-profiles/${id}${query}`,
+			);
+		},
+		preview: (id: string, body?: { version?: number }) =>
+			apiCall<AgentProfilePreviewData>(
+				`/api/resources/agent-profiles/${id}/preview`,
+				{
+					method: "POST",
+					body: JSON.stringify(body ?? {}),
+				},
+			),
+		apply: (
+			id: string,
+			body: {
+				agentId: string;
+				version?: number;
+			},
+		) =>
+			apiCall<AgentProfilePreviewData>(
+				`/api/resources/agent-profiles/${id}/apply`,
+				{
+					method: "POST",
+					body: JSON.stringify(body),
+				},
+			),
+	},
+};
+
 // ── Agent API ─────────────────────────────────────────────────
 
 export type AgentModelSpec = {
@@ -1218,6 +1525,14 @@ export type AgentData = {
 	metadata: Record<string, unknown> | null;
 	isDefault: boolean;
 	isEnabled: boolean;
+	instructionsPresetId: string | null;
+	instructionsPresetVersion: number | null;
+	schemaPresetId: string | null;
+	schemaPresetVersion: number | null;
+	modelProfileId: string | null;
+	modelProfileVersion: number | null;
+	agentProfileTemplateId: string | null;
+	agentProfileTemplateVersion: number | null;
 	userId: string;
 	projectId: string | null;
 	createdAt: string;
@@ -1236,6 +1551,10 @@ export type CreateAgentBody = {
 	defaultOptions?: Record<string, unknown>;
 	memoryConfig?: Record<string, unknown>;
 	metadata?: Record<string, unknown>;
+	instructionsPresetId?: string | null;
+	schemaPresetId?: string | null;
+	modelProfileId?: string | null;
+	agentProfileTemplateId?: string | null;
 	isDefault?: boolean;
 	isEnabled?: boolean;
 	projectId?: string;
@@ -1247,8 +1566,7 @@ const agentApi = {
 	list: () =>
 		apiCall<{ data: AgentData[] }>("/api/agents").then((res) => res.data),
 
-	get: (agentId: string) =>
-		apiCall<AgentData>(`/api/agents/${agentId}`),
+	get: (agentId: string) => apiCall<AgentData>(`/api/agents/${agentId}`),
 
 	create: (body: CreateAgentBody) =>
 		apiCall<AgentData>("/api/agents", {
@@ -1285,6 +1603,7 @@ export const api = {
 	observability: observabilityApi,
 	oauthApp: oauthAppApi,
 	piece: pieceApi,
+	resource: resourceApi,
 	secrets: secretsApi,
 	user: userApi,
 	workflow: workflowApi,

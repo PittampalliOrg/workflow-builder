@@ -18,9 +18,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 		const [source] = await db
 			.select()
 			.from(agents)
-			.where(
-				and(eq(agents.id, agentId), eq(agents.userId, session.user.id)),
-			)
+			.where(and(eq(agents.id, agentId), eq(agents.userId, session.user.id)))
 			.limit(1);
 
 		if (!source) {
@@ -41,6 +39,14 @@ export async function POST(request: Request, { params }: RouteParams) {
 				defaultOptions: source.defaultOptions,
 				memoryConfig: source.memoryConfig,
 				metadata: source.metadata,
+				instructionsPresetId: source.instructionsPresetId,
+				instructionsPresetVersion: source.instructionsPresetVersion,
+				schemaPresetId: source.schemaPresetId,
+				schemaPresetVersion: source.schemaPresetVersion,
+				modelProfileId: source.modelProfileId,
+				modelProfileVersion: source.modelProfileVersion,
+				agentProfileTemplateId: source.agentProfileTemplateId,
+				agentProfileTemplateVersion: source.agentProfileTemplateVersion,
 				isDefault: false,
 				isEnabled: source.isEnabled,
 				userId: session.user.id,
@@ -59,7 +65,10 @@ export async function POST(request: Request, { params }: RouteParams) {
 	} catch (error) {
 		console.error("[agents] duplicate error:", error);
 		return NextResponse.json(
-			{ error: error instanceof Error ? error.message : "Failed to duplicate agent" },
+			{
+				error:
+					error instanceof Error ? error.message : "Failed to duplicate agent",
+			},
 			{ status: 500 },
 		);
 	}

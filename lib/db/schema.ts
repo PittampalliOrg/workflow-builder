@@ -540,6 +540,750 @@ export const apiKeys = pgTable("api_keys", {
 	lastUsedAt: timestamp("last_used_at"),
 });
 
+// ============================================================================
+// Reusable Resource Library
+// ============================================================================
+
+export type ModelProviderIconKey = "openai" | "anthropic" | "google" | "meta";
+
+export const modelProviders = pgTable(
+	"model_providers",
+	{
+		id: text("id").primaryKey(),
+		name: text("name").notNull(),
+		iconKey: text("icon_key").notNull().$type<ModelProviderIconKey>(),
+		description: text("description"),
+		sortOrder: integer("sort_order").notNull().default(0),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		nameUnique: unique("uq_model_providers_name").on(table.name),
+		enabledIdx: index("idx_model_providers_enabled").on(table.isEnabled),
+		sortIdx: index("idx_model_providers_sort_order").on(table.sortOrder),
+	}),
+);
+
+export const modelCatalog = pgTable(
+	"model_catalog",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		providerId: text("provider_id")
+			.notNull()
+			.references(() => modelProviders.id, { onDelete: "cascade" }),
+		modelKey: text("model_key").notNull(),
+		displayName: text("display_name").notNull(),
+		description: text("description"),
+		sortOrder: integer("sort_order").notNull().default(0),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		providerModelUnique: unique("uq_model_catalog_provider_model").on(
+			table.providerId,
+			table.modelKey,
+		),
+		enabledIdx: index("idx_model_catalog_enabled").on(table.isEnabled),
+		providerSortIdx: index("idx_model_catalog_provider_sort").on(
+			table.providerId,
+			table.sortOrder,
+		),
+	}),
+);
+
+export type ProfileFacetKind =
+	| "instruction"
+	| "model"
+	| "tool_policy"
+	| "memory"
+	| "execution"
+	| "interaction"
+	| "output"
+	| "capability";
+
+export type ProfileWarningSeverity = "info" | "warning" | "error";
+
+export type ProfileCompatibilityWarning = {
+	code: string;
+	severity: ProfileWarningSeverity;
+	message: string;
+	field?: string;
+	suggestedAction?: string;
+};
+
+export const agentInstructionFacets = pgTable(
+	"agent_instruction_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_instruction_facets_enabled").on(
+			table.isEnabled,
+		),
+		sortIdx: index("idx_agent_instruction_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentInstructionFacetVersions = pgTable(
+	"agent_instruction_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentInstructionFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_instruction_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_instruction_facet_versions_facet").on(
+			table.facetId,
+		),
+		defaultIdx: index("idx_agent_instruction_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentModelFacets = pgTable(
+	"agent_model_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_model_facets_enabled").on(table.isEnabled),
+		sortIdx: index("idx_agent_model_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentModelFacetVersions = pgTable(
+	"agent_model_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentModelFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_model_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_model_facet_versions_facet").on(table.facetId),
+		defaultIdx: index("idx_agent_model_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentToolPolicyFacets = pgTable(
+	"agent_tool_policy_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_tool_policy_facets_enabled").on(
+			table.isEnabled,
+		),
+		sortIdx: index("idx_agent_tool_policy_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentToolPolicyFacetVersions = pgTable(
+	"agent_tool_policy_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentToolPolicyFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_tool_policy_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_tool_policy_facet_versions_facet").on(
+			table.facetId,
+		),
+		defaultIdx: index("idx_agent_tool_policy_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentMemoryFacets = pgTable(
+	"agent_memory_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_memory_facets_enabled").on(table.isEnabled),
+		sortIdx: index("idx_agent_memory_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentMemoryFacetVersions = pgTable(
+	"agent_memory_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentMemoryFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_memory_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_memory_facet_versions_facet").on(table.facetId),
+		defaultIdx: index("idx_agent_memory_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentExecutionFacets = pgTable(
+	"agent_execution_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_execution_facets_enabled").on(table.isEnabled),
+		sortIdx: index("idx_agent_execution_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentExecutionFacetVersions = pgTable(
+	"agent_execution_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentExecutionFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_execution_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_execution_facet_versions_facet").on(
+			table.facetId,
+		),
+		defaultIdx: index("idx_agent_execution_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentInteractionFacets = pgTable(
+	"agent_interaction_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_interaction_facets_enabled").on(
+			table.isEnabled,
+		),
+		sortIdx: index("idx_agent_interaction_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentInteractionFacetVersions = pgTable(
+	"agent_interaction_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentInteractionFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_interaction_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_interaction_facet_versions_facet").on(
+			table.facetId,
+		),
+		defaultIdx: index("idx_agent_interaction_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentOutputFacets = pgTable(
+	"agent_output_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_output_facets_enabled").on(table.isEnabled),
+		sortIdx: index("idx_agent_output_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentOutputFacetVersions = pgTable(
+	"agent_output_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentOutputFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_output_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_output_facet_versions_facet").on(table.facetId),
+		defaultIdx: index("idx_agent_output_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentCapabilityFacets = pgTable(
+	"agent_capability_facets",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_capability_facets_enabled").on(
+			table.isEnabled,
+		),
+		sortIdx: index("idx_agent_capability_facets_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentCapabilityFacetVersions = pgTable(
+	"agent_capability_facet_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		facetId: text("facet_id")
+			.notNull()
+			.references(() => agentCapabilityFacets.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		config: jsonb("config").notNull().$type<Record<string, unknown>>(),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		isDefault: boolean("is_default").notNull().default(false),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		facetVersionUnique: unique("uq_agent_capability_facet_version").on(
+			table.facetId,
+			table.version,
+		),
+		facetIdx: index("idx_agent_capability_facet_versions_facet").on(
+			table.facetId,
+		),
+		defaultIdx: index("idx_agent_capability_facet_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentProfileTemplates = pgTable(
+	"agent_profile_templates",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		category: text("category"),
+		sourceRepoUrl: text("source_repo_url"),
+		sourcePath: text("source_path"),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		sortOrder: integer("sort_order").notNull().default(0),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		enabledIdx: index("idx_agent_profile_templates_enabled").on(
+			table.isEnabled,
+		),
+		sortIdx: index("idx_agent_profile_templates_sort").on(table.sortOrder),
+	}),
+);
+
+export const agentProfileTemplateVersions = pgTable(
+	"agent_profile_template_versions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		templateId: text("template_id")
+			.notNull()
+			.references(() => agentProfileTemplates.id, { onDelete: "cascade" }),
+		version: integer("version").notNull(),
+		instructionFacetVersionId: text("instruction_facet_version_id").references(
+			() => agentInstructionFacetVersions.id,
+		),
+		modelFacetVersionId: text("model_facet_version_id").references(
+			() => agentModelFacetVersions.id,
+		),
+		toolPolicyFacetVersionId: text("tool_policy_facet_version_id").references(
+			() => agentToolPolicyFacetVersions.id,
+		),
+		memoryFacetVersionId: text("memory_facet_version_id").references(
+			() => agentMemoryFacetVersions.id,
+		),
+		executionFacetVersionId: text("execution_facet_version_id").references(
+			() => agentExecutionFacetVersions.id,
+		),
+		interactionFacetVersionId: text("interaction_facet_version_id").references(
+			() => agentInteractionFacetVersions.id,
+		),
+		outputFacetVersionId: text("output_facet_version_id").references(
+			() => agentOutputFacetVersions.id,
+		),
+		capabilityFacetVersionId: text("capability_facet_version_id").references(
+			() => agentCapabilityFacetVersions.id,
+		),
+		compatibility:
+			jsonb("compatibility").$type<ProfileCompatibilityWarning[]>(),
+		notes: text("notes"),
+		isDefault: boolean("is_default").notNull().default(false),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		templateVersionUnique: unique("uq_agent_profile_template_version").on(
+			table.templateId,
+			table.version,
+		),
+		templateIdx: index("idx_agent_profile_template_versions_template").on(
+			table.templateId,
+		),
+		defaultIdx: index("idx_agent_profile_template_versions_default").on(
+			table.isDefault,
+		),
+	}),
+);
+
+export const agentProfileTemplateExamples = pgTable(
+	"agent_profile_template_examples",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		templateId: text("template_id")
+			.notNull()
+			.references(() => agentProfileTemplates.id, { onDelete: "cascade" }),
+		label: text("label").notNull(),
+		sourceRepoUrl: text("source_repo_url").notNull(),
+		sourcePath: text("source_path").notNull(),
+		notes: text("notes"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+);
+
+export type PromptMode = "system" | "system+user";
+
+export const resourcePrompts = pgTable(
+	"resource_prompts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		name: text("name").notNull(),
+		description: text("description"),
+		systemPrompt: text("system_prompt").notNull(),
+		userPrompt: text("user_prompt"),
+		promptMode: text("prompt_mode")
+			.notNull()
+			.default("system")
+			.$type<PromptMode>(),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		version: integer("version").notNull().default(1),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userProjectIdx: index("idx_resource_prompts_user_project").on(
+			table.userId,
+			table.projectId,
+		),
+		enabledIdx: index("idx_resource_prompts_enabled").on(table.isEnabled),
+		userProjectNameUnique: unique("uq_resource_prompts_user_project_name").on(
+			table.userId,
+			table.projectId,
+			table.name,
+		),
+	}),
+);
+
+export type SchemaType = "json-schema";
+
+export const resourceSchemas = pgTable(
+	"resource_schemas",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		name: text("name").notNull(),
+		description: text("description"),
+		schemaType: text("schema_type")
+			.notNull()
+			.default("json-schema")
+			.$type<SchemaType>(),
+		// biome-ignore lint/suspicious/noExplicitAny: JSON schema shape
+		schema: jsonb("schema").notNull().$type<any>(),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		version: integer("version").notNull().default(1),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userProjectIdx: index("idx_resource_schemas_user_project").on(
+			table.userId,
+			table.projectId,
+		),
+		enabledIdx: index("idx_resource_schemas_enabled").on(table.isEnabled),
+		userProjectNameUnique: unique("uq_resource_schemas_user_project_name").on(
+			table.userId,
+			table.projectId,
+			table.name,
+		),
+	}),
+);
+
+export const resourceModelProfiles = pgTable(
+	"resource_model_profiles",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		name: text("name").notNull(),
+		description: text("description"),
+		model: jsonb("model").notNull().$type<{ provider: string; name: string }>(),
+		defaultOptions: jsonb("default_options").$type<Record<string, unknown>>(),
+		maxTurns: integer("max_turns"),
+		timeoutMinutes: integer("timeout_minutes"),
+		metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+		version: integer("version").notNull().default(1),
+		isEnabled: boolean("is_enabled").notNull().default(true),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		projectId: text("project_id").references(() => projects.id, {
+			onDelete: "cascade",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		userProjectIdx: index("idx_resource_model_profiles_user_project").on(
+			table.userId,
+			table.projectId,
+		),
+		enabledIdx: index("idx_resource_model_profiles_enabled").on(
+			table.isEnabled,
+		),
+		userProjectNameUnique: unique(
+			"uq_resource_model_profiles_user_project_name",
+		).on(table.userId, table.projectId, table.name),
+	}),
+);
+
+export type WorkflowResourceType = "prompt" | "schema" | "model_profile";
+
+export const workflowResourceRefs = pgTable(
+	"workflow_resource_refs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		nodeId: text("node_id").notNull(),
+		resourceType: text("resource_type").notNull().$type<WorkflowResourceType>(),
+		resourceId: text("resource_id").notNull(),
+		resourceVersion: integer("resource_version"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		workflowNodeIdx: index("idx_workflow_resource_refs_workflow_node").on(
+			table.workflowId,
+			table.nodeId,
+		),
+		resourceLookupIdx: index("idx_workflow_resource_refs_resource_lookup").on(
+			table.resourceType,
+			table.resourceId,
+		),
+	}),
+);
+
 // Relations
 export const workflowExecutionsRelations = relations(
 	workflowExecutions,
@@ -585,6 +1329,78 @@ export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;
 export type NewPlatformOauthApp = typeof platformOauthApps.$inferInsert;
+export type ModelProvider = typeof modelProviders.$inferSelect;
+export type NewModelProvider = typeof modelProviders.$inferInsert;
+export type ModelCatalogEntry = typeof modelCatalog.$inferSelect;
+export type NewModelCatalogEntry = typeof modelCatalog.$inferInsert;
+export type AgentInstructionFacet = typeof agentInstructionFacets.$inferSelect;
+export type NewAgentInstructionFacet =
+	typeof agentInstructionFacets.$inferInsert;
+export type AgentInstructionFacetVersion =
+	typeof agentInstructionFacetVersions.$inferSelect;
+export type NewAgentInstructionFacetVersion =
+	typeof agentInstructionFacetVersions.$inferInsert;
+export type AgentModelFacet = typeof agentModelFacets.$inferSelect;
+export type NewAgentModelFacet = typeof agentModelFacets.$inferInsert;
+export type AgentModelFacetVersion =
+	typeof agentModelFacetVersions.$inferSelect;
+export type NewAgentModelFacetVersion =
+	typeof agentModelFacetVersions.$inferInsert;
+export type AgentToolPolicyFacet = typeof agentToolPolicyFacets.$inferSelect;
+export type NewAgentToolPolicyFacet = typeof agentToolPolicyFacets.$inferInsert;
+export type AgentToolPolicyFacetVersion =
+	typeof agentToolPolicyFacetVersions.$inferSelect;
+export type NewAgentToolPolicyFacetVersion =
+	typeof agentToolPolicyFacetVersions.$inferInsert;
+export type AgentMemoryFacet = typeof agentMemoryFacets.$inferSelect;
+export type NewAgentMemoryFacet = typeof agentMemoryFacets.$inferInsert;
+export type AgentMemoryFacetVersion =
+	typeof agentMemoryFacetVersions.$inferSelect;
+export type NewAgentMemoryFacetVersion =
+	typeof agentMemoryFacetVersions.$inferInsert;
+export type AgentExecutionFacet = typeof agentExecutionFacets.$inferSelect;
+export type NewAgentExecutionFacet = typeof agentExecutionFacets.$inferInsert;
+export type AgentExecutionFacetVersion =
+	typeof agentExecutionFacetVersions.$inferSelect;
+export type NewAgentExecutionFacetVersion =
+	typeof agentExecutionFacetVersions.$inferInsert;
+export type AgentInteractionFacet = typeof agentInteractionFacets.$inferSelect;
+export type NewAgentInteractionFacet =
+	typeof agentInteractionFacets.$inferInsert;
+export type AgentInteractionFacetVersion =
+	typeof agentInteractionFacetVersions.$inferSelect;
+export type NewAgentInteractionFacetVersion =
+	typeof agentInteractionFacetVersions.$inferInsert;
+export type AgentOutputFacet = typeof agentOutputFacets.$inferSelect;
+export type NewAgentOutputFacet = typeof agentOutputFacets.$inferInsert;
+export type AgentOutputFacetVersion =
+	typeof agentOutputFacetVersions.$inferSelect;
+export type NewAgentOutputFacetVersion =
+	typeof agentOutputFacetVersions.$inferInsert;
+export type AgentCapabilityFacet = typeof agentCapabilityFacets.$inferSelect;
+export type NewAgentCapabilityFacet = typeof agentCapabilityFacets.$inferInsert;
+export type AgentCapabilityFacetVersion =
+	typeof agentCapabilityFacetVersions.$inferSelect;
+export type NewAgentCapabilityFacetVersion =
+	typeof agentCapabilityFacetVersions.$inferInsert;
+export type AgentProfileTemplate = typeof agentProfileTemplates.$inferSelect;
+export type NewAgentProfileTemplate = typeof agentProfileTemplates.$inferInsert;
+export type AgentProfileTemplateVersion =
+	typeof agentProfileTemplateVersions.$inferSelect;
+export type NewAgentProfileTemplateVersion =
+	typeof agentProfileTemplateVersions.$inferInsert;
+export type AgentProfileTemplateExample =
+	typeof agentProfileTemplateExamples.$inferSelect;
+export type NewAgentProfileTemplateExample =
+	typeof agentProfileTemplateExamples.$inferInsert;
+export type ResourcePrompt = typeof resourcePrompts.$inferSelect;
+export type NewResourcePrompt = typeof resourcePrompts.$inferInsert;
+export type ResourceSchema = typeof resourceSchemas.$inferSelect;
+export type NewResourceSchema = typeof resourceSchemas.$inferInsert;
+export type ResourceModelProfile = typeof resourceModelProfiles.$inferSelect;
+export type NewResourceModelProfile = typeof resourceModelProfiles.$inferInsert;
+export type WorkflowResourceRef = typeof workflowResourceRefs.$inferSelect;
+export type NewWorkflowResourceRef = typeof workflowResourceRefs.$inferInsert;
 
 // ============================================================================
 // Agents (Persistent Agent Configurations)
@@ -647,6 +1463,16 @@ export const agents = pgTable(
 		projectId: text("project_id").references(() => projects.id, {
 			onDelete: "cascade",
 		}),
+		instructionsPresetId: text("instructions_preset_id"),
+		instructionsPresetVersion: integer("instructions_preset_version"),
+		schemaPresetId: text("schema_preset_id"),
+		schemaPresetVersion: integer("schema_preset_version"),
+		modelProfileId: text("model_profile_id"),
+		modelProfileVersion: integer("model_profile_version"),
+		agentProfileTemplateId: text("agent_profile_template_id").references(
+			() => agentProfileTemplates.id,
+		),
+		agentProfileTemplateVersion: integer("agent_profile_template_version"),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 	},
@@ -654,6 +1480,39 @@ export const agents = pgTable(
 		userIdx: index("idx_agents_user_id").on(table.userId),
 		projectIdx: index("idx_agents_project_id").on(table.projectId),
 		typeIdx: index("idx_agents_agent_type").on(table.agentType),
+	}),
+);
+
+export const agentProfileAppliedHistory = pgTable(
+	"agent_profile_applied_history",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		agentId: text("agent_id")
+			.notNull()
+			.references(() => agents.id, { onDelete: "cascade" }),
+		templateId: text("template_id")
+			.notNull()
+			.references(() => agentProfileTemplates.id),
+		templateVersion: integer("template_version").notNull(),
+		appliedByUserId: text("applied_by_user_id")
+			.notNull()
+			.references(() => users.id),
+		source: text("source").notNull().default("ui"),
+		snapshot: jsonb("snapshot").$type<Record<string, unknown>>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		agentIdx: index("idx_agent_profile_applied_history_agent").on(
+			table.agentId,
+		),
+		templateIdx: index("idx_agent_profile_applied_history_template").on(
+			table.templateId,
+		),
+		createdIdx: index("idx_agent_profile_applied_history_created").on(
+			table.createdAt,
+		),
 	}),
 );
 
@@ -837,3 +1696,7 @@ export type NewWorkflowExternalEvent =
 	typeof workflowExternalEvents.$inferInsert;
 export type Agent = typeof agents.$inferSelect;
 export type NewAgent = typeof agents.$inferInsert;
+export type AgentProfileAppliedHistory =
+	typeof agentProfileAppliedHistory.$inferSelect;
+export type NewAgentProfileAppliedHistory =
+	typeof agentProfileAppliedHistory.$inferInsert;

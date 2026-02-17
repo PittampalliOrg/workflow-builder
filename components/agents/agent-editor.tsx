@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -25,7 +25,18 @@ import {
 	ModelSelector,
 	type ModelOption,
 } from "@/components/ai-elements/model-selector";
-import type { AgentData, CreateAgentBody, UpdateAgentBody } from "@/lib/api-client";
+import {
+	api,
+	type AgentData,
+	type AgentProfileListItemData,
+	type CreateAgentBody,
+	type ModelCatalogModelData,
+	type ResourceModelProfileData,
+	type ResourcePromptData,
+	type ResourceSchemaData,
+	type UpdateAgentBody,
+} from "@/lib/api-client";
+import { DEFAULT_MODEL_OPTIONS } from "@/lib/models/catalog-defaults";
 
 const AGENT_TYPES = [
 	{ value: "general", label: "General Purpose" },
@@ -34,19 +45,6 @@ const AGENT_TYPES = [
 	{ value: "planning", label: "Planning" },
 	{ value: "custom", label: "Custom" },
 ] as const;
-
-const MODEL_LIST: ModelOption[] = [
-	{ id: "openai/gpt-5.3-codex", name: "GPT-5.3 Codex", provider: "openai" },
-	{ id: "openai/gpt-5.2-codex", name: "GPT-5.2 Codex", provider: "openai" },
-	{ id: "openai/gpt-4o", name: "GPT-4o", provider: "openai" },
-	{ id: "openai/gpt-4o-mini", name: "GPT-4o mini", provider: "openai" },
-	{ id: "openai/gpt-5.1-instant", name: "GPT-5.1 Instant", provider: "openai" },
-	{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6", provider: "anthropic" },
-	{ id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6", provider: "anthropic" },
-	{ id: "anthropic/claude-sonnet-4-5", name: "Claude Sonnet 4.5", provider: "anthropic" },
-	{ id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro", provider: "google" },
-	{ id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "google" },
-];
 
 const WORKSPACE_TOOLS = [
 	"read_file",
@@ -99,11 +97,52 @@ export function AgentEditor({
 		String(agent?.timeoutMinutes ?? 30),
 	);
 	const [isDefault, setIsDefault] = useState(agent?.isDefault ?? false);
+	const [instructionsPresetId, setInstructionsPresetId] = useState(
+		agent?.instructionsPresetId ?? "",
+	);
+	const [schemaPresetId, setSchemaPresetId] = useState(
+		agent?.schemaPresetId ?? "",
+	);
+	const [modelProfileId, setModelProfileId] = useState(
+		agent?.modelProfileId ?? "",
+	);
+	const [agentProfileTemplateId, setAgentProfileTemplateId] = useState(
+		agent?.agentProfileTemplateId ?? "",
+	);
+	const [defaultOptions, setDefaultOptions] = useState<Record<
+		string,
+		unknown
+	> | null>(agent?.defaultOptions ?? null);
+	const [memoryConfig, setMemoryConfig] = useState<Record<
+		string,
+		unknown
+	> | null>(agent?.memoryConfig ?? null);
+	const [profileWarnings, setProfileWarnings] = useState<string[]>([]);
+	const [applyingProfile, setApplyingProfile] = useState(false);
+	const [promptPresets, setPromptPresets] = useState<ResourcePromptData[]>([]);
+	const [schemaPresets, setSchemaPresets] = useState<ResourceSchemaData[]>([]);
+	const [modelProfiles, setModelProfiles] = useState<
+		ResourceModelProfileData[]
+	>([]);
+	const [agentProfiles, setAgentProfiles] = useState<
+		AgentProfileListItemData[]
+	>([]);
+	const [catalogModels, setCatalogModels] = useState<ModelCatalogModelData[]>(
+		[],
+	);
 	const [saving, setSaving] = useState(false);
 
 	// Build the models list: include the built-in list plus the current value if custom
 	const models = useMemo(() => {
-		const builtIn = [...MODEL_LIST];
+		const builtIn: ModelOption[] =
+			catalogModels.length > 0
+				? catalogModels.map((model) => ({
+						id: model.modelId,
+						name: model.displayName,
+						provider: model.iconKey || model.providerId,
+						description: model.description || undefined,
+					}))
+				: [...DEFAULT_MODEL_OPTIONS];
 		// If the current modelSpec isn't in the list, add it as a custom entry
 		if (modelSpec && !builtIn.some((m) => m.id === modelSpec)) {
 			const parsed = parseModelSpec(modelSpec);
@@ -127,8 +166,38 @@ export function AgentEditor({
 		);
 	}, [modelSpec, models]);
 
+	useEffect(() => {
+		if (!open) return;
+		let cancelled = false;
+
+		(async () => {
+			try {
+				const [prompts, schemas, profiles, models, templateProfiles] =
+					await Promise.all([
+						api.resource.prompts.list(),
+						api.resource.schemas.list(),
+						api.resource.modelProfiles.list(),
+						api.resource.models.list(),
+						api.resource.agentProfiles.list(),
+					]);
+				if (cancelled) return;
+				setPromptPresets(prompts.filter((p) => p.isEnabled));
+				setSchemaPresets(schemas.filter((s) => s.isEnabled));
+				setModelProfiles(profiles.filter((p) => p.isEnabled));
+				setCatalogModels(models);
+				setAgentProfiles(templateProfiles.filter((p) => p.isEnabled));
+			} catch (error) {
+				console.error("Failed to load resource presets:", error);
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [open]);
+
 	const handleSave = async () => {
-		if (!name.trim() || !instructions.trim()) return;
+		if (!name.trim() || (!instructions.trim() && !instructionsPresetId)) return;
 		setSaving(true);
 		try {
 			const body: CreateAgentBody = {
@@ -143,12 +212,46 @@ export function AgentEditor({
 				})),
 				maxTurns: parseInt(maxTurns, 10) || 50,
 				timeoutMinutes: parseInt(timeoutMinutes, 10) || 30,
+				defaultOptions: defaultOptions ?? undefined,
+				memoryConfig: memoryConfig ?? undefined,
 				isDefault,
+				instructionsPresetId: instructionsPresetId || null,
+				schemaPresetId: schemaPresetId || null,
+				modelProfileId: modelProfileId || null,
+				agentProfileTemplateId: agentProfileTemplateId || null,
 			};
 			await onSave(body);
 			onOpenChange(false);
 		} finally {
 			setSaving(false);
+		}
+	};
+
+	const applyAgentProfileTemplate = async (templateId: string) => {
+		if (!templateId) {
+			setProfileWarnings([]);
+			setAgentProfileTemplateId("");
+			return;
+		}
+
+		setApplyingProfile(true);
+		try {
+			const preview = await api.resource.agentProfiles.preview(templateId);
+			setAgentProfileTemplateId(templateId);
+			setAgentType(preview.snapshot.agentType);
+			setInstructions(preview.snapshot.instructions);
+			setModelSpec(formatModelSpec(preview.snapshot.model));
+			setSelectedTools(new Set(preview.snapshot.tools.map((tool) => tool.ref)));
+			setMaxTurns(String(preview.snapshot.maxTurns));
+			setTimeoutMinutes(String(preview.snapshot.timeoutMinutes));
+			setDefaultOptions(preview.snapshot.defaultOptions);
+			setMemoryConfig(preview.snapshot.memoryConfig);
+			setProfileWarnings(preview.warnings.map((warning) => warning.message));
+		} catch (error) {
+			console.error("Failed to preview agent profile template:", error);
+			setProfileWarnings(["Failed to load selected agent profile template"]);
+		} finally {
+			setApplyingProfile(false);
 		}
 	};
 
@@ -169,8 +272,9 @@ export function AgentEditor({
 				</DialogHeader>
 
 				<Tabs defaultValue="general" className="mt-2">
-					<TabsList className="grid w-full grid-cols-4">
+					<TabsList className="grid w-full grid-cols-5">
 						<TabsTrigger value="general">General</TabsTrigger>
+						<TabsTrigger value="presets">Presets</TabsTrigger>
 						<TabsTrigger value="model">Model</TabsTrigger>
 						<TabsTrigger value="tools">Tools</TabsTrigger>
 						<TabsTrigger value="execution">Execution</TabsTrigger>
@@ -224,13 +328,111 @@ export function AgentEditor({
 							<Checkbox
 								id="agent-default"
 								checked={isDefault}
-								onCheckedChange={(checked) =>
-									setIsDefault(checked === true)
-								}
+								onCheckedChange={(checked) => setIsDefault(checked === true)}
 							/>
 							<Label htmlFor="agent-default" className="text-sm">
 								Set as default agent
 							</Label>
+						</div>
+					</TabsContent>
+
+					<TabsContent value="presets" className="space-y-4 mt-4">
+						<div className="space-y-2">
+							<Label htmlFor="agent-profile-template">
+								Agent Profile Template
+							</Label>
+							<Select
+								disabled={applyingProfile}
+								value={agentProfileTemplateId || "__none__"}
+								onValueChange={(value) =>
+									applyAgentProfileTemplate(value === "__none__" ? "" : value)
+								}
+							>
+								<SelectTrigger id="agent-profile-template">
+									<SelectValue placeholder="Select agent profile template" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="__none__">None</SelectItem>
+									{agentProfiles.map((profile) => (
+										<SelectItem key={profile.id} value={profile.id}>
+											{profile.name} (v{profile.defaultVersion})
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+							{profileWarnings.length > 0 ? (
+								<div className="rounded-md border border-amber-400/40 bg-amber-50/60 p-2 text-amber-900 text-xs dark:bg-amber-950/20 dark:text-amber-200">
+									{profileWarnings.join(" ")}
+								</div>
+							) : null}
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="agent-prompt-preset">Prompt Preset</Label>
+							<Select
+								value={instructionsPresetId || "__none__"}
+								onValueChange={(value) => {
+									const next = value === "__none__" ? "" : value;
+									setInstructionsPresetId(next);
+									const selected = promptPresets.find((p) => p.id === next);
+									if (selected && !instructions.trim()) {
+										setInstructions(selected.systemPrompt);
+									}
+								}}
+							>
+								<SelectTrigger id="agent-prompt-preset">
+									<SelectValue placeholder="Select prompt preset" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="__none__">None</SelectItem>
+									{promptPresets.map((preset) => (
+										<SelectItem key={preset.id} value={preset.id}>
+											{preset.name} (v{preset.version})
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="agent-schema-preset">Schema Preset</Label>
+							<Select
+								value={schemaPresetId || "__none__"}
+								onValueChange={(value) =>
+									setSchemaPresetId(value === "__none__" ? "" : value)
+								}
+							>
+								<SelectTrigger id="agent-schema-preset">
+									<SelectValue placeholder="Select schema preset" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="__none__">None</SelectItem>
+									{schemaPresets.map((preset) => (
+										<SelectItem key={preset.id} value={preset.id}>
+											{preset.name} (v{preset.version})
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
+						<div className="space-y-2">
+							<Label htmlFor="agent-model-profile">Model Profile</Label>
+							<Select
+								value={modelProfileId || "__none__"}
+								onValueChange={(value) =>
+									setModelProfileId(value === "__none__" ? "" : value)
+								}
+							>
+								<SelectTrigger id="agent-model-profile">
+									<SelectValue placeholder="Select model profile" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="__none__">None</SelectItem>
+									{modelProfiles.map((profile) => (
+										<SelectItem key={profile.id} value={profile.id}>
+											{profile.name} (v{profile.version})
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
 						</div>
 					</TabsContent>
 
@@ -289,9 +491,7 @@ export function AgentEditor({
 							<Button
 								variant="outline"
 								size="sm"
-								onClick={() =>
-									setSelectedTools(new Set(WORKSPACE_TOOLS))
-								}
+								onClick={() => setSelectedTools(new Set(WORKSPACE_TOOLS))}
 							>
 								Select All
 							</Button>
@@ -343,7 +543,11 @@ export function AgentEditor({
 					</Button>
 					<Button
 						onClick={handleSave}
-						disabled={saving || !name.trim() || !instructions.trim()}
+						disabled={
+							saving ||
+							!name.trim() ||
+							(!instructions.trim() && !instructionsPresetId)
+						}
 					>
 						{saving ? "Saving..." : isEdit ? "Update" : "Create"}
 					</Button>

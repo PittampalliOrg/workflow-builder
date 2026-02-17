@@ -3,36 +3,81 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
+import { getResolvedAgentProfileTemplate } from "@/lib/db/agent-profiles";
+import {
+	resolveModelProfilePresetForUse,
+	resolvePromptPresetForUse,
+	resolveSchemaPresetForUse,
+} from "@/lib/db/resources";
 import { agents } from "@/lib/db/schema";
 
-const createAgentSchema = z.object({
-	name: z.string().min(1).max(200),
-	description: z.string().max(2000).optional(),
-	agentType: z
-		.enum(["general", "code-assistant", "research", "planning", "custom"])
-		.default("general"),
-	instructions: z.string().min(1).max(50000),
-	model: z.object({
-		provider: z.string().min(1),
-		name: z.string().min(1),
-	}),
-	tools: z
-		.array(
-			z.object({
-				type: z.enum(["workspace", "mcp", "action"]),
-				ref: z.string().min(1),
-			}),
-		)
-		.default([]),
-	maxTurns: z.number().int().min(1).max(500).default(50),
-	timeoutMinutes: z.number().int().min(1).max(480).default(30),
-	defaultOptions: z.record(z.string(), z.unknown()).optional(),
-	memoryConfig: z.record(z.string(), z.unknown()).optional(),
-	metadata: z.record(z.string(), z.unknown()).optional(),
-	isDefault: z.boolean().default(false),
-	isEnabled: z.boolean().default(true),
-	projectId: z.string().optional(),
-});
+type AgentTypeValue =
+	| "general"
+	| "code-assistant"
+	| "research"
+	| "planning"
+	| "custom";
+
+const createAgentSchema = z
+	.object({
+		name: z.string().min(1).max(200),
+		description: z.string().max(2000).optional(),
+		agentType: z
+			.enum(["general", "code-assistant", "research", "planning", "custom"])
+			.optional(),
+		instructions: z.string().min(1).max(50000).optional(),
+		model: z
+			.object({
+				provider: z.string().min(1),
+				name: z.string().min(1),
+			})
+			.optional(),
+		tools: z
+			.array(
+				z.object({
+					type: z.enum(["workspace", "mcp", "action"]),
+					ref: z.string().min(1),
+				}),
+			)
+			.optional(),
+		maxTurns: z.number().int().min(1).max(500).optional(),
+		timeoutMinutes: z.number().int().min(1).max(480).optional(),
+		defaultOptions: z.record(z.string(), z.unknown()).optional(),
+		memoryConfig: z.record(z.string(), z.unknown()).optional(),
+		metadata: z.record(z.string(), z.unknown()).optional(),
+		instructionsPresetId: z.string().nullable().optional(),
+		schemaPresetId: z.string().nullable().optional(),
+		modelProfileId: z.string().nullable().optional(),
+		agentProfileTemplateId: z.string().nullable().optional(),
+		isDefault: z.boolean().default(false),
+		isEnabled: z.boolean().default(true),
+		projectId: z.string().optional(),
+	})
+	.superRefine((value, ctx) => {
+		if (
+			!value.instructions &&
+			!value.instructionsPresetId &&
+			!value.agentProfileTemplateId
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["instructions"],
+				message:
+					"instructions, instructionsPresetId, or agentProfileTemplateId is required",
+			});
+		}
+		if (
+			!value.model &&
+			!value.modelProfileId &&
+			!value.agentProfileTemplateId
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["model"],
+				message: "model, modelProfileId, or agentProfileTemplateId is required",
+			});
+		}
+	});
 
 export async function GET(request: Request) {
 	try {
@@ -57,7 +102,9 @@ export async function GET(request: Request) {
 	} catch (error) {
 		console.error("[agents] GET error:", error);
 		return NextResponse.json(
-			{ error: error instanceof Error ? error.message : "Failed to list agents" },
+			{
+				error: error instanceof Error ? error.message : "Failed to list agents",
+			},
 			{ status: 500 },
 		);
 	}
@@ -80,6 +127,110 @@ export async function POST(request: Request) {
 		}
 
 		const data = parsed.data;
+		const projectId = data.projectId ?? session.user.projectId;
+		let resolvedAgentType: AgentTypeValue = data.agentType ?? "general";
+		let resolvedInstructions = data.instructions ?? "";
+		let resolvedTools = data.tools ?? [];
+		let instructionsPresetVersion: number | null = null;
+		let agentProfileTemplateVersion: number | null = null;
+		if (data.instructionsPresetId) {
+			const preset = await resolvePromptPresetForUse({
+				id: data.instructionsPresetId,
+				userId: session.user.id,
+				projectId,
+			});
+			if (!preset) {
+				return NextResponse.json(
+					{ error: "Instructions preset not found" },
+					{ status: 404 },
+				);
+			}
+			resolvedInstructions = preset.systemPrompt;
+			instructionsPresetVersion = preset.version;
+		}
+
+		let resolvedModel = data.model ?? { provider: "openai", name: "gpt-4o" };
+		let resolvedDefaultOptions = data.defaultOptions;
+		let resolvedMemoryConfig = data.memoryConfig;
+		let resolvedMaxTurns = data.maxTurns ?? 50;
+		let resolvedTimeoutMinutes = data.timeoutMinutes ?? 30;
+		let modelProfileVersion: number | null = null;
+		if (data.agentProfileTemplateId) {
+			const profile = await getResolvedAgentProfileTemplate({
+				templateId: data.agentProfileTemplateId,
+				includeDisabled: false,
+			});
+			if (!profile) {
+				return NextResponse.json(
+					{ error: "Agent profile template not found" },
+					{ status: 404 },
+				);
+			}
+			if (
+				profile.snapshot.agentType === "general" ||
+				profile.snapshot.agentType === "code-assistant" ||
+				profile.snapshot.agentType === "research" ||
+				profile.snapshot.agentType === "planning" ||
+				profile.snapshot.agentType === "custom"
+			) {
+				resolvedAgentType = profile.snapshot.agentType;
+			}
+			resolvedInstructions = profile.snapshot.instructions;
+			resolvedModel = profile.snapshot.model;
+			resolvedTools = profile.snapshot.tools;
+			resolvedMaxTurns = profile.snapshot.maxTurns;
+			resolvedTimeoutMinutes = profile.snapshot.timeoutMinutes;
+			resolvedDefaultOptions =
+				profile.snapshot.defaultOptions ?? resolvedDefaultOptions;
+			resolvedMemoryConfig =
+				profile.snapshot.memoryConfig ?? resolvedMemoryConfig;
+			agentProfileTemplateVersion = profile.templateVersion.version;
+		}
+
+		if (data.modelProfileId) {
+			const profile = await resolveModelProfilePresetForUse({
+				id: data.modelProfileId,
+				userId: session.user.id,
+				projectId,
+			});
+			if (!profile) {
+				return NextResponse.json(
+					{ error: "Model profile preset not found" },
+					{ status: 404 },
+				);
+			}
+			resolvedModel = profile.model;
+			resolvedDefaultOptions =
+				(profile.defaultOptions as Record<string, unknown> | null) ??
+				resolvedDefaultOptions;
+			resolvedMaxTurns = profile.maxTurns ?? resolvedMaxTurns;
+			resolvedTimeoutMinutes = profile.timeoutMinutes ?? resolvedTimeoutMinutes;
+			modelProfileVersion = profile.version;
+		}
+
+		let schemaPresetVersion: number | null = null;
+		if (data.schemaPresetId) {
+			const schemaPreset = await resolveSchemaPresetForUse({
+				id: data.schemaPresetId,
+				userId: session.user.id,
+				projectId,
+			});
+			if (!schemaPreset) {
+				return NextResponse.json(
+					{ error: "Schema preset not found" },
+					{ status: 404 },
+				);
+			}
+			schemaPresetVersion = schemaPreset.version;
+			const existingDefaultOptions =
+				(resolvedDefaultOptions as Record<string, unknown>) ?? {};
+			resolvedDefaultOptions = {
+				...existingDefaultOptions,
+				structuredOutput: {
+					schema: schemaPreset.schema,
+				},
+			};
+		}
 
 		// If setting as default, unset any existing default for this user
 		if (data.isDefault) {
@@ -96,19 +247,27 @@ export async function POST(request: Request) {
 			.values({
 				name: data.name,
 				description: data.description,
-				agentType: data.agentType,
-				instructions: data.instructions,
-				model: data.model,
-				tools: data.tools,
-				maxTurns: data.maxTurns,
-				timeoutMinutes: data.timeoutMinutes,
-				defaultOptions: data.defaultOptions,
-				memoryConfig: data.memoryConfig,
+				agentType: resolvedAgentType,
+				instructions: resolvedInstructions,
+				model: resolvedModel,
+				tools: resolvedTools,
+				maxTurns: resolvedMaxTurns,
+				timeoutMinutes: resolvedTimeoutMinutes,
+				defaultOptions: resolvedDefaultOptions,
+				memoryConfig: resolvedMemoryConfig,
 				metadata: data.metadata,
+				instructionsPresetId: data.instructionsPresetId ?? null,
+				instructionsPresetVersion,
+				schemaPresetId: data.schemaPresetId ?? null,
+				schemaPresetVersion,
+				modelProfileId: data.modelProfileId ?? null,
+				modelProfileVersion,
+				agentProfileTemplateId: data.agentProfileTemplateId ?? null,
+				agentProfileTemplateVersion,
 				isDefault: data.isDefault,
 				isEnabled: data.isEnabled,
 				userId: session.user.id,
-				projectId: data.projectId,
+				projectId,
 			})
 			.returning();
 
@@ -123,7 +282,10 @@ export async function POST(request: Request) {
 	} catch (error) {
 		console.error("[agents] POST error:", error);
 		return NextResponse.json(
-			{ error: error instanceof Error ? error.message : "Failed to create agent" },
+			{
+				error:
+					error instanceof Error ? error.message : "Failed to create agent",
+			},
 			{ status: 500 },
 		);
 	}
