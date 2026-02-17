@@ -2,7 +2,7 @@
 
 import { Copy, Download, Loader2, RefreshCw, Search } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
 	Commit,
 	CommitActions,
@@ -21,17 +21,14 @@ import {
 	FileTreeFolder,
 } from "@/components/ai-elements/file-tree";
 import { Shimmer } from "@/components/ai-elements/shimmer";
-import { SplitDiffView } from "@/components/workflow-runs/diff/split-diff-view";
 import { DiffToolbar } from "@/components/workflow-runs/diff/diff-toolbar";
-import { UnifiedDiffView } from "@/components/workflow-runs/diff/unified-diff-view";
+import { MonacoDiffView } from "@/components/workflow-runs/diff/monaco-diff-view";
 import { useDiffPreferences } from "@/hooks/use-diff-preferences";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useTheme } from "next-themes";
 import type { DiffHunk, DiffResult } from "@/lib/diff/types";
 import { computeDiff } from "@/lib/diff/compute-diff";
-import { highlightHunks } from "@/lib/diff/highlight-diff";
 import {
 	api,
 	type ExecutionChangeArtifactMetadata,
@@ -64,6 +61,12 @@ type FileStats = {
 	lines: number;
 	sections: number;
 	status: "A" | "M" | "D" | "R";
+};
+
+type DiffTextPair = {
+	original: string;
+	modified: string;
+	language: string;
 };
 
 function formatBytes(bytes: number): string {
@@ -351,6 +354,101 @@ function parseUnifiedPatchToDiff(patch: string): DiffResult | null {
 	};
 }
 
+function monacoLanguageFromPath(path: string | null | undefined): string {
+	if (!path) {
+		return "plaintext";
+	}
+
+	const fileName = path.split("/").pop()?.toLowerCase() ?? "";
+	if (fileName === "dockerfile") return "dockerfile";
+	if (fileName === "makefile") return "makefile";
+
+	const ext = fileName.split(".").pop();
+	switch (ext) {
+		case "ts":
+		case "tsx":
+			return "typescript";
+		case "js":
+		case "jsx":
+			return "javascript";
+		case "json":
+			return "json";
+		case "md":
+			return "markdown";
+		case "py":
+			return "python";
+		case "go":
+			return "go";
+		case "rs":
+			return "rust";
+		case "java":
+			return "java";
+		case "kt":
+			return "kotlin";
+		case "rb":
+			return "ruby";
+		case "php":
+			return "php";
+		case "sh":
+		case "bash":
+		case "zsh":
+			return "shell";
+		case "yaml":
+		case "yml":
+			return "yaml";
+		case "toml":
+			return "toml";
+		case "xml":
+			return "xml";
+		case "css":
+			return "css";
+		case "scss":
+			return "scss";
+		case "html":
+			return "html";
+		case "sql":
+			return "sql";
+		default:
+			return "plaintext";
+	}
+}
+
+function diffResultToTextPair(result: DiffResult): {
+	original: string;
+	modified: string;
+} {
+	const oldLines: string[] = [];
+	const newLines: string[] = [];
+
+	for (const [hunkIndex, hunk] of result.hunks.entries()) {
+		if (hunkIndex > 0) {
+			oldLines.push("...");
+			newLines.push("...");
+		}
+
+		for (const line of hunk.lines) {
+			if (line.type === "header") {
+				continue;
+			}
+			if (line.type === "context") {
+				oldLines.push(line.content);
+				newLines.push(line.content);
+				continue;
+			}
+			if (line.type === "deletion") {
+				oldLines.push(line.content);
+				continue;
+			}
+			newLines.push(line.content);
+		}
+	}
+
+	return {
+		original: oldLines.join("\n"),
+		modified: newLines.join("\n"),
+	};
+}
+
 function buildFileTree(
 	files: { path: string; status: "A" | "M" | "D" | "R" }[],
 ): { defaultExpanded: Set<string>; nodes: FileTreeNode[] } {
@@ -458,12 +556,15 @@ function renderFileTreeNodes(nodes: FileTreeNode[]): ReactNode {
 
 type ExecutionChangesPanelProps = {
 	executionId: string;
+	initialSelectedFilePath?: string | null;
+	onSelectedFilePathChange?: (path: string | null) => void;
 };
 
 export function ExecutionChangesPanel({
 	executionId,
+	initialSelectedFilePath,
+	onSelectedFilePathChange,
 }: ExecutionChangesPanelProps) {
-	const { resolvedTheme } = useTheme();
 	const { viewMode, contentMode, setContentMode, setViewMode } =
 		useDiffPreferences();
 	const [changes, setChanges] = useState<ExecutionChangeArtifactMetadata[]>([]);
@@ -474,7 +575,9 @@ export function ExecutionChangesPanel({
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [search, setSearch] = useState("");
-	const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
+	const [selectedFilePath, setSelectedFilePath] = useState<string | null>(
+		initialSelectedFilePath ?? null,
+	);
 	const [snapshotByPath, setSnapshotByPath] = useState<
 		Record<string, ExecutionFileSnapshot | null>
 	>({});
@@ -484,10 +587,7 @@ export function ExecutionChangesPanel({
 	const [snapshotLoadingPath, setSnapshotLoadingPath] = useState<string | null>(
 		null,
 	);
-	const [highlightedHunks, setHighlightedHunks] = useState<DiffHunk[]>([]);
-	const [isHighlighting, setIsHighlighting] = useState(false);
 	const [isDownloadingCombined, setIsDownloadingCombined] = useState(false);
-	const highlightVersionRef = useRef(0);
 
 	const loadData = useCallback(async () => {
 		setIsLoading(true);
@@ -528,16 +628,21 @@ export function ExecutionChangesPanel({
 
 	useEffect(() => {
 		setSearch("");
-		setSelectedFilePath(null);
+		setSelectedFilePath(initialSelectedFilePath ?? null);
 		setSnapshotByPath({});
 		setSnapshotErrorByPath({});
 		setSnapshotLoadingPath(null);
-		setHighlightedHunks([]);
-		setIsHighlighting(false);
 		setPendingSync(false);
 		setPendingRetries(0);
 		void loadData();
-	}, [loadData]);
+	}, [initialSelectedFilePath, loadData]);
+
+	useEffect(() => {
+		if (initialSelectedFilePath === undefined) {
+			return;
+		}
+		setSelectedFilePath(initialSelectedFilePath ?? null);
+	}, [initialSelectedFilePath]);
 
 	useEffect(() => {
 		if (!pendingSync) {
@@ -635,9 +740,13 @@ export function ExecutionChangesPanel({
 			) {
 				return current;
 			}
-			return filteredFileEntries[0]?.path ?? null;
+			const next = filteredFileEntries[0]?.path ?? null;
+			if (next !== current) {
+				onSelectedFilePathChange?.(next);
+			}
+			return next;
 		});
-	}, [filteredFileEntries]);
+	}, [filteredFileEntries, onSelectedFilePathChange]);
 
 	const selectedSections = useMemo(() => {
 		if (!selectedFilePath) {
@@ -744,6 +853,19 @@ export function ExecutionChangesPanel({
 		return parseUnifiedPatchToDiff(selectedPatch);
 	}, [contentMode, selectedPatch, selectedSnapshot]);
 
+	const selectedDiffText = useMemo<DiffTextPair | null>(() => {
+		if (!selectedDiffResult) {
+			return null;
+		}
+		const pair = diffResultToTextPair(selectedDiffResult);
+		return {
+			...pair,
+			language:
+				selectedSnapshot?.language ||
+				monacoLanguageFromPath(selectedSnapshot?.path || selectedFilePath),
+		};
+	}, [selectedDiffResult, selectedFilePath, selectedSnapshot]);
+
 	useEffect(() => {
 		if (!selectedFilePath) {
 			return;
@@ -797,37 +919,6 @@ export function ExecutionChangesPanel({
 			active = false;
 		};
 	}, [executionId, selectedFilePath, snapshotByPath]);
-
-	useEffect(() => {
-		if (!selectedFilePath || !selectedDiffResult) {
-			setHighlightedHunks([]);
-			setIsHighlighting(false);
-			return;
-		}
-
-		const colorScheme = resolvedTheme === "dark" ? "dark" : "light";
-		const version = highlightVersionRef.current + 1;
-		highlightVersionRef.current = version;
-		setHighlightedHunks(selectedDiffResult.hunks);
-		setIsHighlighting(true);
-
-		void highlightHunks(selectedDiffResult.hunks, selectedFilePath, colorScheme)
-			.then((nextHunks) => {
-				if (highlightVersionRef.current === version) {
-					setHighlightedHunks(nextHunks);
-				}
-			})
-			.catch(() => {
-				if (highlightVersionRef.current === version) {
-					setHighlightedHunks(selectedDiffResult.hunks);
-				}
-			})
-			.finally(() => {
-				if (highlightVersionRef.current === version) {
-					setIsHighlighting(false);
-				}
-			});
-	}, [resolvedTheme, selectedDiffResult, selectedFilePath]);
 
 	const commitRange = useMemo(() => {
 		const sorted = [...includedChanges].sort((a, b) => a.sequence - b.sequence);
@@ -1082,7 +1173,7 @@ export function ExecutionChangesPanel({
 				</CommitContent>
 			</Commit>
 
-			<div className="grid gap-3 lg:grid-cols-[320px,1fr]">
+			<div className="grid gap-3 lg:grid-cols-[300px,1fr]">
 				<div className="space-y-2 rounded-md border p-2.5">
 					<div className="relative">
 						<Search className="-translate-y-1/2 absolute top-1/2 left-2 h-4 w-4 text-muted-foreground" />
@@ -1094,12 +1185,15 @@ export function ExecutionChangesPanel({
 						/>
 					</div>
 
-					<div className="max-h-[560px] overflow-auto">
+					<div className="max-h-[260px] overflow-auto sm:max-h-[420px] lg:max-h-[calc(100vh-20rem)]">
 						{filteredFileEntries.length > 0 ? (
 							<FileTree
 								defaultExpanded={selectedFileTree.defaultExpanded}
 								key={search || "all-files"}
-								onSelect={(path) => setSelectedFilePath(path)}
+								onSelect={(path) => {
+									setSelectedFilePath(path);
+									onSelectedFilePathChange?.(path);
+								}}
 								selectedPath={selectedFilePath ?? undefined}
 							>
 								{renderFileTreeNodes(selectedFileTree.nodes)}
@@ -1154,7 +1248,7 @@ export function ExecutionChangesPanel({
 									) : null}
 								</div>
 								<div className="flex items-center gap-1.5">
-									{selectedSnapshot && !selectedSnapshot.isBinary ? (
+									{selectedDiffText ? (
 										<DiffToolbar
 											contentMode={contentMode}
 											onContentModeChange={setContentMode}
@@ -1183,7 +1277,7 @@ export function ExecutionChangesPanel({
 								</div>
 							</div>
 
-							<div className="max-h-[560px] overflow-auto rounded-md border bg-[#0d1117]">
+							<div className="max-h-[320px] overflow-auto rounded-md border bg-[#0d1117] sm:max-h-[420px] lg:max-h-[calc(100vh-20rem)]">
 								{selectedSnapshotLoading ? (
 									<div className="flex items-center gap-2 p-3 text-sm text-zinc-400">
 										<Loader2 className="h-4 w-4 animate-spin" />
@@ -1194,18 +1288,14 @@ export function ExecutionChangesPanel({
 										<div className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-destructive text-xs">
 											{selectedSnapshotError}
 										</div>
-										{selectedDiffResult ? (
-											viewMode === "unified" ? (
-												<UnifiedDiffView
-													hunks={highlightedHunks}
-													isLoading={isHighlighting}
-												/>
-											) : (
-												<SplitDiffView
-													hunks={highlightedHunks}
-													isLoading={isHighlighting}
-												/>
-											)
+										{selectedDiffText ? (
+											<MonacoDiffView
+												height="min(52vh, 520px)"
+												language={selectedDiffText.language}
+												modified={selectedDiffText.modified}
+												original={selectedDiffText.original}
+												splitView={viewMode === "split"}
+											/>
 										) : (
 											<pre className="overflow-auto rounded-md border border-zinc-800 bg-[#0d1117] p-3 font-mono text-[13px] leading-6 text-zinc-200">
 												{selectedPatch ||
@@ -1232,18 +1322,14 @@ export function ExecutionChangesPanel({
 											</div>
 										</div>
 									</div>
-								) : selectedDiffResult ? (
-									viewMode === "unified" ? (
-										<UnifiedDiffView
-											hunks={highlightedHunks}
-											isLoading={isHighlighting}
-										/>
-									) : (
-										<SplitDiffView
-											hunks={highlightedHunks}
-											isLoading={isHighlighting}
-										/>
-									)
+								) : selectedDiffText ? (
+									<MonacoDiffView
+										height="min(52vh, 520px)"
+										language={selectedDiffText.language}
+										modified={selectedDiffText.modified}
+										original={selectedDiffText.original}
+										splitView={viewMode === "split"}
+									/>
 								) : (
 									<pre className="overflow-auto rounded-md border border-zinc-800 bg-[#0d1117] p-3 font-mono text-[13px] leading-6 text-zinc-200">
 										{selectedPatch || "No diff available for selected file."}

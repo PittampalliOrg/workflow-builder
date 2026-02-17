@@ -70,6 +70,17 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 			category: "Durable Agent",
 			configFields: [
 				{
+					key: "mode",
+					label: "Mode",
+					type: "select",
+					required: true,
+					defaultValue: "execute",
+					options: [
+						{ label: "Execute Plan", value: "execute" },
+						{ label: "Create Plan", value: "plan" },
+					],
+				},
+				{
 					key: "agentProfileTemplateId",
 					label: "Agent Profile",
 					type: "dynamic-select",
@@ -85,12 +96,28 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{
 					key: "prompt",
-					label: "Prompt",
+					label: "Prompt / Goal",
 					type: "template-textarea",
 					placeholder:
-						"Describe the task for the agent. You can reference previous outputs like {{@nodeId:Label.field}}.",
-					required: true,
+						"Describe the task for the agent. In execute mode this can override the artifact goal.",
+					required: false,
 					rows: 6,
+				},
+				{
+					key: "artifactRef",
+					label: "Plan Artifact",
+					type: "dynamic-select",
+					required: true,
+					autoSelectFirstOption: true,
+					placeholder: "Select a plan artifact",
+					showWhen: { field: "mode", equals: "execute" },
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "durable",
+						actionName: "durable/run",
+						propName: "artifactRef",
+						refreshers: [],
+					},
 				},
 				{
 					key: "workspaceRef",
@@ -100,15 +127,59 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					required: false,
 				},
 				{
+					key: "cwd",
+					label: "Repository Root (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					required: false,
+				},
+				{
 					key: "stopCondition",
 					label: "Stop Condition (optional)",
 					type: "template-textarea",
 					placeholder:
 						"Describe what 'done' means. Example: Stop when the API returns status 200 and the response contains an id.",
 					rows: 4,
+					showWhen: { field: "mode", equals: "execute" },
+				},
+				{
+					key: "requireFileChanges",
+					label: "Require File Changes",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					showWhen: { field: "mode", equals: "execute" },
+					options: [
+						{ label: "Enabled", value: "true" },
+						{ label: "Disabled", value: "false" },
+					],
+				},
+				{
+					key: "cleanupWorkspace",
+					label: "Cleanup Workspace After Execute",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					showWhen: { field: "mode", equals: "execute" },
+					options: [
+						{ label: "Enabled", value: "true" },
+						{ label: "Disabled", value: "false" },
+					],
 				},
 			],
 			outputFields: [
+				{
+					field: "artifactRef",
+					description: "Reference ID for persisted plan artifact",
+				},
+				{
+					field: "plan",
+					description: "Structured plan artifact JSON",
+				},
+				{
+					field: "tasks",
+					description: "Task graph derived from plan artifact",
+				},
 				{ field: "text", description: "Agent response text" },
 				{
 					field: "toolCalls",

@@ -77,6 +77,9 @@ export type ActionConfigFieldBase = {
 		propName: string;
 		refreshers: string[]; // other prop keys that trigger re-fetch
 	};
+
+	// For dynamic-select only: auto-select the first option when field is empty
+	autoSelectFirstOption?: boolean;
 };
 
 /**

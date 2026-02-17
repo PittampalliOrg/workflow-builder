@@ -7,6 +7,8 @@ import {
 	RefreshCcw,
 	X,
 } from "lucide-react";
+import { useAtomValue } from "jotai";
+import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +33,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ActionConfigFieldBase } from "@/lib/actions/types";
+import { nodesAtom, selectedNodeAtom } from "@/lib/workflow-store";
 
 type DropdownOption = {
 	label: string;
@@ -98,6 +101,11 @@ export function DynamicSelectField({
 	const activeRequestRef = useRef<AbortController | null>(null);
 
 	const dynamicOpts = field.dynamicOptions;
+	const nodes = useAtomValue(nodesAtom);
+	const selectedNodeId = useAtomValue(selectedNodeAtom);
+	const params = useParams<{ workflowId?: string }>();
+	const workflowId =
+		typeof params?.workflowId === "string" ? params.workflowId : undefined;
 	const connectionExternalId = getExternalIdFromAuth(config.auth);
 
 	useEffect(() => {
@@ -157,6 +165,7 @@ export function DynamicSelectField({
 				propertyName: dynamicOpts.propName,
 				connectionExternalId,
 				input,
+				workflowId,
 			};
 			if (dynamicOpts.provider !== "builtin") {
 				requestBody.pieceName = dynamicOpts.pieceName;
@@ -208,7 +217,7 @@ export function DynamicSelectField({
 				activeRequestRef.current = null;
 			}
 		}
-	}, [dynamicOpts, connectionExternalId]);
+	}, [dynamicOpts, connectionExternalId, workflowId]);
 
 	// Fetch on mount and when refresher values change
 	useEffect(() => {
@@ -225,18 +234,69 @@ export function DynamicSelectField({
 		refresh();
 	}, [refresherValues, multiSelect, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
+	const planArtifactTemplateOptions = useMemo<DropdownOption[]>(() => {
+		if (!dynamicOpts) {
+			return [];
+		}
+
+		const isPlanArtifactField =
+			field.key === "artifactRef" &&
+			dynamicOpts.provider === "builtin" &&
+			dynamicOpts.actionName === "durable/run" &&
+			dynamicOpts.propName === "artifactRef";
+		if (!isPlanArtifactField) {
+			return [];
+		}
+		const templateOptions: DropdownOption[] = [];
+		for (const node of nodes) {
+			if (node.id === selectedNodeId) {
+				continue;
+			}
+			const cfg = node.data?.config;
+			if (!cfg || typeof cfg !== "object") {
+				continue;
+			}
+
+			const configRecord = cfg as Record<string, unknown>;
+			const actionType =
+				typeof configRecord.actionType === "string"
+					? configRecord.actionType
+					: "";
+			const mode =
+				typeof configRecord.mode === "string"
+					? configRecord.mode.trim().toLowerCase()
+					: "";
+
+			if (!actionType.startsWith("durable/") || mode !== "plan") {
+				continue;
+			}
+
+			const label = node.data?.label || node.id;
+			templateOptions.push({
+				label: `Current run: ${label} (artifactRef output)`,
+				value: `{{@${node.id}:${label}.artifactRef}}`,
+			});
+		}
+		return templateOptions;
+	}, [dynamicOpts, field.key, nodes, selectedNodeId]);
+
+	const selectableOptions = useMemo(
+		() => [...planArtifactTemplateOptions, ...options],
+		[planArtifactTemplateOptions, options],
+	);
+
 	// Client-side filter
 	const filteredOptions = useMemo(() => {
 		if (!searchTerm) {
-			return options;
+			return selectableOptions;
 		}
 		const lower = searchTerm.toLowerCase();
-		return options.filter(
+		return selectableOptions.filter(
 			(opt) =>
 				opt.label.toLowerCase().includes(lower) ||
 				String(opt.value).toLowerCase().includes(lower),
 		);
-	}, [options, searchTerm]);
+	}, [searchTerm, selectableOptions]);
 
 	// Resolve selected option label (check both current + cached)
 	const selectedOption = useMemo(() => {
@@ -250,7 +310,11 @@ export function DynamicSelectField({
 				if (values.length === 0) {
 					return;
 				}
-				const allOpts = [...cachedOptions.current, ...options];
+				const allOpts = [
+					...planArtifactTemplateOptions,
+					...cachedOptions.current,
+					...options,
+				];
 				const labels = values.map((v) => {
 					const opt = allOpts.find((o) => String(o.value) === String(v));
 					return opt?.label || String(v);
@@ -261,9 +325,20 @@ export function DynamicSelectField({
 			}
 		}
 
-		const allOpts = [...cachedOptions.current, ...options];
-		return allOpts.find((o) => String(o.value) === value);
-	}, [value, options, multiSelect]);
+		const allOpts = [
+			...planArtifactTemplateOptions,
+			...cachedOptions.current,
+			...options,
+		];
+		const found = allOpts.find((o) => String(o.value) === value);
+		if (found) {
+			return found;
+		}
+		if (value) {
+			return { label: value, value };
+		}
+		return undefined;
+	}, [value, options, multiSelect, planArtifactTemplateOptions]);
 
 	const isItemSelected = (optionValue: unknown): boolean => {
 		if (multiSelect) {
@@ -283,7 +358,7 @@ export function DynamicSelectField({
 			return;
 		}
 
-		const option = options[optionIndex];
+		const option = selectableOptions[optionIndex];
 		if (!option) {
 			return;
 		}
@@ -321,6 +396,41 @@ export function DynamicSelectField({
 	};
 
 	const isDisabled = disabled || dropdownDisabled;
+	const hasAutoSelectedRef = useRef(false);
+
+	useEffect(() => {
+		hasAutoSelectedRef.current = false;
+	}, [refresherValues, field.key]);
+
+	useEffect(() => {
+		if (hasAutoSelectedRef.current) {
+			return;
+		}
+		if (!field.autoSelectFirstOption || multiSelect || !dynamicOpts) {
+			return;
+		}
+		if (loading || disabled || dropdownDisabled || value) {
+			return;
+		}
+		if (options.length === 0) {
+			return;
+		}
+		const first = options[0];
+		if (!first) {
+			return;
+		}
+		hasAutoSelectedRef.current = true;
+		onChangeRef.current(String(first.value));
+	}, [
+		field.autoSelectFirstOption,
+		multiSelect,
+		dynamicOpts,
+		loading,
+		disabled,
+		dropdownDisabled,
+		value,
+		options,
+	]);
 
 	// Error state: fall back to text input with warning
 	if (error && options.length === 0 && cachedOptions.current.length === 0) {
@@ -460,9 +570,9 @@ export function DynamicSelectField({
 					<CommandGroup>
 						<CommandList>
 							{!loading &&
-								filteredOptions.map((option, _idx) => {
-									// Find the original index in options array
-									const originalIndex = options.indexOf(option);
+								filteredOptions.map((option) => {
+									// Find the index in the full selectable list
+									const originalIndex = selectableOptions.indexOf(option);
 									return (
 										<CommandItem
 											className="flex items-center justify-between gap-2"

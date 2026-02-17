@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
-import { db } from "@/lib/db";
 import { listAgentProfileTemplates } from "@/lib/db/agent-profiles";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
-import { listPieceMetadata } from "@/lib/db/piece-metadata";
+import { listWorkflowPlanArtifactsForUser } from "@/lib/db/workflow-plan-artifacts";
 import {
 	AppConnectionType,
 	type AppConnectionValue,
@@ -39,6 +38,7 @@ type OptionsRequestBody = {
 	actionName: string;
 	propertyName: string;
 	connectionExternalId?: string;
+	workflowId?: string;
 	input?: Record<string, unknown>;
 	searchValue?: string;
 };
@@ -79,6 +79,36 @@ async function buildAgentProfileTemplateListResponse(
 		);
 	}
 	return { options: filterOptions(options, searchValue) };
+}
+
+async function buildWorkflowPlanArtifactListResponse(input: {
+	userId: string;
+	workflowId?: string;
+	searchValue?: string;
+}): Promise<OptionsResponse> {
+	const rows = await listWorkflowPlanArtifactsForUser({
+		userId: input.userId,
+		workflowId: input.workflowId,
+		searchValue: input.searchValue,
+		limit: 100,
+	});
+	const options = rows.map((row) => {
+		const created = row.createdAt.toISOString().slice(0, 19).replace("T", " ");
+		const status = row.status.toUpperCase();
+		const shortId = row.id.slice(0, 12);
+		const workflow = row.workflowId.slice(0, 8);
+		const goal = row.goal.slice(0, 80);
+		return {
+			label: `[${status}] ${created}Z · ${shortId} · wf:${workflow} · ${goal}`,
+			value: row.id,
+		};
+	});
+	if (options.length === 0) {
+		return buildDisabledResponse(
+			"No plan artifacts found. Run durable/run in plan mode first.",
+		);
+	}
+	return { options: filterOptions(options, input.searchValue) };
 }
 
 function filterOptions(
@@ -399,6 +429,22 @@ export async function POST(request: Request) {
 		) {
 			return NextResponse.json(
 				await buildAgentProfileTemplateListResponse(rawBody.searchValue),
+			);
+		}
+
+		if (
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "artifactRef"
+		) {
+			return NextResponse.json(
+				await buildWorkflowPlanArtifactListResponse({
+					userId: session.user.id,
+					workflowId:
+						typeof rawBody.workflowId === "string"
+							? rawBody.workflowId.trim()
+							: undefined,
+					searchValue: rawBody.searchValue,
+				}),
 			);
 		}
 

@@ -1335,17 +1335,35 @@ export function WorkflowRuns({
 								</div>
 							</button>
 
-							<button
-								className="flex shrink-0 items-center justify-center rounded p-1 transition-colors hover:bg-muted"
-								onClick={() => toggleRun(execution.id)}
-								type="button"
-							>
-								{isExpanded ? (
-									<ChevronDown className="h-4 w-4 text-muted-foreground" />
-								) : (
-									<ChevronRight className="h-4 w-4 text-muted-foreground" />
-								)}
-							</button>
+							<div className="flex shrink-0 items-center gap-1">
+								{currentWorkflowId ? (
+									<Button
+										asChild
+										className="h-7 w-7 p-0"
+										size="sm"
+										variant="ghost"
+									>
+										<Link
+											aria-label="Open run detail page"
+											href={`/workflows/${currentWorkflowId}/runs/${execution.id}`}
+											title="Open run detail page"
+										>
+											<ExternalLink className="h-3.5 w-3.5 text-muted-foreground" />
+										</Link>
+									</Button>
+								) : null}
+								<button
+									className="flex items-center justify-center rounded p-1 transition-colors hover:bg-muted"
+									onClick={() => toggleRun(execution.id)}
+									type="button"
+								>
+									{isExpanded ? (
+										<ChevronDown className="h-4 w-4 text-muted-foreground" />
+									) : (
+										<ChevronRight className="h-4 w-4 text-muted-foreground" />
+									)}
+								</button>
+							</div>
 						</div>
 
 						{isExpanded && (
