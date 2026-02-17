@@ -139,7 +139,8 @@ export class K8sSandbox {
 	private readonly _onDestroy?: () => Promise<void>;
 
 	private claimName: string | null = null;
-	private sandboxPodName: string | null = null;
+	private sandboxName: string | null = null;
+	private podName: string | null = null;
 	private podIp: string | null = null;
 	private _destroying = false;
 
@@ -150,6 +151,23 @@ export class K8sSandbox {
 	/** Get the sandbox pod's cluster IP (null if not yet provisioned). */
 	getSandboxPodIp(): string | null {
 		return this.podIp;
+	}
+
+	/** Structured sandbox metadata for workflow outputs and diagnostics. */
+	getDebugInfo(): Record<string, unknown> {
+		return {
+			id: this.id,
+			backend: "k8s",
+			templateName: this.templateName,
+			namespace: this.sandboxNamespace,
+			workingDirectory: this._workingDirectory,
+			timeoutMs: this._timeout,
+			provisionTimeoutMs: this._provisionTimeout,
+			claimName: this.claimName,
+			sandboxName: this.sandboxName,
+			podName: this.podName,
+			podIp: this.podIp,
+		};
 	}
 
 	constructor(options: K8sSandboxOptions = {}) {
@@ -202,11 +220,13 @@ export class K8sSandbox {
 		);
 
 		const sandboxName = await this.waitForSandboxReady();
-		this.sandboxPodName = sandboxName;
-		this.podIp = await this.getPodIp(sandboxName);
+		this.sandboxName = sandboxName;
+		const podEndpoint = await this.getPodEndpoint(sandboxName);
+		this.podName = podEndpoint.podName;
+		this.podIp = podEndpoint.podIp;
 
 		console.log(
-			`[k8s-sandbox] Sandbox ready: pod=${sandboxName}, ip=${this.podIp}`,
+			`[k8s-sandbox] Sandbox ready: sandbox=${sandboxName}, pod=${this.podName}, ip=${this.podIp}`,
 		);
 
 		await this._onStart?.();
@@ -231,7 +251,8 @@ export class K8sSandbox {
 				console.warn(`[k8s-sandbox] Failed to delete SandboxClaim: ${err}`);
 			}
 			this.claimName = null;
-			this.sandboxPodName = null;
+			this.sandboxName = null;
+			this.podName = null;
 			this.podIp = null;
 		}
 
@@ -363,7 +384,9 @@ export class K8sSandbox {
 		);
 	}
 
-	private async getPodIp(sandboxName: string): Promise<string> {
+	private async getPodEndpoint(
+		sandboxName: string,
+	): Promise<{ podName: string; podIp: string }> {
 		const start = Date.now();
 		while (Date.now() - start < 60_000) {
 			try {
@@ -374,21 +397,21 @@ export class K8sSandbox {
 				const podName =
 					sandboxResource.metadata?.annotations?.["agents.x-k8s.io/pod-name"];
 				if (podName) {
-					const ip = await this.getPodIpByName(podName);
-					if (ip) return ip;
+					const endpoint = await this.getPodEndpointByName(podName);
+					if (endpoint) return endpoint;
 				}
 
 				// Strategy 2: Label selector from status
 				const selector = sandboxResource.status?.selector;
 				if (selector) {
-					const ip = await this.getPodIpBySelector(selector);
-					if (ip) return ip;
+					const endpoint = await this.getPodEndpointBySelector(selector);
+					if (endpoint) return endpoint;
 				}
 
 				// Strategy 3: Pod named after the sandbox
 				{
-					const ip = await this.getPodIpByName(sandboxName);
-					if (ip) return ip;
+					const endpoint = await this.getPodEndpointByName(sandboxName);
+					if (endpoint) return endpoint;
 				}
 			} catch {
 				// Sandbox or pod may not be ready yet
@@ -399,14 +422,16 @@ export class K8sSandbox {
 		throw new Error(`Could not get IP for sandbox "${sandboxName}" after 60s`);
 	}
 
-	private async getPodIpByName(podName: string): Promise<string | null> {
+	private async getPodEndpointByName(
+		podName: string,
+	): Promise<{ podName: string; podIp: string } | null> {
 		try {
 			const podPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods/${podName}`;
 			const pod = await k8sRequest("GET", podPath);
 			const ip = pod.status?.podIP;
 			if (ip && pod.status?.phase === "Running") {
 				console.log(`[k8s-sandbox] Resolved pod: ${podName} → ${ip}`);
-				return ip;
+				return { podName, podIp: ip };
 			}
 		} catch {
 			// Pod not found or not ready
@@ -414,7 +439,9 @@ export class K8sSandbox {
 		return null;
 	}
 
-	private async getPodIpBySelector(selector: string): Promise<string | null> {
+	private async getPodEndpointBySelector(
+		selector: string,
+	): Promise<{ podName: string; podIp: string } | null> {
 		try {
 			const listPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods?labelSelector=${encodeURIComponent(selector)}`;
 			const podList = await k8sRequest("GET", listPath);
@@ -425,7 +452,7 @@ export class K8sSandbox {
 					console.log(
 						`[k8s-sandbox] Resolved pod via selector: ${name} → ${ip}`,
 					);
-					return ip;
+					return { podName: name, podIp: ip };
 				}
 			}
 		} catch {

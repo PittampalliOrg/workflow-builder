@@ -1006,6 +1006,19 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             "durationMs": duration_ms,
             "phase": "failed",
         }
+    finally:
+        # Cleanup execution-scoped workspaces (best-effort) on all workflow exits.
+        try:
+            from activities.call_agent_service import cleanup_execution_workspaces
+            yield ctx.call_activity(
+                cleanup_execution_workspaces,
+                input={
+                    "executionId": execution_id,
+                    "_otel": otel_ctx,
+                },
+            )
+        except Exception as cleanup_err:
+            logger.warning(f"[Dynamic Workflow] Workspace cleanup failed: {cleanup_err}")
 
 
 def process_agent_child_workflow(
@@ -1056,6 +1069,7 @@ def process_agent_child_workflow(
         "agentConfig": resolved_config.get("agentConfig"),
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
+        "workspaceRef": resolved_config.get("workspaceRef"),
         "integrations": integrations,
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,

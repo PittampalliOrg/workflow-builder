@@ -254,16 +254,16 @@ const DURABLE_AGENT_FALLBACK_TOOLS = [
 	"mkdir",
 	"file_stat",
 	"execute_command",
+	"clone",
 ];
 
 async function getDurableToolOptions(
 	searchValue?: string,
 ): Promise<OptionsResponse> {
 	try {
-		const response = await fetch(
-			`${DURABLE_AGENT_API_BASE_URL}/api/tools`,
-			{ signal: AbortSignal.timeout(DURABLE_AGENT_OPTIONS_TIMEOUT_MS) },
-		);
+		const response = await fetch(`${DURABLE_AGENT_API_BASE_URL}/api/tools`, {
+			signal: AbortSignal.timeout(DURABLE_AGENT_OPTIONS_TIMEOUT_MS),
+		});
 
 		if (!response.ok) {
 			throw new Error(
@@ -482,8 +482,22 @@ export async function POST(request: Request) {
 			);
 		}
 
-		// GitHub repo/branch selectors for mastra/clone (kept for backward compat)
-		if (normalizedActionName !== "mastra/clone") {
+		// Tools multi-select for workspace/profile
+		if (
+			normalizedActionName === "workspace/profile" &&
+			rawBody.propertyName === "enabledTools"
+		) {
+			return NextResponse.json(
+				await getDurableToolOptions(rawBody.searchValue),
+			);
+		}
+
+		// GitHub repo/branch selectors for clone actions
+		// Keep mastra/clone for backward compatibility and support workspace/clone.
+		if (
+			normalizedActionName !== "mastra/clone" &&
+			normalizedActionName !== "workspace/clone"
+		) {
 			return NextResponse.json(
 				{ error: `Unsupported action: ${rawBody.actionName}` },
 				{ status: 400 },

@@ -12,27 +12,27 @@ export type { AgentRunnerOptions } from "./agent-runner.js";
 
 // Types
 export type {
-  WorkflowStatus,
-  ToolCall,
-  ToolExecutionRecord,
-  DurableAgentTool,
-  AgentWorkflowMessage,
-  AgentWorkflowEntry,
-  AgentWorkflowState,
-  TriggerAction,
-  BroadcastMessage,
-  AgentTaskResponse,
+	WorkflowStatus,
+	ToolCall,
+	ToolExecutionRecord,
+	DurableAgentTool,
+	AgentWorkflowMessage,
+	AgentWorkflowEntry,
+	AgentWorkflowState,
+	TriggerAction,
+	BroadcastMessage,
+	AgentTaskResponse,
 } from "./types/index.js";
 
 // Config
 export type {
-  DurableAgentOptions,
-  AgentStateConfig,
-  AgentPubSubConfig,
-  AgentRegistryConfig,
-  AgentExecutionConfig,
-  WorkflowRetryPolicy,
-  AgentObservabilityConfig,
+	DurableAgentOptions,
+	AgentStateConfig,
+	AgentPubSubConfig,
+	AgentRegistryConfig,
+	AgentExecutionConfig,
+	WorkflowRetryPolicy,
+	AgentObservabilityConfig,
 } from "./config/index.js";
 export { OrchestrationMode } from "./config/index.js";
 
@@ -46,18 +46,28 @@ export { ConversationListMemory } from "./memory/index.js";
 export { DaprStateMemory } from "./memory/index.js";
 
 // LLM
-export { callLlmAdapter, toAiSdkMessages, buildToolDeclarations } from "./llm/index.js";
+export {
+	callLlmAdapter,
+	toAiSdkMessages,
+	buildToolDeclarations,
+} from "./llm/index.js";
 export type { LlmCallResult } from "./llm/index.js";
 
 // Workflow
-export { createAgentWorkflow, createOrchestrationWorkflow } from "./workflow/index.js";
-export type { AgentActivities, OrchestrationActivities } from "./workflow/index.js";
 export {
-  createRecordInitialEntry,
-  createCallLlm,
-  createRunTool,
-  createSaveToolResults,
-  createFinalizeWorkflow,
+	createAgentWorkflow,
+	createOrchestrationWorkflow,
+} from "./workflow/index.js";
+export type {
+	AgentActivities,
+	OrchestrationActivities,
+} from "./workflow/index.js";
+export {
+	createRecordInitialEntry,
+	createCallLlm,
+	createRunTool,
+	createSaveToolResults,
+	createFinalizeWorkflow,
 } from "./workflow/index.js";
 
 // PubSub
@@ -69,48 +79,53 @@ export { AgentRegistry } from "./registry/index.js";
 
 // Orchestration
 export {
-  OrchestrationStrategy,
-  RoundRobinOrchestrationStrategy,
-  RandomOrchestrationStrategy,
-  AgentOrchestrationStrategy,
+	OrchestrationStrategy,
+	RoundRobinOrchestrationStrategy,
+	RandomOrchestrationStrategy,
+	AgentOrchestrationStrategy,
 } from "./orchestration/index.js";
 export type {
-  OrchestrationAction,
-  OrchestrationProcessResult,
-  OrchestrationFinalMessage,
+	OrchestrationAction,
+	OrchestrationProcessResult,
+	OrchestrationFinalMessage,
 } from "./orchestration/index.js";
 
 // Observability
-export { initObservability, extractTraceContext, injectTraceContext } from "./observability/index.js";
+export {
+	initOtel,
+	otelLogMixin,
+	extractTraceContext,
+	injectTraceContext,
+} from "./observability/index.js";
 
 // Mastra adapters (optional — all graceful fallback if packages not installed)
 export {
-  adaptMastraTool,
-  adaptMastraTools,
-  type MastraToolLike,
-  registerLlmProvider,
-  registerEmbeddingProvider,
-  resolveModel,
-  resolveEmbeddingModel,
-  registerBuiltinProviders,
-  createMastraWorkspaceTools,
-  parseMcpServersConfig,
-  discoverMcpTools,
-  type McpServerConfig,
-  runInputProcessors,
-  createProcessors,
-  ProcessorAbortError,
-  type ProcessorLike,
-  MastraMemoryAdapter,
-  createMastraMemoryAdapter,
-  type MastraMemoryLike,
-  createRagTools,
-  parseRagToolsConfig,
-  type RagToolConfig,
-  runScorers,
-  createScorers,
-  type ScorerLike,
-  type ScoringResult,
-  createVoiceTools,
-  type VoiceProviderLike,
+	adaptMastraTool,
+	adaptMastraTools,
+	type MastraToolLike,
+	registerLlmProvider,
+	registerEmbeddingProvider,
+	resolveModel,
+	resolveEmbeddingModel,
+	registerBuiltinProviders,
+	createMastraWorkspaceTools,
+	parseMcpServersConfig,
+	discoverMcpTools,
+	type McpServerConfig,
+	runInputProcessors,
+	createProcessors,
+	ProcessorAbortError,
+	type ProcessorLike,
+	MastraMemoryAdapter,
+	createMastraMemoryAdapter,
+	type MastraMemoryLike,
+	createRagTools,
+	parseRagToolsConfig,
+	type RagToolConfig,
+	runScorers,
+	createScorers,
+	type ScorerLike,
+	type ScoringResult,
+	createVoiceTools,
+	type VoiceProviderLike,
 } from "./mastra/index.js";

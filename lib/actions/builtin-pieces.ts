@@ -134,6 +134,13 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				},
 				// ── Always visible ──
 				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
 					key: "maxTurns",
 					label: "Max Turns",
 					type: "number",
@@ -172,6 +179,14 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					field: "patch",
 					description: "Unified diff patch of all file changes",
 				},
+				{
+					field: "patchRef",
+					description: "Reference to full patch artifact",
+				},
+				{
+					field: "changeSummary",
+					description: "Structured per-step file change metadata",
+				},
 				{ field: "usage", description: "Token usage statistics" },
 				{
 					field: "agentWorkflowId",
@@ -182,6 +197,301 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const WORKSPACE_PIECE: IntegrationDefinition = {
+	type: "workspace",
+	label: "Workspace",
+	pieceName: "workspace",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "profile",
+			label: "Workspace Profile",
+			description:
+				"Create or resolve an execution-scoped workspace profile for this workflow run",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "name",
+					label: "Profile Name",
+					type: "template-input",
+					placeholder: "workspace-profile",
+					required: false,
+				},
+				{
+					key: "rootPath",
+					label: "Root Path (optional)",
+					type: "template-input",
+					placeholder: "workspaces/current",
+					required: false,
+				},
+				{
+					key: "enabledTools",
+					label: "Enabled Tools",
+					type: "dynamic-multi-select",
+					placeholder: "Select workspace tools",
+					defaultValue: "[]",
+					required: false,
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
+						actionName: "workspace/profile",
+						propName: "enabledTools",
+						refreshers: [],
+					},
+				},
+				{
+					key: "requireReadBeforeWrite",
+					label: "Read Before Write",
+					type: "select",
+					required: false,
+					defaultValue: "false",
+					options: [
+						{ label: "Disabled", value: "false" },
+						{ label: "Enabled", value: "true" },
+					],
+				},
+				{
+					key: "commandTimeoutMs",
+					label: "Command Timeout (ms)",
+					type: "number",
+					required: false,
+					defaultValue: "30000",
+					min: 1000,
+				},
+			],
+			outputFields: [
+				{ field: "workspaceRef", description: "Workspace reference ID" },
+				{ field: "executionId", description: "Workflow execution ID" },
+				{ field: "rootPath", description: "Workspace root path" },
+				{ field: "backend", description: "Workspace backend (k8s/local)" },
+			],
+		},
+		{
+			slug: "clone",
+			label: "Workspace Clone Repository",
+			description:
+				"Clone a GitHub repository into an execution-scoped workspace session",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "repositoryOwner",
+					label: "Repository Owner",
+					type: "dynamic-select",
+					required: true,
+					placeholder: "Select owner",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
+						actionName: "workspace/clone",
+						propName: "repositoryOwner",
+						refreshers: [],
+					},
+				},
+				{
+					key: "repositoryRepo",
+					label: "Repository",
+					type: "dynamic-select",
+					required: true,
+					placeholder: "Select repository",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
+						actionName: "workspace/clone",
+						propName: "repositoryRepo",
+						refreshers: ["repositoryOwner"],
+					},
+				},
+				{
+					key: "repositoryBranch",
+					label: "Branch",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select branch",
+					defaultValue: "main",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
+						actionName: "workspace/clone",
+						propName: "repositoryBranch",
+						refreshers: ["repositoryOwner", "repositoryRepo"],
+					},
+				},
+				{
+					key: "targetDir",
+					label: "Target Directory (optional)",
+					type: "template-input",
+					placeholder: "repo",
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "clonePath", description: "Cloned directory path" },
+				{ field: "repository", description: "Repository owner/name" },
+				{ field: "branch", description: "Checked out branch" },
+				{ field: "commitHash", description: "Resolved commit hash" },
+				{ field: "fileCount", description: "Tracked file count" },
+				{
+					field: "changeSummary",
+					description: "Structured file change metadata for this step",
+				},
+			],
+		},
+		{
+			slug: "command",
+			label: "Workspace Command",
+			description: "Execute a shell command in a workspace session",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "command",
+					label: "Command",
+					type: "template-textarea",
+					placeholder: "ls -la",
+					rows: 4,
+					required: true,
+				},
+				{
+					key: "timeoutMs",
+					label: "Timeout (ms)",
+					type: "number",
+					defaultValue: "30000",
+					min: 1000,
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "stdout", description: "Command stdout" },
+				{ field: "stderr", description: "Command stderr" },
+				{ field: "exitCode", description: "Process exit code" },
+				{ field: "success", description: "Whether command succeeded" },
+				{
+					field: "changeSummary",
+					description: "Structured file change metadata for this step",
+				},
+			],
+		},
+		{
+			slug: "file",
+			label: "Workspace File Operation",
+			description:
+				"Read, write, edit, list, stat, mkdir, or delete files in a workspace",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "operation",
+					label: "Operation",
+					type: "select",
+					required: true,
+					defaultValue: "read_file",
+					options: [
+						{ label: "Read File", value: "read_file" },
+						{ label: "Write File", value: "write_file" },
+						{ label: "Edit File", value: "edit_file" },
+						{ label: "List Files", value: "list_files" },
+						{ label: "Delete File", value: "delete_file" },
+						{ label: "Create Directory", value: "mkdir" },
+						{ label: "File Stat", value: "file_stat" },
+					],
+				},
+				{
+					key: "path",
+					label: "Path",
+					type: "template-input",
+					placeholder: "src/index.ts",
+					required: false,
+				},
+				{
+					key: "content",
+					label: "Content",
+					type: "template-textarea",
+					placeholder: "File content",
+					rows: 6,
+					required: false,
+					showWhen: { field: "operation", equals: "write_file" },
+				},
+				{
+					key: "old_string",
+					label: "Find Text",
+					type: "template-textarea",
+					placeholder: "Text to replace",
+					rows: 4,
+					required: false,
+					showWhen: { field: "operation", equals: "edit_file" },
+				},
+				{
+					key: "new_string",
+					label: "Replace With",
+					type: "template-textarea",
+					placeholder: "Replacement text",
+					rows: 4,
+					required: false,
+					showWhen: { field: "operation", equals: "edit_file" },
+				},
+			],
+			outputFields: [
+				{ field: "content", description: "Read file content" },
+				{ field: "files", description: "Directory listing" },
+				{ field: "path", description: "Affected path" },
+				{ field: "deleted", description: "Delete operation status" },
+				{
+					field: "changeSummary",
+					description: "Structured file change metadata for this step",
+				},
+			],
+		},
+		{
+			slug: "cleanup",
+			label: "Workspace Cleanup",
+			description:
+				"Cleanup workspace session(s) by workspaceRef or executionId",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
+					key: "executionId",
+					label: "Execution ID (optional)",
+					type: "template-input",
+					placeholder: "{{Trigger.__execution.id}}",
+					required: false,
+				},
+			],
+			outputFields: [
+				{
+					field: "cleanedWorkspaceRefs",
+					description: "Workspace refs that were cleaned",
+				},
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, DURABLE_AGENT_PIECE];
+	return [MCP_PIECE, WORKSPACE_PIECE, DURABLE_AGENT_PIECE];
 }

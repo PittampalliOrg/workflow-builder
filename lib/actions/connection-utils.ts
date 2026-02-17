@@ -7,6 +7,7 @@ import type { IntegrationType } from "@/lib/actions/types";
  */
 const ACTION_REQUIRED_INTEGRATIONS: Record<string, IntegrationType> = {
 	"mastra/clone": "github",
+	"workspace/clone": "github",
 };
 
 /**
@@ -31,6 +32,15 @@ export function requiresConnectionForIntegration(
 	integrationType: string | null | undefined,
 ): boolean {
 	if (!integrationType) {
+		return false;
+	}
+	if (
+		integrationType === "system" ||
+		integrationType === "durable" ||
+		integrationType === "mcp" ||
+		integrationType === "workspace" ||
+		integrationType === "mastra"
+	) {
 		return false;
 	}
 	return true;

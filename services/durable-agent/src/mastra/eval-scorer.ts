@@ -9,19 +9,19 @@
  * Structural interface matching a Mastra eval scorer.
  */
 export interface ScorerLike {
-  name: string;
-  score(opts: {
-    input: string;
-    output: string;
-    [key: string]: unknown;
-  }): Promise<{ score: number; details?: Record<string, unknown> }>;
+	name: string;
+	score(opts: {
+		input: string;
+		output: string;
+		[key: string]: unknown;
+	}): Promise<{ score: number; details?: Record<string, unknown> }>;
 }
 
 export interface ScoringResult {
-  scorer: string;
-  score: number;
-  details?: Record<string, unknown>;
-  error?: string;
+	scorer: string;
+	score: number;
+	details?: Record<string, unknown>;
+	error?: string;
 }
 
 /**
@@ -37,38 +37,38 @@ export interface ScoringResult {
  * @returns Array of scoring results (one per scorer)
  */
 export async function runScorers(
-  scorers: ScorerLike[],
-  input: string,
-  output: string,
-  runId?: string,
+	scorers: ScorerLike[],
+	input: string,
+	output: string,
+	runId?: string,
 ): Promise<ScoringResult[]> {
-  if (scorers.length === 0) return [];
+	if (scorers.length === 0) return [];
 
-  const results: ScoringResult[] = [];
+	const results: ScoringResult[] = [];
 
-  for (const scorer of scorers) {
-    try {
-      const result = await scorer.score({ input, output, runId });
-      results.push({
-        scorer: scorer.name,
-        score: result.score,
-        details: result.details,
-      });
-      console.log(
-        `[eval-scorer] ${scorer.name}: score=${result.score}${runId ? ` run=${runId}` : ""}`,
-      );
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[eval-scorer] ${scorer.name} failed: ${msg}`);
-      results.push({
-        scorer: scorer.name,
-        score: -1,
-        error: msg,
-      });
-    }
-  }
+	for (const scorer of scorers) {
+		try {
+			const result = await scorer.score({ input, output, runId });
+			results.push({
+				scorer: scorer.name,
+				score: result.score,
+				details: result.details,
+			});
+			console.log(
+				`[eval-scorer] ${scorer.name}: score=${result.score}${runId ? ` run=${runId}` : ""}`,
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.warn(`[eval-scorer] ${scorer.name} failed: ${msg}`);
+			results.push({
+				scorer: scorer.name,
+				score: -1,
+				error: msg,
+			});
+		}
+	}
 
-  return results;
+	return results;
 }
 
 /**
@@ -78,42 +78,47 @@ export async function runScorers(
  * @param config - e.g., "hallucination,relevance,toxicity"
  * @returns Array of scorer instances
  */
-export async function createScorers(
-  config: string,
-): Promise<ScorerLike[]> {
-  if (!config.trim()) return [];
+export async function createScorers(config: string): Promise<ScorerLike[]> {
+	if (!config.trim()) return [];
 
-  const names = config.split(",").map((s) => s.trim()).filter(Boolean);
-  const scorers: ScorerLike[] = [];
+	const names = config
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+	const scorers: ScorerLike[] = [];
 
-  try {
-    // @ts-expect-error optional peer dependency
-    const mastraEvals = await import("@mastra/evals");
-    const mod = mastraEvals as any;
+	try {
+		const mastraEvals = await import("@mastra/evals");
+		const mod = mastraEvals as any;
 
-    for (const name of names) {
-      // Try common patterns: HallucinationScorer, RelevanceScorer, etc.
-      const pascalName = name.charAt(0).toUpperCase() + name.slice(1);
-      const Cls =
-        mod[`${pascalName}Scorer`] ??
-        mod[`${pascalName}Metric`] ??
-        mod[name];
+		for (const name of names) {
+			// Try common patterns: HallucinationScorer, RelevanceScorer, etc.
+			const pascalName = name.charAt(0).toUpperCase() + name.slice(1);
+			const Cls =
+				mod[`${pascalName}Scorer`] ?? mod[`${pascalName}Metric`] ?? mod[name];
 
-      if (Cls) {
-        scorers.push(new Cls());
-        console.log(`[eval-scorer] Loaded scorer: ${name}`);
-      } else {
-        console.warn(`[eval-scorer] Scorer "${name}" not found in @mastra/evals`);
-      }
-    }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("Cannot find module") || msg.includes("MODULE_NOT_FOUND")) {
-      console.log("[eval-scorer] @mastra/evals not installed, skipping scorers");
-    } else {
-      console.warn(`[eval-scorer] Failed to load scorers: ${msg}`);
-    }
-  }
+			if (Cls) {
+				scorers.push(new Cls());
+				console.log(`[eval-scorer] Loaded scorer: ${name}`);
+			} else {
+				console.warn(
+					`[eval-scorer] Scorer "${name}" not found in @mastra/evals`,
+				);
+			}
+		}
+	} catch (err: unknown) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (
+			msg.includes("Cannot find module") ||
+			msg.includes("MODULE_NOT_FOUND")
+		) {
+			console.log(
+				"[eval-scorer] @mastra/evals not installed, skipping scorers",
+			);
+		} else {
+			console.warn(`[eval-scorer] Failed to load scorers: ${msg}`);
+		}
+	}
 
-  return scorers;
+	return scorers;
 }

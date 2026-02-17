@@ -31,7 +31,36 @@ export const WORKSPACE_PATH = resolve(
 	process.env.AGENT_WORKSPACE_PATH || "./workspace",
 );
 
-const SANDBOX_BACKEND = process.env.SANDBOX_BACKEND || detectBackend();
+export const SANDBOX_BACKEND = resolveBackend();
+
+function resolveBackend(): "k8s" | "local" {
+	const inCluster = existsSync(
+		"/var/run/secrets/kubernetes.io/serviceaccount/token",
+	);
+	const configured = String(process.env.SANDBOX_BACKEND || "").trim();
+	if (!configured) {
+		return detectBackend();
+	}
+
+	if (configured === "k8s") {
+		return "k8s";
+	}
+
+	if (configured === "local") {
+		if (inCluster) {
+			throw new Error(
+				"[sandbox] Invalid production configuration: SANDBOX_BACKEND=local " +
+					"is not allowed in-cluster. Set SANDBOX_BACKEND=k8s.",
+			);
+		}
+		return "local";
+	}
+
+	console.warn(
+		`[sandbox] Unknown SANDBOX_BACKEND "${configured}", falling back to auto-detect`,
+	);
+	return detectBackend();
+}
 
 /** Auto-detect: use K8s if running in-cluster, local otherwise. */
 function detectBackend(): "k8s" | "local" {
@@ -78,12 +107,16 @@ export interface Sandbox {
 		options?: { timeout?: number; cwd?: string },
 	): Promise<CommandResult>;
 	getSandboxPodIp?(): string | null;
+	getDebugInfo?(): Record<string, unknown>;
 }
 
 /** Shared filesystem interface */
 export interface Filesystem {
 	readonly name: string;
-	readFile(path: string, options?: { encoding?: string }): Promise<string | Buffer>;
+	readFile(
+		path: string,
+		options?: { encoding?: string },
+	): Promise<string | Buffer>;
 	writeFile(
 		path: string,
 		content: string | Buffer | Uint8Array,
@@ -100,7 +133,7 @@ export interface Filesystem {
 	shellEscape?(s: string): string;
 }
 
-class LocalSandbox implements Sandbox {
+export class LocalSandbox implements Sandbox {
 	readonly name = "LocalSandbox";
 	private readonly workDir: string;
 	private readonly _timeout: number;
@@ -151,12 +184,16 @@ class LocalSandbox implements Sandbox {
 		const startTime = Date.now();
 
 		try {
-			const { stdout, stderr } = await execFileAsync("sh", ["-c", fullCommand], {
-				cwd,
-				timeout,
-				env: { ...buildAllowedEnv(), HOME: cwd },
-				maxBuffer: 10 * 1024 * 1024, // 10MB
-			});
+			const { stdout, stderr } = await execFileAsync(
+				"sh",
+				["-c", fullCommand],
+				{
+					cwd,
+					timeout,
+					env: { ...buildAllowedEnv(), HOME: cwd },
+					maxBuffer: 10 * 1024 * 1024, // 10MB
+				},
+			);
 
 			return {
 				command,
@@ -175,7 +212,7 @@ class LocalSandbox implements Sandbox {
 				command,
 				args,
 				stdout: err.stdout || "",
-				stderr: err.stderr || (err.message || ""),
+				stderr: err.stderr || err.message || "",
 				exitCode: err.code ?? (isTimeout ? 124 : 1),
 				success: false,
 				executionTimeMs,
@@ -183,9 +220,17 @@ class LocalSandbox implements Sandbox {
 			};
 		}
 	}
+
+	getDebugInfo(): Record<string, unknown> {
+		return {
+			backend: "local",
+			workDir: this.workDir,
+			timeoutMs: this._timeout,
+		};
+	}
 }
 
-class LocalFilesystem implements Filesystem {
+export class LocalFilesystem implements Filesystem {
 	readonly name = "LocalFilesystem";
 	private readonly _basePath: string;
 
@@ -208,7 +253,9 @@ class LocalFilesystem implements Filesystem {
 	): Promise<string | Buffer> {
 		const absPath = this.resolvePath(path);
 		if (options?.encoding) {
-			return readFile(absPath, { encoding: options.encoding as BufferEncoding });
+			return readFile(absPath, {
+				encoding: options.encoding as BufferEncoding,
+			});
 		}
 		return readFile(absPath);
 	}
@@ -325,11 +372,9 @@ export async function executeCommandViaSandbox(
 	const timeout =
 		opts?.timeout ?? parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
 
-	const result = await sandbox.executeCommand(
-		"sh",
-		["-c", command],
-		{ timeout },
-	);
+	const result = await sandbox.executeCommand("sh", ["-c", command], {
+		timeout,
+	});
 	return {
 		stdout: result.stdout,
 		stderr: result.stderr,

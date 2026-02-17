@@ -362,7 +362,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									}
 								} catch (err) {
 									console.warn(
-										"[Execute Route] GitHub credential resolution failed for mastra/clone:",
+										"[Execute Route] GitHub credential resolution failed for clone action:",
 										err,
 									);
 								}
@@ -373,6 +373,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const isAgentRun = toolId === "run";
 						const isPlan = toolId === "plan";
 						const isExecutePlan = toolId === "execute";
+						const isWorkspaceProfile =
+							pluginId === "workspace" && toolId === "profile";
+						const isWorkspaceClone =
+							pluginId === "workspace" && toolId === "clone";
+						const isWorkspaceCommand =
+							pluginId === "workspace" && toolId === "command";
+						const isWorkspaceFile =
+							pluginId === "workspace" && toolId === "file";
+						const isWorkspaceCleanup =
+							pluginId === "workspace" && toolId === "cleanup";
 
 						let targetUrl: string;
 						let requestBody: string;
@@ -381,7 +391,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/run`;
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? "",
+								model: args.model,
+								maxTurns: args.maxTurns,
+								instructions: args.instructions,
+								tools: args.tools,
+								workspaceRef:
+									typeof args.workspaceRef === "string"
+										? args.workspaceRef
+										: undefined,
 								parentExecutionId: body.execution_id,
+								executionId: body.execution_id,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -411,6 +430,70 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								plan,
 								cwd: args.cwd ?? "",
 								parentExecutionId: body.execution_id,
+								executionId: body.execution_id,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isWorkspaceProfile) {
+							targetUrl = `${functionUrl}/api/workspaces/profile`;
+							requestBody = JSON.stringify({
+								executionId: body.execution_id,
+								name: args.name,
+								rootPath: args.rootPath,
+								enabledTools: args.enabledTools,
+								requireReadBeforeWrite: args.requireReadBeforeWrite,
+								commandTimeoutMs: args.commandTimeoutMs,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isWorkspaceClone) {
+							targetUrl = `${functionUrl}/api/workspaces/clone`;
+							requestBody = JSON.stringify({
+								executionId: body.execution_id,
+								workspaceRef: args.workspaceRef,
+								repositoryOwner: args.repositoryOwner,
+								repositoryRepo: args.repositoryRepo,
+								repositoryBranch: args.repositoryBranch,
+								targetDir: args.targetDir,
+								repositoryToken: args.repositoryToken,
+								githubToken: args.githubToken,
+								timeoutMs: args.timeoutMs,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isWorkspaceCommand) {
+							targetUrl = `${functionUrl}/api/workspaces/command`;
+							requestBody = JSON.stringify({
+								executionId: body.execution_id,
+								workspaceRef: args.workspaceRef,
+								command: args.command ?? args.prompt ?? "",
+								timeoutMs: args.timeoutMs,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isWorkspaceFile) {
+							targetUrl = `${functionUrl}/api/workspaces/file`;
+							requestBody = JSON.stringify({
+								executionId: body.execution_id,
+								workspaceRef: args.workspaceRef,
+								operation: args.operation,
+								path: args.path,
+								content: args.content,
+								old_string: args.old_string,
+								new_string: args.new_string,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isWorkspaceCleanup) {
+							targetUrl = `${functionUrl}/api/workspaces/cleanup`;
+							requestBody = JSON.stringify({
+								executionId: body.execution_id,
+								workspaceRef: args.workspaceRef,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -467,7 +550,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 											typeof parsedMastra.toolId === "string"
 												? parsedMastra.toolId
 												: toolId,
-										result: parsedMastra.result,
+										result:
+											parsedMastra.result !== undefined
+												? parsedMastra.result
+												: parsedMastra,
+										...(parsedMastra.result &&
+										typeof parsedMastra.result === "object"
+											? (parsedMastra.result as Record<string, unknown>)
+											: {}),
 										plan: parsedMastra.plan,
 										workflowId:
 											typeof parsedMastra.workflowId === "string"
@@ -475,6 +565,37 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 												: typeof parsedMastra.workflow_id === "string"
 													? parsedMastra.workflow_id
 													: undefined,
+										workspaceRef:
+											typeof (parsedMastra as Record<string, unknown>)
+												.workspaceRef === "string"
+												? ((parsedMastra as Record<string, unknown>)
+														.workspaceRef as string)
+												: undefined,
+										executionId:
+											typeof (parsedMastra as Record<string, unknown>)
+												.executionId === "string"
+												? ((parsedMastra as Record<string, unknown>)
+														.executionId as string)
+												: undefined,
+										rootPath:
+											typeof (parsedMastra as Record<string, unknown>)
+												.rootPath === "string"
+												? ((parsedMastra as Record<string, unknown>)
+														.rootPath as string)
+												: undefined,
+										backend:
+											typeof (parsedMastra as Record<string, unknown>)
+												.backend === "string"
+												? ((parsedMastra as Record<string, unknown>)
+														.backend as string)
+												: undefined,
+										cleanedWorkspaceRefs: Array.isArray(
+											(parsedMastra as Record<string, unknown>)
+												.cleanedWorkspaceRefs,
+										)
+											? ((parsedMastra as Record<string, unknown>)
+													.cleanedWorkspaceRefs as unknown[])
+											: undefined,
 										status:
 											typeof parsedMastra.status === "string"
 												? parsedMastra.status

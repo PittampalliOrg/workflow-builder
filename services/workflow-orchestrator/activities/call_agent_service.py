@@ -146,9 +146,11 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "plan": plan,
                     "cwd": input_data.get("cwd", ""),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
+                    "executionId": input_data.get("executionId", ""),
                     "workflowId": input_data.get("workflowId", ""),
                     "nodeId": input_data.get("nodeId", ""),
                     "nodeName": input_data.get("nodeName", ""),
+                    "workspaceRef": input_data.get("workspaceRef", ""),
                 }
                 if input_data.get("maxTurns"):
                     payload["maxTurns"] = input_data["maxTurns"]
@@ -160,4 +162,39 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                 return data
         except Exception as e:
             logger.error(f"[Call Mastra Execute Plan] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
+    """
+    Cleanup any workspace session(s) associated with a workflow execution.
+
+    Expected input_data:
+      - executionId: str
+    """
+    execution_id = str(input_data.get("executionId") or "").strip()
+    if not execution_id:
+        return {"success": False, "error": "executionId is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DURABLE_AGENT_APP_ID}/method/api/workspaces/cleanup"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "workspace/cleanup",
+        "workflow.instance_id": execution_id,
+    }
+
+    with start_activity_span("activity.cleanup_execution_workspaces", otel, attrs):
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                resp = client.post(url, json={"executionId": execution_id})
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "error": "Invalid response from durable agent service"}
+                return data
+        except Exception as e:
+            logger.error(f"[Cleanup Workspaces] Failed: {e}")
             return {"success": False, "error": str(e)}

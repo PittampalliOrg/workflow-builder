@@ -11,7 +11,34 @@ import {
 	sandbox,
 	executeCommandViaSandbox,
 } from "./sandbox-config.js";
+import { workspaceSessions } from "./workspace-sessions.js";
 import type { DurableAgentTool } from "../types/tool.js";
+
+const INTERNAL_ARG_KEYS = new Set([
+	"__durable_instance_id",
+	"workspaceRef",
+	"executionId",
+]);
+
+function stripInternalArgs(
+	args: Record<string, unknown>,
+): Record<string, unknown> {
+	const cleaned: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(args)) {
+		if (!INTERNAL_ARG_KEYS.has(key)) {
+			cleaned[key] = value;
+		}
+	}
+	return cleaned;
+}
+
+function getDurableInstanceId(
+	args: Record<string, unknown>,
+): string | undefined {
+	return typeof args.__durable_instance_id === "string"
+		? args.__durable_instance_id
+		: undefined;
+}
 
 /** Escape a string for safe use inside single-quoted shell arguments. */
 function shellEscape(s: string): string {
@@ -34,7 +61,17 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		description: "Read a file from the workspace",
 		inputSchema: z.object({ path: z.string().describe("File path to read") }),
 		execute: async (args) => {
-			const content = await filesystem.readFile(args.path as string, {
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "read_file",
+					path: cleanArgs.path as string | undefined,
+				});
+			}
+			const content = await filesystem.readFile(cleanArgs.path as string, {
 				encoding: "utf-8",
 			});
 			return { content };
@@ -48,10 +85,25 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			content: z.string().describe("File content"),
 		}),
 		execute: async (args) => {
-			await filesystem.writeFile(args.path as string, args.content as string, {
-				recursive: true,
-			});
-			return { path: args.path };
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "write_file",
+					path: cleanArgs.path as string | undefined,
+					content: cleanArgs.content as string | undefined,
+				});
+			}
+			await filesystem.writeFile(
+				cleanArgs.path as string,
+				cleanArgs.content as string,
+				{
+					recursive: true,
+				},
+			);
+			return { path: cleanArgs.path };
 		},
 	},
 
@@ -63,28 +115,53 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			new_string: z.string().describe("Replacement text"),
 		}),
 		execute: async (args) => {
-			const original = (await filesystem.readFile(args.path as string, {
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "edit_file",
+					path: cleanArgs.path as string | undefined,
+					old_string: cleanArgs.old_string as string | undefined,
+					new_string: cleanArgs.new_string as string | undefined,
+				});
+			}
+			const original = (await filesystem.readFile(cleanArgs.path as string, {
 				encoding: "utf-8",
 			})) as string;
-			const oldStr = args.old_string as string;
-			const newStr = args.new_string as string;
+			const oldStr = cleanArgs.old_string as string;
+			const newStr = cleanArgs.new_string as string;
 			if (!original.includes(oldStr)) {
-				throw new Error(`old_string not found in ${args.path as string}`);
+				throw new Error(`old_string not found in ${cleanArgs.path as string}`);
 			}
 			const updated = original.replace(oldStr, newStr);
-			await filesystem.writeFile(args.path as string, updated);
-			return { path: args.path };
+			await filesystem.writeFile(cleanArgs.path as string, updated);
+			return { path: cleanArgs.path };
 		},
 	},
 
 	list_files: {
 		description: "List directory contents",
 		inputSchema: z.object({
-			path: z.string().optional().describe("Directory path (default: workspace root)"),
+			path: z
+				.string()
+				.optional()
+				.describe("Directory path (default: workspace root)"),
 		}),
 		execute: async (args) => {
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "list_files",
+					path: cleanArgs.path as string | undefined,
+				});
+			}
 			const entries = await filesystem.readdir(
-				(args.path as string) || ".",
+				(cleanArgs.path as string) || ".",
 			);
 			const files = entries.map((e) => ({
 				name: e.name,
@@ -100,7 +177,17 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			path: z.string().describe("Path to delete"),
 		}),
 		execute: async (args) => {
-			await filesystem.deleteFile(args.path as string, {
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "delete_file",
+					path: cleanArgs.path as string | undefined,
+				});
+			}
+			await filesystem.deleteFile(cleanArgs.path as string, {
 				recursive: true,
 				force: true,
 			});
@@ -114,8 +201,18 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			path: z.string().describe("Directory path to create"),
 		}),
 		execute: async (args) => {
-			await filesystem.mkdir(args.path as string, { recursive: true });
-			return { path: args.path };
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "mkdir",
+					path: cleanArgs.path as string | undefined,
+				});
+			}
+			await filesystem.mkdir(cleanArgs.path as string, { recursive: true });
+			return { path: cleanArgs.path };
 		},
 	},
 
@@ -125,7 +222,17 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			path: z.string().describe("Path to get metadata for"),
 		}),
 		execute: async (args) => {
-			const info = await filesystem.stat(args.path as string);
+			const cleanArgs = stripInternalArgs(args);
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeFileOperation({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					operation: "file_stat",
+					path: cleanArgs.path as string | undefined,
+				});
+			}
+			const info = await filesystem.stat(cleanArgs.path as string);
 			return {
 				size: info.size,
 				isFile: info.type === "file",
@@ -142,8 +249,17 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			command: z.string().describe("Shell command to execute"),
 		}),
 		execute: async (args) => {
-			const command = args.command as string;
+			const cleanArgs = stripInternalArgs(args);
+			const command = cleanArgs.command as string;
 			if (!command) throw new Error("command is required");
+			const session = workspaceSessions.resolveSessionFromArgs(args);
+			if (session) {
+				return workspaceSessions.executeCommand({
+					workspaceRef: session.workspaceRef,
+					durableInstanceId: getDurableInstanceId(args),
+					command,
+				});
+			}
 			return executeCommandViaSandbox(command, { timeout: 30_000 });
 		},
 	},
@@ -303,7 +419,8 @@ async function executeClone(
 		const r = await executeCommandViaSandbox(
 			`cd ${shellEscape(cloneDir)} && git ls-files --cached`,
 		);
-		if (r.exitCode === 0) fileCount = r.stdout.split("\n").filter(Boolean).length;
+		if (r.exitCode === 0)
+			fileCount = r.stdout.split("\n").filter(Boolean).length;
 	} catch {
 		/* non-fatal */
 	}

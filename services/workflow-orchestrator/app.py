@@ -45,7 +45,12 @@ from activities.log_external_event import (
     log_approval_response,
     log_approval_timeout,
 )
-from activities.call_agent_service import call_mastra_agent_run, call_durable_agent_run, call_durable_execute_plan
+from activities.call_agent_service import (
+    call_mastra_agent_run,
+    call_durable_agent_run,
+    call_durable_execute_plan,
+    cleanup_execution_workspaces,
+)
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
@@ -105,6 +110,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_mastra_agent_run)
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_execute_plan)
+    wfr.register_activity(cleanup_execution_workspaces)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)

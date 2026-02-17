@@ -8,12 +8,23 @@
  * - GET  /api/health           — Health check
  * - GET  /api/tools            — List available tools
  * - POST /api/tools/:toolId    — Direct tool execution (bypass agent)
+ * - POST /api/workspaces/profile — Create/get execution-scoped workspace
+ * - POST /api/workspaces/clone   — Clone Git repo into workspace session
+ * - POST /api/workspaces/command — Execute command in workspace
+ * - POST /api/workspaces/file    — Execute file operation in workspace
+ * - POST /api/workspaces/cleanup — Cleanup workspace session(s)
+ * - GET  /api/workspaces/changes/:changeSetId — Fetch stored patch artifact
+ * - GET  /api/workspaces/executions/:executionId/changes — List change artifacts
+ * - GET  /api/workspaces/executions/:executionId/patch — Export combined patch
  * - POST /api/run              — Fire-and-forget agent run
  * - POST /api/plan             — Synchronous planning
  * - POST /api/execute-plan     — Fire-and-forget plan execution
  * - GET  /api/dapr/subscribe   — Dapr subscription discovery
  * - POST /api/dapr/sub         — Inbound Dapr events
  */
+
+import { initOtel } from "../observability/otel-setup.js";
+initOtel("durable-agent");
 
 import { interceptConsole, eventBus } from "./event-bus.js";
 interceptConsole();
@@ -25,6 +36,7 @@ import { openai } from "@ai-sdk/openai";
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
 import { sandbox, filesystem } from "./sandbox-config.js";
+import { workspaceSessions } from "./workspace-sessions.js";
 import {
 	publishCompletionEvent,
 	startDaprPublisher,
@@ -33,7 +45,6 @@ import {
 } from "./completion-publisher.js";
 import { generatePlan } from "./planner.js";
 import type { Plan } from "./planner.js";
-import { gitBaseline, gitDiff } from "./git-diff.js";
 import type { DaprEvent } from "./types.js";
 
 // Mastra adapters (all optional — graceful fallback if packages not installed)
@@ -45,10 +56,20 @@ import {
 } from "../mastra/index.js";
 import { discoverMcpTools } from "../mastra/mcp-client-setup.js";
 import { createMastraWorkspaceTools } from "../mastra/workspace-setup.js";
-import { createProcessors, type ProcessorLike } from "../mastra/processor-adapter.js";
+import {
+	createProcessors,
+	type ProcessorLike,
+} from "../mastra/processor-adapter.js";
 import { createRagTools } from "../mastra/rag-tools.js";
-import { createVoiceTools, type VoiceProviderLike } from "../mastra/voice-tools.js";
-import { runScorers, createScorers, type ScorerLike } from "../mastra/eval-scorer.js";
+import {
+	createVoiceTools,
+	type VoiceProviderLike,
+} from "../mastra/voice-tools.js";
+import {
+	runScorers,
+	createScorers,
+	type ScorerLike,
+} from "../mastra/eval-scorer.js";
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -79,7 +100,10 @@ let mcpDisconnect: (() => Promise<void>) | null = null;
 let scorers: ScorerLike[] = [];
 
 // Merged tools from all sources (populated in initAgent)
-let allMergedTools: Record<string, import("../types/tool.js").DurableAgentTool> = {};
+let allMergedTools: Record<
+	string,
+	import("../types/tool.js").DurableAgentTool
+> = {};
 
 // LRU cache for per-request agent instances (keyed by config hash)
 const agentCache = new Map<string, { agent: DurableAgent; lastUsed: number }>();
@@ -125,7 +149,9 @@ function evictStaleAgents(): void {
 /**
  * Create a DurableAgent from per-request config, or return cached instance.
  */
-async function getOrCreateConfiguredAgent(config: AgentConfigPayload): Promise<DurableAgent> {
+async function getOrCreateConfiguredAgent(
+	config: AgentConfigPayload,
+): Promise<DurableAgent> {
 	const hash = agentConfigHash(config);
 	const cached = agentCache.get(hash);
 	if (cached) {
@@ -191,11 +217,16 @@ async function initAgent(): Promise<void> {
 		: openai.chat(process.env.AI_MODEL ?? "gpt-4o");
 
 	if (modelSpec) {
-		console.log(`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpec}`);
+		console.log(
+			`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpec}`,
+		);
 	}
 
 	// Merge all tool sources into the module-level record (used by agent factory too)
-	const mergedTools: Record<string, import("../types/tool.js").DurableAgentTool> = {
+	const mergedTools: Record<
+		string,
+		import("../types/tool.js").DurableAgentTool
+	> = {
 		...workspaceTools,
 	};
 
@@ -283,13 +314,32 @@ type FileChange = {
 	content?: string;
 };
 
+type ChangeSummaryOutput = {
+	changed: boolean;
+	files: Array<{ path: string; op: string }>;
+	stats: {
+		files: number;
+		additions: number;
+		deletions: number;
+	};
+	patchRef?: string;
+	patchSha256?: string;
+	patchBytes?: number;
+	truncatedInlinePatch?: boolean;
+	inlinePatchPreview?: string;
+	truncatedArtifact?: boolean;
+	artifactOriginalBytes?: number;
+};
+
 /**
  * Extract tool calls from the workflow completion result.
  *
  * The agent workflow returns `all_tool_calls` (accumulated across all turns)
  * and `tool_calls` (from the final message only, usually empty).
  */
-function extractToolCalls(result: Record<string, unknown> | undefined): ToolCallRecord[] {
+function extractToolCalls(
+	result: Record<string, unknown> | undefined,
+): ToolCallRecord[] {
 	if (!result) return [];
 
 	const toolCalls: ToolCallRecord[] = [];
@@ -356,7 +406,11 @@ function extractFileChanges(
 				seen.set(path, changes.length);
 				changes.push(change);
 			}
-		} else if (name === "delete_file" || name === "delete" || name.endsWith("delete")) {
+		} else if (
+			name === "delete_file" ||
+			name === "delete" ||
+			name.endsWith("delete")
+		) {
 			const path = String(args.path ?? args.filePath ?? "");
 			if (!path) continue;
 			if (seen.has(path)) {
@@ -371,6 +425,56 @@ function extractFileChanges(
 	return changes;
 }
 
+function buildAgentChangeSummary(
+	executionId: string,
+	durableInstanceId: string,
+): ChangeSummaryOutput {
+	const { patch, changeSets } = workspaceSessions.getExecutionPatch(
+		executionId,
+		{
+			durableInstanceId,
+		},
+	);
+	const files = changeSets.flatMap((set) =>
+		set.files.map((file) => ({
+			path: file.path,
+			op:
+				file.status === "A"
+					? "created"
+					: file.status === "D"
+						? "deleted"
+						: file.status === "R"
+							? "renamed"
+							: "modified",
+		})),
+	);
+	const additions = changeSets.reduce((sum, set) => sum + set.additions, 0);
+	const deletions = changeSets.reduce((sum, set) => sum + set.deletions, 0);
+	const patchBytes = Buffer.byteLength(patch, "utf8");
+	const previewLimit = parseInt(
+		process.env.WORKSPACE_INLINE_PATCH_PREVIEW_BYTES || "16384",
+		10,
+	);
+
+	return {
+		changed: changeSets.length > 0,
+		files,
+		stats: {
+			files: files.length,
+			additions,
+			deletions,
+		},
+		patchRef:
+			changeSets.length > 0
+				? `/api/workspaces/executions/${executionId}/patch?durableInstanceId=${durableInstanceId}`
+				: undefined,
+		patchSha256: undefined,
+		patchBytes: patchBytes > 0 ? patchBytes : undefined,
+		truncatedInlinePatch: patch.length > previewLimit,
+		inlinePatchPreview: patch ? patch.slice(0, previewLimit) : undefined,
+	};
+}
+
 // ── Wait for Dapr Workflow Completion ─────────────────────────
 
 async function waitForWorkflowCompletion(
@@ -381,7 +485,9 @@ async function waitForWorkflowCompletion(
 	result?: Record<string, unknown>;
 	error?: string;
 }> {
-	console.log(`[durable-agent] Waiting for workflow completion: ${instanceId} (timeout=${timeoutSeconds}s)`);
+	console.log(
+		`[durable-agent] Waiting for workflow completion: ${instanceId} (timeout=${timeoutSeconds}s)`,
+	);
 
 	try {
 		// Use Dapr SDK's built-in wait (more reliable than custom polling)
@@ -398,7 +504,9 @@ async function waitForWorkflowCompletion(
 
 		// WorkflowRuntimeStatus enum: RUNNING=0, COMPLETED=1, FAILED=3, TERMINATED=5
 		const statusNum = state.runtimeStatus;
-		console.log(`[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`);
+		console.log(
+			`[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`,
+		);
 
 		if (statusNum === 1) {
 			// COMPLETED
@@ -437,12 +545,15 @@ app.use(express.json({ limit: "10mb" }));
 // Health check
 app.get("/api/health", (_req, res) => {
 	const state = eventBus.getState();
+	const workspaceStats = workspaceSessions.getStats();
 	res.json({
 		service: "durable-agent",
 		agentStatus: state.status,
 		agentTools: TOOL_NAMES,
 		totalRuns: state.totalRuns,
 		totalTokens: state.totalTokens,
+		activeWorkspaces: workspaceStats.activeWorkspaces,
+		mappedWorkspaceInstances: workspaceStats.mappedInstances,
 		initialized,
 	});
 });
@@ -467,6 +578,356 @@ app.post("/api/tools/:toolId", async (req, res) => {
 	}
 });
 
+app.post("/api/workspaces/profile", async (req, res) => {
+	try {
+		const executionIdRaw = req.body?.executionId;
+		const executionId =
+			typeof executionIdRaw === "string" ? executionIdRaw.trim() : "";
+		if (!executionId) {
+			res
+				.status(400)
+				.json({ success: false, error: "executionId is required" });
+			return;
+		}
+
+		const profile = await workspaceSessions.createOrGetProfile({
+			executionId,
+			name: typeof req.body?.name === "string" ? req.body.name : undefined,
+			rootPath:
+				typeof req.body?.rootPath === "string" ? req.body.rootPath : undefined,
+			enabledTools: Array.isArray(req.body?.enabledTools)
+				? req.body.enabledTools
+				: typeof req.body?.enabledTools === "string" &&
+						req.body.enabledTools.trim()
+					? (() => {
+							try {
+								const parsed = JSON.parse(req.body.enabledTools);
+								return Array.isArray(parsed) ? parsed : undefined;
+							} catch {
+								return undefined;
+							}
+						})()
+					: undefined,
+			requireReadBeforeWrite:
+				req.body?.requireReadBeforeWrite === true ||
+				req.body?.requireReadBeforeWrite === "true",
+			commandTimeoutMs:
+				typeof req.body?.commandTimeoutMs === "number"
+					? req.body.commandTimeoutMs
+					: typeof req.body?.commandTimeoutMs === "string" &&
+							req.body.commandTimeoutMs.trim()
+						? parseInt(req.body.commandTimeoutMs, 10)
+						: undefined,
+		});
+
+		res.json({ success: true, ...profile });
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/workspaces/clone", async (req, res) => {
+	try {
+		const repositoryOwner =
+			typeof req.body?.repositoryOwner === "string"
+				? req.body.repositoryOwner
+				: "";
+		const repositoryRepo =
+			typeof req.body?.repositoryRepo === "string"
+				? req.body.repositoryRepo
+				: "";
+		if (!repositoryOwner.trim() || !repositoryRepo.trim()) {
+			res.status(400).json({
+				success: false,
+				error: "repositoryOwner and repositoryRepo are required",
+			});
+			return;
+		}
+
+		const result = await workspaceSessions.cloneRepository({
+			workspaceRef:
+				typeof req.body?.workspaceRef === "string"
+					? req.body.workspaceRef
+					: undefined,
+			executionId:
+				typeof req.body?.executionId === "string"
+					? req.body.executionId
+					: undefined,
+			durableInstanceId:
+				typeof req.body?.durableInstanceId === "string"
+					? req.body.durableInstanceId
+					: typeof req.body?.__durable_instance_id === "string"
+						? req.body.__durable_instance_id
+						: undefined,
+			repositoryOwner,
+			repositoryRepo,
+			repositoryBranch:
+				typeof req.body?.repositoryBranch === "string"
+					? req.body.repositoryBranch
+					: undefined,
+			targetDir:
+				typeof req.body?.targetDir === "string"
+					? req.body.targetDir
+					: undefined,
+			repositoryToken:
+				typeof req.body?.repositoryToken === "string"
+					? req.body.repositoryToken
+					: undefined,
+			githubToken:
+				typeof req.body?.githubToken === "string"
+					? req.body.githubToken
+					: undefined,
+			timeoutMs:
+				typeof req.body?.timeoutMs === "number"
+					? req.body.timeoutMs
+					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+						? parseInt(req.body.timeoutMs, 10)
+						: undefined,
+		});
+
+		res.json({ success: true, result });
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/workspaces/command", async (req, res) => {
+	try {
+		const command =
+			typeof req.body?.command === "string" ? req.body.command : "";
+		if (!command.trim()) {
+			res.status(400).json({ success: false, error: "command is required" });
+			return;
+		}
+
+		const result = await workspaceSessions.executeCommand({
+			workspaceRef:
+				typeof req.body?.workspaceRef === "string"
+					? req.body.workspaceRef
+					: undefined,
+			executionId:
+				typeof req.body?.executionId === "string"
+					? req.body.executionId
+					: undefined,
+			durableInstanceId:
+				typeof req.body?.durableInstanceId === "string"
+					? req.body.durableInstanceId
+					: typeof req.body?.__durable_instance_id === "string"
+						? req.body.__durable_instance_id
+						: undefined,
+			command,
+			timeoutMs:
+				typeof req.body?.timeoutMs === "number"
+					? req.body.timeoutMs
+					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+						? parseInt(req.body.timeoutMs, 10)
+						: undefined,
+		});
+
+		res.json({ success: true, result });
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/workspaces/file", async (req, res) => {
+	try {
+		const operationRaw = req.body?.operation;
+		const operation =
+			typeof operationRaw === "string" ? operationRaw.trim() : "";
+		if (
+			![
+				"read_file",
+				"write_file",
+				"edit_file",
+				"list_files",
+				"delete_file",
+				"mkdir",
+				"file_stat",
+			].includes(operation)
+		) {
+			res.status(400).json({
+				success: false,
+				error:
+					"operation is required and must be one of read_file, write_file, edit_file, list_files, delete_file, mkdir, file_stat",
+			});
+			return;
+		}
+
+		const result = await workspaceSessions.executeFileOperation({
+			workspaceRef:
+				typeof req.body?.workspaceRef === "string"
+					? req.body.workspaceRef
+					: undefined,
+			executionId:
+				typeof req.body?.executionId === "string"
+					? req.body.executionId
+					: undefined,
+			durableInstanceId:
+				typeof req.body?.durableInstanceId === "string"
+					? req.body.durableInstanceId
+					: typeof req.body?.__durable_instance_id === "string"
+						? req.body.__durable_instance_id
+						: undefined,
+			operation: operation as
+				| "read_file"
+				| "write_file"
+				| "edit_file"
+				| "list_files"
+				| "delete_file"
+				| "mkdir"
+				| "file_stat",
+			path: typeof req.body?.path === "string" ? req.body.path : undefined,
+			content:
+				typeof req.body?.content === "string" ? req.body.content : undefined,
+			old_string:
+				typeof req.body?.old_string === "string"
+					? req.body.old_string
+					: undefined,
+			new_string:
+				typeof req.body?.new_string === "string"
+					? req.body.new_string
+					: undefined,
+		});
+
+		res.json({ success: true, result });
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/workspaces/cleanup", async (req, res) => {
+	try {
+		const workspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+		const executionId =
+			typeof req.body?.executionId === "string"
+				? req.body.executionId.trim()
+				: "";
+
+		if (!workspaceRef && !executionId) {
+			res.status(400).json({
+				success: false,
+				error: "workspaceRef or executionId is required",
+			});
+			return;
+		}
+
+		const cleanedRefs: string[] = [];
+		if (workspaceRef) {
+			const cleaned =
+				await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+			if (cleaned) cleanedRefs.push(workspaceRef);
+		}
+		if (executionId) {
+			const refs = await workspaceSessions.cleanupByExecutionId(executionId);
+			for (const ref of refs) cleanedRefs.push(ref);
+		}
+
+		res.json({
+			success: true,
+			cleanedWorkspaceRefs: [...new Set(cleanedRefs)],
+		});
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.get("/api/workspaces/changes/:changeSetId", (req, res) => {
+	const changeSetId =
+		typeof req.params.changeSetId === "string"
+			? req.params.changeSetId.trim()
+			: "";
+	if (!changeSetId) {
+		res.status(400).json({ success: false, error: "changeSetId is required" });
+		return;
+	}
+
+	const artifact = workspaceSessions.getChangeArtifact(changeSetId);
+	if (!artifact) {
+		res
+			.status(404)
+			.json({ success: false, error: "Change artifact not found" });
+		return;
+	}
+
+	res.json({
+		success: true,
+		metadata: artifact.metadata,
+		patch: artifact.patch,
+	});
+});
+
+app.get("/api/workspaces/executions/:executionId/changes", (req, res) => {
+	const executionId =
+		typeof req.params.executionId === "string"
+			? req.params.executionId.trim()
+			: "";
+	if (!executionId) {
+		res.status(400).json({ success: false, error: "executionId is required" });
+		return;
+	}
+
+	const changes =
+		workspaceSessions.listChangeArtifactsByExecutionId(executionId);
+	res.json({
+		success: true,
+		executionId,
+		count: changes.length,
+		changes,
+	});
+});
+
+app.get("/api/workspaces/executions/:executionId/patch", (req, res) => {
+	const executionId =
+		typeof req.params.executionId === "string"
+			? req.params.executionId.trim()
+			: "";
+	if (!executionId) {
+		res.status(400).json({ success: false, error: "executionId is required" });
+		return;
+	}
+
+	const durableInstanceId =
+		typeof req.query?.durableInstanceId === "string"
+			? req.query.durableInstanceId.trim()
+			: undefined;
+	const combined = workspaceSessions.getExecutionPatch(executionId, {
+		durableInstanceId,
+	});
+
+	if (req.query?.format === "raw") {
+		res.setHeader("Content-Type", "text/plain; charset=utf-8");
+		res.send(combined.patch);
+		return;
+	}
+
+	res.json({
+		success: true,
+		executionId,
+		durableInstanceId,
+		patch: combined.patch,
+		changeSets: combined.changeSets,
+	});
+});
+
 // Agent run endpoint (fire-and-forget)
 app.post("/api/run", async (req, res) => {
 	try {
@@ -479,8 +940,25 @@ app.post("/api/run", async (req, res) => {
 		await initAgent();
 
 		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
+		const executionId = (req.body?.executionId as string) ?? parentExecutionId;
 		const nodeId = (req.body?.nodeId as string) ?? "";
 		const agentWorkflowId = `durable-run-${nanoid(12)}`;
+		const requestedWorkspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+		const workspaceRef =
+			requestedWorkspaceRef ||
+			(executionId
+				? workspaceSessions.getWorkspaceRefByExecutionId(executionId) || ""
+				: "");
+		if (workspaceRef && !workspaceSessions.getByWorkspaceRef(workspaceRef)) {
+			res.status(400).json({
+				success: false,
+				error: `workspaceRef not found: ${workspaceRef}`,
+			});
+			return;
+		}
 
 		// Set workflow context on eventBus
 		eventBus.setWorkflowContext({
@@ -493,9 +971,6 @@ app.post("/api/run", async (req, res) => {
 			`[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${prompt.slice(0, 80)}"`,
 		);
 
-		// Git baseline — snapshot workspace for diff
-		const hasBaseline = await gitBaseline();
-
 		// Per-request maxTurns override
 		const maxTurns = req.body?.maxTurns
 			? parseInt(String(req.body.maxTurns), 10)
@@ -505,13 +980,22 @@ app.post("/api/run", async (req, res) => {
 		const agentConfig = req.body?.agentConfig as AgentConfigPayload | undefined;
 		let activeAgent = agent!;
 		let activeAgentOverridden = false;
-		if (agentConfig?.name && agentConfig?.instructions && agentConfig?.modelSpec) {
+		if (
+			agentConfig?.name &&
+			agentConfig?.instructions &&
+			agentConfig?.modelSpec
+		) {
 			try {
 				activeAgent = await getOrCreateConfiguredAgent(agentConfig);
 				activeAgentOverridden = true;
-				console.log(`[durable-agent] Using configured agent: ${agentConfig.name}`);
+				console.log(
+					`[durable-agent] Using configured agent: ${agentConfig.name}`,
+				);
 			} catch (err) {
-				console.warn(`[durable-agent] Failed to create configured agent, falling back to default:`, err);
+				console.warn(
+					`[durable-agent] Failed to create configured agent, falling back to default:`,
+					err,
+				);
 			}
 		}
 
@@ -520,7 +1004,11 @@ app.post("/api/run", async (req, res) => {
 			const toolsRaw = req.body.tools;
 			let toolsList: string[] = [];
 			if (typeof toolsRaw === "string") {
-				try { toolsList = JSON.parse(toolsRaw) as string[]; } catch { /* ignore */ }
+				try {
+					toolsList = JSON.parse(toolsRaw) as string[];
+				} catch {
+					/* ignore */
+				}
 			} else if (Array.isArray(toolsRaw)) {
 				toolsList = toolsRaw.filter((t): t is string => typeof t === "string");
 			}
@@ -534,9 +1022,14 @@ app.post("/api/run", async (req, res) => {
 			if (inlineConfig.modelSpec) {
 				try {
 					activeAgent = await getOrCreateConfiguredAgent(inlineConfig);
-					console.log(`[durable-agent] Using inline agent config: model=${inlineConfig.modelSpec}`);
+					console.log(
+						`[durable-agent] Using inline agent config: model=${inlineConfig.modelSpec}`,
+					);
 				} catch (err) {
-					console.warn(`[durable-agent] Failed to create inline agent, falling back to default:`, err);
+					console.warn(
+						`[durable-agent] Failed to create inline agent, falling back to default:`,
+						err,
+					);
 				}
 			}
 		}
@@ -546,6 +1039,9 @@ app.post("/api/run", async (req, res) => {
 			activeAgent.agentWorkflow,
 			{ task: prompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
+		if (workspaceRef) {
+			workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+		}
 
 		console.log(
 			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
@@ -553,16 +1049,19 @@ app.post("/api/run", async (req, res) => {
 
 		// Fire-and-forget: wait for completion in background, then publish
 		(async () => {
-			console.log(`[durable-agent] Background: starting completion wait for ${instanceId} (parent=${parentExecutionId})`);
+			console.log(
+				`[durable-agent] Background: starting completion wait for ${instanceId} (parent=${parentExecutionId})`,
+			);
 			try {
 				const completion = await waitForWorkflowCompletion(instanceId);
-
-				// Generate git diff
-				const patch = hasBaseline ? await gitDiff() : undefined;
 
 				// Extract tool calls from all turns
 				const toolCalls = extractToolCalls(completion.result);
 				const fileChanges = extractFileChanges(toolCalls);
+				const changeSummary =
+					workspaceRef && executionId
+						? buildAgentChangeSummary(executionId, instanceId)
+						: undefined;
 
 				// Extract text from the final message
 				const text =
@@ -585,7 +1084,9 @@ app.post("/api/run", async (req, res) => {
 						text,
 						toolCalls,
 						fileChanges,
-						patch,
+						patch: changeSummary?.inlinePatchPreview,
+						patchRef: changeSummary?.patchRef,
+						changeSummary,
 						daprInstanceId: instanceId,
 						...(evalResults ? { evalResults } : {}),
 					},
@@ -600,6 +1101,8 @@ app.post("/api/run", async (req, res) => {
 					success: false,
 					error: errorMsg,
 				});
+			} finally {
+				workspaceSessions.unbindDurableInstance(instanceId);
 			}
 		})();
 
@@ -608,6 +1111,7 @@ app.post("/api/run", async (req, res) => {
 			success: true,
 			workflow_id: agentWorkflowId,
 			dapr_instance_id: instanceId,
+			...(workspaceRef ? { workspaceRef } : {}),
 		});
 	} catch (err) {
 		res.status(400).json({ success: false, error: String(err) });
@@ -661,7 +1165,24 @@ app.post("/api/execute-plan", async (req, res) => {
 		const cwd = (req.body?.cwd as string) ?? "";
 		const prompt = (req.body?.prompt as string) ?? "";
 		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
+		const executionId = (req.body?.executionId as string) ?? parentExecutionId;
 		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
+		const requestedWorkspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+		const workspaceRef =
+			requestedWorkspaceRef ||
+			(executionId
+				? workspaceSessions.getWorkspaceRefByExecutionId(executionId) || ""
+				: "");
+		if (workspaceRef && !workspaceSessions.getByWorkspaceRef(workspaceRef)) {
+			res.status(400).json({
+				success: false,
+				error: `workspaceRef not found: ${workspaceRef}`,
+			});
+			return;
+		}
 
 		if (!plan || !plan.steps?.length) {
 			res
@@ -680,9 +1201,7 @@ app.post("/api/execute-plan", async (req, res) => {
 
 		// Build execution prompt with plan injected
 		const planText = plan.steps
-			.map(
-				(s) => `${s.step}. [${s.tool}] ${s.action} — ${s.reasoning}`,
-			)
+			.map((s) => `${s.step}. [${s.tool}] ${s.action} — ${s.reasoning}`)
 			.join("\n");
 		const cwdContext = cwd ? `Working directory: ${cwd}\n\n` : "";
 		const executionPrompt = `${cwdContext}## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: You MUST execute ALL steps using tools. Do NOT stop after reading files — you must also write/edit files as specified in the plan. Complete every step before giving your final answer. If a step fails, note the error and continue with the next step.`;
@@ -692,24 +1211,30 @@ app.post("/api/execute-plan", async (req, res) => {
 			? parseInt(String(req.body.maxTurns), 10)
 			: undefined;
 
-		// Git baseline
-		const hasBaseline = await gitBaseline();
-
 		// Schedule workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
 			agent!.agentWorkflow,
-			{ task: executionPrompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
+			{
+				task: executionPrompt,
+				...(maxTurns ? { maxIterations: maxTurns } : {}),
+			},
 		);
+		if (workspaceRef) {
+			workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+		}
 
 		// Fire-and-forget
 		(async () => {
 			try {
 				const completion = await waitForWorkflowCompletion(instanceId);
-				const patch = hasBaseline ? await gitDiff() : undefined;
 
 				// Extract tool calls from all turns
 				const toolCalls = extractToolCalls(completion.result);
 				const fileChanges = extractFileChanges(toolCalls);
+				const changeSummary =
+					workspaceRef && executionId
+						? buildAgentChangeSummary(executionId, instanceId)
+						: undefined;
 
 				const text =
 					(completion.result?.final_answer as string) ??
@@ -721,7 +1246,16 @@ app.post("/api/execute-plan", async (req, res) => {
 					agentWorkflowId,
 					parentExecutionId,
 					success: completion.success,
-					result: { text, toolCalls, fileChanges, patch, plan, daprInstanceId: instanceId },
+					result: {
+						text,
+						toolCalls,
+						fileChanges,
+						patch: changeSummary?.inlinePatchPreview,
+						patchRef: changeSummary?.patchRef,
+						changeSummary,
+						plan,
+						daprInstanceId: instanceId,
+					},
 					error: completion.error,
 				});
 			} catch (err) {
@@ -731,6 +1265,8 @@ app.post("/api/execute-plan", async (req, res) => {
 					success: false,
 					error: err instanceof Error ? err.message : String(err),
 				});
+			} finally {
+				workspaceSessions.unbindDurableInstance(instanceId);
 			}
 		})();
 
@@ -738,6 +1274,7 @@ app.post("/api/execute-plan", async (req, res) => {
 			success: true,
 			workflow_id: agentWorkflowId,
 			dapr_instance_id: instanceId,
+			...(workspaceRef ? { workspaceRef } : {}),
 		});
 	} catch (err) {
 		res.status(400).json({ success: false, error: String(err) });
@@ -758,8 +1295,7 @@ app.post("/api/dapr/sub", (req, res) => {
 			source: (body.source as string) ?? "",
 			type: (body.type as string) ?? "",
 			specversion: (body.specversion as string) ?? "1.0",
-			datacontenttype:
-				(body.datacontenttype as string) ?? "application/json",
+			datacontenttype: (body.datacontenttype as string) ?? "application/json",
 			data: (body.data as Record<string, unknown>) ?? {},
 		} as DaprEvent);
 		res.json({ status: "SUCCESS" });
@@ -778,6 +1314,7 @@ async function shutdown(signal: string) {
 	console.log(`[durable-agent] Received ${signal}, shutting down...`);
 	try {
 		if (mcpDisconnect) await mcpDisconnect();
+		await workspaceSessions.destroyAll();
 		if (agent) await agent.stop();
 		await sandbox.destroy();
 	} catch (err) {
@@ -790,10 +1327,38 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 
 app.listen(PORT, HOST, async () => {
 	console.log(`[durable-agent] Server listening on http://${HOST}:${PORT}`);
-	console.log(`[durable-agent]   POST /api/run          — start agent workflow`);
+	console.log(
+		`[durable-agent]   POST /api/run          — start agent workflow`,
+	);
 	console.log(`[durable-agent]   POST /api/plan         — generate plan`);
 	console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);
-	console.log(`[durable-agent]   POST /api/tools/:id    — direct tool execution`);
+	console.log(
+		`[durable-agent]   POST /api/tools/:id    — direct tool execution`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/workspaces/profile — create workspace profile`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/workspaces/clone   — clone repository in workspace`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/workspaces/command — execute command in workspace`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/workspaces/file    — file operation in workspace`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/workspaces/cleanup — cleanup workspace sessions`,
+	);
+	console.log(
+		`[durable-agent]   GET  /api/workspaces/changes/:changeSetId — fetch patch artifact`,
+	);
+	console.log(
+		`[durable-agent]   GET  /api/workspaces/executions/:executionId/changes — list patch artifacts`,
+	);
+	console.log(
+		`[durable-agent]   GET  /api/workspaces/executions/:executionId/patch — export combined patch`,
+	);
 	console.log(`[durable-agent]   GET  /api/health       — health check`);
 
 	// Initialize agent eagerly at startup so the Dapr workflow runtime starts
@@ -801,8 +1366,14 @@ app.listen(PORT, HOST, async () => {
 	// the Dapr event log need the runtime to be running to replay.
 	try {
 		await initAgent();
-		console.log("[durable-agent] Agent initialized at startup (workflow runtime ready for replay)");
+		console.log(
+			"[durable-agent] Agent initialized at startup (workflow runtime ready for replay)",
+		);
 	} catch (err) {
-		console.error("[durable-agent] Startup initialization failed (will retry on first request):", err);
+		console.error("[durable-agent] Startup initialization failed:", err);
+		console.error(
+			"[durable-agent] Failing fast because production sandbox initialization is required.",
+		);
+		process.exit(1);
 	}
 });

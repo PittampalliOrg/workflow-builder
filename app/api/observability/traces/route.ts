@@ -115,26 +115,25 @@ function matchesSearch(
 	);
 }
 
-function resolveJaegerService(searchParams: URLSearchParams): string {
-	const candidates = [
-		searchParams.get("service"),
-		process.env.OTEL_SERVICE_NAME,
-		process.env.JAEGER_QUERY_SERVICE,
-		DEFAULT_JAEGER_QUERY_SERVICE,
-	];
+/** Services known to emit workflow correlation tags. */
+const WORKFLOW_SERVICES = [
+	"workflow-orchestrator",
+	"durable-agent",
+	"function-router",
+];
 
-	for (const candidate of candidates) {
-		if (typeof candidate !== "string") {
-			continue;
-		}
-
-		const value = candidate.trim();
-		if (value) {
-			return value;
-		}
+function resolveJaegerServices(searchParams: URLSearchParams): string[] {
+	const explicit = searchParams.get("service")?.trim();
+	if (explicit) {
+		return [explicit];
 	}
 
-	return DEFAULT_JAEGER_QUERY_SERVICE;
+	const appService =
+		process.env.OTEL_SERVICE_NAME?.trim() ||
+		process.env.JAEGER_QUERY_SERVICE?.trim() ||
+		DEFAULT_JAEGER_QUERY_SERVICE;
+
+	return Array.from(new Set([appService, ...WORKFLOW_SERVICES]));
 }
 
 export async function GET(request: Request) {
@@ -166,7 +165,7 @@ export async function GET(request: Request) {
 
 		const from = parseDate(filters.from ?? null);
 		const to = parseDate(filters.to ?? null);
-		const jaegerService = resolveJaegerService(searchParams);
+		const jaegerServices = resolveJaegerServices(searchParams);
 
 		const index = await getProjectExecutionIndex(
 			{
@@ -185,12 +184,34 @@ export async function GET(request: Request) {
 			MAX_JAEGER_FETCH_LIMIT,
 		);
 
-		const traces = await searchJaegerTraces({
-			service: jaegerService,
-			from,
-			to,
-			limit: jaegerLimit,
-		});
+		// Query all relevant services in parallel and merge results.
+		const traceArrays = await Promise.all(
+			jaegerServices.map((svc) =>
+				searchJaegerTraces({
+					service: svc,
+					from,
+					to,
+					limit: jaegerLimit,
+				}).catch(() => [] as Awaited<ReturnType<typeof searchJaegerTraces>>),
+			),
+		);
+
+		// Deduplicate by traceID, keeping the version with the most spans.
+		const traceMap = new Map<string, (typeof traceArrays)[0][0]>();
+		for (const arr of traceArrays) {
+			for (const trace of arr) {
+				const id = trace.traceID ?? trace.traceId ?? "";
+				if (!id) continue;
+				const existing = traceMap.get(id);
+				if (
+					!existing ||
+					(trace.spans?.length ?? 0) > (existing.spans?.length ?? 0)
+				) {
+					traceMap.set(id, trace);
+				}
+			}
+		}
+		const traces = Array.from(traceMap.values());
 
 		const items: ObservabilityTraceListResponse["traces"] = [];
 

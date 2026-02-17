@@ -37,6 +37,12 @@ type AgentOutput = {
 	text?: string;
 	fileChanges?: FileChange[];
 	patch?: string;
+	patchRef?: string;
+	changeSummary?: {
+		changed?: boolean;
+		files?: Array<{ path: string; status?: string; op?: string }>;
+		stats?: { files?: number; additions?: number; deletions?: number };
+	};
 	plan?: { goal?: string; steps?: PlanStep[] };
 	toolCalls?: ToolCall[];
 	usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -157,7 +163,7 @@ export function MastraAgentResult({ output }: ResultComponentProps) {
 		return null;
 	}
 
-	const { text, fileChanges, patch, plan, toolCalls, usage } = output;
+	const { text, fileChanges, patch, patchRef, changeSummary, plan, toolCalls, usage } = output;
 	const hasFileChanges = fileChanges && fileChanges.length > 0;
 	const hasPatch = patch && patch.length > 0;
 	const hasPlan = plan && (plan.goal || (plan.steps && plan.steps.length > 0));
@@ -217,6 +223,15 @@ export function MastraAgentResult({ output }: ResultComponentProps) {
 						</SyntaxHighlighter>
 					</div>
 				</Section>
+			)}
+
+			{changeSummary?.stats && (
+				<div className="text-[10px] text-muted-foreground">
+					Changes: {changeSummary.stats.files ?? 0} files, +
+					{changeSummary.stats.additions ?? 0} / -
+					{changeSummary.stats.deletions ?? 0}
+					{patchRef ? ` (patchRef: ${patchRef})` : ""}
+				</div>
 			)}
 
 			{/* Plan */}

@@ -45,6 +45,8 @@ const durableAgentPlugin: IntegrationPlugin = {
         { field: "toolCalls", description: "Tools called during execution" },
         { field: "fileChanges", description: "Files created, modified, or deleted by the agent" },
         { field: "patch", description: "Unified diff patch of all file changes" },
+        { field: "patchRef", description: "Reference to full patch artifact" },
+        { field: "changeSummary", description: "Structured file change metadata" },
         { field: "usage", description: "Token usage statistics" },
       ],
       outputConfig: {
