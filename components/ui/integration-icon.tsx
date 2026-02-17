@@ -1,6 +1,6 @@
 "use client";
 
-import { Database, HelpCircle } from "lucide-react";
+import { Bot, Database, HelpCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
@@ -32,6 +32,7 @@ const SPECIAL_ICONS: Record<
   React.ComponentType<{ className?: string }>
 > = {
   database: Database,
+  durable: Bot,
   vercel: VercelIcon,
 };
 

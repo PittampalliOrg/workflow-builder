@@ -1014,6 +1014,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 cleanup_execution_workspaces,
                 input={
                     "executionId": execution_id,
+                    "dbExecutionId": db_execution_id,
                     "_otel": otel_ctx,
                 },
             )
@@ -1051,7 +1052,23 @@ def process_agent_child_workflow(
     if not prompt:
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
 
-    timeout_minutes = int(resolved_config.get("timeoutMinutes", 30) or 30)
+    agent_config = resolved_config.get("agentConfig")
+    if not isinstance(agent_config, dict):
+        agent_config = {}
+
+    timeout_raw = resolved_config.get("timeoutMinutes", agent_config.get("timeoutMinutes", 30))
+    try:
+        timeout_minutes = int(timeout_raw or 30)
+    except (TypeError, ValueError):
+        timeout_minutes = 30
+
+    max_turns_raw = resolved_config.get("maxTurns", agent_config.get("maxTurns"))
+    max_turns: int | None = None
+    try:
+        if max_turns_raw is not None:
+            max_turns = int(max_turns_raw)
+    except (TypeError, ValueError):
+        max_turns = None
 
     if action_type == "mastra/execute":
         from activities.call_agent_service import call_durable_execute_plan
@@ -1064,9 +1081,9 @@ def process_agent_child_workflow(
     activity_input = {
         "prompt": prompt,
         "model": resolved_config.get("model"),
-        "maxTurns": resolved_config.get("maxTurns"),
+        "maxTurns": max_turns,
         "stopCondition": resolved_config.get("stopCondition"),
-        "agentConfig": resolved_config.get("agentConfig"),
+        "agentConfig": agent_config,
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
         "workspaceRef": resolved_config.get("workspaceRef"),
@@ -1074,7 +1091,8 @@ def process_agent_child_workflow(
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
         "parentExecutionId": ctx.instance_id,
-        "executionId": execution_id,
+        # Use DB execution ID for cross-service persistence keys when available.
+        "executionId": db_execution_id or execution_id,
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),

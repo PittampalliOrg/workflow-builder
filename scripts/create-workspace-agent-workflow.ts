@@ -7,6 +7,7 @@
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --user-email admin@example.com
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --name "Workspace Agent Starter"
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --prompt "Implement X"
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --agent-profile-template-id profile_xxx
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --connection-external-id github-main
  */
 
@@ -33,6 +34,7 @@ type Args = {
 	userEmail?: string;
 	name: string;
 	prompt: string;
+	agentProfileTemplateId: string;
 	repositoryOwner: string;
 	repositoryRepo: string;
 	repositoryBranch: string;
@@ -44,6 +46,7 @@ function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
 	let name = "Workspace Agent Starter";
 	let prompt = DEFAULT_PROMPT;
+	let agentProfileTemplateId = "";
 	let repositoryOwner = "";
 	let repositoryRepo = "";
 	let repositoryBranch = "main";
@@ -69,6 +72,9 @@ function parseArgs(argv: string[]): Args {
 			i++;
 		} else if (arg === "--prompt") {
 			prompt = argv[i + 1] || prompt;
+			i++;
+		} else if (arg === "--agent-profile-template-id") {
+			agentProfileTemplateId = argv[i + 1] || agentProfileTemplateId;
 			i++;
 		} else if (arg === "--repo-owner") {
 			repositoryOwner = argv[i + 1] || repositoryOwner;
@@ -99,6 +105,7 @@ function parseArgs(argv: string[]): Args {
 		userEmail,
 		name,
 		prompt,
+		agentProfileTemplateId: agentProfileTemplateId.trim(),
 		repositoryOwner: repositoryOwner.trim(),
 		repositoryRepo: repositoryRepo.trim(),
 		repositoryBranch: repositoryBranch.trim() || "main",
@@ -172,6 +179,7 @@ async function resolveProjectId(
 
 function buildWorkflowNodes(input: {
 	prompt: string;
+	agentProfileTemplateId: string;
 	repositoryOwner: string;
 	repositoryRepo: string;
 	repositoryBranch: string;
@@ -268,10 +276,9 @@ function buildWorkflowNodes(input: {
 				type: "action",
 				config: {
 					actionType: "durable/run",
+					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
-					maxTurns: "20",
-					timeoutMinutes: "30",
 				},
 				status: "idle",
 			},
@@ -374,6 +381,11 @@ async function main() {
 				"Repository is required. Provide --repo owner/name (or --repo-owner + --repo-name).",
 			);
 		}
+		if (!args.agentProfileTemplateId) {
+			throw new Error(
+				"Agent profile template is required. Provide --agent-profile-template-id <templateId>.",
+			);
+		}
 
 		const { userId, email } = await resolveUserId(db, args.userEmail);
 		const projectId = await resolveProjectId(db, userId);
@@ -384,6 +396,7 @@ async function main() {
 		);
 		const { nodes, edges } = buildWorkflowNodes({
 			prompt: args.prompt,
+			agentProfileTemplateId: args.agentProfileTemplateId,
 			repositoryOwner: args.repositoryOwner,
 			repositoryRepo: args.repositoryRepo,
 			repositoryBranch: args.repositoryBranch,

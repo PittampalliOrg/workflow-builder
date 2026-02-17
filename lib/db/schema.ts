@@ -1254,7 +1254,11 @@ export const resourceModelProfiles = pgTable(
 	}),
 );
 
-export type WorkflowResourceType = "prompt" | "schema" | "model_profile";
+export type WorkflowResourceType =
+	| "prompt"
+	| "schema"
+	| "model_profile"
+	| "agent_profile";
 
 export const workflowResourceRefs = pgTable(
 	"workflow_resource_refs",

@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
+import type { WorkflowResourceRefInput } from "@/lib/db/resources";
 import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
@@ -152,12 +153,7 @@ export async function PATCH(
 		}
 
 		const body = await request.json();
-		let resolvedRefs: Array<{
-			nodeId: string;
-			resourceType: "prompt" | "schema" | "model_profile";
-			resourceId: string;
-			resourceVersion: number | null;
-		}> | null = null;
+		let resolvedRefs: WorkflowResourceRefInput[] | null = null;
 
 		// Validate that all connection references in nodes belong to the current user
 		if (Array.isArray(body.nodes)) {

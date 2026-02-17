@@ -4,6 +4,7 @@ import type { NodeProps } from "@xyflow/react";
 import { useAtomValue } from "jotai";
 import {
 	AlertTriangle,
+	Bot,
 	Check,
 	Code,
 	Database,
@@ -146,6 +147,8 @@ const getProviderLogo = (
 ) => {
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
+		case "durable/run":
+			return <Bot className="size-12 text-emerald-300" strokeWidth={1.5} />;
 		case "system/http-request":
 			return <Zap className="size-12 text-amber-300" strokeWidth={1.5} />;
 		case "system/database-query":
@@ -361,6 +364,11 @@ export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
 
 	// Get model for AI nodes
 	const getAiModel = (): string | null => {
+		if (actionType === "durable/run") {
+			return typeof data.config?.model === "string"
+				? (data.config.model as string)
+				: null;
+		}
 		if (actionType === "Generate Text") {
 			return (data.config?.aiModel as string) || "meta/llama-4-scout";
 		}

@@ -1,16 +1,8 @@
-import { eq, and } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
-import { listModelCatalog } from "@/lib/db/model-catalog";
-import {
-	listResourceModelProfiles,
-	listResourcePrompts,
-	listResourceSchemas,
-} from "@/lib/db/resources";
-import { DEFAULT_MODEL_OPTIONS } from "@/lib/models/catalog-defaults";
-import { agents } from "@/lib/db/schema";
+import { listAgentProfileTemplates } from "@/lib/db/agent-profiles";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
 import {
@@ -73,153 +65,17 @@ function normalizeActionName(actionName: string): string {
 	return actionName.trim();
 }
 
-async function buildModelsResponse(
+async function buildAgentProfileTemplateListResponse(
 	searchValue?: string,
 ): Promise<OptionsResponse> {
-	try {
-		const catalogRows = await listModelCatalog({ includeDisabled: false });
-		if (catalogRows.length > 0) {
-			return {
-				options: filterOptions(
-					catalogRows.map((row) => ({
-						label: row.displayName,
-						value: row.fullModelId,
-					})),
-					searchValue,
-				),
-			};
-		}
-	} catch (error) {
-		console.error("[builtin/options] model catalog fallback error:", error);
-	}
-
-	const envList = process.env.AGENT_MODELS_JSON || process.env.AI_MODELS_JSON;
-	let models: string[] = [];
-
-	if (envList) {
-		try {
-			const parsed = JSON.parse(envList) as unknown;
-			if (Array.isArray(parsed)) {
-				models = parsed.filter((m): m is string => typeof m === "string");
-			}
-		} catch {
-			// ignore malformed env JSON
-		}
-	}
-
-	if (models.length === 0) {
-		models = DEFAULT_MODEL_OPTIONS.map((model) => model.id);
-	}
-
-	return {
-		options: filterOptions(
-			models.map((m) => ({ label: getModelDisplayLabel(m), value: m })),
-			searchValue,
-		),
-	};
-}
-
-function getModelDisplayLabel(modelId: string): string {
-	const labels: Record<string, string> = {
-		"gpt-5.3-codex": "GPT-5.3 Codex",
-		"gpt-5.2-codex": "GPT-5.2 Codex",
-		"gpt-4o": "GPT-4o",
-		"gpt-4o-mini": "GPT-4o mini",
-		"openai/gpt-5.3-codex": "OpenAI GPT-5.3 Codex (Gateway)",
-		"openai/gpt-5.1-instant": "OpenAI GPT-5.1 Instant (Gateway)",
-		"openai/gpt-4o-mini": "OpenAI GPT-4o mini (Gateway)",
-		"claude-sonnet-4-5": "Claude Sonnet 4.5",
-		"claude-sonnet-4-6": "Claude Sonnet 4.6",
-		"claude-opus-4-6": "Claude Opus 4.6",
-		"google/gemini-2.5-pro": "Gemini 2.5 Pro",
-		"google/gemini-2.5-flash": "Gemini 2.5 Flash",
-	};
-
-	return labels[modelId] || modelId;
-}
-
-async function buildAgentListResponse(
-	userId: string,
-	searchValue?: string,
-): Promise<OptionsResponse> {
-	const userAgents = await db
-		.select({ id: agents.id, name: agents.name, agentType: agents.agentType })
-		.from(agents)
-		.where(and(eq(agents.userId, userId), eq(agents.isEnabled, true)));
-
-	const options: DropdownOption[] = userAgents.map((a) => ({
-		label: `${a.name} (${a.agentType})`,
-		value: a.id,
-	}));
-
-	if (options.length === 0) {
-		return buildDisabledResponse("No saved agents — create one in Agents page");
-	}
-
-	return { options: filterOptions(options, searchValue) };
-}
-
-async function buildPromptPresetListResponse(
-	userId: string,
-	projectId: string,
-	searchValue?: string,
-): Promise<OptionsResponse> {
-	const rows = await listResourcePrompts({
-		userId,
-		projectId,
-		includeDisabled: false,
-	});
+	const rows = await listAgentProfileTemplates({ includeDisabled: false });
 	const options = rows.map((row) => ({
-		label: `${row.name} (v${row.version})`,
+		label: `${row.name} (v${row.defaultVersion})`,
 		value: row.id,
 	}));
 	if (options.length === 0) {
 		return buildDisabledResponse(
-			"No prompt presets — create one in Library page",
-		);
-	}
-	return { options: filterOptions(options, searchValue) };
-}
-
-async function buildSchemaPresetListResponse(
-	userId: string,
-	projectId: string,
-	searchValue?: string,
-): Promise<OptionsResponse> {
-	const rows = await listResourceSchemas({
-		userId,
-		projectId,
-		includeDisabled: false,
-	});
-	const options = rows.map((row) => ({
-		label: `${row.name} (v${row.version})`,
-		value: row.id,
-	}));
-	if (options.length === 0) {
-		return buildDisabledResponse(
-			"No schema presets — create one in Library page",
-		);
-	}
-	return { options: filterOptions(options, searchValue) };
-}
-
-async function buildModelProfileListResponse(
-	userId: string,
-	projectId: string,
-	searchValue?: string,
-): Promise<OptionsResponse> {
-	const rows = await listResourceModelProfiles({
-		userId,
-		projectId,
-		includeDisabled: false,
-	});
-	const options = rows.map((row) => ({
-		label: `${row.name} (v${row.version})`,
-		value: row.id,
-	}));
-	if (options.length === 0) {
-		return buildDisabledResponse(
-			"No model profiles — create one in Library page",
+			"No agent profiles — add templates before building a durable run",
 		);
 	}
 	return { options: filterOptions(options, searchValue) };
@@ -506,7 +362,7 @@ async function getBranchOptions(
  * POST /api/builtin/options
  *
  * Fetch dynamic dropdown options for builtin action config fields.
- * Handles model selection, allowed actions, GitHub repos/branches, and Mastra tools.
+ * Handles durable profile selection, GitHub repos/branches, and tool lists.
  * Session-authenticated.
  */
 export async function POST(request: Request) {
@@ -537,70 +393,12 @@ export async function POST(request: Request) {
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
 
-		// Agent selector for durable/run
 		if (
 			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "agentId"
+			rawBody.propertyName === "agentProfileTemplateId"
 		) {
 			return NextResponse.json(
-				await buildAgentListResponse(session.user.id, rawBody.searchValue),
-			);
-		}
-
-		// Model selector for durable/run
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "model"
-		) {
-			return NextResponse.json(await buildModelsResponse(rawBody.searchValue));
-		}
-
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "instructionsPresetId"
-		) {
-			return NextResponse.json(
-				await buildPromptPresetListResponse(
-					session.user.id,
-					session.user.projectId,
-					rawBody.searchValue,
-				),
-			);
-		}
-
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "schemaPresetId"
-		) {
-			return NextResponse.json(
-				await buildSchemaPresetListResponse(
-					session.user.id,
-					session.user.projectId,
-					rawBody.searchValue,
-				),
-			);
-		}
-
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "modelProfileId"
-		) {
-			return NextResponse.json(
-				await buildModelProfileListResponse(
-					session.user.id,
-					session.user.projectId,
-					rawBody.searchValue,
-				),
-			);
-		}
-
-		// Tools multi-select for durable/run
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "tools"
-		) {
-			return NextResponse.json(
-				await getDurableToolOptions(rawBody.searchValue),
+				await buildAgentProfileTemplateListResponse(rawBody.searchValue),
 			);
 		}
 

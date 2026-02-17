@@ -12,7 +12,11 @@ import {
 } from "./schema";
 import { generateId } from "@/lib/utils/id";
 
-export type ResourceType = "prompt" | "schema" | "model_profile";
+export type ResourceType =
+	| "prompt"
+	| "schema"
+	| "model_profile"
+	| "agent_profile";
 
 export type ResourceListParams = {
 	userId: string;
