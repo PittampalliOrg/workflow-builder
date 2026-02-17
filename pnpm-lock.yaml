@@ -125,6 +125,9 @@ importers:
       date-fns:
         specifier: ^4.1.0
         version: 4.1.0
+      diff-match-patch:
+        specifier: ^1.0.5
+        version: 1.0.5
       dotenv:
         specifier: ^17.2.3
         version: 17.2.3
@@ -219,6 +222,9 @@ importers:
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.1.16
+      '@types/diff-match-patch':
+        specifier: ^1.0.36
+        version: 1.0.36
       '@types/node':
         specifier: ^24
         version: 24.10.0

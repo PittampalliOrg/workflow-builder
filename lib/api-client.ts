@@ -47,6 +47,7 @@ export type ExecutionChangeFileStatus = "A" | "M" | "D" | "R";
 export type ExecutionChangeFileEntry = {
 	path: string;
 	status: ExecutionChangeFileStatus;
+	oldPath?: string;
 };
 
 export type ExecutionChangeArtifactMetadata = {
@@ -71,6 +72,40 @@ export type ExecutionChangeArtifactMetadata = {
 	files: ExecutionChangeFileEntry[];
 	baseRevision?: string;
 	headRevision?: string;
+};
+
+export type ExecutionFileSnapshotHistoryEntry = {
+	id: string;
+	changeSetId: string;
+	sequence: number;
+	path: string;
+	oldPath?: string;
+	status: ExecutionChangeFileStatus;
+	isBinary: boolean;
+	language?: string;
+	oldBytes: number;
+	newBytes: number;
+	oldStorageRef?: string;
+	newStorageRef?: string;
+	oldCompressed: boolean;
+	newCompressed: boolean;
+	createdAt: string;
+};
+
+export type ExecutionFileSnapshot = {
+	executionId: string;
+	path: string;
+	oldPath?: string;
+	status: ExecutionChangeFileStatus;
+	isBinary: boolean;
+	language?: string;
+	oldContent: string | null;
+	newContent: string | null;
+	oldBytes: number;
+	newBytes: number;
+	baseRevision?: string;
+	headRevision?: string;
+	history: ExecutionFileSnapshotHistoryEntry[];
 };
 
 // API error class
@@ -694,6 +729,37 @@ export const workflowApi = {
 			pending?: boolean;
 		}>(
 			`/api/workflows/executions/${executionId}/patch${query ? `?${query}` : ""}`,
+		);
+	},
+
+	getExecutionFileSnapshot: (
+		executionId: string,
+		filePath: string,
+		options?: {
+			durableInstanceId?: string;
+		},
+	) => {
+		const pathSegments = filePath
+			.split("/")
+			.map((segment) => segment.trim())
+			.filter(Boolean)
+			.map((segment) => encodeURIComponent(segment));
+		if (pathSegments.length === 0) {
+			throw new Error("filePath is required");
+		}
+		const params = new URLSearchParams();
+		if (options?.durableInstanceId) {
+			params.set("durableInstanceId", options.durableInstanceId);
+		}
+		const query = params.toString();
+		return apiCall<{
+			success: boolean;
+			executionId: string;
+			path: string;
+			durableInstanceId?: string;
+			snapshot: ExecutionFileSnapshot | null;
+		}>(
+			`/api/workflows/executions/${executionId}/files/snapshot/${pathSegments.join("/")}${query ? `?${query}` : ""}`,
 		);
 	},
 
