@@ -206,6 +206,7 @@ function buildWorkflowNodes(input: {
 	]);
 
 	const workspaceRefTemplate = `{{@${workspaceProfileId}:Workspace Profile.workspaceRef}}`;
+	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
 	const cloneConfig: Record<string, string> = {
 		actionType: "workspace/clone",
 		workspaceRef: workspaceRefTemplate,
@@ -279,6 +280,7 @@ function buildWorkflowNodes(input: {
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
+					cwd: clonePathTemplate,
 				},
 				status: "idle",
 			},

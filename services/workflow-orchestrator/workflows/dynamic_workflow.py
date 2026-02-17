@@ -1080,9 +1080,11 @@ def process_agent_child_workflow(
 
     activity_input = {
         "prompt": prompt,
+        "cwd": resolved_config.get("cwd"),
         "model": resolved_config.get("model"),
         "maxTurns": max_turns,
         "stopCondition": resolved_config.get("stopCondition"),
+        "requireFileChanges": resolved_config.get("requireFileChanges"),
         "agentConfig": agent_config,
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),

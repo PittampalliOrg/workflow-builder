@@ -336,6 +336,67 @@ type ChangeSummaryOutput = {
 	headRevision?: string;
 };
 
+function parseOptionalBoolean(input: unknown): boolean | undefined {
+	if (typeof input === "boolean") return input;
+	if (typeof input !== "string") return undefined;
+	const normalized = input.trim().toLowerCase();
+	if (normalized === "true") return true;
+	if (normalized === "false") return false;
+	return undefined;
+}
+
+function stopConditionImpliesFileChanges(stopCondition: string): boolean {
+	const normalized = stopCondition.toLowerCase();
+	const requiresChangeTerms = [
+		"file changes",
+		"files are updated",
+		"code changes",
+		"files updated",
+		"changes are complete",
+		"edited files",
+		"modified files",
+		"apply changes",
+		"write files",
+		"edit files",
+	];
+	return requiresChangeTerms.some((term) => normalized.includes(term));
+}
+
+function buildRunPrompt(
+	basePrompt: string,
+	stopCondition: string | undefined,
+	requireFileChanges: boolean,
+	cwd?: string,
+): string {
+	const normalizedCwd = cwd?.trim();
+	const normalizedStopCondition = stopCondition?.trim();
+	const cwdContext = normalizedCwd
+		? `Repository root: ${normalizedCwd}\nAlways operate relative to this repository root for file and directory paths.\n\n`
+		: "";
+	if (!normalizedStopCondition) {
+		return `${cwdContext}${basePrompt}`;
+	}
+
+	const fileChangeGuard = requireFileChanges
+		? "\n\nCRITICAL: You must make real file mutations (write/edit/delete/mkdir) before finalizing. Do not stop at analysis or directory listing."
+		: "";
+
+	return `${cwdContext}${basePrompt}
+
+## Stop Condition
+${normalizedStopCondition}
+
+Execute autonomously until the stop condition is satisfied. Do not ask for confirmation before proceeding.${fileChangeGuard}`;
+}
+
+function didRunMutateFiles(
+	fileChanges: FileChange[],
+	changeSummary?: ChangeSummaryOutput,
+): boolean {
+	if (fileChanges.length > 0) return true;
+	return Boolean(changeSummary?.changed || changeSummary?.files.length);
+}
+
 /**
  * Extract tool calls from the workflow completion result.
  *
@@ -587,7 +648,7 @@ app.post("/api/tools/:toolId", async (req, res) => {
 
 app.post("/api/workspaces/profile", async (req, res) => {
 	try {
-		const executionIdRaw = req.body?.executionId;
+		const executionIdRaw = req.body?.executionId ?? req.body?.dbExecutionId;
 		const executionId =
 			typeof executionIdRaw === "string" ? executionIdRaw.trim() : "";
 		if (!executionId) {
@@ -662,7 +723,9 @@ app.post("/api/workspaces/clone", async (req, res) => {
 			executionId:
 				typeof req.body?.executionId === "string"
 					? req.body.executionId
-					: undefined,
+					: typeof req.body?.dbExecutionId === "string"
+						? req.body.dbExecutionId
+						: undefined,
 			durableInstanceId:
 				typeof req.body?.durableInstanceId === "string"
 					? req.body.durableInstanceId
@@ -721,7 +784,9 @@ app.post("/api/workspaces/command", async (req, res) => {
 			executionId:
 				typeof req.body?.executionId === "string"
 					? req.body.executionId
-					: undefined,
+					: typeof req.body?.dbExecutionId === "string"
+						? req.body.dbExecutionId
+						: undefined,
 			durableInstanceId:
 				typeof req.body?.durableInstanceId === "string"
 					? req.body.durableInstanceId
@@ -778,7 +843,9 @@ app.post("/api/workspaces/file", async (req, res) => {
 			executionId:
 				typeof req.body?.executionId === "string"
 					? req.body.executionId
-					: undefined,
+					: typeof req.body?.dbExecutionId === "string"
+						? req.body.dbExecutionId
+						: undefined,
 			durableInstanceId:
 				typeof req.body?.durableInstanceId === "string"
 					? req.body.durableInstanceId
@@ -825,11 +892,15 @@ app.post("/api/workspaces/cleanup", async (req, res) => {
 			typeof req.body?.executionId === "string"
 				? req.body.executionId.trim()
 				: "";
+		const dbExecutionId =
+			typeof req.body?.dbExecutionId === "string"
+				? req.body.dbExecutionId.trim()
+				: "";
 
-		if (!workspaceRef && !executionId) {
+		if (!workspaceRef && !executionId && !dbExecutionId) {
 			res.status(400).json({
 				success: false,
-				error: "workspaceRef or executionId is required",
+				error: "workspaceRef, executionId, or dbExecutionId is required",
 			});
 			return;
 		}
@@ -842,6 +913,10 @@ app.post("/api/workspaces/cleanup", async (req, res) => {
 		}
 		if (executionId) {
 			const refs = await workspaceSessions.cleanupByExecutionId(executionId);
+			for (const ref of refs) cleanedRefs.push(ref);
+		}
+		if (dbExecutionId && dbExecutionId !== executionId) {
+			const refs = await workspaceSessions.cleanupByExecutionId(dbExecutionId);
 			for (const ref of refs) cleanedRefs.push(ref);
 		}
 
@@ -974,7 +1049,11 @@ app.post("/api/run", async (req, res) => {
 		await initAgent();
 
 		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
-		const executionId = (req.body?.executionId as string) ?? parentExecutionId;
+		const executionIdRaw =
+			(req.body?.executionId as string) ??
+			(req.body?.dbExecutionId as string) ??
+			parentExecutionId;
+		const executionId = String(executionIdRaw || "").trim();
 		const nodeId = (req.body?.nodeId as string) ?? "";
 		const agentWorkflowId = `durable-run-${nanoid(12)}`;
 		const requestedWorkspaceRef =
@@ -986,6 +1065,25 @@ app.post("/api/run", async (req, res) => {
 			(executionId
 				? workspaceSessions.getWorkspaceRefByExecutionId(executionId) || ""
 				: "");
+		const stopCondition =
+			typeof req.body?.stopCondition === "string"
+				? req.body.stopCondition.trim()
+				: "";
+		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+		const explicitRequireFileChanges = parseOptionalBoolean(
+			req.body?.requireFileChanges,
+		);
+		const requireFileChanges =
+			explicitRequireFileChanges ??
+			(Boolean(workspaceRef) &&
+				Boolean(stopCondition) &&
+				stopConditionImpliesFileChanges(stopCondition));
+		const runPrompt = buildRunPrompt(
+			prompt,
+			stopCondition,
+			requireFileChanges,
+			cwd,
+		);
 		if (workspaceRef && !workspaceSessions.getByWorkspaceRef(workspaceRef)) {
 			res.status(400).json({
 				success: false,
@@ -1002,7 +1100,7 @@ app.post("/api/run", async (req, res) => {
 		});
 
 		console.log(
-			`[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${prompt.slice(0, 80)}"`,
+			`[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${runPrompt.slice(0, 80)}"`,
 		);
 
 		// Per-request maxTurns override
@@ -1071,7 +1169,7 @@ app.post("/api/run", async (req, res) => {
 		// Schedule the durable agent workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
 			activeAgent.agentWorkflow,
-			{ task: prompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
+			{ task: runPrompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
 		if (workspaceRef) {
 			workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
@@ -1096,6 +1194,11 @@ app.post("/api/run", async (req, res) => {
 					workspaceRef && executionId
 						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
+				const hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+				const fileChangeGuardViolation =
+					requireFileChanges && completion.success && !hasFileMutations
+						? "Stop condition requires file changes, but this run completed without write/edit/delete operations."
+						: undefined;
 
 				// Extract text from the final message
 				const text =
@@ -1106,14 +1209,18 @@ app.post("/api/run", async (req, res) => {
 
 				// Run post-workflow scorers (outside Dapr generator)
 				let evalResults: unknown[] | undefined;
-				if (scorers.length > 0 && completion.success) {
-					evalResults = await runScorers(scorers, prompt, text, instanceId);
+				if (
+					scorers.length > 0 &&
+					completion.success &&
+					!fileChangeGuardViolation
+				) {
+					evalResults = await runScorers(scorers, runPrompt, text, instanceId);
 				}
 
 				await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
-					success: completion.success,
+					success: completion.success && !fileChangeGuardViolation,
 					result: {
 						text,
 						toolCalls,
@@ -1124,7 +1231,7 @@ app.post("/api/run", async (req, res) => {
 						daprInstanceId: instanceId,
 						...(evalResults ? { evalResults } : {}),
 					},
-					error: completion.error,
+					error: fileChangeGuardViolation || completion.error,
 				});
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
@@ -1199,7 +1306,11 @@ app.post("/api/execute-plan", async (req, res) => {
 		const cwd = (req.body?.cwd as string) ?? "";
 		const prompt = (req.body?.prompt as string) ?? "";
 		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
-		const executionId = (req.body?.executionId as string) ?? parentExecutionId;
+		const executionIdRaw =
+			(req.body?.executionId as string) ??
+			(req.body?.dbExecutionId as string) ??
+			parentExecutionId;
+		const executionId = String(executionIdRaw || "").trim();
 		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
 		const requestedWorkspaceRef =
 			typeof req.body?.workspaceRef === "string"
