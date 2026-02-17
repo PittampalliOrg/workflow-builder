@@ -3,6 +3,13 @@ import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
+import { listModelCatalog } from "@/lib/db/model-catalog";
+import {
+	listResourceModelProfiles,
+	listResourcePrompts,
+	listResourceSchemas,
+} from "@/lib/db/resources";
+import { DEFAULT_MODEL_OPTIONS } from "@/lib/models/catalog-defaults";
 import { agents } from "@/lib/db/schema";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
@@ -66,7 +73,26 @@ function normalizeActionName(actionName: string): string {
 	return actionName.trim();
 }
 
-function buildModelsResponse(searchValue?: string): OptionsResponse {
+async function buildModelsResponse(
+	searchValue?: string,
+): Promise<OptionsResponse> {
+	try {
+		const catalogRows = await listModelCatalog({ includeDisabled: false });
+		if (catalogRows.length > 0) {
+			return {
+				options: filterOptions(
+					catalogRows.map((row) => ({
+						label: row.displayName,
+						value: row.fullModelId,
+					})),
+					searchValue,
+				),
+			};
+		}
+	} catch (error) {
+		console.error("[builtin/options] model catalog fallback error:", error);
+	}
+
 	const envList = process.env.AGENT_MODELS_JSON || process.env.AI_MODELS_JSON;
 	let models: string[] = [];
 
@@ -82,18 +108,7 @@ function buildModelsResponse(searchValue?: string): OptionsResponse {
 	}
 
 	if (models.length === 0) {
-		models = [
-			"gpt-5.3-codex",
-			"gpt-5.2-codex",
-			"gpt-4o-mini",
-			"gpt-4o",
-			"claude-sonnet-4-5",
-			"claude-sonnet-4-6",
-			"claude-opus-4-6",
-			"openai/gpt-5.3-codex",
-			"openai/gpt-5.1-instant",
-			"openai/gpt-4o-mini",
-		];
+		models = DEFAULT_MODEL_OPTIONS.map((model) => model.id);
 	}
 
 	return {
@@ -116,6 +131,8 @@ function getModelDisplayLabel(modelId: string): string {
 		"claude-sonnet-4-5": "Claude Sonnet 4.5",
 		"claude-sonnet-4-6": "Claude Sonnet 4.6",
 		"claude-opus-4-6": "Claude Opus 4.6",
+		"google/gemini-2.5-pro": "Gemini 2.5 Pro",
+		"google/gemini-2.5-flash": "Gemini 2.5 Flash",
 	};
 
 	return labels[modelId] || modelId;
@@ -139,6 +156,72 @@ async function buildAgentListResponse(
 		return buildDisabledResponse("No saved agents — create one in Agents page");
 	}
 
+	return { options: filterOptions(options, searchValue) };
+}
+
+async function buildPromptPresetListResponse(
+	userId: string,
+	projectId: string,
+	searchValue?: string,
+): Promise<OptionsResponse> {
+	const rows = await listResourcePrompts({
+		userId,
+		projectId,
+		includeDisabled: false,
+	});
+	const options = rows.map((row) => ({
+		label: `${row.name} (v${row.version})`,
+		value: row.id,
+	}));
+	if (options.length === 0) {
+		return buildDisabledResponse(
+			"No prompt presets — create one in Library page",
+		);
+	}
+	return { options: filterOptions(options, searchValue) };
+}
+
+async function buildSchemaPresetListResponse(
+	userId: string,
+	projectId: string,
+	searchValue?: string,
+): Promise<OptionsResponse> {
+	const rows = await listResourceSchemas({
+		userId,
+		projectId,
+		includeDisabled: false,
+	});
+	const options = rows.map((row) => ({
+		label: `${row.name} (v${row.version})`,
+		value: row.id,
+	}));
+	if (options.length === 0) {
+		return buildDisabledResponse(
+			"No schema presets — create one in Library page",
+		);
+	}
+	return { options: filterOptions(options, searchValue) };
+}
+
+async function buildModelProfileListResponse(
+	userId: string,
+	projectId: string,
+	searchValue?: string,
+): Promise<OptionsResponse> {
+	const rows = await listResourceModelProfiles({
+		userId,
+		projectId,
+		includeDisabled: false,
+	});
+	const options = rows.map((row) => ({
+		label: `${row.name} (v${row.version})`,
+		value: row.id,
+	}));
+	if (options.length === 0) {
+		return buildDisabledResponse(
+			"No model profiles — create one in Library page",
+		);
+	}
 	return { options: filterOptions(options, searchValue) };
 }
 
@@ -469,7 +552,46 @@ export async function POST(request: Request) {
 			normalizedActionName === "durable/run" &&
 			rawBody.propertyName === "model"
 		) {
-			return NextResponse.json(buildModelsResponse(rawBody.searchValue));
+			return NextResponse.json(await buildModelsResponse(rawBody.searchValue));
+		}
+
+		if (
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "instructionsPresetId"
+		) {
+			return NextResponse.json(
+				await buildPromptPresetListResponse(
+					session.user.id,
+					session.user.projectId,
+					rawBody.searchValue,
+				),
+			);
+		}
+
+		if (
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "schemaPresetId"
+		) {
+			return NextResponse.json(
+				await buildSchemaPresetListResponse(
+					session.user.id,
+					session.user.projectId,
+					rawBody.searchValue,
+				),
+			);
+		}
+
+		if (
+			normalizedActionName === "durable/run" &&
+			rawBody.propertyName === "modelProfileId"
+		) {
+			return NextResponse.json(
+				await buildModelProfileListResponse(
+					session.user.id,
+					session.user.projectId,
+					rawBody.searchValue,
+				),
+			);
 		}
 
 		// Tools multi-select for durable/run

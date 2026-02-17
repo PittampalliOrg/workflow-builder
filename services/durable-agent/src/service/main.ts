@@ -204,6 +204,9 @@ async function getOrCreateConfiguredAgent(
 async function initAgent(): Promise<void> {
 	if (initialized) return;
 
+	// Fail fast at startup if durable change persistence is misconfigured.
+	await workspaceSessions.ensureChangeArtifactPersistence();
+
 	// Register built-in model providers (openai)
 	registerBuiltinProviders();
 
@@ -329,6 +332,8 @@ type ChangeSummaryOutput = {
 	inlinePatchPreview?: string;
 	truncatedArtifact?: boolean;
 	artifactOriginalBytes?: number;
+	baseRevision?: string;
+	headRevision?: string;
 };
 
 /**
@@ -425,11 +430,11 @@ function extractFileChanges(
 	return changes;
 }
 
-function buildAgentChangeSummary(
+async function buildAgentChangeSummary(
 	executionId: string,
 	durableInstanceId: string,
-): ChangeSummaryOutput {
-	const { patch, changeSets } = workspaceSessions.getExecutionPatch(
+): Promise<ChangeSummaryOutput> {
+	const { patch, changeSets } = await workspaceSessions.getExecutionPatch(
 		executionId,
 		{
 			durableInstanceId,
@@ -472,6 +477,8 @@ function buildAgentChangeSummary(
 		patchBytes: patchBytes > 0 ? patchBytes : undefined,
 		truncatedInlinePatch: patch.length > previewLimit,
 		inlinePatchPreview: patch ? patch.slice(0, previewLimit) : undefined,
+		baseRevision: changeSets[0]?.baseRevision,
+		headRevision: changeSets.at(-1)?.headRevision,
 	};
 }
 
@@ -850,82 +857,109 @@ app.post("/api/workspaces/cleanup", async (req, res) => {
 	}
 });
 
-app.get("/api/workspaces/changes/:changeSetId", (req, res) => {
-	const changeSetId =
-		typeof req.params.changeSetId === "string"
-			? req.params.changeSetId.trim()
-			: "";
-	if (!changeSetId) {
-		res.status(400).json({ success: false, error: "changeSetId is required" });
-		return;
-	}
+app.get("/api/workspaces/changes/:changeSetId", async (req, res) => {
+	try {
+		const changeSetId =
+			typeof req.params.changeSetId === "string"
+				? req.params.changeSetId.trim()
+				: "";
+		if (!changeSetId) {
+			res
+				.status(400)
+				.json({ success: false, error: "changeSetId is required" });
+			return;
+		}
 
-	const artifact = workspaceSessions.getChangeArtifact(changeSetId);
-	if (!artifact) {
-		res
-			.status(404)
-			.json({ success: false, error: "Change artifact not found" });
-		return;
-	}
+		const artifact = await workspaceSessions.getChangeArtifact(changeSetId);
+		if (!artifact) {
+			res
+				.status(404)
+				.json({ success: false, error: "Change artifact not found" });
+			return;
+		}
 
-	res.json({
-		success: true,
-		metadata: artifact.metadata,
-		patch: artifact.patch,
-	});
+		res.json({
+			success: true,
+			metadata: artifact.metadata,
+			patch: artifact.patch,
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 });
 
-app.get("/api/workspaces/executions/:executionId/changes", (req, res) => {
-	const executionId =
-		typeof req.params.executionId === "string"
-			? req.params.executionId.trim()
-			: "";
-	if (!executionId) {
-		res.status(400).json({ success: false, error: "executionId is required" });
-		return;
-	}
+app.get("/api/workspaces/executions/:executionId/changes", async (req, res) => {
+	try {
+		const executionId =
+			typeof req.params.executionId === "string"
+				? req.params.executionId.trim()
+				: "";
+		if (!executionId) {
+			res
+				.status(400)
+				.json({ success: false, error: "executionId is required" });
+			return;
+		}
 
-	const changes =
-		workspaceSessions.listChangeArtifactsByExecutionId(executionId);
-	res.json({
-		success: true,
-		executionId,
-		count: changes.length,
-		changes,
-	});
+		const changes =
+			await workspaceSessions.listChangeArtifactsByExecutionId(executionId);
+		res.json({
+			success: true,
+			executionId,
+			count: changes.length,
+			changes,
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
 });
 
-app.get("/api/workspaces/executions/:executionId/patch", (req, res) => {
-	const executionId =
-		typeof req.params.executionId === "string"
-			? req.params.executionId.trim()
-			: "";
-	if (!executionId) {
-		res.status(400).json({ success: false, error: "executionId is required" });
-		return;
+app.get("/api/workspaces/executions/:executionId/patch", async (req, res) => {
+	try {
+		const executionId =
+			typeof req.params.executionId === "string"
+				? req.params.executionId.trim()
+				: "";
+		if (!executionId) {
+			res
+				.status(400)
+				.json({ success: false, error: "executionId is required" });
+			return;
+		}
+
+		const durableInstanceId =
+			typeof req.query?.durableInstanceId === "string"
+				? req.query.durableInstanceId.trim()
+				: undefined;
+		const combined = await workspaceSessions.getExecutionPatch(executionId, {
+			durableInstanceId,
+		});
+
+		if (req.query?.format === "raw") {
+			res.setHeader("Content-Type", "text/plain; charset=utf-8");
+			res.send(combined.patch);
+			return;
+		}
+
+		res.json({
+			success: true,
+			executionId,
+			durableInstanceId,
+			patch: combined.patch,
+			changeSets: combined.changeSets,
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
-
-	const durableInstanceId =
-		typeof req.query?.durableInstanceId === "string"
-			? req.query.durableInstanceId.trim()
-			: undefined;
-	const combined = workspaceSessions.getExecutionPatch(executionId, {
-		durableInstanceId,
-	});
-
-	if (req.query?.format === "raw") {
-		res.setHeader("Content-Type", "text/plain; charset=utf-8");
-		res.send(combined.patch);
-		return;
-	}
-
-	res.json({
-		success: true,
-		executionId,
-		durableInstanceId,
-		patch: combined.patch,
-		changeSets: combined.changeSets,
-	});
 });
 
 // Agent run endpoint (fire-and-forget)
@@ -1060,7 +1094,7 @@ app.post("/api/run", async (req, res) => {
 				const fileChanges = extractFileChanges(toolCalls);
 				const changeSummary =
 					workspaceRef && executionId
-						? buildAgentChangeSummary(executionId, instanceId)
+						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
 
 				// Extract text from the final message
@@ -1233,7 +1267,7 @@ app.post("/api/execute-plan", async (req, res) => {
 				const fileChanges = extractFileChanges(toolCalls);
 				const changeSummary =
 					workspaceRef && executionId
-						? buildAgentChangeSummary(executionId, instanceId)
+						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
 
 				const text =

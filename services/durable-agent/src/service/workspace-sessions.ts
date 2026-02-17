@@ -97,6 +97,8 @@ export type WorkspaceChangeSummary = {
 	inlinePatchPreview?: string;
 	truncatedArtifact?: boolean;
 	artifactOriginalBytes?: number;
+	baseRevision?: string;
+	headRevision?: string;
 	trackingError?: string;
 };
 
@@ -149,8 +151,6 @@ const SWEEP_INTERVAL_MS = parseInt(
 	process.env.WORKSPACE_SESSION_SWEEP_MS || `${60 * 1000}`,
 	10,
 );
-const TRACK_CLONE_CHANGES =
-	process.env.WORKSPACE_TRACK_CLONE_CHANGES === "true";
 const STRIP_CLONE_GIT_DIR =
 	process.env.WORKSPACE_CLONE_STRIP_GIT_DIR !== "false";
 const INLINE_PATCH_PREVIEW_BYTES = parseInt(
@@ -199,32 +199,36 @@ class WorkspaceSessionManager {
 		};
 	}
 
-	getChangeArtifact(changeSetId: string): {
+	async ensureChangeArtifactPersistence(): Promise<void> {
+		await changeArtifacts.ensureReady();
+	}
+
+	async getChangeArtifact(changeSetId: string): Promise<{
 		metadata: ChangeArtifactMetadata;
 		patch: string;
-	} | null {
+	} | null> {
 		const id = changeSetId.trim();
 		if (!id) return null;
-		return changeArtifacts.get(id);
+		return await changeArtifacts.get(id);
 	}
 
-	listChangeArtifactsByExecutionId(
+	async listChangeArtifactsByExecutionId(
 		executionId: string,
-	): ChangeArtifactMetadata[] {
+	): Promise<ChangeArtifactMetadata[]> {
 		const id = executionId.trim();
 		if (!id) return [];
-		return changeArtifacts.listByExecutionId(id);
+		return await changeArtifacts.listByExecutionId(id);
 	}
 
-	getExecutionPatch(
+	async getExecutionPatch(
 		executionId: string,
 		opts?: { durableInstanceId?: string },
-	) {
+	): Promise<{ patch: string; changeSets: ChangeArtifactMetadata[] }> {
 		const id = executionId.trim();
 		if (!id) {
-			return { patch: "", changeSets: [] as ChangeArtifactMetadata[] };
+			return { patch: "", changeSets: [] };
 		}
-		return changeArtifacts.getExecutionPatch(id, opts);
+		return await changeArtifacts.getExecutionPatch(id, opts);
 	}
 
 	getWorkspaceRefByExecutionId(executionId: string): string | null {
@@ -488,28 +492,12 @@ class WorkspaceSessionManager {
 			strippedGitDir = true;
 		}
 
-		let changeSummary: WorkspaceChangeSummary | undefined;
-		if (TRACK_CLONE_CHANGES) {
-			changeSummary = await this.captureWorkspaceChangeSummary({
-				session,
-				operation: "clone",
-				durableInstanceId: input.durableInstanceId,
-				includeInExecutionPatch: false,
-			});
-		} else {
-			await this.snapshotTrackingBaseline(session, "clone");
-			changeSummary = {
-				changed: true,
-				files: [{ path: cloneDir, status: "A" }],
-				stats: {
-					files: Math.max(fileCount, 1),
-					additions: 0,
-					deletions: 0,
-				},
-				trackingError:
-					"Clone patch capture is disabled by policy (WORKSPACE_TRACK_CLONE_CHANGES=false)",
-			};
-		}
+		const changeSummary = await this.captureWorkspaceChangeSummary({
+			session,
+			operation: "clone",
+			durableInstanceId: input.durableInstanceId,
+			includeInExecutionPatch: false,
+		});
 
 		this.touch(session);
 		return {
@@ -911,6 +899,8 @@ class WorkspaceSessionManager {
 			inlinePatchPreview: preview,
 			truncatedArtifact: metadata.truncated,
 			artifactOriginalBytes: metadata.originalBytes,
+			baseRevision: metadata.baseRevision,
+			headRevision: metadata.headRevision,
 		};
 	}
 
@@ -932,6 +922,8 @@ class WorkspaceSessionManager {
 		}
 
 		try {
+			const baseRevision = await this.getTrackingHeadRevision(session);
+
 			const stage = await this.runTrackingGit(session, "git add -A .");
 			if (!stage.success || stage.exitCode !== 0) {
 				throw new Error(stage.stderr || "git add failed");
@@ -974,8 +966,9 @@ class WorkspaceSessionManager {
 				throw new Error(commitResult.stderr || "git commit failed");
 			}
 			session.changeSequence += 1;
+			const headRevision = await this.getTrackingHeadRevision(session);
 
-			const metadata = changeArtifacts.save({
+			const metadata = await changeArtifacts.save({
 				executionId: session.executionId,
 				workspaceRef: session.workspaceRef,
 				durableInstanceId: input.durableInstanceId,
@@ -986,6 +979,8 @@ class WorkspaceSessionManager {
 				additions: stats.additions,
 				deletions: stats.deletions,
 				includeInExecutionPatch: input.includeInExecutionPatch,
+				baseRevision: baseRevision || undefined,
+				headRevision: headRevision || undefined,
 			});
 
 			return this.buildChangeSummaryFromArtifact(metadata, patch);
@@ -997,6 +992,17 @@ class WorkspaceSessionManager {
 				trackingError: err instanceof Error ? err.message : String(err),
 			};
 		}
+	}
+
+	private async getTrackingHeadRevision(
+		session: WorkspaceSession,
+	): Promise<string | null> {
+		const revision = await this.runTrackingGit(session, "git rev-parse HEAD");
+		if (!revision.success || revision.exitCode !== 0) {
+			return null;
+		}
+		const value = revision.stdout.trim();
+		return value || null;
 	}
 
 	private resolveFromInput(

@@ -4,6 +4,10 @@ import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
+import {
+	applyResourcePresetsToNodes,
+	persistWorkflowResourceRefs,
+} from "@/lib/workflows/apply-resource-presets";
 import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 
 const CURRENT_WORKFLOW_NAME = "~~__CURRENT__~~";
@@ -74,6 +78,11 @@ export async function POST(request: Request) {
 		}
 
 		const normalizedNodes = normalizeWorkflowNodes(nodes) as any[];
+		const presetApplied = await applyResourcePresetsToNodes({
+			nodes: normalizedNodes,
+			userId: session.user.id,
+			projectId: session.user.projectId,
+		});
 
 		// Check if current workflow exists
 		const [existingWorkflow] = await db
@@ -92,12 +101,17 @@ export async function POST(request: Request) {
 			const [updatedWorkflow] = await db
 				.update(workflows)
 				.set({
-					nodes: normalizedNodes,
+					nodes: presetApplied.nodes as any[],
 					edges,
 					updatedAt: new Date(),
 				})
 				.where(eq(workflows.id, existingWorkflow.id))
 				.returning();
+
+			await persistWorkflowResourceRefs({
+				workflowId: updatedWorkflow.id,
+				refs: presetApplied.refs,
+			});
 
 			return NextResponse.json({
 				id: updatedWorkflow.id,
@@ -115,12 +129,17 @@ export async function POST(request: Request) {
 				id: workflowId,
 				name: CURRENT_WORKFLOW_NAME,
 				description: "Auto-saved current workflow",
-				nodes: normalizedNodes,
+				nodes: presetApplied.nodes as any[],
 				edges,
 				userId: session.user.id,
 				projectId: session.user.projectId,
 			})
 			.returning();
+
+		await persistWorkflowResourceRefs({
+			workflowId: savedWorkflow.id,
+			refs: presetApplied.refs,
+		});
 
 		return NextResponse.json({
 			id: savedWorkflow.id,

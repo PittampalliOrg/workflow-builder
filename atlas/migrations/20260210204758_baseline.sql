@@ -117,6 +117,36 @@ CREATE TABLE "workflows" (
   CONSTRAINT "workflows_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "workflows_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION
 );
+-- Create "agents" table
+CREATE TABLE "agents" (
+  "id" text NOT NULL,
+  "name" text NOT NULL,
+  "description" text NULL,
+  "agent_type" text NOT NULL DEFAULT 'general',
+  "instructions" text NOT NULL,
+  "model" jsonb NOT NULL,
+  "tools" jsonb NOT NULL DEFAULT '[]',
+  "max_turns" integer NOT NULL DEFAULT 50,
+  "timeout_minutes" integer NOT NULL DEFAULT 30,
+  "default_options" jsonb NULL,
+  "memory_config" jsonb NULL,
+  "metadata" jsonb NULL,
+  "is_default" boolean NOT NULL DEFAULT false,
+  "is_enabled" boolean NOT NULL DEFAULT true,
+  "user_id" text NOT NULL,
+  "project_id" text NULL,
+  "created_at" timestamp NOT NULL DEFAULT now(),
+  "updated_at" timestamp NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id"),
+  CONSTRAINT "agents_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "agents_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "users" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION
+);
+-- Create index "idx_agents_agent_type" to table: "agents"
+CREATE INDEX "idx_agents_agent_type" ON "agents" ("agent_type");
+-- Create index "idx_agents_project_id" to table: "agents"
+CREATE INDEX "idx_agents_project_id" ON "agents" ("project_id");
+-- Create index "idx_agents_user_id" to table: "agents"
+CREATE INDEX "idx_agents_user_id" ON "agents" ("user_id");
 -- Create "workflow_executions" table
 CREATE TABLE "workflow_executions" (
   "id" text NOT NULL,

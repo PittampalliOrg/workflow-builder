@@ -6,6 +6,10 @@ import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
+import {
+	applyResourcePresetsToNodes,
+	persistWorkflowResourceRefs,
+} from "@/lib/workflows/apply-resource-presets";
 import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 
 // Helper function to create a default trigger node
@@ -41,10 +45,17 @@ export async function POST(request: Request) {
 			);
 		}
 
-		// Validate that all connection references in nodes belong to the current user
+		// Resolve resource preset refs into snapshot values before persisting.
 		const normalizedNodes = normalizeWorkflowNodes(body.nodes);
+		const presetApplied = await applyResourcePresetsToNodes({
+			nodes: normalizedNodes,
+			userId: session.user.id,
+			projectId: session.user.projectId,
+		});
+
+		// Validate that all connection references in nodes belong to the current user
 		const validation = await validateWorkflowAppConnections(
-			normalizedNodes,
+			presetApplied.nodes as any[],
 			session.user.id,
 		);
 		if (!validation.valid) {
@@ -55,7 +66,7 @@ export async function POST(request: Request) {
 		}
 
 		// Ensure there's always a trigger node (only add one if nodes array is empty)
-		let nodes = normalizedNodes as any;
+		let nodes = presetApplied.nodes as any;
 		if (nodes.length === 0) {
 			nodes = [createDefaultTriggerNode()];
 		}
@@ -85,6 +96,11 @@ export async function POST(request: Request) {
 				projectId: session.user.projectId,
 			})
 			.returning();
+
+		await persistWorkflowResourceRefs({
+			workflowId: newWorkflow.id,
+			refs: presetApplied.refs,
+		});
 
 		return NextResponse.json({
 			...newWorkflow,

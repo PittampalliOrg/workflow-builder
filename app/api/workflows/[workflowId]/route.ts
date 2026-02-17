@@ -4,6 +4,10 @@ import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
+import {
+	applyResourcePresetsToNodes,
+	persistWorkflowResourceRefs,
+} from "@/lib/workflows/apply-resource-presets";
 import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 
 // Helper to strip sensitive data from nodes for public viewing
@@ -148,9 +152,23 @@ export async function PATCH(
 		}
 
 		const body = await request.json();
+		let resolvedRefs: Array<{
+			nodeId: string;
+			resourceType: "prompt" | "schema" | "model_profile";
+			resourceId: string;
+			resourceVersion: number | null;
+		}> | null = null;
 
 		// Validate that all connection references in nodes belong to the current user
 		if (Array.isArray(body.nodes)) {
+			const presetApplied = await applyResourcePresetsToNodes({
+				nodes: body.nodes,
+				userId: session.user.id,
+				projectId: session.user.projectId,
+			});
+			body.nodes = presetApplied.nodes;
+			resolvedRefs = presetApplied.refs;
+
 			const validation = await validateWorkflowAppConnections(
 				body.nodes,
 				session.user.id,
@@ -188,6 +206,13 @@ export async function PATCH(
 				{ error: "Workflow not found" },
 				{ status: 404 },
 			);
+		}
+
+		if (resolvedRefs) {
+			await persistWorkflowResourceRefs({
+				workflowId: updatedWorkflow.id,
+				refs: resolvedRefs,
+			});
 		}
 
 		return NextResponse.json({

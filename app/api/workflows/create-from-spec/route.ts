@@ -9,6 +9,10 @@ import { compileWorkflowSpecToGraph } from "@/lib/workflow-spec/compile";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
 import { lintWorkflowSpec } from "@/lib/workflow-spec/lint";
 import type { WorkflowSpec } from "@/lib/workflow-spec/types";
+import {
+	applyResourcePresetsToNodes,
+	persistWorkflowResourceRefs,
+} from "@/lib/workflows/apply-resource-presets";
 import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 
 export async function POST(request: Request) {
@@ -61,9 +65,14 @@ export async function POST(request: Request) {
 
 		const { nodes, edges } = compileWorkflowSpecToGraph(effectiveSpec);
 		const normalizedNodes = normalizeWorkflowNodes(nodes) as typeof nodes;
+		const presetApplied = await applyResourcePresetsToNodes({
+			nodes: normalizedNodes as unknown[],
+			userId: session.user.id,
+			projectId: session.user.projectId,
+		});
 
 		const validation = await validateWorkflowAppConnections(
-			normalizedNodes as unknown[],
+			presetApplied.nodes as unknown[],
 			session.user.id,
 		);
 		if (!validation.valid) {
@@ -90,13 +99,18 @@ export async function POST(request: Request) {
 				id: workflowId,
 				name: workflowName,
 				description: effectiveSpec.description,
-				nodes: normalizedNodes,
+				nodes: presetApplied.nodes as any[],
 				edges,
 				userId: session.user.id,
 				projectId: session.user.projectId,
 				engineType: "dapr",
 			})
 			.returning();
+
+		await persistWorkflowResourceRefs({
+			workflowId: newWorkflow.id,
+			refs: presetApplied.refs,
+		});
 
 		return NextResponse.json({
 			workflow: {
