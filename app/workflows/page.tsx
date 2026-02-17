@@ -3,36 +3,43 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 import { api } from "@/lib/api-client";
+import {
+	getNavigableWorkflows,
+	LAST_SELECTED_WORKFLOW_ID_KEY,
+	pickWorkflowRedirectId,
+} from "@/lib/workflow-navigation";
 
 export default function WorkflowsPage() {
-  const router = useRouter();
+	const router = useRouter();
 
-  useEffect(() => {
-    const redirectToWorkflow = async () => {
-      try {
-        const workflows = await api.workflow.getAll();
-        // Filter out the auto-save workflow
-        const filtered = workflows.filter((w) => w.name !== "__current__");
+	useEffect(() => {
+		const redirectToWorkflow = async () => {
+			try {
+				const workflows = await api.workflow.getAll();
+				const navigableWorkflows = getNavigableWorkflows(workflows);
+				const lastSelectedWorkflowId = window.localStorage.getItem(
+					LAST_SELECTED_WORKFLOW_ID_KEY,
+				);
+				const workflowId = pickWorkflowRedirectId(
+					navigableWorkflows,
+					lastSelectedWorkflowId,
+				);
 
-        if (filtered.length > 0) {
-          // Sort by updatedAt descending to get most recent
-          const mostRecent = filtered.sort(
-            (a, b) =>
-              new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-          )[0];
-          router.replace(`/workflows/${mostRecent.id}`);
-        } else {
-          // No workflows, redirect to homepage
-          router.replace("/");
-        }
-      } catch (error) {
-        console.error("Failed to load workflows:", error);
-        router.replace("/");
-      }
-    };
+				if (workflowId) {
+					router.replace(`/workflows/${workflowId}`);
+					return;
+				}
 
-    redirectToWorkflow();
-  }, [router]);
+				// No workflows, redirect to homepage
+				router.replace("/");
+			} catch (error) {
+				console.error("Failed to load workflows:", error);
+				router.replace("/");
+			}
+		};
 
-  return null;
+		redirectToWorkflow();
+	}, [router]);
+
+	return null;
 }

@@ -42,6 +42,7 @@ import {
 	type WorkflowVisibility,
 	workflowNotFoundAtom,
 } from "@/lib/workflow-store";
+import { LAST_SELECTED_WORKFLOW_ID_KEY } from "@/lib/workflow-navigation";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
 type WorkflowPageProps = {
@@ -146,6 +147,10 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 	const setGlobalConnections = useSetAtom(connectionsAtom);
 	const setConnectionsLoaded = useSetAtom(connectionsLoadedAtom);
 	const connectionsVersion = useAtomValue(connectionsVersionAtom);
+
+	useEffect(() => {
+		window.localStorage.setItem(LAST_SELECTED_WORKFLOW_ID_KEY, workflowId);
+	}, [workflowId]);
 
 	// Panel width state for resizing
 	const [panelWidth, setPanelWidth] = useState(30); // default percentage

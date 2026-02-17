@@ -39,7 +39,7 @@ import { cn } from "@/lib/utils";
 import type { User } from "@/lib/db/schema";
 
 const navigationLinks = [
-	{ href: "/", label: "Builder", icon: PenTool },
+	{ href: "/workflows", label: "Builder", icon: PenTool },
 	{ href: "/monitor", label: "Monitor", icon: Activity },
 	{ href: "/observability", label: "Observability", icon: Eye },
 	{ href: "/agents", label: "Agents", icon: Bot },
@@ -56,9 +56,13 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 	const [workflowsOpen, setWorkflowsOpen] = useState(true);
 
 	const isActiveLink = (href: string) => {
-		if (href === "/") {
+		if (href === "/workflows") {
 			// Builder is active on home page or any /workflows/* page
-			return pathname === "/" || pathname.startsWith("/workflows");
+			return (
+				pathname === "/" ||
+				pathname === "/workflows" ||
+				pathname.startsWith("/workflows/")
+			);
 		}
 		return pathname === href || pathname.startsWith(href + "/");
 	};
