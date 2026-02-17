@@ -38,8 +38,8 @@ const CONFIG_STORE =
 	process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-builder";
 // Keep both env var names for compatibility across services.
 const SECRET_STORE =
-	process.env.DAPR_SECRETS_STORE ||
 	process.env.DAPR_SECRET_STORE ||
+	process.env.DAPR_SECRETS_STORE ||
 	"azure-keyvault";
 const CONFIG_LABEL = process.env.CONFIG_LABEL || "workflow-builder";
 const K8S_SECRET_NAME =
@@ -178,27 +178,53 @@ async function doInitialize(): Promise<void> {
 }
 
 async function loadConfigurationFromDapr(): Promise<void> {
-	const mutableKeys = [...CONFIG_KEYS];
-	const config = await getConfiguration(CONFIG_STORE, mutableKeys, {
-		label: CONFIG_LABEL,
-	});
+	const stores =
+		CONFIG_STORE === "azureappconfig"
+			? ["azureappconfig"]
+			: [CONFIG_STORE, "azureappconfig"];
+
+	const missingKeys: string[] = [];
 
 	for (const key of CONFIG_KEYS) {
-		const item = config[key];
-		if (item?.value !== undefined) {
-			configCache[key] = item.value;
-		} else {
-			// Fall back to environment variable
-			const envValue = process.env[key];
-			if (envValue !== undefined) {
-				configCache[key] = envValue;
+		let resolved: string | null = null;
+
+		for (const storeName of stores) {
+			try {
+				const config = await getConfiguration(storeName, [key], {
+					label: CONFIG_LABEL,
+				});
+				const item = config[key];
+				if (item?.value !== undefined) {
+					resolved = item.value;
+					break;
+				}
+			} catch {
+				// Continue to the next configured store; missing keys are expected.
 			}
 		}
+
+		if (resolved !== null) {
+			configCache[key] = resolved;
+			continue;
+		}
+
+		const envValue = process.env[key];
+		if (envValue !== undefined) {
+			configCache[key] = envValue;
+			continue;
+		}
+
+		missingKeys.push(key);
 	}
 
 	console.log(
 		`[ConfigProvider] Loaded ${Object.keys(configCache).length} configuration values`,
 	);
+	if (missingKeys.length > 0) {
+		console.log(
+			`[ConfigProvider] Missing ${missingKeys.length} config keys in Dapr/env: ${missingKeys.join(", ")}`,
+		);
+	}
 }
 
 async function loadSecretsFromDapr(): Promise<void> {

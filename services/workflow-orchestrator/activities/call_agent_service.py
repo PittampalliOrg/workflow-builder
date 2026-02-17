@@ -146,7 +146,9 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "plan": plan,
                     "cwd": input_data.get("cwd", ""),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("executionId", ""),
+                    "executionId": input_data.get("dbExecutionId")
+                    or input_data.get("executionId", ""),
+                    "dbExecutionId": input_data.get("dbExecutionId", ""),
                     "workflowId": input_data.get("workflowId", ""),
                     "nodeId": input_data.get("nodeId", ""),
                     "nodeName": input_data.get("nodeName", ""),
@@ -171,10 +173,15 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
 
     Expected input_data:
       - executionId: str
+      - dbExecutionId: str | None
     """
     execution_id = str(input_data.get("executionId") or "").strip()
-    if not execution_id:
-        return {"success": False, "error": "executionId is required"}
+    db_execution_id = str(input_data.get("dbExecutionId") or "").strip()
+    if not execution_id and not db_execution_id:
+        return {
+            "success": False,
+            "error": "executionId or dbExecutionId is required",
+        }
 
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
@@ -184,12 +191,19 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
     attrs = {
         "action.type": "workspace/cleanup",
         "workflow.instance_id": execution_id,
+        "workflow.db_execution_id": db_execution_id,
     }
 
     with start_activity_span("activity.cleanup_execution_workspaces", otel, attrs):
         try:
             with httpx.Client(timeout=15.0) as client:
-                resp = client.post(url, json={"executionId": execution_id})
+                resp = client.post(
+                    url,
+                    json={
+                        "executionId": execution_id,
+                        "dbExecutionId": db_execution_id,
+                    },
+                )
                 resp.raise_for_status()
                 data = resp.json()
                 if not isinstance(data, dict):

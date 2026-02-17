@@ -32,6 +32,17 @@ SECRET_NAME = "workflow-builder-secrets"
 _database_url: str | None = None
 
 
+def _coerce_duration_ms(value: Any) -> int | None:
+    """Best-effort convert duration input to a non-negative integer."""
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def _get_database_url() -> str:
     """Fetch DATABASE_URL from the Dapr kubernetes-secrets store (cached)."""
     global _database_url
@@ -89,7 +100,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     outputs = input_data.get("outputs")
     success = input_data.get("success", True)
     error = input_data.get("error")
-    duration_ms = input_data.get("durationMs")
+    duration_ms = _coerce_duration_ms(input_data.get("durationMs"))
     otel = input_data.get("_otel") or {}
 
     logger.info(
@@ -115,16 +126,47 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 final_output["error"] = error
 
             status = "success" if success else "error"
+            phase = "completed" if success else "failed"
+            progress = 100
+            completed_at = datetime.now(timezone.utc)
 
             db_url = _get_database_url()
             conn = psycopg2.connect(db_url)
             try:
                 with conn.cursor() as cur:
+                    # Prefer wall-clock duration based on DB started_at to avoid replay artifacts.
+                    cur.execute(
+                        """
+                        SELECT started_at
+                        FROM workflow_executions
+                        WHERE id = %s
+                        LIMIT 1
+                        """,
+                        (db_execution_id,),
+                    )
+                    row = cur.fetchone()
+                    started_at = row[0] if row else None
+                    if started_at and getattr(started_at, "tzinfo", None) is None:
+                        started_at = started_at.replace(tzinfo=timezone.utc)
+                    computed_duration_ms = None
+                    if started_at:
+                        computed_duration_ms = max(
+                            int((completed_at - started_at).total_seconds() * 1000), 0
+                        )
+                    persisted_duration_ms = (
+                        computed_duration_ms
+                        if computed_duration_ms is not None
+                        else duration_ms
+                    )
+
                     cur.execute(
                         """
                         UPDATE workflow_executions
                         SET output = %s,
                             status = %s,
+                            phase = %s,
+                            progress = %s,
+                            error = %s,
                             completed_at = %s,
                             duration = %s
                         WHERE id = %s
@@ -132,8 +174,15 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         (
                             json.dumps(final_output),
                             status,
-                            datetime.now(timezone.utc),
-                            str(duration_ms) if duration_ms is not None else None,
+                            phase,
+                            progress,
+                            None if success else error,
+                            completed_at,
+                            (
+                                str(persisted_duration_ms)
+                                if persisted_duration_ms is not None
+                                else None
+                            ),
                             db_execution_id,
                         ),
                     )

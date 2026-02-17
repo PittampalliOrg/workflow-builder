@@ -42,6 +42,37 @@ export type SavedWorkflow = WorkflowData & {
 	isOwner?: boolean;
 };
 
+export type ExecutionChangeFileStatus = "A" | "M" | "D" | "R";
+
+export type ExecutionChangeFileEntry = {
+	path: string;
+	status: ExecutionChangeFileStatus;
+};
+
+export type ExecutionChangeArtifactMetadata = {
+	changeSetId: string;
+	executionId: string;
+	workspaceRef: string;
+	durableInstanceId?: string;
+	operation: string;
+	sequence: number;
+	format: "git-unified-v1";
+	sha256: string;
+	filesChanged: number;
+	additions: number;
+	deletions: number;
+	bytes: number;
+	compressed: boolean;
+	storageRef: string;
+	createdAt: string;
+	includeInExecutionPatch: boolean;
+	truncated: boolean;
+	originalBytes: number;
+	files: ExecutionChangeFileEntry[];
+	baseRevision?: string;
+	headRevision?: string;
+};
+
 // API error class
 export class ApiError extends Error {
 	status: number;
@@ -622,6 +653,49 @@ export const workflowApi = {
 				status: "pending" | "running" | "success" | "error";
 			}>;
 		}>(`/api/workflows/executions/${executionId}/status`),
+
+	// List persisted file-change artifacts for an execution
+	getExecutionChanges: (executionId: string) =>
+		apiCall<{
+			success: boolean;
+			executionId: string;
+			count: number;
+			changes: ExecutionChangeArtifactMetadata[];
+			pending?: boolean;
+		}>(`/api/workflows/executions/${executionId}/changes`),
+
+	// Fetch one persisted file-change artifact
+	getExecutionChangeById: (executionId: string, changeSetId: string) =>
+		apiCall<{
+			success: boolean;
+			executionId: string;
+			metadata: ExecutionChangeArtifactMetadata;
+			patch: string;
+		}>(`/api/workflows/executions/${executionId}/changes/${changeSetId}`),
+
+	// Fetch combined patch across all included change sets
+	getExecutionPatch: (
+		executionId: string,
+		options?: {
+			durableInstanceId?: string;
+		},
+	) => {
+		const params = new URLSearchParams();
+		if (options?.durableInstanceId) {
+			params.set("durableInstanceId", options.durableInstanceId);
+		}
+		const query = params.toString();
+		return apiCall<{
+			success: boolean;
+			executionId: string;
+			durableInstanceId?: string;
+			patch: string;
+			changeSets: ExecutionChangeArtifactMetadata[];
+			pending?: boolean;
+		}>(
+			`/api/workflows/executions/${executionId}/patch${query ? `?${query}` : ""}`,
+		);
+	},
 
 	// Download workflow
 	download: (id: string) =>

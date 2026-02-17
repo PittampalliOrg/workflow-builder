@@ -4,6 +4,7 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ExecutionChangesPanel } from "@/components/workflow-runs/execution-changes-panel";
 import { ExecutionLogsTable } from "@/components/workflow-runs/execution-logs-table";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { SidebarToggle } from "@/components/sidebar-toggle";
@@ -191,6 +192,8 @@ export default function WorkflowRunDetailPage() {
 					</pre>
 				</div>
 			</div>
+
+			<ExecutionChangesPanel executionId={executionId} />
 
 			<div className="space-y-3">
 				<h2 className="font-semibold text-lg">Execution logs</h2>

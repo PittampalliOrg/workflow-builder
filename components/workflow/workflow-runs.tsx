@@ -109,6 +109,60 @@ function isBase64ImageOutput(output: unknown): output is { base64: string } {
 	);
 }
 
+type OutputChangeSummary = {
+	changed: boolean;
+	files: number;
+	additions: number;
+	deletions: number;
+	patchRef?: string;
+};
+
+function extractOutputChangeSummary(
+	output: unknown,
+): OutputChangeSummary | null {
+	if (!output || typeof output !== "object") {
+		return null;
+	}
+	const record = output as Record<string, unknown>;
+	const summaryRaw =
+		typeof record.changeSummary === "object" && record.changeSummary
+			? (record.changeSummary as Record<string, unknown>)
+			: null;
+	if (!summaryRaw) {
+		return null;
+	}
+
+	const statsRaw =
+		typeof summaryRaw.stats === "object" && summaryRaw.stats
+			? (summaryRaw.stats as Record<string, unknown>)
+			: null;
+	const filesFromArray = Array.isArray(summaryRaw.files)
+		? summaryRaw.files.length
+		: 0;
+
+	const files =
+		typeof statsRaw?.files === "number" ? statsRaw.files : filesFromArray;
+	const additions =
+		typeof statsRaw?.additions === "number" ? statsRaw.additions : 0;
+	const deletions =
+		typeof statsRaw?.deletions === "number" ? statsRaw.deletions : 0;
+	const changed =
+		typeof summaryRaw.changed === "boolean"
+			? summaryRaw.changed
+			: files > 0 || additions > 0 || deletions > 0;
+
+	const patchRef =
+		typeof summaryRaw.patchRef === "string" ? summaryRaw.patchRef : undefined;
+
+	return {
+		changed,
+		files,
+		additions,
+		deletions,
+		patchRef,
+	};
+}
+
 // Helper to convert execution logs to a map by nodeId for the global atom
 function createExecutionLogsMap(logs: ExecutionLog[]): Record<
 	string,
@@ -287,10 +341,12 @@ function OutputDisplay({
 	output,
 	input,
 	actionType,
+	runDetailHref,
 }: {
 	output: unknown;
 	input?: unknown;
 	actionType?: string;
+	runDetailHref?: string;
 }) {
 	const { findActionById } = usePiecesCatalog();
 
@@ -397,6 +453,8 @@ function OutputDisplay({
 
 	const richResult = renderRichResult();
 	const hasRichResult = richResult !== null;
+	const changeSummary = extractOutputChangeSummary(output);
+	const hasChangeSummary = Boolean(changeSummary?.changed);
 
 	// Determine external link for URL type configs
 	const externalLink =
@@ -406,6 +464,38 @@ function OutputDisplay({
 
 	return (
 		<>
+			{hasChangeSummary && changeSummary && (
+				<CollapsibleSection title="File Changes">
+					<div className="rounded-lg border bg-muted/50 p-3">
+						<div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+							<span className="rounded bg-muted px-2 py-1 font-medium">
+								{changeSummary.files}{" "}
+								{changeSummary.files === 1 ? "file" : "files"}
+							</span>
+							<span className="rounded bg-emerald-500/15 px-2 py-1 text-emerald-600 dark:text-emerald-300">
+								+{changeSummary.additions}
+							</span>
+							<span className="rounded bg-rose-500/15 px-2 py-1 text-rose-600 dark:text-rose-300">
+								-{changeSummary.deletions}
+							</span>
+							{changeSummary.patchRef && (
+								<code className="rounded bg-muted px-2 py-1">
+									{changeSummary.patchRef}
+								</code>
+							)}
+						</div>
+						{runDetailHref && (
+							<Button asChild size="sm" variant="outline">
+								<Link href={`${runDetailHref}#file-changes`}>
+									<ExternalLink className="mr-2 h-3 w-3" />
+									Inspect Full Diff
+								</Link>
+							</Button>
+						)}
+					</div>
+				</CollapsibleSection>
+			)}
+
 			{/* Always show JSON output */}
 			<CollapsibleSection copyData={output} title="Output">
 				<pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
@@ -598,6 +688,7 @@ function ExecutionLogEntry({
 	getStatusDotClass,
 	isFirst,
 	isLast,
+	runDetailHref,
 }: {
 	log: ExecutionLog;
 	isExpanded: boolean;
@@ -606,6 +697,7 @@ function ExecutionLogEntry({
 	getStatusDotClass: (status: string) => string;
 	isFirst: boolean;
 	isLast: boolean;
+	runDetailHref?: string;
 }) {
 	return (
 		<div className="relative flex gap-3" key={log.id}>
@@ -673,6 +765,7 @@ function ExecutionLogEntry({
 								actionType={log.actionType || log.nodeType}
 								input={log.input}
 								output={log.output}
+								runDetailHref={runDetailHref}
 							/>
 						)}
 						{log.error && (
@@ -1281,6 +1374,11 @@ export function WorkflowRuns({
 												key={log.id}
 												log={log}
 												onToggle={() => toggleLog(log.id)}
+												runDetailHref={
+													currentWorkflowId
+														? `/workflows/${currentWorkflowId}/runs/${execution.id}`
+														: undefined
+												}
 											/>
 										))}
 									</div>

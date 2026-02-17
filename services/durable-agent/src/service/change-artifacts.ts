@@ -74,6 +74,11 @@ type ChangeArtifactRow = {
 	head_revision: string | null;
 };
 
+type WorkflowExecutionAliasRow = {
+	id: string;
+	dapr_instance_id: string | null;
+};
+
 type BlobPayloadEnvelope = {
 	encoding: "base64";
 	payload: string;
@@ -316,12 +321,35 @@ class WorkspaceChangeArtifactStore {
 		executionId: string,
 	): Promise<ChangeArtifactMetadata[]> {
 		await this.ensureInitialized();
+		const id = executionId.trim();
+		if (!id) {
+			return [];
+		}
+		const direct = await this.listByExecutionIdExact(id);
+		if (direct.length > 0) {
+			return direct;
+		}
+		const aliasId = await this.resolveAlternateExecutionId(id);
+		if (!aliasId) {
+			return direct;
+		}
+		const aliasRows = await this.listByExecutionIdExact(aliasId);
+		if (aliasRows.length > 0) {
+			console.log(
+				`[workspace-change-artifacts] Resolved execution alias ${id} -> ${aliasId}`,
+			);
+		}
+		return aliasRows;
+	}
+
+	private async listByExecutionIdExact(
+		executionId: string,
+	): Promise<ChangeArtifactMetadata[]> {
 		if (!this.sql) {
 			throw new Error(
 				"Workspace change persistence database is not configured",
 			);
 		}
-
 		const rows = await this.sql<ChangeArtifactRow[]>`
 			select
 				change_set_id,
@@ -351,6 +379,32 @@ class WorkspaceChangeArtifactStore {
 		`;
 
 		return rows.map((row) => mapRowToMetadata(row));
+	}
+
+	private async resolveAlternateExecutionId(
+		executionId: string,
+	): Promise<string | null> {
+		if (!this.sql) {
+			return null;
+		}
+		const rows = await this.sql<WorkflowExecutionAliasRow[]>`
+			select id, dapr_instance_id
+			from workflow_executions
+			where id = ${executionId} or dapr_instance_id = ${executionId}
+			limit 2
+		`;
+		if (rows.length === 0) {
+			return null;
+		}
+		for (const row of rows) {
+			if (row.id && row.id !== executionId) {
+				return row.id;
+			}
+			if (row.dapr_instance_id && row.dapr_instance_id !== executionId) {
+				return row.dapr_instance_id;
+			}
+		}
+		return null;
 	}
 
 	async getExecutionPatch(

@@ -383,6 +383,11 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							pluginId === "workspace" && toolId === "file";
 						const isWorkspaceCleanup =
 							pluginId === "workspace" && toolId === "cleanup";
+						const workspaceExecutionId =
+							typeof body.db_execution_id === "string" &&
+							body.db_execution_id.trim()
+								? body.db_execution_id.trim()
+								: body.execution_id;
 
 						let targetUrl: string;
 						let requestBody: string;
@@ -400,7 +405,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 										? args.workspaceRef
 										: undefined,
 								parentExecutionId: body.execution_id,
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -430,7 +436,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								plan,
 								cwd: args.cwd ?? "",
 								parentExecutionId: body.execution_id,
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -438,7 +445,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						} else if (isWorkspaceProfile) {
 							targetUrl = `${functionUrl}/api/workspaces/profile`;
 							requestBody = JSON.stringify({
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								name: args.name,
 								rootPath: args.rootPath,
 								enabledTools: args.enabledTools,
@@ -451,7 +459,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						} else if (isWorkspaceClone) {
 							targetUrl = `${functionUrl}/api/workspaces/clone`;
 							requestBody = JSON.stringify({
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
 								repositoryOwner: args.repositoryOwner,
 								repositoryRepo: args.repositoryRepo,
@@ -467,7 +476,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						} else if (isWorkspaceCommand) {
 							targetUrl = `${functionUrl}/api/workspaces/command`;
 							requestBody = JSON.stringify({
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
 								command: args.command ?? args.prompt ?? "",
 								timeoutMs: args.timeoutMs,
@@ -478,7 +488,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						} else if (isWorkspaceFile) {
 							targetUrl = `${functionUrl}/api/workspaces/file`;
 							requestBody = JSON.stringify({
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
 								operation: args.operation,
 								path: args.path,
@@ -492,7 +503,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						} else if (isWorkspaceCleanup) {
 							targetUrl = `${functionUrl}/api/workspaces/cleanup`;
 							requestBody = JSON.stringify({
-								executionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,

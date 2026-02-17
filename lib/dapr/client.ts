@@ -259,9 +259,11 @@ export async function invokeService<T = unknown>(
 		timeout = 30_000,
 	} = options;
 
+	const usesPathAppId = /^\/v1\.0\/invoke\/[^/]+\/method\//.test(path);
+
 	const requestHeaders: Record<string, string> = {
-		"dapr-app-id": appId,
 		"Content-Type": "application/json",
+		...(usesPathAppId ? {} : { "dapr-app-id": appId }),
 		...headers,
 	};
 
