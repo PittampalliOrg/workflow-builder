@@ -22,48 +22,13 @@ export type DefaultModelOption = {
 };
 
 export const DEFAULT_MODEL_PROVIDERS: DefaultModelProvider[] = [
-	{ id: "openai", name: "OpenAI", iconKey: "openai", sortOrder: 10 },
-	{ id: "anthropic", name: "Anthropic", iconKey: "anthropic", sortOrder: 20 },
+	{ id: "anthropic", name: "Anthropic", iconKey: "anthropic", sortOrder: 10 },
+	{ id: "openai", name: "OpenAI", iconKey: "openai", sortOrder: 20 },
 	{ id: "google", name: "Google", iconKey: "google", sortOrder: 30 },
 	{ id: "meta", name: "Meta", iconKey: "meta", sortOrder: 40 },
 ];
 
 export const DEFAULT_MODEL_CATALOG: DefaultModelCatalogEntry[] = [
-	{
-		id: "openai/gpt-5.3-codex",
-		providerId: "openai",
-		modelKey: "gpt-5.3-codex",
-		displayName: "GPT-5.3 Codex",
-		sortOrder: 10,
-	},
-	{
-		id: "openai/gpt-5.2-codex",
-		providerId: "openai",
-		modelKey: "gpt-5.2-codex",
-		displayName: "GPT-5.2 Codex",
-		sortOrder: 20,
-	},
-	{
-		id: "openai/gpt-5.1-instant",
-		providerId: "openai",
-		modelKey: "gpt-5.1-instant",
-		displayName: "GPT-5.1 Instant",
-		sortOrder: 30,
-	},
-	{
-		id: "openai/gpt-4o",
-		providerId: "openai",
-		modelKey: "gpt-4o",
-		displayName: "GPT-4o",
-		sortOrder: 40,
-	},
-	{
-		id: "openai/gpt-4o-mini",
-		providerId: "openai",
-		modelKey: "gpt-4o-mini",
-		displayName: "GPT-4o mini",
-		sortOrder: 50,
-	},
 	{
 		id: "anthropic/claude-opus-4-6",
 		providerId: "anthropic",
@@ -84,6 +49,20 @@ export const DEFAULT_MODEL_CATALOG: DefaultModelCatalogEntry[] = [
 		modelKey: "claude-sonnet-4-5",
 		displayName: "Claude Sonnet 4.5",
 		sortOrder: 30,
+	},
+	{
+		id: "openai/gpt-4o",
+		providerId: "openai",
+		modelKey: "gpt-4o",
+		displayName: "GPT-4o",
+		sortOrder: 40,
+	},
+	{
+		id: "openai/gpt-4o-mini",
+		providerId: "openai",
+		modelKey: "gpt-4o-mini",
+		displayName: "GPT-4o mini",
+		sortOrder: 50,
 	},
 	{
 		id: "google/gemini-2.5-pro",

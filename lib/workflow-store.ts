@@ -34,6 +34,17 @@ export type WorkflowEdge = Edge;
 // Workflow visibility type
 export type WorkflowVisibility = "private" | "public";
 
+export type WorkflowAiMode = "validated" | "classic";
+
+export type WorkflowAiMessage = {
+	id: string;
+	role: "user" | "assistant" | "system";
+	content: string;
+	operations: Array<Record<string, unknown>> | null;
+	createdAt: string;
+	updatedAt: string;
+};
+
 // Atoms for workflow state (now backed by database)
 export const nodesAtom = atom<WorkflowNode[]>([]);
 export const edgesAtom = atom<WorkflowEdge[]>([]);
@@ -57,6 +68,10 @@ export const isPanelAnimatingAtom = atom<boolean>(false);
 export const hasSidebarBeenShownAtom = atom<boolean>(false);
 export const isSidebarCollapsedAtom = atom<boolean>(false);
 export const isTransitioningFromHomepageAtom = atom<boolean>(false);
+export const workflowAiMessagesWorkflowIdAtom = atom<string | null>(null);
+export const workflowAiMessagesAtom = atom<WorkflowAiMessage[]>([]);
+export const workflowAiMessagesLoadingAtom = atom<boolean>(false);
+export const workflowAiModeAtom = atom<WorkflowAiMode>("validated");
 
 // Tracks nodes that are pending integration auto-select check
 // Don't show "missing integration" warning for these nodes

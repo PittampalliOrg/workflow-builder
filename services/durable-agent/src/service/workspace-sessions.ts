@@ -11,9 +11,11 @@ import { posix as pathPosix, resolve as pathResolve } from "node:path";
 import { nanoid } from "nanoid";
 import {
 	changeArtifacts,
+	type ChangeArtifactFileSnapshotInput,
 	type ChangeArtifactMetadata,
 	type ChangeFileEntry,
 	type ChangeFileStatus,
+	type ExecutionFileSnapshot,
 } from "./change-artifacts.js";
 import { K8sRemoteFilesystem } from "./k8s-remote-filesystem.js";
 import { K8sSandbox } from "./k8s-sandbox.js";
@@ -24,6 +26,10 @@ import {
 	type Filesystem,
 	type Sandbox,
 } from "./sandbox-config.js";
+import {
+	workspaceSessionStore,
+	type PersistedWorkspaceSession,
+} from "./workspace-session-store.js";
 
 const WORKSPACE_TOOL_NAMES = [
 	"read_file",
@@ -49,6 +55,7 @@ type WorkspaceSession = {
 	executionId: string;
 	name: string;
 	rootPath: string;
+	clonePath?: string;
 	backend: "k8s" | "local";
 	sandbox: Sandbox;
 	filesystem: Filesystem;
@@ -74,6 +81,7 @@ export type WorkspaceProfileResult = {
 	executionId: string;
 	name: string;
 	rootPath: string;
+	clonePath?: string;
 	backend: "k8s" | "local";
 	enabledTools: WorkspaceToolName[];
 	requireReadBeforeWrite: boolean;
@@ -231,20 +239,55 @@ class WorkspaceSessionManager {
 		return await changeArtifacts.getExecutionPatch(id, opts);
 	}
 
+	async getExecutionFileSnapshot(
+		executionId: string,
+		path: string,
+		opts?: { durableInstanceId?: string },
+	): Promise<ExecutionFileSnapshot | null> {
+		const id = executionId.trim();
+		const targetPath = path.trim();
+		if (!id || !targetPath) {
+			return null;
+		}
+		return await changeArtifacts.getExecutionFileSnapshot(id, targetPath, opts);
+	}
+
 	getWorkspaceRefByExecutionId(executionId: string): string | null {
-		const ref = this.executionToWorkspace.get(executionId);
+		const ref = this.executionToWorkspace.get(executionId.trim());
 		return ref ?? null;
 	}
 
-	resolveSessionFromArgs(
+	async getWorkspaceRefByExecutionIdDurable(
+		executionId: string,
+	): Promise<string | null> {
+		const normalized = executionId.trim();
+		if (!normalized) return null;
+		const inMemory = this.executionToWorkspace.get(normalized);
+		if (inMemory) return inMemory;
+		try {
+			const persisted =
+				await workspaceSessionStore.getByExecutionId(normalized);
+			if (persisted) {
+				return persisted.workspaceRef;
+			}
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed loading workspace by executionId=${normalized}:`,
+				err,
+			);
+		}
+		return null;
+	}
+
+	async resolveSessionFromArgs(
 		args: Record<string, unknown>,
-	): WorkspaceSession | null {
+	): Promise<WorkspaceSession | null> {
 		const workspaceRef =
 			typeof args.workspaceRef === "string" && args.workspaceRef.trim()
 				? args.workspaceRef.trim()
 				: undefined;
 		if (workspaceRef) {
-			return this.getByWorkspaceRef(workspaceRef);
+			return await this.getByWorkspaceRefDurable(workspaceRef);
 		}
 
 		const instanceId =
@@ -255,7 +298,21 @@ class WorkspaceSessionManager {
 		if (instanceId) {
 			const mappedRef = this.durableInstanceToWorkspace.get(instanceId);
 			if (mappedRef) {
-				return this.getByWorkspaceRef(mappedRef);
+				return await this.getByWorkspaceRefDurable(mappedRef);
+			}
+			try {
+				const persistedByInstance =
+					await workspaceSessionStore.getByDurableInstanceId(instanceId);
+				if (persistedByInstance) {
+					return await this.getByWorkspaceRefDurable(
+						persistedByInstance.workspaceRef,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[workspace-sessions] Failed loading workspace by durable instance ${instanceId}:`,
+					err,
+				);
 			}
 		}
 
@@ -266,7 +323,21 @@ class WorkspaceSessionManager {
 		if (executionId) {
 			const ref = this.executionToWorkspace.get(executionId);
 			if (ref) {
-				return this.getByWorkspaceRef(ref);
+				return await this.getByWorkspaceRefDurable(ref);
+			}
+			try {
+				const persistedByExecution =
+					await workspaceSessionStore.getByExecutionId(executionId);
+				if (persistedByExecution) {
+					return await this.getByWorkspaceRefDurable(
+						persistedByExecution.workspaceRef,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[workspace-sessions] Failed loading workspace by execution ${executionId}:`,
+					err,
+				);
 			}
 		}
 
@@ -280,10 +351,45 @@ class WorkspaceSessionManager {
 		return session;
 	}
 
-	bindDurableInstance(instanceId: string, workspaceRef: string): void {
+	async getByWorkspaceRefDurable(
+		workspaceRef: string,
+	): Promise<WorkspaceSession | null> {
+		const normalized = workspaceRef.trim();
+		if (!normalized) return null;
+		const inMemory = this.sessions.get(normalized);
+		if (inMemory) {
+			this.touch(inMemory);
+			return inMemory;
+		}
+		try {
+			const persisted =
+				await workspaceSessionStore.getByWorkspaceRef(normalized);
+			if (!persisted) return null;
+			return await this.hydrateFromPersisted(persisted);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed hydrating workspaceRef=${normalized}:`,
+				err,
+			);
+			return null;
+		}
+	}
+
+	async bindDurableInstance(
+		instanceId: string,
+		workspaceRef: string,
+	): Promise<void> {
 		if (!instanceId || !workspaceRef) return;
 		if (!this.sessions.has(workspaceRef)) return;
 		this.durableInstanceToWorkspace.set(instanceId, workspaceRef);
+		try {
+			await workspaceSessionStore.markDurableInstance(workspaceRef, instanceId);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed persisting durable binding ${instanceId} -> ${workspaceRef}:`,
+				err,
+			);
+		}
 	}
 
 	unbindDurableInstance(instanceId: string): void {
@@ -308,6 +414,21 @@ class WorkspaceSessionManager {
 			}
 			this.executionToWorkspace.delete(executionId);
 		}
+		try {
+			const persisted =
+				await workspaceSessionStore.getByExecutionId(executionId);
+			if (persisted) {
+				const hydrated = await this.hydrateFromPersisted(persisted);
+				if (hydrated) {
+					return this.serialize(hydrated);
+				}
+			}
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed hydrating persisted profile for execution=${executionId}:`,
+				err,
+			);
+		}
 
 		const rootPath = this.resolveRootPath(executionId, input.rootPath);
 		const session = await this.createSession({
@@ -324,6 +445,24 @@ class WorkspaceSessionManager {
 
 		this.sessions.set(session.workspaceRef, session);
 		this.executionToWorkspace.set(executionId, session.workspaceRef);
+		try {
+			await workspaceSessionStore.upsert({
+				workspaceRef: session.workspaceRef,
+				workflowExecutionId: executionId,
+				name: session.name,
+				rootPath: session.rootPath,
+				backend: session.backend,
+				enabledTools: [...session.enabledTools],
+				requireReadBeforeWrite: session.requireReadBeforeWrite,
+				commandTimeoutMs: session.commandTimeoutMs,
+				status: "active",
+			});
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed persisting workspace session ${session.workspaceRef}:`,
+				err,
+			);
+		}
 		return this.serialize(session);
 	}
 
@@ -337,7 +476,7 @@ class WorkspaceSessionManager {
 		sandbox: WorkspaceSandboxMetadata;
 		changeSummary?: WorkspaceChangeSummary;
 	}> {
-		const session = this.resolveFromInput(
+		const session = await this.resolveFromInput(
 			input.workspaceRef,
 			input.executionId,
 		);
@@ -351,10 +490,11 @@ class WorkspaceSessionManager {
 		if (!command) {
 			throw new Error("command is required");
 		}
+		const commandCwd = session.clonePath || session.rootPath;
 
 		const result = await session.sandbox.executeCommand(command, undefined, {
 			timeout: timeoutMs,
-			cwd: session.rootPath,
+			cwd: commandCwd,
 		});
 
 		const changeSummary = await this.captureWorkspaceChangeSummary({
@@ -380,7 +520,7 @@ class WorkspaceSessionManager {
 	async cloneRepository(
 		input: ExecuteWorkspaceCloneInput,
 	): Promise<Record<string, unknown>> {
-		const session = this.resolveFromInput(
+		const session = await this.resolveFromInput(
 			input.workspaceRef,
 			input.executionId,
 		);
@@ -498,11 +638,24 @@ class WorkspaceSessionManager {
 			durableInstanceId: input.durableInstanceId,
 			includeInExecutionPatch: false,
 		});
+		const clonePathAbsolute = pathPosix.join(session.rootPath, cloneDir);
+		session.clonePath = clonePathAbsolute;
+		try {
+			await workspaceSessionStore.markClonePath(
+				session.workspaceRef,
+				clonePathAbsolute,
+			);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed persisting clonePath for ${session.workspaceRef}:`,
+				err,
+			);
+		}
 
 		this.touch(session);
 		return {
 			success: true,
-			clonePath: cloneDir,
+			clonePath: clonePathAbsolute,
 			repository: `${owner}/${repo}`,
 			branch,
 			commitHash,
@@ -516,7 +669,7 @@ class WorkspaceSessionManager {
 	async executeFileOperation(
 		input: ExecuteWorkspaceFileInput,
 	): Promise<Record<string, unknown>> {
-		const session = this.resolveFromInput(
+		const session = await this.resolveFromInput(
 			input.workspaceRef,
 			input.executionId,
 		);
@@ -536,6 +689,7 @@ class WorkspaceSessionManager {
 
 			case "write_file": {
 				const path = this.requirePath(input.path, operation);
+				this.assertPathWithinCloneScope(session, path, operation);
 				await this.enforceReadBeforeWrite(session, path);
 				await session.filesystem.writeFile(path, String(input.content ?? ""), {
 					recursive: true,
@@ -552,6 +706,7 @@ class WorkspaceSessionManager {
 
 			case "edit_file": {
 				const path = this.requirePath(input.path, operation);
+				this.assertPathWithinCloneScope(session, path, operation);
 				await this.enforceReadBeforeWrite(session, path);
 				const oldStr = String(input.old_string ?? "");
 				const newStr = String(input.new_string ?? "");
@@ -588,6 +743,7 @@ class WorkspaceSessionManager {
 
 			case "delete_file": {
 				const path = this.requirePath(input.path, operation);
+				this.assertPathWithinCloneScope(session, path, operation);
 				await session.filesystem.deleteFile(path, {
 					recursive: true,
 					force: true,
@@ -608,6 +764,7 @@ class WorkspaceSessionManager {
 
 			case "mkdir": {
 				const path = this.requirePath(input.path, operation);
+				this.assertPathWithinCloneScope(session, path, operation);
 				await session.filesystem.mkdir(path, { recursive: true });
 				const changeSummary = await this.captureWorkspaceChangeSummary({
 					session,
@@ -637,7 +794,10 @@ class WorkspaceSessionManager {
 	async cleanupByExecutionId(executionId: string): Promise<string[]> {
 		const id = executionId.trim();
 		if (!id) return [];
-		const ref = this.executionToWorkspace.get(id);
+		const ref =
+			this.executionToWorkspace.get(id) ||
+			(await this.getWorkspaceRefByExecutionIdDurable(id)) ||
+			undefined;
 		if (!ref) return [];
 		await this.cleanupByWorkspaceRef(ref);
 		return [ref];
@@ -646,7 +806,11 @@ class WorkspaceSessionManager {
 	async cleanupByWorkspaceRef(workspaceRef: string): Promise<boolean> {
 		const ref = workspaceRef.trim();
 		if (!ref) return false;
-		const session = this.sessions.get(ref);
+		let session = this.sessions.get(ref);
+		if (!session) {
+			const hydrated = await this.getByWorkspaceRefDurable(ref);
+			session = hydrated ?? undefined;
+		}
 		if (!session) return false;
 
 		this.sessions.delete(ref);
@@ -680,6 +844,14 @@ class WorkspaceSessionManager {
 		} catch (err) {
 			console.warn(
 				`[workspace-sessions] Failed to destroy sandbox ${ref}:`,
+				err,
+			);
+		}
+		try {
+			await workspaceSessionStore.markCleaned(ref);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed marking workspace cleaned for ${ref}:`,
 				err,
 			);
 		}
@@ -844,19 +1016,43 @@ class WorkspaceSessionManager {
 	}
 
 	private parseNameStatusOutput(raw: string): ChangeFileEntry[] {
+		const tokens = raw.split("\0").filter(Boolean);
 		const files: ChangeFileEntry[] = [];
-		for (const line of raw.split("\n")) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			const parts = trimmed.split("\t");
-			if (parts.length < 2) continue;
-			const rawStatus = parts[0].trim().toUpperCase();
-			const first = rawStatus.charAt(0);
+
+		for (let index = 0; index < tokens.length; ) {
+			const statusToken = tokens[index]?.trim().toUpperCase();
+			index += 1;
+			if (!statusToken) {
+				continue;
+			}
+
+			const first = statusToken.charAt(0);
 			const status: ChangeFileStatus =
 				first === "A" || first === "D" || first === "R" ? first : "M";
-			const path = status === "R" ? parts[2] || parts[1] : parts[1];
+
+			if (status === "R") {
+				const oldPath = tokens[index]?.trim();
+				const path = tokens[index + 1]?.trim();
+				index += 2;
+				if (!path) {
+					continue;
+				}
+				files.push({
+					path,
+					status,
+					oldPath: oldPath || undefined,
+				});
+				continue;
+			}
+
+			const path = tokens[index]?.trim();
+			index += 1;
+			if (!path) {
+				continue;
+			}
 			files.push({ path, status });
 		}
+
 		return files;
 	}
 
@@ -877,6 +1073,87 @@ class WorkspaceSessionManager {
 			if (Number.isFinite(del)) deletions += del;
 		}
 		return { additions, deletions };
+	}
+
+	private parseSingleNumStat(raw: string): {
+		additions: number;
+		deletions: number;
+		isBinary: boolean;
+	} {
+		let additions = 0;
+		let deletions = 0;
+		let isBinary = false;
+
+		for (const line of raw.split("\n")) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			const parts = trimmed.split("\t");
+			if (parts.length < 3) continue;
+			if (parts[0] === "-" || parts[1] === "-") {
+				isBinary = true;
+				continue;
+			}
+			const add = Number.parseInt(parts[0], 10);
+			const del = Number.parseInt(parts[1], 10);
+			if (Number.isFinite(add)) additions += add;
+			if (Number.isFinite(del)) deletions += del;
+		}
+
+		return { additions, deletions, isBinary };
+	}
+
+	private inferLanguageFromPath(path: string): string | undefined {
+		const filename = path.split("/").at(-1)?.toLowerCase() ?? "";
+		if (!filename) {
+			return undefined;
+		}
+		if (filename === "dockerfile") {
+			return "dockerfile";
+		}
+		const extension = filename.includes(".")
+			? (filename.split(".").at(-1) ?? "").toLowerCase()
+			: "";
+		const languageByExtension: Record<string, string> = {
+			ts: "typescript",
+			tsx: "tsx",
+			js: "javascript",
+			jsx: "jsx",
+			py: "python",
+			json: "json",
+			md: "markdown",
+			css: "css",
+			scss: "scss",
+			html: "html",
+			yaml: "yaml",
+			yml: "yaml",
+			sh: "bash",
+			bash: "bash",
+			go: "go",
+			rs: "rust",
+			sql: "sql",
+			java: "java",
+			rb: "ruby",
+			php: "php",
+			c: "c",
+			h: "c",
+			cpp: "cpp",
+			hpp: "cpp",
+		};
+		return extension ? languageByExtension[extension] : undefined;
+	}
+
+	private async readTrackedBlobAsText(
+		session: WorkspaceSession,
+		spec: string,
+	): Promise<string | null> {
+		const result = await this.runTrackingGit(
+			session,
+			`git show --no-textconv --no-color ${shellEscape(spec)}`,
+		);
+		if (!result.success || result.exitCode !== 0) {
+			return null;
+		}
+		return result.stdout;
 	}
 
 	private buildChangeSummaryFromArtifact(
@@ -948,15 +1225,53 @@ class WorkspaceSessionManager {
 
 			const statusResult = await this.runTrackingGit(
 				session,
-				"git diff --cached --name-status --find-renames HEAD",
+				"git diff --cached --name-status --find-renames -z HEAD",
 			);
+			if (!statusResult.success || statusResult.exitCode !== 0) {
+				throw new Error(statusResult.stderr || "git diff --name-status failed");
+			}
 			const files = this.parseNameStatusOutput(statusResult.stdout);
 
 			const numStatResult = await this.runTrackingGit(
 				session,
 				"git diff --cached --numstat HEAD",
 			);
+			if (!numStatResult.success || numStatResult.exitCode !== 0) {
+				throw new Error(numStatResult.stderr || "git diff --numstat failed");
+			}
 			const stats = this.parseNumStatOutput(numStatResult.stdout);
+			const fileSnapshots: ChangeArtifactFileSnapshotInput[] = [];
+
+			for (const file of files) {
+				const statTarget = file.oldPath || file.path;
+				const singleNumStatResult = await this.runTrackingGit(
+					session,
+					`git diff --cached --numstat HEAD -- ${shellEscape(statTarget)}`,
+				);
+				const singleStats = this.parseSingleNumStat(singleNumStatResult.stdout);
+				const isBinary = singleStats.isBinary;
+
+				const oldSpec = `HEAD:${file.oldPath || file.path}`;
+				const newSpec = `:${file.path}`;
+				const oldContent =
+					file.status === "A" || isBinary
+						? null
+						: await this.readTrackedBlobAsText(session, oldSpec);
+				const newContent =
+					file.status === "D" || isBinary
+						? null
+						: await this.readTrackedBlobAsText(session, newSpec);
+
+				fileSnapshots.push({
+					path: file.path,
+					status: file.status,
+					oldPath: file.oldPath,
+					isBinary,
+					language: this.inferLanguageFromPath(file.path),
+					oldContent,
+					newContent,
+				});
+			}
 
 			const commitResult = await this.runTrackingGit(
 				session,
@@ -981,6 +1296,7 @@ class WorkspaceSessionManager {
 				includeInExecutionPatch: input.includeInExecutionPatch,
 				baseRevision: baseRevision || undefined,
 				headRevision: headRevision || undefined,
+				fileSnapshots,
 			});
 
 			return this.buildChangeSummaryFromArtifact(metadata, patch);
@@ -1005,12 +1321,12 @@ class WorkspaceSessionManager {
 		return value || null;
 	}
 
-	private resolveFromInput(
+	private async resolveFromInput(
 		workspaceRef?: string,
 		executionId?: string,
-	): WorkspaceSession {
+	): Promise<WorkspaceSession> {
 		if (workspaceRef) {
-			const byRef = this.sessions.get(workspaceRef.trim());
+			const byRef = await this.getByWorkspaceRefDurable(workspaceRef.trim());
 			if (byRef) {
 				this.touch(byRef);
 				return byRef;
@@ -1018,9 +1334,20 @@ class WorkspaceSessionManager {
 		}
 
 		if (executionId) {
-			const ref = this.executionToWorkspace.get(executionId.trim());
+			const normalizedExecutionId = executionId.trim();
+			const ref = this.executionToWorkspace.get(normalizedExecutionId);
 			if (ref) {
-				const byExecution = this.sessions.get(ref);
+				const byExecution = await this.getByWorkspaceRefDurable(ref);
+				if (byExecution) {
+					this.touch(byExecution);
+					return byExecution;
+				}
+			}
+			const durableRef = await this.getWorkspaceRefByExecutionIdDurable(
+				normalizedExecutionId,
+			);
+			if (durableRef) {
+				const byExecution = await this.getByWorkspaceRefDurable(durableRef);
 				if (byExecution) {
 					this.touch(byExecution);
 					return byExecution;
@@ -1031,6 +1358,56 @@ class WorkspaceSessionManager {
 		throw new Error(
 			"Workspace session not found (provide workspaceRef or executionId)",
 		);
+	}
+
+	private async hydrateFromPersisted(
+		record: PersistedWorkspaceSession,
+	): Promise<WorkspaceSession | null> {
+		const existing = this.sessions.get(record.workspaceRef);
+		if (existing) {
+			this.touch(existing);
+			return existing;
+		}
+
+		try {
+			const session = await this.createSession({
+				executionId: record.workflowExecutionId,
+				name: record.name,
+				rootPath: record.rootPath,
+				enabledTools: record.enabledTools,
+				requireReadBeforeWrite: record.requireReadBeforeWrite,
+				commandTimeoutMs: record.commandTimeoutMs,
+			});
+			session.workspaceRef = record.workspaceRef;
+			session.clonePath = record.clonePath;
+			this.sessions.set(session.workspaceRef, session);
+			this.executionToWorkspace.set(
+				record.workflowExecutionId,
+				record.workspaceRef,
+			);
+			if (record.durableInstanceId) {
+				this.durableInstanceToWorkspace.set(
+					record.durableInstanceId,
+					record.workspaceRef,
+				);
+			}
+			this.touch(session);
+			return session;
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed hydrating persisted workspace ${record.workspaceRef}:`,
+				err,
+			);
+			try {
+				await workspaceSessionStore.markCleaned(
+					record.workspaceRef,
+					err instanceof Error ? err.message : String(err),
+				);
+			} catch {
+				// Best effort.
+			}
+			return null;
+		}
 	}
 
 	private resolveRootPath(executionId: string, requested?: string): string {
@@ -1060,6 +1437,7 @@ class WorkspaceSessionManager {
 			executionId: session.executionId,
 			name: session.name,
 			rootPath: session.rootPath,
+			clonePath: session.clonePath,
 			backend: session.backend,
 			enabledTools: [...session.enabledTools],
 			requireReadBeforeWrite: session.requireReadBeforeWrite,
@@ -1112,6 +1490,26 @@ class WorkspaceSessionManager {
 		return normalized;
 	}
 
+	private assertPathWithinCloneScope(
+		session: WorkspaceSession,
+		path: string,
+		operation: WorkspaceFileOperation,
+	): void {
+		if (!session.clonePath) return;
+		const normalizedRoot = pathPosix.normalize(session.clonePath);
+		const absolutePath = path.startsWith("/")
+			? pathPosix.normalize(path)
+			: pathPosix.normalize(pathPosix.join(session.rootPath, path));
+		const inScope =
+			absolutePath === normalizedRoot ||
+			absolutePath.startsWith(`${normalizedRoot}/`);
+		if (!inScope) {
+			throw new Error(
+				`${operation} path "${path}" is outside clone root "${normalizedRoot}"`,
+			);
+		}
+	}
+
 	private async enforceReadBeforeWrite(
 		session: WorkspaceSession,
 		path: string,
@@ -1129,6 +1527,14 @@ class WorkspaceSessionManager {
 
 	private touch(session: WorkspaceSession): void {
 		session.lastAccessedAt = Date.now();
+		void workspaceSessionStore
+			.markTouched(session.workspaceRef)
+			.catch((err) => {
+				console.warn(
+					`[workspace-sessions] Failed updating lastAccessedAt for ${session.workspaceRef}:`,
+					err,
+				);
+			});
 	}
 
 	private buildSandboxMetadata(

@@ -164,6 +164,80 @@ def _try_parse_json(value: Any) -> Any:
         return value
 
 
+SUMMARY_OUTPUT_KEYS = (
+    "text",
+    "toolCalls",
+    "fileChanges",
+    "patch",
+    "patchRef",
+    "changeSummary",
+    "artifactRef",
+    "plan",
+    "planMarkdown",
+    "planPolicy",
+    "tasks",
+    "daprInstanceId",
+    "workspaceRef",
+    "cleanup",
+)
+
+
+def _node_output_has_file_changes(candidate: dict[str, Any]) -> bool:
+    file_changes = candidate.get("fileChanges")
+    if isinstance(file_changes, list) and len(file_changes) > 0:
+        return True
+
+    summary = candidate.get("changeSummary")
+    if not isinstance(summary, dict):
+        return False
+
+    changed = summary.get("changed")
+    if isinstance(changed, bool) and changed:
+        return True
+
+    stats = summary.get("stats")
+    if isinstance(stats, dict):
+        files = stats.get("files")
+        additions = stats.get("additions")
+        deletions = stats.get("deletions")
+        if isinstance(files, int) and files > 0:
+            return True
+        if isinstance(additions, int) and additions > 0:
+            return True
+        if isinstance(deletions, int) and deletions > 0:
+            return True
+
+    return False
+
+
+def _extract_summary_fields_from_outputs(outputs: dict[str, Any]) -> dict[str, Any]:
+    """
+    Surface the most relevant agent/file-change payload at top level, so
+    workflow_executions.output stays useful even when final node is cleanup.
+    """
+    if not isinstance(outputs, dict):
+        return {}
+
+    values = [v for v in outputs.values() if isinstance(v, dict)]
+    if not values:
+        return {}
+
+    source: dict[str, Any] | None = None
+    for value in reversed(values):
+        if _node_output_has_file_changes(value):
+            source = value
+            break
+
+    if source is None:
+        source = values[-1]
+
+    return {
+        key: source.get(key)
+        for key in SUMMARY_OUTPUT_KEYS
+        if source.get(key) is not None
+    }
+
+
 @wfr.workflow(name="dynamic_workflow")
 def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     """
@@ -953,22 +1027,28 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         # Convert node_outputs to simple outputs dict
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
 
+        summary_fields = _extract_summary_fields_from_outputs(outputs)
+        final_output = {
+            "success": True,
+            "outputs": outputs,
+            "durationMs": duration_ms,
+            "phase": "completed",
+            **summary_fields,
+        }
+
         # Persist final results to PostgreSQL (belt-and-suspenders)
         if db_execution_id:
-            yield ctx.call_activity(persist_results_to_db, input={
+            persist_input = {
                 "dbExecutionId": db_execution_id,
                 "outputs": outputs,
                 "success": True,
                 "durationMs": duration_ms,
                 "_otel": otel_ctx,
-            })
+            }
+            persist_input.update(summary_fields)
+            yield ctx.call_activity(persist_results_to_db, input=persist_input)
 
-        return {
-            "success": True,
-            "outputs": outputs,
-            "durationMs": duration_ms,
-            "phase": "completed",
-        }
+        return final_output
 
     except Exception as e:
         duration_ms = int((time.time() - start_time) * 1000)
@@ -985,27 +1065,33 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
 
+        summary_fields = _extract_summary_fields_from_outputs(outputs)
+        final_output = {
+            "success": False,
+            "outputs": outputs,
+            "error": error_message,
+            "durationMs": duration_ms,
+            "phase": "failed",
+            **summary_fields,
+        }
+
         # Persist failure results to PostgreSQL (belt-and-suspenders)
         if db_execution_id:
             try:
-                yield ctx.call_activity(persist_results_to_db, input={
+                persist_input = {
                     "dbExecutionId": db_execution_id,
                     "outputs": outputs,
                     "success": False,
                     "error": error_message,
                     "durationMs": duration_ms,
                     "_otel": otel_ctx,
-                })
+                }
+                persist_input.update(summary_fields)
+                yield ctx.call_activity(persist_results_to_db, input=persist_input)
             except Exception as persist_err:
                 logger.error(f"[Dynamic Workflow] Failed to persist error results: {persist_err}")
 
-        return {
-            "success": False,
-            "outputs": outputs,
-            "error": error_message,
-            "durationMs": duration_ms,
-            "phase": "failed",
-        }
+        return final_output
     finally:
         # Cleanup execution-scoped workspaces (best-effort) on all workflow exits.
         try:
@@ -1045,11 +1131,16 @@ def process_agent_child_workflow(
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
+    mode = str(resolved_config.get("mode", "plan_mode") or "plan_mode").strip().lower()
+    if mode not in ("plan_mode", "execute_direct"):
+        mode = "execute_direct"
 
     prompt = str(resolved_config.get("prompt", "") or "").strip()
     if not prompt and action_type == "mastra/execute":
         prompt = "Execute the provided plan"
-    if not prompt:
+    if not prompt and mode == "plan_mode":
+        return {"success": False, "error": "Agent prompt is required (config.prompt)"}
+    if not prompt and mode == "execute_direct":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
 
     agent_config = resolved_config.get("agentConfig")
@@ -1062,6 +1153,14 @@ def process_agent_child_workflow(
     except (TypeError, ValueError):
         timeout_minutes = 30
 
+    approval_timeout_raw = resolved_config.get("approvalTimeoutMinutes", 60)
+    try:
+        approval_timeout_minutes = int(approval_timeout_raw or 60)
+    except (TypeError, ValueError):
+        approval_timeout_minutes = 60
+    if approval_timeout_minutes <= 0:
+        approval_timeout_minutes = 60
+
     max_turns_raw = resolved_config.get("maxTurns", agent_config.get("maxTurns"))
     max_turns: int | None = None
     try:
@@ -1073,10 +1172,15 @@ def process_agent_child_workflow(
     if action_type == "mastra/execute":
         from activities.call_agent_service import call_durable_execute_plan
         call_activity_fn = call_durable_execute_plan
+        run_mode = "execute_plan"
+    elif mode == "plan_mode":
+        from activities.call_agent_service import call_durable_plan
+        call_activity_fn = call_durable_plan
+        run_mode = "plan_mode"
     else:
-        # All durable/* action types route to durable-agent
         from activities.call_agent_service import call_durable_agent_run
         call_activity_fn = call_durable_agent_run
+        run_mode = "execute_direct"
 
     activity_input = {
         "prompt": prompt,
@@ -1085,6 +1189,7 @@ def process_agent_child_workflow(
         "maxTurns": max_turns,
         "stopCondition": resolved_config.get("stopCondition"),
         "requireFileChanges": resolved_config.get("requireFileChanges"),
+        "cleanupWorkspace": resolved_config.get("cleanupWorkspace"),
         "agentConfig": agent_config,
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
@@ -1093,18 +1198,19 @@ def process_agent_child_workflow(
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
         "parentExecutionId": ctx.instance_id,
-        # Use DB execution ID for cross-service persistence keys when available.
         "executionId": db_execution_id or execution_id,
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),
+        "approvalTimeoutMinutes": approval_timeout_minutes,
         "_otel": otel_ctx,
     }
 
-    if action_type == "mastra/execute":
+    if action_type == "mastra/execute" or run_mode == "execute_plan":
         activity_input["planJson"] = resolved_config.get("planJson")
+        activity_input["artifactRef"] = resolved_config.get("artifactRef")
         activity_input["cwd"] = resolved_config.get("cwd", "")
-        activity_input["timeoutMinutes"] = resolved_config.get("timeoutMinutes", 30)
+        activity_input["timeoutMinutes"] = timeout_minutes
 
     start_result = yield ctx.call_activity(
         call_activity_fn,
@@ -1113,6 +1219,116 @@ def process_agent_child_workflow(
 
     if not isinstance(start_result, dict) or not start_result.get("success", False):
         return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
+
+    planned_payload: dict[str, Any] | None = None
+    if run_mode == "plan_mode":
+        artifact_ref = start_result.get("artifactRef")
+        if not isinstance(artifact_ref, str) or not artifact_ref.strip():
+            return {
+                "success": False,
+                "error": "Plan mode did not return artifactRef",
+                "result": start_result,
+            }
+
+        planned_payload = {
+            "artifactRef": artifact_ref,
+            "plan": start_result.get("plan"),
+            "tasks": start_result.get("tasks"),
+            "planMarkdown": start_result.get("planMarkdown"),
+            "planPolicy": start_result.get("planPolicy"),
+            "planning": {
+                "daprPlanningInstanceId": start_result.get("daprPlanningInstanceId"),
+            },
+        }
+
+        node_id = str(node.get("id") or "unknown")
+        approval_event_name = f"durable_plan_approval_{node_id}_{ctx.instance_id}"
+
+        ctx.set_custom_status(json.dumps({
+            "phase": "awaiting_approval",
+            "progress": 50,
+            "message": f"Plan ready for approval: {node.get('label')}",
+            "currentNodeId": node.get("id"),
+            "currentNodeName": node.get("label") or node.get("id"),
+            "approvalEventName": approval_event_name,
+            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+        }))
+
+        yield ctx.call_activity(publish_phase_changed, input={
+            "workflowId": workflow_id,
+            "executionId": execution_id,
+            "phase": "awaiting_approval",
+            "progress": 50,
+            "message": f"Plan ready for approval: {node.get('label')}",
+            "_otel": otel_ctx,
+        })
+
+        approval_event = ctx.wait_for_external_event(approval_event_name)
+        timeout_timer = ctx.create_timer(timedelta(minutes=approval_timeout_minutes))
+        completed_task = yield wf.when_any([approval_event, timeout_timer])
+
+        if completed_task == timeout_timer:
+            return {
+                "success": False,
+                "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
+                **planned_payload,
+            }
+
+        approval_result = approval_event.get_result() or {}
+        approved = bool(approval_result.get("approved"))
+        if not approved:
+            reason = approval_result.get("reason") or "Plan was rejected"
+            return {
+                "success": False,
+                "error": str(reason),
+                "approval": approval_result,
+                **planned_payload,
+            }
+
+        ctx.set_custom_status(json.dumps({
+            "phase": "executing",
+            "progress": 55,
+            "message": f"Plan approved, executing: {node.get('label')}",
+            "currentNodeId": node.get("id"),
+            "currentNodeName": node.get("label") or node.get("id"),
+            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+        }))
+
+        yield ctx.call_activity(publish_phase_changed, input={
+            "workflowId": workflow_id,
+            "executionId": execution_id,
+            "phase": "executing",
+            "progress": 55,
+            "message": f"Plan approved, executing: {node.get('label')}",
+            "_otel": otel_ctx,
+        })
+
+        from activities.call_agent_service import call_durable_execute_plan
+
+        execute_input = {
+            **activity_input,
+            "artifactRef": artifact_ref,
+            "planJson": start_result.get("plan"),
+            "timeoutMinutes": timeout_minutes,
+            "approval": approval_result,
+        }
+        execute_start_result = yield ctx.call_activity(
+            call_durable_execute_plan,
+            input=execute_input,
+        )
+        if not isinstance(execute_start_result, dict) or not execute_start_result.get("success", False):
+            return {
+                "success": False,
+                "error": (
+                    execute_start_result.get("error")
+                    if isinstance(execute_start_result, dict)
+                    else "Failed to start approved plan execution"
+                ),
+                **planned_payload,
+            }
+
+        start_result = execute_start_result
+        run_mode = "execute_plan"
 
     agent_workflow_id = (
         start_result.get("workflow_id")
@@ -1123,6 +1339,7 @@ def process_agent_child_workflow(
         return {
             "success": False,
             "error": "Agent service did not return workflow_id",
+            **(planned_payload or {}),
         }
 
     logger.info(
@@ -1142,6 +1359,7 @@ def process_agent_child_workflow(
             "success": False,
             "agentWorkflowId": agent_workflow_id,
             "error": f"Agent timed out after {timeout_minutes} minutes",
+            **(planned_payload or {}),
         }
 
     event_data = completion_event.get_result() or {}
@@ -1155,14 +1373,25 @@ def process_agent_child_workflow(
             "agentWorkflowId": agent_workflow_id,
             "error": event_data.get("error") or "Agent failed",
             "result": event_data.get("result"),
+            **(planned_payload or {}),
         }
 
-    # The agent workflow publishes its own step result under event_data.result.
-    return event_data.get("result") or {
+    result_payload = event_data.get("result") or {
         "success": True,
         "agentWorkflowId": agent_workflow_id,
         "data": event_data,
     }
+
+    if planned_payload:
+        if isinstance(result_payload, dict):
+            merged = {**planned_payload, **result_payload}
+            return merged
+        return {
+            **planned_payload,
+            "result": result_payload,
+        }
+
+    return result_payload
 
 
 def process_approval_gate(

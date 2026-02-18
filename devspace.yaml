@@ -140,6 +140,16 @@ dev:
         waitInitialSync: true
         onUpload:
           restartContainer: false
+          exec:
+            - name: install-dependencies
+              command: sh
+              args:
+                - -lc
+                - cd /app && pnpm install --frozen-lockfile
+              failOnError: true
+              onChange:
+                - package.json
+                - pnpm-lock.yaml
         excludePaths:
           # Node.js / Next.js artifacts
           - node_modules/

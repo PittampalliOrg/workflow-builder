@@ -4,6 +4,7 @@
  * Drop-in replacement for python-runtime-sandbox that provides:
  *   - POST /execute  — run a shell command, return { stdout, stderr, exit_code }
  *   - POST /upload   — accept multipart file upload (saves to /app/)
+ *   - GET  /download/{path} — return file bytes for remote filesystem reads
  *   - GET  /          — readiness probe
  *   - GET  /health    — health check
  *
@@ -12,11 +13,18 @@
 
 const http = require("node:http");
 const { execFile } = require("node:child_process");
-const { writeFileSync, mkdirSync } = require("node:fs");
-const { join } = require("node:path");
+const { writeFileSync, readFileSync, statSync } = require("node:fs");
+const { basename, join, normalize, resolve } = require("node:path");
 
 const PORT = parseInt(process.env.PORT || "8888", 10);
 const WORK_DIR = process.env.WORKSPACE_DIR || "/app";
+const SHELL = process.env.SANDBOX_SHELL || "/bin/bash";
+const HOME_DIR = process.env.HOME || "/home/node";
+const WORKSPACE_ALIASES = [
+	"/workspace",
+	"/home/node/workspace",
+	"/home/user/workspace",
+];
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -78,18 +86,55 @@ function sendJson(res, status, data) {
 	res.end(JSON.stringify(data));
 }
 
+function sendText(res, status, text) {
+	res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
+	res.end(text);
+}
+
+function resolveSafePath(inputPath) {
+	const normalizedWorkDir = normalize(resolve(WORK_DIR));
+	let requested = String(inputPath || "");
+	if (!requested) {
+		throw new Error("path is required");
+	}
+	for (const alias of WORKSPACE_ALIASES) {
+		if (requested === alias) {
+			requested = normalizedWorkDir;
+			break;
+		}
+		const aliasPrefix = `${alias}/`;
+		if (requested.startsWith(aliasPrefix)) {
+			requested = resolve(
+				normalizedWorkDir,
+				requested.slice(aliasPrefix.length),
+			);
+			break;
+		}
+	}
+	const resolvedPath = requested.startsWith("/")
+		? normalize(requested)
+		: normalize(resolve(normalizedWorkDir, requested));
+	const withinWorkDir =
+		resolvedPath === normalizedWorkDir ||
+		resolvedPath.startsWith(`${normalizedWorkDir}/`);
+	if (!withinWorkDir) {
+		throw new Error(`Path escapes sandbox root: ${requested}`);
+	}
+	return resolvedPath;
+}
+
 // ── Execute Command ──────────────────────────────────────────
 
 function executeCommand(command, timeoutMs = 120000) {
 	return new Promise((resolve) => {
 		execFile(
-			"/bin/sh",
-			["-c", command],
+			SHELL,
+			["-lc", command],
 			{
 				cwd: WORK_DIR,
 				timeout: timeoutMs,
 				maxBuffer: 10 * 1024 * 1024, // 10MB
-				env: { ...process.env, HOME: WORK_DIR },
+				env: { ...process.env, HOME: HOME_DIR, WORKSPACE_DIR: WORK_DIR },
 			},
 			(error, stdout, stderr) => {
 				let exitCode = 0;
@@ -138,7 +183,7 @@ const server = http.createServer(async (req, res) => {
 			if (!command || typeof command !== "string") {
 				return sendJson(res, 400, { error: "command is required" });
 			}
-			const timeoutMs = body.timeout || 120000;
+			const timeoutMs = Number(body.timeout) || 120000;
 			const result = await executeCommand(command, timeoutMs);
 			return sendJson(res, 200, result);
 		} catch (err) {
@@ -152,10 +197,11 @@ const server = http.createServer(async (req, res) => {
 			const files = await parseMultipart(req);
 			const saved = [];
 			for (const file of files) {
-				const dest = join(WORK_DIR, file.filename);
+				const safeName = basename(file.filename);
+				const dest = join(WORK_DIR, safeName);
 				writeFileSync(dest, file.content);
 				saved.push({
-					filename: file.filename,
+					filename: safeName,
 					path: dest,
 					size: file.content.length,
 				});
@@ -163,6 +209,30 @@ const server = http.createServer(async (req, res) => {
 			return sendJson(res, 200, { success: true, files: saved });
 		} catch (err) {
 			return sendJson(res, 400, { error: err.message });
+		}
+	}
+
+	// File download
+	if (path.startsWith("/download/") && method === "GET") {
+		try {
+			const raw = decodeURIComponent(path.replace("/download/", ""));
+			const filePath = resolveSafePath(raw);
+			const stat = statSync(filePath);
+			if (stat.isDirectory()) {
+				return sendText(res, 400, "Is a directory");
+			}
+			const content = readFileSync(filePath);
+			res.writeHead(200, {
+				"Content-Type": "application/octet-stream",
+				"Content-Length": String(content.length),
+			});
+			return res.end(content);
+		} catch (err) {
+			const msg = String(err?.message || err);
+			if (msg.includes("ENOENT")) {
+				return sendText(res, 404, "No such file or directory");
+			}
+			return sendText(res, 400, msg);
 		}
 	}
 

@@ -1,7 +1,7 @@
 /**
  * Model Router — resolves "provider/model" strings to AI SDK 6 LanguageModel instances.
  *
- * No new dependencies: uses existing `ai` and `@ai-sdk/openai`.
+ * Uses installed AI SDK providers (openai, anthropic when available).
  * Additional providers can be registered at runtime via registerLlmProvider().
  */
 
@@ -19,21 +19,18 @@ const embeddingProviders = new Map<string, EmbeddingFactory>();
  * @param name - Provider name (e.g., "openai", "anthropic")
  * @param factory - Function that takes a model ID and returns a LanguageModel
  */
-export function registerLlmProvider(
-  name: string,
-  factory: ModelFactory,
-): void {
-  llmProviders.set(name, factory);
+export function registerLlmProvider(name: string, factory: ModelFactory): void {
+	llmProviders.set(name, factory);
 }
 
 /**
  * Register a provider that can create EmbeddingModel instances.
  */
 export function registerEmbeddingProvider(
-  name: string,
-  factory: EmbeddingFactory,
+	name: string,
+	factory: EmbeddingFactory,
 ): void {
-  embeddingProviders.set(name, factory);
+	embeddingProviders.set(name, factory);
 }
 
 /**
@@ -43,56 +40,56 @@ export function registerEmbeddingProvider(
  *               or an existing LanguageModel instance (passed through).
  */
 export function resolveModel(spec: string | LanguageModel): LanguageModel {
-  if (typeof spec !== "string") return spec;
+	if (typeof spec !== "string") return spec;
 
-  const slashIndex = spec.indexOf("/");
-  if (slashIndex === -1) {
-    throw new Error(
-      `Invalid model spec "${spec}": expected "provider/model" format`,
-    );
-  }
+	const slashIndex = spec.indexOf("/");
+	if (slashIndex === -1) {
+		throw new Error(
+			`Invalid model spec "${spec}": expected "provider/model" format`,
+		);
+	}
 
-  const providerName = spec.slice(0, slashIndex);
-  const modelId = spec.slice(slashIndex + 1);
-  const factory = llmProviders.get(providerName);
+	const providerName = spec.slice(0, slashIndex);
+	const modelId = spec.slice(slashIndex + 1);
+	const factory = llmProviders.get(providerName);
 
-  if (!factory) {
-    const available = [...llmProviders.keys()].join(", ") || "(none)";
-    throw new Error(
-      `Unknown LLM provider "${providerName}". Registered providers: ${available}`,
-    );
-  }
+	if (!factory) {
+		const available = [...llmProviders.keys()].join(", ") || "(none)";
+		throw new Error(
+			`Unknown LLM provider "${providerName}". Registered providers: ${available}`,
+		);
+	}
 
-  return factory(modelId);
+	return factory(modelId);
 }
 
 /**
  * Resolve an embedding model spec to an EmbeddingModel instance.
  */
 export function resolveEmbeddingModel(
-  spec: string | EmbeddingModel,
+	spec: string | EmbeddingModel,
 ): EmbeddingModel {
-  if (typeof spec !== "string") return spec;
+	if (typeof spec !== "string") return spec;
 
-  const slashIndex = spec.indexOf("/");
-  if (slashIndex === -1) {
-    throw new Error(
-      `Invalid embedding model spec "${spec}": expected "provider/model" format`,
-    );
-  }
+	const slashIndex = spec.indexOf("/");
+	if (slashIndex === -1) {
+		throw new Error(
+			`Invalid embedding model spec "${spec}": expected "provider/model" format`,
+		);
+	}
 
-  const providerName = spec.slice(0, slashIndex);
-  const modelId = spec.slice(slashIndex + 1);
-  const factory = embeddingProviders.get(providerName);
+	const providerName = spec.slice(0, slashIndex);
+	const modelId = spec.slice(slashIndex + 1);
+	const factory = embeddingProviders.get(providerName);
 
-  if (!factory) {
-    const available = [...embeddingProviders.keys()].join(", ") || "(none)";
-    throw new Error(
-      `Unknown embedding provider "${providerName}". Registered providers: ${available}`,
-    );
-  }
+	if (!factory) {
+		const available = [...embeddingProviders.keys()].join(", ") || "(none)";
+		throw new Error(
+			`Unknown embedding provider "${providerName}". Registered providers: ${available}`,
+		);
+	}
 
-  return factory(modelId);
+	return factory(modelId);
 }
 
 /**
@@ -100,18 +97,35 @@ export function resolveEmbeddingModel(
  * Called during startup; safe if @ai-sdk/openai is already a dependency.
  */
 export function registerBuiltinProviders(): void {
-  // @ai-sdk/openai is a hard dependency — always available
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { openai } = require("@ai-sdk/openai") as {
-      openai: { chat: (id: string) => LanguageModel; embedding: (id: string) => EmbeddingModel };
-    };
-    registerLlmProvider("openai", (modelId) => openai.chat(modelId));
-    registerEmbeddingProvider("openai", (modelId) => openai.embedding(modelId));
-    console.log("[model-router] Registered built-in provider: openai");
-  } catch {
-    console.warn(
-      "[model-router] @ai-sdk/openai not available, skipping builtin registration",
-    );
-  }
+	// @ai-sdk/openai is a hard dependency — always available
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const { openai } = require("@ai-sdk/openai") as {
+			openai: {
+				chat: (id: string) => LanguageModel;
+				embedding: (id: string) => EmbeddingModel;
+			};
+		};
+		registerLlmProvider("openai", (modelId) => openai.chat(modelId));
+		registerEmbeddingProvider("openai", (modelId) => openai.embedding(modelId));
+		console.log("[model-router] Registered built-in provider: openai");
+	} catch {
+		console.warn(
+			"[model-router] @ai-sdk/openai not available, skipping builtin registration",
+		);
+	}
+
+	// @ai-sdk/anthropic is optional; register when installed
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-require-imports
+		const { anthropic } = require("@ai-sdk/anthropic") as {
+			anthropic: (modelId: string) => LanguageModel;
+		};
+		registerLlmProvider("anthropic", (modelId) => anthropic(modelId));
+		console.log("[model-router] Registered built-in provider: anthropic");
+	} catch {
+		console.warn(
+			"[model-router] @ai-sdk/anthropic not available, skipping provider registration",
+		);
+	}
 }

@@ -32,6 +32,7 @@ import {
 	isGeneratingAtom,
 	isPanelAnimatingAtom,
 	isTransitioningFromHomepageAtom,
+	isWorkflowOwnerAtom,
 	nodesAtom,
 	onEdgesChangeAtom,
 	onNodesChangeAtom,
@@ -47,6 +48,7 @@ import type { DagreLayoutOptions } from "@/lib/workflow-layout/dagre-layout";
 import { layoutWorkflowNodes } from "@/lib/workflow-layout/dagre-layout";
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
+import { CanvasAiChatInput } from "./canvas-ai-chat-input";
 import { ActionNode } from "./nodes/action-node";
 import { ActivityNode } from "./nodes/activity-node";
 import { AddNode } from "./nodes/add-node";
@@ -92,10 +94,12 @@ const edgeTypes = {
 export function WorkflowCanvas() {
 	const [nodes, setNodes] = useAtom(nodesAtom);
 	const [edges, setEdges] = useAtom(edgesAtom);
-	const [isGenerating] = useAtom(isGeneratingAtom);
+	const isGenerating = useAtomValue(isGeneratingAtom);
 	const currentWorkflowId = useAtomValue(currentWorkflowIdAtom);
-	const [showMinimap] = useAtom(showMinimapAtom);
+	const showMinimap = useAtomValue(showMinimapAtom);
+	const isOwner = useAtomValue(isWorkflowOwnerAtom);
 	const rightPanelWidth = useAtomValue(rightPanelWidthAtom);
+	const activeTab = useAtomValue(propertiesPanelActiveTabAtom);
 	const isPanelAnimating = useAtomValue(isPanelAnimatingAtom);
 	const currentRunningNodeId = useAtomValue(currentRunningNodeIdAtom);
 	const [isTransitioningFromHomepage, setIsTransitioningFromHomepage] = useAtom(
@@ -677,6 +681,12 @@ export function WorkflowCanvas() {
 					<MiniMap bgColor="var(--sidebar)" nodeStrokeColor="var(--border)" />
 				)}
 			</Canvas>
+
+			{currentWorkflowId &&
+				isOwner &&
+				!(activeTab === "ai" && rightPanelWidth) && (
+					<CanvasAiChatInput workflowId={currentWorkflowId} />
+				)}
 
 			{/* Context Menu */}
 			<WorkflowContextMenu

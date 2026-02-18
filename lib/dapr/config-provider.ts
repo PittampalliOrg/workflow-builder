@@ -6,7 +6,7 @@
  *
  * Features:
  * - Caches configuration and secrets at startup
- * - Falls back to environment variables when Dapr is unavailable
+ * - Requires Dapr secret stores for secret resolution (no env fallback)
  * - Type-safe access to known configuration keys
  *
  * @example
@@ -66,15 +66,21 @@ const CONFIG_KEYS = [
 ] as const;
 
 /**
- * Secret mappings from ENV_VAR to Azure Key Vault secret name
+ * Secret mappings from ENV_VAR to secret names in Dapr secret stores.
+ * Canonical Key Vault names are listed first (e.g. OPENAI-API-KEY).
  */
-const SECRET_MAPPINGS: Record<string, string> = {
-	DATABASE_URL: "WORKFLOW-BUILDER-DATABASE-URL",
-	BETTER_AUTH_SECRET: "WORKFLOW-BUILDER-AUTH-SECRET",
-	INTEGRATION_ENCRYPTION_KEY: "WORKFLOW-BUILDER-INTEGRATION-KEY",
-	OPENAI_API_KEY: "OPENAI-API-KEY",
-	ANTHROPIC_API_KEY: "ANTHROPIC-API-KEY",
-	GITHUB_TOKEN: "GITHUB-TOKEN",
+const SECRET_MAPPINGS: Record<string, readonly string[]> = {
+	DATABASE_URL: ["WORKFLOW-BUILDER-DATABASE-URL", "DATABASE_URL"],
+	BETTER_AUTH_SECRET: ["WORKFLOW-BUILDER-AUTH-SECRET", "BETTER_AUTH_SECRET"],
+	INTEGRATION_ENCRYPTION_KEY: [
+		"WORKFLOW-BUILDER-INTEGRATION-KEY",
+		"INTEGRATION_ENCRYPTION_KEY",
+	],
+	JWT_SIGNING_KEY: ["WORKFLOW-BUILDER-JWT-SIGNING-KEY", "JWT_SIGNING_KEY"],
+	OPENAI_API_KEY: ["OPENAI-API-KEY", "OPENAI_API_KEY"],
+	ANTHROPIC_API_KEY: ["ANTHROPIC-API-KEY", "ANTHROPIC_API_KEY"],
+	AI_GATEWAY_API_KEY: ["OPENAI-API-KEY", "AI_GATEWAY_API_KEY"],
+	GITHUB_TOKEN: ["GITHUB-TOKEN", "GITHUB_TOKEN"],
 };
 
 /**
@@ -100,6 +106,12 @@ const K8S_SECRET_KEYS = [
 	"OAUTH_APP_MICROSOFT_CLIENT_SECRET",
 	"OAUTH_APP_LINKEDIN_CLIENT_ID",
 	"OAUTH_APP_LINKEDIN_CLIENT_SECRET",
+] as const;
+
+const REQUIRED_SECRET_KEYS = [
+	"OPENAI_API_KEY",
+	"ANTHROPIC_API_KEY",
+	"AI_GATEWAY_API_KEY",
 ] as const;
 
 // ============================================================================
@@ -142,12 +154,9 @@ async function doInitialize(): Promise<void> {
 	}
 
 	if (!daprAvailable) {
-		console.log(
-			"[ConfigProvider] Dapr sidecar not available, using environment variables",
+		throw new Error(
+			"[ConfigProvider] Dapr sidecar not available. Secret fallback is disabled.",
 		);
-		loadFromEnvironment();
-		initialized = true;
-		return;
 	}
 
 	console.log(
@@ -169,8 +178,8 @@ async function doInitialize(): Promise<void> {
 	try {
 		await loadSecretsFromDapr();
 	} catch (error) {
-		console.warn("[ConfigProvider] Failed to load secrets from Dapr:", error);
-		loadSecretsFromEnvironment();
+		console.error("[ConfigProvider] Failed to load secrets from Dapr:", error);
+		throw error;
 	}
 
 	initialized = true;
@@ -228,40 +237,22 @@ async function loadConfigurationFromDapr(): Promise<void> {
 }
 
 async function loadSecretsFromDapr(): Promise<void> {
-	// Prefer Kubernetes secret store when configured (single Secret with multiple keys).
-	if (SECRET_STORE === "kubernetes-secrets") {
-		const data = await getSecretMap(SECRET_STORE, K8S_SECRET_NAME);
-		for (const key of K8S_SECRET_KEYS) {
-			const value = data[key];
-			if (value !== undefined && value !== "") {
-				secretCache[key] = value;
-				continue;
-			}
-			const envValue = process.env[key];
-			if (envValue !== undefined) {
-				secretCache[key] = envValue;
-			}
+	const stores = getSecretStoreCandidates();
+	for (const storeName of stores) {
+		if (storeName === "kubernetes-secrets") {
+			await loadSecretsFromKubernetesStore(storeName);
+			continue;
 		}
-
-		console.log(
-			`[ConfigProvider] Loaded ${Object.keys(secretCache).length} secrets from ${SECRET_STORE}:${K8S_SECRET_NAME}`,
-		);
-		return;
+		await loadMappedSecretsFromStore(storeName);
 	}
 
-	// Azure Key Vault / single-value stores (secret name == key).
-	for (const [envKey, kvName] of Object.entries(SECRET_MAPPINGS)) {
-		try {
-			const value = await getSecret(SECRET_STORE, kvName);
-			if (value) {
-				secretCache[envKey] = value;
-			}
-		} catch {
-			const envValue = process.env[envKey];
-			if (envValue !== undefined) {
-				secretCache[envKey] = envValue;
-			}
-		}
+	const missingRequiredKeys = REQUIRED_SECRET_KEYS.filter(
+		(key) => !secretCache[key],
+	);
+	if (missingRequiredKeys.length > 0) {
+		throw new Error(
+			`[ConfigProvider] Missing required secrets after Dapr resolution: ${missingRequiredKeys.join(", ")}`,
+		);
 	}
 
 	console.log(
@@ -269,9 +260,75 @@ async function loadSecretsFromDapr(): Promise<void> {
 	);
 }
 
-function loadFromEnvironment(): void {
-	loadConfigFromEnvironment();
-	loadSecretsFromEnvironment();
+function getSecretStoreCandidates(): string[] {
+	const candidates = [
+		process.env.DAPR_SECRETS_STORE,
+		"azure-keyvault",
+		SECRET_STORE,
+		process.env.DAPR_SECRET_STORE,
+		"kubernetes-secrets",
+	].filter((name): name is string => Boolean(name && name.trim()));
+
+	return Array.from(new Set(candidates));
+}
+
+async function loadSecretsFromKubernetesStore(
+	storeName: string,
+): Promise<void> {
+	try {
+		const data = await getSecretMap(storeName, K8S_SECRET_NAME);
+
+		// Load mapped keys first so canonical names (OPENAI-API-KEY, etc.)
+		// populate normalized env keys.
+		for (const [envKey, secretNames] of Object.entries(SECRET_MAPPINGS)) {
+			if (secretCache[envKey]) {
+				continue;
+			}
+			const candidates = [...secretNames, envKey];
+			for (const candidateKey of candidates) {
+				const value = data[candidateKey];
+				if (value !== undefined && value !== "") {
+					secretCache[envKey] = value;
+					break;
+				}
+			}
+		}
+
+		// Also hydrate direct keys from the Kubernetes secret map.
+		for (const key of K8S_SECRET_KEYS) {
+			if (secretCache[key]) {
+				continue;
+			}
+			const value = data[key];
+			if (value !== undefined && value !== "") {
+				secretCache[key] = value;
+			}
+		}
+	} catch (error) {
+		console.warn(
+			`[ConfigProvider] Failed loading secrets from ${storeName}:${K8S_SECRET_NAME}`,
+			error,
+		);
+	}
+}
+
+async function loadMappedSecretsFromStore(storeName: string): Promise<void> {
+	for (const [envKey, secretNames] of Object.entries(SECRET_MAPPINGS)) {
+		if (secretCache[envKey]) {
+			continue;
+		}
+		for (const secretName of secretNames) {
+			try {
+				const value = await getSecret(storeName, secretName);
+				if (value) {
+					secretCache[envKey] = value;
+					break;
+				}
+			} catch {
+				// Try the next candidate secret name/store.
+			}
+		}
+	}
 }
 
 function loadConfigFromEnvironment(): void {
@@ -279,15 +336,6 @@ function loadConfigFromEnvironment(): void {
 		const value = process.env[key];
 		if (value !== undefined) {
 			configCache[key] = value;
-		}
-	}
-}
-
-function loadSecretsFromEnvironment(): void {
-	for (const envKey of Object.keys(SECRET_MAPPINGS)) {
-		const value = process.env[envKey];
-		if (value !== undefined) {
-			secretCache[envKey] = value;
 		}
 	}
 }
@@ -319,13 +367,7 @@ export function getSecretValue(key: string): string {
 	if (key in secretCache) {
 		return secretCache[key];
 	}
-
-	const envValue = process.env[key];
-	if (envValue !== undefined) {
-		return envValue;
-	}
-
-	return "";
+	throw new Error(`[ConfigProvider] Secret not loaded: ${key}`);
 }
 
 /**

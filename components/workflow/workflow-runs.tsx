@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
 	Check,
 	ChevronDown,
@@ -809,11 +809,21 @@ export function WorkflowRuns({
 	const setDaprPhase = useSetAtom(daprPhaseAtom);
 	const setApprovalResponded = useSetAtom(approvalRespondedAtom);
 	const approvalRespondedRef = useRef(false);
+	const approvalExecutionIdRef = useRef<string | null>(null);
+	const approvalEventNameRef = useRef<string | null>(null);
 	// Keep ref in sync with atom so the polling closure always sees latest value
-	const approvalRespondedAtomValue = useAtom(approvalRespondedAtom)[0];
+	const approvalRespondedAtomValue = useAtomValue(approvalRespondedAtom);
+	const approvalExecutionIdAtomValue = useAtomValue(approvalExecutionIdAtom);
+	const approvalEventNameAtomValue = useAtomValue(approvalEventNameAtom);
 	useEffect(() => {
 		approvalRespondedRef.current = approvalRespondedAtomValue;
 	}, [approvalRespondedAtomValue]);
+	useEffect(() => {
+		approvalExecutionIdRef.current = approvalExecutionIdAtomValue;
+	}, [approvalExecutionIdAtomValue]);
+	useEffect(() => {
+		approvalEventNameRef.current = approvalEventNameAtomValue;
+	}, [approvalEventNameAtomValue]);
 	const [executions, setExecutions] = useState<WorkflowExecution[]>([]);
 	const [logs, setLogs] = useState<Record<string, ExecutionLog[]>>({});
 	const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
@@ -1052,11 +1062,24 @@ export function WorkflowRuns({
 							statusResponse.phase === "awaiting_approval" &&
 							statusResponse.approvalEventName
 						) {
-							// Only set if user hasn't already responded
-							if (!approvalRespondedRef.current) {
+							const incomingExecutionId = execution.id;
+							const incomingEventName = statusResponse.approvalEventName;
+							const isNewApprovalContext =
+								approvalExecutionIdRef.current !== incomingExecutionId ||
+								approvalEventNameRef.current !== incomingEventName;
+
+							// If execution or event changed, reset response state so the new run can be approved
+							if (isNewApprovalContext) {
+								setApprovalResponded(false);
+								approvalRespondedRef.current = false;
+							}
+
+							if (!approvalRespondedRef.current || isNewApprovalContext) {
 								setDaprPhase("awaiting_approval");
-								setApprovalEventName(statusResponse.approvalEventName);
-								setApprovalExecutionId(execution.id);
+								setApprovalEventName(incomingEventName);
+								setApprovalExecutionId(incomingExecutionId);
+								approvalExecutionIdRef.current = incomingExecutionId;
+								approvalEventNameRef.current = incomingEventName;
 							}
 						} else if (statusResponse.phase !== "awaiting_approval") {
 							// Only clear on definitive phase transitions, not transient polls
@@ -1065,7 +1088,9 @@ export function WorkflowRuns({
 								clearPhases.includes(statusResponse.phase ?? "") ||
 								statusResponse.status === "completed" ||
 								statusResponse.status === "error";
-							if (isClearPhase) {
+							const isCurrentApprovalExecution =
+								approvalExecutionIdRef.current === execution.id;
+							if (isClearPhase && isCurrentApprovalExecution) {
 								setDaprPhase(
 									statusResponse.phase as
 										| "executing"
@@ -1076,6 +1101,9 @@ export function WorkflowRuns({
 								setApprovalEventName(null);
 								setApprovalExecutionId(null);
 								setApprovalResponded(false);
+								approvalExecutionIdRef.current = null;
+								approvalEventNameRef.current = null;
+								approvalRespondedRef.current = false;
 							}
 						}
 

@@ -1,6 +1,6 @@
 /**
  * Create a workflow that uses the new workspace + durable agent pattern:
- * trigger -> workspace/profile -> workspace/clone -> durable/run -> workspace/cleanup
+ * trigger -> workspace/profile -> workspace/clone -> durable/run (plan mode)
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name
@@ -190,8 +190,7 @@ function buildWorkflowNodes(input: {
 	const triggerId = nanoid();
 	const workspaceProfileId = nanoid();
 	const cloneId = nanoid();
-	const durableRunId = nanoid();
-	const cleanupId = nanoid();
+	const durableAgentId = nanoid();
 
 	const enabledTools = JSON.stringify([
 		"read_file",
@@ -268,34 +267,22 @@ function buildWorkflowNodes(input: {
 			},
 		},
 		{
-			id: durableRunId,
+			id: durableAgentId,
 			type: "action",
 			position: { x: 400, y: 0 },
 			data: {
-				label: "Durable Run",
-				description: "Run durable agent in the workspace",
+				label: "Durable Agent",
+				description:
+					"Create a plan, wait for approval, then execute in a single durable run",
 				type: "action",
 				config: {
 					actionType: "durable/run",
+					mode: "plan_mode",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
 					cwd: clonePathTemplate,
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: cleanupId,
-			type: "action",
-			position: { x: 700, y: 0 },
-			data: {
-				label: "Workspace Cleanup",
-				description: "Cleanup workspace session",
-				type: "action",
-				config: {
-					actionType: "workspace/cleanup",
-					workspaceRef: workspaceRefTemplate,
+					approvalTimeoutMinutes: "60",
 				},
 				status: "idle",
 			},
@@ -323,15 +310,7 @@ function buildWorkflowNodes(input: {
 			id: nanoid(),
 			type: "animated",
 			source: cloneId,
-			target: durableRunId,
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: nanoid(),
-			type: "animated",
-			source: durableRunId,
-			target: cleanupId,
+			target: durableAgentId,
 			sourceHandle: null,
 			targetHandle: null,
 		},
@@ -414,7 +393,7 @@ async function main() {
 				id: workflowId,
 				name: args.name,
 				description:
-					"Programmatically created workspace-agent workflow (profile -> clone -> run -> cleanup)",
+					"Programmatically created workspace-agent workflow (profile -> clone -> durable plan mode)",
 				userId,
 				projectId,
 				nodes,

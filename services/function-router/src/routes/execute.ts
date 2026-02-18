@@ -393,24 +393,49 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						let requestBody: string;
 
 						if (isAgentRun) {
-							targetUrl = `${functionUrl}/api/run`;
-							requestBody = JSON.stringify({
-								prompt: args.prompt ?? "",
-								model: args.model,
-								maxTurns: args.maxTurns,
-								instructions: args.instructions,
-								tools: args.tools,
-								workspaceRef:
-									typeof args.workspaceRef === "string"
-										? args.workspaceRef
-										: undefined,
-								parentExecutionId: body.execution_id,
-								executionId: workspaceExecutionId,
-								dbExecutionId: body.db_execution_id ?? undefined,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
-							});
+							const mode =
+								typeof args.mode === "string"
+									? args.mode.trim().toLowerCase()
+									: "plan_mode";
+							if (mode === "plan_mode") {
+								targetUrl = `${functionUrl}/api/plan`;
+								requestBody = JSON.stringify({
+									prompt: args.prompt ?? "",
+									cwd: args.cwd ?? "",
+									workspaceRef:
+										typeof args.workspaceRef === "string"
+											? args.workspaceRef
+											: undefined,
+									parentExecutionId: body.execution_id,
+									executionId: workspaceExecutionId,
+									dbExecutionId: body.db_execution_id ?? undefined,
+									workflowId: body.workflow_id,
+									nodeId: body.node_id,
+									nodeName: body.node_name,
+								});
+							} else {
+								targetUrl = `${functionUrl}/api/run`;
+								requestBody = JSON.stringify({
+									prompt: args.prompt ?? "",
+									model: args.model,
+									maxTurns: args.maxTurns,
+									instructions: args.instructions,
+									tools: args.tools,
+									stopCondition: args.stopCondition,
+									requireFileChanges: args.requireFileChanges,
+									cleanupWorkspace: args.cleanupWorkspace,
+									workspaceRef:
+										typeof args.workspaceRef === "string"
+											? args.workspaceRef
+											: undefined,
+									parentExecutionId: body.execution_id,
+									executionId: workspaceExecutionId,
+									dbExecutionId: body.db_execution_id ?? undefined,
+									workflowId: body.workflow_id,
+									nodeId: body.node_id,
+									nodeName: body.node_name,
+								});
+							}
 						} else if (isPlan) {
 							targetUrl = `${functionUrl}/api/plan`;
 							requestBody = JSON.stringify({
@@ -435,6 +460,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								prompt: args.prompt ?? "",
 								plan,
 								cwd: args.cwd ?? "",
+								cleanupWorkspace: args.cleanupWorkspace,
 								parentExecutionId: body.execution_id,
 								executionId: workspaceExecutionId,
 								dbExecutionId: body.db_execution_id ?? undefined,
@@ -681,14 +707,43 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						let requestBody: string;
 
 						if (toolId === "run") {
-							targetUrl = `${functionUrl}/api/run`;
-							requestBody = JSON.stringify({
-								prompt: resolvedInput.prompt || resolvedInput.input || "",
-								parentExecutionId: body.execution_id,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
-							});
+							const mode =
+								typeof resolvedInput.mode === "string"
+									? resolvedInput.mode.toLowerCase()
+									: "plan_mode";
+							if (mode === "plan_mode") {
+								targetUrl = `${functionUrl}/api/plan`;
+								requestBody = JSON.stringify({
+									prompt: resolvedInput.prompt || resolvedInput.input || "",
+									cwd: resolvedInput.cwd || "",
+									workspaceRef: resolvedInput.workspaceRef || "",
+									parentExecutionId: body.execution_id,
+									executionId: body.db_execution_id || body.execution_id,
+									dbExecutionId: body.db_execution_id ?? undefined,
+									workflowId: body.workflow_id,
+									nodeId: body.node_id,
+									nodeName: body.node_name,
+								});
+							} else {
+								targetUrl = `${functionUrl}/api/run`;
+								requestBody = JSON.stringify({
+									prompt: resolvedInput.prompt || resolvedInput.input || "",
+									model: resolvedInput.model,
+									maxTurns: resolvedInput.maxTurns,
+									instructions: resolvedInput.instructions,
+									tools: resolvedInput.tools,
+									stopCondition: resolvedInput.stopCondition,
+									requireFileChanges: resolvedInput.requireFileChanges,
+									cleanupWorkspace: resolvedInput.cleanupWorkspace,
+									workspaceRef: resolvedInput.workspaceRef || "",
+									parentExecutionId: body.execution_id,
+									executionId: body.db_execution_id || body.execution_id,
+									dbExecutionId: body.db_execution_id ?? undefined,
+									workflowId: body.workflow_id,
+									nodeId: body.node_id,
+									nodeName: body.node_name,
+								});
+							}
 						} else if (toolId === "plan") {
 							targetUrl = `${functionUrl}/api/plan`;
 							requestBody = JSON.stringify({
@@ -701,6 +756,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								prompt: resolvedInput.prompt || "",
 								plan: resolvedInput.planJson || resolvedInput.plan || null,
 								cwd: resolvedInput.cwd || "",
+								cleanupWorkspace: resolvedInput.cleanupWorkspace,
 								parentExecutionId: body.execution_id,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,

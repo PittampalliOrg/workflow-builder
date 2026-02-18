@@ -50,13 +50,14 @@ export async function publishCompletionEvent(opts: {
 	success: boolean;
 	result?: Record<string, unknown>;
 	error?: string;
-}): Promise<void> {
+}): Promise<boolean> {
 	if (!opts.parentExecutionId) {
 		console.warn("[dapr] No parentExecutionId, skipping completion event");
-		return;
+		return false;
 	}
 
-	const orchestratorAppId = process.env.ORCHESTRATOR_APP_ID ?? "workflow-orchestrator";
+	const orchestratorAppId =
+		process.env.ORCHESTRATOR_APP_ID ?? "workflow-orchestrator";
 	const eventName = `agent_completed_${opts.agentWorkflowId}`;
 	const eventData = {
 		workflow_id: opts.agentWorkflowId,
@@ -82,13 +83,16 @@ export async function publishCompletionEvent(opts: {
 		if (!resp.ok) {
 			const body = await resp.text();
 			console.warn(`[dapr] Raise event failed: ${resp.status} ${body}`);
+			return false;
 		} else {
 			console.log(
 				`[dapr] Raised external event "${eventName}" on parent ${opts.parentExecutionId} (success=${opts.success})`,
 			);
+			return true;
 		}
 	} catch (err) {
 		console.error(`[dapr] Failed to raise completion event: ${err}`);
+		return false;
 	}
 }
 

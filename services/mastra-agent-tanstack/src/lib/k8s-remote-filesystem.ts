@@ -111,8 +111,7 @@ export class K8sRemoteFilesystem extends MastraFilesystem {
 			);
 
 			if (!res.ok) {
-				const text = await res.text();
-				this.throwMappedError(text, absPath);
+				return this.readFileViaExec(absPath, options);
 			}
 
 			if (options?.encoding) {
@@ -457,6 +456,39 @@ export class K8sRemoteFilesystem extends MastraFilesystem {
 		if (Buffer.isBuffer(content)) return content;
 		if (content instanceof Uint8Array) return Buffer.from(content);
 		return Buffer.from(content, "utf-8");
+	}
+
+	/**
+	 * Fallback file read path using /execute when /download is not implemented by
+	 * the sandbox runtime. Returns base64 to keep binary-safe transport.
+	 */
+	private async readFileViaExec(
+		absPath: string,
+		options?: ReadOptions,
+	): Promise<string | Buffer> {
+		const cmd = [
+			`if [ ! -e ${this.shellEscape(absPath)} ]; then`,
+			`  echo "No such file or directory" 1>&2;`,
+			"  exit 2;",
+			"fi;",
+			`if [ -d ${this.shellEscape(absPath)} ]; then`,
+			`  echo "Is a directory" 1>&2;`,
+			"  exit 21;",
+			"fi;",
+			`base64 ${this.shellEscape(absPath)} | tr -d '\\n'`,
+		].join(" ");
+
+		const result = await this.exec(cmd);
+		if (result.exit_code !== 0) {
+			this.throwMappedError(result.stderr || result.stdout, absPath);
+		}
+
+		const bytes = Buffer.from(result.stdout.trim(), "base64");
+		if (options?.encoding) {
+			const encoding = options.encoding as BufferEncoding;
+			return bytes.toString(encoding);
+		}
+		return bytes;
 	}
 
 	/** Map stderr error strings to descriptive errors. */

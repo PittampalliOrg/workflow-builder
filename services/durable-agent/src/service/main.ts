@@ -16,6 +16,7 @@
  * - GET  /api/workspaces/changes/:changeSetId — Fetch stored patch artifact
  * - GET  /api/workspaces/executions/:executionId/changes — List change artifacts
  * - GET  /api/workspaces/executions/:executionId/patch — Export combined patch
+ * - GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — Fetch aggregated file snapshot
  * - POST /api/run              — Fire-and-forget agent run
  * - POST /api/plan             — Synchronous planning
  * - POST /api/execute-plan     — Fire-and-forget plan execution
@@ -43,9 +44,23 @@ import {
 	handleDaprSubscriptionEvent,
 	getDaprSubscriptions,
 } from "./completion-publisher.js";
-import { generatePlan } from "./planner.js";
+import {
+	PlanGenerationError,
+	generatePlanFromMarkdown,
+	validatePlanForExecution,
+} from "./planner.js";
 import type { Plan } from "./planner.js";
+import { planArtifacts } from "./plan-artifacts.js";
+import { workflowRunTracker } from "./run-tracker.js";
 import type { DaprEvent } from "./types.js";
+import {
+	buildPlanModePrompt,
+	buildPlanRepairPrompt,
+} from "./plan-mode-prompt.js";
+import {
+	extractProposedPlanText,
+	stripProposedPlanBlocks,
+} from "./proposed-plan-parser.js";
 
 // Mastra adapters (all optional — graceful fallback if packages not installed)
 import {
@@ -75,6 +90,22 @@ import {
 
 const PORT = parseInt(process.env.PORT || "8001", 10);
 const HOST = process.env.HOST || "0.0.0.0";
+const RUN_RECONCILE_INTERVAL_MS = parseInt(
+	process.env.DURABLE_RUN_RECONCILE_INTERVAL_MS || "15000",
+	10,
+);
+const PLAN_REPAIR_ATTEMPTS = Math.max(
+	0,
+	parseInt(process.env.DURABLE_PLAN_REPAIR_ATTEMPTS || "2", 10),
+);
+const PLAN_REPAIR_MAX_TURNS = Math.max(
+	1,
+	parseInt(process.env.DURABLE_PLAN_REPAIR_MAX_TURNS || "8", 10),
+);
+const PLAN_TIMEOUT_SECONDS = Math.max(
+	60,
+	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "600", 10),
+);
 
 // ── Agent Config Types ────────────────────────────────────────
 
@@ -98,6 +129,8 @@ let workflowClient: DaprWorkflowClient | null = null;
 let initialized = false;
 let mcpDisconnect: (() => Promise<void>) | null = null;
 let scorers: ScorerLike[] = [];
+let reconcileLoopStarted = false;
+let reconcilingRuns = false;
 
 // Merged tools from all sources (populated in initAgent)
 let allMergedTools: Record<
@@ -304,6 +337,14 @@ Be concise and direct. Use the appropriate tool for each task.`,
 	workflowClient = new DaprWorkflowClient();
 
 	initialized = true;
+	if (!reconcileLoopStarted) {
+		reconcileLoopStarted = true;
+		void reconcileUnpublishedRuns();
+		const timer = setInterval(() => {
+			void reconcileUnpublishedRuns();
+		}, RUN_RECONCILE_INTERVAL_MS);
+		timer.unref();
+	}
 	console.log("[durable-agent] Agent initialized and workflow runtime started");
 }
 
@@ -336,6 +377,15 @@ type ChangeSummaryOutput = {
 	headRevision?: string;
 };
 
+type PlanModePolicy = {
+	readOnlyExpected: boolean;
+	promptEnforced: boolean;
+	usedMutatingTools: boolean;
+	mutatingTools: string[];
+	mutatingToolCalls: number;
+	totalToolCalls: number;
+};
+
 function parseOptionalBoolean(input: unknown): boolean | undefined {
 	if (typeof input === "boolean") return input;
 	if (typeof input !== "string") return undefined;
@@ -343,6 +393,39 @@ function parseOptionalBoolean(input: unknown): boolean | undefined {
 	if (normalized === "true") return true;
 	if (normalized === "false") return false;
 	return undefined;
+}
+
+function isMutatingToolName(name: string): boolean {
+	const normalized = name.trim().toLowerCase();
+	if (!normalized) return false;
+	return (
+		normalized === "write_file" ||
+		normalized === "edit_file" ||
+		normalized === "delete_file" ||
+		normalized === "mkdir" ||
+		normalized === "execute_command" ||
+		normalized === "clone" ||
+		normalized.endsWith("write_file") ||
+		normalized.endsWith("edit_file") ||
+		normalized.endsWith("delete_file") ||
+		normalized.endsWith("mkdir") ||
+		normalized.endsWith("execute_command")
+	);
+}
+
+function buildPlanModePolicy(toolCalls: ToolCallRecord[]): PlanModePolicy {
+	const mutatingTools = [
+		...new Set(toolCalls.map((tc) => tc.name).filter(isMutatingToolName)),
+	].sort();
+	return {
+		readOnlyExpected: true,
+		promptEnforced: true,
+		usedMutatingTools: mutatingTools.length > 0,
+		mutatingTools,
+		mutatingToolCalls: toolCalls.filter((tc) => isMutatingToolName(tc.name))
+			.length,
+		totalToolCalls: toolCalls.length,
+	};
 }
 
 function stopConditionImpliesFileChanges(stopCondition: string): boolean {
@@ -395,6 +478,42 @@ function didRunMutateFiles(
 ): boolean {
 	if (fileChanges.length > 0) return true;
 	return Boolean(changeSummary?.changed || changeSummary?.files.length);
+}
+
+function planHasExecutableTasks(plan: Plan): boolean {
+	return plan.tasks.length > 0 && plan.steps.length > 0;
+}
+
+function buildPlanExecutionText(plan: Plan): string {
+	return plan.tasks
+		.map((task, index) => {
+			const deps =
+				task.blockedBy.length > 0
+					? ` [blockedBy: ${task.blockedBy.join(", ")}]`
+					: "";
+			const why = task.reasoning ? ` — ${task.reasoning}` : "";
+			return `${index + 1}. [${task.tool}] (${task.id}) ${task.title}: ${task.instructions}${why}${deps}`;
+		})
+		.join("\n");
+}
+
+function planTaskImpliesFileMutation(tool: string): boolean {
+	const normalized = tool.trim().toLowerCase();
+	if (!normalized) return false;
+	return (
+		normalized === "write_file" ||
+		normalized === "edit_file" ||
+		normalized === "delete_file" ||
+		normalized === "mkdir" ||
+		normalized.endsWith("write_file") ||
+		normalized.endsWith("edit_file") ||
+		normalized.endsWith("delete_file") ||
+		normalized.endsWith("mkdir")
+	);
+}
+
+function planLikelyRequiresFileChanges(plan: Plan): boolean {
+	return plan.tasks.some((task) => planTaskImpliesFileMutation(task.tool));
 }
 
 /**
@@ -602,6 +721,151 @@ async function waitForWorkflowCompletion(
 	} catch (err) {
 		console.error(`[durable-agent] waitForWorkflowCompletion error: ${err}`);
 		return { success: false, error: String(err) };
+	}
+}
+
+type PlanningAttemptResult = {
+	instanceId: string;
+	completion: {
+		success: boolean;
+		result?: Record<string, unknown>;
+		error?: string;
+	};
+	toolCalls: ToolCallRecord[];
+	planningText: string;
+};
+
+async function runPlanningAttempt(input: {
+	activeAgent: DurableAgent;
+	task: string;
+	maxIterations: number;
+	workspaceRef?: string;
+	timeoutSeconds?: number;
+}): Promise<PlanningAttemptResult> {
+	const instanceId = await workflowClient!.scheduleNewWorkflow(
+		input.activeAgent.agentWorkflow,
+		{
+			task: input.task,
+			maxIterations: input.maxIterations,
+		},
+	);
+	if (input.workspaceRef) {
+		await workspaceSessions.bindDurableInstance(instanceId, input.workspaceRef);
+	}
+
+	let completion: {
+		success: boolean;
+		result?: Record<string, unknown>;
+		error?: string;
+	};
+	try {
+		completion = await waitForWorkflowCompletion(
+			instanceId,
+			input.timeoutSeconds ?? PLAN_TIMEOUT_SECONDS,
+		);
+	} finally {
+		workspaceSessions.unbindDurableInstance(instanceId);
+	}
+
+	const toolCalls = extractToolCalls(completion.result);
+	const planningText =
+		(completion.result?.final_answer as string) ??
+		(completion.result?.last_message as string) ??
+		(completion.result?.content as string) ??
+		"";
+
+	return {
+		instanceId,
+		completion,
+		toolCalls,
+		planningText,
+	};
+}
+
+async function getWorkflowCompletionSnapshot(instanceId: string): Promise<{
+	done: boolean;
+	success: boolean;
+	result?: Record<string, unknown>;
+	error?: string;
+}> {
+	try {
+		const state = await workflowClient!.getWorkflowState(instanceId, true);
+		if (!state) {
+			return { done: true, success: false, error: "Workflow state not found" };
+		}
+		const statusNum = state.runtimeStatus;
+		if (statusNum === 1) {
+			let result: Record<string, unknown> = {};
+			if (state.serializedOutput) {
+				try {
+					result = JSON.parse(state.serializedOutput);
+				} catch {
+					result = { raw: state.serializedOutput };
+				}
+			}
+			return { done: true, success: true, result };
+		}
+		if (statusNum === 3 || statusNum === 5) {
+			let error = "Workflow failed";
+			if ((state as any).failureDetails?.message) {
+				error = (state as any).failureDetails.message;
+			}
+			return { done: true, success: false, error };
+		}
+		return { done: false, success: false };
+	} catch (err) {
+		return { done: false, success: false, error: String(err) };
+	}
+}
+
+async function reconcileUnpublishedRuns(): Promise<void> {
+	if (reconcilingRuns) return;
+	reconcilingRuns = true;
+	try {
+		const pending = await workflowRunTracker.listPending(50);
+		for (const run of pending) {
+			try {
+				let success = run.status === "completed";
+				let error = run.error;
+				let result = run.result;
+				if (!result && !error) {
+					const snapshot = await getWorkflowCompletionSnapshot(
+						run.daprInstanceId,
+					);
+					if (!snapshot.done) {
+						await workflowRunTracker.markReconciled(run.id);
+						continue;
+					}
+					success = snapshot.success;
+					error = snapshot.error;
+					result = snapshot.result;
+					await workflowRunTracker.markCompleted({
+						id: run.id,
+						success,
+						result,
+						error,
+					});
+				}
+
+				const published = await publishCompletionEvent({
+					agentWorkflowId: run.agentWorkflowId,
+					parentExecutionId: run.parentExecutionId,
+					success,
+					result,
+					error,
+				});
+				if (published) {
+					await workflowRunTracker.markEventPublished(run.id);
+				}
+				await workflowRunTracker.markReconciled(run.id);
+			} catch (err) {
+				console.warn(`[durable-agent] reconcile run ${run.id} failed:`, err);
+			}
+		}
+	} catch (err) {
+		console.warn("[durable-agent] reconcileUnpublishedRuns failed:", err);
+	} finally {
+		reconcilingRuns = false;
 	}
 }
 
@@ -1037,6 +1301,63 @@ app.get("/api/workspaces/executions/:executionId/patch", async (req, res) => {
 	}
 });
 
+app.get(
+	"/api/workspaces/executions/:executionId/files/snapshot",
+	async (req, res) => {
+		try {
+			const executionId =
+				typeof req.params.executionId === "string"
+					? req.params.executionId.trim()
+					: "";
+			if (!executionId) {
+				res
+					.status(400)
+					.json({ success: false, error: "executionId is required" });
+				return;
+			}
+
+			const filePath =
+				typeof req.query?.path === "string" ? req.query.path.trim() : "";
+			if (!filePath) {
+				res.status(400).json({ success: false, error: "path is required" });
+				return;
+			}
+
+			const durableInstanceId =
+				typeof req.query?.durableInstanceId === "string"
+					? req.query.durableInstanceId.trim()
+					: undefined;
+			const snapshot = await workspaceSessions.getExecutionFileSnapshot(
+				executionId,
+				filePath,
+				{
+					durableInstanceId,
+				},
+			);
+			if (!snapshot) {
+				res.status(404).json({
+					success: false,
+					error: "File snapshot not found for execution",
+				});
+				return;
+			}
+
+			res.json({
+				success: true,
+				executionId,
+				path: filePath,
+				durableInstanceId,
+				snapshot,
+			});
+		} catch (err) {
+			res.status(500).json({
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	},
+);
+
 // Agent run endpoint (fire-and-forget)
 app.post("/api/run", async (req, res) => {
 	try {
@@ -1055,6 +1376,10 @@ app.post("/api/run", async (req, res) => {
 			parentExecutionId;
 		const executionId = String(executionIdRaw || "").trim();
 		const nodeId = (req.body?.nodeId as string) ?? "";
+		const workflowId =
+			typeof req.body?.workflowId === "string"
+				? req.body.workflowId.trim()
+				: "";
 		const agentWorkflowId = `durable-run-${nanoid(12)}`;
 		const requestedWorkspaceRef =
 			typeof req.body?.workspaceRef === "string"
@@ -1063,7 +1388,9 @@ app.post("/api/run", async (req, res) => {
 		const workspaceRef =
 			requestedWorkspaceRef ||
 			(executionId
-				? workspaceSessions.getWorkspaceRefByExecutionId(executionId) || ""
+				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+						executionId,
+					)) || ""
 				: "");
 		const stopCondition =
 			typeof req.body?.stopCondition === "string"
@@ -1084,12 +1411,16 @@ app.post("/api/run", async (req, res) => {
 			requireFileChanges,
 			cwd,
 		);
-		if (workspaceRef && !workspaceSessions.getByWorkspaceRef(workspaceRef)) {
-			res.status(400).json({
-				success: false,
-				error: `workspaceRef not found: ${workspaceRef}`,
-			});
-			return;
+		if (workspaceRef) {
+			const session =
+				await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
+			if (!session) {
+				res.status(400).json({
+					success: false,
+					error: `workspaceRef not found: ${workspaceRef}`,
+				});
+				return;
+			}
 		}
 
 		// Set workflow context on eventBus
@@ -1109,7 +1440,10 @@ app.post("/api/run", async (req, res) => {
 			: undefined;
 
 		// Resolve agent: use per-request agentConfig if provided, otherwise default
-		const agentConfig = req.body?.agentConfig as AgentConfigPayload | undefined;
+		const agentConfig =
+			req.body?.agentConfig && typeof req.body.agentConfig === "object"
+				? (req.body.agentConfig as AgentConfigPayload)
+				: undefined;
 		let activeAgent = agent!;
 		let activeAgentOverridden = false;
 		if (
@@ -1172,12 +1506,26 @@ app.post("/api/run", async (req, res) => {
 			{ task: runPrompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
 		);
 		if (workspaceRef) {
-			workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
 		}
 
 		console.log(
 			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
 		);
+		const trackedRunId = agentWorkflowId;
+		if (executionId && workflowId && nodeId) {
+			await workflowRunTracker.trackScheduled({
+				id: trackedRunId,
+				workflowExecutionId: executionId,
+				workflowId,
+				nodeId,
+				mode: "run",
+				agentWorkflowId,
+				daprInstanceId: instanceId,
+				parentExecutionId,
+				workspaceRef: workspaceRef || undefined,
+			});
+		}
 
 		// Fire-and-forget: wait for completion in background, then publish
 		(async () => {
@@ -1216,32 +1564,56 @@ app.post("/api/run", async (req, res) => {
 				) {
 					evalResults = await runScorers(scorers, runPrompt, text, instanceId);
 				}
+				const completionSuccess =
+					completion.success && !fileChangeGuardViolation;
+				const completionResult = {
+					text,
+					toolCalls,
+					fileChanges,
+					patch: changeSummary?.inlinePatchPreview,
+					patchRef: changeSummary?.patchRef,
+					changeSummary,
+					daprInstanceId: instanceId,
+					...(evalResults ? { evalResults } : {}),
+				};
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: completionSuccess,
+						result: completionResult,
+						error: fileChangeGuardViolation || completion.error,
+					});
+				}
 
-				await publishCompletionEvent({
+				const published = await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
-					success: completion.success && !fileChangeGuardViolation,
-					result: {
-						text,
-						toolCalls,
-						fileChanges,
-						patch: changeSummary?.inlinePatchPreview,
-						patchRef: changeSummary?.patchRef,
-						changeSummary,
-						daprInstanceId: instanceId,
-						...(evalResults ? { evalResults } : {}),
-					},
+					success: completionSuccess,
+					result: completionResult,
 					error: fileChangeGuardViolation || completion.error,
 				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
 			} catch (err) {
 				const errorMsg = err instanceof Error ? err.message : String(err);
 				console.error(`[durable-agent] Background run failed: ${errorMsg}`);
-				await publishCompletionEvent({
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: false,
+						error: errorMsg,
+					});
+				}
+				const published = await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
 					success: false,
 					error: errorMsg,
 				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
 			} finally {
 				workspaceSessions.unbindDurableInstance(instanceId);
 			}
@@ -1262,7 +1634,8 @@ app.post("/api/run", async (req, res) => {
 // Plan endpoint (synchronous)
 app.post("/api/plan", async (req, res) => {
 	try {
-		const prompt = req.body?.prompt as string;
+		const prompt =
+			typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
 		if (!prompt) {
 			res.status(400).json({ success: false, error: "prompt is required" });
 			return;
@@ -1270,31 +1643,311 @@ app.post("/api/plan", async (req, res) => {
 
 		await initAgent();
 
-		const cwd = (req.body?.cwd as string) ?? "";
+		const executionIdRaw =
+			(req.body?.executionId as string) ??
+			(req.body?.dbExecutionId as string) ??
+			(req.body?.parentExecutionId as string) ??
+			"";
+		const executionId = String(executionIdRaw || "").trim();
+		const workflowId =
+			typeof req.body?.workflowId === "string"
+				? req.body.workflowId.trim()
+				: "";
+		const nodeId =
+			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+		const parentExecutionId =
+			typeof req.body?.parentExecutionId === "string"
+				? req.body.parentExecutionId.trim()
+				: "";
+		let cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+		const requestedWorkspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+		const workspaceRef =
+			requestedWorkspaceRef ||
+			(executionId
+				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+						executionId,
+					)) || ""
+				: "");
+		const session = workspaceRef
+			? await workspaceSessions.getByWorkspaceRefDurable(workspaceRef)
+			: null;
+		if (workspaceRef && !session) {
+			res.status(400).json({
+				success: false,
+				error: `workspaceRef not found: ${workspaceRef}`,
+			});
+			return;
+		}
+		if (!cwd && session) {
+			cwd = session.clonePath || session.rootPath;
+		}
 
-		eventBus.emitEvent("planning_started", { prompt });
-
-		// Give planning agent directory context
-		let contextPrefix = "";
-		if (cwd) {
-			try {
-				const files = await executeTool("list_files", { path: cwd });
-				contextPrefix = `Working directory: ${cwd}\nDirectory contents: ${JSON.stringify(files)}\n\n`;
-			} catch {
-				/* non-fatal */
+		const maxTurnsRaw = req.body?.maxTurns;
+		let planningMaxTurns = 24;
+		if (maxTurnsRaw != null) {
+			const parsed = Number.parseInt(String(maxTurnsRaw), 10);
+			if (Number.isFinite(parsed) && parsed > 0) {
+				planningMaxTurns = parsed;
 			}
 		}
 
-		const plan = await generatePlan(contextPrefix + prompt);
+		// Resolve agent: prefer explicit agentConfig, then inline model config, else default.
+		const agentConfig =
+			req.body?.agentConfig && typeof req.body.agentConfig === "object"
+				? (req.body.agentConfig as AgentConfigPayload)
+				: undefined;
+		let activeAgent = agent!;
+		let activeAgentOverridden = false;
+		if (
+			agentConfig?.name &&
+			agentConfig?.instructions &&
+			agentConfig?.modelSpec
+		) {
+			try {
+				activeAgent = await getOrCreateConfiguredAgent(agentConfig);
+				activeAgentOverridden = true;
+			} catch (err) {
+				console.warn(
+					`[durable-agent] Failed to create configured planning agent, falling back to default:`,
+					err,
+				);
+			}
+		}
+		if (!activeAgentOverridden && req.body?.model) {
+			const toolsRaw = req.body.tools;
+			let toolsList: string[] = [];
+			if (typeof toolsRaw === "string") {
+				try {
+					toolsList = JSON.parse(toolsRaw) as string[];
+				} catch {
+					/* ignore */
+				}
+			} else if (Array.isArray(toolsRaw)) {
+				toolsList = toolsRaw.filter((t): t is string => typeof t === "string");
+			}
+
+			const inlineConfig: AgentConfigPayload = {
+				name: "inline-plan-agent",
+				instructions: (req.body.instructions as string) || "",
+				modelSpec: req.body.model as string,
+				tools: toolsList.length > 0 ? toolsList : undefined,
+				maxTurns: planningMaxTurns,
+			};
+			if (inlineConfig.modelSpec) {
+				try {
+					activeAgent = await getOrCreateConfiguredAgent(inlineConfig);
+				} catch (err) {
+					console.warn(
+						`[durable-agent] Failed to create inline planning agent, falling back to default:`,
+						err,
+					);
+				}
+			}
+		}
+
+		const planningPrompt = buildPlanModePrompt({
+			userPrompt: prompt,
+			repositoryRoot: cwd || undefined,
+		});
+		eventBus.emitEvent("planning_started", { prompt, planningMaxTurns });
+
+		const planningInstanceIds: string[] = [];
+		const planningTexts: string[] = [];
+		const toolCalls: ToolCallRecord[] = [];
+
+		const initialPlanningAttempt = await runPlanningAttempt({
+			activeAgent,
+			task: planningPrompt.prompt,
+			maxIterations: planningMaxTurns,
+			workspaceRef: workspaceRef || undefined,
+		});
+		planningInstanceIds.push(initialPlanningAttempt.instanceId);
+
+		if (!initialPlanningAttempt.completion.success) {
+			res.status(500).json({
+				success: false,
+				error:
+					initialPlanningAttempt.completion.error || "Plan mode run failed",
+			});
+			return;
+		}
+
+		toolCalls.push(...initialPlanningAttempt.toolCalls);
+		planningTexts.push(initialPlanningAttempt.planningText);
+
+		let planningText = initialPlanningAttempt.planningText;
+		const initialExtractedPlan = extractProposedPlanText(planningText);
+		let extractedPlan = initialExtractedPlan;
+		let repairAttemptsUsed = 0;
+
+		while (
+			!extractedPlan?.trim() &&
+			repairAttemptsUsed < PLAN_REPAIR_ATTEMPTS
+		) {
+			repairAttemptsUsed += 1;
+			const repairPrompt = buildPlanRepairPrompt({
+				userPrompt: prompt,
+				priorResponse: planningText,
+				attempt: repairAttemptsUsed,
+				repositoryRoot: cwd || undefined,
+				promptProfile: planningPrompt.profile,
+			});
+			const repairAttempt = await runPlanningAttempt({
+				activeAgent,
+				task: repairPrompt.prompt,
+				maxIterations: PLAN_REPAIR_MAX_TURNS,
+				workspaceRef: workspaceRef || undefined,
+			});
+			planningInstanceIds.push(repairAttempt.instanceId);
+			if (!repairAttempt.completion.success) {
+				res.status(500).json({
+					success: false,
+					error: {
+						code: "PLAN_MODE_REPAIR_FAILED",
+						message:
+							repairAttempt.completion.error ||
+							"Plan mode repair attempt failed",
+						details: {
+							promptProfile: planningPrompt.profile,
+							repairAttempt: repairAttemptsUsed,
+							planningInstanceIds,
+						},
+					},
+				});
+				return;
+			}
+			toolCalls.push(...repairAttempt.toolCalls);
+			planningText = repairAttempt.planningText;
+			planningTexts.push(planningText);
+			extractedPlan = extractProposedPlanText(planningText);
+		}
+
+		const planPolicy = buildPlanModePolicy(toolCalls);
+		const planningTranscript =
+			planningTexts.length > 0 ? planningTexts.join("\n\n") : planningText;
+		const planEnvelope = {
+			hasProposedPlanBlock: Boolean(extractedPlan),
+			extracted: Boolean(extractedPlan?.trim()),
+			fallbackUsed: false,
+			repairAttemptsUsed,
+			repairAttemptsConfigured: PLAN_REPAIR_ATTEMPTS,
+			repaired: repairAttemptsUsed > 0 && Boolean(extractedPlan?.trim()),
+			initialAttemptHasProposedPlanBlock: Boolean(initialExtractedPlan),
+			initialAttemptExtracted: Boolean(initialExtractedPlan?.trim()),
+			attempts: planningInstanceIds.length,
+		};
+		if (!extractedPlan?.trim()) {
+			res.status(422).json({
+				success: false,
+				error: {
+					code: "PLAN_MODE_PROPOSED_PLAN_REQUIRED",
+					message:
+						"Plan mode response must include a non-empty <proposed_plan>...</proposed_plan> block",
+					details: {
+						promptProfile: planningPrompt.profile,
+						planEnvelope,
+						planningInstanceIds,
+					},
+				},
+			});
+			return;
+		}
+		const planMarkdown = extractedPlan.trim();
+		const planWarnings: string[] = [];
+		if (repairAttemptsUsed > 0) {
+			planWarnings.push(
+				`Recovered required <proposed_plan> block via ${repairAttemptsUsed} repair attempt${repairAttemptsUsed === 1 ? "" : "s"}`,
+			);
+		}
+		const planningNarrative =
+			stripProposedPlanBlocks(planningTranscript).trim();
+
+		const { plan, meta: generationMeta } = await generatePlanFromMarkdown({
+			userPrompt: prompt,
+			planMarkdown,
+		});
+		let artifactRef: string | undefined;
+		if (executionId && workflowId && nodeId) {
+			try {
+				const artifact = await planArtifacts.save({
+					workflowExecutionId: executionId,
+					workflowId,
+					nodeId,
+					workspaceRef: workspaceRef || undefined,
+					clonePath: cwd || undefined,
+					goal: plan.goal,
+					plan: plan as unknown as Record<string, unknown>,
+					planMarkdown,
+					sourcePrompt: prompt,
+					metadata: {
+						repositoryRoot: cwd || undefined,
+						artifactType:
+							(plan as { artifactType?: string }).artifactType ||
+							"task_graph_v1",
+						generationMeta,
+						planPolicy,
+						promptProfile: planningPrompt.profile,
+						planEnvelope,
+						planWarnings,
+						planningNarrative: planningNarrative || undefined,
+						planningInstanceIds,
+						parentExecutionId: parentExecutionId || undefined,
+					},
+				});
+				artifactRef = artifact.artifactRef;
+			} catch (err) {
+				console.error(
+					`[durable-agent] Failed to persist plan artifact for execution=${executionId}:`,
+					err,
+				);
+			}
+		}
 
 		eventBus.emitEvent("planning_completed", {
 			goal: plan.goal,
-			stepCount: plan.steps.length,
+			stepCount:
+				Array.isArray((plan as { tasks?: unknown[] }).tasks) &&
+				(plan as { tasks?: unknown[] }).tasks
+					? (plan as { tasks?: unknown[] }).tasks?.length
+					: plan.steps.length,
 			estimatedToolCalls: plan.estimated_tool_calls,
+			toolCalls: toolCalls.length,
 		});
 
-		res.json({ success: true, plan });
+		res.json({
+			success: true,
+			plan,
+			artifactRef,
+			schemaVersion: "task_graph_v1",
+			generationMeta,
+			planMarkdown,
+			planPolicy,
+			promptProfile: planningPrompt.profile,
+			planEnvelope,
+			planWarnings,
+			toolCalls,
+			tasks: (plan as { tasks?: unknown[] }).tasks ?? [],
+			...(workspaceRef ? { workspaceRef } : {}),
+			daprPlanningInstanceId: planningInstanceIds[0],
+			daprPlanningInstanceIds: planningInstanceIds,
+		});
 	} catch (err) {
+		if (err instanceof PlanGenerationError) {
+			res.status(422).json({
+				success: false,
+				error: {
+					code: err.code,
+					message: err.message,
+					attempts: err.attempts,
+					strategy: err.strategy,
+					details: err.details,
+				},
+			});
+			return;
+		}
 		res.status(500).json({ success: false, error: String(err) });
 	}
 });
@@ -1302,7 +1955,10 @@ app.post("/api/plan", async (req, res) => {
 // Execute plan endpoint (fire-and-forget)
 app.post("/api/execute-plan", async (req, res) => {
 	try {
-		const plan = req.body?.plan as Plan | undefined;
+		let planInput = req.body?.plan as unknown;
+		const artifactRefRaw =
+			typeof req.body?.artifactRef === "string" ? req.body.artifactRef : "";
+		const artifactRef = artifactRefRaw.trim();
 		const cwd = (req.body?.cwd as string) ?? "";
 		const prompt = (req.body?.prompt as string) ?? "";
 		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
@@ -1311,17 +1967,53 @@ app.post("/api/execute-plan", async (req, res) => {
 			(req.body?.dbExecutionId as string) ??
 			parentExecutionId;
 		const executionId = String(executionIdRaw || "").trim();
+		const workflowId =
+			typeof req.body?.workflowId === "string"
+				? req.body.workflowId.trim()
+				: "";
+		const nodeId =
+			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+		const cleanupWorkspaceRequested = parseOptionalBoolean(
+			req.body?.cleanupWorkspace,
+		);
+		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
 		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
 		const requestedWorkspaceRef =
 			typeof req.body?.workspaceRef === "string"
 				? req.body.workspaceRef.trim()
 				: "";
-		const workspaceRef =
+		let workspaceRef =
 			requestedWorkspaceRef ||
 			(executionId
-				? workspaceSessions.getWorkspaceRefByExecutionId(executionId) || ""
+				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+						executionId,
+					)) || ""
 				: "");
-		if (workspaceRef && !workspaceSessions.getByWorkspaceRef(workspaceRef)) {
+		let resolvedCwd = cwd.trim();
+		if (!planInput && artifactRef) {
+			const artifact = await planArtifacts.get(artifactRef);
+			if (!artifact) {
+				res.status(404).json({
+					success: false,
+					error: `Plan artifact not found: ${artifactRef}`,
+				});
+				return;
+			}
+			const artifactPlan = artifact.plan as unknown;
+			if (artifactPlan && typeof artifactPlan === "object") {
+				planInput = artifactPlan;
+			}
+			if (!workspaceRef && artifact.workspaceRef) {
+				workspaceRef = artifact.workspaceRef;
+			}
+			if (!resolvedCwd && artifact.clonePath) {
+				resolvedCwd = artifact.clonePath;
+			}
+		}
+		if (
+			workspaceRef &&
+			!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))
+		) {
 			res.status(400).json({
 				success: false,
 				error: `workspaceRef not found: ${workspaceRef}`,
@@ -1329,11 +2021,37 @@ app.post("/api/execute-plan", async (req, res) => {
 			return;
 		}
 
-		if (!plan || !plan.steps?.length) {
-			res
-				.status(400)
-				.json({ success: false, error: "plan with steps is required" });
+		const parsedPlan = validatePlanForExecution(planInput);
+		if (!parsedPlan.success) {
+			res.status(400).json({
+				success: false,
+				error: {
+					code: "INVALID_PLAN_SCHEMA",
+					message:
+						"Plan must match canonical task_graph_v1 schema with non-empty tasks and steps",
+					details: parsedPlan.issues,
+				},
+			});
 			return;
+		}
+		const plan: Plan = parsedPlan.plan;
+		if (!planHasExecutableTasks(plan)) {
+			res.status(400).json({
+				success: false,
+				error: {
+					code: "INVALID_PLAN_SCHEMA",
+					message: "Plan must contain executable tasks",
+				},
+			});
+			return;
+		}
+		const explicitRequireFileChanges = parseOptionalBoolean(
+			req.body?.requireFileChanges,
+		);
+		const requireFileChanges =
+			explicitRequireFileChanges ?? planLikelyRequiresFileChanges(plan);
+		if (artifactRef) {
+			await planArtifacts.markStatus(artifactRef, "approved");
 		}
 
 		await initAgent();
@@ -1345,11 +2063,14 @@ app.post("/api/execute-plan", async (req, res) => {
 		});
 
 		// Build execution prompt with plan injected
-		const planText = plan.steps
-			.map((s) => `${s.step}. [${s.tool}] ${s.action} — ${s.reasoning}`)
-			.join("\n");
-		const cwdContext = cwd ? `Working directory: ${cwd}\n\n` : "";
-		const executionPrompt = `${cwdContext}## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: You MUST execute ALL steps using tools. Do NOT stop after reading files — you must also write/edit files as specified in the plan. Complete every step before giving your final answer. If a step fails, note the error and continue with the next step.`;
+		const planText = buildPlanExecutionText(plan);
+		const cwdContext = resolvedCwd
+			? `Working directory: ${resolvedCwd}\n\n`
+			: "";
+		const mutationRequirement = requireFileChanges
+			? "\nCRITICAL: This execution requires real file mutations. Before finalizing, you MUST perform write/edit/delete/mkdir operations and produce concrete file changes."
+			: "";
+		const executionPrompt = `${cwdContext}You are now in EXECUTION MODE.\nDo not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: Execute all applicable steps with tools. If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. If a step fails, record the error and proceed with the next step.${mutationRequirement}`;
 
 		// Per-request maxTurns override
 		const maxTurns = req.body?.maxTurns
@@ -1365,7 +2086,22 @@ app.post("/api/execute-plan", async (req, res) => {
 			},
 		);
 		if (workspaceRef) {
-			workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+		}
+		const trackedRunId = agentWorkflowId;
+		if (executionId && workflowId && nodeId) {
+			await workflowRunTracker.trackScheduled({
+				id: trackedRunId,
+				workflowExecutionId: executionId,
+				workflowId,
+				nodeId,
+				mode: "execute_plan",
+				agentWorkflowId,
+				daprInstanceId: instanceId,
+				parentExecutionId,
+				workspaceRef: workspaceRef || undefined,
+				artifactRef: artifactRef || undefined,
+			});
 		}
 
 		// Fire-and-forget
@@ -1380,36 +2116,113 @@ app.post("/api/execute-plan", async (req, res) => {
 					workspaceRef && executionId
 						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
+				const hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+				const fileChangeGuardViolation =
+					requireFileChanges && completion.success && !hasFileMutations
+						? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
+						: undefined;
 
 				const text =
 					(completion.result?.final_answer as string) ??
 					(completion.result?.last_message as string) ??
 					(completion.result?.content as string) ??
 					JSON.stringify(completion.result ?? {});
+				let cleanup: {
+					requested: boolean;
+					performed: boolean;
+					success: boolean;
+					workspaceRef?: string;
+					error?: string;
+				} = {
+					requested: cleanupWorkspace,
+					performed: false,
+					success: !cleanupWorkspace || !workspaceRef,
+				};
+				if (cleanupWorkspace && workspaceRef) {
+					try {
+						const cleaned =
+							await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+						cleanup = {
+							requested: true,
+							performed: true,
+							success: cleaned,
+							workspaceRef,
+						};
+					} catch (cleanupErr) {
+						cleanup = {
+							requested: true,
+							performed: true,
+							success: false,
+							workspaceRef,
+							error:
+								cleanupErr instanceof Error
+									? cleanupErr.message
+									: String(cleanupErr),
+						};
+					}
+				}
+				const completionResult = {
+					text,
+					toolCalls,
+					fileChanges,
+					patch: changeSummary?.inlinePatchPreview,
+					patchRef: changeSummary?.patchRef,
+					changeSummary,
+					requireFileChanges,
+					hasFileMutations,
+					plan,
+					artifactRef: artifactRef || undefined,
+					daprInstanceId: instanceId,
+					cleanup,
+				};
+				const completionSuccess =
+					completion.success && !fileChangeGuardViolation;
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: completionSuccess,
+						result: completionResult,
+						error: fileChangeGuardViolation || completion.error,
+					});
+				}
 
-				await publishCompletionEvent({
+				const published = await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
-					success: completion.success,
-					result: {
-						text,
-						toolCalls,
-						fileChanges,
-						patch: changeSummary?.inlinePatchPreview,
-						patchRef: changeSummary?.patchRef,
-						changeSummary,
-						plan,
-						daprInstanceId: instanceId,
-					},
-					error: completion.error,
+					success: completionSuccess,
+					result: completionResult,
+					error: fileChangeGuardViolation || completion.error,
 				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
+				if (artifactRef) {
+					await planArtifacts.markStatus(
+						artifactRef,
+						completionSuccess ? "executed" : "failed",
+					);
+				}
 			} catch (err) {
-				await publishCompletionEvent({
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: false,
+						error: errorMsg,
+					});
+				}
+				const published = await publishCompletionEvent({
 					agentWorkflowId,
 					parentExecutionId,
 					success: false,
-					error: err instanceof Error ? err.message : String(err),
+					error: errorMsg,
 				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
+				if (artifactRef) {
+					await planArtifacts.markStatus(artifactRef, "failed");
+				}
 			} finally {
 				workspaceSessions.unbindDurableInstance(instanceId);
 			}
@@ -1419,6 +2232,8 @@ app.post("/api/execute-plan", async (req, res) => {
 			success: true,
 			workflow_id: agentWorkflowId,
 			dapr_instance_id: instanceId,
+			cleanupWorkspace,
+			...(artifactRef ? { artifactRef } : {}),
 			...(workspaceRef ? { workspaceRef } : {}),
 		});
 	} catch (err) {
@@ -1503,6 +2318,9 @@ app.listen(PORT, HOST, async () => {
 	);
 	console.log(
 		`[durable-agent]   GET  /api/workspaces/executions/:executionId/patch — export combined patch`,
+	);
+	console.log(
+		`[durable-agent]   GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — fetch aggregated file snapshot`,
 	);
 	console.log(`[durable-agent]   GET  /api/health       — health check`);
 

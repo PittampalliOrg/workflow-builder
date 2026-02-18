@@ -9,6 +9,51 @@ export type ChangeFileStatus = "A" | "M" | "D" | "R";
 export type ChangeFileEntry = {
 	path: string;
 	status: ChangeFileStatus;
+	oldPath?: string;
+};
+
+export type ChangeArtifactFileSnapshotInput = {
+	path: string;
+	status: ChangeFileStatus;
+	oldPath?: string;
+	isBinary: boolean;
+	language?: string;
+	oldContent?: string | null;
+	newContent?: string | null;
+};
+
+export type ChangeArtifactFileSnapshot = {
+	id: string;
+	changeSetId: string;
+	sequence: number;
+	path: string;
+	oldPath?: string;
+	status: ChangeFileStatus;
+	isBinary: boolean;
+	language?: string;
+	oldBytes: number;
+	newBytes: number;
+	oldStorageRef?: string;
+	newStorageRef?: string;
+	oldCompressed: boolean;
+	newCompressed: boolean;
+	createdAt: string;
+};
+
+export type ExecutionFileSnapshot = {
+	executionId: string;
+	path: string;
+	oldPath?: string;
+	status: ChangeFileStatus;
+	isBinary: boolean;
+	language?: string;
+	oldContent: string | null;
+	newContent: string | null;
+	oldBytes: number;
+	newBytes: number;
+	baseRevision?: string;
+	headRevision?: string;
+	history: ChangeArtifactFileSnapshot[];
 };
 
 export type ChangeArtifactMetadata = {
@@ -48,6 +93,7 @@ type SaveChangeArtifactInput = {
 	includeInExecutionPatch?: boolean;
 	baseRevision?: string;
 	headRevision?: string;
+	fileSnapshots?: ChangeArtifactFileSnapshotInput[];
 };
 
 type ChangeArtifactRow = {
@@ -77,6 +123,26 @@ type ChangeArtifactRow = {
 type WorkflowExecutionAliasRow = {
 	id: string;
 	dapr_instance_id: string | null;
+};
+
+type ChangeArtifactFileRow = {
+	id: string;
+	change_set_id: string;
+	sequence: number;
+	path: string;
+	old_path: string | null;
+	status: ChangeFileStatus;
+	is_binary: boolean;
+	language: string | null;
+	old_storage_ref: string | null;
+	new_storage_ref: string | null;
+	old_compressed: boolean;
+	new_compressed: boolean;
+	old_bytes: number;
+	new_bytes: number;
+	created_at: string | Date;
+	base_revision: string | null;
+	head_revision: string | null;
 };
 
 type BlobPayloadEnvelope = {
@@ -112,6 +178,16 @@ function normalizeStorageRef(executionId: string, changeSetId: string): string {
 	return `${RECON_BLOB_PREFIX}/${cleanExecution}/${changeSetId}.json`;
 }
 
+function normalizeFileStorageRef(
+	executionId: string,
+	changeSetId: string,
+	fileIndex: number,
+	variant: "old" | "new",
+): string {
+	const cleanExecution = executionId.replace(/[^a-zA-Z0-9._-]/g, "-");
+	return `${RECON_BLOB_PREFIX}/${cleanExecution}/${changeSetId}/files/${fileIndex}-${variant}.txt`;
+}
+
 function toIsoString(input: string | Date): string {
 	if (input instanceof Date) {
 		return input.toISOString();
@@ -131,6 +207,10 @@ function parseFiles(input: ChangeFileEntry[] | string): ChangeFileEntry[] {
 				status: (String(entry.status || "M")
 					.toUpperCase()
 					.charAt(0) || "M") as ChangeFileStatus,
+				oldPath:
+					typeof entry.oldPath === "string" && entry.oldPath.trim()
+						? entry.oldPath.trim()
+						: undefined,
 			}))
 			.filter((entry) => Boolean(entry.path));
 	}
@@ -143,6 +223,28 @@ function parseFiles(input: ChangeFileEntry[] | string): ChangeFileEntry[] {
 		}
 	}
 	return [];
+}
+
+function mapSnapshotRow(
+	row: ChangeArtifactFileRow,
+): ChangeArtifactFileSnapshot {
+	return {
+		id: row.id,
+		changeSetId: row.change_set_id,
+		sequence: row.sequence,
+		path: row.path,
+		oldPath: row.old_path || undefined,
+		status: row.status,
+		isBinary: row.is_binary,
+		language: row.language || undefined,
+		oldBytes: row.old_bytes,
+		newBytes: row.new_bytes,
+		oldStorageRef: row.old_storage_ref || undefined,
+		newStorageRef: row.new_storage_ref || undefined,
+		oldCompressed: row.old_compressed,
+		newCompressed: row.new_compressed,
+		createdAt: toIsoString(row.created_at),
+	};
 }
 
 function mapRowToMetadata(row: ChangeArtifactRow): ChangeArtifactMetadata {
@@ -220,6 +322,8 @@ class WorkspaceChangeArtifactStore {
 		const sha256 = createHash("sha256").update(storedPatch).digest("hex");
 		const changeSetId = `chg_${nanoid(16)}`;
 		const storageRef = normalizeStorageRef(input.executionId, changeSetId);
+		const createdBlobRefs: string[] = [];
+		const fileSnapshots = input.fileSnapshots ?? [];
 		const metadata: ChangeArtifactMetadata = {
 			changeSetId,
 			executionId: input.executionId,
@@ -250,57 +354,166 @@ class WorkspaceChangeArtifactStore {
 				payloadBytes,
 				shouldCompress,
 			);
-			await this.sql`
-				insert into workspace_change_artifacts (
-					change_set_id,
-					execution_id,
-					workspace_ref,
-					durable_instance_id,
-					operation,
-					sequence,
-					format,
-					sha256,
-					files_changed,
-					additions,
-					deletions,
-					bytes,
-					compressed,
-					storage_ref,
-					created_at,
-					include_in_execution_patch,
-					truncated,
-					original_bytes,
-					files,
-					base_revision,
-					head_revision
-				)
-				values (
-					${metadata.changeSetId},
-					${metadata.executionId},
-					${metadata.workspaceRef},
-					${metadata.durableInstanceId ?? null},
-					${metadata.operation},
-					${metadata.sequence},
-					${metadata.format},
-					${metadata.sha256},
-					${metadata.filesChanged},
-					${metadata.additions},
-					${metadata.deletions},
-					${metadata.bytes},
-					${metadata.compressed},
-					${metadata.storageRef},
-					${metadata.createdAt},
-					${metadata.includeInExecutionPatch},
-					${metadata.truncated},
-					${metadata.originalBytes},
-					${this.sql.json(metadata.files)},
-					${metadata.baseRevision ?? null},
-					${metadata.headRevision ?? null}
-				)
-			`;
+			createdBlobRefs.push(metadata.storageRef);
+			const snapshotRows = await Promise.all(
+				fileSnapshots.map(async (snapshot, index) => {
+					const id = `chgfil_${nanoid(18)}`;
+					let oldStorageRef: string | null = null;
+					let newStorageRef: string | null = null;
+					let oldCompressed = false;
+					let newCompressed = false;
+					let oldBytes = 0;
+					let newBytes = 0;
+
+					if (typeof snapshot.oldContent === "string") {
+						const stored = this.prepareStoredTextPayload(snapshot.oldContent);
+						oldStorageRef = normalizeFileStorageRef(
+							input.executionId,
+							changeSetId,
+							index,
+							"old",
+						);
+						await this.writeBlobPayload(
+							oldStorageRef,
+							stored.payloadBytes,
+							stored.compressed,
+						);
+						createdBlobRefs.push(oldStorageRef);
+						oldCompressed = stored.compressed;
+						oldBytes = stored.bytes;
+					}
+
+					if (typeof snapshot.newContent === "string") {
+						const stored = this.prepareStoredTextPayload(snapshot.newContent);
+						newStorageRef = normalizeFileStorageRef(
+							input.executionId,
+							changeSetId,
+							index,
+							"new",
+						);
+						await this.writeBlobPayload(
+							newStorageRef,
+							stored.payloadBytes,
+							stored.compressed,
+						);
+						createdBlobRefs.push(newStorageRef);
+						newCompressed = stored.compressed;
+						newBytes = stored.bytes;
+					}
+
+					return {
+						id,
+						changeSetId,
+						createdAt: metadata.createdAt,
+						isBinary: snapshot.isBinary,
+						language: snapshot.language || null,
+						newBytes,
+						newCompressed,
+						newStorageRef,
+						oldBytes,
+						oldCompressed,
+						oldPath: snapshot.oldPath || null,
+						oldStorageRef,
+						path: snapshot.path,
+						sequence: metadata.sequence,
+						status: snapshot.status,
+					};
+				}),
+			);
+
+			await this.sql.begin(async (tx) => {
+				await tx`
+					insert into workspace_change_artifacts (
+						change_set_id,
+						execution_id,
+						workspace_ref,
+						durable_instance_id,
+						operation,
+						sequence,
+						format,
+						sha256,
+						files_changed,
+						additions,
+						deletions,
+						bytes,
+						compressed,
+						storage_ref,
+						created_at,
+						include_in_execution_patch,
+						truncated,
+						original_bytes,
+						files,
+						base_revision,
+						head_revision
+					)
+					values (
+						${metadata.changeSetId},
+						${metadata.executionId},
+						${metadata.workspaceRef},
+						${metadata.durableInstanceId ?? null},
+						${metadata.operation},
+						${metadata.sequence},
+						${metadata.format},
+						${metadata.sha256},
+						${metadata.filesChanged},
+						${metadata.additions},
+						${metadata.deletions},
+						${metadata.bytes},
+						${metadata.compressed},
+						${metadata.storageRef},
+						${metadata.createdAt},
+						${metadata.includeInExecutionPatch},
+						${metadata.truncated},
+						${metadata.originalBytes},
+						${tx.json(metadata.files)},
+						${metadata.baseRevision ?? null},
+						${metadata.headRevision ?? null}
+					)
+				`;
+				for (const row of snapshotRows) {
+					await tx`
+						insert into workspace_change_artifact_files (
+							id,
+							change_set_id,
+							sequence,
+							path,
+							old_path,
+							status,
+							is_binary,
+							language,
+							old_storage_ref,
+							new_storage_ref,
+							old_compressed,
+							new_compressed,
+							old_bytes,
+							new_bytes,
+							created_at
+						)
+						values (
+							${row.id},
+							${row.changeSetId},
+							${row.sequence},
+							${row.path},
+							${row.oldPath},
+							${row.status},
+							${row.isBinary},
+							${row.language},
+							${row.oldStorageRef},
+							${row.newStorageRef},
+							${row.oldCompressed},
+							${row.newCompressed},
+							${row.oldBytes},
+							${row.newBytes},
+							${row.createdAt}
+						)
+					`;
+				}
+			});
 			return metadata;
 		} catch (error) {
-			await this.deleteBlobPayload(metadata.storageRef);
+			await Promise.all(
+				createdBlobRefs.map((ref) => this.deleteBlobPayload(ref)),
+			);
 			throw error;
 		}
 	}
@@ -437,6 +650,123 @@ class WorkspaceChangeArtifactStore {
 		};
 	}
 
+	async getExecutionFileSnapshot(
+		executionId: string,
+		path: string,
+		opts?: { durableInstanceId?: string },
+	): Promise<ExecutionFileSnapshot | null> {
+		await this.ensureInitialized();
+		if (!this.sql) {
+			throw new Error(
+				"Workspace change persistence database is not configured",
+			);
+		}
+
+		const normalizedExecutionId = executionId.trim();
+		const normalizedPath = path.trim();
+		if (!normalizedExecutionId || !normalizedPath) {
+			return null;
+		}
+
+		const rows = await this.sql<ChangeArtifactFileRow[]>`
+			select
+				acf.id,
+				acf.change_set_id,
+				acf.sequence,
+				acf.path,
+				acf.old_path,
+				acf.status,
+				acf.is_binary,
+				acf.language,
+				acf.old_storage_ref,
+				acf.new_storage_ref,
+				acf.old_compressed,
+				acf.new_compressed,
+				acf.old_bytes,
+				acf.new_bytes,
+				acf.created_at,
+				aca.base_revision,
+				aca.head_revision
+			from workspace_change_artifact_files acf
+			join workspace_change_artifacts aca
+				on aca.change_set_id = acf.change_set_id
+			where aca.execution_id = ${normalizedExecutionId}
+				${
+					opts?.durableInstanceId
+						? this.sql`and aca.durable_instance_id = ${opts.durableInstanceId}`
+						: this.sql``
+				}
+			order by acf.sequence asc, acf.created_at asc
+		`;
+
+		if (rows.length === 0) {
+			return null;
+		}
+
+		const lineagePaths = new Set<string>([normalizedPath]);
+		const lineageRows: ChangeArtifactFileRow[] = [];
+		for (const row of rows) {
+			const oldPath = row.old_path ?? undefined;
+			const matchesPath =
+				lineagePaths.has(row.path) ||
+				(oldPath !== undefined && lineagePaths.has(oldPath));
+			if (!matchesPath) {
+				continue;
+			}
+			lineageRows.push(row);
+			lineagePaths.add(row.path);
+			if (oldPath) {
+				lineagePaths.add(oldPath);
+			}
+		}
+
+		if (lineageRows.length === 0) {
+			return null;
+		}
+
+		const firstWithOld = lineageRows.find((row) => row.old_storage_ref);
+		const lastWithNew = [...lineageRows]
+			.reverse()
+			.find((row) => row.new_storage_ref);
+		const lastRow = lineageRows[lineageRows.length - 1];
+		const isBinary = lineageRows.some((row) => row.is_binary);
+
+		const oldContent =
+			firstWithOld?.old_storage_ref && !isBinary
+				? await this.readStoredTextPayload(
+						firstWithOld.old_storage_ref,
+						firstWithOld.old_compressed,
+					)
+				: null;
+		const newContent =
+			lastWithNew?.new_storage_ref && !isBinary
+				? await this.readStoredTextPayload(
+						lastWithNew.new_storage_ref,
+						lastWithNew.new_compressed,
+					)
+				: null;
+
+		return {
+			executionId: normalizedExecutionId,
+			path: lastRow.path,
+			oldPath: lastRow.old_path || undefined,
+			status: lastRow.status,
+			isBinary,
+			language: lastRow.language || undefined,
+			oldContent,
+			newContent,
+			oldBytes: firstWithOld?.old_bytes ?? 0,
+			newBytes: lastWithNew?.new_bytes ?? 0,
+			baseRevision:
+				lineageRows.find((row) => row.base_revision)?.base_revision ||
+				undefined,
+			headRevision:
+				[...lineageRows].reverse().find((row) => row.head_revision)
+					?.head_revision || undefined,
+			history: lineageRows.map((row) => mapSnapshotRow(row)),
+		};
+	}
+
 	private async getMetadataByChangeSetId(
 		changeSetId: string,
 	): Promise<ChangeArtifactMetadata | null> {
@@ -495,6 +825,28 @@ class WorkspaceChangeArtifactStore {
 			);
 		}
 		return patch;
+	}
+
+	private prepareStoredTextPayload(content: string): {
+		bytes: number;
+		compressed: boolean;
+		payloadBytes: Buffer;
+	} {
+		const bytes = Buffer.byteLength(content, "utf8");
+		const compressed = bytes >= COMPRESS_THRESHOLD_BYTES;
+		const payloadBytes = compressed
+			? gzipSync(Buffer.from(content, "utf8"))
+			: Buffer.from(content, "utf8");
+		return { bytes, compressed, payloadBytes };
+	}
+
+	private async readStoredTextPayload(
+		storageRef: string,
+		compressed: boolean,
+	): Promise<string> {
+		const rawPayload = await this.readBlobPayload(storageRef);
+		const payload = compressed ? gunzipSync(rawPayload) : rawPayload;
+		return payload.toString("utf8");
 	}
 
 	private async writeBlobPayload(
@@ -664,12 +1016,39 @@ class WorkspaceChangeArtifactStore {
 			)
 		`;
 		await this.sql`
+			create table if not exists workspace_change_artifact_files (
+				id text primary key,
+				change_set_id text not null references workspace_change_artifacts(change_set_id) on delete cascade,
+				sequence integer not null,
+				path text not null,
+				old_path text null,
+				status text not null,
+				is_binary boolean not null default false,
+				language text null,
+				old_storage_ref text null,
+				new_storage_ref text null,
+				old_compressed boolean not null default false,
+				new_compressed boolean not null default false,
+				old_bytes integer not null default 0,
+				new_bytes integer not null default 0,
+				created_at timestamptz not null
+			)
+		`;
+		await this.sql`
 			create index if not exists idx_workspace_change_artifacts_execution
 			on workspace_change_artifacts (execution_id, sequence, created_at)
 		`;
 		await this.sql`
 			create index if not exists idx_workspace_change_artifacts_instance
 			on workspace_change_artifacts (durable_instance_id, sequence)
+		`;
+		await this.sql`
+			create index if not exists idx_workspace_change_artifact_files_change_set
+			on workspace_change_artifact_files (change_set_id)
+		`;
+		await this.sql`
+			create index if not exists idx_workspace_change_artifact_files_path_sequence
+			on workspace_change_artifact_files (path, sequence)
 		`;
 		await this.verifyBlobBindingRoundTrip();
 

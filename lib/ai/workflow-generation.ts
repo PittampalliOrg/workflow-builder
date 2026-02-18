@@ -3,6 +3,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import { createWorkflowOperationStreamFromSpec } from "@/lib/ai/workflow-spec-generation";
+import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
 import { buildRelevantActionListPrompt } from "@/lib/ai/action-list-prompt";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
@@ -382,29 +383,24 @@ IMPORTANT: Output ONLY the operations needed to make the requested changes.
 
 async function getAiModel() {
 	// Prefer Anthropic if configured (Azure Key Vault secret mapping exists).
-	const anthropicKey =
-		(await getSecretValueAsync("ANTHROPIC_API_KEY").catch(() => "")) ||
-		process.env.ANTHROPIC_API_KEY;
+	const anthropicKey = await getSecretValueAsync("ANTHROPIC_API_KEY");
 	if (anthropicKey) {
 		const provider = createAnthropic({ apiKey: anthropicKey });
-		const modelId =
+		const configuredModelId =
 			process.env.ANTHROPIC_MODEL ||
-			(process.env.AI_MODEL?.startsWith("claude-")
-				? process.env.AI_MODEL
-				: "") ||
-			"claude-opus-4-6";
-		return provider.chat(modelId);
+			(process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+		const modelKey = await resolveCatalogModelKey({
+			providerId: "anthropic",
+			configuredModelId: configuredModelId || undefined,
+			fallbackModelKey: "claude-opus-4-6",
+		});
+		return provider.chat(modelKey);
 	}
 
 	const gatewayBaseURL = process.env.AI_GATEWAY_BASE_URL;
 
-	// Try Dapr secrets first, then fall back to environment variables.
-	const openaiKey =
-		(await getSecretValueAsync("OPENAI_API_KEY").catch(() => "")) ||
-		process.env.OPENAI_API_KEY;
-	const gatewayKey =
-		(await getSecretValueAsync("AI_GATEWAY_API_KEY").catch(() => "")) ||
-		process.env.AI_GATEWAY_API_KEY;
+	const openaiKey = await getSecretValueAsync("OPENAI_API_KEY");
+	const gatewayKey = await getSecretValueAsync("AI_GATEWAY_API_KEY");
 
 	// If a gateway base URL is provided, prefer the gateway key. Otherwise, prefer
 	// a plain OpenAI key (common in Kubernetes deployments).
@@ -417,12 +413,16 @@ async function getAiModel() {
 		);
 	}
 
-	const modelId =
+	const configuredModelId =
 		process.env.OPENAI_MODEL ||
-		(!process.env.AI_MODEL?.startsWith("claude-")
-			? process.env.AI_MODEL
-			: "") ||
-		(gatewayBaseURL ? "openai/gpt-5.3-codex" : "gpt-5.3-codex");
+		(!process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+
+	const modelKey = await resolveCatalogModelKey({
+		providerId: "openai",
+		configuredModelId: configuredModelId || undefined,
+		fallbackModelKey: "gpt-4o",
+	});
+	const modelId = gatewayBaseURL ? `openai/${modelKey}` : modelKey;
 
 	const provider = createOpenAI({
 		apiKey,

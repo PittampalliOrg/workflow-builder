@@ -62,7 +62,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		inputSchema: z.object({ path: z.string().describe("File path to read") }),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -86,7 +86,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -116,7 +116,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -151,7 +151,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -178,7 +178,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -202,7 +202,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -223,7 +223,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 		}),
 		execute: async (args) => {
 			const cleanArgs = stripInternalArgs(args);
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeFileOperation({
 					workspaceRef: session.workspaceRef,
@@ -252,7 +252,7 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 			const cleanArgs = stripInternalArgs(args);
 			const command = cleanArgs.command as string;
 			if (!command) throw new Error("command is required");
-			const session = workspaceSessions.resolveSessionFromArgs(args);
+			const session = await workspaceSessions.resolveSessionFromArgs(args);
 			if (session) {
 				return workspaceSessions.executeCommand({
 					workspaceRef: session.workspaceRef,

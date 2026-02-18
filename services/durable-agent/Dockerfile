@@ -4,16 +4,18 @@
 # Stage 1: Production dependencies
 FROM node:22-alpine AS deps
 WORKDIR /app
+ARG PNPM_VERSION=9.12.3
 
 COPY package.json ./
-RUN npm install -g pnpm && pnpm install --prod
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm install --prod
 
 # Stage 2: Builder (all deps + tsc build)
 FROM node:22-alpine AS builder
 WORKDIR /app
+ARG PNPM_VERSION=9.12.3
 
 COPY package.json tsconfig.json ./
-RUN npm install -g pnpm && pnpm install --prod=false
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm install --prod=false
 
 COPY src/ ./src/
 

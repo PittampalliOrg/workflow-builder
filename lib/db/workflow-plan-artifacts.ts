@@ -14,6 +14,19 @@ export type WorkflowPlanArtifactListItem = {
 	createdAt: Date;
 };
 
+export type WorkflowExecutionPlanArtifact = {
+	id: string;
+	goal: string;
+	status: string;
+	artifactType: string;
+	nodeId: string;
+	planMarkdown: string | null;
+	planJson: unknown;
+	metadata: Record<string, unknown> | null;
+	createdAt: Date;
+	updatedAt: Date;
+};
+
 export async function listWorkflowPlanArtifactsForUser(input: {
 	userId: string;
 	searchValue?: string;
@@ -50,4 +63,53 @@ export async function listWorkflowPlanArtifactsForUser(input: {
 		)
 		.orderBy(desc(workflowPlanArtifacts.createdAt))
 		.limit(limit);
+}
+
+export async function getLatestWorkflowPlanArtifactForExecution(input: {
+	workflowExecutionId: string;
+	nodeId?: string;
+}): Promise<WorkflowExecutionPlanArtifact | null> {
+	const executionId = input.workflowExecutionId.trim();
+	if (!executionId) {
+		return null;
+	}
+	const nodeId = input.nodeId?.trim();
+
+	const whereConditions = [
+		eq(workflowPlanArtifacts.workflowExecutionId, executionId),
+	];
+	if (nodeId) {
+		whereConditions.push(eq(workflowPlanArtifacts.nodeId, nodeId));
+	}
+
+	const [row] = await db
+		.select({
+			id: workflowPlanArtifacts.id,
+			goal: workflowPlanArtifacts.goal,
+			status: workflowPlanArtifacts.status,
+			artifactType: workflowPlanArtifacts.artifactType,
+			nodeId: workflowPlanArtifacts.nodeId,
+			planMarkdown: workflowPlanArtifacts.planMarkdown,
+			planJson: workflowPlanArtifacts.planJson,
+			metadata: workflowPlanArtifacts.metadata,
+			createdAt: workflowPlanArtifacts.createdAt,
+			updatedAt: workflowPlanArtifacts.updatedAt,
+		})
+		.from(workflowPlanArtifacts)
+		.where(
+			whereConditions.length > 1 ? and(...whereConditions) : whereConditions[0],
+		)
+		.orderBy(desc(workflowPlanArtifacts.createdAt))
+		.limit(1);
+
+	if (!row) {
+		return null;
+	}
+	return {
+		...row,
+		metadata:
+			row.metadata && typeof row.metadata === "object"
+				? (row.metadata as Record<string, unknown>)
+				: null,
+	};
 }

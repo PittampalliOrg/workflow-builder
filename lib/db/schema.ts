@@ -357,6 +357,174 @@ export const workflowExecutions = pgTable("workflow_executions", {
 	duration: text("duration"), // Duration in milliseconds
 });
 
+export type WorkflowPlanArtifactStatus =
+	| "draft"
+	| "approved"
+	| "superseded"
+	| "executed"
+	| "failed";
+
+export type WorkflowPlanArtifactType = "task_graph_v1";
+
+/**
+ * Durable plan artifacts produced during workflow execution.
+ * Artifacts are decoupled from execution so they can be reused by multiple agents.
+ */
+export const workflowPlanArtifacts = pgTable(
+	"workflow_plan_artifacts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		userId: text("user_id").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		nodeId: text("node_id").notNull(),
+		workspaceRef: text("workspace_ref"),
+		clonePath: text("clone_path"),
+		artifactType: text("artifact_type")
+			.notNull()
+			.default("task_graph_v1")
+			.$type<WorkflowPlanArtifactType>(),
+		artifactVersion: integer("artifact_version").notNull().default(1),
+		status: text("status")
+			.notNull()
+			.default("draft")
+			.$type<WorkflowPlanArtifactStatus>(),
+		goal: text("goal").notNull(),
+		// biome-ignore lint/suspicious/noExplicitAny: Structured plan JSON schema versioned at runtime
+		planJson: jsonb("plan_json").notNull().$type<any>(),
+		planMarkdown: text("plan_markdown"),
+		sourcePrompt: text("source_prompt"),
+		metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		executionCreatedIdx: index(
+			"idx_workflow_plan_artifacts_execution_created",
+		).on(table.workflowExecutionId, table.createdAt),
+		workflowNodeCreatedIdx: index(
+			"idx_workflow_plan_artifacts_workflow_node_created",
+		).on(table.workflowId, table.nodeId, table.createdAt),
+		statusIdx: index("idx_workflow_plan_artifacts_status").on(table.status),
+		userCreatedIdx: index("idx_workflow_plan_artifacts_user_created").on(
+			table.userId,
+			table.createdAt,
+		),
+	}),
+);
+
+export type WorkflowWorkspaceSessionStatus = "active" | "cleaned" | "error";
+
+/**
+ * Durable workspace session metadata used by durable-agent to recover mappings
+ * after pod restarts while Dapr workflows are still running.
+ */
+export const workflowWorkspaceSessions = pgTable(
+	"workflow_workspace_sessions",
+	{
+		workspaceRef: text("workspace_ref").primaryKey(),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		durableInstanceId: text("durable_instance_id"),
+		name: text("name").notNull(),
+		rootPath: text("root_path").notNull(),
+		clonePath: text("clone_path"),
+		backend: text("backend").notNull().$type<"k8s" | "local">(),
+		enabledTools: jsonb("enabled_tools").notNull().$type<string[]>(),
+		requireReadBeforeWrite: boolean("require_read_before_write")
+			.notNull()
+			.default(false),
+		commandTimeoutMs: integer("command_timeout_ms").notNull().default(30000),
+		status: text("status")
+			.notNull()
+			.default("active")
+			.$type<WorkflowWorkspaceSessionStatus>(),
+		lastError: text("last_error"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+		lastAccessedAt: timestamp("last_accessed_at").notNull().defaultNow(),
+		cleanedAt: timestamp("cleaned_at"),
+	},
+	(table) => ({
+		executionIdx: index("idx_workflow_workspace_sessions_execution").on(
+			table.workflowExecutionId,
+		),
+		instanceIdx: index("idx_workflow_workspace_sessions_instance").on(
+			table.durableInstanceId,
+		),
+		statusIdx: index("idx_workflow_workspace_sessions_status").on(table.status),
+	}),
+);
+
+export type WorkflowAgentRunMode = "run" | "plan" | "execute_plan";
+export type WorkflowAgentRunStatus =
+	| "scheduled"
+	| "completed"
+	| "failed"
+	| "event_published";
+
+/**
+ * Durable tracking for child durable-agent runs invoked by workflow orchestrator.
+ * Used for completion event replay and restart recovery.
+ */
+export const workflowAgentRuns = pgTable(
+	"workflow_agent_runs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		nodeId: text("node_id").notNull(),
+		mode: text("mode").notNull().$type<WorkflowAgentRunMode>(),
+		agentWorkflowId: text("agent_workflow_id").notNull(),
+		daprInstanceId: text("dapr_instance_id").notNull(),
+		parentExecutionId: text("parent_execution_id").notNull(),
+		workspaceRef: text("workspace_ref"),
+		artifactRef: text("artifact_ref"),
+		status: text("status")
+			.notNull()
+			.default("scheduled")
+			.$type<WorkflowAgentRunStatus>(),
+		result: jsonb("result").$type<Record<string, unknown> | null>(),
+		error: text("error"),
+		completedAt: timestamp("completed_at"),
+		eventPublishedAt: timestamp("event_published_at"),
+		lastReconciledAt: timestamp("last_reconciled_at"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		instanceUnique: unique("uq_workflow_agent_runs_instance").on(
+			table.daprInstanceId,
+		),
+		agentWorkflowUnique: unique("uq_workflow_agent_runs_agent_workflow").on(
+			table.agentWorkflowId,
+		),
+		executionIdx: index("idx_workflow_agent_runs_execution").on(
+			table.workflowExecutionId,
+			table.createdAt,
+		),
+		statusIdx: index("idx_workflow_agent_runs_status").on(
+			table.status,
+			table.eventPublishedAt,
+		),
+	}),
+);
+
 export type WorkflowAiMessageRole = "user" | "assistant" | "system";
 
 /**
@@ -1291,10 +1459,29 @@ export const workflowResourceRefs = pgTable(
 // Relations
 export const workflowExecutionsRelations = relations(
 	workflowExecutions,
-	({ one }) => ({
+	({ one, many }) => ({
 		workflow: one(workflows, {
 			fields: [workflowExecutions.workflowId],
 			references: [workflows.id],
+		}),
+		planArtifacts: many(workflowPlanArtifacts),
+	}),
+);
+
+export const workflowPlanArtifactsRelations = relations(
+	workflowPlanArtifacts,
+	({ one }) => ({
+		workflowExecution: one(workflowExecutions, {
+			fields: [workflowPlanArtifacts.workflowExecutionId],
+			references: [workflowExecutions.id],
+		}),
+		workflow: one(workflows, {
+			fields: [workflowPlanArtifacts.workflowId],
+			references: [workflows.id],
+		}),
+		user: one(users, {
+			fields: [workflowPlanArtifacts.userId],
+			references: [users.id],
 		}),
 	}),
 );
@@ -1329,6 +1516,14 @@ export type WorkflowExecution = typeof workflowExecutions.$inferSelect;
 export type NewWorkflowExecution = typeof workflowExecutions.$inferInsert;
 export type WorkflowExecutionLog = typeof workflowExecutionLogs.$inferSelect;
 export type NewWorkflowExecutionLog = typeof workflowExecutionLogs.$inferInsert;
+export type WorkflowPlanArtifact = typeof workflowPlanArtifacts.$inferSelect;
+export type NewWorkflowPlanArtifact = typeof workflowPlanArtifacts.$inferInsert;
+export type WorkflowWorkspaceSession =
+	typeof workflowWorkspaceSessions.$inferSelect;
+export type NewWorkflowWorkspaceSession =
+	typeof workflowWorkspaceSessions.$inferInsert;
+export type WorkflowAgentRun = typeof workflowAgentRuns.$inferSelect;
+export type NewWorkflowAgentRun = typeof workflowAgentRuns.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;

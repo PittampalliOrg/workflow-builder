@@ -11,6 +11,7 @@ import {
 	type WorkflowSpec,
 } from "@/lib/workflow-spec/types";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
+import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
 
 type Operation = {
 	op:
@@ -121,28 +122,24 @@ async function getAi(): Promise<{
 	model: Parameters<typeof generateObject>[0]["model"];
 	provider: "anthropic" | "openai";
 }> {
-	const anthropicKey =
-		(await getSecretValueAsync("ANTHROPIC_API_KEY").catch(() => "")) ||
-		process.env.ANTHROPIC_API_KEY;
+	const anthropicKey = await getSecretValueAsync("ANTHROPIC_API_KEY");
 	if (anthropicKey) {
 		const provider = createAnthropic({ apiKey: anthropicKey });
-		const modelId =
+		const configuredModelId =
 			process.env.ANTHROPIC_MODEL ||
-			(process.env.AI_MODEL?.startsWith("claude-")
-				? process.env.AI_MODEL
-				: "") ||
-			"claude-opus-4-6";
-		return { model: provider.chat(modelId), provider: "anthropic" };
+			(process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+		const modelKey = await resolveCatalogModelKey({
+			providerId: "anthropic",
+			configuredModelId: configuredModelId || undefined,
+			fallbackModelKey: "claude-opus-4-6",
+		});
+		return { model: provider.chat(modelKey), provider: "anthropic" };
 	}
 
 	const gatewayBaseURL = process.env.AI_GATEWAY_BASE_URL;
 
-	const openaiKey =
-		(await getSecretValueAsync("OPENAI_API_KEY").catch(() => "")) ||
-		process.env.OPENAI_API_KEY;
-	const gatewayKey =
-		(await getSecretValueAsync("AI_GATEWAY_API_KEY").catch(() => "")) ||
-		process.env.AI_GATEWAY_API_KEY;
+	const openaiKey = await getSecretValueAsync("OPENAI_API_KEY");
+	const gatewayKey = await getSecretValueAsync("AI_GATEWAY_API_KEY");
 
 	const apiKey = gatewayBaseURL
 		? gatewayKey || openaiKey
@@ -153,12 +150,16 @@ async function getAi(): Promise<{
 		);
 	}
 
-	const modelId =
+	const configuredModelId =
 		process.env.OPENAI_MODEL ||
-		(!process.env.AI_MODEL?.startsWith("claude-")
-			? process.env.AI_MODEL
-			: "") ||
-		(gatewayBaseURL ? "openai/gpt-5.3-codex" : "gpt-5.3-codex");
+		(!process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+
+	const modelKey = await resolveCatalogModelKey({
+		providerId: "openai",
+		configuredModelId: configuredModelId || undefined,
+		fallbackModelKey: "gpt-4o",
+	});
+	const modelId = gatewayBaseURL ? `openai/${modelKey}` : modelKey;
 
 	const provider = createOpenAI({
 		apiKey,

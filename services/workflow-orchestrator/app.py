@@ -48,6 +48,7 @@ from activities.log_external_event import (
 from activities.call_agent_service import (
     call_mastra_agent_run,
     call_durable_agent_run,
+    call_durable_plan,
     call_durable_execute_plan,
     cleanup_execution_workspaces,
 )
@@ -109,6 +110,7 @@ async def lifespan(app: FastAPI):
     # Agent service activities (mastra-agent-tanstack)
     wfr.register_activity(call_mastra_agent_run)
     wfr.register_activity(call_durable_agent_run)
+    wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(cleanup_execution_workspaces)
     # AP workflow callback activities
@@ -303,19 +305,122 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, name, nodes, edges FROM workflows WHERE id = %s",
+            "SELECT id, name, user_id, nodes, edges FROM workflows WHERE id = %s",
             (workflow_id,),
         )
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
 
-        wf_id, wf_name, nodes_json, edges_json = row
+        wf_id, wf_name, user_id, nodes_json, edges_json = row
         # JSONB columns may already be dicts/lists, or may need parsing
         nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
         edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
 
-        return {"id": wf_id, "name": wf_name, "nodes": nodes, "edges": edges}
+        return {
+            "id": wf_id,
+            "name": wf_name,
+            "userId": user_id,
+            "nodes": nodes,
+            "edges": edges,
+        }
+    finally:
+        conn.close()
+
+
+def _generate_execution_id() -> str:
+    """Generate a 21-char lowercase/digit execution ID (matches app conventions)."""
+    import secrets
+    alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
+    return "".join(secrets.choice(alphabet) for _ in range(21))
+
+
+def _create_workflow_execution(
+    workflow_id: str,
+    user_id: str,
+    trigger_data: dict[str, Any],
+) -> str:
+    """Create a running workflow_executions row and return its ID."""
+    import psycopg2
+
+    execution_id = _generate_execution_id()
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO workflow_executions (
+                    id, workflow_id, user_id, status, input, phase, progress
+                )
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                """,
+                (
+                    execution_id,
+                    workflow_id,
+                    user_id,
+                    "running",
+                    json.dumps(trigger_data or {}),
+                    "running",
+                    0,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return execution_id
+
+
+def _mark_workflow_execution_started(execution_id: str, dapr_instance_id: str) -> None:
+    """Attach dapr instance correlation to an execution row."""
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workflow_executions
+                SET dapr_instance_id = %s, phase = %s, progress = %s
+                WHERE id = %s
+                """,
+                (dapr_instance_id, "running", 0, execution_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> None:
+    """Set failure state when workflow scheduling fails before execution starts."""
+    import psycopg2
+    from datetime import datetime, timezone
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workflow_executions
+                SET status = %s,
+                    phase = %s,
+                    progress = %s,
+                    error = %s,
+                    completed_at = %s
+                WHERE id = %s
+                """,
+                (
+                    "error",
+                    "failed",
+                    100,
+                    error,
+                    datetime.now(timezone.utc),
+                    execution_id,
+                ),
+            )
+        conn.commit()
     finally:
         conn.close()
 
@@ -497,12 +602,21 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "updatedAt": now,
         }
 
+        # 6.5 Create DB execution row so durable-agent plan artifacts and run
+        # tracking always have a valid workflow_executions foreign key.
+        db_execution_id = _create_workflow_execution(
+            workflow_id=wf["id"],
+            user_id=wf["userId"],
+            trigger_data=request.triggerData,
+        )
+
         # 7. Schedule via the existing start_workflow logic
         client = get_workflow_client()
         workflow_input = {
             "definition": definition,
             "triggerData": request.triggerData,
             "integrations": request.integrations,
+            "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_otel": inject_current_context(),
         }
@@ -521,6 +635,8 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             instance_id=instance_id,
         )
 
+        _mark_workflow_execution_started(db_execution_id, result_id)
+
         logger.info(f"[Execute-By-Id] Workflow scheduled: {result_id}")
 
         return StartWorkflowResponse(
@@ -532,6 +648,16 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
     except HTTPException:
         raise
     except Exception as e:
+        try:
+            if "db_execution_id" in locals():
+                _mark_workflow_execution_failed_to_start(
+                    db_execution_id,
+                    str(e),
+                )
+        except Exception as persist_err:
+            logger.error(
+                f"[Execute-By-Id] Failed to mark execution start failure: {persist_err}"
+            )
         logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

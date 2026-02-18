@@ -104,6 +104,54 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
+def call_durable_plan(ctx, input_data: dict) -> dict:
+    """
+    Generate a structured plan on durable-agent service.
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DURABLE_AGENT_APP_ID}/method/api/plan"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "durable/plan",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.call_durable_plan", otel, attrs):
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                payload = {
+                    "prompt": input_data.get("prompt", ""),
+                    "cwd": input_data.get("cwd", ""),
+                    "workspaceRef": input_data.get("workspaceRef", ""),
+                    "model": input_data.get("model"),
+                    "maxTurns": input_data.get("maxTurns"),
+                    "instructions": input_data.get("instructions"),
+                    "tools": input_data.get("tools"),
+                    "agentConfig": input_data.get("agentConfig"),
+                    "parentExecutionId": input_data.get("parentExecutionId", ""),
+                    "executionId": input_data.get("dbExecutionId")
+                    or input_data.get("executionId", ""),
+                    "dbExecutionId": input_data.get("dbExecutionId", ""),
+                    "workflowId": input_data.get("workflowId", ""),
+                    "nodeId": input_data.get("nodeId", ""),
+                    "nodeName": input_data.get("nodeName", ""),
+                }
+                resp = client.post(url, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                if not isinstance(data, dict):
+                    return {"success": False, "error": "Invalid response"}
+                return data
+        except Exception as e:
+            logger.error(f"[Call Durable Plan] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
 def call_durable_execute_plan(ctx, input_data: dict) -> dict:
     """
     Start a plan execution on durable-agent service.
@@ -123,7 +171,7 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
     )
     otel = input_data.get("_otel") or {}
     attrs = {
-        "action.type": "mastra/execute",
+        "action.type": "durable/execute-plan",
         "workflow.instance_id": input_data.get("parentExecutionId") or "",
         "workflow.id": input_data.get("workflowId") or "",
         "node.id": input_data.get("nodeId") or "",
@@ -144,7 +192,10 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                 payload = {
                     "prompt": input_data.get("prompt", ""),
                     "plan": plan,
+                    "artifactRef": input_data.get("artifactRef", ""),
                     "cwd": input_data.get("cwd", ""),
+                    "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                    "approval": input_data.get("approval"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
                     "executionId": input_data.get("dbExecutionId")
                     or input_data.get("executionId", ""),
@@ -163,7 +214,7 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     return {"success": False, "error": "Invalid response"}
                 return data
         except Exception as e:
-            logger.error(f"[Call Mastra Execute Plan] Failed: {e}")
+            logger.error(f"[Call Durable Execute Plan] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

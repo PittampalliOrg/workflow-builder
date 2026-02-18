@@ -74,10 +74,13 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					label: "Mode",
 					type: "select",
 					required: true,
-					defaultValue: "execute",
+					defaultValue: "plan_mode",
 					options: [
-						{ label: "Execute Plan", value: "execute" },
-						{ label: "Create Plan", value: "plan" },
+						{
+							label: "Plan Mode",
+							value: "plan_mode",
+						},
+						{ label: "Execute Direct", value: "execute_direct" },
 					],
 				},
 				{
@@ -99,25 +102,9 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					label: "Prompt / Goal",
 					type: "template-textarea",
 					placeholder:
-						"Describe the task for the agent. In execute mode this can override the artifact goal.",
-					required: false,
-					rows: 6,
-				},
-				{
-					key: "artifactRef",
-					label: "Plan Artifact",
-					type: "dynamic-select",
+						"Describe the task for the agent. In plan mode this produces the reviewable plan before execution.",
 					required: true,
-					autoSelectFirstOption: true,
-					placeholder: "Select a plan artifact",
-					showWhen: { field: "mode", equals: "execute" },
-					dynamicOptions: {
-						provider: "builtin",
-						pieceName: "durable",
-						actionName: "durable/run",
-						propName: "artifactRef",
-						refreshers: [],
-					},
+					rows: 6,
 				},
 				{
 					key: "workspaceRef",
@@ -140,7 +127,7 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					placeholder:
 						"Describe what 'done' means. Example: Stop when the API returns status 200 and the response contains an id.",
 					rows: 4,
-					showWhen: { field: "mode", equals: "execute" },
+					showWhen: { field: "mode", equals: "execute_direct" },
 				},
 				{
 					key: "requireFileChanges",
@@ -148,11 +135,20 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					type: "select",
 					required: false,
 					defaultValue: "true",
-					showWhen: { field: "mode", equals: "execute" },
+					showWhen: { field: "mode", equals: "execute_direct" },
 					options: [
 						{ label: "Enabled", value: "true" },
 						{ label: "Disabled", value: "false" },
 					],
+				},
+				{
+					key: "approvalTimeoutMinutes",
+					label: "Plan Approval Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "60",
+					min: 1,
+					showWhen: { field: "mode", equals: "plan_mode" },
 				},
 				{
 					key: "cleanupWorkspace",
@@ -160,7 +156,7 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					type: "select",
 					required: false,
 					defaultValue: "true",
-					showWhen: { field: "mode", equals: "execute" },
+					showWhen: { field: "mode", equals: "execute_direct" },
 					options: [
 						{ label: "Enabled", value: "true" },
 						{ label: "Disabled", value: "false" },
@@ -175,6 +171,15 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				{
 					field: "plan",
 					description: "Structured plan artifact JSON",
+				},
+				{
+					field: "planMarkdown",
+					description: "Markdown plan generated during plan mode",
+				},
+				{
+					field: "planPolicy",
+					description:
+						"Plan mode policy metadata (read-only expectation + violations)",
 				},
 				{
 					field: "tasks",

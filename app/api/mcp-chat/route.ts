@@ -8,6 +8,7 @@ import {
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { getMcpChatTools } from "@/lib/mcp-chat/tools";
+import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
 import {
 	discoverTools,
 	callExternalMcpTool,
@@ -19,25 +20,22 @@ import { NextResponse } from "next/server";
 async function getModel() {
 	const gatewayBaseURL = process.env.AI_GATEWAY_BASE_URL;
 
-	// Try Dapr secrets first, then fall back to environment variables
-	const openaiKey =
-		(await getSecretValueAsync("OPENAI_API_KEY")) || process.env.OPENAI_API_KEY;
-	const gatewayKey =
-		(await getSecretValueAsync("AI_GATEWAY_API_KEY")) ||
-		process.env.AI_GATEWAY_API_KEY;
-	const anthropicKey =
-		(await getSecretValueAsync("ANTHROPIC_API_KEY")) ||
-		process.env.ANTHROPIC_API_KEY;
+	// Secrets are loaded from Dapr-backed config provider (no env fallback).
+	const openaiKey = await getSecretValueAsync("OPENAI_API_KEY");
+	const gatewayKey = await getSecretValueAsync("AI_GATEWAY_API_KEY");
+	const anthropicKey = await getSecretValueAsync("ANTHROPIC_API_KEY");
 
 	if (anthropicKey) {
-		const modelId =
+		const configuredModelId =
 			process.env.ANTHROPIC_MODEL ||
-			(process.env.AI_MODEL?.startsWith("claude-")
-				? process.env.AI_MODEL
-				: "") ||
-			"claude-opus-4-6";
+			(process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+		const modelKey = await resolveCatalogModelKey({
+			providerId: "anthropic",
+			configuredModelId: configuredModelId || undefined,
+			fallbackModelKey: "claude-opus-4-6",
+		});
 		const provider = createAnthropic({ apiKey: anthropicKey });
-		return provider.chat(modelId);
+		return provider.chat(modelKey);
 	}
 
 	const apiKey = gatewayBaseURL
@@ -50,12 +48,15 @@ async function getModel() {
 		);
 	}
 
-	const modelId =
+	const configuredModelId =
 		process.env.OPENAI_MODEL ||
-		(!process.env.AI_MODEL?.startsWith("claude-")
-			? process.env.AI_MODEL
-			: "") ||
-		(gatewayBaseURL ? "openai/gpt-5.3-codex" : "gpt-5.3-codex");
+		(!process.env.AI_MODEL?.startsWith("claude-") ? process.env.AI_MODEL : "");
+	const modelKey = await resolveCatalogModelKey({
+		providerId: "openai",
+		configuredModelId: configuredModelId || undefined,
+		fallbackModelKey: "gpt-4o",
+	});
+	const modelId = gatewayBaseURL ? `openai/${modelKey}` : modelKey;
 
 	const provider = createOpenAI({
 		apiKey,

@@ -7,7 +7,6 @@ import {
 	RefreshCcw,
 	X,
 } from "lucide-react";
-import { useAtomValue } from "jotai";
 import { useParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -33,7 +32,6 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ActionConfigFieldBase } from "@/lib/actions/types";
-import { nodesAtom, selectedNodeAtom } from "@/lib/workflow-store";
 
 type DropdownOption = {
 	label: string;
@@ -101,8 +99,6 @@ export function DynamicSelectField({
 	const activeRequestRef = useRef<AbortController | null>(null);
 
 	const dynamicOpts = field.dynamicOptions;
-	const nodes = useAtomValue(nodesAtom);
-	const selectedNodeId = useAtomValue(selectedNodeAtom);
 	const params = useParams<{ workflowId?: string }>();
 	const workflowId =
 		typeof params?.workflowId === "string" ? params.workflowId : undefined;
@@ -234,56 +230,7 @@ export function DynamicSelectField({
 		refresh();
 	}, [refresherValues, multiSelect, refresh]); // eslint-disable-line react-hooks/exhaustive-deps
 
-	const planArtifactTemplateOptions = useMemo<DropdownOption[]>(() => {
-		if (!dynamicOpts) {
-			return [];
-		}
-
-		const isPlanArtifactField =
-			field.key === "artifactRef" &&
-			dynamicOpts.provider === "builtin" &&
-			dynamicOpts.actionName === "durable/run" &&
-			dynamicOpts.propName === "artifactRef";
-		if (!isPlanArtifactField) {
-			return [];
-		}
-		const templateOptions: DropdownOption[] = [];
-		for (const node of nodes) {
-			if (node.id === selectedNodeId) {
-				continue;
-			}
-			const cfg = node.data?.config;
-			if (!cfg || typeof cfg !== "object") {
-				continue;
-			}
-
-			const configRecord = cfg as Record<string, unknown>;
-			const actionType =
-				typeof configRecord.actionType === "string"
-					? configRecord.actionType
-					: "";
-			const mode =
-				typeof configRecord.mode === "string"
-					? configRecord.mode.trim().toLowerCase()
-					: "";
-
-			if (!actionType.startsWith("durable/") || mode !== "plan") {
-				continue;
-			}
-
-			const label = node.data?.label || node.id;
-			templateOptions.push({
-				label: `Current run: ${label} (artifactRef output)`,
-				value: `{{@${node.id}:${label}.artifactRef}}`,
-			});
-		}
-		return templateOptions;
-	}, [dynamicOpts, field.key, nodes, selectedNodeId]);
-
-	const selectableOptions = useMemo(
-		() => [...planArtifactTemplateOptions, ...options],
-		[planArtifactTemplateOptions, options],
-	);
+	const selectableOptions = options;
 
 	// Client-side filter
 	const filteredOptions = useMemo(() => {
@@ -310,11 +257,7 @@ export function DynamicSelectField({
 				if (values.length === 0) {
 					return;
 				}
-				const allOpts = [
-					...planArtifactTemplateOptions,
-					...cachedOptions.current,
-					...options,
-				];
+				const allOpts = [...cachedOptions.current, ...options];
 				const labels = values.map((v) => {
 					const opt = allOpts.find((o) => String(o.value) === String(v));
 					return opt?.label || String(v);
@@ -325,11 +268,7 @@ export function DynamicSelectField({
 			}
 		}
 
-		const allOpts = [
-			...planArtifactTemplateOptions,
-			...cachedOptions.current,
-			...options,
-		];
+		const allOpts = [...cachedOptions.current, ...options];
 		const found = allOpts.find((o) => String(o.value) === value);
 		if (found) {
 			return found;
@@ -338,7 +277,7 @@ export function DynamicSelectField({
 			return { label: value, value };
 		}
 		return undefined;
-	}, [value, options, multiSelect, planArtifactTemplateOptions]);
+	}, [value, options, multiSelect]);
 
 	const isItemSelected = (optionValue: unknown): boolean => {
 		if (multiSelect) {
