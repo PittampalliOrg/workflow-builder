@@ -1,12 +1,13 @@
 import { and, desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { createWorkflowOperationStream } from "@/lib/ai/workflow-generation";
-import type { Operation } from "@/lib/ai/validated-operation-stream";
+import {
+	type Operation,
+	createWorkflowOperationStream,
+} from "@/lib/ai/workflow-generation";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflowAiMessages, workflows } from "@/lib/db/schema";
 import { isWorkflowAiMessagesTableMissing } from "@/lib/db/workflow-ai-messages";
-import { createValidatedOperationStream } from "@/lib/ai/validated-operation-stream";
 
 type ExistingWorkflow = {
 	nodes?: Array<{ id: string; data?: { label?: string } }>;
@@ -65,10 +66,6 @@ export async function POST(
 			typeof body?.existingWorkflow === "object" && body.existingWorkflow
 				? (body.existingWorkflow as ExistingWorkflow)
 				: undefined;
-		const mode =
-			body?.mode === "classic" || body?.mode === "validated"
-				? (body.mode as "classic" | "validated")
-				: "validated";
 
 		if (!message) {
 			return NextResponse.json(
@@ -139,26 +136,21 @@ export async function POST(
 		}
 
 		const operations: Operation[] = [];
-		let streamError: string | null = null;
-		const baseStream = await createWorkflowOperationStream({
-			prompt: message,
-			existingWorkflow,
-			messageHistory: messageHistory.map((item) => ({
-				role: item.role,
-				content: item.content,
-			})),
-		});
-
-		const sourceStream = await createValidatedOperationStream({
-			baseStream,
-			prompt: message,
-			existingWorkflow,
-			mode,
-			onOperation: (op) => operations.push(op),
-			onError: (err) => {
-				streamError = err;
+		const sourceStream = await createWorkflowOperationStream(
+			{
+				prompt: message,
+				existingWorkflow,
+				messageHistory: messageHistory.map((item) => ({
+					role: item.role,
+					content: item.content,
+				})),
 			},
-		});
+			{
+				onOperation: (operation) => {
+					operations.push(operation);
+				},
+			},
+		);
 
 		const stream = new ReadableStream<Uint8Array>({
 			async start(controller) {
@@ -178,9 +170,7 @@ export async function POST(
 								workflowId,
 								userId: session.user.id,
 								role: "assistant",
-								content: streamError
-									? `Workflow generation failed: ${streamError}`
-									: summarizeOperations(operations),
+								content: summarizeOperations(operations),
 								operations: operations as Array<Record<string, unknown>>,
 							});
 						} catch (error) {

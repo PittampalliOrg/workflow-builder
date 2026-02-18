@@ -231,16 +231,18 @@ def start_activity_span(
 
         tracer = ot_trace.get_tracer("workflow-orchestrator")
         parent_ctx = _extract_context(carrier)
-        with tracer.start_as_current_span(name, context=parent_ctx) as span:
-            if attributes:
-                for k, v in attributes.items():
-                    if v is None:
-                        continue
-                    try:
-                        span.set_attribute(k, v)
-                    except Exception:
-                        pass
-            yield span
     except Exception:
+        # Fallback mode: run without tracing context.
         yield None
+        return
 
+    with tracer.start_as_current_span(name, context=parent_ctx) as span:
+        if attributes:
+            for k, v in attributes.items():
+                if v is None:
+                    continue
+                try:
+                    span.set_attribute(k, v)
+                except Exception:
+                    pass
+        yield span

@@ -262,6 +262,95 @@ function validateActionConfigWithZod(input: {
 	}
 }
 
+const DEFAULT_TRIGGER_OUTPUT_FIELDS = [
+	"triggered",
+	"timestamp",
+	"input",
+] as const;
+
+function getRootOutputField(fieldPath: string): string | undefined {
+	const first = fieldPath.split(/[.[\]]/)[0]?.trim();
+	return first || undefined;
+}
+
+function collectWebhookSchemaFieldPaths(
+	schema: unknown,
+	prefix = "",
+): string[] {
+	if (!Array.isArray(schema)) {
+		return [];
+	}
+
+	const fields: string[] = [];
+	for (const item of schema) {
+		if (!item || typeof item !== "object") {
+			continue;
+		}
+
+		const field = item as Record<string, unknown>;
+		const name = typeof field.name === "string" ? field.name.trim() : "";
+		if (!name) {
+			continue;
+		}
+
+		const fieldPath = prefix ? `${prefix}.${name}` : name;
+		fields.push(fieldPath);
+
+		const nestedFields = field.fields;
+		const type = typeof field.type === "string" ? field.type : "";
+		const itemType = typeof field.itemType === "string" ? field.itemType : "";
+		if (Array.isArray(nestedFields) && nestedFields.length > 0) {
+			if (type === "object") {
+				fields.push(...collectWebhookSchemaFieldPaths(nestedFields, fieldPath));
+			} else if (type === "array" && itemType === "object") {
+				fields.push(
+					...collectWebhookSchemaFieldPaths(nestedFields, `${fieldPath}[0]`),
+				);
+			}
+		}
+	}
+
+	return fields;
+}
+
+function getTriggerOutputFieldSet(spec: WorkflowSpec): Set<string> {
+	const allowed = new Set<string>(DEFAULT_TRIGGER_OUTPUT_FIELDS);
+	const triggerConfig = spec.trigger.config as
+		| Record<string, unknown>
+		| undefined;
+	const triggerType =
+		typeof triggerConfig?.triggerType === "string"
+			? triggerConfig.triggerType.toLowerCase()
+			: "";
+
+	if (triggerType !== "webhook") {
+		return allowed;
+	}
+
+	const webhookSchema =
+		typeof triggerConfig?.webhookSchema === "string"
+			? triggerConfig.webhookSchema
+			: "";
+	if (!webhookSchema.trim()) {
+		return allowed;
+	}
+
+	try {
+		const parsedSchema = JSON.parse(webhookSchema);
+		const schemaFields = collectWebhookSchemaFieldPaths(parsedSchema);
+		for (const schemaField of schemaFields) {
+			const root = getRootOutputField(schemaField);
+			if (root) {
+				allowed.add(root);
+			}
+		}
+	} catch {
+		// Ignore invalid schema JSON and keep default trigger fields.
+	}
+
+	return allowed;
+}
+
 function validateActionOutputFieldRefs(input: {
 	action: ActionDefinition;
 	ref: TemplateRef;
@@ -273,7 +362,7 @@ function validateActionOutputFieldRefs(input: {
 	if (!ref.fieldPath) return;
 	if (!action.outputFields || action.outputFields.length === 0) return;
 
-	const first = ref.fieldPath.split(/[.[\]]/)[0]?.trim();
+	const first = getRootOutputField(ref.fieldPath);
 	if (!first) return;
 	const allowed = new Set(action.outputFields.map((f) => f.field));
 	if (!allowed.has(first)) {
@@ -284,6 +373,27 @@ function validateActionOutputFieldRefs(input: {
 			nodeId,
 		});
 	}
+}
+
+function validateTriggerOutputFieldRefs(input: {
+	allowedFields: Set<string>;
+	ref: TemplateRef;
+	result: WorkflowSpecLintResult;
+	path: string;
+	nodeId: string;
+}): void {
+	const { allowedFields, ref, result, path, nodeId } = input;
+	if (!ref.fieldPath) return;
+
+	const first = getRootOutputField(ref.fieldPath);
+	if (!first || allowedFields.has(first)) return;
+
+	addIssue("warnings", result, {
+		code: "UNKNOWN_OUTPUT_FIELD",
+		message: `Template references unknown output field "${first}" on trigger.`,
+		path,
+		nodeId,
+	});
 }
 
 export function lintWorkflowSpec(
@@ -416,6 +526,7 @@ export function lintWorkflowSpec(
 
 	const ancestors = computeAncestors(graph);
 	const dominators = computeDominators(graph, topo.order);
+	const triggerOutputFields = getTriggerOutputFieldSet(spec);
 
 	// Action existence + required fields
 	for (const step of spec.steps) {
@@ -491,6 +602,17 @@ export function lintWorkflowSpec(
 				}
 
 				// Output field existence check (warn-only)
+				if (ref.nodeId === spec.trigger.id) {
+					validateTriggerOutputFieldRefs({
+						allowedFields: triggerOutputFields,
+						ref,
+						result,
+						path,
+						nodeId: step.id,
+					});
+					continue;
+				}
+
 				const producer = spec.steps.find((s2) => s2.id === ref.nodeId);
 				if (producer?.kind === "action" && catalog) {
 					const action = catalog.actionsById.get(

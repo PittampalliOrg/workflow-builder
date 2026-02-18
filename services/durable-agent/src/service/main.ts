@@ -6,6 +6,7 @@
  *
  * Routes:
  * - GET  /api/health           — Health check
+ * - GET  /api/ready            — Readiness check (initialized runtime)
  * - GET  /api/tools            — List available tools
  * - POST /api/tools/:toolId    — Direct tool execution (bypass agent)
  * - POST /api/workspaces/profile — Create/get execution-scoped workspace
@@ -61,6 +62,10 @@ import {
 	extractProposedPlanText,
 	stripProposedPlanBlocks,
 } from "./proposed-plan-parser.js";
+import {
+	normalizeModelSpecForEnvironment,
+	normalizeOpenAiChatModel,
+} from "./model-normalization.js";
 
 // Mastra adapters (all optional — graceful fallback if packages not installed)
 import {
@@ -107,6 +112,15 @@ const PLAN_TIMEOUT_SECONDS = Math.max(
 	60,
 	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "600", 10),
 );
+const STARTUP_INIT_REQUIRED = ["1", "true", "yes", "on"].includes(
+	String(process.env.DURABLE_REQUIRE_STARTUP_INIT || "")
+		.trim()
+		.toLowerCase(),
+);
+const STARTUP_INIT_RETRY_MS = Math.max(
+	5_000,
+	parseInt(process.env.DURABLE_STARTUP_INIT_RETRY_MS || "30000", 10),
+);
 
 // ── Agent Config Types ────────────────────────────────────────
 
@@ -128,10 +142,12 @@ type AgentConfigPayload = {
 let agent: DurableAgent | null = null;
 let workflowClient: DaprWorkflowClient | null = null;
 let initialized = false;
+let initializingPromise: Promise<void> | null = null;
 let mcpDisconnect: (() => Promise<void>) | null = null;
 let scorers: ScorerLike[] = [];
 let reconcileLoopStarted = false;
 let reconcilingRuns = false;
+let startupInitRetryTimer: NodeJS.Timeout | null = null;
 
 // Merged tools from all sources (populated in initAgent)
 let allMergedTools: Record<
@@ -159,30 +175,8 @@ function agentConfigHash(config: AgentConfigPayload): string {
 	return `agent-${hash.toString(36)}`;
 }
 
-function normalizeModelSpecForEnvironment(modelSpecRaw: string): string {
-	const modelSpec = String(modelSpecRaw || "").trim();
-	if (!modelSpec) {
-		return `openai/${process.env.AI_MODEL ?? "gpt-4o"}`;
-	}
-
-	const slashIndex = modelSpec.indexOf("/");
-	if (slashIndex <= 0) {
-		return modelSpec;
-	}
-
-	const provider = modelSpec.slice(0, slashIndex).toLowerCase();
-	if (
-		provider === "anthropic" &&
-		!String(process.env.ANTHROPIC_API_KEY || "").trim()
-	) {
-		const fallback = `openai/${process.env.AI_MODEL ?? "gpt-4o"}`;
-		console.warn(
-			`[durable-agent] Model "${modelSpec}" requires ANTHROPIC_API_KEY; falling back to "${fallback}"`,
-		);
-		return fallback;
-	}
-
-	return modelSpec;
+function resolveNormalizedModel(modelSpecRaw: string) {
+	return resolveModel(normalizeModelSpecForEnvironment(modelSpecRaw));
 }
 
 function evictStaleAgents(): void {
@@ -247,7 +241,7 @@ async function getOrCreateConfiguredAgent(
 		goal: "Execute task according to custom instructions",
 		instructions: config.instructions,
 		model,
-		modelResolver: resolveModel,
+		modelResolver: resolveNormalizedModel,
 		tools,
 		state: {
 			storeName: process.env.STATE_STORE_NAME || "statestore",
@@ -265,79 +259,90 @@ async function getOrCreateConfiguredAgent(
 
 async function initAgent(): Promise<void> {
 	if (initialized) return;
-
-	// Fail fast at startup if durable change persistence is misconfigured.
-	await workspaceSessions.ensureChangeArtifactPersistence();
-
-	// Register built-in model providers (openai)
-	registerBuiltinProviders();
-
-	// Start sandbox
-	await sandbox.start();
-
-	// Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
-	const modelSpec = process.env.MASTRA_MODEL_SPEC;
-	const model = modelSpec
-		? resolveModel(modelSpec)
-		: openai.chat(process.env.AI_MODEL ?? "gpt-4o");
-
-	if (modelSpec) {
-		console.log(
-			`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpec}`,
-		);
+	if (initializingPromise) {
+		await initializingPromise;
+		return;
 	}
 
-	// Merge all tool sources into the module-level record (used by agent factory too)
-	const mergedTools: Record<
-		string,
-		import("../types/tool.js").DurableAgentTool
-	> = {
-		...workspaceTools,
-	};
+	initializingPromise = (async () => {
+		try {
+			// Fail fast at startup if durable change persistence is misconfigured.
+			await workspaceSessions.ensureChangeArtifactPersistence();
 
-	// Mastra workspace tools (if MASTRA_WORKSPACE=true)
-	if (process.env.MASTRA_WORKSPACE === "true") {
-		const wsTools = await createMastraWorkspaceTools(filesystem, sandbox);
-		Object.assign(mergedTools, wsTools);
-	}
+			// Register built-in model providers (openai)
+			registerBuiltinProviders();
 
-	// MCP tools (if MCP_SERVERS env var set)
-	if (process.env.MCP_SERVERS) {
-		const mcp = await discoverMcpTools();
-		Object.assign(mergedTools, mcp.tools);
-		mcpDisconnect = mcp.disconnect;
-	}
+			// Start sandbox
+			await sandbox.start();
 
-	// RAG tools (if MASTRA_RAG_TOOLS env var set)
-	if (process.env.MASTRA_RAG_TOOLS) {
-		const ragTools = await createRagTools();
-		Object.assign(mergedTools, ragTools);
-	}
+			// Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
+			const modelSpecRaw = process.env.MASTRA_MODEL_SPEC;
+			const modelSpec = modelSpecRaw
+				? normalizeModelSpecForEnvironment(modelSpecRaw)
+				: undefined;
+			const model = modelSpec
+				? resolveModel(modelSpec)
+				: openai.chat(
+						normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL"),
+					);
 
-	// Processors (if MASTRA_PROCESSORS env var set)
-	let processors: ProcessorLike[] = [];
-	if (process.env.MASTRA_PROCESSORS) {
-		processors = await createProcessors(process.env.MASTRA_PROCESSORS);
-	}
+			if (modelSpecRaw) {
+				console.log(
+					`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpecRaw} -> ${modelSpec}`,
+				);
+			}
 
-	// Scorers (if MASTRA_SCORERS env var set) — run post-workflow
-	if (process.env.MASTRA_SCORERS) {
-		scorers = await createScorers(process.env.MASTRA_SCORERS);
-	}
+			// Merge all tool sources into the module-level record (used by agent factory too)
+			const mergedTools: Record<
+				string,
+				import("../types/tool.js").DurableAgentTool
+			> = {
+				...workspaceTools,
+			};
 
-	console.log(
-		`[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
-	);
+			// Mastra workspace tools (if MASTRA_WORKSPACE=true)
+			if (process.env.MASTRA_WORKSPACE === "true") {
+				const wsTools = await createMastraWorkspaceTools(filesystem, sandbox);
+				Object.assign(mergedTools, wsTools);
+			}
 
-	// Store merged tools for agent factory (per-request config agents)
-	allMergedTools = mergedTools;
+			// MCP tools (if MCP_SERVERS env var set)
+			if (process.env.MCP_SERVERS) {
+				const mcp = await discoverMcpTools();
+				Object.assign(mergedTools, mcp.tools);
+				mcpDisconnect = mcp.disconnect;
+			}
 
-	// Create durable agent with all tool sources and optional Mastra integrations
-	agent = new DurableAgent({
-		name: "durable-dev-agent",
-		role: "Development assistant",
-		goal: "Help users with file operations, code editing, and command execution",
-		instructions: `You are a development assistant with access to workspace tools.
+			// RAG tools (if MASTRA_RAG_TOOLS env var set)
+			if (process.env.MASTRA_RAG_TOOLS) {
+				const ragTools = await createRagTools();
+				Object.assign(mergedTools, ragTools);
+			}
+
+			// Processors (if MASTRA_PROCESSORS env var set)
+			let processors: ProcessorLike[] = [];
+			if (process.env.MASTRA_PROCESSORS) {
+				processors = await createProcessors(process.env.MASTRA_PROCESSORS);
+			}
+
+			// Scorers (if MASTRA_SCORERS env var set) — run post-workflow
+			if (process.env.MASTRA_SCORERS) {
+				scorers = await createScorers(process.env.MASTRA_SCORERS);
+			}
+
+			console.log(
+				`[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
+			);
+
+			// Store merged tools for agent factory (per-request config agents)
+			allMergedTools = mergedTools;
+
+			// Create durable agent with all tool sources and optional Mastra integrations
+			agent = new DurableAgent({
+				name: "durable-dev-agent",
+				role: "Development assistant",
+				goal: "Help users with file operations, code editing, and command execution",
+				instructions: `You are a development assistant with access to workspace tools.
 
 Use workspace tools to help users with file operations and command execution:
 - Read, write, and edit files in the workspace
@@ -346,36 +351,94 @@ Use workspace tools to help users with file operations and command execution:
 - Create and delete files and directories
 
 Be concise and direct. Use the appropriate tool for each task.`,
-		model,
-		modelResolver: resolveModel,
-		tools: mergedTools,
-		state: {
-			storeName: process.env.STATE_STORE_NAME || "statestore",
-		},
-		execution: {
-			maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
-		},
-		mastra: {
-			processors: processors.length > 0 ? processors : undefined,
-		},
-	});
+				model,
+				modelResolver: resolveNormalizedModel,
+				tools: mergedTools,
+				state: {
+					storeName: process.env.STATE_STORE_NAME || "statestore",
+				},
+				execution: {
+					maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
+				},
+				mastra: {
+					processors: processors.length > 0 ? processors : undefined,
+				},
+			});
 
-	// Start the agent (registers workflows + starts runtime)
-	await agent.start();
+			// Start the agent (registers workflows + starts runtime)
+			await agent.start();
 
-	// Create workflow client for scheduling
-	workflowClient = new DaprWorkflowClient();
+			// Create workflow client for scheduling
+			workflowClient = new DaprWorkflowClient();
 
-	initialized = true;
-	if (!reconcileLoopStarted) {
-		reconcileLoopStarted = true;
-		void reconcileUnpublishedRuns();
-		const timer = setInterval(() => {
-			void reconcileUnpublishedRuns();
-		}, RUN_RECONCILE_INTERVAL_MS);
-		timer.unref();
+			initialized = true;
+			if (!reconcileLoopStarted) {
+				reconcileLoopStarted = true;
+				void reconcileUnpublishedRuns();
+				const timer = setInterval(() => {
+					void reconcileUnpublishedRuns();
+				}, RUN_RECONCILE_INTERVAL_MS);
+				timer.unref();
+			}
+			console.log(
+				"[durable-agent] Agent initialized and workflow runtime started",
+			);
+		} catch (err) {
+			initialized = false;
+			workflowClient = null;
+			try {
+				if (agent) {
+					await agent.stop();
+				}
+			} catch {
+				/* best effort */
+			}
+			agent = null;
+			try {
+				await sandbox.destroy();
+			} catch {
+				/* best effort */
+			}
+			throw err;
+		} finally {
+			initializingPromise = null;
+		}
+	})();
+
+	await initializingPromise;
+}
+
+function scheduleStartupInitRetry(): void {
+	if (initialized || startupInitRetryTimer) {
+		return;
 	}
-	console.log("[durable-agent] Agent initialized and workflow runtime started");
+	startupInitRetryTimer = setInterval(() => {
+		if (initialized) {
+			if (startupInitRetryTimer) {
+				clearInterval(startupInitRetryTimer);
+				startupInitRetryTimer = null;
+			}
+			return;
+		}
+		void (async () => {
+			try {
+				await initAgent();
+				console.log(
+					"[durable-agent] Startup retry succeeded (workflow runtime ready)",
+				);
+				if (startupInitRetryTimer) {
+					clearInterval(startupInitRetryTimer);
+					startupInitRetryTimer = null;
+				}
+			} catch (err) {
+				console.warn(
+					"[durable-agent] Startup retry initialization failed:",
+					err instanceof Error ? err.message : String(err),
+				);
+			}
+		})();
+	}, STARTUP_INIT_RETRY_MS);
+	startupInitRetryTimer.unref();
 }
 
 // ── File Change Extraction ────────────────────────────────────
@@ -940,6 +1003,23 @@ app.get("/api/health", (_req, res) => {
 		totalTokens: state.totalTokens,
 		activeWorkspaces: workspaceStats.activeWorkspaces,
 		mappedWorkspaceInstances: workspaceStats.mappedInstances,
+		initialized,
+	});
+});
+
+// Readiness check (only ready after agent/runtime initialization)
+app.get("/api/ready", (_req, res) => {
+	if (!initialized) {
+		res.status(503).json({
+			service: "durable-agent",
+			ready: false,
+			initialized,
+		});
+		return;
+	}
+	res.json({
+		service: "durable-agent",
+		ready: true,
 		initialized,
 	});
 });
@@ -2405,6 +2485,9 @@ app.listen(PORT, HOST, async () => {
 		`[durable-agent]   GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — fetch aggregated file snapshot`,
 	);
 	console.log(`[durable-agent]   GET  /api/health       — health check`);
+	console.log(
+		`[durable-agent]   GET  /api/ready        — readiness check (initialized runtime)`,
+	);
 
 	// Initialize agent eagerly at startup so the Dapr workflow runtime starts
 	// immediately. This is required for crash recovery: pending workflows in
@@ -2416,9 +2499,15 @@ app.listen(PORT, HOST, async () => {
 		);
 	} catch (err) {
 		console.error("[durable-agent] Startup initialization failed:", err);
-		console.error(
-			"[durable-agent] Failing fast because production sandbox initialization is required.",
+		if (STARTUP_INIT_REQUIRED) {
+			console.error(
+				"[durable-agent] Failing fast because DURABLE_REQUIRE_STARTUP_INIT=true.",
+			);
+			process.exit(1);
+		}
+		console.warn(
+			`[durable-agent] Continuing without eager initialization. Retrying in background every ${STARTUP_INIT_RETRY_MS}ms.`,
 		);
-		process.exit(1);
+		scheduleStartupInitRetry();
 	}
 });

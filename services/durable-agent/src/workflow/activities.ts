@@ -499,7 +499,7 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 						: args;
 				let result: unknown;
 				try {
-					result = await tool.execute(enrichedArgs);
+					result = await tool.execute!(enrichedArgs);
 					span.setAttribute(
 						"gen_ai.tool.call.result",
 						JSON.stringify(result).slice(0, 4096),

@@ -45,11 +45,22 @@ type MissingNodeConnection = {
 	integrationLabel: string;
 };
 
+type ContractIssue = {
+	nodeId: string;
+	nodeLabel: string;
+	code: string;
+	severity: "error" | "warning";
+	message: string;
+	path: string;
+	fieldKey?: string;
+};
+
 type WorkflowIssues = {
 	brokenReferences: BrokenReference[];
 	missingRequiredFields: MissingRequiredField[];
 	missingIntegrations: MissingIntegration[];
 	missingNodeConnections: MissingNodeConnection[];
+	contractIssues: ContractIssue[];
 };
 
 type WorkflowIssuesOverlayProps = OverlayComponentProps<{
@@ -71,12 +82,14 @@ export function WorkflowIssuesOverlay({
 	const { brokenReferences, missingRequiredFields, missingIntegrations } =
 		issues;
 	const missingNodeConnections = issues.missingNodeConnections || [];
+	const contractIssues = issues.contractIssues || [];
 
 	const totalIssues =
 		brokenReferences.length +
 		missingRequiredFields.length +
 		missingIntegrations.length +
-		missingNodeConnections.length;
+		missingNodeConnections.length +
+		contractIssues.length;
 
 	const handleGoToStep = (nodeId: string, fieldKey?: string) => {
 		// Select the node and set tab (this is handled by onGoToStep)
@@ -265,6 +278,42 @@ export function WorkflowIssuesOverlay({
 											</Button>
 										</div>
 									))}
+								</div>
+							</div>
+						))}
+					</div>
+				)}
+
+				{/* Contract Issues Section */}
+				{contractIssues.length > 0 && (
+					<div className="space-y-2">
+						<h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+							Contract Issues
+						</h4>
+						{contractIssues.map((issue, idx) => (
+							<div key={`${issue.nodeId}-${issue.code}-${idx}`}>
+								<p className="font-medium text-sm">{issue.nodeLabel}</p>
+								<div className="mt-1 flex items-center gap-3 py-0.5 pl-3">
+									<p className="min-w-0 flex-1 text-muted-foreground text-sm">
+										<span
+											className={
+												issue.severity === "error"
+													? "text-red-500"
+													: "text-orange-500"
+											}
+										>
+											{issue.severity.toUpperCase()}
+										</span>{" "}
+										{issue.message}
+									</p>
+									<Button
+										className="shrink-0"
+										onClick={() => handleGoToStep(issue.nodeId, issue.fieldKey)}
+										size="sm"
+										variant="outline"
+									>
+										Fix
+									</Button>
 								</div>
 							</div>
 						))}

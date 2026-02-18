@@ -347,6 +347,9 @@ export async function executeTool(
 		throw new Error(`Unknown tool: ${rawToolId}`);
 	}
 
+	if (!tool.execute) {
+		throw new Error(`Tool "${rawToolId}" has no execute function`);
+	}
 	const result = await tool.execute(args);
 	return (result as Record<string, unknown>) ?? {};
 }

@@ -13,14 +13,10 @@ import {
 	workflowAiMessagesAtom,
 	workflowAiMessagesLoadingAtom,
 	workflowAiMessagesWorkflowIdAtom,
-	workflowAiModeAtom,
 	type WorkflowAiMessage,
-	type WorkflowAiMode,
 	type WorkflowEdge,
 	type WorkflowNode,
 } from "@/lib/workflow-store";
-
-const STORAGE_KEY = "workflow-ai-mode";
 
 function isNodeIncomplete(node: WorkflowNode): boolean {
 	const nodeType = node.data?.type;
@@ -52,7 +48,6 @@ export function useWorkflowAiChat(workflowId: string) {
 	const [messagesWorkflowId, setMessagesWorkflowId] = useAtom(
 		workflowAiMessagesWorkflowIdAtom,
 	);
-	const [mode, setModeAtom] = useAtom(workflowAiModeAtom);
 
 	const realNodes = useMemo(
 		() => nodes.filter((node) => node.type !== "add"),
@@ -69,29 +64,6 @@ export function useWorkflowAiChat(workflowId: string) {
 		const onlyNode = realNodes[0];
 		return onlyNode?.data?.type === "trigger";
 	}, [edges.length, realNodes]);
-
-	useEffect(() => {
-		try {
-			const rawMode = window.localStorage.getItem(STORAGE_KEY);
-			if (rawMode === "classic" || rawMode === "validated") {
-				setModeAtom(rawMode);
-			}
-		} catch {
-			/* ignore storage errors */
-		}
-	}, [setModeAtom]);
-
-	const setMode = useCallback(
-		(nextMode: WorkflowAiMode) => {
-			setModeAtom(nextMode);
-			try {
-				window.localStorage.setItem(STORAGE_KEY, nextMode);
-			} catch {
-				/* ignore storage errors */
-			}
-		},
-		[setModeAtom],
-	);
 
 	const refreshMessages = useCallback(async () => {
 		setIsLoadingMessages(true);
@@ -193,7 +165,6 @@ export function useWorkflowAiChat(workflowId: string) {
 						}
 					},
 					existingWorkflow,
-					{ mode },
 				);
 
 				const finalEdges = (workflowData.edges || []).map((edge) => ({
@@ -250,7 +221,6 @@ export function useWorkflowAiChat(workflowId: string) {
 			setNodes,
 			setEdges,
 			setCurrentWorkflowName,
-			mode,
 			setSelectedNode,
 			refreshMessages,
 		],
@@ -267,9 +237,7 @@ export function useWorkflowAiChat(workflowId: string) {
 			isLoadingMessages &&
 			(messagesWorkflowId === workflowId || !messagesWorkflowId),
 		messages: scopedMessages,
-		mode,
 		refreshMessages,
-		setMode,
 		submit,
 	};
 }

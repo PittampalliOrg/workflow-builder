@@ -8,6 +8,7 @@ import {
   Position,
   useInternalNode,
 } from "@xyflow/react";
+import type { EdgeValidationState } from "@/lib/workflow-validation/types";
 
 const Temporary = ({
   id,
@@ -109,7 +110,44 @@ const getEdgeParams = (
   };
 };
 
-const Animated = ({ id, source, target, style, selected }: EdgeProps) => {
+function getEdgeColors(input: {
+  selected: boolean;
+  validationState: EdgeValidationState;
+}) {
+  const { selected, validationState } = input;
+  if (validationState === "invalid") {
+    return {
+      edgeStroke: selected
+        ? "color-mix(in srgb, #dc2626 86%, white 14%)"
+        : "color-mix(in srgb, #dc2626 68%, var(--muted-foreground) 32%)",
+      glowStroke: selected
+        ? "color-mix(in srgb, #dc2626 80%, white 20%)"
+        : "color-mix(in srgb, #dc2626 75%, transparent 25%)",
+    };
+  }
+
+  if (validationState === "warning") {
+    return {
+      edgeStroke: selected
+        ? "color-mix(in srgb, #d97706 88%, white 12%)"
+        : "color-mix(in srgb, #d97706 70%, var(--muted-foreground) 30%)",
+      glowStroke: selected
+        ? "color-mix(in srgb, #d97706 78%, white 22%)"
+        : "color-mix(in srgb, #d97706 70%, transparent 30%)",
+    };
+  }
+
+  return {
+    edgeStroke: selected
+      ? "color-mix(in srgb, var(--primary) 88%, white 12%)"
+      : "color-mix(in srgb, var(--primary) 62%, var(--muted-foreground) 38%)",
+    glowStroke: selected
+      ? "color-mix(in srgb, var(--primary) 80%, white 20%)"
+      : "color-mix(in srgb, var(--primary) 70%, transparent 30%)",
+  };
+}
+
+const Animated = ({ id, source, target, style, selected, data }: EdgeProps) => {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
 
@@ -131,12 +169,13 @@ const Animated = ({ id, source, target, style, selected }: EdgeProps) => {
     targetPosition: targetPos,
   });
 
-  const edgeStroke = selected
-    ? "color-mix(in srgb, var(--primary) 88%, white 12%)"
-    : "color-mix(in srgb, var(--primary) 62%, var(--muted-foreground) 38%)";
-  const glowStroke = selected
-    ? "color-mix(in srgb, var(--primary) 80%, white 20%)"
-    : "color-mix(in srgb, var(--primary) 70%, transparent 30%)";
+  const validationState =
+    (data as { validationState?: EdgeValidationState } | undefined)
+      ?.validationState ?? "valid";
+  const { edgeStroke, glowStroke } = getEdgeColors({
+    selected: selected ?? false,
+    validationState,
+  });
 
   return (
     <>

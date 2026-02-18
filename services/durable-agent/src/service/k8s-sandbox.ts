@@ -181,7 +181,16 @@ export class K8sSandbox {
 		this._timeout = options.timeout
 			? options.timeout
 			: parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
-		this._provisionTimeout = options.provisionTimeout || 60_000;
+		const configuredProvisionTimeout = parseInt(
+			process.env.SANDBOX_PROVISION_TIMEOUT_MS || "180000",
+			10,
+		);
+		this._provisionTimeout = options.provisionTimeout
+			? options.provisionTimeout
+			: Number.isFinite(configuredProvisionTimeout) &&
+					configuredProvisionTimeout > 0
+				? configuredProvisionTimeout
+				: 180_000;
 		this._onStart = options.onStart;
 		this._onStop = options.onStop;
 		this._onDestroy = options.onDestroy;
@@ -388,7 +397,7 @@ export class K8sSandbox {
 		sandboxName: string,
 	): Promise<{ podName: string; podIp: string }> {
 		const start = Date.now();
-		while (Date.now() - start < 60_000) {
+		while (Date.now() - start < this._provisionTimeout) {
 			try {
 				const sandboxPath = `/apis/agents.x-k8s.io/v1alpha1/namespaces/${this.sandboxNamespace}/sandboxes/${sandboxName}`;
 				const sandboxResource = await k8sRequest("GET", sandboxPath);
@@ -419,7 +428,9 @@ export class K8sSandbox {
 			await new Promise((r) => setTimeout(r, 1000));
 		}
 
-		throw new Error(`Could not get IP for sandbox "${sandboxName}" after 60s`);
+		throw new Error(
+			`Could not get IP for sandbox "${sandboxName}" after ${this._provisionTimeout}ms`,
+		);
 	}
 
 	private async getPodEndpointByName(

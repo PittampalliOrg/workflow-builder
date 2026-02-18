@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { nodesAtom, selectedNodeAtom } from "@/lib/workflow-store";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
+import { PromptResourcePicker } from "./prompt-resource-picker";
 import { TemplateAutocomplete } from "./template-autocomplete";
 
 export interface TemplateBadgeInputProps {
@@ -476,6 +477,24 @@ export function TemplateBadgeInput({
     contentRef.current.focus();
   };
 
+  const handleInsertPromptPreset = (text: string) => {
+    if (!text) {
+      return;
+    }
+
+    const currentText = extractValue();
+    const cursorPos = saveCursorPosition();
+    const insertOffset = cursorPos?.offset ?? currentText.length;
+    const nextValue =
+      currentText.slice(0, insertOffset) + text + currentText.slice(insertOffset);
+
+    setInternalValue(nextValue);
+    onChange?.(nextValue);
+    shouldUpdateDisplay.current = true;
+    pendingCursorPosition.current = insertOffset + text.length;
+    contentRef.current?.focus();
+  };
+
   const handleFocus = () => {
     setIsFocused(true);
     shouldUpdateDisplay.current = true;
@@ -501,6 +520,134 @@ export function TemplateBadgeInput({
     document.execCommand("insertText", false, text);
   };
 
+  const isTemplateBadgeElement = (node: Node | null): node is HTMLElement =>
+    node instanceof HTMLElement && node.hasAttribute("data-template");
+
+  const resolveAdjacentBadge = (
+    candidate: Node | null,
+    direction: "backward" | "forward"
+  ): HTMLElement | null => {
+    let current = candidate;
+    while (current) {
+      if (isTemplateBadgeElement(current)) {
+        return current;
+      }
+
+      if (current.nodeType === Node.TEXT_NODE) {
+        if ((current.textContent || "").length > 0) {
+          return null;
+        }
+        current =
+          direction === "backward"
+            ? current.previousSibling
+            : current.nextSibling;
+        continue;
+      }
+
+      return null;
+    }
+
+    return null;
+  };
+
+  const getAdjacentTemplateBadge = (
+    key: "Backspace" | "Delete"
+  ): HTMLElement | null => {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      return null;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed) {
+      return null;
+    }
+
+    const { startContainer, startOffset } = range;
+
+    if (startContainer.nodeType === Node.TEXT_NODE) {
+      const text = startContainer.textContent || "";
+      if (key === "Backspace") {
+        if (startOffset > 0) {
+          return null;
+        }
+        return resolveAdjacentBadge(startContainer.previousSibling, "backward");
+      }
+
+      if (startOffset < text.length) {
+        return null;
+      }
+      return resolveAdjacentBadge(startContainer.nextSibling, "forward");
+    }
+
+    const element = startContainer as Element;
+    const children = element.childNodes;
+    if (key === "Backspace") {
+      if (startOffset > 0) {
+        return resolveAdjacentBadge(children.item(startOffset - 1), "backward");
+      }
+      return resolveAdjacentBadge(element.previousSibling, "backward");
+    }
+
+    const directCandidate = children.item(startOffset);
+    if (directCandidate) {
+      return resolveAdjacentBadge(directCandidate, "forward");
+    }
+    return resolveAdjacentBadge(element.nextSibling, "forward");
+  };
+
+  const removeAdjacentTemplateBadge = (
+    key: "Backspace" | "Delete"
+  ): boolean => {
+    const badge = getAdjacentTemplateBadge(key);
+    if (!badge) {
+      return false;
+    }
+
+    badge.remove();
+    const newValue = extractValue();
+    setInternalValue(newValue);
+    onChange?.(newValue);
+    shouldUpdateDisplay.current = true;
+    requestAnimationFrame(() => updateDisplay());
+    return true;
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    const key = e.key;
+
+    // Scope Ctrl+A / Cmd+A to select only this field's content
+    if (key === "a" && (e.metaKey || e.ctrlKey) && contentRef.current) {
+      e.preventDefault();
+      const range = document.createRange();
+      range.selectNodeContents(contentRef.current);
+      const sel = window.getSelection();
+      if (sel) {
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      return;
+    }
+
+    if (
+      (key === "Backspace" || key === "Delete") &&
+      removeAdjacentTemplateBadge(key)
+    ) {
+      e.preventDefault();
+      return;
+    }
+
+    // Let the autocomplete handle Enter/Arrow keys when it's open
+    if (showAutocomplete && ["Enter", "ArrowDown", "ArrowUp"].includes(key)) {
+      return;
+    }
+
+    // Prevent Enter in single-line input
+    if (key === "Enter") {
+      e.preventDefault();
+    }
+  };
+
   // Update display only when needed (not while typing)
   useEffect(() => {
     if (shouldUpdateDisplay.current) {
@@ -510,24 +657,31 @@ export function TemplateBadgeInput({
 
   return (
     <>
-      <div
-        className={cn(
-          "flex min-h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-within:outline-none focus-within:ring-1 focus-within:ring-ring",
-          disabled && "cursor-not-allowed opacity-50",
-          className
-        )}
-      >
+      <div className="flex items-center gap-2">
         <div
-          className="w-full outline-none"
-          contentEditable={!disabled}
-          id={id}
-          onBlur={handleBlur}
-          onFocus={handleFocus}
-          onInput={handleInput}
-          onPaste={handlePaste}
-          ref={contentRef}
-          role="textbox"
-          suppressContentEditableWarning
+          className={cn(
+            "flex min-h-9 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-within:outline-none focus-within:ring-1 focus-within:ring-ring",
+            disabled && "cursor-not-allowed opacity-50",
+            className
+          )}
+        >
+          <div
+            className="w-full outline-none"
+            contentEditable={!disabled}
+            id={id}
+            onBlur={handleBlur}
+            onFocus={handleFocus}
+            onInput={handleInput}
+            onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
+            ref={contentRef}
+            role="textbox"
+            suppressContentEditableWarning
+          />
+        </div>
+        <PromptResourcePicker
+          disabled={disabled}
+          onInsert={handleInsertPromptPreset}
         />
       </div>
       

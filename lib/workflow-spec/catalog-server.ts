@@ -127,6 +127,8 @@ function actionDefinitionFromFunctionRow(row: {
 		description: row.description || "",
 		category: row.pluginId,
 		configFields,
+		inputSchema: row.inputSchema,
+		outputSchema: row.outputSchema,
 		outputFields: outputFields.length > 0 ? outputFields : undefined,
 	};
 }

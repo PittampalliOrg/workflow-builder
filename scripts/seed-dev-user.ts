@@ -23,6 +23,7 @@ import {
 	platforms,
 	projectMembers,
 	projects,
+	resourcePrompts,
 	signingKeys,
 	userIdentities,
 	users,
@@ -37,6 +38,43 @@ const DEV_USER_EMAIL = "admin@example.com";
 const DEV_USER_NAME = "admin";
 const DEV_USER_PASSWORD = "developer";
 const DEV_PROJECT_ID = "dev-default-project";
+
+const EXAMPLE_RESOURCE_PROMPTS: Array<{
+	name: string;
+	description: string;
+	systemPrompt: string;
+	userPrompt: string | null;
+	promptMode: "system" | "system+user";
+}> = [
+	{
+		name: "Workflow: Extract Structured Summary",
+		description: "Summarize unstructured text into clean JSON output.",
+		systemPrompt:
+			"You extract clear, factual summaries. Return concise language and preserve key entities, dates, and decisions.",
+		userPrompt:
+			"Summarize the following text and include bullet points for actions, owners, and deadlines.\n\n{{@trigger:Manual.input}}",
+		promptMode: "system+user",
+	},
+	{
+		name: "Workflow: Error Triage",
+		description:
+			"Analyze logs and produce triage classification with likely root cause.",
+		systemPrompt:
+			"You are a senior production incident triage assistant. Classify severity, identify likely root cause, and propose next diagnostic checks.",
+		userPrompt:
+			"Analyze these logs and classify the incident.\n\nLogs:\n{{@trigger:Manual.input}}\n\nPrevious step output:\n{{@source:Source.data}}",
+		promptMode: "system+user",
+	},
+	{
+		name: "Workflow: Rewriter",
+		description:
+			"Rewrite text for clarity while preserving intent and meaning.",
+		systemPrompt:
+			"Rewrite user text to improve clarity and structure while preserving tone and original meaning.",
+		userPrompt: null,
+		promptMode: "system",
+	},
+];
 
 type SeedUserSpec = {
 	id: string;
@@ -522,6 +560,78 @@ async function seedApiKeysForUser(
 	}
 }
 
+async function seedExamplePromptResourcesForUser(
+	db: ReturnType<typeof drizzle>,
+	userId: string,
+) {
+	for (const preset of EXAMPLE_RESOURCE_PROMPTS) {
+		const existing = await db
+			.select({
+				id: resourcePrompts.id,
+				name: resourcePrompts.name,
+				description: resourcePrompts.description,
+				systemPrompt: resourcePrompts.systemPrompt,
+				userPrompt: resourcePrompts.userPrompt,
+				promptMode: resourcePrompts.promptMode,
+				version: resourcePrompts.version,
+				isEnabled: resourcePrompts.isEnabled,
+			})
+			.from(resourcePrompts)
+			.where(
+				and(
+					eq(resourcePrompts.userId, userId),
+					eq(resourcePrompts.projectId, null),
+					eq(resourcePrompts.name, preset.name),
+				),
+			)
+			.limit(1);
+
+		if (existing.length === 0) {
+			await db.insert(resourcePrompts).values({
+				id: generateId(),
+				name: preset.name,
+				description: preset.description,
+				systemPrompt: preset.systemPrompt,
+				userPrompt: preset.userPrompt,
+				promptMode: preset.promptMode,
+				metadata: { seeded: true },
+				version: 1,
+				isEnabled: true,
+				userId,
+				projectId: null,
+			});
+			console.log(`Created prompt preset "${preset.name}" for user ${userId}`);
+			continue;
+		}
+
+		const row = existing[0];
+		const hasChanges =
+			row.description !== preset.description ||
+			row.systemPrompt !== preset.systemPrompt ||
+			row.userPrompt !== preset.userPrompt ||
+			row.promptMode !== preset.promptMode ||
+			!row.isEnabled;
+
+		if (!hasChanges) {
+			continue;
+		}
+
+		await db
+			.update(resourcePrompts)
+			.set({
+				description: preset.description,
+				systemPrompt: preset.systemPrompt,
+				userPrompt: preset.userPrompt,
+				promptMode: preset.promptMode,
+				isEnabled: true,
+				version: row.version + 1,
+				updatedAt: new Date(),
+			})
+			.where(eq(resourcePrompts.id, row.id));
+		console.log(`Updated prompt preset "${preset.name}" for user ${userId}`);
+	}
+}
+
 async function seedDevUser() {
 	console.log("Seeding development user...\n");
 
@@ -532,7 +642,7 @@ async function seedDevUser() {
 		await ensureDefaultPlatform(db, DEV_USER_ID);
 		await ensureSigningPublicKey(db, DEFAULT_PLATFORM_ID);
 
-		await upsertUserWithIdentity(
+		const devUserId = await upsertUserWithIdentity(
 			db,
 			{
 				id: DEV_USER_ID,
@@ -547,6 +657,7 @@ async function seedDevUser() {
 			},
 			DEFAULT_PLATFORM_ID,
 		);
+		await seedExamplePromptResourcesForUser(db, devUserId);
 
 		const githubEmail = process.env.SEED_GITHUB_USER_EMAIL?.trim();
 		const githubName =
@@ -569,8 +680,12 @@ async function seedDevUser() {
 				},
 				DEFAULT_PLATFORM_ID,
 			);
+			await seedExamplePromptResourcesForUser(db, githubUserId);
 		} else {
 			githubUserId = await findGithubUserId(db);
+			if (githubUserId) {
+				await seedExamplePromptResourcesForUser(db, githubUserId);
+			}
 		}
 
 		if (seedApiKeys.length > 0) {

@@ -8,13 +8,6 @@ import {
 	PromptInputSubmit,
 	PromptInputTextarea,
 } from "@/components/ai-elements/prompt-input";
-import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@/components/ui/select";
 import { useWorkflowAiChat } from "@/hooks/use-workflow-ai-chat";
 
 type AiChatPanelProps = {
@@ -29,40 +22,11 @@ function formatTimestamp(iso: string): string {
 }
 
 export function AiChatPanel({ workflowId }: AiChatPanelProps) {
-	const { isGenerating, isLoadingMessages, messages, mode, setMode, submit } =
+	const { isGenerating, isLoadingMessages, messages, submit } =
 		useWorkflowAiChat(workflowId);
 
 	return (
 		<div className="flex h-full min-h-0 flex-col">
-			<div className="shrink-0 border-b p-3">
-				<div className="mb-2 text-muted-foreground text-xs uppercase tracking-wide">
-					AI Settings
-				</div>
-				<div className="flex items-center justify-between gap-2">
-					<div className="text-sm">Generation mode</div>
-					<Select
-						disabled={isGenerating}
-						onValueChange={(value) => {
-							if (value === "classic" || value === "validated") {
-								setMode(value);
-							}
-						}}
-						value={mode}
-					>
-						<SelectTrigger className="h-8 w-[160px] text-xs">
-							<SelectValue placeholder="Mode" />
-						</SelectTrigger>
-						<SelectContent>
-							<SelectItem value="validated">Validated</SelectItem>
-							<SelectItem value="classic">Classic</SelectItem>
-						</SelectContent>
-					</Select>
-				</div>
-				<p className="mt-2 text-muted-foreground text-xs">
-					Applies to both sidebar chat and the canvas input bar.
-				</p>
-			</div>
-
 			<div className="flex-1 space-y-3 overflow-y-auto p-4">
 				{isLoadingMessages ? (
 					<div className="flex items-center gap-2 text-muted-foreground text-sm">

@@ -35,8 +35,6 @@ export type WorkflowEdge = Edge;
 // Workflow visibility type
 export type WorkflowVisibility = "private" | "public";
 
-export type WorkflowAiMode = "validated" | "classic";
-
 export type WorkflowAiMessage = {
 	id: string;
 	role: "user" | "assistant" | "system";
@@ -72,7 +70,6 @@ export const isTransitioningFromHomepageAtom = atom<boolean>(false);
 export const workflowAiMessagesWorkflowIdAtom = atom<string | null>(null);
 export const workflowAiMessagesAtom = atom<WorkflowAiMessage[]>([]);
 export const workflowAiMessagesLoadingAtom = atom<boolean>(false);
-export const workflowAiModeAtom = atom<WorkflowAiMode>("validated");
 
 // Tracks nodes that are pending integration auto-select check
 // Don't show "missing integration" warning for these nodes
@@ -265,16 +262,31 @@ export const updateNodeDataAtom = atom(
 	null,
 	(get, set, { id, data }: { id: string; data: Partial<WorkflowNodeData> }) => {
 		const currentNodes = get(nodesAtom);
+		const oldNode = currentNodes.find((node) => node.id === id);
+		if (!oldNode) {
+			return;
+		}
+
+		const updateKeys = Object.keys(data) as Array<keyof WorkflowNodeData>;
+		const isStatusOnlyUpdate =
+			updateKeys.length > 0 && updateKeys.every((key) => key === "status");
+		const hasDirectDataChanges = updateKeys.some(
+			(key) => oldNode.data[key] !== data[key],
+		);
 
 		// Check if label is being updated
-		const oldNode = currentNodes.find((node) => node.id === id);
 		const oldLabel = oldNode?.data.label;
 		const newLabel = data.label;
 		const isLabelChange = newLabel !== undefined && oldLabel !== newLabel;
+		if (!hasDirectDataChanges && !isLabelChange) {
+			return;
+		}
 
+		let hasNodeChanges = false;
 		const newNodes = currentNodes.map((node) => {
 			if (node.id === id) {
 				// Update the node itself
+				hasNodeChanges = true;
 				return { ...node, data: { ...node.data, ...data } };
 			}
 
@@ -288,6 +300,7 @@ export const updateNodeDataAtom = atom(
 				);
 
 				if (updatedConfig !== node.data.config) {
+					hasNodeChanges = true;
 					return {
 						...node,
 						data: {
@@ -301,10 +314,24 @@ export const updateNodeDataAtom = atom(
 			return node;
 		});
 
+		if (!hasNodeChanges) {
+			return;
+		}
+
+		if (!isStatusOnlyUpdate) {
+			const currentEdges = get(edgesAtom);
+			const history = get(historyAtom);
+			set(historyAtom, [
+				...history,
+				{ nodes: currentNodes, edges: currentEdges },
+			]);
+			set(futureAtom, []);
+		}
+
 		set(nodesAtom, newNodes);
 
 		// Mark as having unsaved changes (except for status updates during execution)
-		if (!data.status) {
+		if (!isStatusOnlyUpdate) {
 			set(hasUnsavedChangesAtom, true);
 			// Trigger debounced autosave (for typing)
 			set(autosaveAtom);

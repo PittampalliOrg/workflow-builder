@@ -498,11 +498,10 @@ export const aiChatApi = {
 			edges: WorkflowEdge[];
 			name?: string;
 		},
-		options?: { mode?: "validated" | "classic" },
 	): Promise<WorkflowData> =>
 		streamWorkflowOperations(
 			`/api/workflows/${workflowId}/ai-chat/stream`,
-			{ message, existingWorkflow, mode: options?.mode },
+			{ message, existingWorkflow },
 			onUpdate,
 			existingWorkflow,
 		),

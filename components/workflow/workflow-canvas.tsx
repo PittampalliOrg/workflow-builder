@@ -22,6 +22,9 @@ import "@xyflow/react/dist/style.css";
 
 import { PlayCircle, Zap } from "lucide-react";
 import { nanoid } from "nanoid";
+import { usePiecesCatalog } from "@/lib/actions/pieces-store";
+import { buildCatalogFromIntegrations } from "@/lib/workflow-spec/catalog";
+import { validateWorkflowGraph } from "@/lib/workflow-validation/validate-workflow-graph";
 import {
 	addNodeAtom,
 	autosaveAtom,
@@ -132,6 +135,32 @@ export function WorkflowCanvas() {
 	const [isCanvasReady, setIsCanvasReady] = useState(false);
 	const [contextMenuState, setContextMenuState] =
 		useState<ContextMenuState>(null);
+	const { pieces, loaded } = usePiecesCatalog();
+
+	const workflowCatalog = useMemo(
+		() => (loaded ? buildCatalogFromIntegrations(pieces) : undefined),
+		[loaded, pieces],
+	);
+	const workflowValidation = useMemo(
+		() =>
+			validateWorkflowGraph({
+				nodes,
+				edges,
+				catalog: workflowCatalog,
+			}),
+		[nodes, edges, workflowCatalog],
+	);
+	const edgesWithValidation = useMemo(
+		() =>
+			edges.map((edge) => ({
+				...edge,
+				data: {
+					...(edge.data as Record<string, unknown> | undefined),
+					validationState: workflowValidation.edgeStates[edge.id] ?? "valid",
+				},
+			})),
+		[edges, workflowValidation.edgeStates],
+	);
 
 	// Context menu handlers
 	const { onNodeContextMenu, onEdgeContextMenu, onPaneContextMenu } =
@@ -757,7 +786,7 @@ export function WorkflowCanvas() {
 				className="bg-background"
 				connectionLineComponent={Connection}
 				connectionMode={ConnectionMode.Strict}
-				edges={edges}
+				edges={edgesWithValidation}
 				edgeTypes={edgeTypes}
 				elementsSelectable={!isGenerating}
 				isValidConnection={isValidConnection}

@@ -153,6 +153,10 @@ export type ActionDefinition = {
 	/** Category label used for grouping in UI (typically the piece display name) */
 	category: string;
 	configFields: ActionConfigField[];
+	/** Optional JSON Schema for input shape (future contract checks). */
+	inputSchema?: unknown;
+	/** Optional JSON Schema for output shape (future contract checks). */
+	outputSchema?: unknown;
 	outputFields?: OutputField[];
 	outputConfig?: OutputDisplayConfig;
 };

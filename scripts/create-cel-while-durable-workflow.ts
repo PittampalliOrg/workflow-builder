@@ -8,13 +8,20 @@
  *   DATABASE_URL=... pnpm tsx scripts/create-cel-while-durable-workflow.ts --user-email you@example.com
  *   DATABASE_URL=... pnpm tsx scripts/create-cel-while-durable-workflow.ts --expression "iteration < 2"
  *   DATABASE_URL=... pnpm tsx scripts/create-cel-while-durable-workflow.ts --prompt "Summarize the request in one sentence."
+ *   DATABASE_URL=... pnpm tsx scripts/create-cel-while-durable-workflow.ts --profile tpl_coding_agent
  */
 
 import { desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { nanoid } from "nanoid";
 import postgres from "postgres";
-import { projectMembers, projects, users, workflows } from "../lib/db/schema";
+import {
+	agentProfileTemplates,
+	projectMembers,
+	projects,
+	users,
+	workflows,
+} from "../lib/db/schema";
 import { generateId } from "../lib/utils/id";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
 
@@ -27,6 +34,7 @@ type Args = {
 	expression: string;
 	prompt: string;
 	model?: string;
+	profile?: string;
 };
 
 function parseArgs(argv: string[]): Args {
@@ -38,6 +46,7 @@ function parseArgs(argv: string[]): Args {
 	let prompt =
 		"You are in a loop iteration. Return one short sentence confirming completion.";
 	let model: string | undefined;
+	let profile: string | undefined;
 
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -59,6 +68,9 @@ function parseArgs(argv: string[]): Args {
 		} else if (arg === "--model") {
 			model = argv[i + 1] || model;
 			i++;
+		} else if (arg === "--profile") {
+			profile = argv[i + 1] || profile;
+			i++;
 		}
 	}
 
@@ -69,6 +81,7 @@ function parseArgs(argv: string[]): Args {
 		expression: expression.trim() || "iteration < 3",
 		prompt: prompt.trim(),
 		model: model?.trim() || undefined,
+		profile: profile?.trim() || undefined,
 	};
 }
 
@@ -139,10 +152,44 @@ async function resolveProjectId(
 	);
 }
 
+async function resolveAgentProfile(
+	db: ReturnType<typeof drizzle>,
+	profileIdOrSlug?: string,
+): Promise<string> {
+	if (profileIdOrSlug) {
+		const byId = await db.query.agentProfileTemplates.findFirst({
+			where: eq(agentProfileTemplates.id, profileIdOrSlug),
+		});
+		if (byId) return byId.id;
+
+		const bySlug = await db.query.agentProfileTemplates.findFirst({
+			where: eq(agentProfileTemplates.slug, profileIdOrSlug),
+		});
+		if (bySlug) return bySlug.id;
+
+		throw new Error(
+			`Agent profile template not found: ${profileIdOrSlug}. ` +
+				"Use an id (e.g. tpl_coding_agent) or slug (e.g. coding-agent).",
+		);
+	}
+
+	const first = await db.query.agentProfileTemplates.findFirst({
+		where: eq(agentProfileTemplates.isEnabled, true),
+		orderBy: [agentProfileTemplates.sortOrder, agentProfileTemplates.name],
+	});
+	if (!first) {
+		throw new Error(
+			"No agent profile templates found. Seed profiles first or pass --profile.",
+		);
+	}
+	return first.id;
+}
+
 function buildWorkflowGraph(input: {
 	expression: string;
 	prompt: string;
 	model?: string;
+	agentProfileTemplateId: string;
 }) {
 	const triggerId = nanoid();
 	const whileId = nanoid();
@@ -152,6 +199,7 @@ function buildWorkflowGraph(input: {
 	const durableConfig: Record<string, string> = {
 		actionType: "durable/run",
 		mode: "execute_direct",
+		agentProfileTemplateId: input.agentProfileTemplateId,
 		prompt: input.prompt,
 		maxTurns: "4",
 	};
@@ -251,16 +299,27 @@ async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const client = postgres(DATABASE_URL, { max: 1 });
 	const db = drizzle(client, {
-		schema: { users, projects, projectMembers, workflows },
+		schema: {
+			users,
+			projects,
+			projectMembers,
+			workflows,
+			agentProfileTemplates,
+		},
 	});
 
 	try {
 		const { userId, email } = await resolveUserId(db, args.userEmail);
 		const projectId = await resolveProjectId(db, userId);
+		const agentProfileTemplateId = await resolveAgentProfile(
+			db,
+			args.profile,
+		);
 		const { nodes, edges } = buildWorkflowGraph({
 			expression: args.expression,
 			prompt: args.prompt,
 			model: args.model,
+			agentProfileTemplateId,
 		});
 
 		const workflowId = generateId();
@@ -292,6 +351,7 @@ async function main() {
 		console.log(`  userEmail: ${email ?? "unknown"}`);
 		console.log(`  projectId: ${created.projectId}`);
 		console.log(`  whileExpression: ${args.expression}`);
+		console.log(`  agentProfile: ${agentProfileTemplateId}`);
 		console.log(`  prompt: ${args.prompt}`);
 		console.log(`  updatedAt: ${created.updatedAt.toISOString()}`);
 		console.log(`  open: /workflows/${created.id}`);

@@ -2,8 +2,9 @@
 
 import { useAtom } from "jotai";
 import { Check } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { buildWorkflowContextAvailability } from "@/lib/workflow-validation/context-availability";
 import { cn } from "@/lib/utils";
 import { edgesAtom, nodesAtom, type WorkflowNode } from "@/lib/workflow-store";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
@@ -214,46 +215,44 @@ export function TemplateAutocomplete({
     return () => setMounted(false);
   }, []);
 
-  // Find all nodes that come before the current node
-  const getUpstreamNodes = () => {
-    if (!currentNodeId) {
-      return [];
-    }
-
-    const visited = new Set<string>();
-    const upstream: string[] = [];
-
-    const traverse = (nodeId: string) => {
-      if (visited.has(nodeId)) {
-        return;
-      }
-      visited.add(nodeId);
-
-      const incomingEdges = edges.filter((edge) => edge.target === nodeId);
-      for (const edge of incomingEdges) {
-        upstream.push(edge.source);
-        traverse(edge.source);
-      }
-    };
-
-    traverse(currentNodeId);
-
-    return nodes.filter((node) => upstream.includes(node.id));
-  };
-
-  const upstreamNodes = getUpstreamNodes();
+  const contextByNodeId = useMemo(
+    () => buildWorkflowContextAvailability(nodes, edges),
+    [nodes, edges]
+  );
+  const contextForNode = currentNodeId
+    ? contextByNodeId[currentNodeId]
+    : undefined;
+  const nodeById = useMemo(
+    () => new Map(nodes.map((node) => [node.id, node] as const)),
+    [nodes]
+  );
+  const upstreamNodes = useMemo(
+    () =>
+      (contextForNode?.upstreamNodes || [])
+        .map((entry) => {
+          const node = nodeById.get(entry.nodeId);
+          if (!node) {
+            return null;
+          }
+          return { node, availability: entry.availability };
+        })
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
+    [contextForNode?.upstreamNodes, nodeById]
+  );
 
   // Build list of all available options (nodes + their fields)
   const options: Array<{
-    type: "node" | "field";
+    type: "node" | "field" | "context-field";
     nodeId: string;
     nodeName: string;
     field?: string;
     description?: string;
     template: string;
+    availability?: "always" | "maybe";
   }> = [];
 
-  for (const node of upstreamNodes) {
+  for (const entry of upstreamNodes) {
+    const node = entry.node;
     const nodeName = getNodeDisplayNameForNode(node, findActionById);
     const fields = getCommonFieldsForNode(node, findActionById);
 
@@ -263,6 +262,7 @@ export function TemplateAutocomplete({
       nodeId: node.id,
       nodeName,
       template: `{{@${node.id}:${nodeName}}}`,
+      availability: entry.availability,
     });
 
     // Add fields
@@ -274,8 +274,21 @@ export function TemplateAutocomplete({
         field: field.field,
         description: field.description,
         template: `{{@${node.id}:${nodeName}.${field.field}}}`,
+        availability: entry.availability,
       });
     }
+  }
+
+  // Add workflow state keys as explicit context hints.
+  for (const stateKey of contextForNode?.stateKeys || []) {
+    options.push({
+      type: "context-field",
+      nodeId: "state",
+      nodeName: "state",
+      field: stateKey,
+      description: "Workflow state key from set-state",
+      template: `{{state.${stateKey}}}`,
+    });
   }
 
   // Filter options based on search term
@@ -283,7 +296,8 @@ export function TemplateAutocomplete({
     ? options.filter(
         (opt) =>
           opt.nodeName.toLowerCase().includes(filter.toLowerCase()) ||
-          (opt.field && opt.field.toLowerCase().includes(filter.toLowerCase()))
+          (opt.field && opt.field.toLowerCase().includes(filter.toLowerCase())) ||
+          opt.template.toLowerCase().includes(filter.toLowerCase())
       )
     : options;
 
@@ -373,6 +387,13 @@ export function TemplateAutocomplete({
               <div className="font-medium">
                 {option.type === "node" ? (
                   option.nodeName
+                ) : option.type === "context-field" ? (
+                  <>
+                    <span className="text-muted-foreground">
+                      {option.nodeName}.
+                    </span>
+                    {option.field}
+                  </>
                 ) : (
                   <>
                     <span className="text-muted-foreground">
@@ -382,6 +403,9 @@ export function TemplateAutocomplete({
                   </>
                 )}
               </div>
+              {option.availability === "maybe" && (
+                <div className="text-orange-500 text-[11px]">Maybe available</div>
+              )}
               {option.description && (
                 <div className="text-muted-foreground text-xs">
                   {option.description}

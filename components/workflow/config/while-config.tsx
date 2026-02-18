@@ -4,12 +4,16 @@ import { useAtomValue } from "jotai";
 import { useMemo } from "react";
 import { Label } from "@/components/ui/label";
 import { CodeEditor } from "@/components/ui/code-editor";
-import { nodesAtom } from "@/lib/workflow-store";
+import { edgesAtom, nodesAtom } from "@/lib/workflow-store";
 import {
 	setupCelLanguage,
 	type CelEditorContext,
 	type MonacoLike,
 } from "@/lib/monaco-cel-language";
+import {
+	buildWhileCelMemberFields,
+	buildWorkflowContextAvailability,
+} from "@/lib/workflow-validation/context-availability";
 
 type WhileConfigProps = {
 	nodeId: string;
@@ -25,86 +29,21 @@ export function WhileConfig({
 	disabled,
 }: WhileConfigProps) {
 	const nodes = useAtomValue(nodesAtom);
+	const edges = useAtomValue(edgesAtom);
 
 	const { loopBodyLabel, stateKeys, celContext, contextVersion } =
 		useMemo(() => {
-			const extractSetStateKeys = (
-				nodeConfig: Record<string, unknown> | undefined,
-			): string[] => {
-				if (!nodeConfig) {
-					return [];
-				}
-
-				const keys = new Set<string>();
-
-				if (Array.isArray(nodeConfig.entries)) {
-					for (const entry of nodeConfig.entries) {
-						if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-							continue;
-						}
-						const rawKey = (entry as Record<string, unknown>).key;
-						const key =
-							typeof rawKey === "string"
-								? rawKey.trim()
-								: String(rawKey ?? "").trim();
-						if (key) {
-							keys.add(key);
-						}
-					}
-				}
-
-				const legacyKey =
-					typeof nodeConfig.key === "string"
-						? nodeConfig.key.trim()
-						: String(nodeConfig.key ?? "").trim();
-				if (legacyKey) {
-					keys.add(legacyKey);
-				}
-
-				return Array.from(keys);
-			};
-
 			const loopBodyNode = nodes.find(
 				(node) => node.parentId === nodeId && node.type !== "add",
 			);
 			const loopBodyLabel = String(
 				loopBodyNode?.data?.label || loopBodyNode?.id || "Not detected",
 			);
-
-			const stateKeys = Array.from(
-				new Set(
-					nodes
-						.filter((node) => node.type === "set-state")
-						.flatMap((node) =>
-							extractSetStateKeys(node.data?.config as Record<string, unknown>),
-						)
-						.filter(Boolean),
-				),
-			);
+			const contextByNodeId = buildWorkflowContextAvailability(nodes, edges);
+			const stateKeys = contextByNodeId[nodeId]?.stateKeys || [];
 
 			const celContext: CelEditorContext = {
-				memberFields: {
-					state: stateKeys,
-					workflow: ["id", "name", "input", "input_as_text"],
-					input: [
-						"success",
-						"data",
-						"error",
-						"text",
-						"toolCalls",
-						"fileChanges",
-						"daprInstanceId",
-					],
-					last: [
-						"success",
-						"data",
-						"error",
-						"text",
-						"toolCalls",
-						"fileChanges",
-						"daprInstanceId",
-					],
-				},
+				memberFields: buildWhileCelMemberFields(stateKeys),
 			};
 
 			return {
@@ -113,7 +52,7 @@ export function WhileConfig({
 				celContext,
 				contextVersion: `${nodeId}:${loopBodyNode?.id || "none"}:${stateKeys.join("|")}`,
 			};
-		}, [nodes, nodeId]);
+		}, [nodes, edges, nodeId]);
 
 	return (
 		<div className="space-y-4">

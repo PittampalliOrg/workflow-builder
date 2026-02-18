@@ -6,6 +6,10 @@ import {
 	type PlanValidationIssue,
 	normalizeAndValidateCanonicalPlan,
 } from "./plan-schema.js";
+import {
+	normalizeModelSpecForEnvironment,
+	normalizeOpenAiChatModel,
+} from "./model-normalization.js";
 
 const AVAILABLE_TOOLS = `Available workspace tools:
 - read_file: Read a file from the workspace
@@ -104,7 +108,11 @@ async function generateWithAiSdk(
 	prompt: string,
 	validationErrors: string[],
 ): Promise<unknown> {
-	const model = openai.chat(process.env.AI_MODEL ?? "gpt-4o");
+	const model = openai.chat(
+		normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL", {
+			logPrefix: "[planner]",
+		}),
+	);
 	const result = await generateObject({
 		model,
 		schema: CanonicalPlanSchema,
@@ -120,10 +128,14 @@ async function generateWithMastra(
 ): Promise<unknown> {
 	// Optional peer dependency. Fallback is handled by caller.
 	const { Agent } = await import("@mastra/core/agent");
-	const modelSpec =
+	const modelSpec = normalizeModelSpecForEnvironment(
 		process.env.PLAN_STRUCTURED_MODEL_SPEC ||
-		process.env.MASTRA_MODEL_SPEC ||
-		`openai/${process.env.AI_MODEL ?? "gpt-4o"}`;
+			process.env.MASTRA_MODEL_SPEC ||
+			"",
+		{
+			logPrefix: "[planner]",
+		},
+	);
 
 	const planner = new Agent({
 		id: "durable-structured-planner",

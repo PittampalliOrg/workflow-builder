@@ -713,11 +713,28 @@ export const PanelInner = () => {
 								<Label className="ml-1" htmlFor="workflow-id">
 									Workflow ID
 								</Label>
-								<Input
-									disabled
-									id="workflow-id"
-									value={currentWorkflowId || "Not saved"}
-								/>
+								<div className="flex items-center gap-1">
+									<Input
+										className="font-mono text-xs"
+										id="workflow-id"
+										readOnly
+										value={currentWorkflowId || "Not saved"}
+									/>
+									{currentWorkflowId && (
+										<Button
+											className="shrink-0"
+											onClick={() => {
+												navigator.clipboard.writeText(currentWorkflowId);
+												toast.success("Workflow ID copied");
+											}}
+											size="icon"
+											title="Copy Workflow ID"
+											variant="ghost"
+										>
+											<Copy className="size-4" />
+										</Button>
+									)}
+								</div>
 							</div>
 							{!isOwner && (
 								<div className="rounded-lg border border-muted bg-muted/30 p-3">

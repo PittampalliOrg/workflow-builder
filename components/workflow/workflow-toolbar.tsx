@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ButtonGroup } from "@/components/ui/button-group";
@@ -38,6 +38,8 @@ import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
 } from "@/lib/actions/connection-utils";
+import { buildCatalogFromIntegrations } from "@/lib/workflow-spec/catalog";
+import { validateWorkflowGraph } from "@/lib/workflow-validation/validate-workflow-graph";
 import {
 	addNodeAtom,
 	canRedoAtom,
@@ -71,6 +73,7 @@ import {
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ActionDefinition, IntegrationType } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
+import type { ContractIssue } from "@/lib/workflow-validation/types";
 import { Panel } from "../ai-elements/panel";
 import { DeployButton } from "../deploy-button";
 import { GitHubStarsButton } from "../github-stars-button";
@@ -505,6 +508,43 @@ function getMissingNodeConnections(
 	return missing;
 }
 
+function getFieldKeyFromIssuePath(path: string): string | undefined {
+	const segments = path.split("/").filter(Boolean);
+	const configIndex = segments.findIndex((segment) => segment === "config");
+	if (configIndex === -1) {
+		return undefined;
+	}
+	return segments[configIndex + 1];
+}
+
+function mapContractIssuesForOverlay(
+	issues: ContractIssue[],
+	nodes: WorkflowNode[],
+	findActionById: (
+		actionId: string | undefined | null,
+	) => ActionDefinition | undefined,
+) {
+	const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+	return issues
+		.filter((issue) => Boolean(issue.nodeId))
+		.map((issue) => {
+			const node = issue.nodeId ? nodeById.get(issue.nodeId) : undefined;
+			const actionType = node?.data.config?.actionType as string | undefined;
+			const action = actionType ? findActionById(actionType) : undefined;
+			return {
+				nodeId: issue.nodeId || "",
+				nodeLabel:
+					node?.data.label || action?.label || node?.id || "Unnamed Step",
+				code: issue.code,
+				severity: issue.severity,
+				message: issue.message,
+				path: issue.path,
+				fieldKey: getFieldKeyFromIssuePath(issue.path),
+			};
+		})
+		.filter((issue) => Boolean(issue.nodeId));
+}
+
 type ExecuteTestWorkflowParams = {
 	workflowId: string;
 	nodes: WorkflowNode[];
@@ -632,8 +672,22 @@ function useWorkflowHandlers({
 	session,
 }: WorkflowHandlerParams) {
 	const { open: openOverlay } = useOverlay();
-	const { findActionById, getIntegrationLabels } = usePiecesCatalog();
+	const { findActionById, getIntegrationLabels, pieces, loaded } =
+		usePiecesCatalog();
 	const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+	const workflowCatalog = useMemo(
+		() => (loaded ? buildCatalogFromIntegrations(pieces) : undefined),
+		[loaded, pieces],
+	);
+	const workflowValidation = useMemo(
+		() =>
+			validateWorkflowGraph({
+				nodes,
+				edges,
+				catalog: workflowCatalog,
+			}),
+		[nodes, edges, workflowCatalog],
+	);
 
 	// Cleanup polling interval on unmount
 	useEffect(
@@ -757,13 +811,19 @@ function useWorkflowHandlers({
 			findActionById,
 			integrationLabels,
 		);
+		const contractIssues = mapContractIssuesForOverlay(
+			workflowValidation.issues,
+			nodes,
+			findActionById,
+		);
 
 		// If there are any issues, show the workflow issues overlay
 		if (
 			brokenRefs.length > 0 ||
 			missingFields.length > 0 ||
 			missingIntegrations.length > 0 ||
-			missingNodeConnections.length > 0
+			missingNodeConnections.length > 0 ||
+			contractIssues.length > 0
 		) {
 			openOverlay(WorkflowIssuesOverlay, {
 				issues: {
@@ -771,6 +831,7 @@ function useWorkflowHandlers({
 					missingRequiredFields: missingFields,
 					missingIntegrations,
 					missingNodeConnections,
+					contractIssues,
 				},
 				onGoToStep: handleGoToStep,
 				onRunAnyway: promptAndExecute,
@@ -1597,6 +1658,20 @@ function WorkflowMenuComponent({
 								}
 							>
 								<span>Export JSON</span>
+							</DropdownMenuItem>
+						)}
+						{workflowId && (
+							<DropdownMenuItem
+								className="flex items-center gap-2"
+								disabled={state.isDuplicating}
+								onClick={actions.handleDuplicate}
+							>
+								{state.isDuplicating ? (
+									<Loader2 className="size-4 animate-spin" />
+								) : (
+									<Copy className="size-4" />
+								)}
+								<span>Duplicate workflow</span>
 							</DropdownMenuItem>
 						)}
 						<DropdownMenuSeparator />
