@@ -46,6 +46,13 @@ import {
 } from "@/lib/workflow-store";
 import type { DagreLayoutOptions } from "@/lib/workflow-layout/dagre-layout";
 import { layoutWorkflowNodes } from "@/lib/workflow-layout/dagre-layout";
+import {
+	WORKFLOW_NODE_SIZE,
+	clampWhileChildPosition,
+	getAbsolutePosition,
+	isPointInsideWhileNode,
+	isWhileBodyCandidate,
+} from "@/lib/workflows/while-node";
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
 import { CanvasAiChatInput } from "./canvas-ai-chat-input";
@@ -60,6 +67,7 @@ import { SetStateNode } from "./nodes/set-state-node";
 import { TimerNode } from "./nodes/timer-node";
 import { TransformNode } from "./nodes/transform-node";
 import { TriggerNode } from "./nodes/trigger-node";
+import { WhileNode } from "./nodes/while-node";
 import {
 	type ContextMenuState,
 	useContextMenuHandlers,
@@ -313,6 +321,7 @@ export function WorkflowCanvas() {
 			"approval-gate": ApprovalGateNode,
 			timer: TimerNode,
 			"loop-until": LoopUntilNode,
+			while: WhileNode,
 			"if-else": IfElseNode,
 			note: NoteNode,
 			"set-state": SetStateNode,
@@ -343,6 +352,106 @@ export function WorkflowCanvas() {
 			return true;
 		},
 		[nodes],
+	);
+
+	const onNodeDragStop = useCallback(
+		(_event: unknown, draggedNode: Node) => {
+			if (draggedNode.type === "while") {
+				return;
+			}
+
+			const currentNode = nodes.find((node) => node.id === draggedNode.id);
+			if (!currentNode) {
+				return;
+			}
+
+			const whileNodes = nodes.filter((node) => node.type === "while");
+			if (whileNodes.length === 0) {
+				return;
+			}
+
+			const nodeLookup = new Map(nodes.map((node) => [node.id, node] as const));
+			const draggedAbs = getAbsolutePosition(currentNode, nodeLookup);
+			const center = {
+				x: draggedAbs.x + WORKFLOW_NODE_SIZE / 2,
+				y: draggedAbs.y + WORKFLOW_NODE_SIZE / 2,
+			};
+
+			const containingWhile = whileNodes.find((whileNode) => {
+				const whileAbs = getAbsolutePosition(whileNode, nodeLookup);
+				return isPointInsideWhileNode(center, whileAbs);
+			});
+			const currentParent =
+				currentNode.parentId &&
+				nodes.find(
+					(node) => node.id === currentNode.parentId && node.type === "while",
+				);
+
+			const shouldBind =
+				Boolean(containingWhile) && isWhileBodyCandidate(currentNode);
+			const needsUnbind = Boolean(currentParent) && !containingWhile;
+
+			if (!shouldBind && !needsUnbind) {
+				return;
+			}
+
+			let changed = false;
+			const nextNodes = nodes.map((node) => {
+				if (node.id !== currentNode.id) {
+					return node;
+				}
+
+				if (shouldBind && containingWhile) {
+					const hasExistingBody = nodes.some(
+						(candidate) =>
+							candidate.id !== currentNode.id &&
+							candidate.parentId === containingWhile.id &&
+							isWhileBodyCandidate(candidate),
+					);
+					if (hasExistingBody) {
+						return node;
+					}
+
+					const whileAbs = getAbsolutePosition(containingWhile, nodeLookup);
+					const relative = clampWhileChildPosition({
+						x: draggedAbs.x - whileAbs.x,
+						y: draggedAbs.y - whileAbs.y,
+					});
+
+					changed =
+						node.parentId !== containingWhile.id ||
+						node.position.x !== relative.x ||
+						node.position.y !== relative.y;
+
+					return {
+						...node,
+						parentId: containingWhile.id,
+						position: relative,
+					};
+				}
+
+				if (needsUnbind) {
+					changed = Boolean(node.parentId || node.extent);
+					return {
+						...node,
+						parentId: undefined,
+						extent: undefined,
+						position: draggedAbs,
+					};
+				}
+
+				return node;
+			});
+
+			if (!changed) {
+				return;
+			}
+
+			setNodes(nextNodes);
+			setHasUnsavedChanges(true);
+			triggerAutosave({ immediate: true });
+		},
+		[nodes, setNodes, setHasUnsavedChanges, triggerAutosave],
 	);
 
 	const isValidConnection = useCallback(
@@ -662,6 +771,7 @@ export function WorkflowCanvas() {
 				onEdgeContextMenu={isGenerating ? undefined : onEdgeContextMenu}
 				onEdgesChange={isGenerating ? undefined : onEdgesChange}
 				onNodeClick={isGenerating ? undefined : onNodeClick}
+				onNodeDragStop={isGenerating ? undefined : onNodeDragStop}
 				onNodeContextMenu={isGenerating ? undefined : onNodeContextMenu}
 				onNodesChange={isGenerating ? undefined : onNodesChange}
 				onPaneClick={onPaneClick}

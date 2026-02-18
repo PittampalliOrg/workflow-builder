@@ -473,6 +473,238 @@ def _serialize_node(node: dict) -> dict[str, Any]:
     }
 
 
+def _node_type(node: dict[str, Any]) -> str:
+    data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+    return str(data.get("type") or node.get("type") or "")
+
+
+def _is_while_node(node: dict[str, Any]) -> bool:
+    return _node_type(node) == "while"
+
+
+def _is_while_body_candidate(node: dict[str, Any]) -> bool:
+    if _node_type(node) != "action":
+        return False
+    data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+    config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
+    return str(config.get("actionType") or "").strip() == "durable/run"
+
+
+def _abs_position(
+    node: dict[str, Any],
+    by_id: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    x = float((node.get("position") or {}).get("x", 0))
+    y = float((node.get("position") or {}).get("y", 0))
+    current = node
+    while current.get("parentId"):
+        parent = by_id.get(str(current.get("parentId")))
+        if not parent:
+            break
+        x += float((parent.get("position") or {}).get("x", 0))
+        y += float((parent.get("position") or {}).get("y", 0))
+        current = parent
+    return {"x": x, "y": y}
+
+
+def _next_unique_id(base: str, used: set[str]) -> str:
+    if base not in used:
+        return base
+    i = 1
+    while f"{base}-{i}" in used:
+        i += 1
+    return f"{base}-{i}"
+
+
+def _lower_while_nodes(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    while_nodes = [n for n in nodes if _is_while_node(n)]
+    if not while_nodes:
+        return nodes, edges
+
+    lowered_nodes = list(nodes)
+    lowered_edges = list(edges)
+
+    for while_node in while_nodes:
+        while_id = str(while_node.get("id") or "")
+        if not while_id:
+            continue
+
+        by_id = {
+            str(node.get("id")): node
+            for node in lowered_nodes
+            if node.get("id") is not None
+        }
+        while_abs = _abs_position(while_node, by_id)
+        data = while_node.get("data", {}) if isinstance(while_node.get("data"), dict) else {}
+        config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
+        while_expression = str(config.get("expression") or "").strip()
+
+        max_iterations_raw = config.get("maxIterations", 20)
+        delay_seconds_raw = config.get("delaySeconds", 0)
+        try:
+            max_iterations = max(1, int(max_iterations_raw))
+        except Exception:
+            max_iterations = 20
+        try:
+            delay_seconds = max(0, int(delay_seconds_raw))
+        except Exception:
+            delay_seconds = 0
+        on_max_iterations = str(config.get("onMaxIterations") or "continue").strip().lower()
+        if on_max_iterations not in ("continue", "fail"):
+            on_max_iterations = "continue"
+
+        children = sorted(
+            [
+                n
+                for n in lowered_nodes
+                if str(n.get("parentId") or "") == while_id
+            ],
+            key=lambda n: str(n.get("id") or ""),
+        )
+        child_ids = {str(n.get("id") or "") for n in children if n.get("id")}
+        body = next((n for n in children if _is_while_body_candidate(n)), None)
+
+        if body is None:
+            lowered_nodes = [
+                n
+                for n in lowered_nodes
+                if str(n.get("id") or "") not in child_ids or str(n.get("id") or "") == while_id
+            ]
+            lowered_edges = [
+                e
+                for e in lowered_edges
+                if str(e.get("source") or "") not in child_ids
+                and str(e.get("target") or "") not in child_ids
+            ]
+
+            for idx, node in enumerate(lowered_nodes):
+                if str(node.get("id") or "") != while_id:
+                    continue
+                node_data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
+                node_data["type"] = "loop-until"
+                node_data["config"] = {
+                    "loopStartNodeId": "",
+                    "maxIterations": max_iterations,
+                    "delaySeconds": delay_seconds,
+                    "onMaxIterations": on_max_iterations,
+                    "operator": "BOOLEAN_IS_TRUE",
+                    "left": True,
+                    "conditionMode": "celExpression",
+                    "celExpression": f"!({while_expression})" if while_expression else "true",
+                    "whileExpression": while_expression,
+                }
+                node["type"] = "loop-until"
+                node["data"] = node_data
+                lowered_nodes[idx] = node
+                break
+            continue
+
+        body_id = str(body.get("id") or "")
+        if not body_id:
+            continue
+
+        body_abs = _abs_position(body, by_id)
+        loop_id = while_id
+
+        incoming = [e for e in lowered_edges if str(e.get("target") or "") == while_id]
+        outgoing = [e for e in lowered_edges if str(e.get("source") or "") == while_id]
+
+        next_nodes: list[dict[str, Any]] = []
+        for node in lowered_nodes:
+            nid = str(node.get("id") or "")
+            if nid == while_id:
+                continue
+            if nid in child_ids and nid != body_id:
+                continue
+            if nid == body_id:
+                node = dict(node)
+                node["position"] = body_abs
+                node.pop("parentId", None)
+                node.pop("extent", None)
+            next_nodes.append(node)
+
+        loop_node = {
+            "id": loop_id,
+            "type": "loop-until",
+            "position": {
+                "x": max(while_abs["x"] + 250, body_abs["x"] + 240),
+                "y": body_abs["y"],
+            },
+            "data": {
+                "label": str(data.get("label") or "While"),
+                "description": str(data.get("description") or "Loop while condition is true"),
+                "type": "loop-until",
+                "config": {
+                    "loopStartNodeId": body_id,
+                    "maxIterations": max_iterations,
+                    "delaySeconds": delay_seconds,
+                    "onMaxIterations": on_max_iterations,
+                    "operator": "BOOLEAN_IS_TRUE",
+                    "left": True,
+                    "conditionMode": "celExpression",
+                    "celExpression": f"!({while_expression})" if while_expression else "true",
+                    "whileExpression": while_expression,
+                },
+                "status": str(data.get("status") or "idle"),
+                "enabled": bool(data.get("enabled", True)),
+            },
+        }
+        next_nodes.append(loop_node)
+        lowered_nodes = next_nodes
+
+        lowered_edges = [
+            e
+            for e in lowered_edges
+            if str(e.get("source") or "") != while_id
+            and str(e.get("target") or "") != while_id
+            and str(e.get("source") or "") not in child_ids
+            and str(e.get("target") or "") not in child_ids
+        ]
+
+        used_edge_ids = {str(e.get("id") or "") for e in lowered_edges}
+
+        def append_edge(source: str, target: str, source_handle: Any = None, target_handle: Any = None) -> None:
+            base = f"{source}->{target}"
+            if source_handle:
+                base = f"{base}:{source_handle}"
+            edge_id = _next_unique_id(base, used_edge_ids)
+            used_edge_ids.add(edge_id)
+            lowered_edges.append(
+                {
+                    "id": edge_id,
+                    "source": source,
+                    "target": target,
+                    "sourceHandle": source_handle,
+                    "targetHandle": target_handle,
+                    "type": "animated",
+                }
+            )
+
+        for edge in incoming:
+            source = str(edge.get("source") or "")
+            if source:
+                append_edge(
+                    source=source,
+                    target=body_id,
+                    source_handle=edge.get("sourceHandle"),
+                    target_handle=edge.get("targetHandle"),
+                )
+
+        append_edge(source=body_id, target=loop_id)
+
+        for edge in outgoing:
+            target = str(edge.get("target") or "")
+            if target:
+                append_edge(
+                    source=loop_id,
+                    target=target,
+                    source_handle=edge.get("sourceHandle"),
+                    target_handle=edge.get("targetHandle"),
+                )
+
+    return lowered_nodes, lowered_edges
+
+
 def map_runtime_status(dapr_status: str) -> str:
     """Map Dapr runtime status to our status format."""
     status_map = {
@@ -566,9 +798,14 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
         wf = _fetch_workflow_from_db(request.workflowId)
         raw_nodes = wf["nodes"]
         raw_edges = wf["edges"]
+        lowered_nodes, lowered_edges = _lower_while_nodes(raw_nodes, raw_edges)
 
         # 2. Filter out 'add' placeholder nodes
-        exec_nodes = [n for n in raw_nodes if n.get("type") != "add" and n.get("data", {}).get("type") != "add"]
+        exec_nodes = [
+            n
+            for n in lowered_nodes
+            if n.get("type") != "add" and n.get("data", {}).get("type") != "add"
+        ]
 
         # 3. Serialize nodes
         serialized_nodes = [_serialize_node(n) for n in exec_nodes]
@@ -578,7 +815,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
         serialized_edges = [
             {"id": e["id"], "source": e["source"], "target": e["target"],
              "sourceHandle": e.get("sourceHandle"), "targetHandle": e.get("targetHandle")}
-            for e in raw_edges
+            for e in lowered_edges
             if e["source"] in node_ids and e["target"] in node_ids
         ]
 

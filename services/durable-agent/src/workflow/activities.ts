@@ -14,11 +14,14 @@ import { trace, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 
 import type {
 	AgentWorkflowMessage,
-	AgentWorkflowState,
 	ToolCall,
 	ToolExecutionRecord,
 	DurableAgentTool,
 } from "../types/index.js";
+import type {
+	LoopDeclarationOnlyTool,
+	LoopToolChoice,
+} from "../types/loop-policy.js";
 import type { DaprAgentState } from "../state/dapr-state.js";
 import type { MemoryProvider } from "../memory/memory-base.js";
 import { callLlmAdapter, type LlmCallResult } from "../llm/ai-sdk-adapter.js";
@@ -60,6 +63,14 @@ export interface CallLlmPayload {
 		tool_call_id: string;
 		name: string;
 	}>;
+	modelSpec?: string;
+	activeTools?: string[];
+	toolChoice?: LoopToolChoice;
+	trimMessagesTo?: number;
+	truncateToolResultChars?: number;
+	appendInstructions?: string;
+	declarationOnlyTools?: LoopDeclarationOnlyTool[];
+	approvalRequiredTools?: string[];
 }
 
 export interface RunToolPayload {
@@ -148,6 +159,7 @@ export function createCallLlm(
 	memory: MemoryProvider,
 	processors?: ProcessorLike[],
 	agentName?: string,
+	resolveModelSpec?: (modelSpec: string) => LanguageModel,
 ) {
 	let turnCount = 0;
 
@@ -156,8 +168,25 @@ export function createCallLlm(
 		payload: CallLlmPayload,
 	): Promise<LlmCallResult> {
 		turnCount++;
-		const state = await stateManager.loadState();
-		const entry = state.instances[payload.instanceId];
+		let state = await stateManager.loadState();
+		let entry = state.instances[payload.instanceId];
+		if (!entry) {
+			// Defensive self-heal: concurrent state writes can drop an instance entry.
+			// Recreate the entry instead of crashing the workflow turn.
+			console.warn(
+				`[callLlm] Missing state entry for instance=${payload.instanceId}; recreating`,
+			);
+			state = await stateManager.ensureInstance(
+				payload.instanceId,
+				payload.task ?? "Recovered workflow state",
+			);
+			entry = state.instances[payload.instanceId];
+			if (!entry) {
+				throw new Error(
+					`Failed to recover state entry for instance ${payload.instanceId}`,
+				);
+			}
+		}
 
 		// On the first turn, prepend the user's task as a user message
 		if (payload.task) {
@@ -283,16 +312,94 @@ export function createCallLlm(
 			}
 		}
 
+		let preparedMessages = processedMessages;
+		const trimMessagesTo =
+			typeof payload.trimMessagesTo === "number" &&
+			Number.isFinite(payload.trimMessagesTo)
+				? Math.max(1, Math.floor(payload.trimMessagesTo))
+				: undefined;
+		if (trimMessagesTo && preparedMessages.length > trimMessagesTo) {
+			preparedMessages = preparedMessages.slice(-trimMessagesTo);
+		}
+
+		const truncateToolResultChars =
+			typeof payload.truncateToolResultChars === "number" &&
+			Number.isFinite(payload.truncateToolResultChars)
+				? Math.max(64, Math.floor(payload.truncateToolResultChars))
+				: undefined;
+		if (truncateToolResultChars) {
+			preparedMessages = preparedMessages.map((msg) => {
+				if (msg.role !== "tool" || typeof msg.content !== "string") {
+					return msg;
+				}
+				if (msg.content.length <= truncateToolResultChars) {
+					return msg;
+				}
+				return {
+					...msg,
+					content:
+						msg.content.slice(0, truncateToolResultChars) +
+						`... [truncated ${msg.content.length - truncateToolResultChars} chars]`,
+				};
+			});
+		}
+
+		let activeTools = tools;
+		const activeToolNames = Array.isArray(payload.activeTools)
+			? payload.activeTools
+					.map((name) => (typeof name === "string" ? name.trim() : ""))
+					.filter((name) => Boolean(name))
+			: [];
+		if (activeToolNames.length > 0) {
+			const allowed = new Set(activeToolNames);
+			activeTools = {};
+			for (const [toolName, toolDef] of Object.entries(tools)) {
+				if (allowed.has(toolName)) {
+					activeTools[toolName] = toolDef;
+				}
+			}
+		}
+
+		const declarationOnlyTools = Array.isArray(payload.declarationOnlyTools)
+			? payload.declarationOnlyTools.filter(
+					(entry): entry is LoopDeclarationOnlyTool =>
+						Boolean(entry?.name && typeof entry.name === "string"),
+				)
+			: [];
+		const approvalRequiredTools = new Set(
+			Array.isArray(payload.approvalRequiredTools)
+				? payload.approvalRequiredTools
+						.map((name) =>
+							typeof name === "string" ? name.trim().toLowerCase() : "",
+						)
+						.filter((name) => Boolean(name))
+				: [],
+		);
+		const effectiveModel =
+			typeof payload.modelSpec === "string" &&
+			payload.modelSpec.trim() &&
+			resolveModelSpec
+				? resolveModelSpec(payload.modelSpec.trim())
+				: model;
+		const effectiveSystemPrompt =
+			typeof payload.appendInstructions === "string" &&
+			payload.appendInstructions.trim()
+				? `${systemPrompt}\n\n## Step Instructions\n${payload.appendInstructions.trim()}`
+				: systemPrompt;
+
 		// Call LLM with tool declarations (no auto-execute)
 		const result = await callLlmAdapter(
-			model,
-			systemPrompt,
-			processedMessages,
-			tools,
+			effectiveModel,
+			effectiveSystemPrompt,
+			preparedMessages,
+			activeTools,
 			{
 				instanceId: payload.instanceId,
 				turn: turnCount,
 				agentName,
+				toolChoice: payload.toolChoice,
+				declarationOnlyTools,
+				approvalRequiredTools,
 			},
 		);
 
@@ -343,6 +450,16 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 		if (!tool) {
 			const errMsg = `Unknown tool: ${fnName}`;
 			console.error(`[runTool] ${errMsg}`);
+			return {
+				role: "tool",
+				content: JSON.stringify({ error: errMsg }),
+				tool_call_id: toolCall.id,
+				name: fnName,
+			};
+		}
+		if (typeof tool.execute !== "function") {
+			const errMsg = `Tool has no execute handler: ${fnName}`;
+			console.warn(`[runTool] ${errMsg}`);
 			return {
 				role: "tool",
 				content: JSON.stringify({ error: errMsg }),
@@ -425,8 +542,23 @@ export function createSaveToolResults(
 		_ctx: WorkflowActivityContext,
 		payload: SaveToolResultsPayload,
 	): Promise<void> {
-		const state = await stateManager.loadState();
-		const entry = state.instances[payload.instanceId];
+		let state = await stateManager.loadState();
+		let entry = state.instances[payload.instanceId];
+		if (!entry) {
+			console.warn(
+				`[saveToolResults] Missing state entry for instance=${payload.instanceId}; recreating`,
+			);
+			state = await stateManager.ensureInstance(
+				payload.instanceId,
+				"Recovered workflow state",
+			);
+			entry = state.instances[payload.instanceId];
+			if (!entry) {
+				throw new Error(
+					`Failed to recover state entry for instance ${payload.instanceId}`,
+				);
+			}
+		}
 
 		// Deduplicate by tool_call_id to guard against replays
 		const existingIds = new Set(

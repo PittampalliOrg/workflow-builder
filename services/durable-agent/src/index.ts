@@ -22,6 +22,16 @@ export type {
 	TriggerAction,
 	BroadcastMessage,
 	AgentTaskResponse,
+	LoopToolChoice,
+	LoopStopCondition,
+	LoopPrepareStepRule,
+	LoopPrepareStepPolicy,
+	LoopDoneToolConfig,
+	LoopPolicy,
+	LoopUsage,
+	LoopStepRecord,
+	LoopDeclarationOnlyTool,
+	LoopPreparedStep,
 } from "./types/index.js";
 
 // Config

@@ -16,13 +16,54 @@ type SetStateNodeProps = NodeProps & {
 	id: string;
 };
 
+function readSetStateKeys(
+	config: Record<string, unknown> | undefined,
+): string[] {
+	if (!config) {
+		return [];
+	}
+
+	const keys = new Set<string>();
+	if (Array.isArray(config.entries)) {
+		for (const entry of config.entries) {
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+				continue;
+			}
+			const rawKey = (entry as Record<string, unknown>).key;
+			const key =
+				typeof rawKey === "string"
+					? rawKey.trim()
+					: String(rawKey ?? "").trim();
+			if (key) {
+				keys.add(key);
+			}
+		}
+	}
+
+	const legacyKey =
+		typeof config.key === "string"
+			? config.key.trim()
+			: String(config.key ?? "").trim();
+	if (legacyKey) {
+		keys.add(legacyKey);
+	}
+
+	return Array.from(keys);
+}
+
 export const SetStateNode = memo(
 	({ data, selected, id }: SetStateNodeProps) => {
 		if (!data) {
 			return null;
 		}
 
-		const key = String(data.config?.key || "").trim();
+		const keys = readSetStateKeys(data.config);
+		const description =
+			keys.length === 0
+				? "Set workflow variables"
+				: keys.length === 1
+					? `Set state.${keys[0]}`
+					: `Set ${keys.length} state values`;
 
 		return (
 			<Node
@@ -43,9 +84,7 @@ export const SetStateNode = memo(
 						<NodeTitle className="text-base">
 							{data.label || "Set State"}
 						</NodeTitle>
-						<NodeDescription className="text-xs">
-							{key ? `Set state.${key}` : "Set a workflow variable"}
-						</NodeDescription>
+						<NodeDescription className="text-xs">{description}</NodeDescription>
 					</div>
 				</div>
 			</Node>

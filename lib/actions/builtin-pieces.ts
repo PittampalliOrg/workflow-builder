@@ -121,6 +121,15 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					required: false,
 				},
 				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					required: false,
+					defaultValue: "50",
+					min: 1,
+					placeholder: "50",
+				},
+				{
 					key: "stopCondition",
 					label: "Stop Condition (optional)",
 					type: "template-textarea",
@@ -205,6 +214,27 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				{
 					field: "changeSummary",
 					description: "Structured per-step file change metadata",
+				},
+				{
+					field: "loopStopReason",
+					description: "Loop termination reason from durable ReAct runtime",
+				},
+				{
+					field: "loopStopCondition",
+					description: "Matched stopWhen condition payload (if any)",
+				},
+				{
+					field: "requiresApproval",
+					description: "Approval requirement details when execution paused",
+				},
+				{
+					field: "staticToolCalls",
+					description:
+						"Tool calls not executed (approval/declaration-only termination)",
+				},
+				{
+					field: "usageTotals",
+					description: "Accumulated token usage across loop steps",
 				},
 				{ field: "usage", description: "Token usage statistics" },
 				{

@@ -276,6 +276,9 @@ importers:
       '@ai-sdk/openai':
         specifier: ^3.0.0
         version: 3.0.25(zod@3.25.76)
+      '@bufbuild/cel':
+        specifier: ^0.4.0
+        version: 0.4.0(@bufbuild/protobuf@2.11.0)
       '@dapr/dapr':
         specifier: ^3.4.0
         version: 3.6.1
@@ -328,7 +331,7 @@ importers:
         specifier: ^5.0.0
         version: 5.1.6
       postgres:
-        specifier: ^3.4.7
+        specifier: 3.4.7
         version: 3.4.7
       zod:
         specifier: ^3.23.0
@@ -1710,6 +1713,19 @@ packages:
 
   '@biomejs/wasm-nodejs@2.3.14':
     resolution: {integrity: sha512-XRLrEHVUlvDzWvtH8eu5cBRlApL8U6eXSp2NQ6RrBR52v6Oo4qP4s4Ccw+ROMQ2gtqEi/9Daqqi56PkAV1yDZw==}
+
+  '@bufbuild/cel-spec@0.4.0':
+    resolution: {integrity: sha512-dUS6f2fNt6KEumsYGE7YFxERZE5ZuyME1hQmGjtO8tkZhR6ow6/ne3v4Gik9cfdb9lSLK3AJ+vDxCdGWmDbWvA==}
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.6.2
+
+  '@bufbuild/cel@0.4.0':
+    resolution: {integrity: sha512-CdW/JgiTJCYXqnwuaJRo7NcoYhR37AaF58MMiog0/t8nudn86ZyLXYaA1f2yGhm2U17h8pKGZNksTHVSTcpmAw==}
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.6.2
+
+  '@bufbuild/protobuf@2.11.0':
+    resolution: {integrity: sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ==}
 
   '@clack/core@1.0.0':
     resolution: {integrity: sha512-Orf9Ltr5NeiEuVJS8Rk2XTw3IxNC2Bic3ash7GgYeA8LJ/zmSNpSQ/m5UAhe03lA6KFgklzZ5KTHs4OAMA/SAQ==}
@@ -12165,6 +12181,17 @@ snapshots:
       '@babel/helper-validator-identifier': 7.28.5
 
   '@biomejs/wasm-nodejs@2.3.14': {}
+
+  '@bufbuild/cel-spec@0.4.0(@bufbuild/protobuf@2.11.0)':
+    dependencies:
+      '@bufbuild/protobuf': 2.11.0
+
+  '@bufbuild/cel@0.4.0(@bufbuild/protobuf@2.11.0)':
+    dependencies:
+      '@bufbuild/cel-spec': 0.4.0(@bufbuild/protobuf@2.11.0)
+      '@bufbuild/protobuf': 2.11.0
+
+  '@bufbuild/protobuf@2.11.0': {}
 
   '@clack/core@1.0.0':
     dependencies:

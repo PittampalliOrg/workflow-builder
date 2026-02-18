@@ -7,6 +7,11 @@ import { generateText, type LanguageModel } from "ai";
 import type { AgentWorkflowMessage } from "../types/state.js";
 import type { ToolCall } from "../types/tool.js";
 import type { DurableAgentTool } from "../types/tool.js";
+import type {
+	LoopDeclarationOnlyTool,
+	LoopToolChoice,
+	LoopUsage,
+} from "../types/loop-policy.js";
 import { toAiSdkMessages } from "./message-converter.js";
 import { buildToolDeclarations } from "./tool-declarations.js";
 
@@ -14,6 +19,13 @@ export interface LlmCallResult {
 	role: "assistant";
 	content: string | null;
 	tool_calls?: ToolCall[];
+	finish_reason?: string;
+	usage?: LoopUsage;
+	declared_tools?: Array<{
+		name: string;
+		executable: boolean;
+		approvalRequired: boolean;
+	}>;
 }
 
 /**
@@ -23,6 +35,9 @@ export interface CallLlmOptions {
 	instanceId?: string;
 	turn?: number;
 	agentName?: string;
+	toolChoice?: LoopToolChoice;
+	declarationOnlyTools?: LoopDeclarationOnlyTool[];
+	approvalRequiredTools?: Set<string>;
 }
 
 /**
@@ -42,15 +57,24 @@ export async function callLlmAdapter(
 	options?: CallLlmOptions,
 ): Promise<LlmCallResult> {
 	const coreMessages = toAiSdkMessages(messages);
-	const toolDecls = buildToolDeclarations(tools);
+	const declarationOnlyTools = options?.declarationOnlyTools ?? [];
+	const toolDecls = buildToolDeclarations(tools, declarationOnlyTools);
 
 	const hasTools = Object.keys(toolDecls).length > 0;
+	const toolChoice = options?.toolChoice;
+	const normalizedToolChoice =
+		toolChoice === "auto" || toolChoice === "none" || toolChoice === "required"
+			? toolChoice
+			: toolChoice?.type === "tool"
+				? { type: "tool" as const, toolName: toolChoice.toolName }
+				: undefined;
 
 	const result = await generateText({
 		model,
 		system: systemPrompt,
 		messages: coreMessages,
 		tools: hasTools ? toolDecls : undefined,
+		toolChoice: hasTools ? (normalizedToolChoice as any) : undefined,
 		experimental_telemetry: {
 			isEnabled: true,
 			functionId: "durable-agent.callLlm",
@@ -77,9 +101,35 @@ export async function callLlmAdapter(
 		}));
 	}
 
+	const declaredTools: Array<{
+		name: string;
+		executable: boolean;
+		approvalRequired: boolean;
+	}> = [];
+	const approvalRequiredTools =
+		options?.approvalRequiredTools ?? new Set<string>();
+	const declarationOnlyToolNames = new Set(
+		declarationOnlyTools.map((tool) => tool.name),
+	);
+	for (const name of Object.keys(toolDecls)) {
+		declaredTools.push({
+			name,
+			executable:
+				!declarationOnlyToolNames.has(name) && Boolean(tools[name]?.execute),
+			approvalRequired: approvalRequiredTools.has(name.toLowerCase()),
+		});
+	}
+
 	return {
 		role: "assistant",
 		content: result.text || null,
 		tool_calls: toolCalls,
+		finish_reason: result.finishReason,
+		usage: {
+			inputTokens: result.usage?.inputTokens,
+			outputTokens: result.usage?.outputTokens,
+			totalTokens: result.usage?.totalTokens,
+		},
+		declared_tools: declaredTools,
 	};
 }

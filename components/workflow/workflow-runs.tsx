@@ -1017,9 +1017,9 @@ export function WorkflowRuns({
 					return cleaned.size !== prev.size ? cleaned : prev;
 				});
 
-				// Poll Dapr status for any running executions to update their status
-				const runningExecutions = newExecutions.filter(
-					(e) => e.status === "running",
+				// Poll Dapr status for active executions to update status as soon as they start.
+				const activeExecutions = newExecutions.filter(
+					(e) => e.status === "pending" || e.status === "running",
 				);
 
 				// Track status updates to merge with fetched data
@@ -1035,7 +1035,7 @@ export function WorkflowRuns({
 					}
 				> = {};
 
-				for (const execution of runningExecutions) {
+				for (const execution of activeExecutions) {
 					try {
 						// This calls the status API which updates the DB from Dapr orchestrator
 						const statusResponse = await api.dapr.getStatus(execution.id);

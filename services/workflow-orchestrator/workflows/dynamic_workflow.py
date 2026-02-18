@@ -25,6 +25,8 @@ import dapr.ext.workflow as wf
 
 from core.template_resolver import resolve_templates, NodeOutputs
 from core.ap_condition_evaluator import evaluate_conditions
+from core.cel_loop import eval_cel_boolean, get_loop_iteration_for_evaluation
+from core.set_state import resolve_set_state_updates
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
@@ -163,7 +165,6 @@ def _try_parse_json(value: Any) -> Any:
     except Exception:
         return value
 
-
 SUMMARY_OUTPUT_KEYS = (
     "text",
     "toolCalls",
@@ -236,6 +237,50 @@ def _extract_summary_fields_from_outputs(outputs: dict[str, Any]) -> dict[str, A
         for key in SUMMARY_OUTPUT_KEYS
         if source.get(key) is not None
     }
+
+
+def _cleanup_execution_workspaces_for_workflow(
+    ctx: wf.DaprWorkflowContext,
+    execution_id: str,
+    db_execution_id: str | None,
+    otel_ctx: dict | None,
+):
+    """
+    Best-effort cleanup for execution-scoped workspaces.
+
+    Important: keep this as a normal yield path and do not invoke from a
+    `finally` block in workflow generators, which can trigger
+    "generator ignored GeneratorExit" in the durable runtime.
+    """
+    try:
+        from activities.call_agent_service import cleanup_execution_workspaces
+
+        yield ctx.call_activity(
+            cleanup_execution_workspaces,
+            input={
+                "executionId": execution_id,
+                "dbExecutionId": db_execution_id,
+                "_otel": otel_ctx or {},
+            },
+        )
+    except Exception as cleanup_err:
+        logger.warning(f"[Dynamic Workflow] Workspace cleanup failed: {cleanup_err}")
+
+
+def _return_with_workspace_cleanup(
+    ctx: wf.DaprWorkflowContext,
+    execution_id: str,
+    db_execution_id: str | None,
+    otel_ctx: dict | None,
+    result: dict[str, Any],
+):
+    yield from _cleanup_execution_workspaces_for_workflow(
+        ctx=ctx,
+        execution_id=execution_id,
+        db_execution_id=db_execution_id,
+        otel_ctx=otel_ctx,
+    )
+    return result
 
 
 @wfr.workflow(name="dynamic_workflow")
@@ -510,13 +555,19 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     }))
 
                     duration_ms = int((time.time() - start_time) * 1000)
-                    return {
+                    return (yield from _return_with_workspace_cleanup(
+                        ctx=ctx,
+                        execution_id=execution_id,
+                        db_execution_id=db_execution_id,
+                        otel_ctx=otel_ctx,
+                        result={
                         "success": False,
                         "outputs": node_outputs,
                         "error": f"Workflow rejected at {node.get('label')}: {result.get('reason')}",
                         "durationMs": duration_ms,
                         "phase": "rejected",
-                    }
+                        },
+                    ))
 
             # --- Loop Until nodes ---
             elif node_type == "loop-until":
@@ -543,41 +594,92 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 max_iterations = int(config.get("maxIterations", 10) or 10)
                 delay_seconds = int(config.get("delaySeconds", 0) or 0)
                 on_max_iterations = str(config.get("onMaxIterations") or "fail").strip().lower()
+                condition_mode = str(config.get("conditionMode") or "").strip()
+                loop_pass_count = get_loop_iteration_for_evaluation(loop_iterations, node_id)
 
                 operator = str(config.get("operator") or "EXISTS").strip()
                 left_raw = config.get("left", "")
                 right_raw = config.get("right", "")
+                left_val = left_raw
+                right_val = right_raw
+                cel_expression = ""
 
-                resolved_condition = resolve_templates(
-                    {"left": left_raw, "right": right_raw},
-                    node_outputs,
-                )
-                left_val = (
-                    resolved_condition.get("left")
-                    if isinstance(resolved_condition, dict)
-                    else left_raw
-                )
-                right_val = (
-                    resolved_condition.get("right")
-                    if isinstance(resolved_condition, dict)
-                    else right_raw
-                )
-                # If template resolution failed, treat as missing value for condition evaluation.
-                if is_unresolved_template(left_val):
-                    left_val = None
-                if is_unresolved_template(right_val):
-                    right_val = None
+                if condition_mode == "celExpression":
+                    cel_expression = str(config.get("celExpression") or "").strip()
+                    resolved_expression = resolve_templates(cel_expression, node_outputs)
+                    if isinstance(resolved_expression, str):
+                        cel_expression = resolved_expression.strip()
+                    if cel_expression:
+                        last_output_entry = (
+                            node_outputs.get(loop_start_node_id)
+                            if loop_start_node_id
+                            else None
+                        )
+                        last_output = (
+                            last_output_entry.get("data")
+                            if isinstance(last_output_entry, dict)
+                            else None
+                        )
+                        workflow_context = {
+                            "id": workflow_id,
+                            "name": definition.get("name"),
+                            "input": trigger_data,
+                            "input_as_text": (
+                                trigger_data
+                                if isinstance(trigger_data, str)
+                                else json.dumps(trigger_data, default=str)
+                            ),
+                        }
+                        context_payload = {
+                            "input": last_output if last_output is not None else trigger_data,
+                            "state": state_vars,
+                            "workflow": workflow_context,
+                            "iteration": loop_pass_count,
+                            "last": last_output,
+                        }
+                        try:
+                            condition_met = eval_cel_boolean(cel_expression, context_payload)
+                        except Exception as cel_err:
+                            logger.warning(
+                                "[Dynamic Workflow] CEL loop condition evaluation failed for node %s: %s",
+                                node_id,
+                                cel_err,
+                            )
+                            condition_met = False
+                    else:
+                        condition_met = False
+                    operator = "CEL_EXPRESSION"
+                    left_val = cel_expression
+                    right_val = ""
+                else:
+                    resolved_condition = resolve_templates(
+                        {"left": left_raw, "right": right_raw},
+                        node_outputs,
+                    )
+                    left_val = (
+                        resolved_condition.get("left")
+                        if isinstance(resolved_condition, dict)
+                        else left_raw
+                    )
+                    right_val = (
+                        resolved_condition.get("right")
+                        if isinstance(resolved_condition, dict)
+                        else right_raw
+                    )
+                    # If template resolution failed, treat as missing value for condition evaluation.
+                    if is_unresolved_template(left_val):
+                        left_val = None
+                    if is_unresolved_template(right_val):
+                        right_val = None
 
-                condition_met = evaluate_conditions(
-                    [[{"operator": operator, "firstValue": left_val, "secondValue": right_val}]]
-                )
-
-                current_iter = int(loop_iterations.get(node_id, 0) or 0)
+                    condition_met = evaluate_conditions(
+                        [[{"operator": operator, "firstValue": left_val, "secondValue": right_val}]]
+                    )
 
                 if condition_met:
                     node_result = {
                         "conditionMet": True,
-                        "iteration": current_iter,
+                        "iteration": loop_pass_count,
                         "operator": operator,
                         "loopStartNodeId": loop_start_node_id,
                     }
@@ -586,7 +688,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     if not loop_start_node_id:
                         node_result = {
                             "conditionMet": False,
-                            "iteration": current_iter,
+                            "iteration": loop_pass_count,
                             "error": "loopStartNodeId is required",
                         }
                         if db_execution_id and loop_log_id:
@@ -603,13 +705,19 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 },
                             )
                         duration_ms = int((time.time() - start_time) * 1000)
-                        return {
+                        return (yield from _return_with_workspace_cleanup(
+                            ctx=ctx,
+                            execution_id=execution_id,
+                            db_execution_id=db_execution_id,
+                            otel_ctx=otel_ctx,
+                            result={
                             "success": False,
                             "outputs": node_outputs,
                             "error": f"Loop misconfigured at {node.get('label')}: loopStartNodeId is required",
                             "durationMs": duration_ms,
                             "phase": "failed",
-                        }
+                            },
+                        ))
 
                     start_index = node_index_map.get(loop_start_node_id)
                     if start_index is None:
@@ -617,7 +725,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         err = f"loopStartNodeId not found in executionOrder: {loop_start_node_id}"
                         node_result = {
                             "conditionMet": False,
-                            "iteration": current_iter,
+                            "iteration": loop_pass_count,
                             "error": err,
                         }
                         if db_execution_id and loop_log_id:
@@ -633,13 +741,19 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "_otel": otel_ctx,
                                 },
                             )
-                        return {
+                        return (yield from _return_with_workspace_cleanup(
+                            ctx=ctx,
+                            execution_id=execution_id,
+                            db_execution_id=db_execution_id,
+                            otel_ctx=otel_ctx,
+                            result={
                             "success": False,
                             "outputs": node_outputs,
                             "error": err,
                             "durationMs": duration_ms,
                             "phase": "failed",
-                        }
+                            },
+                        ))
 
                     if start_index >= i:
                         duration_ms = int((time.time() - start_time) * 1000)
@@ -649,7 +763,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         )
                         node_result = {
                             "conditionMet": False,
-                            "iteration": current_iter,
+                            "iteration": loop_pass_count,
                             "error": err,
                         }
                         if db_execution_id and loop_log_id:
@@ -665,21 +779,27 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "_otel": otel_ctx,
                                 },
                             )
-                        return {
+                        return (yield from _return_with_workspace_cleanup(
+                            ctx=ctx,
+                            execution_id=execution_id,
+                            db_execution_id=db_execution_id,
+                            otel_ctx=otel_ctx,
+                            result={
                             "success": False,
                             "outputs": node_outputs,
                             "error": err,
                             "durationMs": duration_ms,
                             "phase": "failed",
-                        }
+                            },
+                        ))
 
                     if max_iterations < 1:
                         max_iterations = 1
 
-                    if current_iter + 1 > max_iterations:
+                    if loop_pass_count > max_iterations:
                         node_result = {
                             "conditionMet": False,
-                            "iteration": current_iter,
+                            "iteration": loop_pass_count,
                             "maxIterations": max_iterations,
                             "exceededMaxIterations": True,
                             "operator": operator,
@@ -705,24 +825,29 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             node_result["exitedLoop"] = True
                         else:
                             duration_ms = int((time.time() - start_time) * 1000)
-                            return {
+                            return (yield from _return_with_workspace_cleanup(
+                                ctx=ctx,
+                                execution_id=execution_id,
+                                db_execution_id=db_execution_id,
+                                otel_ctx=otel_ctx,
+                                result={
                                 "success": False,
                                 "outputs": node_outputs,
                                 "error": f"Loop exceeded maxIterations ({max_iterations}) at {node.get('label')}",
                                 "durationMs": duration_ms,
                                 "phase": "failed",
-                            }
+                                },
+                            ))
                     else:
                         # Jump back.
-                        next_iter = current_iter + 1
-                        loop_iterations[node_id] = next_iter
+                        loop_iterations[node_id] = loop_pass_count
 
                         if delay_seconds > 0:
                             yield ctx.create_timer(timedelta(seconds=delay_seconds))
 
                         node_result = {
                             "conditionMet": False,
-                            "iteration": next_iter,
+                            "iteration": loop_pass_count,
                             "maxIterations": max_iterations,
                             "operator": operator,
                             "loopStartNodeId": loop_start_node_id,
@@ -870,25 +995,28 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # --- Set State nodes ---
             elif node_type == "set-state":
                 logger.info(f"[Dynamic Workflow] Setting state: {node.get('label')}")
-                key_raw = config.get("key", "")
-                value_raw = config.get("value", "")
+                updates, set_state_error = resolve_set_state_updates(config, node_outputs)
 
-                resolved = resolve_templates({"key": key_raw, "value": value_raw}, node_outputs)
-                key = str((resolved.get("key") if isinstance(resolved, dict) else key_raw) or "").strip()
-                resolved_value = resolved.get("value") if isinstance(resolved, dict) else value_raw
-                resolved_value = _try_parse_json(resolved_value)
-
-                if not key:
-                    node_result = {"success": False, "error": {"message": "key is required"}}
+                if set_state_error:
+                    node_result = {"success": False, "error": {"message": set_state_error}}
                 else:
-                    state_vars[key] = resolved_value
+                    for key, value in updates.items():
+                        state_vars[key] = value
                     # Keep the virtual state node updated for template resolution.
                     node_outputs["state"] = {
                         "label": "State",
                         "actionType": "state",
                         "data": {"success": True, "data": state_vars},
                     }
-                    node_result = {"success": True, "data": {"key": key, "value": resolved_value}}
+                    node_data: dict[str, Any] = {
+                        "updated": updates,
+                        "count": len(updates),
+                    }
+                    if len(updates) == 1:
+                        first_key = next(iter(updates))
+                        node_data["key"] = first_key
+                        node_data["value"] = updates[first_key]
+                    node_result = {"success": True, "data": node_data}
 
                 if isinstance(node_result, dict) and not node_result.get("success", True):
                     if not config.get("continueOnError"):
@@ -1048,7 +1176,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             persist_input.update(summary_fields)
             yield ctx.call_activity(persist_results_to_db, input=persist_input)
 
-        return final_output
+        return (yield from _return_with_workspace_cleanup(
+            ctx=ctx,
+            execution_id=execution_id,
+            db_execution_id=db_execution_id,
+            otel_ctx=otel_ctx,
+            result=final_output,
+        ))
 
     except Exception as e:
         duration_ms = int((time.time() - start_time) * 1000)
@@ -1091,21 +1225,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             except Exception as persist_err:
                 logger.error(f"[Dynamic Workflow] Failed to persist error results: {persist_err}")
 
-        return final_output
-    finally:
-        # Cleanup execution-scoped workspaces (best-effort) on all workflow exits.
-        try:
-            from activities.call_agent_service import cleanup_execution_workspaces
-            yield ctx.call_activity(
-                cleanup_execution_workspaces,
-                input={
-                    "executionId": execution_id,
-                    "dbExecutionId": db_execution_id,
-                    "_otel": otel_ctx,
-                },
-            )
-        except Exception as cleanup_err:
-            logger.warning(f"[Dynamic Workflow] Workspace cleanup failed: {cleanup_err}")
+        return (yield from _return_with_workspace_cleanup(
+            ctx=ctx,
+            execution_id=execution_id,
+            db_execution_id=db_execution_id,
+            otel_ctx=otel_ctx,
+            result=final_output,
+        ))
 
 
 def process_agent_child_workflow(
@@ -1242,7 +1368,18 @@ def process_agent_child_workflow(
         }
 
         node_id = str(node.get("id") or "unknown")
-        approval_event_name = f"durable_plan_approval_{node_id}_{ctx.instance_id}"
+        approval_event_name = (
+            f"durable_plan_approval_{node_id}_{ctx.instance_id}".lower()
+        )
+
+        if db_execution_id:
+            yield ctx.call_activity(log_approval_request, input={
+                "executionId": db_execution_id,
+                "nodeId": node.get("id"),
+                "eventName": approval_event_name,
+                "timeoutSeconds": approval_timeout_minutes * 60,
+                "_otel": otel_ctx,
+            })
 
         ctx.set_custom_status(json.dumps({
             "phase": "awaiting_approval",
@@ -1268,6 +1405,14 @@ def process_agent_child_workflow(
         completed_task = yield wf.when_any([approval_event, timeout_timer])
 
         if completed_task == timeout_timer:
+            if db_execution_id:
+                yield ctx.call_activity(log_approval_timeout, input={
+                    "executionId": db_execution_id,
+                    "nodeId": node.get("id"),
+                    "eventName": approval_event_name,
+                    "timeoutSeconds": approval_timeout_minutes * 60,
+                    "_otel": otel_ctx,
+                })
             return {
                 "success": False,
                 "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
@@ -1275,6 +1420,17 @@ def process_agent_child_workflow(
             }
 
         approval_result = approval_event.get_result() or {}
+        if db_execution_id:
+            yield ctx.call_activity(log_approval_response, input={
+                "executionId": db_execution_id,
+                "nodeId": node.get("id"),
+                "eventName": approval_event_name,
+                "approved": approval_result.get("approved", False),
+                "reason": approval_result.get("reason"),
+                "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                "payload": approval_result,
+                "_otel": otel_ctx,
+            })
         approved = bool(approval_result.get("approved"))
         if not approved:
             reason = approval_result.get("reason") or "Plan was rejected"
@@ -1422,7 +1578,7 @@ def process_approval_gate(
     """
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
-    event_name = config.get("eventName") or f"approval_{node.get('id')}"
+    event_name = str(config.get("eventName") or f"approval_{node.get('id')}").strip().lower()
     timeout_seconds = get_timeout_seconds(config)
 
     logger.info(

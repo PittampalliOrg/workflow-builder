@@ -271,8 +271,14 @@ If / Else node type:
 Set State node type:
 - Node type is "set-state"
 - Sets a workflow-scoped variable accessible via {{state.key}} later
-- Config example:
+- Config examples:
   { "key": "customerId", "value": "{{@nodeId:Label.id}}" }
+  {
+    "entries": [
+      { "key": "customerId", "value": "{{@nodeId:Label.id}}" },
+      { "key": "customerEmail", "value": "{{@nodeId:Label.email}}" }
+    ]
+  }
 
 Transform node type:
 - Node type is "transform"

@@ -12,6 +12,7 @@ export type WorkflowNodeType =
 	| "approval-gate" // ctx.wait_for_external_event() + timer
 	| "timer" // ctx.create_timer()
 	| "loop-until" // Dapr workflow: repeat a section until a condition is met
+	| "while" // UI container: loop enclosed durable agent while CEL condition is true
 	| "if-else" // Control flow: choose true/false branch based on a condition
 	| "note" // Non-executing annotation
 	| "set-state" // Data: set a workflow-scoped variable

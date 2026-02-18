@@ -123,15 +123,28 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.call_durable_plan", otel, attrs):
         try:
-            with httpx.Client(timeout=60.0) as client:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 10)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 10)
+            except (TypeError, ValueError):
+                timeout_minutes = 10
+            if timeout_minutes <= 0:
+                timeout_minutes = 10
+            # Planning is synchronous and can run multiple turns; keep the activity
+            # timeout aligned with configured planning budget plus a small buffer.
+            planning_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 3600)
+
+            with httpx.Client(timeout=planning_timeout_seconds) as client:
                 payload = {
                     "prompt": input_data.get("prompt", ""),
                     "cwd": input_data.get("cwd", ""),
                     "workspaceRef": input_data.get("workspaceRef", ""),
                     "model": input_data.get("model"),
                     "maxTurns": input_data.get("maxTurns"),
+                    "timeoutMinutes": timeout_minutes,
                     "instructions": input_data.get("instructions"),
                     "tools": input_data.get("tools"),
+                    "loopPolicy": input_data.get("loopPolicy"),
                     "agentConfig": input_data.get("agentConfig"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
                     "executionId": input_data.get("dbExecutionId")
@@ -195,6 +208,7 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "artifactRef": input_data.get("artifactRef", ""),
                     "cwd": input_data.get("cwd", ""),
                     "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                    "loopPolicy": input_data.get("loopPolicy"),
                     "approval": input_data.get("approval"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
                     "executionId": input_data.get("dbExecutionId")

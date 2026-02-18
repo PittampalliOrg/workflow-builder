@@ -37,6 +37,7 @@ function getNodeSize(
 	node: WorkflowNode,
 	options: DagreLayoutOptions,
 ): { width: number; height: number } {
+	const isWhileNode = node.type === "while" || node.data?.type === "while";
 	const typedNode = node as NodeWithMeasurements;
 	const measuredWidth = typedNode.measured?.width;
 	const measuredHeight = typedNode.measured?.height;
@@ -49,9 +50,12 @@ function getNodeSize(
 		options.nodeHeight ??
 		DEFAULT_NODE_HEIGHT;
 
+	const fallbackWidth = isWhileNode ? 420 : width;
+	const fallbackHeight = isWhileNode ? 300 : height;
+
 	return {
-		width: Math.max(width, 1),
-		height: Math.max(height, 1),
+		width: Math.max(fallbackWidth, 1),
+		height: Math.max(fallbackHeight, 1),
 	};
 }
 

@@ -228,6 +228,295 @@ function parseMastraToolInput(
 	return { toolId, args };
 }
 
+function parseBooleanInput(value: unknown): boolean | undefined {
+	if (typeof value === "boolean") return value;
+	if (typeof value !== "string") return undefined;
+	const normalized = value.trim().toLowerCase();
+	if (normalized === "true") return true;
+	if (normalized === "false") return false;
+	return undefined;
+}
+
+function parseStringArrayInput(value: unknown): string[] | undefined {
+	if (Array.isArray(value)) {
+		const parsed = value
+			.map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+			.filter((entry) => Boolean(entry));
+		return parsed.length > 0 ? [...new Set(parsed)] : undefined;
+	}
+
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+
+	if (trimmed.startsWith("[")) {
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (Array.isArray(parsed)) {
+				return parseStringArrayInput(parsed);
+			}
+		} catch {
+			return undefined;
+		}
+	}
+
+	const parsed = trimmed
+		.split(",")
+		.map((entry) => entry.trim())
+		.filter((entry) => Boolean(entry));
+	return parsed.length > 0 ? [...new Set(parsed)] : undefined;
+}
+
+function parseJsonObjectInput(
+	value: unknown,
+): Record<string, unknown> | undefined {
+	if (isPlainObject(value)) return value;
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	try {
+		const parsed = JSON.parse(trimmed) as unknown;
+		return isPlainObject(parsed) ? parsed : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseJsonValueInput(value: unknown): unknown {
+	if (typeof value !== "string") return value;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	try {
+		return JSON.parse(trimmed) as unknown;
+	} catch {
+		return undefined;
+	}
+}
+
+function parseNumberInput(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	const parsed = Number(trimmed);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function buildStructuredStopCondition(
+	input: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const mode =
+		typeof input.loopStopMode === "string" ? input.loopStopMode.trim() : "";
+	if (!mode || mode === "none" || mode === "custom_json") {
+		return undefined;
+	}
+
+	if (mode === "stepCountIs") {
+		const maxSteps = parseNumberInput(input.loopStopMaxSteps) ?? 20;
+		return { type: "stepCountIs", maxSteps: Math.max(1, Math.floor(maxSteps)) };
+	}
+
+	if (mode === "hasToolCall") {
+		const toolName =
+			typeof input.loopStopToolName === "string"
+				? input.loopStopToolName.trim()
+				: "";
+		return toolName ? { type: "hasToolCall", toolName } : undefined;
+	}
+
+	if (mode === "toolCallNeedsApproval") {
+		const toolNames = parseStringArrayInput(input.loopStopApprovalToolNames);
+		return toolNames
+			? { type: "toolCallNeedsApproval", toolNames }
+			: { type: "toolCallNeedsApproval" };
+	}
+
+	if (mode === "toolWithoutExecute") {
+		return { type: "toolWithoutExecute" };
+	}
+
+	if (mode === "assistantTextIncludes") {
+		const text =
+			typeof input.loopStopText === "string" ? input.loopStopText.trim() : "";
+		if (!text) return undefined;
+		const caseSensitive = parseBooleanInput(input.loopStopCaseSensitive);
+		return caseSensitive === undefined
+			? { type: "assistantTextIncludes", text }
+			: { type: "assistantTextIncludes", text, caseSensitive };
+	}
+
+	if (mode === "assistantTextMatchesRegex") {
+		const pattern =
+			typeof input.loopStopRegexPattern === "string"
+				? input.loopStopRegexPattern.trim()
+				: "";
+		if (!pattern) return undefined;
+		const flags =
+			typeof input.loopStopRegexFlags === "string"
+				? input.loopStopRegexFlags.trim()
+				: "";
+		return flags
+			? { type: "assistantTextMatchesRegex", pattern, flags }
+			: { type: "assistantTextMatchesRegex", pattern };
+	}
+
+	if (mode === "totalUsageAtLeast") {
+		const inputTokens = parseNumberInput(input.loopStopInputTokens);
+		const outputTokens = parseNumberInput(input.loopStopOutputTokens);
+		const totalTokens = parseNumberInput(input.loopStopTotalTokens);
+		if (
+			inputTokens === undefined &&
+			outputTokens === undefined &&
+			totalTokens === undefined
+		) {
+			return undefined;
+		}
+		return {
+			type: "totalUsageAtLeast",
+			...(inputTokens !== undefined ? { inputTokens } : {}),
+			...(outputTokens !== undefined ? { outputTokens } : {}),
+			...(totalTokens !== undefined ? { totalTokens } : {}),
+		};
+	}
+
+	if (mode === "costEstimateExceeds") {
+		const usd = parseNumberInput(input.loopStopCostUsd);
+		if (usd === undefined) return undefined;
+		const inputPer1kUsd = parseNumberInput(input.loopStopCostInputPer1kUsd);
+		const outputPer1kUsd = parseNumberInput(input.loopStopCostOutputPer1kUsd);
+		return {
+			type: "costEstimateExceeds",
+			usd,
+			...(inputPer1kUsd !== undefined ? { inputPer1kUsd } : {}),
+			...(outputPer1kUsd !== undefined ? { outputPer1kUsd } : {}),
+		};
+	}
+
+	if (mode === "celExpression") {
+		const expression =
+			typeof input.loopStopCelExpression === "string"
+				? input.loopStopCelExpression.trim()
+				: "";
+		return expression ? { type: "celExpression", expression } : undefined;
+	}
+
+	return undefined;
+}
+
+function buildLoopPolicyInput(
+	input: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	const basePolicy = parseJsonObjectInput(input.loopPolicy) ?? {};
+	const policy: Record<string, unknown> = { ...basePolicy };
+	let hasLoopConfig = Object.keys(policy).length > 0;
+
+	const stopWhenFromJson = parseJsonValueInput(input.loopStopWhen);
+	const stopConditionFromMode = buildStructuredStopCondition(input);
+	if (Array.isArray(stopWhenFromJson) || isPlainObject(stopWhenFromJson)) {
+		policy.stopWhen = stopWhenFromJson;
+		hasLoopConfig = true;
+	} else if (stopConditionFromMode) {
+		policy.stopWhen = [stopConditionFromMode];
+		hasLoopConfig = true;
+	}
+
+	const prepareStep = parseJsonObjectInput(input.loopPrepareStep);
+	if (prepareStep) {
+		policy.prepareStep = prepareStep;
+		hasLoopConfig = true;
+	}
+
+	const approvalRequiredTools = parseStringArrayInput(
+		input.loopApprovalRequiredTools,
+	);
+	if (approvalRequiredTools) {
+		policy.approvalRequiredTools = approvalRequiredTools;
+		hasLoopConfig = true;
+	}
+
+	const defaultActiveTools = parseStringArrayInput(
+		input.loopDefaultActiveTools,
+	);
+	if (defaultActiveTools) {
+		policy.defaultActiveTools = defaultActiveTools;
+		hasLoopConfig = true;
+	}
+
+	const defaultToolChoiceRaw =
+		typeof input.loopDefaultToolChoice === "string"
+			? input.loopDefaultToolChoice.trim().toLowerCase()
+			: "";
+	if (
+		defaultToolChoiceRaw === "auto" ||
+		defaultToolChoiceRaw === "required" ||
+		defaultToolChoiceRaw === "none"
+	) {
+		policy.defaultToolChoice = defaultToolChoiceRaw;
+		hasLoopConfig = true;
+	} else if (defaultToolChoiceRaw === "tool") {
+		const toolName =
+			typeof input.loopDefaultToolName === "string"
+				? input.loopDefaultToolName.trim()
+				: "";
+		if (toolName) {
+			policy.defaultToolChoice = {
+				type: "tool",
+				toolName,
+			};
+			hasLoopConfig = true;
+		}
+	}
+
+	const doneToolEnabled = parseBooleanInput(input.loopDoneToolEnabled);
+	const doneToolName =
+		typeof input.loopDoneToolName === "string"
+			? input.loopDoneToolName.trim()
+			: "";
+	const doneToolDescription =
+		typeof input.loopDoneToolDescription === "string"
+			? input.loopDoneToolDescription.trim()
+			: "";
+	const doneToolResponseField =
+		typeof input.loopDoneToolResponseField === "string"
+			? input.loopDoneToolResponseField.trim()
+			: "";
+	const doneToolInputSchema = parseJsonValueInput(
+		input.loopDoneToolInputSchema,
+	);
+	const hasDoneToolOverrides =
+		doneToolEnabled !== undefined ||
+		Boolean(doneToolName) ||
+		Boolean(doneToolDescription) ||
+		Boolean(doneToolResponseField) ||
+		doneToolInputSchema !== undefined;
+
+	if (hasDoneToolOverrides) {
+		const existingDoneTool = isPlainObject(policy.doneTool)
+			? policy.doneTool
+			: {};
+		const doneTool: Record<string, unknown> = { ...existingDoneTool };
+		if (doneToolEnabled !== undefined) {
+			doneTool.enabled = doneToolEnabled;
+		}
+		if (doneToolName) {
+			doneTool.name = doneToolName;
+		}
+		if (doneToolDescription) {
+			doneTool.description = doneToolDescription;
+		}
+		if (doneToolResponseField) {
+			doneTool.responseField = doneToolResponseField;
+		}
+		if (doneToolInputSchema && typeof doneToolInputSchema === "object") {
+			doneTool.inputSchema = doneToolInputSchema;
+		}
+		policy.doneTool = doneTool;
+		hasLoopConfig = true;
+	}
+
+	return hasLoopConfig ? policy : undefined;
+}
+
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
 	/**
 	 * POST /execute - Route function execution to appropriate service
@@ -391,6 +680,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 						let targetUrl: string;
 						let requestBody: string;
+						const loopPolicy = buildLoopPolicyInput(args);
 
 						if (isAgentRun) {
 							const mode =
@@ -402,6 +692,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									cwd: args.cwd ?? "",
+									maxTurns: args.maxTurns,
+									loopPolicy,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
 											? args.workspaceRef
@@ -421,6 +713,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									maxTurns: args.maxTurns,
 									instructions: args.instructions,
 									tools: args.tools,
+									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
 									cleanupWorkspace: args.cleanupWorkspace,
@@ -441,6 +734,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? "",
 								cwd: args.cwd ?? "",
+								maxTurns: args.maxTurns,
+								loopPolicy,
 								parentExecutionId: body.execution_id,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
@@ -460,6 +755,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								prompt: args.prompt ?? "",
 								plan,
 								cwd: args.cwd ?? "",
+								maxTurns: args.maxTurns,
+								loopPolicy,
 								cleanupWorkspace: args.cleanupWorkspace,
 								parentExecutionId: body.execution_id,
 								executionId: workspaceExecutionId,
@@ -705,6 +1002,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const toolId = stepName;
 						let targetUrl: string;
 						let requestBody: string;
+						const loopPolicy = buildLoopPolicyInput(resolvedInput);
 
 						if (toolId === "run") {
 							const mode =
@@ -716,6 +1014,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								requestBody = JSON.stringify({
 									prompt: resolvedInput.prompt || resolvedInput.input || "",
 									cwd: resolvedInput.cwd || "",
+									maxTurns: resolvedInput.maxTurns,
+									loopPolicy,
 									workspaceRef: resolvedInput.workspaceRef || "",
 									parentExecutionId: body.execution_id,
 									executionId: body.db_execution_id || body.execution_id,
@@ -732,6 +1032,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									maxTurns: resolvedInput.maxTurns,
 									instructions: resolvedInput.instructions,
 									tools: resolvedInput.tools,
+									loopPolicy,
 									stopCondition: resolvedInput.stopCondition,
 									requireFileChanges: resolvedInput.requireFileChanges,
 									cleanupWorkspace: resolvedInput.cleanupWorkspace,
@@ -749,6 +1050,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: resolvedInput.prompt || resolvedInput.input || "",
 								cwd: resolvedInput.cwd || "",
+								maxTurns: resolvedInput.maxTurns,
+								loopPolicy,
 							});
 						} else if (toolId === "execute") {
 							targetUrl = `${functionUrl}/api/execute-plan`;
@@ -756,6 +1059,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								prompt: resolvedInput.prompt || "",
 								plan: resolvedInput.planJson || resolvedInput.plan || null,
 								cwd: resolvedInput.cwd || "",
+								maxTurns: resolvedInput.maxTurns,
+								loopPolicy,
 								cleanupWorkspace: resolvedInput.cleanupWorkspace,
 								parentExecutionId: body.execution_id,
 								workflowId: body.workflow_id,

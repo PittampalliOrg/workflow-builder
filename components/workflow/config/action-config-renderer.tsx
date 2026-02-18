@@ -13,11 +13,13 @@ import {
 } from "@/components/ui/select";
 import { TemplateBadgeInput } from "@/components/ui/template-badge-input";
 import { TemplateBadgeTextarea } from "@/components/ui/template-badge-textarea";
+import { CodeEditor } from "@/components/ui/code-editor";
 import type {
 	ActionConfigField,
 	ActionConfigFieldBase,
 } from "@/lib/actions/types";
-import { isFieldGroup } from "@/lib/actions/utils";
+import { flattenConfigFields, isFieldGroup } from "@/lib/actions/utils";
+import { setupCelLanguage, type MonacoLike } from "@/lib/monaco-cel-language";
 import { DynamicSelectField } from "./fields/dynamic-select-field";
 import { ModelSelectorField } from "./fields/model-selector-field";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
@@ -57,6 +59,34 @@ function TemplateTextareaField({
 			rows={field.rows || 4}
 			value={value}
 		/>
+	);
+}
+
+function CelEditorField({ field, value, onChange, disabled }: FieldProps) {
+	const rows = Math.max(4, field.rows || 6);
+	const height = `${rows * 22}px`;
+
+	return (
+		<div className="overflow-hidden rounded-md border">
+			<CodeEditor
+				defaultLanguage="cel"
+				height={height}
+				onChange={(next) => onChange(next ?? "")}
+				onMount={(_, monaco) => {
+					setupCelLanguage(monaco as unknown as MonacoLike);
+				}}
+				options={{
+					minimap: { enabled: false },
+					lineNumbers: "off",
+					scrollBeyondLastLine: false,
+					fontSize: 12,
+					wordWrap: "on",
+					readOnly: disabled,
+					automaticLayout: true,
+				}}
+				value={value}
+			/>
+		</div>
 	);
 }
 
@@ -148,6 +178,7 @@ const FIELD_RENDERERS: Record<
 > = {
 	"template-input": TemplateInputField,
 	"template-textarea": TemplateTextareaField,
+	"cel-editor": CelEditorField,
 	text: TextInputField,
 	number: NumberInputField,
 	select: SelectField,
@@ -164,11 +195,16 @@ function renderField(
 	field: ActionConfigFieldBase,
 	config: Record<string, unknown>,
 	onUpdateConfig: (key: string, value: unknown) => void,
+	fieldDefaultsByKey: Record<string, string | undefined>,
 	disabled?: boolean,
 ) {
-	// Check conditional rendering (coerce to string so undefined matches "")
+	// Check conditional rendering; fall back to dependent field default value.
 	if (field.showWhen) {
-		const dependentValue = String(config[field.showWhen.field] ?? "");
+		const dependentValue = String(
+			config[field.showWhen.field] ??
+				fieldDefaultsByKey[field.showWhen.field] ??
+				"",
+		);
 		if (dependentValue !== field.showWhen.equals) {
 			return null;
 		}
@@ -203,6 +239,7 @@ function FieldGroup({
 	fields,
 	config,
 	onUpdateConfig,
+	fieldDefaultsByKey,
 	disabled,
 	defaultExpanded = false,
 }: {
@@ -210,6 +247,7 @@ function FieldGroup({
 	fields: ActionConfigFieldBase[];
 	config: Record<string, unknown>;
 	onUpdateConfig: (key: string, value: unknown) => void;
+	fieldDefaultsByKey: Record<string, string | undefined>;
 	disabled?: boolean;
 	defaultExpanded?: boolean;
 }) {
@@ -232,7 +270,13 @@ function FieldGroup({
 			{isExpanded && (
 				<div className="ml-1 space-y-4 border-primary/50 border-l-2 py-2 pl-3">
 					{fields.map((field) =>
-						renderField(field, config, onUpdateConfig, disabled),
+						renderField(
+							field,
+							config,
+							onUpdateConfig,
+							fieldDefaultsByKey,
+							disabled,
+						),
 					)}
 				</div>
 			)}
@@ -257,6 +301,10 @@ export function ActionConfigRenderer({
 	onUpdateConfig,
 	disabled,
 }: ActionConfigRendererProps) {
+	const fieldDefaultsByKey = Object.fromEntries(
+		flattenConfigFields(fields).map((field) => [field.key, field.defaultValue]),
+	);
+
 	return (
 		<>
 			{fields.map((field) => {
@@ -267,6 +315,7 @@ export function ActionConfigRenderer({
 							defaultExpanded={field.defaultExpanded}
 							disabled={disabled}
 							fields={field.fields}
+							fieldDefaultsByKey={fieldDefaultsByKey}
 							key={`group-${field.label}`}
 							label={field.label}
 							onUpdateConfig={onUpdateConfig}
@@ -274,7 +323,13 @@ export function ActionConfigRenderer({
 					);
 				}
 
-				return renderField(field, config, onUpdateConfig, disabled);
+				return renderField(
+					field,
+					config,
+					onUpdateConfig,
+					fieldDefaultsByKey,
+					disabled,
+				);
 			})}
 		</>
 	);

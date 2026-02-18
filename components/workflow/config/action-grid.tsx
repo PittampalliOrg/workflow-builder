@@ -109,6 +109,14 @@ const DAPR_CONTROL_FLOW: ActionType[] = [
 		nodeType: "loop-until",
 	},
 	{
+		id: "dapr:while",
+		label: "While",
+		description: "Loop an enclosed Durable Agent while CEL condition is true",
+		category: "Control Flow",
+		isDaprActivity: true,
+		nodeType: "while",
+	},
+	{
 		id: "dapr:if-else",
 		label: "If / Else",
 		description: "Branch based on a condition",
@@ -252,11 +260,6 @@ function ActionIcon({
 	if (action.category === "System") {
 		return <Settings className={cn(className, "text-muted-foreground")} />;
 	}
-	// For Dapr categories
-	const DaprIcon = DAPR_CATEGORY_ICONS[action.category];
-	if (DaprIcon) {
-		return <DaprIcon className={cn(className, "text-muted-foreground")} />;
-	}
 	// Special icons for specific Dapr nodes
 	if (action.nodeType === "approval-gate") {
 		return <ShieldCheck className={cn(className, "text-muted-foreground")} />;
@@ -265,6 +268,9 @@ function ActionIcon({
 		return <Clock className={cn(className, "text-muted-foreground")} />;
 	}
 	if (action.nodeType === "loop-until") {
+		return <Repeat className={cn(className, "text-muted-foreground")} />;
+	}
+	if (action.nodeType === "while") {
 		return <Repeat className={cn(className, "text-muted-foreground")} />;
 	}
 	if (action.nodeType === "if-else") {
@@ -278,6 +284,11 @@ function ActionIcon({
 	}
 	if (action.nodeType === "note") {
 		return <StickyNote className={cn(className, "text-muted-foreground")} />;
+	}
+	// For Dapr categories
+	const DaprIcon = DAPR_CATEGORY_ICONS[action.category];
+	if (DaprIcon) {
+		return <DaprIcon className={cn(className, "text-muted-foreground")} />;
 	}
 	return <Zap className={cn(className, "text-muted-foreground")} />;
 }

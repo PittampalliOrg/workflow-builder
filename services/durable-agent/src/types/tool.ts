@@ -5,22 +5,22 @@
 
 /** OpenAI-format tool call structure. */
 export interface ToolCall {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string; // JSON-encoded
-  };
+	id: string;
+	type: "function";
+	function: {
+		name: string;
+		arguments: string; // JSON-encoded
+	};
 }
 
 /** Record of a tool execution for audit/history. */
 export interface ToolExecutionRecord {
-  id: string;
-  timestamp: string; // ISO-8601
-  tool_call_id: string;
-  tool_name: string;
-  tool_args: Record<string, unknown>;
-  execution_result: string;
+	id: string;
+	timestamp: string; // ISO-8601
+	tool_call_id: string;
+	tool_name: string;
+	tool_args: Record<string, unknown>;
+	execution_result: string;
 }
 
 /**
@@ -30,7 +30,7 @@ export interface ToolExecutionRecord {
  * exposes description, inputSchema, and execute().
  */
 export interface DurableAgentTool {
-  description?: string;
-  inputSchema?: unknown;
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+	description?: string;
+	inputSchema?: unknown;
+	execute?: (args: Record<string, unknown>) => Promise<unknown>;
 }

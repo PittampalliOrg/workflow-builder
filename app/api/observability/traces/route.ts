@@ -185,6 +185,8 @@ export async function GET(request: Request) {
 		);
 
 		// Query all relevant services in parallel and merge results.
+		// Let rejected lookups fail the request, but tolerate non-array responses
+		// so partial/mock responses don't crash merge logic.
 		const traceArrays = await Promise.all(
 			jaegerServices.map((svc) =>
 				searchJaegerTraces({
@@ -192,14 +194,19 @@ export async function GET(request: Request) {
 					from,
 					to,
 					limit: jaegerLimit,
-				}).catch(() => [] as Awaited<ReturnType<typeof searchJaegerTraces>>),
+				}),
 			),
 		);
 
 		// Deduplicate by traceID, keeping the version with the most spans.
-		const traceMap = new Map<string, (typeof traceArrays)[0][0]>();
+		const traceMap = new Map<
+			string,
+			Awaited<ReturnType<typeof searchJaegerTraces>>[number]
+		>();
 		for (const arr of traceArrays) {
-			for (const trace of arr) {
+			const tracesForService: Awaited<ReturnType<typeof searchJaegerTraces>> =
+				Array.isArray(arr) ? arr : [];
+			for (const trace of tracesForService) {
 				const id = trace.traceID ?? trace.traceId ?? "";
 				if (!id) continue;
 				const existing = traceMap.get(id);

@@ -11,6 +11,7 @@ import type {
 	WorkflowNode,
 	WorkflowNodeType,
 } from "./workflow-store";
+import { lowerWhileNodesForExecution } from "./workflows/while-node";
 
 /**
  * Serialized node format for workflow definitions
@@ -273,13 +274,14 @@ export function generateWorkflowDefinition(
 	metadata?: WorkflowDefinition["metadata"],
 ): WorkflowDefinition {
 	const now = new Date().toISOString();
+	const lowered = lowerWhileNodesForExecution({ nodes, edges });
 
 	// Filter out 'add' nodes (UI placeholder nodes)
-	const executableNodes = nodes.filter((n) => n.type !== "add");
+	const executableNodes = lowered.nodes.filter((n) => n.type !== "add");
 
 	// Serialize nodes and edges
 	const serializedNodes = executableNodes.map(serializeNode);
-	const serializedEdges = edges
+	const serializedEdges = lowered.edges
 		.filter(
 			(e) =>
 				executableNodes.some((n) => n.id === e.source) &&
@@ -288,7 +290,7 @@ export function generateWorkflowDefinition(
 		.map(serializeEdge);
 
 	// Get execution order
-	const executionOrder = topologicalSort(executableNodes, edges);
+	const executionOrder = topologicalSort(executableNodes, lowered.edges);
 
 	return {
 		id: workflowId,

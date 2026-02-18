@@ -272,166 +272,169 @@ type ActionNodeProps = NodeProps & {
 };
 
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Complex UI logic with multiple conditions including disabled state
-export const ActionNode = memo(({ data, selected, id }: ActionNodeProps) => {
-	const { findActionById, getIntegration } = usePiecesCatalog();
-	const selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
-	const executionLogs = useAtomValue(executionLogsAtom);
-	const pendingIntegrationNodes = useAtomValue(pendingIntegrationNodesAtom);
-	const availableIntegrationIds = useAtomValue(connectionIdsAtom);
-	const allConnections = useAtomValue(connectionsAtom);
-	const integrationsLoaded = useAtomValue(connectionsLoadedAtom);
+export const ActionNode = memo(
+	({ data, selected, id, parentId }: ActionNodeProps) => {
+		const { findActionById, getIntegration } = usePiecesCatalog();
+		const selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
+		const executionLogs = useAtomValue(executionLogsAtom);
+		const pendingIntegrationNodes = useAtomValue(pendingIntegrationNodesAtom);
+		const availableIntegrationIds = useAtomValue(connectionIdsAtom);
+		const allConnections = useAtomValue(connectionsAtom);
+		const integrationsLoaded = useAtomValue(connectionsLoadedAtom);
 
-	if (!data) {
-		return null;
-	}
+		if (!data) {
+			return null;
+		}
 
-	const actionType = (data.config?.actionType as string) || "";
-	const status = data.status;
+		const actionType = (data.config?.actionType as string) || "";
+		const status = data.status;
+		const hideHandles = Boolean(parentId);
 
-	// Check if this node has a generated image from the selected execution
-	const nodeLog = executionLogs[id];
-	const hasGeneratedImage =
-		selectedExecutionId &&
-		actionType === "Generate Image" &&
-		nodeLog?.output &&
-		isBase64ImageOutput(nodeLog.output);
+		// Check if this node has a generated image from the selected execution
+		const nodeLog = executionLogs[id];
+		const hasGeneratedImage =
+			selectedExecutionId &&
+			actionType === "Generate Image" &&
+			nodeLog?.output &&
+			isBase64ImageOutput(nodeLog.output);
 
-	// Handle empty action type (new node without selected action)
-	if (!actionType) {
+		// Handle empty action type (new node without selected action)
+		if (!actionType) {
+			const isDisabled = data.enabled === false;
+			return (
+				<Node
+					className={cn(
+						"flex h-48 w-48 flex-col items-center justify-center shadow-none transition-all duration-150 ease-out",
+						selected && "border-primary",
+						isDisabled && "opacity-50",
+					)}
+					data-testid={`action-node-${id}`}
+					handles={{ target: !hideHandles, source: !hideHandles }}
+					status={status}
+				>
+					{isDisabled && (
+						<div className="absolute top-2 left-2 rounded-full bg-gray-500/50 p-1">
+							<EyeOff className="size-3.5 text-white" />
+						</div>
+					)}
+					<div className="flex flex-col items-center justify-center gap-3 p-6">
+						<Zap className="size-12 text-muted-foreground" strokeWidth={1.5} />
+						<div className="flex flex-col items-center gap-1 text-center">
+							<NodeTitle className="text-base">
+								{data.label || "Action"}
+							</NodeTitle>
+							<NodeDescription className="text-xs">
+								Select an action
+							</NodeDescription>
+						</div>
+					</div>
+				</Node>
+			);
+		}
+
+		// Get human-readable label from registry if no custom label is set
+		const actionInfo = findActionById(actionType);
+		const displayTitle = data.label || actionInfo?.label || actionType;
+		const displayDescription =
+			data.description ||
+			getIntegrationFromActionType(actionType, findActionById, getIntegration);
+
+		const needsIntegration = requiresIntegration(actionType, findActionById);
+		// Don't show missing indicator if we're still checking for auto-select
+		const isPendingIntegrationCheck = pendingIntegrationNodes.has(id);
+		// Check both that integrationId is set AND that it exists in available integrations
+		const configuredIntegrationId = data.config?.integrationId as
+			| string
+			| undefined;
+		const hasValidIntegration =
+			configuredIntegrationId &&
+			availableIntegrationIds.has(configuredIntegrationId);
+		const authTemplate = data.config?.auth as string | undefined;
+		const authExternalId = authTemplate?.match(
+			/\{\{connections\[['"]([^'"]+)['"]\]\}\}/,
+		)?.[1];
+		const hasValidAuthConnection =
+			!!authExternalId &&
+			allConnections.some((c) => c.externalId === authExternalId);
+		// Only show missing indicator after integrations have been loaded
+		const integrationMissing =
+			integrationsLoaded &&
+			needsIntegration &&
+			!hasValidIntegration &&
+			!hasValidAuthConnection &&
+			!isPendingIntegrationCheck;
+
+		// Get model for AI nodes
+		const getAiModel = (): string | null => {
+			if (actionType === "durable/run") {
+				return typeof data.config?.model === "string"
+					? (data.config.model as string)
+					: null;
+			}
+			if (actionType === "Generate Text") {
+				return (data.config?.aiModel as string) || "meta/llama-4-scout";
+			}
+			if (actionType === "Generate Image") {
+				return (
+					(data.config?.imageModel as string) || "google/imagen-4.0-generate"
+				);
+			}
+			return null;
+		};
+
+		const aiModel = getAiModel();
 		const isDisabled = data.enabled === false;
+
 		return (
 			<Node
 				className={cn(
-					"flex h-48 w-48 flex-col items-center justify-center shadow-none transition-all duration-150 ease-out",
+					"relative flex h-48 w-48 flex-col items-center justify-center shadow-none transition-all duration-150 ease-out",
 					selected && "border-primary",
 					isDisabled && "opacity-50",
 				)}
 				data-testid={`action-node-${id}`}
-				handles={{ target: true, source: true }}
+				handles={{ target: !hideHandles, source: !hideHandles }}
 				status={status}
 			>
+				{/* Disabled badge in top left */}
 				{isDisabled && (
 					<div className="absolute top-2 left-2 rounded-full bg-gray-500/50 p-1">
 						<EyeOff className="size-3.5 text-white" />
 					</div>
 				)}
+
+				{/* Integration warning badge in top left (only if not disabled) */}
+				{!isDisabled && integrationMissing && (
+					<div className="absolute top-2 left-2 rounded-full bg-orange-500/50 p-1">
+						<AlertTriangle className="size-3.5 text-white" />
+					</div>
+				)}
+
+				{/* Status indicator badge in top right */}
+				<StatusBadge status={status} />
+
 				<div className="flex flex-col items-center justify-center gap-3 p-6">
-					<Zap className="size-12 text-muted-foreground" strokeWidth={1.5} />
+					{hasGeneratedImage ? (
+						<GeneratedImageThumbnail
+							base64={(nodeLog.output as { base64: string }).base64}
+						/>
+					) : (
+						getProviderLogo(actionType, findActionById, getIntegration)
+					)}
 					<div className="flex flex-col items-center gap-1 text-center">
-						<NodeTitle className="text-base">
-							{data.label || "Action"}
-						</NodeTitle>
-						<NodeDescription className="text-xs">
-							Select an action
-						</NodeDescription>
+						<NodeTitle className="text-base">{displayTitle}</NodeTitle>
+						{displayDescription && (
+							<NodeDescription className="text-xs">
+								{displayDescription}
+							</NodeDescription>
+						)}
+						{/* Model badge for AI nodes */}
+						{aiModel && <ModelBadge model={aiModel} />}
 					</div>
 				</div>
 			</Node>
 		);
-	}
-
-	// Get human-readable label from registry if no custom label is set
-	const actionInfo = findActionById(actionType);
-	const displayTitle = data.label || actionInfo?.label || actionType;
-	const displayDescription =
-		data.description ||
-		getIntegrationFromActionType(actionType, findActionById, getIntegration);
-
-	const needsIntegration = requiresIntegration(actionType, findActionById);
-	// Don't show missing indicator if we're still checking for auto-select
-	const isPendingIntegrationCheck = pendingIntegrationNodes.has(id);
-	// Check both that integrationId is set AND that it exists in available integrations
-	const configuredIntegrationId = data.config?.integrationId as
-		| string
-		| undefined;
-	const hasValidIntegration =
-		configuredIntegrationId &&
-		availableIntegrationIds.has(configuredIntegrationId);
-	const authTemplate = data.config?.auth as string | undefined;
-	const authExternalId = authTemplate?.match(
-		/\{\{connections\[['"]([^'"]+)['"]\]\}\}/,
-	)?.[1];
-	const hasValidAuthConnection =
-		!!authExternalId &&
-		allConnections.some((c) => c.externalId === authExternalId);
-	// Only show missing indicator after integrations have been loaded
-	const integrationMissing =
-		integrationsLoaded &&
-		needsIntegration &&
-		!hasValidIntegration &&
-		!hasValidAuthConnection &&
-		!isPendingIntegrationCheck;
-
-	// Get model for AI nodes
-	const getAiModel = (): string | null => {
-		if (actionType === "durable/run") {
-			return typeof data.config?.model === "string"
-				? (data.config.model as string)
-				: null;
-		}
-		if (actionType === "Generate Text") {
-			return (data.config?.aiModel as string) || "meta/llama-4-scout";
-		}
-		if (actionType === "Generate Image") {
-			return (
-				(data.config?.imageModel as string) || "google/imagen-4.0-generate"
-			);
-		}
-		return null;
-	};
-
-	const aiModel = getAiModel();
-	const isDisabled = data.enabled === false;
-
-	return (
-		<Node
-			className={cn(
-				"relative flex h-48 w-48 flex-col items-center justify-center shadow-none transition-all duration-150 ease-out",
-				selected && "border-primary",
-				isDisabled && "opacity-50",
-			)}
-			data-testid={`action-node-${id}`}
-			handles={{ target: true, source: true }}
-			status={status}
-		>
-			{/* Disabled badge in top left */}
-			{isDisabled && (
-				<div className="absolute top-2 left-2 rounded-full bg-gray-500/50 p-1">
-					<EyeOff className="size-3.5 text-white" />
-				</div>
-			)}
-
-			{/* Integration warning badge in top left (only if not disabled) */}
-			{!isDisabled && integrationMissing && (
-				<div className="absolute top-2 left-2 rounded-full bg-orange-500/50 p-1">
-					<AlertTriangle className="size-3.5 text-white" />
-				</div>
-			)}
-
-			{/* Status indicator badge in top right */}
-			<StatusBadge status={status} />
-
-			<div className="flex flex-col items-center justify-center gap-3 p-6">
-				{hasGeneratedImage ? (
-					<GeneratedImageThumbnail
-						base64={(nodeLog.output as { base64: string }).base64}
-					/>
-				) : (
-					getProviderLogo(actionType, findActionById, getIntegration)
-				)}
-				<div className="flex flex-col items-center gap-1 text-center">
-					<NodeTitle className="text-base">{displayTitle}</NodeTitle>
-					{displayDescription && (
-						<NodeDescription className="text-xs">
-							{displayDescription}
-						</NodeDescription>
-					)}
-					{/* Model badge for AI nodes */}
-					{aiModel && <ModelBadge model={aiModel} />}
-				</div>
-			</div>
-		</Node>
-	);
-});
+	},
+);
 
 ActionNode.displayName = "ActionNode";

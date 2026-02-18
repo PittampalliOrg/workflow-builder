@@ -34,6 +34,7 @@ export type ActionConfigFieldBase = {
 	type:
 		| "template-input" // TemplateBadgeInput - supports {{variable}}
 		| "template-textarea" // TemplateBadgeTextarea - supports {{variable}}
+		| "cel-editor" // Monaco editor tailored for Common Expression Language (CEL)
 		| "text" // Regular text input
 		| "number" // Number input
 		| "select" // Dropdown select

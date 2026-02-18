@@ -63,6 +63,11 @@ def log_external_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             "responded_by": input_data.get("respondedBy"),
             "payload": input_data.get("payload"),
         }
+        # Omit null values so strict schema validation in function-router
+        # doesn't reject optional fields sent as explicit null.
+        request_payload = {
+            key: value for key, value in request_payload.items() if value is not None
+        }
 
         response = requests.post(url, json=request_payload, timeout=30)
         response.raise_for_status()

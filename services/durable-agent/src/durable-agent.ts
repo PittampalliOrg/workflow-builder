@@ -178,6 +178,7 @@ export class DurableAgent {
 			this.memory,
 			processors.length > 0 ? processors : undefined,
 			this.name,
+			options.modelResolver,
 		);
 		this.boundRunTool = createRunTool(this.tools);
 		this.boundSaveToolResults = createSaveToolResults(

@@ -67,6 +67,7 @@ import { SetStateConfig } from "./config/set-state-config";
 import { TimerConfig } from "./config/timer-config";
 import { TransformConfig } from "./config/transform-config";
 import { TriggerConfig } from "./config/trigger-config";
+import { WhileConfig } from "./config/while-config";
 import { WorkflowRuns } from "./workflow-runs";
 
 // System actions that need integrations (not in plugin registry)
@@ -503,7 +504,7 @@ export const PanelInner = () => {
 		[updateNodeData, setPendingIntegrationNodes],
 	);
 
-	const handleUpdateConfig = (key: string, value: string) => {
+	const handleUpdateConfig = (key: string, value: unknown) => {
 		if (selectedNode) {
 			let newConfig: Record<string, unknown> = {
 				...selectedNode.data.config,
@@ -521,7 +522,7 @@ export const PanelInner = () => {
 			updateNodeData({ id: selectedNode.id, data: { config: newConfig } });
 
 			// When action type changes, auto-select integration if only one exists
-			if (key === "actionType") {
+			if (key === "actionType" && typeof value === "string") {
 				// Cancel any pending auto-select operation for this node
 				const existingController =
 					autoSelectAbortControllersRef.current[selectedNode.id];
@@ -886,15 +887,17 @@ export const PanelInner = () => {
 																	? "Timer"
 																	: selection.nodeType === "loop-until"
 																		? "Loop Until"
-																		: selection.nodeType === "if-else"
-																			? "If / Else"
-																			: selection.nodeType === "note"
-																				? "Note"
-																				: selection.nodeType === "set-state"
-																					? "Set State"
-																					: selection.nodeType === "transform"
-																						? "Transform"
-																						: "Step",
+																		: selection.nodeType === "while"
+																			? "While"
+																			: selection.nodeType === "if-else"
+																				? "If / Else"
+																				: selection.nodeType === "note"
+																					? "Note"
+																					: selection.nodeType === "set-state"
+																						? "Set State"
+																						: selection.nodeType === "transform"
+																							? "Transform"
+																							: "Step",
 													config:
 														selection.nodeType === "activity"
 															? { activityName: selection.activityName }
@@ -908,19 +911,28 @@ export const PanelInner = () => {
 																		left: "",
 																		right: "",
 																	}
-																: selection.nodeType === "if-else"
+																: selection.nodeType === "while"
 																	? {
-																			operator: "EXISTS",
-																			left: "",
-																			right: "",
+																			expression: "",
+																			maxIterations: 20,
+																			delaySeconds: 0,
+																			onMaxIterations: "continue",
 																		}
-																	: selection.nodeType === "note"
-																		? { text: "" }
-																		: selection.nodeType === "set-state"
-																			? { key: "", value: "" }
-																			: selection.nodeType === "transform"
-																				? { templateJson: "{\n  \n}" }
-																				: {},
+																	: selection.nodeType === "if-else"
+																		? {
+																				operator: "EXISTS",
+																				left: "",
+																				right: "",
+																			}
+																		: selection.nodeType === "note"
+																			? { text: "" }
+																			: selection.nodeType === "set-state"
+																				? {
+																						entries: [{ key: "", value: "" }],
+																					}
+																				: selection.nodeType === "transform"
+																					? { templateJson: "{\n  \n}" }
+																					: {},
 												},
 											});
 										} else {
@@ -1002,6 +1014,16 @@ export const PanelInner = () => {
 							{/* Dapr Loop Until Config */}
 							{selectedNode.type === "loop-until" && (
 								<LoopUntilConfig
+									config={selectedNode.data.config || {}}
+									disabled={isGenerating || !isOwner}
+									onUpdateConfig={handleUpdateConfig}
+								/>
+							)}
+
+							{/* While Config */}
+							{selectedNode.type === "while" && (
+								<WhileConfig
+									nodeId={selectedNode.id}
 									config={selectedNode.data.config || {}}
 									disabled={isGenerating || !isOwner}
 									onUpdateConfig={handleUpdateConfig}

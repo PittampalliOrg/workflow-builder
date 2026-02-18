@@ -6,6 +6,7 @@
 
 import { tool, jsonSchema } from "ai";
 import type { DurableAgentTool } from "../types/tool.js";
+import type { LoopDeclarationOnlyTool } from "../types/loop-policy.js";
 
 /**
  * Build AI SDK 6 tool declarations (schema-only, no execute).
@@ -13,21 +14,35 @@ import type { DurableAgentTool } from "../types/tool.js";
  * are available without the SDK auto-executing them.
  */
 export function buildToolDeclarations(
-  tools: Record<string, DurableAgentTool>,
+	tools: Record<string, DurableAgentTool>,
+	declarationOnlyTools: LoopDeclarationOnlyTool[] = [],
 ): Record<string, any> {
-  const decls: Record<string, any> = {};
-  for (const [name, t] of Object.entries(tools)) {
-    const schema = t.inputSchema;
-    const jsonSch = schema
-      ? jsonSchema(zodToJsonSchema(schema) as any)
-      : undefined;
+	const decls: Record<string, any> = {};
+	for (const [name, t] of Object.entries(tools)) {
+		const schema = t.inputSchema;
+		const jsonSch = schema
+			? jsonSchema(zodToJsonSchema(schema) as any)
+			: undefined;
 
-    decls[name] = tool({
-      description: t.description ?? "",
-      inputSchema: jsonSch ?? jsonSchema({ type: "object" } as any),
-    });
-  }
-  return decls;
+		decls[name] = tool({
+			description: t.description ?? "",
+			inputSchema: jsonSch ?? jsonSchema({ type: "object" } as any),
+		});
+	}
+
+	for (const declaration of declarationOnlyTools) {
+		if (!declaration?.name) continue;
+		if (decls[declaration.name]) continue;
+		const schema =
+			declaration.inputSchema && typeof declaration.inputSchema === "object"
+				? declaration.inputSchema
+				: ({ type: "object" } as const);
+		decls[declaration.name] = tool({
+			description: declaration.description ?? "",
+			inputSchema: jsonSchema(schema as any),
+		});
+	}
+	return decls;
 }
 
 /**
@@ -35,52 +50,52 @@ export function buildToolDeclarations(
  * Handles the common types used by workspace tools.
  */
 function zodToJsonSchema(schema: any): Record<string, unknown> {
-  if (!schema) {
-    return { type: "object" };
-  }
+	if (!schema) {
+		return { type: "object" };
+	}
 
-  // Already a plain JSON Schema object (not a Zod schema) — pass through
-  if (!schema._def && typeof schema.type === "string") {
-    return schema;
-  }
+	// Already a plain JSON Schema object (not a Zod schema) — pass through
+	if (!schema._def && typeof schema.type === "string") {
+		return schema;
+	}
 
-  if (!schema._def) {
-    return { type: "object" };
-  }
+	if (!schema._def) {
+		return { type: "object" };
+	}
 
-  const def = schema._def;
-  const typeName = def.typeName;
+	const def = schema._def;
+	const typeName = def.typeName;
 
-  if (typeName === "ZodObject") {
-    const properties: Record<string, unknown> = {};
-    const required: string[] = [];
-    const shape = schema.shape ?? def.shape?.() ?? {};
+	if (typeName === "ZodObject") {
+		const properties: Record<string, unknown> = {};
+		const required: string[] = [];
+		const shape = schema.shape ?? def.shape?.() ?? {};
 
-    for (const [key, value] of Object.entries(shape)) {
-      properties[key] = zodToJsonSchema(value as any);
-      if ((value as any)?._def?.typeName !== "ZodOptional") {
-        required.push(key);
-      }
-    }
+		for (const [key, value] of Object.entries(shape)) {
+			properties[key] = zodToJsonSchema(value as any);
+			if ((value as any)?._def?.typeName !== "ZodOptional") {
+				required.push(key);
+			}
+		}
 
-    return {
-      type: "object",
-      properties,
-      ...(required.length > 0 ? { required } : {}),
-    };
-  }
+		return {
+			type: "object",
+			properties,
+			...(required.length > 0 ? { required } : {}),
+		};
+	}
 
-  if (typeName === "ZodString") return { type: "string" };
-  if (typeName === "ZodNumber") return { type: "number" };
-  if (typeName === "ZodBoolean") return { type: "boolean" };
-  if (typeName === "ZodOptional") return zodToJsonSchema(def.innerType);
-  if (typeName === "ZodDefault") return zodToJsonSchema(def.innerType);
-  if (typeName === "ZodArray") {
-    return { type: "array", items: zodToJsonSchema(def.type) };
-  }
-  if (typeName === "ZodEnum") {
-    return { type: "string", enum: def.values };
-  }
+	if (typeName === "ZodString") return { type: "string" };
+	if (typeName === "ZodNumber") return { type: "number" };
+	if (typeName === "ZodBoolean") return { type: "boolean" };
+	if (typeName === "ZodOptional") return zodToJsonSchema(def.innerType);
+	if (typeName === "ZodDefault") return zodToJsonSchema(def.innerType);
+	if (typeName === "ZodArray") {
+		return { type: "array", items: zodToJsonSchema(def.type) };
+	}
+	if (typeName === "ZodEnum") {
+		return { type: "string", enum: def.values };
+	}
 
-  return { type: "string" };
+	return { type: "string" };
 }

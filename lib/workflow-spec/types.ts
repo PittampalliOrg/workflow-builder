@@ -108,12 +108,63 @@ export const LoopUntilStepSpecSchema = BaseStepSpecSchema.extend({
 	next: NextLinearSchema.optional(),
 });
 
+const SetStateEntrySchema = z.object({
+	key: z.string().min(1),
+	value: JsonValueSchema,
+});
+
+const SetStateConfigSchema = z
+	.object({
+		key: z.string().min(1).optional(),
+		value: JsonValueSchema.optional(),
+		entries: z.array(SetStateEntrySchema).min(1).optional(),
+	})
+	.superRefine((config, ctx) => {
+		const hasEntries =
+			Array.isArray(config.entries) && config.entries.length > 0;
+		const hasSingle =
+			typeof config.key === "string" &&
+			config.key.length > 0 &&
+			config.value !== undefined;
+
+		if (!hasEntries && !hasSingle) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["entries"],
+				message:
+					'Set-state config must provide either "entries" or both "key" and "value".',
+			});
+		}
+
+		if (
+			typeof config.key === "string" &&
+			config.key.length > 0 &&
+			config.value === undefined &&
+			!hasEntries
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["value"],
+				message: '"value" is required when "key" is provided.',
+			});
+		}
+
+		if (
+			config.value !== undefined &&
+			(!config.key || config.key.length === 0) &&
+			!hasEntries
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["key"],
+				message: '"key" is required when "value" is provided.',
+			});
+		}
+	});
+
 export const SetStateStepSpecSchema = BaseStepSpecSchema.extend({
 	kind: z.literal("set-state"),
-	config: z.object({
-		key: z.string().min(1),
-		value: JsonValueSchema,
-	}),
+	config: SetStateConfigSchema,
 	next: NextLinearSchema.optional(),
 });
 

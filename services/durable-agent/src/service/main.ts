@@ -69,6 +69,7 @@ import {
 	adaptMastraTools,
 	type MastraToolLike,
 } from "../mastra/index.js";
+import type { LoopPolicy } from "../types/loop-policy.js";
 import { discoverMcpTools } from "../mastra/mcp-client-setup.js";
 import { createMastraWorkspaceTools } from "../mastra/workspace-setup.js";
 import {
@@ -158,6 +159,32 @@ function agentConfigHash(config: AgentConfigPayload): string {
 	return `agent-${hash.toString(36)}`;
 }
 
+function normalizeModelSpecForEnvironment(modelSpecRaw: string): string {
+	const modelSpec = String(modelSpecRaw || "").trim();
+	if (!modelSpec) {
+		return `openai/${process.env.AI_MODEL ?? "gpt-4o"}`;
+	}
+
+	const slashIndex = modelSpec.indexOf("/");
+	if (slashIndex <= 0) {
+		return modelSpec;
+	}
+
+	const provider = modelSpec.slice(0, slashIndex).toLowerCase();
+	if (
+		provider === "anthropic" &&
+		!String(process.env.ANTHROPIC_API_KEY || "").trim()
+	) {
+		const fallback = `openai/${process.env.AI_MODEL ?? "gpt-4o"}`;
+		console.warn(
+			`[durable-agent] Model "${modelSpec}" requires ANTHROPIC_API_KEY; falling back to "${fallback}"`,
+		);
+		return fallback;
+	}
+
+	return modelSpec;
+}
+
 function evictStaleAgents(): void {
 	const now = Date.now();
 	for (const [key, entry] of agentCache) {
@@ -195,7 +222,8 @@ async function getOrCreateConfiguredAgent(
 	evictStaleAgents();
 
 	// Resolve model
-	const model = resolveModel(config.modelSpec);
+	const effectiveModelSpec = normalizeModelSpecForEnvironment(config.modelSpec);
+	const model = resolveModel(effectiveModelSpec);
 
 	// Filter tools if specified
 	let tools = allMergedTools;
@@ -210,7 +238,7 @@ async function getOrCreateConfiguredAgent(
 	}
 
 	console.log(
-		`[durable-agent] Creating configured agent: name=${config.name} model=${config.modelSpec} tools=${Object.keys(tools).length}`,
+		`[durable-agent] Creating configured agent: name=${config.name} model=${effectiveModelSpec} tools=${Object.keys(tools).length}`,
 	);
 
 	const configuredAgent = new DurableAgent({
@@ -219,6 +247,7 @@ async function getOrCreateConfiguredAgent(
 		goal: "Execute task according to custom instructions",
 		instructions: config.instructions,
 		model,
+		modelResolver: resolveModel,
 		tools,
 		state: {
 			storeName: process.env.STATE_STORE_NAME || "statestore",
@@ -318,6 +347,7 @@ Use workspace tools to help users with file operations and command execution:
 
 Be concise and direct. Use the appropriate tool for each task.`,
 		model,
+		modelResolver: resolveModel,
 		tools: mergedTools,
 		state: {
 			storeName: process.env.STATE_STORE_NAME || "statestore",
@@ -392,6 +422,28 @@ function parseOptionalBoolean(input: unknown): boolean | undefined {
 	const normalized = input.trim().toLowerCase();
 	if (normalized === "true") return true;
 	if (normalized === "false") return false;
+	return undefined;
+}
+
+function parseOptionalLoopPolicy(input: unknown): LoopPolicy | undefined {
+	if (!input) return undefined;
+	if (typeof input === "string") {
+		const trimmed = input.trim();
+		if (!trimmed) return undefined;
+		try {
+			const parsed = JSON.parse(trimmed);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed as LoopPolicy;
+			}
+			return undefined;
+		} catch (err) {
+			console.warn("[durable-agent] Invalid loopPolicy JSON:", err);
+			return undefined;
+		}
+	}
+	if (typeof input === "object" && !Array.isArray(input)) {
+		return input as LoopPolicy;
+	}
 	return undefined;
 }
 
@@ -741,12 +793,14 @@ async function runPlanningAttempt(input: {
 	maxIterations: number;
 	workspaceRef?: string;
 	timeoutSeconds?: number;
+	loopPolicy?: LoopPolicy;
 }): Promise<PlanningAttemptResult> {
 	const instanceId = await workflowClient!.scheduleNewWorkflow(
 		input.activeAgent.agentWorkflow,
 		{
 			task: input.task,
 			maxIterations: input.maxIterations,
+			...(input.loopPolicy ? { loopPolicy: input.loopPolicy } : {}),
 		},
 	);
 	if (input.workspaceRef) {
@@ -1396,6 +1450,7 @@ app.post("/api/run", async (req, res) => {
 			typeof req.body?.stopCondition === "string"
 				? req.body.stopCondition.trim()
 				: "";
+		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
 		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
 		const explicitRequireFileChanges = parseOptionalBoolean(
 			req.body?.requireFileChanges,
@@ -1503,7 +1558,11 @@ app.post("/api/run", async (req, res) => {
 		// Schedule the durable agent workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
 			activeAgent.agentWorkflow,
-			{ task: runPrompt, ...(maxTurns ? { maxIterations: maxTurns } : {}) },
+			{
+				task: runPrompt,
+				...(maxTurns ? { maxIterations: maxTurns } : {}),
+				...(loopPolicy ? { loopPolicy } : {}),
+			},
 		);
 		if (workspaceRef) {
 			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
@@ -1569,6 +1628,15 @@ app.post("/api/run", async (req, res) => {
 				const completionResult = {
 					text,
 					toolCalls,
+					staticToolCalls:
+						(completion.result?.static_tool_calls as unknown[]) ?? undefined,
+					loopStopReason:
+						(typeof completion.result?.stop_reason === "string"
+							? completion.result.stop_reason
+							: undefined) ?? undefined,
+					loopStopCondition: completion.result?.stop_condition,
+					requiresApproval: completion.result?.requires_approval,
+					usageTotals: completion.result?.usage_totals,
 					fileChanges,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,
@@ -1693,6 +1761,7 @@ app.post("/api/plan", async (req, res) => {
 				planningMaxTurns = parsed;
 			}
 		}
+		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
 
 		// Resolve agent: prefer explicit agentConfig, then inline model config, else default.
 		const agentConfig =
@@ -1763,6 +1832,7 @@ app.post("/api/plan", async (req, res) => {
 			task: planningPrompt.prompt,
 			maxIterations: planningMaxTurns,
 			workspaceRef: workspaceRef || undefined,
+			loopPolicy,
 		});
 		planningInstanceIds.push(initialPlanningAttempt.instanceId);
 
@@ -1800,6 +1870,7 @@ app.post("/api/plan", async (req, res) => {
 				task: repairPrompt.prompt,
 				maxIterations: PLAN_REPAIR_MAX_TURNS,
 				workspaceRef: workspaceRef || undefined,
+				loopPolicy,
 			});
 			planningInstanceIds.push(repairAttempt.instanceId);
 			if (!repairAttempt.completion.success) {
@@ -1977,6 +2048,7 @@ app.post("/api/execute-plan", async (req, res) => {
 			req.body?.cleanupWorkspace,
 		);
 		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
+		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
 		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
 		const requestedWorkspaceRef =
 			typeof req.body?.workspaceRef === "string"
@@ -2083,6 +2155,7 @@ app.post("/api/execute-plan", async (req, res) => {
 			{
 				task: executionPrompt,
 				...(maxTurns ? { maxIterations: maxTurns } : {}),
+				...(loopPolicy ? { loopPolicy } : {}),
 			},
 		);
 		if (workspaceRef) {
@@ -2164,6 +2237,15 @@ app.post("/api/execute-plan", async (req, res) => {
 				const completionResult = {
 					text,
 					toolCalls,
+					staticToolCalls:
+						(completion.result?.static_tool_calls as unknown[]) ?? undefined,
+					loopStopReason:
+						(typeof completion.result?.stop_reason === "string"
+							? completion.result.stop_reason
+							: undefined) ?? undefined,
+					loopStopCondition: completion.result?.stop_condition,
+					requiresApproval: completion.result?.requires_approval,
+					usageTotals: completion.result?.usage_totals,
 					fileChanges,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,

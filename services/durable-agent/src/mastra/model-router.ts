@@ -6,12 +6,14 @@
  */
 
 import type { LanguageModel, EmbeddingModel } from "ai";
+import { createRequire } from "node:module";
 
 type ModelFactory = (modelId: string) => LanguageModel;
 type EmbeddingFactory = (modelId: string) => EmbeddingModel;
 
 const llmProviders = new Map<string, ModelFactory>();
 const embeddingProviders = new Map<string, EmbeddingFactory>();
+const require = createRequire(import.meta.url);
 
 /**
  * Register a provider that can create LanguageModel instances.

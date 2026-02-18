@@ -7,6 +7,7 @@ and inter-service communication.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -77,7 +78,8 @@ def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 client.publish_event(
                     pubsub_name=PUBSUB_NAME,
                     topic_name=topic,
-                    data=event_payload,
+                    data=json.dumps(event_payload),
+                    data_content_type="application/json",
                 )
 
             logger.info(f"[Publish Event] Successfully published {event_type} to {topic}")
