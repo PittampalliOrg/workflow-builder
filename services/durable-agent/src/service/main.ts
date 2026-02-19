@@ -66,6 +66,7 @@ import {
 	normalizeModelSpecForEnvironment,
 	normalizeOpenAiChatModel,
 } from "./model-normalization.js";
+import { hydrateRuntimeSecretsFromDapr } from "./runtime-secrets.js";
 
 // Mastra adapters (all optional — graceful fallback if packages not installed)
 import {
@@ -266,6 +267,7 @@ async function initAgent(): Promise<void> {
 
 	initializingPromise = (async () => {
 		try {
+			await hydrateRuntimeSecretsFromDapr();
 			// Fail fast at startup if durable change persistence is misconfigured.
 			await workspaceSessions.ensureChangeArtifactPersistence();
 
