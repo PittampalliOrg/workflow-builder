@@ -22,6 +22,37 @@ MASTRA_AGENT_APP_ID = config.MASTRA_AGENT_APP_ID
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
 
 
+def _post_json_with_details(
+    *,
+    client: httpx.Client,
+    url: str,
+    payload: dict,
+    service_label: str,
+) -> dict:
+    response = client.post(url, json=payload)
+    if response.status_code >= 400:
+        body = (response.text or "").strip()
+        body_preview = body[:1200] if body else "<empty>"
+        raise RuntimeError(
+            f"{service_label} failed with HTTP {response.status_code}: {body_preview}"
+        )
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        body_preview = (response.text or "").strip()[:1200]
+        raise RuntimeError(
+            f"{service_label} returned non-JSON response: {body_preview}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"{service_label} returned invalid response type: {type(data).__name__}"
+        )
+
+    return data
+
+
 def call_mastra_agent_run(ctx, input_data: dict) -> dict:
     """
     Start a Mastra agent run on mastra-agent-tanstack.
@@ -52,12 +83,12 @@ def call_mastra_agent_run(ctx, input_data: dict) -> dict:
     with start_activity_span("activity.call_mastra_agent_run", otel, attrs):
         try:
             with httpx.Client(timeout=30.0) as client:
-                resp = client.post(url, json=input_data)
-                resp.raise_for_status()
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": "Invalid response from mastra agent service"}
-                return data
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=input_data,
+                    service_label="Mastra agent run",
+                )
         except Exception as e:
             logger.error(f"[Call Mastra Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -93,12 +124,12 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
     with start_activity_span("activity.call_durable_agent_run", otel, attrs):
         try:
             with httpx.Client(timeout=30.0) as client:
-                resp = client.post(url, json=input_data)
-                resp.raise_for_status()
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": "Invalid response from durable agent service"}
-                return data
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=input_data,
+                    service_label="Durable agent run",
+                )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -154,12 +185,12 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
                     "nodeId": input_data.get("nodeId", ""),
                     "nodeName": input_data.get("nodeName", ""),
                 }
-                resp = client.post(url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": "Invalid response"}
-                return data
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Durable plan",
+                )
         except Exception as e:
             logger.error(f"[Call Durable Plan] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -221,12 +252,12 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                 }
                 if input_data.get("maxTurns"):
                     payload["maxTurns"] = input_data["maxTurns"]
-                resp = client.post(url, json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": "Invalid response"}
-                return data
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Durable execute plan",
+                )
         except Exception as e:
             logger.error(f"[Call Durable Execute Plan] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -262,18 +293,16 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
     with start_activity_span("activity.cleanup_execution_workspaces", otel, attrs):
         try:
             with httpx.Client(timeout=15.0) as client:
-                resp = client.post(
-                    url,
-                    json={
-                        "executionId": execution_id,
-                        "dbExecutionId": db_execution_id,
-                    },
+                payload = {
+                    "executionId": execution_id,
+                    "dbExecutionId": db_execution_id,
+                }
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Workspace cleanup",
                 )
-                resp.raise_for_status()
-                data = resp.json()
-                if not isinstance(data, dict):
-                    return {"success": False, "error": "Invalid response from durable agent service"}
-                return data
         except Exception as e:
             logger.error(f"[Cleanup Workspaces] Failed: {e}")
             return {"success": False, "error": str(e)}
