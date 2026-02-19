@@ -278,7 +278,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					label: "Enabled Tools",
 					type: "dynamic-multi-select",
 					placeholder: "Select workspace tools",
-					defaultValue: "[]",
+					defaultValue: '["read","write","edit","list","bash"]',
 					required: false,
 					dynamicOptions: {
 						provider: "builtin",
@@ -437,7 +437,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 			slug: "file",
 			label: "Workspace File Operation",
 			description:
-				"Read, write, edit, list, stat, mkdir, or delete files in a workspace",
+				"Read, write, edit, or list files in a workspace",
 			category: "Workspace",
 			configFields: [
 				{
@@ -452,15 +452,12 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					label: "Operation",
 					type: "select",
 					required: true,
-					defaultValue: "read_file",
+					defaultValue: "read",
 					options: [
-						{ label: "Read File", value: "read_file" },
-						{ label: "Write File", value: "write_file" },
-						{ label: "Edit File", value: "edit_file" },
-						{ label: "List Files", value: "list_files" },
-						{ label: "Delete File", value: "delete_file" },
-						{ label: "Create Directory", value: "mkdir" },
-						{ label: "File Stat", value: "file_stat" },
+						{ label: "Read File", value: "read" },
+						{ label: "Write File", value: "write" },
+						{ label: "Edit File", value: "edit" },
+						{ label: "List Files", value: "list" },
 					],
 				},
 				{
@@ -477,7 +474,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					placeholder: "File content",
 					rows: 6,
 					required: false,
-					showWhen: { field: "operation", equals: "write_file" },
+					showWhen: { field: "operation", equals: "write" },
 				},
 				{
 					key: "old_string",
@@ -486,7 +483,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					placeholder: "Text to replace",
 					rows: 4,
 					required: false,
-					showWhen: { field: "operation", equals: "edit_file" },
+					showWhen: { field: "operation", equals: "edit" },
 				},
 				{
 					key: "new_string",
@@ -495,14 +492,13 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					placeholder: "Replacement text",
 					rows: 4,
 					required: false,
-					showWhen: { field: "operation", equals: "edit_file" },
+					showWhen: { field: "operation", equals: "edit" },
 				},
 			],
 			outputFields: [
 				{ field: "content", description: "Read file content" },
 				{ field: "files", description: "Directory listing" },
 				{ field: "path", description: "Affected path" },
-				{ field: "deleted", description: "Delete operation status" },
 				{
 					field: "changeSummary",
 					description: "Structured file change metadata for this step",

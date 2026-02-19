@@ -184,15 +184,11 @@ type DurableToolsResponse = {
 };
 
 const DURABLE_AGENT_FALLBACK_TOOLS = [
-	"read_file",
-	"write_file",
-	"edit_file",
-	"list_files",
-	"delete_file",
-	"mkdir",
-	"file_stat",
-	"execute_command",
-	"clone",
+	"read",
+	"write",
+	"edit",
+	"list",
+	"bash",
 ];
 
 async function getDurableToolOptions(
