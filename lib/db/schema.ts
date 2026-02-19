@@ -563,6 +563,40 @@ export const workflowAiMessages = pgTable(
 	}),
 );
 
+/**
+ * Workflow AI tools chat history.
+ * Persists UI message parts for the side-panel tools-based chat.
+ */
+export const workflowAiToolMessages = pgTable(
+	"workflow_ai_tool_messages",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		messageId: text("message_id").notNull(),
+		role: text("role").notNull().$type<WorkflowAiMessageRole>(),
+		parts: jsonb("parts").notNull().$type<Array<Record<string, unknown>>>(),
+		textContent: text("text_content").notNull().default(""),
+		mentions: jsonb("mentions").$type<Array<Record<string, unknown>> | null>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		workflowUserCreatedIdx: index(
+			"idx_workflow_ai_tool_messages_workflow_user_created",
+		).on(table.workflowId, table.userId, table.createdAt),
+		workflowUserMessageUnique: unique(
+			"uq_workflow_ai_tool_messages_workflow_user_message",
+		).on(table.workflowId, table.userId, table.messageId),
+	}),
+);
+
 // Workflow execution logs to track individual node executions
 export const workflowExecutionLogs = pgTable("workflow_execution_logs", {
 	id: text("id")
@@ -1512,6 +1546,9 @@ export type NewWorkflowConnectionRef =
 	typeof workflowConnectionRefs.$inferInsert;
 export type WorkflowAiMessage = typeof workflowAiMessages.$inferSelect;
 export type NewWorkflowAiMessage = typeof workflowAiMessages.$inferInsert;
+export type WorkflowAiToolMessage = typeof workflowAiToolMessages.$inferSelect;
+export type NewWorkflowAiToolMessage =
+	typeof workflowAiToolMessages.$inferInsert;
 export type WorkflowExecution = typeof workflowExecutions.$inferSelect;
 export type NewWorkflowExecution = typeof workflowExecutions.$inferInsert;
 export type WorkflowExecutionLog = typeof workflowExecutionLogs.$inferSelect;

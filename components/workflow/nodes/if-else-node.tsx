@@ -33,18 +33,24 @@ export const IfElseNode = memo(({ data, selected, id }: IfElseNodeProps) => {
 				sources: [
 					{
 						id: "true",
+						label: "true",
+						maxConnections: 1,
 						position: Position.Right,
 						style: { top: "35%" },
 						className: "border-green-700 bg-green-500",
 					},
 					{
 						id: "false",
+						label: "false",
+						maxConnections: 1,
 						position: Position.Right,
 						style: { top: "65%" },
 						className: "border-red-700 bg-red-500",
 					},
 				],
 			}}
+			runnable
+			selected={selected}
 			status={data.status}
 		>
 			<div className="flex flex-col items-center justify-center gap-3 p-6">
@@ -60,11 +66,6 @@ export const IfElseNode = memo(({ data, selected, id }: IfElseNodeProps) => {
 						{data.description || "Choose a branch"}
 					</NodeDescription>
 				</div>
-			</div>
-
-			<div className="absolute right-6 flex w-10 flex-col gap-6 text-muted-foreground text-[10px]">
-				<span className="text-right">true</span>
-				<span className="text-right">false</span>
 			</div>
 		</Node>
 	);

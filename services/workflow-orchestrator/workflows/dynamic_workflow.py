@@ -37,6 +37,7 @@ from activities.log_external_event import (
 )
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
+from activities.fetch_child_workflow import fetch_child_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -1082,6 +1083,131 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 })
 
                 node_result = {"published": True, "topic": topic, "eventType": event_type}
+
+            # --- Sub-workflow nodes ---
+            elif node_type == "sub-workflow":
+                child_workflow_id = config.get("workflowId")
+
+                if not child_workflow_id:
+                    raise ValueError(
+                        f"sub-workflow node {node_id} has no workflowId configured"
+                    )
+
+                logger.info(
+                    f"[Dynamic Workflow] Executing sub-workflow: {node.get('label')} "
+                    f"(child={child_workflow_id})"
+                )
+
+                # Log node start
+                sub_log_id = None
+                sub_start_time = time.time()
+                if db_execution_id:
+                    start_result = yield ctx.call_activity(
+                        log_node_start,
+                        input={
+                            "executionId": db_execution_id,
+                            "nodeId": node.get("id"),
+                            "nodeName": node.get("label", ""),
+                            "nodeType": node_type,
+                            "actionType": "sub-workflow",
+                            "input": config,
+                            "_otel": otel_ctx,
+                        },
+                    )
+                    sub_log_id = start_result.get("logId")
+
+                # Step 1: Resolve input mapping template
+                input_mapping_raw = config.get("inputMapping", "{}")
+                resolved_input = resolve_templates(
+                    {"inputMapping": input_mapping_raw}, node_outputs
+                )
+                resolved_mapping = (
+                    resolved_input.get("inputMapping")
+                    if isinstance(resolved_input, dict)
+                    else input_mapping_raw
+                )
+                try:
+                    trigger_data_child = (
+                        json.loads(resolved_mapping)
+                        if isinstance(resolved_mapping, str)
+                        else resolved_mapping
+                    )
+                except json.JSONDecodeError:
+                    trigger_data_child = {"raw": resolved_mapping}
+
+                # Step 2: Fetch child workflow definition via activity
+                parent_chain = input_data.get("parentWorkflowIds", [])
+                if workflow_id and workflow_id not in parent_chain:
+                    parent_chain = parent_chain + [workflow_id]
+
+                child_info = yield ctx.call_activity(
+                    fetch_child_workflow,
+                    input={
+                        "workflowId": child_workflow_id,
+                        "parentWorkflowIds": parent_chain,
+                    },
+                )
+
+                # Step 3: Execute as child workflow
+                child_input = {
+                    "definition": child_info["definition"],
+                    "triggerData": trigger_data_child,
+                    "integrations": integrations,
+                    "dbExecutionId": None,  # Don't create separate execution record
+                    "nodeConnectionMap": child_info.get("nodeConnectionMap", {}),
+                    "parentWorkflowIds": child_info.get("parentWorkflowIds", []),
+                    "_otel": otel_ctx,
+                }
+
+                child_result = yield ctx.call_child_workflow(
+                    dynamic_workflow,
+                    input=child_input,
+                    instance_id=f"{ctx.instance_id}__sub__{node_id}",
+                )
+
+                # Step 4: Collect outputs
+                child_success = (
+                    child_result.get("success", False)
+                    if isinstance(child_result, dict)
+                    else False
+                )
+                node_result = {
+                    "success": child_success,
+                    "data": {
+                        "success": child_success,
+                        "outputs": child_result.get("outputs", {}) if isinstance(child_result, dict) else {},
+                        "state": child_result.get("state", {}) if isinstance(child_result, dict) else {},
+                    },
+                }
+
+                # Log node completion
+                if db_execution_id and sub_log_id:
+                    sub_duration_ms = int((time.time() - sub_start_time) * 1000)
+                    yield ctx.call_activity(
+                        log_node_complete,
+                        input={
+                            "logId": sub_log_id,
+                            "status": "success" if child_success else "error",
+                            "output": node_result,
+                            "error": child_result.get("error") if isinstance(child_result, dict) and not child_success else None,
+                            "durationMs": sub_duration_ms,
+                            "_otel": otel_ctx,
+                        },
+                    )
+
+                if not child_success:
+                    child_error = (
+                        child_result.get("error", "Child workflow failed")
+                        if isinstance(child_result, dict)
+                        else "Child workflow failed"
+                    )
+                    if not config.get("continueOnError"):
+                        raise RuntimeError(
+                            f"Sub-workflow failed at {node.get('label')}: {child_error}"
+                        )
+                    logger.warning(
+                        f"[Dynamic Workflow] Sub-workflow failed but continuing: {child_error}"
+                    )
 
             else:
                 logger.warning(f"[Dynamic Workflow] Unknown node type: {node_type}, skipping")

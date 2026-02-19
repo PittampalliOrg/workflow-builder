@@ -61,7 +61,9 @@ export function LoopUntilConfig({
 
 	const startNodeOptions = useMemo(() => {
 		return nodes
-			.filter((n) => n.type !== "add" && n.type !== "trigger")
+			.filter(
+				(n) => n.type !== "add" && n.type !== "trigger" && n.type !== "group",
+			)
 			.map((n) => ({
 				id: n.id,
 				label: (n.data?.label || n.id).trim(),

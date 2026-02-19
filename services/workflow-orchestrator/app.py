@@ -55,6 +55,7 @@ from activities.call_agent_service import (
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
+from activities.fetch_child_workflow import fetch_child_workflow
 
 # OpenTelemetry
 from tracing import setup_tracing, inject_current_context
@@ -116,6 +117,8 @@ async def lifespan(app: FastAPI):
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)
+    # Sub-workflow support
+    wfr.register_activity(fetch_child_workflow)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 

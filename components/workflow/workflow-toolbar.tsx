@@ -15,6 +15,7 @@ import {
 	Redo2,
 	Save,
 	Settings2,
+	Square,
 	Trash2,
 	Undo2,
 } from "lucide-react";
@@ -52,6 +53,7 @@ import {
 	deleteEdgeAtom,
 	deleteNodeAtom,
 	edgesAtom,
+	groupSelectedNodesAtom,
 	hasUnsavedChangesAtom,
 	isExecutingAtom,
 	isGeneratingAtom,
@@ -63,9 +65,14 @@ import {
 	selectedEdgeAtom,
 	selectedExecutionIdAtom,
 	selectedNodeAtom,
+	simulationModeAtom,
+	simulateWorkflowRunAtom,
 	triggerExecuteAtom,
 	undoAtom,
+	ungroupNodeAtom,
 	updateNodeDataAtom,
+	workflowSimulationRunningAtom,
+	cancelWorkflowSimulationAtom,
 	type WorkflowEdge,
 	type WorkflowNode,
 	type WorkflowVisibility,
@@ -92,6 +99,7 @@ import { WorkflowIssuesOverlay } from "../overlays/workflow-issues-overlay";
 import { SidebarToggle } from "../sidebar-toggle";
 import { WorkflowIcon } from "../ui/workflow-icon";
 import { UserMenu } from "../workflows/user-menu";
+import { Switch } from "@/components/ui/switch";
 
 type WorkflowToolbarProps = {
 	workflowId?: string;
@@ -651,6 +659,7 @@ type WorkflowHandlerParams = {
 	userIntegrations: Array<{ id: string; pieceName: IntegrationType }>;
 	engineType: "vercel" | "dapr";
 	session: { user: { id: string } } | null;
+	simulationMode: boolean;
 };
 
 function useWorkflowHandlers({
@@ -670,8 +679,10 @@ function useWorkflowHandlers({
 	userIntegrations,
 	engineType,
 	session,
+	simulationMode,
 }: WorkflowHandlerParams) {
 	const { open: openOverlay } = useOverlay();
+	const runWorkflowSimulation = useSetAtom(simulateWorkflowRunAtom);
 	const { findActionById, getIntegrationLabels, pieces, loaded } =
 		usePiecesCatalog();
 	const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -717,6 +728,18 @@ function useWorkflowHandlers({
 	};
 
 	const executeWorkflow = async (input: Record<string, unknown> = {}) => {
+		if (simulationMode) {
+			setActiveTab("runs");
+			setSelectedExecutionId(null);
+			setIsExecuting(true);
+			try {
+				await runWorkflowSimulation({});
+			} finally {
+				setIsExecuting(false);
+			}
+			return;
+		}
+
 		if (!currentWorkflowId) {
 			toast.error("Please save the workflow before executing");
 			return;
@@ -881,6 +904,8 @@ function useWorkflowState() {
 	const setSelectedExecutionId = useSetAtom(selectedExecutionIdAtom);
 	const userIntegrations = useAtomValue(connectionsAtom);
 	const [triggerExecute, setTriggerExecute] = useAtom(triggerExecuteAtom);
+	const [simulationMode, setSimulationMode] = useAtom(simulationModeAtom);
+	const workflowSimulationRunning = useAtomValue(workflowSimulationRunningAtom);
 
 	const [isDownloading, setIsDownloading] = useState(false);
 	const [isDuplicating, setIsDuplicating] = useState(false);
@@ -945,12 +970,16 @@ function useWorkflowState() {
 		userIntegrations,
 		triggerExecute,
 		setTriggerExecute,
+		simulationMode,
+		setSimulationMode,
+		workflowSimulationRunning,
 	};
 }
 
 // Hook for workflow actions
 function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 	const { open: openOverlay } = useOverlay();
+	const cancelWorkflowSimulation = useSetAtom(cancelWorkflowSimulationAtom);
 	const {
 		currentWorkflowId,
 		workflowName,
@@ -973,6 +1002,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setSelectedExecutionId,
 		userIntegrations,
 		engineType,
+		simulationMode,
 		triggerExecute,
 		setTriggerExecute,
 		router,
@@ -996,6 +1026,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		userIntegrations,
 		engineType,
 		session,
+		simulationMode,
 	});
 
 	// Listen for execute trigger from keyboard shortcut
@@ -1165,9 +1196,15 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		}
 	};
 
+	const handleCancelSimulation = () => {
+		cancelWorkflowSimulation();
+		setIsExecuting(false);
+	};
+
 	return {
 		handleSave,
 		handleExecute,
+		handleCancelSimulation,
 		handleClearWorkflow,
 		handleDeleteWorkflow,
 		handleDownload,
@@ -1194,10 +1231,23 @@ function ToolbarActions({
 	const [edges] = useAtom(edgesAtom);
 	const deleteNode = useSetAtom(deleteNodeAtom);
 	const deleteEdge = useSetAtom(deleteEdgeAtom);
+	const groupSelectedNodes = useSetAtom(groupSelectedNodesAtom);
+	const ungroupNode = useSetAtom(ungroupNodeAtom);
 	const { screenToFlowPosition } = useReactFlow();
 
 	const selectedNode = nodes.find((node) => node.id === selectedNodeId);
 	const selectedEdge = edges.find((edge) => edge.id === selectedEdgeId);
+	const selectedNodes = nodes.filter((node) => node.selected);
+	const groupableSelectedNodes = selectedNodes.filter(
+		(node) =>
+			!["trigger", "add", "group", "while"].includes(node.type ?? "") &&
+			!node.parentId,
+	);
+	const canGroupSelectedNodes = groupableSelectedNodes.length >= 2;
+	const selectedGroupNode =
+		selectedNodes.length === 1 && selectedNodes[0]?.type === "group"
+			? selectedNodes[0]
+			: null;
 	const hasSelection = selectedNode || selectedEdge;
 
 	// For non-owners viewing public workflows, don't show toolbar actions
@@ -1333,6 +1383,30 @@ function ToolbarActions({
 						<Trash2 className="size-4" />
 					</Button>
 				)}
+				{canGroupSelectedNodes && (
+					<Button
+						className="border hover:bg-black/5 dark:hover:bg-white/5"
+						disabled={state.isGenerating}
+						onClick={() => groupSelectedNodes()}
+						size="icon"
+						title="Group selected nodes"
+						variant="secondary"
+					>
+						<span className="font-semibold text-[11px]">G</span>
+					</Button>
+				)}
+				{selectedGroupNode && (
+					<Button
+						className="border hover:bg-black/5 dark:hover:bg-white/5"
+						disabled={state.isGenerating}
+						onClick={() => ungroupNode(selectedGroupNode.id)}
+						size="icon"
+						title="Ungroup"
+						variant="secondary"
+					>
+						<span className="font-semibold text-[11px]">U</span>
+					</Button>
+				)}
 			</ButtonGroup>
 
 			{/* Add Step - Desktop Horizontal */}
@@ -1347,6 +1421,30 @@ function ToolbarActions({
 				>
 					<Plus className="size-4" />
 				</Button>
+				{canGroupSelectedNodes && (
+					<Button
+						className="border hover:bg-black/5 dark:hover:bg-white/5"
+						disabled={state.isGenerating}
+						onClick={() => groupSelectedNodes()}
+						size="icon"
+						title="Group selected nodes"
+						variant="secondary"
+					>
+						<span className="font-semibold text-[11px]">G</span>
+					</Button>
+				)}
+				{selectedGroupNode && (
+					<Button
+						className="border hover:bg-black/5 dark:hover:bg-white/5"
+						disabled={state.isGenerating}
+						onClick={() => ungroupNode(selectedGroupNode.id)}
+						size="icon"
+						title="Ungroup"
+						variant="secondary"
+					>
+						<span className="font-semibold text-[11px]">U</span>
+					</Button>
+				)}
 			</ButtonGroup>
 
 			{/* Undo/Redo - Mobile Vertical */}
@@ -1411,6 +1509,7 @@ function ToolbarActions({
 
 			{/* Visibility Toggle */}
 			<VisibilityButton actions={actions} state={state} />
+			<SimulationModeToggle state={state} />
 
 			<RunButtonGroup actions={actions} state={state} />
 		</>
@@ -1541,6 +1640,23 @@ function VisibilityButton({
 	);
 }
 
+function SimulationModeToggle({
+	state,
+}: {
+	state: ReturnType<typeof useWorkflowState>;
+}) {
+	return (
+		<label className="flex items-center gap-2 rounded-md border bg-secondary px-2 py-1.5">
+			<span className="text-muted-foreground text-xs">Sim</span>
+			<Switch
+				checked={state.simulationMode}
+				disabled={state.isGenerating || state.workflowSimulationRunning}
+				onCheckedChange={state.setSimulationMode}
+			/>
+		</label>
+	);
+}
+
 // Run Button Group Component
 function RunButtonGroup({
 	state,
@@ -1549,18 +1665,32 @@ function RunButtonGroup({
 	state: ReturnType<typeof useWorkflowState>;
 	actions: ReturnType<typeof useWorkflowActions>;
 }) {
+	const showSimulationCancel =
+		state.simulationMode &&
+		state.isExecuting &&
+		state.workflowSimulationRunning;
+
 	return (
 		<Button
 			className="border hover:bg-black/5 disabled:opacity-100 dark:hover:bg-white/5 disabled:[&>svg]:text-muted-foreground"
 			disabled={
-				state.isExecuting || state.nodes.length === 0 || state.isGenerating
+				!showSimulationCancel &&
+				(state.isExecuting || state.nodes.length === 0 || state.isGenerating)
 			}
-			onClick={() => actions.handleExecute()}
+			onClick={() => {
+				if (showSimulationCancel) {
+					actions.handleCancelSimulation();
+					return;
+				}
+				actions.handleExecute();
+			}}
 			size="icon"
-			title="Run Workflow"
+			title={showSimulationCancel ? "Cancel Simulation" : "Run Workflow"}
 			variant="secondary"
 		>
-			{state.isExecuting ? (
+			{showSimulationCancel ? (
+				<Square className="size-4" />
+			) : state.isExecuting ? (
 				<Loader2 className="size-4 animate-spin" />
 			) : (
 				<Play className="size-4" />

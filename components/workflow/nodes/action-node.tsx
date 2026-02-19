@@ -29,6 +29,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
 	executionLogsAtom,
+	nodesAtom,
 	pendingIntegrationNodesAtom,
 	selectedExecutionIdAtom,
 	type WorkflowNodeData,
@@ -281,6 +282,7 @@ export const ActionNode = memo(
 		const availableIntegrationIds = useAtomValue(connectionIdsAtom);
 		const allConnections = useAtomValue(connectionsAtom);
 		const integrationsLoaded = useAtomValue(connectionsLoadedAtom);
+		const allNodes = useAtomValue(nodesAtom);
 
 		if (!data) {
 			return null;
@@ -288,7 +290,10 @@ export const ActionNode = memo(
 
 		const actionType = (data.config?.actionType as string) || "";
 		const status = data.status;
-		const hideHandles = Boolean(parentId);
+		const parentNode = parentId
+			? allNodes.find((node) => node.id === parentId)
+			: null;
+		const hideHandles = parentNode?.type === "while";
 
 		// Check if this node has a generated image from the selected execution
 		const nodeLog = executionLogs[id];
@@ -310,6 +315,8 @@ export const ActionNode = memo(
 					)}
 					data-testid={`action-node-${id}`}
 					handles={{ target: !hideHandles, source: !hideHandles }}
+					runnable
+					selected={selected}
 					status={status}
 				>
 					{isDisabled && (
@@ -394,6 +401,8 @@ export const ActionNode = memo(
 				)}
 				data-testid={`action-node-${id}`}
 				handles={{ target: !hideHandles, source: !hideHandles }}
+				runnable
+				selected={selected}
 				status={status}
 			>
 				{/* Disabled badge in top left */}

@@ -9,276 +9,364 @@ import { ConfirmOverlay } from "@/components/overlays/confirm-overlay";
 import { useOverlay } from "@/components/overlays/overlay-provider";
 import { cn } from "@/lib/utils";
 import {
-  addNodeAtom,
-  deleteEdgeAtom,
-  deleteNodeAtom,
-  nodesAtom,
-  propertiesPanelActiveTabAtom,
-  selectedNodeAtom,
-  type WorkflowNode,
+	addNodeAtom,
+	detachNodeFromParentAtom,
+	deleteEdgeAtom,
+	deleteNodeAtom,
+	groupSelectedNodesAtom,
+	nodesAtom,
+	propertiesPanelActiveTabAtom,
+	selectedNodeAtom,
+	ungroupNodeAtom,
+	type WorkflowNode,
+	type WorkflowNodeType,
 } from "@/lib/workflow-store";
 
 export type ContextMenuType = "node" | "edge" | "pane" | null;
 
 export type ContextMenuState = {
-  type: ContextMenuType;
-  position: { x: number; y: number };
-  flowPosition?: XYPosition;
-  nodeId?: string;
-  edgeId?: string;
+	type: ContextMenuType;
+	position: { x: number; y: number };
+	flowPosition?: XYPosition;
+	nodeId?: string;
+	edgeId?: string;
 } | null;
 
 type WorkflowContextMenuProps = {
-  menuState: ContextMenuState;
-  onClose: () => void;
+	menuState: ContextMenuState;
+	onClose: () => void;
 };
 
+const PANE_NODE_OPTIONS: Array<{
+	type: WorkflowNodeType;
+	label: string;
+}> = [
+	{ type: "action", label: "Add Action" },
+	{ type: "if-else", label: "Add If / Else" },
+	{ type: "loop-until", label: "Add Loop" },
+	{ type: "transform", label: "Add Transform" },
+	{ type: "note", label: "Add Note" },
+];
+
 export function WorkflowContextMenu({
-  menuState,
-  onClose,
+	menuState,
+	onClose,
 }: WorkflowContextMenuProps) {
-  const nodes = useAtomValue(nodesAtom);
-  const deleteNode = useSetAtom(deleteNodeAtom);
-  const deleteEdge = useSetAtom(deleteEdgeAtom);
-  const addNode = useSetAtom(addNodeAtom);
-  const setSelectedNode = useSetAtom(selectedNodeAtom);
-  const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
-  const { open: openOverlay } = useOverlay();
-  const menuRef = useRef<HTMLDivElement>(null);
+	const nodes = useAtomValue(nodesAtom);
+	const deleteNode = useSetAtom(deleteNodeAtom);
+	const deleteEdge = useSetAtom(deleteEdgeAtom);
+	const addNode = useSetAtom(addNodeAtom);
+	const detachNodeFromParent = useSetAtom(detachNodeFromParentAtom);
+	const groupSelectedNodes = useSetAtom(groupSelectedNodesAtom);
+	const ungroupNode = useSetAtom(ungroupNodeAtom);
+	const setSelectedNode = useSetAtom(selectedNodeAtom);
+	const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
+	const { open: openOverlay } = useOverlay();
+	const menuRef = useRef<HTMLDivElement>(null);
 
-  const handleDeleteNode = useCallback(() => {
-    if (menuState?.nodeId) {
-      const nodeId = menuState.nodeId;
-      onClose();
-      openOverlay(ConfirmOverlay, {
-        title: "Delete Step",
-        message:
-          "Are you sure you want to delete this node? This action cannot be undone.",
-        confirmLabel: "Delete",
-        confirmVariant: "destructive" as const,
-        onConfirm: () => {
-          deleteNode(nodeId);
-        },
-      });
-    }
-  }, [menuState, deleteNode, onClose, openOverlay]);
+	const handleDeleteNode = useCallback(() => {
+		if (menuState?.nodeId) {
+			const nodeId = menuState.nodeId;
+			onClose();
+			openOverlay(ConfirmOverlay, {
+				title: "Delete Step",
+				message:
+					"Are you sure you want to delete this node? This action cannot be undone.",
+				confirmLabel: "Delete",
+				confirmVariant: "destructive" as const,
+				onConfirm: () => {
+					deleteNode(nodeId);
+				},
+			});
+		}
+	}, [menuState, deleteNode, onClose, openOverlay]);
 
-  const handleDeleteEdge = useCallback(() => {
-    if (menuState?.edgeId) {
-      const edgeId = menuState.edgeId;
-      onClose();
-      openOverlay(ConfirmOverlay, {
-        title: "Delete Connection",
-        message:
-          "Are you sure you want to delete this connection? This action cannot be undone.",
-        confirmLabel: "Delete",
-        confirmVariant: "destructive" as const,
-        onConfirm: () => {
-          deleteEdge(edgeId);
-        },
-      });
-    }
-  }, [menuState, deleteEdge, onClose, openOverlay]);
+	const handleDeleteEdge = useCallback(() => {
+		if (menuState?.edgeId) {
+			const edgeId = menuState.edgeId;
+			onClose();
+			openOverlay(ConfirmOverlay, {
+				title: "Delete Connection",
+				message:
+					"Are you sure you want to delete this connection? This action cannot be undone.",
+				confirmLabel: "Delete",
+				confirmVariant: "destructive" as const,
+				onConfirm: () => {
+					deleteEdge(edgeId);
+				},
+			});
+		}
+	}, [menuState, deleteEdge, onClose, openOverlay]);
 
-  const handleAddStep = useCallback(() => {
-    if (menuState?.flowPosition) {
-      const nodeHeight = 192;
-      const newNode: WorkflowNode = {
-        id: nanoid(),
-        type: "action",
-        position: {
-          x: menuState.flowPosition.x,
-          y: menuState.flowPosition.y - nodeHeight / 2,
-        },
-        data: {
-          label: "",
-          description: "",
-          type: "action",
-          config: {},
-          status: "idle",
-        },
-        selected: true,
-      };
-      addNode(newNode);
-      setSelectedNode(newNode.id);
-      setActiveTab("properties");
-    }
-    onClose();
-  }, [menuState, addNode, setSelectedNode, setActiveTab, onClose]);
+	const handleAddStep = useCallback(
+		(nodeType: WorkflowNodeType) => {
+			if (menuState?.flowPosition) {
+				const nodeHeight = 192;
+				const newNode: WorkflowNode = {
+					id: nanoid(),
+					type: nodeType,
+					position: {
+						x: menuState.flowPosition.x,
+						y: menuState.flowPosition.y - nodeHeight / 2,
+					},
+					data: {
+						label: "",
+						description: "",
+						type: nodeType,
+						config: {},
+						status: "idle",
+					},
+					selected: true,
+				};
+				addNode(newNode);
+				setSelectedNode(newNode.id);
+				setActiveTab("properties");
+			}
+			onClose();
+		},
+		[menuState, addNode, setSelectedNode, setActiveTab, onClose],
+	);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    if (!menuState) {
-      return;
-    }
+	const handleGroupSelection = useCallback(() => {
+		groupSelectedNodes();
+		onClose();
+	}, [groupSelectedNodes, onClose]);
 
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(event.target as globalThis.Node)
-      ) {
-        onClose();
-      }
-    };
+	const handleUngroup = useCallback(() => {
+		const nodeId = menuState?.nodeId;
+		if (!nodeId) {
+			return;
+		}
+		ungroupNode(nodeId);
+		onClose();
+	}, [menuState, onClose, ungroupNode]);
 
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-      }
-    };
+	const handleDetachFromWhile = useCallback(() => {
+		const nodeId = menuState?.nodeId;
+		if (!nodeId) {
+			return;
+		}
+		detachNodeFromParent(nodeId);
+		onClose();
+	}, [detachNodeFromParent, menuState, onClose]);
 
-    // Use a small timeout to prevent the menu from closing immediately
-    const timeoutId = setTimeout(() => {
-      document.addEventListener("mousedown", handleClickOutside);
-      document.addEventListener("keydown", handleEscape);
-    }, 0);
+	// Close menu when clicking outside
+	useEffect(() => {
+		if (!menuState) {
+			return;
+		}
 
-    return () => {
-      clearTimeout(timeoutId);
-      document.removeEventListener("mousedown", handleClickOutside);
-      document.removeEventListener("keydown", handleEscape);
-    };
-  }, [menuState, onClose]);
+		const handleClickOutside = (event: MouseEvent) => {
+			if (
+				menuRef.current &&
+				!menuRef.current.contains(event.target as globalThis.Node)
+			) {
+				onClose();
+			}
+		};
 
-  if (!menuState) {
-    return null;
-  }
+		const handleEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") {
+				onClose();
+			}
+		};
 
-  // Check if the node is a trigger (can't be deleted)
-  const isTriggerNode = Boolean(
-    menuState.nodeId &&
-      nodes.find((n) => n.id === menuState.nodeId)?.data.type === "trigger"
-  );
+		// Use a small timeout to prevent the menu from closing immediately
+		const timeoutId = setTimeout(() => {
+			document.addEventListener("mousedown", handleClickOutside);
+			document.addEventListener("keydown", handleEscape);
+		}, 0);
 
-  const getNodeLabel = () => {
-    if (!menuState.nodeId) {
-      return "Step";
-    }
-    const node = nodes.find((n) => n.id === menuState.nodeId);
-    return node?.data.label || "Step";
-  };
+		return () => {
+			clearTimeout(timeoutId);
+			document.removeEventListener("mousedown", handleClickOutside);
+			document.removeEventListener("keydown", handleEscape);
+		};
+	}, [menuState, onClose]);
 
-  return (
-    <div
-      className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-      ref={menuRef}
-      style={{
-        left: menuState.position.x,
-        top: menuState.position.y,
-      }}
-    >
-      {menuState.type === "node" && (
-        <MenuItem
-          disabled={isTriggerNode}
-          icon={<Trash2 className="size-4" />}
-          label={`Delete ${getNodeLabel()}`}
-          onClick={handleDeleteNode}
-          variant="destructive"
-        />
-      )}
+	if (!menuState) {
+		return null;
+	}
 
-      {menuState.type === "edge" && (
-        <MenuItem
-          icon={<Link2Off className="size-4" />}
-          label="Delete Connection"
-          onClick={handleDeleteEdge}
-          variant="destructive"
-        />
-      )}
+	// Check if the node is a trigger (can't be deleted)
+	const isTriggerNode = Boolean(
+		menuState.nodeId &&
+			nodes.find((n) => n.id === menuState.nodeId)?.data.type === "trigger",
+	);
 
-      {menuState.type === "pane" && (
-        <MenuItem
-          icon={<Plus className="size-4" />}
-          label="Add Step"
-          onClick={handleAddStep}
-        />
-      )}
-    </div>
-  );
+	const getNodeLabel = () => {
+		if (!menuState.nodeId) {
+			return "Step";
+		}
+		const node = nodes.find((n) => n.id === menuState.nodeId);
+		return node?.data.label || "Step";
+	};
+	const selectedGroupableNodes = nodes.filter(
+		(node) =>
+			node.selected &&
+			!["trigger", "add", "group", "while"].includes(node.type ?? "") &&
+			!node.parentId,
+	);
+	const canGroupSelection = selectedGroupableNodes.length >= 2;
+	const selectedNode = menuState.nodeId
+		? nodes.find((node) => node.id === menuState.nodeId)
+		: null;
+	const nodeType = selectedNode?.type ?? null;
+	const parentNode = selectedNode?.parentId
+		? nodes.find((node) => node.id === selectedNode.parentId)
+		: undefined;
+	const canDetachFromWhile = parentNode?.type === "while";
+	const canUngroupNode = nodeType === "group";
+
+	return (
+		<div
+			className="fade-in-0 zoom-in-95 fixed z-50 min-w-[8rem] animate-in overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+			ref={menuRef}
+			style={{
+				left: menuState.position.x,
+				top: menuState.position.y,
+			}}
+		>
+			{menuState.type === "node" && (
+				<>
+					{canGroupSelection && (
+						<MenuItem
+							icon={<span className="w-4 text-center text-xs">G</span>}
+							label="Group Selected Nodes"
+							onClick={handleGroupSelection}
+						/>
+					)}
+					{canUngroupNode && (
+						<MenuItem
+							icon={<span className="w-4 text-center text-xs">U</span>}
+							label="Ungroup"
+							onClick={handleUngroup}
+						/>
+					)}
+					{canDetachFromWhile && (
+						<MenuItem
+							icon={<Link2Off className="size-4" />}
+							label="Detach from While"
+							onClick={handleDetachFromWhile}
+						/>
+					)}
+					<MenuItem
+						disabled={isTriggerNode}
+						icon={<Trash2 className="size-4" />}
+						label={`Delete ${getNodeLabel()}`}
+						onClick={handleDeleteNode}
+						variant="destructive"
+					/>
+				</>
+			)}
+
+			{menuState.type === "edge" && (
+				<MenuItem
+					icon={<Link2Off className="size-4" />}
+					label="Delete Connection"
+					onClick={handleDeleteEdge}
+					variant="destructive"
+				/>
+			)}
+
+			{menuState.type === "pane" && (
+				<>
+					{PANE_NODE_OPTIONS.map((option) => (
+						<MenuItem
+							icon={<Plus className="size-4" />}
+							key={option.type}
+							label={option.label}
+							onClick={() => handleAddStep(option.type)}
+						/>
+					))}
+				</>
+			)}
+		</div>
+	);
 }
 
 type MenuItemProps = {
-  icon: React.ReactNode;
-  label: string;
-  onClick: () => void;
-  variant?: "default" | "destructive";
-  disabled?: boolean;
+	icon: React.ReactNode;
+	label: string;
+	onClick: () => void;
+	variant?: "default" | "destructive";
+	disabled?: boolean;
 };
 
 function MenuItem({
-  icon,
-  label,
-  onClick,
-  variant = "default",
-  disabled,
+	icon,
+	label,
+	onClick,
+	variant = "default",
+	disabled,
 }: MenuItemProps) {
-  return (
-    <button
-      className={cn(
-        "relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none",
-        "hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground",
-        variant === "destructive" &&
-          "text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive",
-        disabled && "pointer-events-none opacity-50"
-      )}
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
-    >
-      {icon}
-      {label}
-    </button>
-  );
+	return (
+		<button
+			className={cn(
+				"relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none",
+				"hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground",
+				variant === "destructive" &&
+					"text-destructive hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive",
+				disabled && "pointer-events-none opacity-50",
+			)}
+			disabled={disabled}
+			onClick={onClick}
+			type="button"
+		>
+			{icon}
+			{label}
+		</button>
+	);
 }
 
 // Hook helpers for using with React Flow
 export function useContextMenuHandlers(
-  screenToFlowPosition: (position: { x: number; y: number }) => XYPosition,
-  setMenuState: (state: ContextMenuState) => void
+	screenToFlowPosition: (position: { x: number; y: number }) => XYPosition,
+	setMenuState: (state: ContextMenuState) => void,
 ) {
-  const onNodeContextMenu = useCallback(
-    (event: React.MouseEvent, node: Node) => {
-      event.preventDefault();
-      setMenuState({
-        type: "node",
-        position: { x: event.clientX, y: event.clientY },
-        nodeId: node.id,
-      });
-    },
-    [setMenuState]
-  );
+	const onNodeContextMenu = useCallback(
+		(event: React.MouseEvent, node: Node) => {
+			event.preventDefault();
+			setMenuState({
+				type: "node",
+				position: { x: event.clientX, y: event.clientY },
+				nodeId: node.id,
+			});
+		},
+		[setMenuState],
+	);
 
-  const onEdgeContextMenu = useCallback(
-    (event: React.MouseEvent, edge: Edge) => {
-      event.preventDefault();
-      setMenuState({
-        type: "edge",
-        position: { x: event.clientX, y: event.clientY },
-        edgeId: edge.id,
-      });
-    },
-    [setMenuState]
-  );
+	const onEdgeContextMenu = useCallback(
+		(event: React.MouseEvent, edge: Edge) => {
+			event.preventDefault();
+			setMenuState({
+				type: "edge",
+				position: { x: event.clientX, y: event.clientY },
+				edgeId: edge.id,
+			});
+		},
+		[setMenuState],
+	);
 
-  const onPaneContextMenu = useCallback(
-    (event: React.MouseEvent | MouseEvent) => {
-      event.preventDefault();
-      const flowPosition = screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-      setMenuState({
-        type: "pane",
-        position: { x: event.clientX, y: event.clientY },
-        flowPosition,
-      });
-    },
-    [screenToFlowPosition, setMenuState]
-  );
+	const onPaneContextMenu = useCallback(
+		(event: React.MouseEvent | MouseEvent) => {
+			event.preventDefault();
+			const flowPosition = screenToFlowPosition({
+				x: event.clientX,
+				y: event.clientY,
+			});
+			setMenuState({
+				type: "pane",
+				position: { x: event.clientX, y: event.clientY },
+				flowPosition,
+			});
+		},
+		[screenToFlowPosition, setMenuState],
+	);
 
-  return {
-    onNodeContextMenu,
-    onEdgeContextMenu,
-    onPaneContextMenu,
-  };
+	return {
+		onNodeContextMenu,
+		onEdgeContextMenu,
+		onPaneContextMenu,
+	};
 }

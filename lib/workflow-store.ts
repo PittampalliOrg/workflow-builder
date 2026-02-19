@@ -1,12 +1,20 @@
-import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
+import type {
+	Edge,
+	EdgeChange,
+	Node,
+	NodeChange,
+	XYPosition,
+} from "@xyflow/react";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
+import { nanoid } from "nanoid";
 import { api } from "./api-client";
 
 export type WorkflowNodeType =
 	| "trigger"
 	| "action"
 	| "add"
+	| "group" // UI container: generic visual grouping
 	// Dapr workflow node types
 	| "activity" // ctx.call_activity()
 	| "approval-gate" // ctx.wait_for_external_event() + timer
@@ -17,7 +25,8 @@ export type WorkflowNodeType =
 	| "note" // Non-executing annotation
 	| "set-state" // Data: set a workflow-scoped variable
 	| "transform" // Data: build structured output from a JSON template
-	| "publish-event"; // publish to pub/sub
+	| "publish-event" // publish to pub/sub
+	| "sub-workflow"; // execute another workflow as a child step
 
 export type WorkflowNodeData = {
 	label: string;
@@ -31,6 +40,27 @@ export type WorkflowNodeData = {
 
 export type WorkflowNode = Node<WorkflowNodeData>;
 export type WorkflowEdge = Edge;
+
+export type ConnectionEndpoint = {
+	node: string;
+	handle?: string | null;
+};
+
+export type ConnectionSite = {
+	id: string;
+	position: XYPosition;
+	type?: "source" | "target";
+	source?: ConnectionEndpoint;
+	target?: ConnectionEndpoint;
+};
+
+export type WhileDropTargetState = "eligible" | "unsupported" | "occupied";
+
+export type ActiveWhileDropTarget = {
+	whileId: string;
+	draggedNodeId: string;
+	state: WhileDropTargetState;
+} | null;
 
 // Workflow visibility type
 export type WorkflowVisibility = "private" | "public";
@@ -70,6 +100,9 @@ export const isTransitioningFromHomepageAtom = atom<boolean>(false);
 export const workflowAiMessagesWorkflowIdAtom = atom<string | null>(null);
 export const workflowAiMessagesAtom = atom<WorkflowAiMessage[]>([]);
 export const workflowAiMessagesLoadingAtom = atom<boolean>(false);
+export const connectionSitesAtom = atom<Record<string, ConnectionSite>>({});
+export const potentialConnectionAtom = atom<ConnectionSite | null>(null);
+export const activeWhileDropTargetAtom = atom<ActiveWhileDropTarget>(null);
 
 // Tracks nodes that are pending integration auto-select check
 // Don't show "missing integration" warning for these nodes
@@ -93,8 +126,90 @@ export type ExecutionLogEntry = {
 	output?: unknown;
 };
 
+export type NodeSimulationResult = {
+	nodeId: string;
+	status: "success" | "error";
+	summary: string;
+	output?: unknown;
+	finishedAt: string;
+};
+
 // Map of nodeId -> execution log entry for the currently selected execution
 export const executionLogsAtom = atom<Record<string, ExecutionLogEntry>>({});
+export const simulationModeAtom = atom<boolean>(false);
+export const workflowSimulationRunningAtom = atom<boolean>(false);
+export const simulatingNodeIdsAtom = atom<Set<string>>(new Set<string>());
+export const nodeSimulationResultsAtom = atom<
+	Record<string, NodeSimulationResult>
+>({});
+
+const NODE_HALF_SIZE = 96;
+const GROUP_PADDING = 24;
+const DEFAULT_GROUP_WIDTH = 320;
+const DEFAULT_GROUP_HEIGHT = 220;
+
+function createWorkflowNodeData(nodeType: WorkflowNodeType): WorkflowNodeData {
+	switch (nodeType) {
+		case "trigger":
+			return {
+				label: "",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			};
+		case "action":
+		case "activity":
+		case "approval-gate":
+		case "timer":
+		case "loop-until":
+		case "group":
+		case "while":
+		case "if-else":
+		case "note":
+		case "set-state":
+		case "transform":
+		case "publish-event":
+		case "sub-workflow":
+		default:
+			return {
+				label: "",
+				description: "",
+				type: nodeType,
+				config: {},
+				status: "idle",
+			};
+	}
+}
+
+function getAbsoluteNodePosition(
+	node: Pick<WorkflowNode, "position" | "parentId" | "id">,
+	lookup: Map<string, Pick<WorkflowNode, "position" | "parentId" | "id">>,
+): { x: number; y: number } {
+	let x = node.position.x;
+	let y = node.position.y;
+	let current: Pick<WorkflowNode, "position" | "parentId" | "id"> | undefined =
+		node;
+
+	while (current?.parentId) {
+		const parent = lookup.get(current.parentId);
+		if (!parent) {
+			break;
+		}
+		x += parent.position.x;
+		y += parent.position.y;
+		current = parent;
+	}
+
+	return { x, y };
+}
+
+function isGroupableNode(node: WorkflowNode): boolean {
+	if (node.parentId) {
+		return false;
+	}
+	return !["trigger", "add", "group", "while"].includes(node.type ?? "");
+}
 
 // Autosave functionality
 let autosaveTimeoutId: NodeJS.Timeout | null = null;
@@ -152,10 +267,38 @@ export const onNodesChangeAtom = atom(
 			return true;
 		});
 
-		const newNodes = applyNodeChanges(
+		const removedNodeIds = new Set(
+			filteredChanges
+				.filter((change) => change.type === "remove")
+				.map((change) => change.id),
+		);
+		const removedGroupIds = new Set(
+			currentNodes
+				.filter((node) => removedNodeIds.has(node.id) && node.type === "group")
+				.map((node) => node.id),
+		);
+
+		const nodeLookup = new Map(
+			currentNodes.map((node) => [node.id, node] as const),
+		);
+		let newNodes = applyNodeChanges(
 			filteredChanges,
 			currentNodes,
 		) as WorkflowNode[];
+		if (removedGroupIds.size > 0) {
+			newNodes = newNodes.map((node) => {
+				if (!(node.parentId && removedGroupIds.has(node.parentId))) {
+					return node;
+				}
+
+				return {
+					...node,
+					parentId: undefined,
+					extent: undefined,
+					position: getAbsoluteNodePosition(node, nodeLookup),
+				};
+			});
+		}
 		set(nodesAtom, newNodes);
 
 		// Sync selection state with selectedNodeAtom
@@ -193,7 +336,11 @@ export const onNodesChangeAtom = atom(
 		const hadPositionChanges = filteredChanges.some(
 			(change) => change.type === "position" && change.dragging === false,
 		);
-		if (hadPositionChanges) {
+		const hadDimensionChanges = filteredChanges.some(
+			(change) => change.type === "dimensions" && change.resizing === false,
+		);
+		if (hadPositionChanges || hadDimensionChanges) {
+			set(hasUnsavedChangesAtom, true);
 			set(autosaveAtom); // Debounced save
 		}
 	},
@@ -226,6 +373,189 @@ export const onEdgesChangeAtom = atom(
 		if (hadDeletions) {
 			set(autosaveAtom, { immediate: true });
 		}
+	},
+);
+
+const POTENTIAL_CONNECTION_RADIUS = 150;
+
+export const upsertConnectionSiteAtom = atom(
+	null,
+	(_get, set, site: ConnectionSite) => {
+		set(connectionSitesAtom, (current) => ({
+			...current,
+			[site.id]: site,
+		}));
+	},
+);
+
+export const removeConnectionSiteAtom = atom(null, (get, set, id: string) => {
+	const current = get(connectionSitesAtom);
+	if (!current[id]) {
+		return;
+	}
+
+	const next = { ...current };
+	delete next[id];
+	set(connectionSitesAtom, next);
+
+	const potential = get(potentialConnectionAtom);
+	if (potential?.id === id) {
+		set(potentialConnectionAtom, null);
+	}
+});
+
+export const checkForPotentialConnectionAtom = atom(
+	null,
+	(
+		get,
+		set,
+		{
+			position,
+			options,
+		}: {
+			position: XYPosition;
+			options?: { exclude?: string[]; type?: "source" | "target" };
+		},
+	) => {
+		const excluded = new Set(options?.exclude ?? []);
+		const sites = Object.values(get(connectionSitesAtom)).filter((site) => {
+			if (excluded.has(site.id)) {
+				return false;
+			}
+			if (options?.type && site.type && options.type !== site.type) {
+				return false;
+			}
+			return true;
+		});
+
+		if (sites.length === 0) {
+			set(potentialConnectionAtom, null);
+			return;
+		}
+
+		let best: { distance: number; site: ConnectionSite } | null = null;
+		for (const site of sites) {
+			const dx = site.position.x - position.x;
+			const dy = site.position.y - position.y;
+			const distance = Math.hypot(dx, dy);
+			if (!best || distance < best.distance) {
+				best = { distance, site };
+			}
+		}
+
+		if (!best || best.distance > POTENTIAL_CONNECTION_RADIUS) {
+			set(potentialConnectionAtom, null);
+			return;
+		}
+
+		set(potentialConnectionAtom, best.site);
+	},
+);
+
+export const resetPotentialConnectionAtom = atom(null, (_get, set) => {
+	set(potentialConnectionAtom, null);
+});
+
+export const insertNodeAtConnectionAtom = atom(
+	null,
+	(
+		get,
+		set,
+		{
+			position,
+			source,
+			target,
+			edgeId,
+			nodeType = "action",
+			selectNode = true,
+		}: {
+			position: XYPosition;
+			source?: ConnectionEndpoint;
+			target?: ConnectionEndpoint;
+			edgeId?: string;
+			nodeType?: WorkflowNodeType;
+			selectNode?: boolean;
+		},
+	) => {
+		const effectiveNodeType = nodeType === "add" ? "action" : nodeType;
+		const currentNodes = get(nodesAtom);
+		const currentEdges = get(edgesAtom);
+		const history = get(historyAtom);
+
+		set(historyAtom, [
+			...history,
+			{ nodes: currentNodes, edges: currentEdges },
+		]);
+		set(futureAtom, []);
+
+		const newNode: WorkflowNode = {
+			id: nanoid(),
+			type: effectiveNodeType,
+			position: {
+				x: position.x - NODE_HALF_SIZE,
+				y: position.y - NODE_HALF_SIZE,
+			},
+			data: createWorkflowNodeData(effectiveNodeType),
+			selected: selectNode,
+		};
+
+		const nextNodes: WorkflowNode[] = [
+			...currentNodes.map(
+				(node) => ({ ...node, selected: false }) as WorkflowNode,
+			),
+			newNode,
+		];
+
+		const baseEdges = currentEdges.filter((edge) => {
+			if (edgeId) {
+				return edge.id !== edgeId;
+			}
+			if (!(source && target)) {
+				return true;
+			}
+			return !(
+				edge.source === source.node &&
+				edge.target === target.node &&
+				(edge.sourceHandle ?? null) === (source.handle ?? null) &&
+				(edge.targetHandle ?? null) === (target.handle ?? null)
+			);
+		});
+
+		const nextEdges = [...baseEdges];
+
+		if (source) {
+			nextEdges.push({
+				id: nanoid(),
+				type: "animated",
+				source: source.node,
+				target: newNode.id,
+				sourceHandle: source.handle ?? null,
+			});
+		}
+
+		if (target) {
+			nextEdges.push({
+				id: nanoid(),
+				type: "animated",
+				source: newNode.id,
+				target: target.node,
+				targetHandle: target.handle ?? null,
+			});
+		}
+
+		set(nodesAtom, nextNodes);
+		set(edgesAtom, nextEdges);
+		set(selectedEdgeAtom, null);
+		if (selectNode) {
+			set(selectedNodeAtom, newNode.id);
+			if (newNode.data.type === "action" && !newNode.data.config?.actionType) {
+				set(newlyCreatedNodeIdAtom, newNode.id);
+			}
+		}
+
+		set(potentialConnectionAtom, null);
+		set(hasUnsavedChangesAtom, true);
+		set(autosaveAtom, { immediate: true });
 	},
 );
 
@@ -367,6 +697,298 @@ export const batchSetNodeStatusesAtom = atom(
 	},
 );
 
+const NODE_SIMULATION_BASE_DELAY_MS = 700;
+const canceledSimulationNodes = new Set<string>();
+let workflowSimulationRunToken = 0;
+
+function getNodeSimulationError(node: WorkflowNode): string | null {
+	const config = node.data.config ?? {};
+
+	switch (node.data.type) {
+		case "action": {
+			const actionType = String(config.actionType ?? "").trim();
+			return actionType ? null : "Action type is required";
+		}
+		case "activity": {
+			const activityName = String(config.activityName ?? "").trim();
+			return activityName ? null : "Activity name is required";
+		}
+		case "timer": {
+			const duration = Number(config.durationSeconds ?? 0);
+			return Number.isFinite(duration) && duration > 0
+				? null
+				: "Timer duration must be greater than 0";
+		}
+		case "approval-gate": {
+			const eventName = String(config.eventName ?? "").trim();
+			return eventName ? null : "Approval event name is required";
+		}
+		case "if-else": {
+			const expression = String(config.expression ?? "").trim();
+			return expression ? null : "Condition expression is required";
+		}
+		case "loop-until": {
+			const condition = String(config.untilCondition ?? "").trim();
+			return condition ? null : "Loop exit condition is required";
+		}
+		case "set-state": {
+			const hasEntries =
+				Array.isArray((config as Record<string, unknown>).entries) &&
+				(config as { entries: unknown[] }).entries.length > 0;
+			const singleKey = String(config.key ?? "").trim();
+			return hasEntries || singleKey
+				? null
+				: "At least one state key is required";
+		}
+		case "transform": {
+			const template = String(config.template ?? "").trim();
+			return template ? null : "Transform template is required";
+		}
+		case "while": {
+			const expression = String(config.expression ?? "").trim();
+			return expression ? null : "While condition is required";
+		}
+		case "group":
+			return "Group steps are not executable";
+		case "note":
+			return "Note steps are not executable";
+		default:
+			return null;
+	}
+}
+
+function getTopologicalSimulationOrder(
+	nodes: WorkflowNode[],
+	edges: WorkflowEdge[],
+): string[] {
+	const executableNodes = nodes.filter(
+		(node) =>
+			node.type !== "add" && node.type !== "note" && node.type !== "group",
+	);
+	const executableIds = new Set(executableNodes.map((node) => node.id));
+	const filteredEdges = edges.filter(
+		(edge) => executableIds.has(edge.source) && executableIds.has(edge.target),
+	);
+
+	const incomingCount = new Map<string, number>();
+	const outgoing = new Map<string, string[]>();
+	for (const node of executableNodes) {
+		incomingCount.set(node.id, 0);
+		outgoing.set(node.id, []);
+	}
+	for (const edge of filteredEdges) {
+		incomingCount.set(edge.target, (incomingCount.get(edge.target) ?? 0) + 1);
+		outgoing.set(edge.source, [
+			...(outgoing.get(edge.source) ?? []),
+			edge.target,
+		]);
+	}
+
+	const queue = executableNodes
+		.filter((node) => (incomingCount.get(node.id) ?? 0) === 0)
+		.sort((a, b) => a.position.x - b.position.x || a.position.y - b.position.y)
+		.map((node) => node.id);
+	const ordered: string[] = [];
+
+	while (queue.length > 0) {
+		const nodeId = queue.shift();
+		if (!nodeId) {
+			break;
+		}
+		ordered.push(nodeId);
+		for (const nextId of outgoing.get(nodeId) ?? []) {
+			const remaining = (incomingCount.get(nextId) ?? 0) - 1;
+			incomingCount.set(nextId, remaining);
+			if (remaining === 0) {
+				queue.push(nextId);
+			}
+		}
+	}
+
+	// Cycles or disconnected fragments: append remaining nodes by canvas position.
+	if (ordered.length < executableNodes.length) {
+		const seen = new Set(ordered);
+		const remaining = executableNodes
+			.filter((node) => !seen.has(node.id))
+			.sort(
+				(a, b) => a.position.x - b.position.x || a.position.y - b.position.y,
+			)
+			.map((node) => node.id);
+		return [...ordered, ...remaining];
+	}
+
+	return ordered;
+}
+
+export const clearNodeSimulationResultAtom = atom(
+	null,
+	(get, set, nodeId: string) => {
+		const current = get(nodeSimulationResultsAtom);
+		if (!current[nodeId]) {
+			return;
+		}
+		const next = { ...current };
+		delete next[nodeId];
+		set(nodeSimulationResultsAtom, next);
+	},
+);
+
+export const cancelNodeSimulationAtom = atom(
+	null,
+	(get, set, nodeId: string) => {
+		canceledSimulationNodes.add(nodeId);
+		const running = get(simulatingNodeIdsAtom);
+		if (!running.has(nodeId)) {
+			return;
+		}
+
+		const nextRunning = new Set(running);
+		nextRunning.delete(nodeId);
+		set(simulatingNodeIdsAtom, nextRunning);
+		set(updateNodeDataAtom, { id: nodeId, data: { status: "idle" } });
+	},
+);
+
+export const simulateNodeRunAtom = atom(
+	null,
+	async (
+		get,
+		set,
+		{
+			nodeId,
+			delayMs = NODE_SIMULATION_BASE_DELAY_MS,
+			preserveSelection = false,
+		}: {
+			nodeId: string;
+			delayMs?: number;
+			preserveSelection?: boolean;
+		},
+	) => {
+		const node = get(nodesAtom).find((candidate) => candidate.id === nodeId);
+		if (!node) {
+			return;
+		}
+		if (node.type === "add" || node.type === "note" || node.type === "group") {
+			return;
+		}
+
+		const running = get(simulatingNodeIdsAtom);
+		if (running.has(nodeId)) {
+			return;
+		}
+
+		canceledSimulationNodes.delete(nodeId);
+		set(simulatingNodeIdsAtom, new Set([...running, nodeId]));
+		if (!preserveSelection) {
+			set(selectedExecutionIdAtom, null);
+		}
+		set(updateNodeDataAtom, { id: nodeId, data: { status: "running" } });
+
+		await new Promise((resolve) => {
+			setTimeout(resolve, delayMs);
+		});
+
+		if (canceledSimulationNodes.has(nodeId)) {
+			canceledSimulationNodes.delete(nodeId);
+			set(updateNodeDataAtom, { id: nodeId, data: { status: "idle" } });
+			set(simulatingNodeIdsAtom, (current) => {
+				const next = new Set(current);
+				next.delete(nodeId);
+				return next;
+			});
+			return;
+		}
+
+		const latestNode = get(nodesAtom).find(
+			(candidate) => candidate.id === nodeId,
+		);
+		if (!latestNode) {
+			set(simulatingNodeIdsAtom, (current) => {
+				const next = new Set(current);
+				next.delete(nodeId);
+				return next;
+			});
+			return;
+		}
+
+		const errorMessage = getNodeSimulationError(latestNode);
+		const status: "success" | "error" = errorMessage ? "error" : "success";
+		set(updateNodeDataAtom, { id: nodeId, data: { status } });
+		set(nodeSimulationResultsAtom, (current) => ({
+			...current,
+			[nodeId]: {
+				nodeId,
+				status,
+				summary:
+					status === "success"
+						? "Dry run completed"
+						: "Dry run validation failed",
+				output:
+					status === "success"
+						? {
+								nodeType: latestNode.data.type,
+								configured:
+									Object.keys(latestNode.data.config ?? {}).length > 0,
+							}
+						: { error: errorMessage },
+				finishedAt: new Date().toISOString(),
+			},
+		}));
+		set(simulatingNodeIdsAtom, (current) => {
+			const next = new Set(current);
+			next.delete(nodeId);
+			return next;
+		});
+	},
+);
+
+export const cancelWorkflowSimulationAtom = atom(null, (get, set) => {
+	workflowSimulationRunToken += 1;
+	set(workflowSimulationRunningAtom, false);
+	for (const nodeId of get(simulatingNodeIdsAtom)) {
+		set(cancelNodeSimulationAtom, nodeId);
+	}
+});
+
+export const simulateWorkflowRunAtom = atom(
+	null,
+	async (
+		get,
+		set,
+		{ delayMs = NODE_SIMULATION_BASE_DELAY_MS }: { delayMs?: number } = {},
+	) => {
+		if (get(workflowSimulationRunningAtom)) {
+			return;
+		}
+
+		workflowSimulationRunToken += 1;
+		const currentRunToken = workflowSimulationRunToken;
+		set(workflowSimulationRunningAtom, true);
+		set(selectedExecutionIdAtom, null);
+
+		try {
+			const order = getTopologicalSimulationOrder(
+				get(nodesAtom),
+				get(edgesAtom),
+			);
+			for (const nodeId of order) {
+				if (currentRunToken !== workflowSimulationRunToken) {
+					break;
+				}
+				await set(simulateNodeRunAtom, {
+					nodeId,
+					delayMs,
+					preserveSelection: true,
+				});
+			}
+		} finally {
+			if (currentRunToken === workflowSimulationRunToken) {
+				set(workflowSimulationRunningAtom, false);
+			}
+		}
+	},
+);
+
 // Helper function to update templates in a config object when a node label changes
 function updateTemplatesInConfig(
 	config: Record<string, unknown>,
@@ -433,7 +1055,23 @@ export const deleteNodeAtom = atom(null, (get, set, nodeId: string) => {
 	set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
 	set(futureAtom, []);
 
-	const newNodes = currentNodes.filter((node) => node.id !== nodeId);
+	const nodeLookup = new Map(
+		currentNodes.map((node) => [node.id, node] as const),
+	);
+	const newNodes = currentNodes
+		.filter((node) => node.id !== nodeId)
+		.map((node) => {
+			if (!(node.parentId && node.parentId === nodeId)) {
+				return node;
+			}
+			const abs = getAbsoluteNodePosition(node, nodeLookup);
+			return {
+				...node,
+				parentId: undefined,
+				extent: undefined,
+				position: abs,
+			};
+		});
 	const newEdges = currentEdges.filter(
 		(edge) => edge.source !== nodeId && edge.target !== nodeId,
 	);
@@ -451,6 +1089,49 @@ export const deleteNodeAtom = atom(null, (get, set, nodeId: string) => {
 	// Trigger immediate autosave
 	set(autosaveAtom, { immediate: true });
 });
+
+export const addEdgeAtom = atom(
+	null,
+	(
+		get,
+		set,
+		edge: {
+			id: string;
+			source: string;
+			target: string;
+			sourceHandle?: string | null;
+			targetHandle?: string | null;
+			type?: string;
+		},
+	) => {
+		// Save current state to history before making changes
+		const currentNodes = get(nodesAtom);
+		const currentEdges = get(edgesAtom);
+		const history = get(historyAtom);
+		set(historyAtom, [
+			...history,
+			{ nodes: currentNodes, edges: currentEdges },
+		]);
+		set(futureAtom, []);
+
+		const newEdge: WorkflowEdge = {
+			id: edge.id,
+			source: edge.source,
+			target: edge.target,
+			...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
+			...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
+			type: edge.type || "animated",
+		};
+
+		set(edgesAtom, [...currentEdges, newEdge]);
+
+		// Mark as having unsaved changes
+		set(hasUnsavedChangesAtom, true);
+
+		// Trigger immediate autosave
+		set(autosaveAtom, { immediate: true });
+	},
+);
 
 export const deleteEdgeAtom = atom(null, (get, set, edgeId: string) => {
 	// Save current state to history before making changes
@@ -486,16 +1167,42 @@ export const deleteSelectedItemsAtom = atom(null, (get, set) => {
 	const selectedNodeIds = currentNodes
 		.filter((node) => node.selected && node.data.type !== "trigger")
 		.map((node) => node.id);
+	const selectedNodeIdSet = new Set(selectedNodeIds);
+	const selectedGroupIds = new Set(
+		currentNodes
+			.filter((node) => selectedNodeIdSet.has(node.id) && node.type === "group")
+			.map((node) => node.id),
+	);
+	const nodeLookup = new Map(
+		currentNodes.map((node) => [node.id, node] as const),
+	);
 
 	// Delete selected nodes (excluding trigger nodes) and their connected edges
-	const newNodes = currentNodes.filter((node) => {
-		// Keep trigger nodes even if selected
-		if (node.data.type === "trigger") {
-			return true;
-		}
-		// Remove other selected nodes
-		return !node.selected;
-	});
+	const newNodes = currentNodes
+		.filter((node) => {
+			// Keep trigger nodes even if selected
+			if (node.data.type === "trigger") {
+				return true;
+			}
+			// Remove other selected nodes
+			return !node.selected;
+		})
+		.map((node) => {
+			if (
+				!(node.parentId && selectedGroupIds.has(node.parentId)) ||
+				selectedNodeIdSet.has(node.id)
+			) {
+				return node;
+			}
+
+			const abs = getAbsoluteNodePosition(node, nodeLookup);
+			return {
+				...node,
+				parentId: undefined,
+				extent: undefined,
+				position: abs,
+			};
+		});
 
 	const newEdges = currentEdges.filter(
 		(edge) =>
@@ -533,6 +1240,36 @@ export const clearWorkflowAtom = atom(null, (get, set) => {
 
 	// Mark as having unsaved changes
 	set(hasUnsavedChangesAtom, true);
+});
+
+// Counter atom: increment to request fitView from outside React Flow context
+export const fitViewRequestAtom = atom(0);
+
+// Auto-arrange nodes using dagre layout (imported lazily to avoid circular deps)
+export const autoArrangeAtom = atom(null, async (get, set) => {
+	const currentNodes = get(nodesAtom);
+	const currentEdges = get(edgesAtom);
+
+	// Save current state to history for undo
+	const history = get(historyAtom);
+	set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
+	set(futureAtom, []);
+
+	// Lazy import to avoid circular dependency
+	const { layoutWorkflowNodes } = await import(
+		"@/lib/workflow-layout/dagre-layout"
+	);
+	const nextNodes = layoutWorkflowNodes(currentNodes, currentEdges);
+	set(nodesAtom, nextNodes);
+
+	// Mark as having unsaved changes
+	set(hasUnsavedChangesAtom, true);
+
+	// Trigger autosave
+	set(autosaveAtom, { immediate: true });
+
+	// Request fitView
+	set(fitViewRequestAtom, (c) => c + 1);
 });
 
 // Load workflow from database
@@ -593,6 +1330,195 @@ type HistoryState = {
 
 const historyAtom = atom<HistoryState[]>([]);
 const futureAtom = atom<HistoryState[]>([]);
+
+export const pushHistorySnapshotAtom = atom(null, (get, set) => {
+	const currentNodes = get(nodesAtom);
+	const currentEdges = get(edgesAtom);
+	const history = get(historyAtom);
+	set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
+	set(futureAtom, []);
+});
+
+export const groupSelectedNodesAtom = atom(null, (get, set) => {
+	const currentNodes = get(nodesAtom);
+	const currentEdges = get(edgesAtom);
+	const selectedNodes = currentNodes.filter((node) => node.selected);
+	const groupableNodes = selectedNodes.filter(isGroupableNode);
+
+	if (groupableNodes.length < 2) {
+		return;
+	}
+
+	set(pushHistorySnapshotAtom);
+
+	const nodeLookup = new Map(
+		currentNodes.map((node) => [node.id, node] as const),
+	);
+	const groupableIds = new Set(groupableNodes.map((node) => node.id));
+	const absolutePositions = new Map(
+		groupableNodes.map((node) => [
+			node.id,
+			getAbsoluteNodePosition(node, nodeLookup),
+		]),
+	);
+
+	const minX = Math.min(
+		...groupableNodes.map((node) => absolutePositions.get(node.id)?.x ?? 0),
+	);
+	const minY = Math.min(
+		...groupableNodes.map((node) => absolutePositions.get(node.id)?.y ?? 0),
+	);
+	const maxX = Math.max(
+		...groupableNodes.map(
+			(node) => (absolutePositions.get(node.id)?.x ?? 0) + NODE_HALF_SIZE * 2,
+		),
+	);
+	const maxY = Math.max(
+		...groupableNodes.map(
+			(node) => (absolutePositions.get(node.id)?.y ?? 0) + NODE_HALF_SIZE * 2,
+		),
+	);
+
+	const groupId = nanoid();
+	const groupPosition = { x: minX - GROUP_PADDING, y: minY - GROUP_PADDING };
+	const groupNode: WorkflowNode = {
+		id: groupId,
+		type: "group",
+		position: groupPosition,
+		data: {
+			...createWorkflowNodeData("group"),
+			label: "Group",
+			description: "Grouped steps",
+		},
+		selected: true,
+		style: {
+			width: Math.max(maxX - minX + GROUP_PADDING * 2, DEFAULT_GROUP_WIDTH),
+			height: Math.max(maxY - minY + GROUP_PADDING * 2, DEFAULT_GROUP_HEIGHT),
+		},
+	};
+
+	const nextNodes = [
+		...currentNodes.map((node) => {
+			if (!groupableIds.has(node.id)) {
+				return { ...node, selected: false };
+			}
+
+			const absolutePosition = absolutePositions.get(node.id);
+			if (!absolutePosition) {
+				return { ...node, selected: false };
+			}
+
+			return {
+				...node,
+				parentId: groupId,
+				extent: "parent" as const,
+				selected: false,
+				position: {
+					x: absolutePosition.x - groupPosition.x,
+					y: absolutePosition.y - groupPosition.y,
+				},
+			};
+		}),
+		groupNode,
+	];
+
+	set(nodesAtom, nextNodes);
+	set(selectedNodeAtom, groupId);
+	set(selectedEdgeAtom, null);
+	set(hasUnsavedChangesAtom, true);
+	set(autosaveAtom, { immediate: true });
+});
+
+export const ungroupNodeAtom = atom(null, (get, set, groupId: string) => {
+	const currentNodes = get(nodesAtom);
+	const currentEdges = get(edgesAtom);
+	const groupNode = currentNodes.find(
+		(node) => node.id === groupId && node.type === "group",
+	);
+	if (!groupNode) {
+		return;
+	}
+
+	const nodeLookup = new Map(
+		currentNodes.map((node) => [node.id, node] as const),
+	);
+	const childNodes = currentNodes.filter((node) => node.parentId === groupId);
+
+	set(pushHistorySnapshotAtom);
+
+	const nextNodes = currentNodes
+		.filter((node) => node.id !== groupId)
+		.map((node) => {
+			if (node.parentId !== groupId) {
+				return { ...node, selected: false };
+			}
+
+			return {
+				...node,
+				parentId: undefined,
+				extent: undefined,
+				selected: true,
+				position: getAbsoluteNodePosition(node, nodeLookup),
+			};
+		});
+
+	set(nodesAtom, nextNodes);
+	set(edgesAtom, currentEdges);
+	set(
+		selectedNodeAtom,
+		childNodes.length === 1 ? (childNodes[0]?.id ?? null) : null,
+	);
+	set(selectedEdgeAtom, null);
+	set(hasUnsavedChangesAtom, true);
+	set(autosaveAtom, { immediate: true });
+});
+
+export const detachNodeFromParentAtom = atom(
+	null,
+	(get, set, nodeId: string) => {
+		const currentNodes = get(nodesAtom);
+		const nodeToDetach = currentNodes.find((node) => node.id === nodeId);
+		if (!nodeToDetach?.parentId) {
+			return;
+		}
+
+		const currentEdges = get(edgesAtom);
+		const history = get(historyAtom);
+		set(historyAtom, [
+			...history,
+			{ nodes: currentNodes, edges: currentEdges },
+		]);
+		set(futureAtom, []);
+
+		const nodeLookup = new Map(
+			currentNodes.map((node) => [node.id, node] as const),
+		);
+		const absolutePosition = getAbsoluteNodePosition(nodeToDetach, nodeLookup);
+
+		const nextNodes = currentNodes.map((node) => {
+			if (node.id === nodeId) {
+				return {
+					...node,
+					parentId: undefined,
+					extent: undefined,
+					selected: true,
+					position: absolutePosition,
+				};
+			}
+
+			return {
+				...node,
+				selected: false,
+			};
+		});
+
+		set(nodesAtom, nextNodes);
+		set(selectedNodeAtom, nodeId);
+		set(selectedEdgeAtom, null);
+		set(hasUnsavedChangesAtom, true);
+		set(autosaveAtom, { immediate: true });
+	},
+);
 
 // Undo atom
 export const undoAtom = atom(null, (get, set) => {

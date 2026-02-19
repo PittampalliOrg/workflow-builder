@@ -54,6 +54,11 @@ import {
 } from "@/lib/workflow-store";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { IntegrationType } from "@/lib/actions/types";
+import {
+	ResizableHandle,
+	ResizablePanel,
+	ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { AiChatPanel } from "./ai-chat-panel";
 import { ActionConfig } from "./config/action-config";
@@ -64,6 +69,7 @@ import { IfElseConfig } from "./config/if-else-config";
 import { LoopUntilConfig } from "./config/loop-until-config";
 import { NoteConfig } from "./config/note-config";
 import { SetStateConfig } from "./config/set-state-config";
+import { SubWorkflowConfig } from "./config/sub-workflow-config";
 import { TimerConfig } from "./config/timer-config";
 import { TransformConfig } from "./config/transform-config";
 import { TriggerConfig } from "./config/trigger-config";
@@ -228,6 +234,7 @@ export const PanelInner = () => {
 	const selectedNodes = nodes.filter((node) => node.selected);
 	const selectedEdges = edges.filter((edge) => edge.selected);
 	const hasMultipleSelections = selectedNodes.length + selectedEdges.length > 1;
+	const showInlineChatSplit = !!selectedNode && !!currentWorkflowId && isOwner;
 
 	// Switch to Properties tab if Code tab is hidden for the selected node
 	useEffect(() => {
@@ -261,11 +268,7 @@ export const PanelInner = () => {
 		}
 	}, [selectedNode, activeTab, isOwner, setActiveTab]);
 
-	useEffect(() => {
-		if (selectedNode && activeTab === "ai") {
-			setActiveTab("properties");
-		}
-	}, [selectedNode, activeTab, setActiveTab]);
+	// AI tab is now allowed when a node is selected, so no forced switch needed.
 
 	// Auto-fix invalid integration references when a node is selected
 	const globalIntegrations = useAtomValue(connectionsAtom);
@@ -582,7 +585,26 @@ export const PanelInner = () => {
 
 	// If multiple items are selected, show multi-selection properties
 	if (hasMultipleSelections) {
-		return (
+		const canShowChat = !!currentWorkflowId && isOwner;
+		return canShowChat ? (
+			<ResizablePanelGroup
+				autoSaveId="multi-select-chat-split"
+				className="size-full"
+				direction="vertical"
+			>
+				<ResizablePanel defaultSize={60} minSize={20}>
+					<MultiSelectionPanel
+						onDelete={deleteSelectedItems}
+						selectedEdges={selectedEdges}
+						selectedNodes={selectedNodes}
+					/>
+				</ResizablePanel>
+				<ResizableHandle withHandle />
+				<ResizablePanel defaultSize={40} minSize={25}>
+					<AiChatPanel workflowId={currentWorkflowId!} />
+				</ResizablePanel>
+			</ResizablePanelGroup>
+		) : (
 			<MultiSelectionPanel
 				onDelete={deleteSelectedItems}
 				selectedEdges={selectedEdges}
@@ -841,6 +863,308 @@ export const PanelInner = () => {
 		);
 	}
 
+	const renderNodeConfigContent = (inSplit: boolean) => (
+		<div
+			className={inSplit ? "size-full overflow-y-auto" : "flex flex-1 flex-col"}
+		>
+			{/* Action selection - full height flex layout */}
+			{selectedNode.data.type === "action" &&
+				!selectedNode.data.config?.actionType &&
+				isOwner && (
+					<div
+						className={`flex min-h-0 flex-col px-4 pt-4 ${inSplit ? "size-full" : "flex-1"}`}
+					>
+						<ActionGrid
+							disabled={isGenerating}
+							isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
+							onSelectAction={(selection: ActionSelection) => {
+								// Handle Dapr activity selection - morph node type
+								if (
+									selection.isDaprActivity &&
+									selection.nodeType &&
+									selection.nodeType !== "action"
+								) {
+									morphNodeType({
+										id: selectedNode.id,
+										nodeType: selection.nodeType,
+										data: {
+											label:
+												selection.nodeType === "activity"
+													? selection.activityName || "Activity"
+													: selection.nodeType === "approval-gate"
+														? "Approval Gate"
+														: selection.nodeType === "timer"
+															? "Timer"
+															: selection.nodeType === "loop-until"
+																? "Loop Until"
+																: selection.nodeType === "while"
+																	? "While"
+																	: selection.nodeType === "if-else"
+																		? "If / Else"
+																		: selection.nodeType === "note"
+																			? "Note"
+																			: selection.nodeType === "set-state"
+																				? "Set State"
+																				: selection.nodeType === "transform"
+																					? "Transform"
+																					: "Step",
+											config:
+												selection.nodeType === "activity"
+													? { activityName: selection.activityName }
+													: selection.nodeType === "loop-until"
+														? {
+																loopStartNodeId: "",
+																maxIterations: 10,
+																delaySeconds: 0,
+																onMaxIterations: "fail",
+																operator: "EXISTS",
+																left: "",
+																right: "",
+															}
+														: selection.nodeType === "while"
+															? {
+																	expression: "",
+																	maxIterations: 20,
+																	delaySeconds: 0,
+																	onMaxIterations: "continue",
+																}
+															: selection.nodeType === "if-else"
+																? {
+																		operator: "EXISTS",
+																		left: "",
+																		right: "",
+																	}
+																: selection.nodeType === "note"
+																	? { text: "" }
+																	: selection.nodeType === "set-state"
+																		? {
+																				entries: [{ key: "", value: "" }],
+																			}
+																		: selection.nodeType === "transform"
+																			? { templateJson: "{\n  \n}" }
+																			: {},
+										},
+									});
+								} else {
+									// Regular action selection
+									handleUpdateConfig("actionType", selection.actionType);
+								}
+								// Clear newly created tracking once action is selected
+								if (selectedNode?.id === newlyCreatedNodeId) {
+									setNewlyCreatedNodeId(null);
+								}
+							}}
+						/>
+					</div>
+				)}
+
+			{/* Other content - scrollable */}
+			{!(
+				selectedNode.data.type === "action" &&
+				!selectedNode.data.config?.actionType &&
+				isOwner
+			) && (
+				<div
+					className={`space-y-4 p-4 ${inSplit ? "" : "flex-1 overflow-y-auto"}`}
+				>
+					{selectedNode.data.type === "trigger" && (
+						<TriggerConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+							workflowId={currentWorkflowId ?? undefined}
+						/>
+					)}
+
+					{selectedNode.data.type === "action" &&
+						!selectedNode.data.config?.actionType &&
+						!isOwner && (
+							<div className="rounded-lg border border-muted bg-muted/30 p-3">
+								<p className="text-muted-foreground text-sm">
+									No action configured for this step.
+								</p>
+							</div>
+						)}
+
+					{selectedNode.data.type === "action" &&
+					selectedNode.data.config?.actionType ? (
+						<ActionConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							isOwner={isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					) : null}
+
+					{/* Dapr Activity Config */}
+					{selectedNode.type === "activity" && (
+						<ActivityConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Dapr Approval Gate Config */}
+					{selectedNode.type === "approval-gate" && (
+						<ApprovalGateConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Dapr Timer Config */}
+					{selectedNode.type === "timer" && (
+						<TimerConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Dapr Loop Until Config */}
+					{selectedNode.type === "loop-until" && (
+						<LoopUntilConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* While Config */}
+					{selectedNode.type === "while" && (
+						<WhileConfig
+							nodeId={selectedNode.id}
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* If/Else Config */}
+					{selectedNode.type === "if-else" && (
+						<IfElseConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Note Config */}
+					{selectedNode.type === "note" && (
+						<NoteConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Set State Config */}
+					{selectedNode.type === "set-state" && (
+						<SetStateConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Transform Config */}
+					{selectedNode.type === "transform" && (
+						<TransformConfig
+							config={selectedNode.data.config || {}}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* Sub-Workflow Config */}
+					{selectedNode.type === "sub-workflow" && (
+						<SubWorkflowConfig
+							config={selectedNode.data.config || {}}
+							currentWorkflowId={currentWorkflowId ?? undefined}
+							disabled={isGenerating || !isOwner}
+							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{selectedNode.data.type !== "action" ||
+					selectedNode.data.config?.actionType ? (
+						<>
+							<div className="space-y-2">
+								<Label className="ml-1" htmlFor="label">
+									Label
+								</Label>
+								<Input
+									disabled={isGenerating || !isOwner}
+									id="label"
+									onChange={(e) => handleUpdateLabel(e.target.value)}
+									value={selectedNode.data.label}
+								/>
+							</div>
+
+							<div className="space-y-2">
+								<Label className="ml-1" htmlFor="description">
+									Description
+								</Label>
+								<Input
+									disabled={isGenerating || !isOwner}
+									id="description"
+									onChange={(e) => handleUpdateDescription(e.target.value)}
+									placeholder="Optional description"
+									value={selectedNode.data.description || ""}
+								/>
+							</div>
+						</>
+					) : null}
+
+					{!isOwner && (
+						<div className="rounded-lg border border-muted bg-muted/30 p-3">
+							<p className="text-muted-foreground text-sm">
+								You are viewing a public workflow. Duplicate it to make changes.
+							</p>
+						</div>
+					)}
+
+					{/* Actions moved into content */}
+					{isOwner && (
+						<div className="flex items-center gap-2 pt-4">
+							{selectedNode.data.type === "action" && (
+								<Button
+									className="text-muted-foreground"
+									onClick={handleToggleEnabled}
+									size="sm"
+									variant="ghost"
+								>
+									{selectedNode.data.enabled === false ? (
+										<>
+											<EyeOff className="mr-2 size-4" />
+											Disabled
+										</>
+									) : (
+										<>
+											<Eye className="mr-2 size-4" />
+											Enabled
+										</>
+									)}
+								</Button>
+							)}
+							<Button
+								className="text-muted-foreground"
+								onClick={() => setShowDeleteNodeAlert(true)}
+								size="sm"
+								variant="ghost"
+							>
+								<Trash2 className="mr-2 size-4" />
+								Delete
+							</Button>
+						</div>
+					)}
+				</div>
+			)}
+		</div>
+	);
+
 	return (
 		<>
 			<Tabs
@@ -866,6 +1190,14 @@ export const PanelInner = () => {
 					{isOwner && (
 						<TabsTrigger
 							className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
+							value="ai"
+						>
+							AI
+						</TabsTrigger>
+					)}
+					{isOwner && (
+						<TabsTrigger
+							className="bg-transparent text-muted-foreground data-[state=active]:text-foreground data-[state=active]:shadow-none"
 							value="runs"
 						>
 							Runs
@@ -876,287 +1208,22 @@ export const PanelInner = () => {
 					className="flex flex-col overflow-hidden"
 					value="properties"
 				>
-					{/* Action selection - full height flex layout */}
-					{selectedNode.data.type === "action" &&
-						!selectedNode.data.config?.actionType &&
-						isOwner && (
-							<div className="flex min-h-0 flex-1 flex-col px-4 pt-4">
-								<ActionGrid
-									disabled={isGenerating}
-									isNewlyCreated={selectedNode?.id === newlyCreatedNodeId}
-									onSelectAction={(selection: ActionSelection) => {
-										// Handle Dapr activity selection - morph node type
-										if (
-											selection.isDaprActivity &&
-											selection.nodeType &&
-											selection.nodeType !== "action"
-										) {
-											morphNodeType({
-												id: selectedNode.id,
-												nodeType: selection.nodeType,
-												data: {
-													label:
-														selection.nodeType === "activity"
-															? selection.activityName || "Activity"
-															: selection.nodeType === "approval-gate"
-																? "Approval Gate"
-																: selection.nodeType === "timer"
-																	? "Timer"
-																	: selection.nodeType === "loop-until"
-																		? "Loop Until"
-																		: selection.nodeType === "while"
-																			? "While"
-																			: selection.nodeType === "if-else"
-																				? "If / Else"
-																				: selection.nodeType === "note"
-																					? "Note"
-																					: selection.nodeType === "set-state"
-																						? "Set State"
-																						: selection.nodeType === "transform"
-																							? "Transform"
-																							: "Step",
-													config:
-														selection.nodeType === "activity"
-															? { activityName: selection.activityName }
-															: selection.nodeType === "loop-until"
-																? {
-																		loopStartNodeId: "",
-																		maxIterations: 10,
-																		delaySeconds: 0,
-																		onMaxIterations: "fail",
-																		operator: "EXISTS",
-																		left: "",
-																		right: "",
-																	}
-																: selection.nodeType === "while"
-																	? {
-																			expression: "",
-																			maxIterations: 20,
-																			delaySeconds: 0,
-																			onMaxIterations: "continue",
-																		}
-																	: selection.nodeType === "if-else"
-																		? {
-																				operator: "EXISTS",
-																				left: "",
-																				right: "",
-																			}
-																		: selection.nodeType === "note"
-																			? { text: "" }
-																			: selection.nodeType === "set-state"
-																				? {
-																						entries: [{ key: "", value: "" }],
-																					}
-																				: selection.nodeType === "transform"
-																					? { templateJson: "{\n  \n}" }
-																					: {},
-												},
-											});
-										} else {
-											// Regular action selection
-											handleUpdateConfig("actionType", selection.actionType);
-										}
-										// Clear newly created tracking once action is selected
-										if (selectedNode?.id === newlyCreatedNodeId) {
-											setNewlyCreatedNodeId(null);
-										}
-									}}
-								/>
-							</div>
-						)}
-
-					{/* Other content - scrollable */}
-					{!(
-						selectedNode.data.type === "action" &&
-						!selectedNode.data.config?.actionType &&
-						isOwner
-					) && (
-						<div className="flex-1 space-y-4 overflow-y-auto p-4">
-							{selectedNode.data.type === "trigger" && (
-								<TriggerConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-									workflowId={currentWorkflowId ?? undefined}
-								/>
-							)}
-
-							{selectedNode.data.type === "action" &&
-								!selectedNode.data.config?.actionType &&
-								!isOwner && (
-									<div className="rounded-lg border border-muted bg-muted/30 p-3">
-										<p className="text-muted-foreground text-sm">
-											No action configured for this step.
-										</p>
-									</div>
-								)}
-
-							{selectedNode.data.type === "action" &&
-							selectedNode.data.config?.actionType ? (
-								<ActionConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									isOwner={isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							) : null}
-
-							{/* Dapr Activity Config */}
-							{selectedNode.type === "activity" && (
-								<ActivityConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Dapr Approval Gate Config */}
-							{selectedNode.type === "approval-gate" && (
-								<ApprovalGateConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Dapr Timer Config */}
-							{selectedNode.type === "timer" && (
-								<TimerConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Dapr Loop Until Config */}
-							{selectedNode.type === "loop-until" && (
-								<LoopUntilConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* While Config */}
-							{selectedNode.type === "while" && (
-								<WhileConfig
-									nodeId={selectedNode.id}
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* If/Else Config */}
-							{selectedNode.type === "if-else" && (
-								<IfElseConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Note Config */}
-							{selectedNode.type === "note" && (
-								<NoteConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Set State Config */}
-							{selectedNode.type === "set-state" && (
-								<SetStateConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{/* Transform Config */}
-							{selectedNode.type === "transform" && (
-								<TransformConfig
-									config={selectedNode.data.config || {}}
-									disabled={isGenerating || !isOwner}
-									onUpdateConfig={handleUpdateConfig}
-								/>
-							)}
-
-							{selectedNode.data.type !== "action" ||
-							selectedNode.data.config?.actionType ? (
-								<>
-									<div className="space-y-2">
-										<Label className="ml-1" htmlFor="label">
-											Label
-										</Label>
-										<Input
-											disabled={isGenerating || !isOwner}
-											id="label"
-											onChange={(e) => handleUpdateLabel(e.target.value)}
-											value={selectedNode.data.label}
-										/>
-									</div>
-
-									<div className="space-y-2">
-										<Label className="ml-1" htmlFor="description">
-											Description
-										</Label>
-										<Input
-											disabled={isGenerating || !isOwner}
-											id="description"
-											onChange={(e) => handleUpdateDescription(e.target.value)}
-											placeholder="Optional description"
-											value={selectedNode.data.description || ""}
-										/>
-									</div>
-								</>
-							) : null}
-
-							{!isOwner && (
-								<div className="rounded-lg border border-muted bg-muted/30 p-3">
-									<p className="text-muted-foreground text-sm">
-										You are viewing a public workflow. Duplicate it to make
-										changes.
-									</p>
-								</div>
-							)}
-
-							{/* Actions moved into content */}
-							{isOwner && (
-								<div className="flex items-center gap-2 pt-4">
-									{selectedNode.data.type === "action" && (
-										<Button
-											className="text-muted-foreground"
-											onClick={handleToggleEnabled}
-											size="sm"
-											variant="ghost"
-										>
-											{selectedNode.data.enabled === false ? (
-												<>
-													<EyeOff className="mr-2 size-4" />
-													Disabled
-												</>
-											) : (
-												<>
-													<Eye className="mr-2 size-4" />
-													Enabled
-												</>
-											)}
-										</Button>
-									)}
-									<Button
-										className="text-muted-foreground"
-										onClick={() => setShowDeleteNodeAlert(true)}
-										size="sm"
-										variant="ghost"
-									>
-										<Trash2 className="mr-2 size-4" />
-										Delete
-									</Button>
-								</div>
-							)}
-						</div>
+					{showInlineChatSplit ? (
+						<ResizablePanelGroup
+							autoSaveId="node-config-chat-split"
+							className="flex-1"
+							direction="vertical"
+						>
+							<ResizablePanel defaultSize={60} minSize={20}>
+								{renderNodeConfigContent(true)}
+							</ResizablePanel>
+							<ResizableHandle withHandle />
+							<ResizablePanel defaultSize={40} minSize={25}>
+								<AiChatPanel workflowId={currentWorkflowId!} />
+							</ResizablePanel>
+						</ResizablePanelGroup>
+					) : (
+						renderNodeConfigContent(false)
 					)}
 				</TabsContent>
 				<TabsContent
@@ -1213,6 +1280,19 @@ export const PanelInner = () => {
 						);
 					})()}
 				</TabsContent>
+				{isOwner && (
+					<TabsContent className="flex flex-col overflow-hidden" value="ai">
+						<div className="flex-1 min-h-0">
+							{currentWorkflowId ? (
+								<AiChatPanel workflowId={currentWorkflowId} />
+							) : (
+								<div className="p-4 text-muted-foreground text-sm">
+									Save this workflow to enable AI chat.
+								</div>
+							)}
+						</div>
+					</TabsContent>
+				)}
 				{isOwner && (
 					<TabsContent className="flex flex-col overflow-hidden" value="runs">
 						{/* Actions in content header */}

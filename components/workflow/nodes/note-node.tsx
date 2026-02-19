@@ -29,6 +29,7 @@ export const NoteNode = memo(({ data, selected, id }: NoteNodeProps) => {
 			)}
 			data-testid={`note-node-${id}`}
 			handles={{ target: false, source: false }}
+			selected={selected}
 			status={data.status}
 		>
 			<div className="flex flex-col items-center justify-center gap-3 p-6">

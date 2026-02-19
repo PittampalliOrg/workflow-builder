@@ -11,7 +11,7 @@ export type DagreLayoutOptions = {
 	columnGap?: number;
 	viewportWidth?: number;
 	maxColumns?: number;
-	strategy?: "auto" | "dagre" | "compact";
+	strategy?: "auto" | "dagre" | "compact" | "elk";
 };
 
 type NodeWithMeasurements = WorkflowNode & {
@@ -161,6 +161,9 @@ function shouldUseCompactLayout(
 		return true;
 	}
 	if (options.strategy === "dagre") {
+		return false;
+	}
+	if (options.strategy === "elk") {
 		return false;
 	}
 	if (nodes.length < 4) {

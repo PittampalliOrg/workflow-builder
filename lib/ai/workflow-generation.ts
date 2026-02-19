@@ -387,7 +387,9 @@ IMPORTANT: Output ONLY the operations needed to make the requested changes.
 - POSITIONING: When adding new nodes, look at existing node positions and place new nodes 250px away (horizontally or vertically) from existing nodes. Never overlap nodes.`;
 }
 
-async function getAiModel() {
+export async function getAiModel(options?: { anthropicFallback?: string }) {
+	const anthropicFallback = options?.anthropicFallback || "claude-opus-4-6";
+
 	// Prefer Anthropic if configured (Azure Key Vault secret mapping exists).
 	const anthropicKey = await getSecretValueAsync("ANTHROPIC_API_KEY");
 	if (anthropicKey) {
@@ -398,7 +400,7 @@ async function getAiModel() {
 		const modelKey = await resolveCatalogModelKey({
 			providerId: "anthropic",
 			configuredModelId: configuredModelId || undefined,
-			fallbackModelKey: "claude-opus-4-6",
+			fallbackModelKey: anthropicFallback,
 		});
 		return provider.chat(modelKey);
 	}

@@ -12,6 +12,7 @@ import type {
 	UpsertAppConnectionRequestBody,
 } from "./types/app-connection";
 import type { IntegrationDefinition } from "./actions/types";
+import type { WorkflowAiMentionRef } from "./ai/workflow-ai-tools";
 import type { McpInputProperty } from "./mcp/types";
 import type {
 	ObservabilityEntitiesResponse,
@@ -203,6 +204,13 @@ export type WorkflowAiChatMessage = {
 	operations: Array<Record<string, unknown>> | null;
 	createdAt: string;
 	updatedAt: string;
+};
+
+export type WorkflowAiToolsMessage = {
+	id: string;
+	role: "user" | "assistant" | "system";
+	parts: Array<Record<string, unknown>>;
+	mentions?: WorkflowAiMentionRef[];
 };
 
 type OperationHandler = (
@@ -488,6 +496,22 @@ export const aiChatApi = {
 		apiCall<{ messages: WorkflowAiChatMessage[] }>(
 			`/api/workflows/${workflowId}/ai-chat/messages`,
 		),
+
+	getToolMessages: (workflowId: string) =>
+		apiCall<{ messages: WorkflowAiToolsMessage[] }>(
+			`/api/workflows/${workflowId}/ai-chat/tools/messages`,
+		),
+
+	clear: (workflowId: string) =>
+		apiCall<{
+			success: boolean;
+			deleted: {
+				legacyMessages: number;
+				toolMessages: number;
+			};
+		}>(`/api/workflows/${workflowId}/ai-chat/clear`, {
+			method: "DELETE",
+		}),
 
 	generateStream: (
 		workflowId: string,

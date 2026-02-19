@@ -215,6 +215,7 @@ export function topologicalSort(
 			node &&
 			node.type !== "trigger" &&
 			node.type !== "add" &&
+			node.type !== "group" &&
 			node.type !== "note"
 		) {
 			result.push(nodeId);
@@ -276,8 +277,10 @@ export function generateWorkflowDefinition(
 	const now = new Date().toISOString();
 	const lowered = lowerWhileNodesForExecution({ nodes, edges });
 
-	// Filter out 'add' nodes (UI placeholder nodes)
-	const executableNodes = lowered.nodes.filter((n) => n.type !== "add");
+	// Filter out non-executing UI-only nodes.
+	const executableNodes = lowered.nodes.filter(
+		(n) => n.type !== "add" && n.type !== "group",
+	);
 
 	// Serialize nodes and edges
 	const serializedNodes = executableNodes.map(serializeNode);

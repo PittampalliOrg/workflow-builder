@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DebugPanel } from "@/components/workflow/debug-panel";
 import { NodeConfigPanel } from "@/components/workflow/node-config-panel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { ApiError, api } from "@/lib/api-client";
@@ -797,6 +798,8 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
 			{/* Mobile: NodeConfigPanel renders the overlay trigger button */}
 			{isMobile && <NodeConfigPanel />}
+
+			<DebugPanel />
 		</div>
 	);
 };

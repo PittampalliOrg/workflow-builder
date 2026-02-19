@@ -107,6 +107,8 @@ export const ApprovalGateNode = memo(
 				)}
 				data-testid={`approval-gate-node-${id}`}
 				handles={{ target: true, source: true }}
+				runnable
+				selected={selected}
 				status={isWaitingForApproval ? "running" : status}
 			>
 				<StatusBadge status={status} />

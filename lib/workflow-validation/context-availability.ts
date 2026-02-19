@@ -69,7 +69,9 @@ function getNodeLabel(node: WorkflowNode): string {
 }
 
 function buildGraph(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
-	const filteredNodes = nodes.filter((node) => node.type !== "add");
+	const filteredNodes = nodes.filter(
+		(node) => node.type !== "add" && node.type !== "group",
+	);
 	const nodeIds = filteredNodes.map((node) => node.id);
 	const nodeIdSet = new Set(nodeIds);
 

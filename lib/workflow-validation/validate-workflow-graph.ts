@@ -1,4 +1,8 @@
 import { decompileGraphToWorkflowSpec } from "@/lib/workflow-spec/decompile";
+import {
+	areHandleTypesCompatible,
+	getConnectionRulesForEdge,
+} from "@/lib/workflow-connection-rules";
 import { lintWorkflowSpec, type LintIssue } from "@/lib/workflow-spec/lint";
 import type { WorkflowSpecCatalog } from "@/lib/workflow-spec/catalog";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
@@ -67,11 +71,22 @@ function isErrorIssue(issue: ContractIssue): boolean {
 
 function buildEdgeStates(
 	edges: WorkflowEdge[],
+	issues: ContractIssue[],
 	issuesByNodeId: Record<string, ContractIssue[]>,
 ): Record<string, EdgeValidationState> {
 	const edgeStates: Record<string, EdgeValidationState> = {};
 
 	for (const edge of edges) {
+		const edgeIssues = issues.filter((issue) => issue.edgeId === edge.id);
+		if (edgeIssues.some(isErrorIssue)) {
+			edgeStates[edge.id] = "invalid";
+			continue;
+		}
+		if (edgeIssues.length > 0) {
+			edgeStates[edge.id] = "warning";
+			continue;
+		}
+
 		const sourceIssues = issuesByNodeId[edge.source] ?? [];
 		const targetIssues = issuesByNodeId[edge.target] ?? [];
 		const allNodeIssues = [...sourceIssues, ...targetIssues];
@@ -92,8 +107,39 @@ function buildEdgeStates(
 	return edgeStates;
 }
 
+function getConnectionContractIssues(
+	nodes: WorkflowNode[],
+	edges: WorkflowEdge[],
+): ContractIssue[] {
+	const issues: ContractIssue[] = [];
+
+	for (const edge of edges) {
+		const rules = getConnectionRulesForEdge({ nodes, connection: edge });
+		if (!rules) {
+			continue;
+		}
+
+		if (
+			!areHandleTypesCompatible(rules.sourceRule.dataType, rules.targetRule)
+		) {
+			issues.push({
+				code: "TYPE_COMPAT_WARNING",
+				severity: "error",
+				message: `Incompatible connection type from ${rules.sourceNode.data.type} to ${rules.targetNode.data.type}.`,
+				path: `/edges/${edge.id}`,
+				nodeId: rules.targetNode.id,
+				edgeId: edge.id,
+			});
+		}
+	}
+
+	return issues;
+}
+
 function sanitizeGraph(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
-	const filteredNodes = nodes.filter((node) => node.type !== "add");
+	const filteredNodes = nodes.filter(
+		(node) => node.type !== "add" && node.type !== "group",
+	);
 	const nodeIds = new Set(filteredNodes.map((node) => node.id));
 	const filteredEdges = edges.filter(
 		(edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target),
@@ -164,9 +210,10 @@ export function validateWorkflowGraph(
 		...lintResult.result.warnings.map((issue) =>
 			toContractIssue(issue, "warning"),
 		),
+		...getConnectionContractIssues(filteredNodes, filteredEdges),
 	];
 	const issuesByNodeId = buildIssuesByNodeId(issues);
-	const edgeStates = buildEdgeStates(filteredEdges, issuesByNodeId);
+	const edgeStates = buildEdgeStates(filteredEdges, issues, issuesByNodeId);
 
 	return {
 		issues,

@@ -73,6 +73,8 @@ export const SetStateNode = memo(
 				)}
 				data-testid={`set-state-node-${id}`}
 				handles={{ target: true, source: true }}
+				runnable
+				selected={selected}
 				status={data.status}
 			>
 				<div className="flex flex-col items-center justify-center gap-3 p-6">

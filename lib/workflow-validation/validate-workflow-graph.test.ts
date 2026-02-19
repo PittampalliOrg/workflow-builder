@@ -180,4 +180,30 @@ describe("validateWorkflowGraph", () => {
 		expect(result.edgeStates.e2).toBe("invalid");
 		expect(result.edgeStates.e1).toBe("valid");
 	});
+
+	it("ignores group nodes when building validation graph", () => {
+		const nodes = [
+			makeNode({ id: "trigger", type: "trigger", label: "Trigger" }),
+			makeNode({
+				id: "source",
+				type: "action",
+				label: "Source",
+				config: { actionType: "test/source" },
+			}),
+			makeNode({ id: "group-1", type: "group", label: "Group" }),
+		] satisfies WorkflowNode[];
+		const edges = [
+			makeEdge({ id: "e1", source: "trigger", target: "source" }),
+			makeEdge({ id: "e2", source: "source", target: "group-1" }),
+		] satisfies WorkflowEdge[];
+		const catalog = makeCatalog([
+			makeAction({ id: "test/source", label: "Source" }),
+		]);
+
+		const result = validateWorkflowGraph({ nodes, edges, catalog });
+
+		expect(result.edgeStates.e1).toBe("valid");
+		expect(result.edgeStates.e2).toBeUndefined();
+		expect(Object.keys(result.issuesByNodeId)).not.toContain("group-1");
+	});
 });

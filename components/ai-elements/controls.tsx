@@ -29,7 +29,9 @@ export type AutoLayoutPresetId =
 	| "auto"
 	| "compact"
 	| "flow-left-right"
-	| "flow-top-bottom";
+	| "flow-top-bottom"
+	| "elk-left-right"
+	| "elk-top-bottom";
 
 type AutoLayoutPreset = {
 	id: AutoLayoutPresetId;
@@ -68,6 +70,18 @@ const AUTO_LAYOUT_PRESETS: AutoLayoutPreset[] = [
 		label: "Flow Top to Bottom",
 		description: "Vertical DAG flow layout",
 		options: { strategy: "dagre", direction: "TB", maxColumns: 3 },
+	},
+	{
+		id: "elk-left-right",
+		label: "ELK Left to Right",
+		description: "ELK layered layout",
+		options: { strategy: "elk", direction: "LR", maxColumns: 3 },
+	},
+	{
+		id: "elk-top-bottom",
+		label: "ELK Top to Bottom",
+		description: "ELK layered vertical layout",
+		options: { strategy: "elk", direction: "TB", maxColumns: 3 },
 	},
 ];
 

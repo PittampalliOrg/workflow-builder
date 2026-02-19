@@ -1,5 +1,8 @@
+"use client";
+
 import {
   BaseEdge,
+  EdgeLabelRenderer,
   type EdgeProps,
   getBezierPath,
   getSimpleBezierPath,
@@ -8,6 +11,15 @@ import {
   Position,
   useInternalNode,
 } from "@xyflow/react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { useEffect } from "react";
+import {
+  isGeneratingAtom,
+  insertNodeAtConnectionAtom,
+  potentialConnectionAtom,
+  removeConnectionSiteAtom,
+  upsertConnectionSiteAtom,
+} from "@/lib/workflow-store";
 import type { EdgeValidationState } from "@/lib/workflow-validation/types";
 
 const Temporary = ({
@@ -147,9 +159,23 @@ function getEdgeColors(input: {
   };
 }
 
-const Animated = ({ id, source, target, style, selected, data }: EdgeProps) => {
+const Animated = ({
+  id,
+  source,
+  target,
+  style,
+  selected,
+  data,
+  sourceHandleId,
+  targetHandleId,
+}: EdgeProps) => {
   const sourceNode = useInternalNode(source);
   const targetNode = useInternalNode(target);
+  const insertNodeAtConnection = useSetAtom(insertNodeAtConnectionAtom);
+  const upsertConnectionSite = useSetAtom(upsertConnectionSiteAtom);
+  const removeConnectionSite = useSetAtom(removeConnectionSiteAtom);
+  const potentialConnection = useAtomValue(potentialConnectionAtom);
+  const isGenerating = useAtomValue(isGeneratingAtom);
 
   if (!(sourceNode && targetNode)) {
     return null;
@@ -160,7 +186,7 @@ const Animated = ({ id, source, target, style, selected, data }: EdgeProps) => {
     targetNode
   );
 
-  const [edgePath] = getBezierPath({
+  const [edgePath, labelX, labelY] = getBezierPath({
     sourceX: sx,
     sourceY: sy,
     sourcePosition: sourcePos,
@@ -176,6 +202,44 @@ const Animated = ({ id, source, target, style, selected, data }: EdgeProps) => {
     selected: selected ?? false,
     validationState,
   });
+  const connectionSiteId = `edge-${id}`;
+  const isPotentialConnection = potentialConnection?.id === connectionSiteId;
+
+  useEffect(() => {
+    upsertConnectionSite({
+      id: connectionSiteId,
+      position: { x: labelX, y: labelY },
+      source: { node: source, handle: sourceHandleId },
+      target: { node: target, handle: targetHandleId },
+    });
+
+    return () => {
+      removeConnectionSite(connectionSiteId);
+    };
+  }, [
+    connectionSiteId,
+    labelX,
+    labelY,
+    removeConnectionSite,
+    source,
+    sourceHandleId,
+    target,
+    targetHandleId,
+    upsertConnectionSite,
+  ]);
+
+  const handleInsert = () => {
+    if (isGenerating) {
+      return;
+    }
+    insertNodeAtConnection({
+      edgeId: id,
+      position: { x: labelX, y: labelY },
+      source: { node: source, handle: sourceHandleId },
+      target: { node: target, handle: targetHandleId },
+      nodeType: "action",
+    });
+  };
 
   return (
     <>
@@ -204,6 +268,31 @@ const Animated = ({ id, source, target, style, selected, data }: EdgeProps) => {
           strokeLinejoin: "round",
         }}
       />
+      {!isGenerating ? (
+      <EdgeLabelRenderer>
+        <div
+          className="nodrag nopan pointer-events-auto absolute"
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+          }}
+        >
+          <button
+            className={
+              "flex size-6 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm transition hover:bg-accent hover:text-accent-foreground " +
+              (isPotentialConnection ? "border-primary text-primary" : "border-border")
+            }
+            onClick={(event) => {
+              event.stopPropagation();
+              handleInsert();
+            }}
+            title="Insert step"
+            type="button"
+          >
+            <span className="relative -top-px text-sm leading-none">+</span>
+          </button>
+        </div>
+      </EdgeLabelRenderer>
+      ) : null}
     </>
   );
 };

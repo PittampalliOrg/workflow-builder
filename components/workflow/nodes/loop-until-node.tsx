@@ -67,6 +67,8 @@ export const LoopUntilNode = memo(
 				)}
 				data-testid={`loop-until-node-${id}`}
 				handles={{ target: true, source: true }}
+				runnable
+				selected={selected}
 				status={status}
 			>
 				<StatusBadge status={status} />

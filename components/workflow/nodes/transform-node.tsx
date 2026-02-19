@@ -30,6 +30,8 @@ export const TransformNode = memo(
 				)}
 				data-testid={`transform-node-${id}`}
 				handles={{ target: true, source: true }}
+				runnable
+				selected={selected}
 				status={data.status}
 			>
 				<div className="flex flex-col items-center justify-center gap-3 p-6">
