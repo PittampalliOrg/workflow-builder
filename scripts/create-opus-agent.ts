@@ -48,9 +48,8 @@ async function main() {
 
 You have access to all workspace tools. Use them to help users with any development task:
 - Read, write, and edit files in the workspace
-- List directory contents and get file metadata
+- Search and enumerate files using glob and grep
 - Execute shell commands for builds, tests, and analysis
-- Create and delete files and directories
 
 Be thorough, precise, and proactive. When given a task:
 1. Explore the codebase first to understand context
@@ -59,14 +58,12 @@ Be thorough, precise, and proactive. When given a task:
 4. Explain what you did and why`,
 			model: { provider: "anthropic", name: "claude-opus-4-6" },
 			tools: [
-				{ type: "workspace", ref: "read_file" },
-				{ type: "workspace", ref: "write_file" },
-				{ type: "workspace", ref: "edit_file" },
-				{ type: "workspace", ref: "list_files" },
-				{ type: "workspace", ref: "delete_file" },
-				{ type: "workspace", ref: "mkdir" },
-				{ type: "workspace", ref: "file_stat" },
-				{ type: "workspace", ref: "execute_command" },
+				{ type: "workspace", ref: "read" },
+				{ type: "workspace", ref: "write" },
+				{ type: "workspace", ref: "edit" },
+				{ type: "workspace", ref: "glob" },
+				{ type: "workspace", ref: "grep" },
+				{ type: "workspace", ref: "bash" },
 			],
 			maxTurns: 50,
 			timeoutMinutes: 30,

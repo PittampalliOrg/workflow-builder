@@ -193,15 +193,11 @@ function buildWorkflowNodes(input: {
 	const durableAgentId = nanoid();
 
 	const enabledTools = JSON.stringify([
-		"read_file",
-		"write_file",
-		"edit_file",
-		"list_files",
-		"delete_file",
-		"mkdir",
-		"file_stat",
-		"execute_command",
-		"clone",
+		"read",
+		"write",
+		"edit",
+		"list",
+		"bash",
 	]);
 
 	const workspaceRefTemplate = `{{@${workspaceProfileId}:Workspace Profile.workspaceRef}}`;

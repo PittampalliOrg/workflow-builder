@@ -21,21 +21,18 @@ const DEFAULT_AGENTS = [
 
 Use workspace tools to help users with file operations and command execution:
 - Read, write, and edit files in the workspace
-- List directory contents and get file metadata
+- Search and enumerate files with glob and grep
 - Execute shell commands
-- Create and delete files and directories
 
 Be concise and direct. Use the appropriate tool for each task.`,
 		model: { provider: "openai", name: "gpt-4o" },
 		tools: [
-			{ type: "workspace" as const, ref: "read_file" },
-			{ type: "workspace" as const, ref: "write_file" },
-			{ type: "workspace" as const, ref: "edit_file" },
-			{ type: "workspace" as const, ref: "list_files" },
-			{ type: "workspace" as const, ref: "delete_file" },
-			{ type: "workspace" as const, ref: "mkdir" },
-			{ type: "workspace" as const, ref: "file_stat" },
-			{ type: "workspace" as const, ref: "execute_command" },
+			{ type: "workspace" as const, ref: "read" },
+			{ type: "workspace" as const, ref: "write" },
+			{ type: "workspace" as const, ref: "edit" },
+			{ type: "workspace" as const, ref: "glob" },
+			{ type: "workspace" as const, ref: "grep" },
+			{ type: "workspace" as const, ref: "bash" },
 		],
 		maxTurns: 50,
 		timeoutMinutes: 30,
@@ -54,15 +51,15 @@ Guidelines:
 - Write clean, well-structured code
 - Explain your changes when asked
 - Run tests after making changes when possible
-- Use edit_file for targeted changes, write_file only for new files`,
+- Use edit for targeted changes, write for new files`,
 		model: { provider: "openai", name: "gpt-4o" },
 		tools: [
-			{ type: "workspace" as const, ref: "read_file" },
-			{ type: "workspace" as const, ref: "write_file" },
-			{ type: "workspace" as const, ref: "edit_file" },
-			{ type: "workspace" as const, ref: "list_files" },
-			{ type: "workspace" as const, ref: "file_stat" },
-			{ type: "workspace" as const, ref: "execute_command" },
+			{ type: "workspace" as const, ref: "read" },
+			{ type: "workspace" as const, ref: "write" },
+			{ type: "workspace" as const, ref: "edit" },
+			{ type: "workspace" as const, ref: "glob" },
+			{ type: "workspace" as const, ref: "grep" },
+			{ type: "workspace" as const, ref: "bash" },
 		],
 		maxTurns: 50,
 		timeoutMinutes: 30,
@@ -78,15 +75,15 @@ Guidelines:
 Guidelines:
 - Thoroughly explore the codebase before drawing conclusions
 - Read multiple files to understand architecture and patterns
-- Use execute_command to run analysis tools (grep, find, wc, etc.)
+- Use bash to run analysis tools (grep, find, wc, etc.)
 - Provide structured, actionable findings
 - Do NOT modify any files — you are read-only`,
 		model: { provider: "openai", name: "gpt-4o" },
 		tools: [
-			{ type: "workspace" as const, ref: "read_file" },
-			{ type: "workspace" as const, ref: "list_files" },
-			{ type: "workspace" as const, ref: "file_stat" },
-			{ type: "workspace" as const, ref: "execute_command" },
+			{ type: "workspace" as const, ref: "read" },
+			{ type: "workspace" as const, ref: "glob" },
+			{ type: "workspace" as const, ref: "grep" },
+			{ type: "workspace" as const, ref: "bash" },
 		],
 		maxTurns: 30,
 		timeoutMinutes: 20,

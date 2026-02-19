@@ -466,7 +466,7 @@ async function verifyFiles(): Promise<void> {
   for (const { path, expected } of filesToCheck) {
     try {
       const result = await fetchJson(
-        `${AGENT_BASE_URL}/api/tools/read_file`,
+        `${AGENT_BASE_URL}/api/tools/read`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -506,10 +506,10 @@ async function cleanup(): Promise<void> {
   ];
   for (const path of files) {
     try {
-      await fetchJson(`${AGENT_BASE_URL}/api/tools/delete`, {
+      await fetchJson(`${AGENT_BASE_URL}/api/tools/bash`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ args: { path } }),
+        body: JSON.stringify({ args: { command: `rm -f ${JSON.stringify(path)}` } }),
       });
     } catch {
       // Best-effort cleanup

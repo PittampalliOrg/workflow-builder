@@ -46,15 +46,13 @@ const AGENT_TYPES = [
 	{ value: "custom", label: "Custom" },
 ] as const;
 
-const WORKSPACE_TOOLS = [
-	"read_file",
-	"write_file",
-	"edit_file",
-	"list_files",
-	"delete_file",
-	"mkdir",
-	"file_stat",
-	"execute_command",
+const AGENT_TOOLS = [
+	"read",
+	"write",
+	"edit",
+	"glob",
+	"grep",
+	"bash",
 ] as const;
 
 function parseModelSpec(spec: string): { provider: string; name: string } {
@@ -90,7 +88,7 @@ export function AgentEditor({
 		agent ? formatModelSpec(agent.model) : "openai/gpt-4o",
 	);
 	const [selectedTools, setSelectedTools] = useState<Set<string>>(
-		new Set(agent?.tools?.map((t) => t.ref) ?? WORKSPACE_TOOLS),
+		new Set(agent?.tools?.map((t) => t.ref) ?? AGENT_TOOLS),
 	);
 	const [maxTurns, setMaxTurns] = useState(String(agent?.maxTurns ?? 50));
 	const [timeoutMinutes, setTimeoutMinutes] = useState(
@@ -465,12 +463,12 @@ export function AgentEditor({
 
 					<TabsContent value="tools" className="space-y-4 mt-4">
 						<div className="space-y-2">
-							<Label>Workspace Tools</Label>
+							<Label>Agent Tools</Label>
 							<p className="text-xs text-muted-foreground mb-2">
-								Select which tools this agent can use
+								Select which opencode tools this agent can use
 							</p>
 							<div className="grid grid-cols-2 gap-2">
-								{WORKSPACE_TOOLS.map((tool) => (
+								{AGENT_TOOLS.map((tool) => (
 									<div key={tool} className="flex items-center gap-2">
 										<Checkbox
 											id={`tool-${tool}`}
@@ -491,7 +489,7 @@ export function AgentEditor({
 							<Button
 								variant="outline"
 								size="sm"
-								onClick={() => setSelectedTools(new Set(WORKSPACE_TOOLS))}
+								onClick={() => setSelectedTools(new Set(AGENT_TOOLS))}
 							>
 								Select All
 							</Button>

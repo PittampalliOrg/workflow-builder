@@ -426,7 +426,7 @@ VALUES
     'fv_tool_research_v1',
     'f_tool_research',
     1,
-    '{"tools":[{"type":"workspace","ref":"read_file"},{"type":"workspace","ref":"list_files"},{"type":"workspace","ref":"file_stat"},{"type":"workspace","ref":"execute_command"}]}',
+    '{"tools":[{"type":"workspace","ref":"read"},{"type":"workspace","ref":"glob"},{"type":"workspace","ref":"grep"},{"type":"workspace","ref":"bash"}]}',
     NULL,
     true
   ),
@@ -434,7 +434,7 @@ VALUES
     'fv_tool_coding_v1',
     'f_tool_coding',
     1,
-    '{"tools":[{"type":"workspace","ref":"read_file"},{"type":"workspace","ref":"write_file"},{"type":"workspace","ref":"edit_file"},{"type":"workspace","ref":"list_files"},{"type":"workspace","ref":"delete_file"},{"type":"workspace","ref":"mkdir"},{"type":"workspace","ref":"file_stat"},{"type":"workspace","ref":"execute_command"}]}',
+    '{"tools":[{"type":"workspace","ref":"read"},{"type":"workspace","ref":"write"},{"type":"workspace","ref":"edit"},{"type":"workspace","ref":"glob"},{"type":"workspace","ref":"grep"},{"type":"workspace","ref":"bash"}]}',
     NULL,
     true
   ),
@@ -458,7 +458,7 @@ VALUES
     'fv_tool_sql_v1',
     'f_tool_sql',
     1,
-    '{"tools":[{"type":"workspace","ref":"read_file"},{"type":"workspace","ref":"list_files"},{"type":"workspace","ref":"execute_command"}]}',
+    '{"tools":[{"type":"workspace","ref":"read"},{"type":"workspace","ref":"glob"},{"type":"workspace","ref":"grep"},{"type":"workspace","ref":"bash"}]}',
     NULL,
     true
   );
