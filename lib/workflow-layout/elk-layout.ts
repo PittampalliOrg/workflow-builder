@@ -1,4 +1,4 @@
-import ELK, { type ElkNode } from "elkjs/lib/elk.bundled.js";
+import ELK from "elkjs/lib/elk.bundled.js";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 import type { DagreLayoutOptions } from "./dagre-layout";
 
@@ -63,7 +63,7 @@ export async function layoutWorkflowNodesElk(
 	);
 
 	const elk = new ELK();
-	const graph: ElkNode = {
+	const graph = {
 		id: "root",
 		layoutOptions: {
 			"elk.algorithm": "layered",

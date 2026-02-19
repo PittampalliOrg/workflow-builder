@@ -1,105 +1,96 @@
-import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { appConnections } from "@/lib/db/schema";
-import { AppConnectionStatus } from "@/lib/types/app-connection";
+import { NextResponse } from "next/server";
 import { normalizePieceName } from "@/lib/activepieces/installed-pieces";
-import {
-	ensurePieceMcpServer,
-	serviceNameForPiece,
-} from "@/lib/k8s/piece-mcp-provisioner";
+import { getSession } from "@/lib/auth-helpers";
+import { db } from "@/lib/db";
+import { upsertPieceMcpConnection } from "@/lib/db/mcp-connections";
+import { appConnections } from "@/lib/db/schema";
+import { ensurePieceServer } from "@/lib/mcp-runtime/service";
+import { getUserProjectRole } from "@/lib/project-service";
+import { AppConnectionStatus } from "@/lib/types/app-connection";
 
 type ProvisionResult = {
 	pieceName: string;
-	serviceName: string;
-	action: "created" | "already_exists" | "error";
+	action: "enabled" | "error";
+	serverUrl: string | null;
 	error?: string;
 };
+
+function canWrite(role: string) {
+	return role === "ADMIN" || role === "EDITOR";
+}
 
 /**
  * POST /api/mcp-chat/servers/provision
  *
- * Provision piece-mcp-servers for pieces with active connections.
- * Body: { pieceName?: string }  — omit for bulk (all active connections)
+ * Enable managed MCP connections for one piece or all pieces with active
+ * app connections in the current project.
  */
 export async function POST(request: Request) {
 	try {
+		const session = await getSession(request);
+		if (!session?.user) {
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
+		const role = await getUserProjectRole(
+			session.user.id,
+			session.user.projectId,
+		);
+		if (!(role && canWrite(role))) {
+			return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+		}
+
 		const body = (await request.json().catch(() => ({}))) as {
 			pieceName?: string;
 		};
 
-		type PieceToProvision = {
-			pieceName: string;
-			externalId?: string;
-		};
+		const pieces = body.pieceName
+			? [normalizePieceName(body.pieceName)]
+			: (
+					await db
+						.selectDistinct({ pieceName: appConnections.pieceName })
+						.from(appConnections)
+						.where(eq(appConnections.status, AppConnectionStatus.ACTIVE))
+				).map((row) => normalizePieceName(row.pieceName));
 
-		let pieces: PieceToProvision[];
-
-		if (body.pieceName) {
-			// Single piece: look up its connection externalId
-			const conn = await db
-				.select({
-					pieceName: appConnections.pieceName,
-					externalId: appConnections.externalId,
-				})
-				.from(appConnections)
-				.where(eq(appConnections.pieceName, body.pieceName))
-				.limit(1);
-
-			pieces = [
-				{
-					pieceName: body.pieceName,
-					externalId: conn[0]?.externalId,
-				},
-			];
-		} else {
-			// Bulk: find all distinct piece names with active connections
-			const connections = await db
-				.select({
-					pieceName: appConnections.pieceName,
-					externalId: appConnections.externalId,
-				})
-				.from(appConnections)
-				.where(eq(appConnections.status, AppConnectionStatus.ACTIVE));
-
-			// Deduplicate by pieceName (take first connection's externalId)
-			const seen = new Map<string, string | undefined>();
-			for (const c of connections) {
-				if (!seen.has(c.pieceName)) {
-					seen.set(c.pieceName, c.externalId);
-				}
+		const results: ProvisionResult[] = [];
+		for (const pieceName of pieces) {
+			try {
+				const ensured = await ensurePieceServer({ pieceName });
+				await upsertPieceMcpConnection({
+					projectId: session.user.projectId,
+					pieceName,
+					displayName: pieceName,
+					status: ensured.server?.healthy ? "ENABLED" : "ERROR",
+					serverUrl: ensured.server?.url ?? null,
+					registryRef: ensured.server?.registryRef ?? null,
+					lastError: ensured.server?.healthy
+						? null
+						: (ensured.error ?? "Server unavailable"),
+					metadata: ensured.server
+						? {
+								provider: ensured.server.provider,
+								serviceName: ensured.server.serviceName,
+							}
+						: null,
+					actorUserId: session.user.id,
+				});
+				results.push({
+					pieceName,
+					action: ensured.server?.healthy ? "enabled" : "error",
+					serverUrl: ensured.server?.url ?? null,
+					error: ensured.server?.healthy ? undefined : ensured.error,
+				});
+			} catch (error) {
+				results.push({
+					pieceName,
+					action: "error",
+					serverUrl: null,
+					error: error instanceof Error ? error.message : "Unknown error",
+				});
 			}
-			pieces = Array.from(seen.entries()).map(([pieceName, externalId]) => ({
-				pieceName,
-				externalId,
-			}));
 		}
-
-		const results: ProvisionResult[] = await Promise.all(
-			pieces.map(async (p): Promise<ProvisionResult> => {
-				const normalized = normalizePieceName(p.pieceName);
-				const serviceName = serviceNameForPiece(p.pieceName);
-
-				try {
-					const { created } = await ensurePieceMcpServer(
-						p.pieceName,
-						p.externalId,
-					);
-					return {
-						pieceName: normalized,
-						serviceName,
-						action: created ? "created" : "already_exists",
-					};
-				} catch (err) {
-					return {
-						pieceName: normalized,
-						serviceName,
-						action: "error",
-						error: err instanceof Error ? err.message : "Unknown error",
-					};
-				}
-			}),
-		);
 
 		return NextResponse.json({ results });
 	} catch (error) {

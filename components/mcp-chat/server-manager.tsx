@@ -1,11 +1,10 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useAtom } from "jotai";
 import {
 	mcpServersAtom,
-	addServer,
-	removeServer,
+	setServersFromManaged,
 	toggleServer,
 	updateServerStatus,
 } from "@/lib/mcp-chat/mcp-servers-store";
@@ -20,137 +19,217 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { Server, Trash2, Plus, Loader2, Search } from "lucide-react";
+import {
+	Server,
+	Trash2,
+	Plus,
+	Loader2,
+	RefreshCw,
+	Wrench,
+	CloudCog,
+} from "lucide-react";
+import { api } from "@/lib/api-client";
+import { McpConnectionSourceType } from "@/lib/types/mcp-connection";
 
 type DiscoveredServer = {
+	id: string;
 	name: string;
 	pieceName: string;
 	url: string;
-	connectionExternalId: string;
 	healthy: boolean;
+	enabled: boolean;
 	toolCount: number;
 	toolNames: string[];
+	status: string;
 };
 
 export function ServerManager() {
 	const [servers, setServers] = useAtom(mcpServersAtom);
 	const [url, setUrl] = useState("");
 	const [name, setName] = useState("");
-	const [testing, setTesting] = useState(false);
-	const [addError, setAddError] = useState<string | null>(null);
-	const [discovering, setDiscovering] = useState(false);
-	const [discovered, setDiscovered] = useState<DiscoveredServer[]>([]);
-	const [discoverError, setDiscoverError] = useState<string | null>(null);
+	const [loading, setLoading] = useState(false);
+	const [catalogLoading, setCatalogLoading] = useState(false);
+	const [catalogError, setCatalogError] = useState<string | null>(null);
+	const [serverError, setServerError] = useState<string | null>(null);
+	const [catalog, setCatalog] = useState<
+		Array<{
+			pieceName: string;
+			displayName: string;
+			activeConnectionCount: number;
+			enabled: boolean;
+		}>
+	>([]);
+	const [busyId, setBusyId] = useState<string | null>(null);
 
-	const handleAdd = useCallback(async () => {
-		const trimmedUrl = url.trim();
-		const trimmedName = name.trim() || new URL(trimmedUrl).hostname;
-
-		if (!trimmedUrl) return;
-
-		setTesting(true);
-		setAddError(null);
-
-		const id = addServer(setServers, {
-			name: trimmedName,
-			url: trimmedUrl,
-		});
-
-		updateServerStatus(setServers, id, "connecting");
-
-		try {
-			const res = await fetch("/api/mcp-chat/servers/test", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ url: trimmedUrl }),
-			});
-
-			const data = await res.json();
-
-			if (!res.ok) {
-				updateServerStatus(setServers, id, "error", {
-					error: data.error || "Connection failed",
-				});
-				setAddError(data.error || "Connection failed");
-			} else {
-				updateServerStatus(setServers, id, "connected", {
-					toolCount: data.tools.length,
-					tools: data.tools,
-				});
-				setUrl("");
-				setName("");
-			}
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : "Connection failed";
-			updateServerStatus(setServers, id, "error", { error: msg });
-			setAddError(msg);
-		} finally {
-			setTesting(false);
-		}
-	}, [url, name, setServers]);
-
-	const handleDiscover = useCallback(async () => {
-		setDiscovering(true);
-		setDiscoverError(null);
-		setDiscovered([]);
-
+	const refreshManagedServers = useCallback(async () => {
+		setLoading(true);
+		setServerError(null);
 		try {
 			const res = await fetch("/api/mcp-chat/servers/discover");
-			const data = await res.json();
-
+			const data = (await res.json()) as {
+				servers: DiscoveredServer[];
+				error?: string;
+			};
 			if (!res.ok) {
-				setDiscoverError(data.error || "Discovery failed");
-				return;
+				throw new Error(data.error || "Failed to discover servers");
 			}
 
-			// Filter out servers already added
-			const existingUrls = new Set(servers.map((s) => s.url));
-			const newServers = (data.servers as DiscoveredServer[]).filter(
-				(s) => !existingUrls.has(s.url),
+			setServersFromManaged(
+				setServers,
+				data.servers.map((server) => ({
+					connectionId: server.id,
+					name: server.name,
+					url: server.url,
+					toolCount: server.toolCount,
+					toolNames: server.toolNames,
+					enabled: server.enabled && Boolean(server.url),
+				})),
 			);
-			setDiscovered(newServers);
-		} catch (err) {
-			setDiscoverError(
-				err instanceof Error ? err.message : "Discovery failed",
+		} catch (error) {
+			setServerError(
+				error instanceof Error ? error.message : "Failed to load MCP servers",
 			);
 		} finally {
-			setDiscovering(false);
+			setLoading(false);
 		}
-	}, [servers]);
+	}, [setServers]);
 
-	const handleAddDiscovered = useCallback(
-		(server: DiscoveredServer) => {
-			const id = addServer(setServers, {
-				name: server.name,
-				url: server.url,
-			});
-			updateServerStatus(setServers, id, "connected", {
-				toolCount: server.toolCount,
-				tools: server.toolNames.map((n) => ({ name: n })),
-			});
-			setDiscovered((prev) => prev.filter((s) => s.url !== server.url));
+	const refreshCatalog = useCallback(async () => {
+		setCatalogLoading(true);
+		setCatalogError(null);
+		try {
+			const result = await api.mcpConnection.catalog();
+			setCatalog(
+				result.data
+					.filter((item) => !item.enabled && item.hasActiveConnections)
+					.map((item) => ({
+						pieceName: item.pieceName,
+						displayName: item.displayName,
+						activeConnectionCount: item.activeConnectionCount,
+						enabled: item.enabled,
+					})),
+			);
+		} catch (error) {
+			setCatalogError(
+				error instanceof Error ? error.message : "Failed to load catalog",
+			);
+		} finally {
+			setCatalogLoading(false);
+		}
+	}, []);
+
+	const refreshAll = useCallback(async () => {
+		await Promise.all([refreshManagedServers(), refreshCatalog()]);
+	}, [refreshManagedServers, refreshCatalog]);
+
+	const handleEnablePiece = useCallback(
+		async (pieceName: string) => {
+			try {
+				setBusyId(`enable:${pieceName}`);
+				await api.mcpConnection.create({
+					sourceType: McpConnectionSourceType.NIMBLE_PIECE,
+					pieceName,
+				});
+				await refreshAll();
+			} catch (error) {
+				setCatalogError(
+					error instanceof Error ? error.message : "Failed to enable piece MCP",
+				);
+			} finally {
+				setBusyId(null);
+			}
 		},
-		[setServers],
+		[refreshAll],
 	);
 
+	const handleAddCustom = useCallback(async () => {
+		const trimmedUrl = url.trim();
+		const trimmedName = name.trim();
+		if (!(trimmedUrl && trimmedName)) {
+			return;
+		}
+
+		try {
+			setBusyId("add-custom");
+			await api.mcpConnection.create({
+				sourceType: McpConnectionSourceType.CUSTOM_URL,
+				displayName: trimmedName,
+				serverUrl: trimmedUrl,
+			});
+			setUrl("");
+			setName("");
+			await refreshManagedServers();
+		} catch (error) {
+			setServerError(
+				error instanceof Error ? error.message : "Failed to add custom server",
+			);
+		} finally {
+			setBusyId(null);
+		}
+	}, [name, refreshManagedServers, url]);
+
 	const handleRemove = useCallback(
-		(id: string) => {
-			removeServer(setServers, id);
+		async (id: string) => {
+			try {
+				setBusyId(id);
+				await api.mcpConnection.delete(id);
+				await refreshAll();
+			} catch (error) {
+				setServerError(
+					error instanceof Error ? error.message : "Failed to remove server",
+				);
+			} finally {
+				setBusyId(null);
+			}
 		},
-		[setServers],
+		[refreshAll],
 	);
 
 	const handleToggle = useCallback(
-		(id: string) => {
+		async (id: string, enabled: boolean) => {
 			toggleServer(setServers, id);
+			try {
+				await api.mcpConnection.setStatus(id, enabled ? "DISABLED" : "ENABLED");
+				await refreshAll();
+			} catch (error) {
+				updateServerStatus(setServers, id, "error", {
+					error:
+						error instanceof Error
+							? error.message
+							: "Failed to update server status",
+				});
+			}
 		},
-		[setServers],
+		[refreshAll, setServers],
+	);
+
+	const handleSync = useCallback(
+		async (id: string) => {
+			try {
+				setBusyId(id);
+				await api.mcpConnection.sync(id);
+				await refreshAll();
+			} catch (error) {
+				setServerError(
+					error instanceof Error ? error.message : "Failed to sync",
+				);
+			} finally {
+				setBusyId(null);
+			}
+		},
+		[refreshAll],
 	);
 
 	const enabledCount = servers.filter((s) => s.enabled).length;
 
 	return (
-		<Sheet>
+		<Sheet
+			onOpenChange={(open) => {
+				if (open) {
+					void refreshAll();
+				}
+			}}
+		>
 			<SheetTrigger asChild>
 				<Button variant="outline" size="sm" className="gap-1.5 text-xs">
 					<Server className="h-3.5 w-3.5" />
@@ -165,134 +244,127 @@ export function ServerManager() {
 					)}
 				</Button>
 			</SheetTrigger>
-			<SheetContent className="w-[400px] sm:w-[440px]">
+			<SheetContent className="w-[420px] sm:w-[460px]">
 				<SheetHeader>
 					<SheetTitle>MCP Servers</SheetTitle>
 				</SheetHeader>
 
 				<div className="mt-6 space-y-6">
-					{/* Discover Piece Servers */}
+					<div className="flex items-center justify-end">
+						<Button
+							variant="outline"
+							size="sm"
+							className="gap-1.5 text-xs"
+							onClick={() => void refreshAll()}
+							disabled={loading || catalogLoading}
+						>
+							{loading || catalogLoading ? (
+								<Loader2 className="h-3 w-3 animate-spin" />
+							) : (
+								<RefreshCw className="h-3 w-3" />
+							)}
+							Refresh
+						</Button>
+					</div>
+
 					<div className="space-y-3">
-						<div className="flex items-center justify-between">
-							<h3 className="text-sm font-medium">Piece Servers</h3>
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={handleDiscover}
-								disabled={discovering}
-								className="gap-1.5 text-xs"
-							>
-								{discovering ? (
-									<Loader2 className="h-3 w-3 animate-spin" />
-								) : (
-									<Search className="h-3 w-3" />
-								)}
-								{discovering ? "Scanning..." : "Discover"}
-							</Button>
+						<div className="flex items-center gap-2">
+							<CloudCog className="h-4 w-4 text-muted-foreground" />
+							<h3 className="text-sm font-medium">Enable Piece MCP</h3>
 						</div>
-						{discoverError && (
-							<p className="text-xs text-destructive">{discoverError}</p>
+						{catalogError && (
+							<p className="text-xs text-destructive">{catalogError}</p>
 						)}
-						{discovered.length > 0 && (
+						{catalogLoading ? (
+							<p className="text-xs text-muted-foreground">
+								Loading catalog...
+							</p>
+						) : catalog.length === 0 ? (
+							<p className="text-xs text-muted-foreground">
+								No additional pieces with active app connections to enable.
+							</p>
+						) : (
 							<div className="space-y-2">
-								{discovered.map((server) => (
+								{catalog.slice(0, 10).map((item) => (
 									<div
-										key={server.url}
-										className="flex items-center justify-between rounded-lg border border-dashed bg-muted/50 p-2.5"
+										key={item.pieceName}
+										className="flex items-center justify-between rounded-lg border border-dashed bg-muted/40 p-2.5"
 									>
 										<div className="min-w-0 flex-1">
-											<div className="flex items-center gap-2">
-												<span className="h-2 w-2 shrink-0 rounded-full bg-green-500" />
-												<span className="text-sm font-medium truncate">
-													{server.name}
-												</span>
-												<Badge
-													variant="secondary"
-													className="shrink-0 px-1.5 py-0 text-[10px]"
-												>
-													{server.toolCount} tools
-												</Badge>
+											<div className="truncate text-sm font-medium">
+												{item.displayName}
+											</div>
+											<div className="text-xs text-muted-foreground">
+												{item.activeConnectionCount} active connection
+												{item.activeConnectionCount === 1 ? "" : "s"}
 											</div>
 										</div>
 										<Button
 											size="sm"
 											variant="outline"
-											onClick={() => handleAddDiscovered(server)}
+											onClick={() => void handleEnablePiece(item.pieceName)}
+											disabled={busyId === `enable:${item.pieceName}`}
 											className="ml-2 gap-1 text-xs"
 										>
 											<Plus className="h-3 w-3" />
-											Add
+											Enable
 										</Button>
 									</div>
 								))}
 							</div>
 						)}
-						{!discovering &&
-							discovered.length === 0 &&
-							discoverError === null && (
-								<p className="text-xs text-muted-foreground">
-									Click Discover to find piece MCP servers with active
-									connections.
-								</p>
-							)}
 					</div>
 
-					{/* Manual Add Server Form */}
 					<div className="space-y-3">
-						<h3 className="text-sm font-medium">Add Custom Server</h3>
-						<div className="space-y-2">
-							<Input
-								placeholder="Server URL (e.g. http://localhost:3001/mcp)"
-								value={url}
-								onChange={(e) => {
-									setUrl(e.target.value);
-									setAddError(null);
-								}}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && url.trim()) handleAdd();
-								}}
-							/>
-							<Input
-								placeholder="Display name (optional)"
-								value={name}
-								onChange={(e) => setName(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && url.trim()) handleAdd();
-								}}
-							/>
+						<div className="flex items-center gap-2">
+							<Wrench className="h-4 w-4 text-muted-foreground" />
+							<h3 className="text-sm font-medium">Add Custom Server</h3>
 						</div>
+						<Input
+							placeholder="Display name"
+							value={name}
+							onChange={(e) => setName(e.target.value)}
+						/>
+						<Input
+							placeholder="Server URL (e.g. http://svc:3100/mcp)"
+							value={url}
+							onChange={(e) => setUrl(e.target.value)}
+						/>
 						<Button
-							onClick={handleAdd}
-							disabled={!url.trim() || testing}
+							onClick={() => void handleAddCustom()}
+							disabled={busyId === "add-custom" || !(name.trim() && url.trim())}
 							size="sm"
 							className="w-full gap-1.5"
 						>
-							{testing ? (
+							{busyId === "add-custom" ? (
 								<Loader2 className="h-3.5 w-3.5 animate-spin" />
 							) : (
 								<Plus className="h-3.5 w-3.5" />
 							)}
-							{testing ? "Connecting..." : "Add Server"}
+							Add Server
 						</Button>
-						{addError && <p className="text-xs text-destructive">{addError}</p>}
+						{serverError && (
+							<p className="text-xs text-destructive">{serverError}</p>
+						)}
 					</div>
 
-					{/* Server List */}
-					{servers.length === 0 ? (
-						<div className="py-8 text-center text-sm text-muted-foreground">
-							No MCP servers configured.
-							<br />
-							Add one above or discover piece servers.
-						</div>
-					) : (
-						<div className="space-y-3">
-							<h3 className="text-sm font-medium">
-								Active Servers ({servers.length})
-							</h3>
-							{servers.map((server) => (
+					<div className="space-y-3">
+						<h3 className="text-sm font-medium">
+							Managed Servers ({servers.length})
+						</h3>
+						{loading ? (
+							<p className="text-xs text-muted-foreground">
+								Loading servers...
+							</p>
+						) : servers.length === 0 ? (
+							<div className="py-6 text-center text-sm text-muted-foreground">
+								No MCP servers enabled.
+							</div>
+						) : (
+							servers.map((server) => (
 								<div
 									key={server.id}
-									className="rounded-lg border bg-card p-3 space-y-2"
+									className="space-y-2 rounded-lg border p-3"
 								>
 									<div className="flex items-start justify-between gap-2">
 										<div className="min-w-0 flex-1">
@@ -308,7 +380,7 @@ export function ServerManager() {
 																	: "bg-gray-400"
 													}`}
 												/>
-												<span className="text-sm font-medium truncate">
+												<span className="truncate text-sm font-medium">
 													{server.name}
 												</span>
 												{server.toolCount > 0 && (
@@ -317,38 +389,50 @@ export function ServerManager() {
 														className="shrink-0 px-1.5 py-0 text-[10px]"
 													>
 														{server.toolCount} tool
-														{server.toolCount !== 1 ? "s" : ""}
+														{server.toolCount === 1 ? "" : "s"}
 													</Badge>
 												)}
 											</div>
-											<p className="mt-0.5 truncate text-xs text-muted-foreground pl-4">
+											<p className="mt-0.5 truncate pl-4 text-xs text-muted-foreground">
 												{server.url}
 											</p>
 										</div>
-										<div className="flex items-center gap-1.5 shrink-0">
+										<div className="flex shrink-0 items-center gap-1">
 											<Switch
 												checked={server.enabled}
-												onCheckedChange={() => handleToggle(server.id)}
+												onCheckedChange={() =>
+													void handleToggle(server.id, server.enabled)
+												}
 											/>
 											<Button
 												variant="ghost"
 												size="icon"
+												className="h-7 w-7"
+												disabled={busyId === server.id}
+												onClick={() => void handleSync(server.id)}
+											>
+												<RefreshCw className="h-3.5 w-3.5" />
+											</Button>
+											<Button
+												variant="ghost"
+												size="icon"
 												className="h-7 w-7 text-muted-foreground hover:text-destructive"
-												onClick={() => handleRemove(server.id)}
+												disabled={busyId === server.id}
+												onClick={() => void handleRemove(server.id)}
 											>
 												<Trash2 className="h-3.5 w-3.5" />
 											</Button>
 										</div>
 									</div>
 									{server.error && (
-										<p className="text-xs text-destructive pl-4">
+										<p className="pl-4 text-xs text-destructive">
 											{server.error}
 										</p>
 									)}
 								</div>
-							))}
-						</div>
-					)}
+							))
+						)}
+					</div>
 				</div>
 			</SheetContent>
 		</Sheet>

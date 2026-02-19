@@ -21,6 +21,9 @@ import {
 } from "@/lib/types/app-connection";
 import { ensurePieceMcpServer } from "@/lib/k8s/piece-mcp-provisioner";
 
+const ENABLE_LEGACY_MCP_AUTO_PROVISION =
+	process.env.MCP_AUTO_PROVISION_ON_CONNECTION_CREATE === "true";
+
 function isUpsertBody(value: unknown): value is UpsertAppConnectionRequestBody {
 	if (typeof value !== "object" || value === null) {
 		return false;
@@ -249,15 +252,19 @@ export async function POST(request: Request) {
 			upsertPayload,
 		);
 
-		// Fire-and-forget: auto-deploy piece-mcp-server for MCP Chat
-		ensurePieceMcpServer(upsertPayload.pieceName, upsertPayload.externalId).catch(
-			(err) => {
+		// Legacy-only behavior: keep disabled by default to avoid mixing
+		// workflow app connections with project-managed MCP connection lifecycle.
+		if (ENABLE_LEGACY_MCP_AUTO_PROVISION) {
+			ensurePieceMcpServer(
+				upsertPayload.pieceName,
+				upsertPayload.externalId,
+			).catch((err) => {
 				console.error(
 					`[auto-provision] Failed for ${upsertPayload.pieceName}:`,
 					err.message,
 				);
-			},
-		);
+			});
+		}
 
 		return NextResponse.json(removeSensitiveData(connection), { status: 201 });
 	} catch (error) {

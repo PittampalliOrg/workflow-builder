@@ -7,6 +7,7 @@ export type McpServerConfig = {
 	name: string;
 	url: string;
 	enabled: boolean;
+	connectionId?: string;
 };
 
 export type McpServerState = McpServerConfig & {
@@ -31,7 +32,9 @@ function loadFromStorage(): McpServerState[] {
 		const configs: StoredServerConfig[] = JSON.parse(raw);
 		return configs.map((c) => ({
 			...c,
-			status: (c.toolCount ? "connected" : "disconnected") as McpServerState["status"],
+			status: (c.toolCount
+				? "connected"
+				: "disconnected") as McpServerState["status"],
 			toolCount: c.toolCount ?? 0,
 			tools: c.tools ?? [],
 		}));
@@ -95,12 +98,57 @@ export function addServer(
 			name: config.name,
 			url: config.url,
 			enabled: true,
+			connectionId: undefined,
 			status: "disconnected",
 			toolCount: 0,
 			tools: [],
 		},
 	]);
 	return id;
+}
+
+export type ManagedServerInput = {
+	connectionId: string;
+	name: string;
+	url: string;
+	toolCount?: number;
+	toolNames?: string[];
+	enabled?: boolean;
+};
+
+export function setServersFromManaged(
+	setter: (update: (prev: McpServerState[]) => McpServerState[]) => void,
+	managed: ManagedServerInput[],
+) {
+	setter((prev) => {
+		const prevByConnectionId = new Map(
+			prev
+				.filter((row) => row.connectionId)
+				.map((row) => [row.connectionId as string, row]),
+		);
+
+		return managed.map((item) => {
+			const existing = prevByConnectionId.get(item.connectionId);
+			const toolNames = item.toolNames ?? [];
+			return {
+				id: item.connectionId,
+				connectionId: item.connectionId,
+				name: item.name,
+				url: item.url,
+				enabled: item.enabled ?? existing?.enabled ?? true,
+				status:
+					toolNames.length > 0 || (item.toolCount ?? 0) > 0
+						? "connected"
+						: (existing?.status ?? "disconnected"),
+				toolCount: item.toolCount ?? existing?.toolCount ?? 0,
+				tools:
+					toolNames.length > 0
+						? toolNames.map((name) => ({ name }))
+						: (existing?.tools ?? []),
+				error: existing?.error,
+			} satisfies McpServerState;
+		});
+	});
 }
 
 // Helper: remove a server

@@ -2,8 +2,10 @@
 
 import { formatDistanceToNow } from "date-fns";
 import { Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import { McpConnectionsPanel } from "@/components/connections/mcp-connections-panel";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -42,6 +44,7 @@ import {
 	loadOAuth2Result,
 } from "@/lib/app-connections/oauth2-resume-client";
 import { AppConnectionType } from "@/lib/types/app-connection";
+import { cn } from "@/lib/utils";
 
 function getStatusBadge(status: string) {
 	switch (status) {
@@ -75,6 +78,7 @@ function getPieceDisplayName(pieceName: string): string {
 
 export default function ConnectionsPage() {
 	const { open } = useOverlay();
+	const [activeTab, setActiveTab] = useState<"app" | "mcp">("app");
 	const [connections, setConnections] = useState<AppConnection[]>([]);
 	const [loading, setLoading] = useState(true);
 	const [deleteTarget, setDeleteTarget] = useState<AppConnection | null>(null);
@@ -240,114 +244,159 @@ export default function ConnectionsPage() {
 				<div>
 					<h1 className="font-semibold text-2xl">Connections</h1>
 					<p className="text-muted-foreground text-sm">
-						Manage your app connections and credentials
+						{activeTab === "app"
+							? "Manage workflow app connections and credentials"
+							: "Manage project MCP connections for agents and MCP Chat"}
 					</p>
 				</div>
-				<Button onClick={handleAddConnection}>
-					<Plus className="mr-2 size-4" />
-					New Connection
-				</Button>
+				{activeTab === "app" ? (
+					<Button onClick={handleAddConnection}>
+						<Plus className="mr-2 size-4" />
+						New Connection
+					</Button>
+				) : (
+					<Button asChild variant="outline">
+						<Link href="/settings/mcp-connections">Open MCP Settings</Link>
+					</Button>
+				)}
 			</div>
 
-			{loading ? (
-				<div className="py-12 text-center text-muted-foreground text-sm">
-					Loading connections...
-				</div>
-			) : connections.length === 0 ? (
-				<div className="py-12 text-center">
-					<p className="text-muted-foreground text-sm">
-						No connections yet. Add one to get started.
-					</p>
-				</div>
-			) : (
-				<div className="rounded-md border">
-					<Table>
-						<TableHeader>
-							<TableRow>
-								<TableHead>App</TableHead>
-								<TableHead>Name</TableHead>
-								<TableHead>Status</TableHead>
-								<TableHead>Updated</TableHead>
-								<TableHead className="w-[120px]" />
-							</TableRow>
-						</TableHeader>
-						<TableBody>
-							{connections.map((conn) => (
-								<TableRow key={conn.id}>
-									<TableCell>
-										<div className="flex items-center gap-2">
-											<IntegrationIcon
-												className="size-5 shrink-0"
-												integration={conn.pieceName}
-												logoUrl={pieceLogos.get(conn.pieceName)}
-											/>
-											<span className="text-sm">
-												{getPieceDisplayName(conn.pieceName)}
-											</span>
-										</div>
-									</TableCell>
-									<TableCell className="font-medium">
-										{conn.displayName}
-									</TableCell>
-									<TableCell>{getStatusBadge(conn.status)}</TableCell>
-									<TableCell className="text-muted-foreground text-sm">
-										{conn.updatedAt
-											? formatDistanceToNow(new Date(conn.updatedAt), {
-													addSuffix: true,
-												})
-											: "—"}
-									</TableCell>
-									<TableCell>
-										<TooltipProvider delayDuration={300}>
-											<div className="flex items-center gap-1">
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															onClick={() => setRenameTarget(conn)}
-															size="icon"
-															variant="ghost"
-														>
-															<Pencil className="size-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Rename</TooltipContent>
-												</Tooltip>
+			<div className="mb-4 flex items-center gap-2">
+				<button
+					className={cn(
+						"rounded-md px-3 py-1.5 text-sm",
+						activeTab === "app"
+							? "bg-muted text-foreground"
+							: "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+					)}
+					onClick={() => setActiveTab("app")}
+					type="button"
+				>
+					App Connections
+				</button>
+				<button
+					className={cn(
+						"rounded-md px-3 py-1.5 text-sm",
+						activeTab === "mcp"
+							? "bg-muted text-foreground"
+							: "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+					)}
+					onClick={() => setActiveTab("mcp")}
+					type="button"
+				>
+					MCP Connections
+				</button>
+			</div>
 
-												{isOAuth2Connection(conn) && (
+			{activeTab === "app" ? (
+				loading ? (
+					<div className="py-12 text-center text-muted-foreground text-sm">
+						Loading connections...
+					</div>
+				) : connections.length === 0 ? (
+					<div className="py-12 text-center">
+						<p className="text-muted-foreground text-sm">
+							No connections yet. Add one to get started.
+						</p>
+					</div>
+				) : (
+					<div className="rounded-md border">
+						<Table>
+							<TableHeader>
+								<TableRow>
+									<TableHead>App</TableHead>
+									<TableHead>Name</TableHead>
+									<TableHead>Status</TableHead>
+									<TableHead>Updated</TableHead>
+									<TableHead className="w-[120px]" />
+								</TableRow>
+							</TableHeader>
+							<TableBody>
+								{connections.map((conn) => (
+									<TableRow key={conn.id}>
+										<TableCell>
+											<div className="flex items-center gap-2">
+												<IntegrationIcon
+													className="size-5 shrink-0"
+													integration={conn.pieceName}
+													logoUrl={pieceLogos.get(conn.pieceName)}
+												/>
+												<span className="text-sm">
+													{getPieceDisplayName(conn.pieceName)}
+												</span>
+											</div>
+										</TableCell>
+										<TableCell className="font-medium">
+											{conn.displayName}
+										</TableCell>
+										<TableCell>{getStatusBadge(conn.status)}</TableCell>
+										<TableCell className="text-muted-foreground text-sm">
+											{conn.updatedAt
+												? formatDistanceToNow(new Date(conn.updatedAt), {
+														addSuffix: true,
+													})
+												: "—"}
+										</TableCell>
+										<TableCell>
+											<TooltipProvider delayDuration={300}>
+												<div className="flex items-center gap-1">
 													<Tooltip>
 														<TooltipTrigger asChild>
 															<Button
-																onClick={() => handleReconnect(conn)}
+																onClick={() => setRenameTarget(conn)}
 																size="icon"
 																variant="ghost"
 															>
-																<RefreshCw className="size-4" />
+																<Pencil className="size-4" />
 															</Button>
 														</TooltipTrigger>
-														<TooltipContent>Reconnect</TooltipContent>
+														<TooltipContent>Rename</TooltipContent>
 													</Tooltip>
-												)}
 
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															className="text-destructive hover:text-destructive"
-															onClick={() => setDeleteTarget(conn)}
-															size="icon"
-															variant="ghost"
-														>
-															<Trash2 className="size-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Delete</TooltipContent>
-												</Tooltip>
-											</div>
-										</TooltipProvider>
-									</TableCell>
-								</TableRow>
-							))}
-						</TableBody>
-					</Table>
+													{isOAuth2Connection(conn) && (
+														<Tooltip>
+															<TooltipTrigger asChild>
+																<Button
+																	onClick={() => handleReconnect(conn)}
+																	size="icon"
+																	variant="ghost"
+																>
+																	<RefreshCw className="size-4" />
+																</Button>
+															</TooltipTrigger>
+															<TooltipContent>Reconnect</TooltipContent>
+														</Tooltip>
+													)}
+
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																className="text-destructive hover:text-destructive"
+																onClick={() => setDeleteTarget(conn)}
+																size="icon"
+																variant="ghost"
+															>
+																<Trash2 className="size-4" />
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent>Delete</TooltipContent>
+													</Tooltip>
+												</div>
+											</TooltipProvider>
+										</TableCell>
+									</TableRow>
+								))}
+							</TableBody>
+						</Table>
+					</div>
+				)
+			) : (
+				<div className="space-y-3">
+					<p className="text-muted-foreground text-sm">
+						MCP connections are managed at the project level and shared across
+						agents and MCP Chat.
+					</p>
+					<McpConnectionsPanel />
 				</div>
 			)}
 

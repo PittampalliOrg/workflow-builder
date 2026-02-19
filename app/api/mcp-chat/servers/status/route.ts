@@ -1,59 +1,43 @@
 import { NextResponse } from "next/server";
-import { eq, sql } from "drizzle-orm";
-import { db } from "@/lib/db";
-import { appConnections } from "@/lib/db/schema";
-import { AppConnectionStatus } from "@/lib/types/app-connection";
-import { normalizePieceName } from "@/lib/activepieces/installed-pieces";
-import { listManagedServers } from "@/lib/k8s/piece-mcp-provisioner";
+import { getSession } from "@/lib/auth-helpers";
+import { listMcpConnections } from "@/lib/db/mcp-connections";
+import { getUserProjectRole } from "@/lib/project-service";
 
 /**
  * GET /api/mcp-chat/servers/status
  *
- * List all managed piece-mcp-servers and their readiness,
- * plus any pieces with active connections that lack a server.
+ * Lists project-scoped MCP connection records and their statuses.
  */
-export async function GET() {
+export async function GET(request: Request) {
 	try {
-		// Get all managed servers from K8s
-		const servers = await listManagedServers();
+		const session = await getSession(request);
+		if (!session?.user) {
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
 
-		// Get all pieces with active connections and their count
-		const activeConnections = await db
-			.select({
-				pieceName: appConnections.pieceName,
-				count: sql<number>`count(*)::int`,
-			})
-			.from(appConnections)
-			.where(eq(appConnections.status, AppConnectionStatus.ACTIVE))
-			.groupBy(appConnections.pieceName);
-
-		const provisionedPieces = new Set(servers.map((s) => s.pieceName));
-
-		// Find pieces with active connections but no server
-		const unprovisioned = activeConnections
-			.filter((c) => !provisionedPieces.has(normalizePieceName(c.pieceName)))
-			.map((c) => ({
-				pieceName: normalizePieceName(c.pieceName),
-				activeConnections: c.count,
-			}));
-
-		// Enrich server info with connection counts
-		const connectionCountByPiece = new Map(
-			activeConnections.map((c) => [
-				normalizePieceName(c.pieceName),
-				c.count,
-			]),
+		const role = await getUserProjectRole(
+			session.user.id,
+			session.user.projectId,
 		);
+		if (!role) {
+			return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+		}
 
-		const enrichedServers = servers.map((s) => ({
-			...s,
-			hasActiveConnection: connectionCountByPiece.has(s.pieceName),
-			activeConnections: connectionCountByPiece.get(s.pieceName) ?? 0,
-		}));
-
+		const rows = await listMcpConnections({
+			projectId: session.user.projectId,
+		});
 		return NextResponse.json({
-			servers: enrichedServers,
-			unprovisioned,
+			servers: rows.map((row) => ({
+				id: row.id,
+				name: row.displayName,
+				pieceName: row.pieceName,
+				url: row.serverUrl,
+				status: row.status,
+				sourceType: row.sourceType,
+				lastSyncAt: row.lastSyncAt?.toISOString() ?? null,
+				lastError: row.lastError,
+				metadata: row.metadata ?? null,
+			})),
 		});
 	} catch (error) {
 		console.error("[mcp-chat/servers/status] Error:", error);

@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
+import { getSession } from "@/lib/auth-helpers";
 import { discoverTools } from "@/lib/mcp-chat/mcp-client-manager";
 
 export async function POST(req: Request) {
 	try {
+		const session = await getSession(req);
+		if (!session?.user) {
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
 		const { url } = await req.json();
 
 		if (!url || typeof url !== "string") {
@@ -12,7 +18,7 @@ export async function POST(req: Request) {
 			);
 		}
 
-		const tools = await discoverTools(url, "test");
+		const tools = await discoverTools(url, "test", session.user.id);
 
 		return NextResponse.json({
 			tools: tools.map(({ name, description }) => ({ name, description })),

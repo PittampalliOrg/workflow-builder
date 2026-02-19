@@ -231,6 +231,54 @@ export const mcpRuns = pgTable(
 	}),
 );
 
+export type McpConnectionSourceType =
+	| "nimble_piece"
+	| "custom_url"
+	| "hosted_workflow";
+export type McpConnectionStatus = "ENABLED" | "DISABLED" | "ERROR";
+
+export const mcpConnections = pgTable(
+	"mcp_connection",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		sourceType: text("source_type").notNull().$type<McpConnectionSourceType>(),
+		pieceName: text("piece_name"),
+		displayName: text("display_name").notNull(),
+		registryRef: text("registry_ref"),
+		serverUrl: text("server_url"),
+		status: text("status")
+			.notNull()
+			.default("DISABLED")
+			.$type<McpConnectionStatus>(),
+		lastSyncAt: timestamp("last_sync_at"),
+		lastError: text("last_error"),
+		metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
+		createdBy: text("created_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		updatedBy: text("updated_by").references(() => users.id, {
+			onDelete: "set null",
+		}),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectIdx: index("idx_mcp_connection_project_id").on(table.projectId),
+		projectStatusIdx: index("idx_mcp_connection_project_status").on(
+			table.projectId,
+			table.status,
+		),
+		projectSourcePieceUnique: unique(
+			"uq_mcp_connection_project_source_piece",
+		).on(table.projectId, table.sourceType, table.pieceName),
+	}),
+);
+
 // Piece metadata cache imported from Activepieces
 export const pieceMetadata = pgTable(
 	"piece_metadata",
@@ -1537,6 +1585,8 @@ export type McpServer = typeof mcpServers.$inferSelect;
 export type NewMcpServer = typeof mcpServers.$inferInsert;
 export type McpRun = typeof mcpRuns.$inferSelect;
 export type NewMcpRun = typeof mcpRuns.$inferInsert;
+export type McpConnection = typeof mcpConnections.$inferSelect;
+export type NewMcpConnection = typeof mcpConnections.$inferInsert;
 export type PieceMetadata = typeof pieceMetadata.$inferSelect;
 export type NewPieceMetadata = typeof pieceMetadata.$inferInsert;
 export type AppConnectionRecord = typeof appConnections.$inferSelect;

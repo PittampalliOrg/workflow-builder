@@ -14,6 +14,7 @@ import {
 	mcpServerConfigsAtom,
 	enabledMcpServersAtom,
 	mcpServersAtom,
+	setServersFromManaged,
 	updateServerStatus,
 } from "@/lib/mcp-chat/mcp-servers-store";
 import { RotateCcw, Sparkles } from "lucide-react";
@@ -50,6 +51,38 @@ export default function McpChatPage() {
 	const scopesRef = useRef(scopes);
 	scopesRef.current = scopes;
 
+	// Preload managed project MCP servers.
+	useEffect(() => {
+		fetch("/api/mcp-chat/servers/discover")
+			.then((res) => res.json())
+			.then(
+				(data: {
+					servers?: Array<{
+						id: string;
+						name: string;
+						url: string;
+						enabled: boolean;
+						toolCount: number;
+						toolNames: string[];
+					}>;
+				}) => {
+					const servers = data.servers ?? [];
+					setServersFromManaged(
+						setServers,
+						servers.map((server) => ({
+							connectionId: server.id,
+							name: server.name,
+							url: server.url,
+							toolCount: server.toolCount,
+							toolNames: server.toolNames,
+							enabled: server.enabled && Boolean(server.url),
+						})),
+					);
+				},
+			)
+			.catch(() => {});
+	}, [setServers]);
+
 	// Auto-reconnect enabled servers that have no tools (e.g. after page reload)
 	useEffect(() => {
 		const stale = servers.filter((s) => s.enabled && s.toolCount === 0);
@@ -81,9 +114,7 @@ export default function McpChatPage() {
 					});
 				});
 		}
-		// Run only once on mount
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+	}, [servers, setServers]);
 
 	const handleAddScope = useCallback((scope: SlashCommandScope) => {
 		setScopes((prev) =>

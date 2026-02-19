@@ -20,6 +20,12 @@ import type {
 	ObservabilityTraceFilters,
 	ObservabilityTraceListResponse,
 } from "./types/observability";
+import type {
+	CreateMcpConnectionBody,
+	McpConnection,
+	McpConnectionCatalogItem,
+	McpConnectionStatus,
+} from "./types/mcp-connection";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -1354,6 +1360,55 @@ const mcpServerApi = {
 		),
 };
 
+const mcpConnectionApi = {
+	list: (query?: { projectId?: string; status?: McpConnectionStatus }) => {
+		const search = new URLSearchParams();
+		if (query?.projectId) {
+			search.set("projectId", query.projectId);
+		}
+		if (query?.status) {
+			search.set("status", query.status);
+		}
+		return apiCall<{ data: McpConnection[] }>(
+			`/api/mcp-connections${search.toString() ? `?${search.toString()}` : ""}`,
+		);
+	},
+
+	catalog: (query?: { projectId?: string }) => {
+		const search = new URLSearchParams();
+		if (query?.projectId) {
+			search.set("projectId", query.projectId);
+		}
+		return apiCall<{ data: McpConnectionCatalogItem[] }>(
+			`/api/mcp-connections/catalog${
+				search.toString() ? `?${search.toString()}` : ""
+			}`,
+		);
+	},
+
+	create: (body: CreateMcpConnectionBody) =>
+		apiCall<McpConnection>("/api/mcp-connections", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+
+	setStatus: (id: string, status: "ENABLED" | "DISABLED") =>
+		apiCall<McpConnection>(`/api/mcp-connections/${id}/status`, {
+			method: "POST",
+			body: JSON.stringify({ status }),
+		}),
+
+	sync: (id: string) =>
+		apiCall<McpConnection>(`/api/mcp-connections/${id}/sync`, {
+			method: "POST",
+		}),
+
+	delete: (id: string) =>
+		apiCall<{ success: boolean }>(`/api/mcp-connections/${id}`, {
+			method: "DELETE",
+		}),
+};
+
 // ── Resource Library API ─────────────────────────────────────
 
 export type ResourcePromptData = {
@@ -1762,6 +1817,7 @@ export const api = {
 	appConnection: appConnectionApi,
 	dapr: daprApi,
 	functions: functionsApi,
+	mcpConnection: mcpConnectionApi,
 	mcpServer: mcpServerApi,
 	observability: observabilityApi,
 	oauthApp: oauthAppApi,
