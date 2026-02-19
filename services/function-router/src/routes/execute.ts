@@ -302,6 +302,41 @@ function parseNumberInput(value: unknown): number | undefined {
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function parseDurableAgentConfig(
+	input: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+	return isPlainObject(input.agentConfig) ? input.agentConfig : undefined;
+}
+
+function parseDurableModelInput(
+	input: Record<string, unknown>,
+): string | undefined {
+	if (typeof input.model === "string" && input.model.trim()) {
+		return input.model.trim();
+	}
+
+	const agentConfig = parseDurableAgentConfig(input);
+	if (!agentConfig) return undefined;
+
+	if (
+		typeof agentConfig.modelSpec === "string" &&
+		agentConfig.modelSpec.trim()
+	) {
+		return agentConfig.modelSpec.trim();
+	}
+
+	if (!isPlainObject(agentConfig.model)) return undefined;
+	const provider =
+		typeof agentConfig.model.provider === "string"
+			? agentConfig.model.provider.trim()
+			: "";
+	const name =
+		typeof agentConfig.model.name === "string"
+			? agentConfig.model.name.trim()
+			: "";
+	return provider && name ? `${provider}/${name}` : undefined;
+}
+
 function buildStructuredStopCondition(
 	input: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
@@ -681,6 +716,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						let targetUrl: string;
 						let requestBody: string;
 						const loopPolicy = buildLoopPolicyInput(args);
+						const model = parseDurableModelInput(args);
+						const agentConfig = parseDurableAgentConfig(args);
 
 						if (isAgentRun) {
 							const mode =
@@ -692,7 +729,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									cwd: args.cwd ?? "",
+									model,
 									maxTurns: args.maxTurns,
+									timeoutMinutes: args.timeoutMinutes,
+									instructions: args.instructions,
+									tools: args.tools,
+									agentConfig,
 									loopPolicy,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
@@ -709,10 +751,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								targetUrl = `${functionUrl}/api/run`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
-									model: args.model,
+									cwd: args.cwd ?? "",
+									model,
 									maxTurns: args.maxTurns,
+									timeoutMinutes: args.timeoutMinutes,
 									instructions: args.instructions,
 									tools: args.tools,
+									agentConfig,
 									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
@@ -734,9 +779,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? "",
 								cwd: args.cwd ?? "",
+								model,
 								maxTurns: args.maxTurns,
+								timeoutMinutes: args.timeoutMinutes,
+								instructions: args.instructions,
+								tools: args.tools,
+								agentConfig,
 								loopPolicy,
+								workspaceRef:
+									typeof args.workspaceRef === "string"
+										? args.workspaceRef
+										: undefined,
 								parentExecutionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -1003,6 +1059,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						let targetUrl: string;
 						let requestBody: string;
 						const loopPolicy = buildLoopPolicyInput(resolvedInput);
+						const model = parseDurableModelInput(resolvedInput);
+						const agentConfig = parseDurableAgentConfig(resolvedInput);
 
 						if (toolId === "run") {
 							const mode =
@@ -1014,7 +1072,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								requestBody = JSON.stringify({
 									prompt: resolvedInput.prompt || resolvedInput.input || "",
 									cwd: resolvedInput.cwd || "",
+									model,
 									maxTurns: resolvedInput.maxTurns,
+									timeoutMinutes: resolvedInput.timeoutMinutes,
+									instructions: resolvedInput.instructions,
+									tools: resolvedInput.tools,
+									agentConfig,
 									loopPolicy,
 									workspaceRef: resolvedInput.workspaceRef || "",
 									parentExecutionId: body.execution_id,
@@ -1028,10 +1091,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								targetUrl = `${functionUrl}/api/run`;
 								requestBody = JSON.stringify({
 									prompt: resolvedInput.prompt || resolvedInput.input || "",
-									model: resolvedInput.model,
+									cwd: resolvedInput.cwd || "",
+									model,
 									maxTurns: resolvedInput.maxTurns,
+									timeoutMinutes: resolvedInput.timeoutMinutes,
 									instructions: resolvedInput.instructions,
 									tools: resolvedInput.tools,
+									agentConfig,
 									loopPolicy,
 									stopCondition: resolvedInput.stopCondition,
 									requireFileChanges: resolvedInput.requireFileChanges,
@@ -1050,8 +1116,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: resolvedInput.prompt || resolvedInput.input || "",
 								cwd: resolvedInput.cwd || "",
+								model,
 								maxTurns: resolvedInput.maxTurns,
+								timeoutMinutes: resolvedInput.timeoutMinutes,
+								instructions: resolvedInput.instructions,
+								tools: resolvedInput.tools,
+								agentConfig,
 								loopPolicy,
+								workspaceRef: resolvedInput.workspaceRef || "",
+								parentExecutionId: body.execution_id,
+								executionId: body.db_execution_id || body.execution_id,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
 							});
 						} else if (toolId === "execute") {
 							targetUrl = `${functionUrl}/api/execute-plan`;

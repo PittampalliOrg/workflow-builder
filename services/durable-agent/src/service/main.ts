@@ -137,6 +137,8 @@ type AgentConfigPayload = {
 	timeoutMinutes?: number;
 	tools?: string[]; // List of tool names to enable (subset of workspace tools)
 };
+const FALLBACK_AGENT_INSTRUCTIONS =
+	"You are a concise development assistant. Execute the task directly and return useful output.";
 
 // ── Agent Setup ───────────────────────────────────────────────
 
@@ -162,9 +164,12 @@ const AGENT_CACHE_MAX = 10;
 const AGENT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function agentConfigHash(config: AgentConfigPayload): string {
+	const normalizedInstructions = normalizeAgentInstructions(
+		config.instructions,
+	);
 	const key = JSON.stringify({
 		n: config.name,
-		i: config.instructions.slice(0, 200),
+		i: normalizedInstructions.slice(0, 200),
 		m: config.modelSpec,
 		t: config.tools?.sort(),
 	});
@@ -174,6 +179,11 @@ function agentConfigHash(config: AgentConfigPayload): string {
 		hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
 	}
 	return `agent-${hash.toString(36)}`;
+}
+
+function normalizeAgentInstructions(instructions: string | undefined): string {
+	const trimmed = typeof instructions === "string" ? instructions.trim() : "";
+	return trimmed.length > 0 ? trimmed : FALLBACK_AGENT_INSTRUCTIONS;
 }
 
 function resolveNormalizedModel(modelSpecRaw: string) {
@@ -207,7 +217,11 @@ function evictStaleAgents(): void {
 async function getOrCreateConfiguredAgent(
 	config: AgentConfigPayload,
 ): Promise<DurableAgent> {
-	const hash = agentConfigHash(config);
+	const normalizedConfig: AgentConfigPayload = {
+		...config,
+		instructions: normalizeAgentInstructions(config.instructions),
+	};
+	const hash = agentConfigHash(normalizedConfig);
 	const cached = agentCache.get(hash);
 	if (cached) {
 		cached.lastUsed = Date.now();
@@ -217,13 +231,15 @@ async function getOrCreateConfiguredAgent(
 	evictStaleAgents();
 
 	// Resolve model
-	const effectiveModelSpec = normalizeModelSpecForEnvironment(config.modelSpec);
+	const effectiveModelSpec = normalizeModelSpecForEnvironment(
+		normalizedConfig.modelSpec,
+	);
 	const model = resolveModel(effectiveModelSpec);
 
 	// Filter tools if specified
 	let tools = allMergedTools;
-	if (config.tools && config.tools.length > 0) {
-		const allowed = new Set(config.tools);
+	if (normalizedConfig.tools && normalizedConfig.tools.length > 0) {
+		const allowed = new Set(normalizedConfig.tools);
 		tools = {};
 		for (const [name, tool] of Object.entries(allMergedTools)) {
 			if (allowed.has(name)) {
@@ -237,10 +253,10 @@ async function getOrCreateConfiguredAgent(
 	);
 
 	const configuredAgent = new DurableAgent({
-		name: config.name,
+		name: normalizedConfig.name,
 		role: "Configured agent",
 		goal: "Execute task according to custom instructions",
-		instructions: config.instructions,
+		instructions: normalizedConfig.instructions,
 		model,
 		modelResolver: resolveNormalizedModel,
 		tools,
@@ -248,7 +264,7 @@ async function getOrCreateConfiguredAgent(
 			storeName: process.env.STATE_STORE_NAME || "statestore",
 		},
 		execution: {
-			maxIterations: config.maxTurns ?? 50,
+			maxIterations: normalizedConfig.maxTurns ?? 50,
 		},
 	});
 
@@ -1583,13 +1599,12 @@ app.post("/api/run", async (req, res) => {
 				: undefined;
 		let activeAgent = agent!;
 		let activeAgentOverridden = false;
-		if (
-			agentConfig?.name &&
-			agentConfig?.instructions &&
-			agentConfig?.modelSpec
-		) {
+		if (agentConfig?.name && agentConfig?.modelSpec) {
 			try {
-				activeAgent = await getOrCreateConfiguredAgent(agentConfig);
+				activeAgent = await getOrCreateConfiguredAgent({
+					...agentConfig,
+					instructions: normalizeAgentInstructions(agentConfig.instructions),
+				});
 				activeAgentOverridden = true;
 				console.log(
 					`[durable-agent] Using configured agent: ${agentConfig.name}`,
@@ -1618,7 +1633,9 @@ app.post("/api/run", async (req, res) => {
 
 			const inlineConfig: AgentConfigPayload = {
 				name: "inline-agent",
-				instructions: (req.body.instructions as string) || "",
+				instructions: normalizeAgentInstructions(
+					req.body.instructions as string | undefined,
+				),
 				modelSpec: req.body.model as string,
 				tools: toolsList.length > 0 ? toolsList : undefined,
 			};
@@ -1852,13 +1869,12 @@ app.post("/api/plan", async (req, res) => {
 				: undefined;
 		let activeAgent = agent!;
 		let activeAgentOverridden = false;
-		if (
-			agentConfig?.name &&
-			agentConfig?.instructions &&
-			agentConfig?.modelSpec
-		) {
+		if (agentConfig?.name && agentConfig?.modelSpec) {
 			try {
-				activeAgent = await getOrCreateConfiguredAgent(agentConfig);
+				activeAgent = await getOrCreateConfiguredAgent({
+					...agentConfig,
+					instructions: normalizeAgentInstructions(agentConfig.instructions),
+				});
 				activeAgentOverridden = true;
 			} catch (err) {
 				console.warn(
@@ -1882,7 +1898,9 @@ app.post("/api/plan", async (req, res) => {
 
 			const inlineConfig: AgentConfigPayload = {
 				name: "inline-plan-agent",
-				instructions: (req.body.instructions as string) || "",
+				instructions: normalizeAgentInstructions(
+					req.body.instructions as string | undefined,
+				),
 				modelSpec: req.body.model as string,
 				tools: toolsList.length > 0 ? toolsList : undefined,
 				maxTurns: planningMaxTurns,
