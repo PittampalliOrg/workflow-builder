@@ -112,11 +112,14 @@ export function RunTraceTab({
 			}
 			return;
 		}
-		const valid = selectedSpanId
-			? activeTrace.spans.some((span) => span.spanId === selectedSpanId)
-			: false;
+		if (!selectedSpanId) {
+			return;
+		}
+		const valid = activeTrace.spans.some(
+			(span) => span.spanId === selectedSpanId,
+		);
 		if (!valid) {
-			onSelectedSpanIdChange(activeTrace.spans[0]?.spanId ?? null);
+			onSelectedSpanIdChange(null);
 		}
 	}, [activeTrace, onSelectedSpanIdChange, selectedSpanId]);
 

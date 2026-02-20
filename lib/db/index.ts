@@ -38,6 +38,7 @@ import {
 	resourceModelProfiles,
 	resourcePrompts,
 	resourceSchemas,
+	runtimeConfigAuditLogs,
 	signingKeys,
 	userIdentities,
 	users,
@@ -94,6 +95,7 @@ const schema = {
 	resourcePrompts,
 	resourceSchemas,
 	resourceModelProfiles,
+	runtimeConfigAuditLogs,
 	workflowResourceRefs,
 	agents,
 };

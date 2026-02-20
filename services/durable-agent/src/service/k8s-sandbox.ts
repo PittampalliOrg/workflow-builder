@@ -71,6 +71,10 @@ function readK8sCa(): Buffer | undefined {
 	return undefined;
 }
 
+function shellEscape(input: string): string {
+	return `'${input.replace(/'/g, "'\"'\"'")}'`;
+}
+
 /** Low-level K8s API request using node:https. */
 function k8sRequest(method: string, path: string, body?: object): Promise<any> {
 	return new Promise((resolve, reject) => {
@@ -142,6 +146,7 @@ export class K8sSandbox {
 	private sandboxName: string | null = null;
 	private podName: string | null = null;
 	private podIp: string | null = null;
+	private loggedImageWarning = false;
 	private _destroying = false;
 
 	get workingDirectory(): string {
@@ -283,20 +288,14 @@ export class K8sSandbox {
 			throw new Error("K8s sandbox not ready — call start() first");
 		}
 
-		let fullCommand: string;
-		if (args && args.length > 0) {
-			const escaped = args.map((a) =>
-				a.includes(" ") ? `"${a.replace(/"/g, '\\"')}"` : a,
-			);
-			fullCommand = `${command} ${escaped.join(" ")}`;
-		} else {
-			fullCommand = command;
-		}
+		const fullCommand =
+			args && args.length > 0
+				? `${command} ${args.map((arg) => shellEscape(arg)).join(" ")}`
+				: command;
 
 		const timeout = options?.timeout ?? this._timeout;
 		const cwd = options?.cwd ?? this._workingDirectory;
-
-		const wrappedCommand = `/bin/sh -c "cd ${cwd} && ${fullCommand.replace(/"/g, '\\"')}"`;
+		const wrappedCommand = `cd ${shellEscape(cwd)} && ${fullCommand}`;
 
 		const startTime = Date.now();
 
@@ -401,6 +400,7 @@ export class K8sSandbox {
 			try {
 				const sandboxPath = `/apis/agents.x-k8s.io/v1alpha1/namespaces/${this.sandboxNamespace}/sandboxes/${sandboxName}`;
 				const sandboxResource = await k8sRequest("GET", sandboxPath);
+				this.warnOnMutableSandboxImage(sandboxResource);
 
 				// Strategy 1: Warm pool — pod name in annotation
 				const podName =
@@ -430,6 +430,22 @@ export class K8sSandbox {
 
 		throw new Error(
 			`Could not get IP for sandbox "${sandboxName}" after ${this._provisionTimeout}ms`,
+		);
+	}
+
+	private warnOnMutableSandboxImage(sandboxResource: any): void {
+		if (this.loggedImageWarning) return;
+		const image =
+			sandboxResource?.spec?.podTemplate?.spec?.containers?.[0]?.image;
+		if (!image || typeof image !== "string") return;
+		const normalized = image.trim().toLowerCase();
+		if (!normalized) return;
+		const mutableTag = normalized.endsWith(":latest");
+		const hasDigest = normalized.includes("@sha256:");
+		if (!mutableTag && hasDigest) return;
+		this.loggedImageWarning = true;
+		console.warn(
+			`[k8s-sandbox] Sandbox image is mutable (${image}). Prefer digest-pinned images for reproducible, secure runs.`,
 		);
 	}
 

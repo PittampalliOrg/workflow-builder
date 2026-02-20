@@ -3,12 +3,12 @@
  * trigger -> workspace/profile -> workspace/clone -> durable/run (plan mode)
  *
  * Usage:
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --user-email admin@example.com
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --name "Workspace Agent Starter"
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --prompt "Implement X"
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --agent-profile-template-id profile_xxx
- *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --connection-external-id github-main
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch main
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch dev --user-email admin@example.com
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch feature/my-branch --name "Workspace Agent Starter"
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch main --prompt "Implement X"
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch main --agent-profile-template-id profile_xxx
+ *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch main --connection-external-id github-main
  */
 
 import { desc, eq } from "drizzle-orm";
@@ -49,7 +49,7 @@ function parseArgs(argv: string[]): Args {
 	let agentProfileTemplateId = "";
 	let repositoryOwner = "";
 	let repositoryRepo = "";
-	let repositoryBranch = "main";
+	let repositoryBranch = "";
 	let targetDir: string | undefined;
 	let connectionExternalId: string | undefined;
 
@@ -108,7 +108,7 @@ function parseArgs(argv: string[]): Args {
 		agentProfileTemplateId: agentProfileTemplateId.trim(),
 		repositoryOwner: repositoryOwner.trim(),
 		repositoryRepo: repositoryRepo.trim(),
-		repositoryBranch: repositoryBranch.trim() || "main",
+		repositoryBranch: repositoryBranch.trim(),
 		targetDir: targetDir?.trim() || undefined,
 		connectionExternalId: connectionExternalId?.trim() || undefined,
 	};
@@ -356,6 +356,11 @@ async function main() {
 		if (!args.repositoryOwner || !args.repositoryRepo) {
 			throw new Error(
 				"Repository is required. Provide --repo owner/name (or --repo-owner + --repo-name).",
+			);
+		}
+		if (!args.repositoryBranch) {
+			throw new Error(
+				"Repository branch is required. Provide --branch <name> to avoid implicit defaults.",
 			);
 		}
 		if (!args.agentProfileTemplateId) {

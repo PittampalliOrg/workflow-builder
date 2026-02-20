@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
 const items = [
+	{ href: "/settings", label: "Overview" },
+	{ href: "/settings/runtime-config", label: "Runtime Config" },
 	{ href: "/settings/oauth-apps", label: "OAuth Apps" },
 	{ href: "/settings/mcp", label: "MCP" },
 	{ href: "/settings/mcp-connections", label: "MCP Connections" },

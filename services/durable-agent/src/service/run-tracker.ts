@@ -236,6 +236,72 @@ class WorkflowRunTracker {
 		`;
 		return rows.map(toTracked);
 	}
+
+	async getById(id: string): Promise<TrackedWorkflowAgentRun | undefined> {
+		if (!this.sql) return undefined;
+		const rows = await this.sql<WorkflowAgentRunRow[]>`
+			select
+				id,
+				workflow_execution_id,
+				workflow_id,
+				node_id,
+				mode,
+				agent_workflow_id,
+				dapr_instance_id,
+				parent_execution_id,
+				workspace_ref,
+				artifact_ref,
+				status,
+				result,
+				error,
+				completed_at,
+				event_published_at,
+				last_reconciled_at,
+				created_at,
+				updated_at
+			from workflow_agent_runs
+			where id = ${id}
+			limit 1
+		`;
+		const row = rows[0];
+		if (!row) return undefined;
+		return toTracked(row);
+	}
+
+	async listScheduledByParentExecutionId(
+		parentExecutionId: string,
+		limit = 50,
+	): Promise<TrackedWorkflowAgentRun[]> {
+		if (!this.sql) return [];
+		const safeLimit = Math.max(1, Math.min(limit, 500));
+		const rows = await this.sql<WorkflowAgentRunRow[]>`
+			select
+				id,
+				workflow_execution_id,
+				workflow_id,
+				node_id,
+				mode,
+				agent_workflow_id,
+				dapr_instance_id,
+				parent_execution_id,
+				workspace_ref,
+				artifact_ref,
+				status,
+				result,
+				error,
+				completed_at,
+				event_published_at,
+				last_reconciled_at,
+				created_at,
+				updated_at
+			from workflow_agent_runs
+			where parent_execution_id = ${parentExecutionId}
+				and status = 'scheduled'
+			order by created_at asc
+			limit ${safeLimit}
+		`;
+		return rows.map(toTracked);
+	}
 }
 
 export const workflowRunTracker = new WorkflowRunTracker();

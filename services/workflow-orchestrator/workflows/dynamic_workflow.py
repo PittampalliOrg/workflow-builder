@@ -294,7 +294,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
     Supports:
     - Action nodes: Regular function execution via function-router
-    - Agent nodes: agent/* and mastra/* actions via mastra-agent-tanstack
+    - Agent nodes: durable/* and mastra/* actions via durable-agent activities
     - Approval gates: Wait for external events with timeout
     - Timers: Delay execution for specified duration
     - Condition nodes: Branching logic
@@ -1404,6 +1404,8 @@ def process_agent_child_workflow(
         timeout_minutes = int(timeout_raw or 30)
     except (TypeError, ValueError):
         timeout_minutes = 30
+    if timeout_minutes <= 0:
+        timeout_minutes = 30
 
     approval_timeout_raw = resolved_config.get("approvalTimeoutMinutes", 60)
     try:
@@ -1617,6 +1619,10 @@ def process_agent_child_workflow(
         or start_result.get("workflowId")
         or start_result.get("agentWorkflowId")
     )
+    dapr_instance_id = (
+        start_result.get("dapr_instance_id")
+        or start_result.get("daprInstanceId")
+    )
     if not agent_workflow_id:
         return {
             "success": False,
@@ -1637,10 +1643,36 @@ def process_agent_child_workflow(
         logger.warning(
             f"[Agent Workflow] Timed out after {timeout_minutes} minutes: {agent_workflow_id}"
         )
+        terminate_result: dict[str, Any] = {"success": False}
+        try:
+            from activities.call_agent_service import terminate_durable_agent_run
+
+            terminate_result = yield ctx.call_activity(
+                terminate_durable_agent_run,
+                input={
+                    "agentWorkflowId": agent_workflow_id,
+                    "daprInstanceId": dapr_instance_id,
+                    "parentExecutionId": ctx.instance_id,
+                    "workspaceRef": resolved_config.get("workspaceRef"),
+                    "cleanupWorkspace": True,
+                    "reason": (
+                        "terminated because parent workflow timed out waiting for "
+                        f"agent run ({timeout_minutes} minutes)"
+                    ),
+                    "_otel": otel_ctx,
+                },
+            )
+        except Exception as terminate_err:
+            logger.warning(
+                f"[Agent Workflow] Failed to terminate timed out child run {agent_workflow_id}: {terminate_err}"
+            )
+            terminate_result = {"success": False, "error": str(terminate_err)}
         return {
             "success": False,
             "agentWorkflowId": agent_workflow_id,
+            "daprInstanceId": dapr_instance_id,
             "error": f"Agent timed out after {timeout_minutes} minutes",
+            "termination": terminate_result,
             **(planned_payload or {}),
         }
 

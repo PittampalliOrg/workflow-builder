@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Lock, LockOpen, Trash2, Copy, Check } from "lucide-react";
 import { toast } from "sonner";
+import { SettingsSubnav } from "@/components/settings/settings-subnav";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -158,6 +159,7 @@ export default function OAuthAppsSettingsPage() {
 					</p>
 				</div>
 			</div>
+			<SettingsSubnav />
 
 			<div className="flex-1 overflow-auto p-6">
 				{/* Redirect URI helper */}

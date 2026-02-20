@@ -1,13 +1,14 @@
 """
 Call Agent Service Activities
 
-Activities that call mastra-agent-tanstack to run agent actions
+Activities that call durable-agent to run agent actions
 as durable Dapr workflows and report completion via pub/sub external events.
 """
 
 from __future__ import annotations
 
 import logging
+from urllib.parse import quote
 
 import httpx
 
@@ -51,6 +52,48 @@ def _post_json_with_details(
         )
 
     return data
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return default
+
+
+def terminate_durable_runs_by_parent_execution(
+    parent_execution_id: str,
+    reason: str | None = None,
+    cleanup_workspace: bool = True,
+) -> dict:
+    """
+    Terminate active durable-agent runs belonging to a parent workflow execution.
+    """
+    parent_execution_id = str(parent_execution_id or "").strip()
+    if not parent_execution_id:
+        return {"success": False, "error": "parentExecutionId is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DURABLE_AGENT_APP_ID}/method/api/runs/terminate-by-parent"
+    )
+    payload = {
+        "parentExecutionId": parent_execution_id,
+        "reason": reason or "terminated due to parent workflow termination",
+        "cleanupWorkspace": cleanup_workspace,
+    }
+    with httpx.Client(timeout=20.0) as client:
+        return _post_json_with_details(
+            client=client,
+            url=url,
+            payload=payload,
+            service_label="Durable run parent termination",
+        )
 
 
 def call_mastra_agent_run(ctx, input_data: dict) -> dict:
@@ -108,9 +151,11 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
       - model: str | None
       - maxTurns: int | None
     """
+    workspace_ref = str(input_data.get("workspaceRef") or "").strip()
+    run_route = "api/run-sandboxed" if workspace_ref else "api/run"
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/run"
+        f"{DURABLE_AGENT_APP_ID}/method/{run_route}"
     )
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -260,6 +305,55 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Durable Execute Plan] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Terminate a specific durable-agent run.
+
+    Expected input_data:
+      - agentWorkflowId: str
+      - daprInstanceId: str | None
+      - parentExecutionId: str | None
+      - reason: str | None
+      - cleanupWorkspace: bool | str | None
+    """
+    agent_workflow_id = str(input_data.get("agentWorkflowId") or "").strip()
+    if not agent_workflow_id:
+        return {"success": False, "error": "agentWorkflowId is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DURABLE_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
+    )
+    payload = {
+        "daprInstanceId": input_data.get("daprInstanceId"),
+        "parentExecutionId": input_data.get("parentExecutionId"),
+        "workspaceRef": input_data.get("workspaceRef"),
+        "reason": input_data.get("reason")
+        or "terminated because parent workflow timed out",
+        "cleanupWorkspace": _as_bool(input_data.get("cleanupWorkspace"), True),
+    }
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "durable/run-terminate",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "agent.workflow_id": agent_workflow_id,
+        "agent.dapr_instance_id": input_data.get("daprInstanceId") or "",
+    }
+
+    with start_activity_span("activity.terminate_durable_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Durable run termination",
+                )
+        except Exception as e:
+            logger.error(f"[Terminate Durable Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

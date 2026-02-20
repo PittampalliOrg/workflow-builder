@@ -7,7 +7,6 @@ import type { IntegrationType } from "@/lib/actions/types";
  */
 const ACTION_REQUIRED_INTEGRATIONS: Record<string, IntegrationType> = {
 	"mastra/clone": "github",
-	"workspace/clone": "github",
 };
 
 /**

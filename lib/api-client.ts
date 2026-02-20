@@ -1409,6 +1409,77 @@ const mcpConnectionApi = {
 		}),
 };
 
+export type RuntimeConfigCurrentValue = {
+	storeName: string;
+	configKey: string;
+	value: string;
+	version?: string;
+	metadata?: Record<string, string>;
+} | null;
+
+export type RuntimeConfigAuditLog = {
+	id: string;
+	projectId: string;
+	userId: string;
+	storeName: string;
+	configKey: string;
+	value: string;
+	metadata?: Record<string, string>;
+	status: "success" | "error";
+	provider?: string;
+	error?: string;
+	createdAt: string;
+};
+
+const runtimeConfigApi = {
+	list: (query?: {
+		projectId?: string;
+		storeName?: string;
+		configKey?: string;
+		metadata?: Record<string, string>;
+		limit?: number;
+	}) => {
+		const search = new URLSearchParams();
+		if (query?.projectId) search.set("projectId", query.projectId);
+		if (query?.storeName) search.set("storeName", query.storeName);
+		if (query?.configKey) search.set("configKey", query.configKey);
+		if (query?.metadata) search.set("metadata", JSON.stringify(query.metadata));
+		if (query?.limit) search.set("limit", String(query.limit));
+		return apiCall<{
+			data: {
+				defaults: {
+					storeName: string;
+					metadata: Record<string, string>;
+				};
+				writerEnabled: boolean;
+				current: RuntimeConfigCurrentValue;
+				logs: RuntimeConfigAuditLog[];
+			};
+		}>(
+			`/api/runtime-config${search.toString() ? `?${search.toString()}` : ""}`,
+		);
+	},
+
+	write: (body: {
+		projectId?: string;
+		storeName?: string;
+		configKey: string;
+		value: string;
+		metadata?: Record<string, string | number | boolean>;
+	}) =>
+		apiCall<{
+			success: boolean;
+			data: {
+				storeName: string;
+				configKey: string;
+				current: RuntimeConfigCurrentValue;
+			};
+		}>("/api/runtime-config", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+};
+
 // ── Resource Library API ─────────────────────────────────────
 
 export type ResourcePromptData = {
@@ -1823,6 +1894,7 @@ export const api = {
 	oauthApp: oauthAppApi,
 	piece: pieceApi,
 	resource: resourceApi,
+	runtimeConfig: runtimeConfigApi,
 	secrets: secretsApi,
 	user: userApi,
 	workflow: workflowApi,

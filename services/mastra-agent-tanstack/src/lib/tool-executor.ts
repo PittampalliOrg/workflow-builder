@@ -175,13 +175,16 @@ export async function executeTool(
 		case "clone": {
 			const owner = ((args.repositoryOwner as string) || "").trim();
 			const repo = ((args.repositoryRepo as string) || "").trim();
-			const branch = ((args.repositoryBranch as string) || "main").trim();
+			const branch = ((args.repositoryBranch as string) || "").trim();
 			const token =
 				((args.repositoryToken as string) || "").trim() ||
 				((args.githubToken as string) || "").trim();
 
 			if (!owner || !repo) {
 				throw new Error("repositoryOwner and repositoryRepo are required");
+			}
+			if (!branch) {
+				throw new Error("repositoryBranch is required");
 			}
 
 			const cloneDir = repo;

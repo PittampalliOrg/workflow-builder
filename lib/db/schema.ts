@@ -712,6 +712,51 @@ export const credentialAccessLogs = pgTable("credential_access_logs", {
 });
 
 // ============================================================================
+// Runtime Configuration Audit Logs
+// ============================================================================
+
+export type RuntimeConfigAuditStatus = "success" | "error";
+
+/**
+ * Runtime configuration write audit history
+ * Tracks who changed dynamic config values used by durable agents.
+ */
+export const runtimeConfigAuditLogs = pgTable(
+	"runtime_config_audit_logs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		projectId: text("project_id")
+			.notNull()
+			.references(() => projects.id, { onDelete: "cascade" }),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id, { onDelete: "cascade" }),
+		storeName: text("store_name").notNull(),
+		configKey: text("config_key").notNull(),
+		value: text("value").notNull(),
+		metadata: jsonb("metadata").$type<Record<string, string>>(),
+		status: text("status").notNull().$type<RuntimeConfigAuditStatus>(),
+		provider: text("provider"),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB payload from writer service
+		providerResponse: jsonb("provider_response").$type<any>(),
+		error: text("error"),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		projectCreatedIdx: index("idx_runtime_cfg_audit_project_created").on(
+			table.projectId,
+			table.createdAt,
+		),
+		projectKeyIdx: index("idx_runtime_cfg_audit_project_key").on(
+			table.projectId,
+			table.configKey,
+		),
+	}),
+);
+
+// ============================================================================
 // Workflow External Events (Approval Audit Trail)
 // ============================================================================
 

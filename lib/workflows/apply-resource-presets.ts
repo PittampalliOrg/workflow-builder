@@ -19,6 +19,44 @@ function asNonEmptyString(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+function parseConfigKeys(value: unknown): string[] | undefined {
+	const raw = asNonEmptyString(value);
+	if (!raw) return undefined;
+	const keys = raw
+		.split(/[\n,]/g)
+		.map((part) => part.trim())
+		.filter(Boolean);
+	return keys.length > 0 ? [...new Set(keys)] : undefined;
+}
+
+function parseConfigMetadata(
+	value: unknown,
+): Record<string, string> | undefined {
+	const raw = asNonEmptyString(value);
+	if (!raw) return undefined;
+	try {
+		const parsed = JSON.parse(raw);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return undefined;
+		}
+		const metadata = Object.fromEntries(
+			Object.entries(parsed)
+				.map(([k, v]) =>
+					typeof v === "string"
+						? ([k.trim(), v.trim()] as const)
+						: typeof v === "number" || typeof v === "boolean"
+							? ([k.trim(), String(v)] as const)
+							: null,
+				)
+				.filter((entry): entry is readonly [string, string] => Boolean(entry))
+				.filter(([k, v]) => Boolean(k) && Boolean(v)),
+		);
+		return Object.keys(metadata).length > 0 ? metadata : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export async function applyResourcePresetsToNodes(input: {
 	nodes: unknown[];
 	userId: string;
@@ -83,6 +121,18 @@ export async function applyResourcePresetsToNodes(input: {
 
 		const modelSpec = `${resolvedProfile.snapshot.model.provider}/${resolvedProfile.snapshot.model.name}`;
 		const toolNames = resolvedProfile.snapshot.tools.map((tool) => tool.ref);
+		const configStoreName = asNonEmptyString(config.configStoreName);
+		const configName = asNonEmptyString(config.configName);
+		const configKeys = parseConfigKeys(config.configKeys);
+		const configMetadata = parseConfigMetadata(config.configMetadata);
+		const configuration = configStoreName
+			? {
+					storeName: configStoreName,
+					...(configName ? { configName } : {}),
+					...(configKeys ? { keys: configKeys } : {}),
+					...(configMetadata ? { metadata: configMetadata } : {}),
+				}
+			: undefined;
 
 		config.agentProfileTemplateVersion =
 			resolvedProfile.templateVersion.version;
@@ -99,6 +149,7 @@ export async function applyResourcePresetsToNodes(input: {
 			maxTurns: resolvedProfile.snapshot.maxTurns,
 			timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
 			tools: toolNames,
+			...(configuration ? { configuration } : {}),
 		};
 		config.model = modelSpec;
 		config.maxTurns = String(resolvedProfile.snapshot.maxTurns);

@@ -15,6 +15,7 @@ import {
 	MessageSquare,
 	Eye,
 	Library,
+	SlidersHorizontal,
 } from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
 import {
@@ -47,6 +48,11 @@ const navigationLinks = [
 	{ href: "/connections", label: "Connections", icon: Plug },
 	{ href: "/mcp-apps", label: "MCP Apps", icon: AppWindow },
 	{ href: "/mcp-chat", label: "MCP Chat", icon: MessageSquare },
+	{
+		href: "/settings/runtime-config",
+		label: "Runtime Config",
+		icon: SlidersHorizontal,
+	},
 	{ href: "/settings", label: "Settings", icon: Settings },
 ];
 

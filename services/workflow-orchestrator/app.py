@@ -11,7 +11,7 @@ Architecture:
 - Dapr state store for workflow state persistence
 - Dapr pub/sub for event publishing
 
-KEY FEATURE: Native multi-app child workflow support for agent actions via mastra-agent-tanstack.
+KEY FEATURE: Native child workflow support for durable agent actions via durable-agent.
 """
 
 from __future__ import annotations
@@ -51,6 +51,8 @@ from activities.call_agent_service import (
     call_durable_agent_run,
     call_durable_plan,
     call_durable_execute_plan,
+    terminate_durable_agent_run,
+    terminate_durable_runs_by_parent_execution,
     cleanup_execution_workspaces,
 )
 from activities.log_node_execution import log_node_start, log_node_complete
@@ -109,11 +111,12 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_node_complete)
     # Persist final results to PostgreSQL
     wfr.register_activity(persist_results_to_db)
-    # Agent service activities (mastra-agent-tanstack)
+    # Agent service activities (durable-agent)
     wfr.register_activity(call_mastra_agent_run)
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
+    wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
@@ -1430,11 +1433,28 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
             + (f" Reason: {request.reason}" if request.reason else "")
         )
 
+        child_termination = None
+        try:
+            child_termination = terminate_durable_runs_by_parent_execution(
+                parent_execution_id=instance_id,
+                reason=request.reason,
+                cleanup_workspace=True,
+            )
+            logger.info(
+                "[Workflow Routes] Child durable run termination summary: "
+                f"{child_termination}"
+            )
+        except Exception as child_err:
+            logger.warning(
+                f"[Workflow Routes] Child durable run termination failed: {child_err}"
+            )
+
         client.terminate_workflow(instance_id=instance_id, output=request.reason)
 
         return {
             "success": True,
             "instanceId": instance_id,
+            "childTermination": child_termination,
         }
 
     except Exception as e:
@@ -1521,7 +1541,7 @@ def agent_events_subscription(event: CloudEvent):
     """
     Handle agent completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when mastra-agent-tanstack
+    This endpoint receives CloudEvents from Dapr pub/sub when durable-agent
     publishes completion events. It forwards the events as external events to
     waiting parent workflows.
     """

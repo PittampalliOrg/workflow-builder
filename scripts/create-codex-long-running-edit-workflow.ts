@@ -1,12 +1,13 @@
 /**
- * Create a codex-focused agentic workflow:
+ * Create a long-running codex edit workflow with explicit UI-visible diff outputs:
  * trigger -> workspace/profile -> workspace/clone -> durable/run (execute_direct) -> review commands
  *
  * Usage:
- *   DATABASE_URL=... pnpm tsx scripts/create-codex-agentic-edit-workflow.ts --branch main
- *   DATABASE_URL=... pnpm tsx scripts/create-codex-agentic-edit-workflow.ts --user-email admin@example.com --branch dev
- *   DATABASE_URL=... pnpm tsx scripts/create-codex-agentic-edit-workflow.ts --connection-external-id github-main --branch feature/my-branch
- *   DATABASE_URL=... pnpm tsx scripts/create-codex-agentic-edit-workflow.ts --agent-profile-template-id profile_xxx --branch main
+ *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --branch dev
+ *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --repo owner/name --branch feature/my-branch
+ *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --name "Codex Long Running Edit"
+ *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --user-email admin@example.com --branch dev
+ *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --connection-external-id github-main --branch dev
  */
 
 import { desc, eq } from "drizzle-orm";
@@ -35,6 +36,7 @@ Return a concise summary of edits and validation results.`;
 
 const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "codex";
+const DEFAULT_MODEL = "openai/gpt-5.2-codex";
 const DATABASE_URL = process.env.DATABASE_URL;
 
 type Args = {
@@ -47,11 +49,22 @@ type Args = {
 	repositoryBranch: string;
 	targetDir?: string;
 	connectionExternalId?: string;
+	model: string;
+	maxTurns: number;
+	timeoutMinutes: number;
+	diffPreviewLines: number;
 };
+
+function parseIntArg(value: string | undefined, fallback: number): number {
+	if (!value) return fallback;
+	const parsed = Number.parseInt(value, 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+	return parsed;
+}
 
 function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
-	let name = "Codex Agentic Edit Flow";
+	let name = "Codex Long Running Edit + Diff Review";
 	let prompt = DEFAULT_PROMPT;
 	let agentProfileTemplateId: string | undefined;
 	let repositoryOwner = DEFAULT_REPO_OWNER;
@@ -59,6 +72,10 @@ function parseArgs(argv: string[]): Args {
 	let repositoryBranch = "";
 	let targetDir: string | undefined;
 	let connectionExternalId: string | undefined;
+	let model = DEFAULT_MODEL;
+	let maxTurns = 260;
+	let timeoutMinutes = 60;
+	let diffPreviewLines = 800;
 
 	const parseRepoRef = (
 		repoRef: string,
@@ -123,6 +140,26 @@ function parseArgs(argv: string[]): Args {
 		if (arg === "--connection-external-id") {
 			connectionExternalId = argv[i + 1] || connectionExternalId;
 			i++;
+			continue;
+		}
+		if (arg === "--model") {
+			model = argv[i + 1] || model;
+			i++;
+			continue;
+		}
+		if (arg === "--max-turns") {
+			maxTurns = parseIntArg(argv[i + 1], maxTurns);
+			i++;
+			continue;
+		}
+		if (arg === "--timeout-minutes") {
+			timeoutMinutes = parseIntArg(argv[i + 1], timeoutMinutes);
+			i++;
+			continue;
+		}
+		if (arg === "--diff-preview-lines") {
+			diffPreviewLines = parseIntArg(argv[i + 1], diffPreviewLines);
+			i++;
 		}
 	}
 
@@ -136,6 +173,10 @@ function parseArgs(argv: string[]): Args {
 		repositoryBranch: repositoryBranch.trim(),
 		targetDir: targetDir?.trim() || undefined,
 		connectionExternalId: connectionExternalId?.trim() || undefined,
+		model: model.trim() || DEFAULT_MODEL,
+		maxTurns,
+		timeoutMinutes,
+		diffPreviewLines,
 	};
 }
 
@@ -147,9 +188,7 @@ async function resolveUser(
 		const user = await db.query.users.findFirst({
 			where: eq(users.email, userEmail),
 		});
-		if (!user) {
-			throw new Error(`User not found for email: ${userEmail}`);
-		}
+		if (!user) throw new Error(`User not found for email: ${userEmail}`);
 		return { userId: user.id, email: user.email };
 	}
 
@@ -173,10 +212,7 @@ async function resolveUser(
 		.from(users)
 		.orderBy(desc(users.updatedAt))
 		.limit(1);
-	if (!fallbackUser) {
-		throw new Error("No users found in database");
-	}
-
+	if (!fallbackUser) throw new Error("No users found in database");
 	return { userId: fallbackUser.id, email: fallbackUser.email };
 }
 
@@ -223,14 +259,15 @@ async function resolveConnection(
 		return { connectionId: row.id, connectionExternalId };
 	}
 
-	const latestGithubConnection = await db.query.appConnections.findFirst({
+	const connections = await db.query.appConnections.findMany({
 		where: eq(appConnections.ownerId, userId),
 		orderBy: [desc(appConnections.updatedAt)],
+		limit: 50,
 	});
-	if (
-		latestGithubConnection &&
-		latestGithubConnection.pieceName.toLowerCase().includes("github")
-	) {
+	const latestGithubConnection = connections.find((row) =>
+		row.pieceName.toLowerCase().includes("github"),
+	);
+	if (latestGithubConnection) {
 		return {
 			connectionId: latestGithubConnection.id,
 			connectionExternalId: latestGithubConnection.externalId,
@@ -270,6 +307,10 @@ function buildWorkflowGraph(input: {
 	targetDir?: string;
 	connectionExternalId?: string;
 	connectionId?: string;
+	model: string;
+	maxTurns: number;
+	timeoutMinutes: number;
+	diffPreviewLines: number;
 }) {
 	const triggerId = nanoid();
 	const profileId = nanoid();
@@ -277,6 +318,7 @@ function buildWorkflowGraph(input: {
 	const durableRunId = nanoid();
 	const reviewNamesId = nanoid();
 	const reviewStatsId = nanoid();
+	const reviewPatchId = nanoid();
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
@@ -311,26 +353,39 @@ function buildWorkflowGraph(input: {
 	}
 
 	const reviewNamesCommand = `if [ -d .git ]; then
-git status --short
-echo "--- changed files ---"
-CHANGED="$(git diff --name-only || true)"
-if [ -z "$CHANGED" ]; then
-  echo "No file changes detected after durable run."
+	echo "--- git status --short ---"
+	git status --short || true
+	echo "--- changed files ---"
+	CHANGED="$(git diff --name-only || true)"
+	if [ -z "$CHANGED" ]; then
+	  echo "No file changes detected after durable run."
+	else
+	  printf '%s\n' "$CHANGED"
+	  echo "--- changed file count ---"
+	  printf '%s\n' "$CHANGED" | wc -l | tr -d ' '
+	fi
 else
-  printf '%s\n' "$CHANGED"
-fi
-else
-echo "No .git metadata found (clone strips git metadata)."
-echo "Listing files as fallback review:"
-find . -type f | sort | head -200 || true
+	echo "No .git metadata found (clone strips git metadata)."
+	echo "Listing files as fallback review:"
+	find . -type f | sort | head -200 || true
 fi`;
 
 	const reviewStatsCommand = `if [ -d .git ]; then
-echo "--- diff stat ---"
-git diff --stat || true
+	echo "--- diff stat ---"
+	git diff --stat --no-color || true
+	echo "--- short stat ---"
+	git diff --shortstat --no-color || true
 else
-echo "No .git metadata found (clone strips git metadata)."
-echo "Cannot compute git diff --stat without repository metadata."
+	echo "No .git metadata found (clone strips git metadata)."
+	echo "Cannot compute git diff stats without repository metadata."
+fi`;
+
+	const reviewPatchCommand = `if [ -d .git ]; then
+	echo "--- unified diff preview (first ${input.diffPreviewLines} lines) ---"
+	git diff --no-color | sed -n '1,${input.diffPreviewLines}p' || true
+else
+	echo "No .git metadata found (clone strips git metadata)."
+	echo "Cannot render unified diff preview without repository metadata."
 fi`;
 
 	const nodes = normalizeWorkflowNodes([
@@ -356,10 +411,10 @@ fi`;
 				type: "action",
 				config: {
 					actionType: "workspace/profile",
-					name: "codex-workspace",
+					name: "codex-long-running-workspace",
 					enabledTools,
 					requireReadBeforeWrite: "true",
-					commandTimeoutMs: "120000",
+					commandTimeoutMs: "180000",
 				},
 				status: "idle",
 			},
@@ -381,21 +436,24 @@ fi`;
 			type: "action",
 			position: { x: 320, y: 0 },
 			data: {
-				label: "Durable Agent Edit",
-				description: "Execute complex code edit task",
+				label: "Durable Agent Edit (Long Run)",
+				description: "Long-running direct execution with required file edits",
 				type: "action",
 				config: {
 					actionType: "durable/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
+					model: input.model,
 					tools: durableTools,
 					instructions:
-						"Use repository tools directly. Perform concrete file edits with read/write/edit/list/bash tools before finalizing.",
+						"Work directly in the repository. Do not ask clarifying questions. Make concrete file edits and run validations before finalizing.",
+					stopCondition:
+						"File changes are complete, validation commands have been run, and a concise change summary is ready.",
 					workspaceRef: workspaceRefTemplate,
 					cwd: clonePathTemplate,
-					maxTurns: "80",
-					timeoutMinutes: "20",
+					maxTurns: String(input.maxTurns),
+					timeoutMinutes: String(input.timeoutMinutes),
 					requireFileChanges: "true",
 					cleanupWorkspace: "false",
 				},
@@ -405,16 +463,16 @@ fi`;
 		{
 			id: reviewNamesId,
 			type: "action",
-			position: { x: 620, y: -80 },
+			position: { x: 620, y: -120 },
 			data: {
-				label: "Review File Changes",
-				description: "List changed files (git when available)",
+				label: "Review Changed Files",
+				description: "UI-visible list of changed files",
 				type: "action",
 				config: {
 					actionType: "workspace/command",
 					workspaceRef: workspaceRefTemplate,
 					command: reviewNamesCommand,
-					timeoutMs: "120000",
+					timeoutMs: "180000",
 					continueOnError: true,
 				},
 				status: "idle",
@@ -423,16 +481,34 @@ fi`;
 		{
 			id: reviewStatsId,
 			type: "action",
-			position: { x: 920, y: -80 },
+			position: { x: 920, y: -120 },
 			data: {
 				label: "Review Diff Stats",
-				description: "Show diff statistics or fallback explanation",
+				description: "UI-visible diff stat summary",
 				type: "action",
 				config: {
 					actionType: "workspace/command",
 					workspaceRef: workspaceRefTemplate,
 					command: reviewStatsCommand,
-					timeoutMs: "120000",
+					timeoutMs: "180000",
+					continueOnError: true,
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: reviewPatchId,
+			type: "action",
+			position: { x: 1220, y: -120 },
+			data: {
+				label: "Review Diff Preview",
+				description: "UI-visible unified diff preview",
+				type: "action",
+				config: {
+					actionType: "workspace/command",
+					workspaceRef: workspaceRefTemplate,
+					command: reviewPatchCommand,
+					timeoutMs: "180000",
 					continueOnError: true,
 				},
 				status: "idle",
@@ -481,6 +557,14 @@ fi`;
 			sourceHandle: null,
 			targetHandle: null,
 		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: reviewStatsId,
+			target: reviewPatchId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
 	];
 
 	return { nodes, edges };
@@ -497,6 +581,7 @@ async function main() {
 			"repository branch is required. Pass --branch <name> to avoid implicit defaults.",
 		);
 	}
+
 	const client = postgres(DATABASE_URL, { max: 1 });
 	const db = drizzle(client, {
 		schema: {
@@ -531,6 +616,10 @@ async function main() {
 			targetDir: args.targetDir,
 			connectionExternalId,
 			connectionId,
+			model: args.model,
+			maxTurns: args.maxTurns,
+			timeoutMinutes: args.timeoutMinutes,
+			diffPreviewLines: args.diffPreviewLines,
 		});
 
 		const workflowId = generateId();
@@ -540,7 +629,7 @@ async function main() {
 				id: workflowId,
 				name: args.name,
 				description:
-					"Agentic workflow for codex repo: clone, perform complex edits, then review file changes.",
+					"Long-running codex edit workflow with explicit changed-files and diff review outputs for UI inspection.",
 				userId,
 				projectId,
 				nodes,
@@ -565,6 +654,10 @@ async function main() {
 		console.log(`  updatedAt: ${created.updatedAt.toISOString()}`);
 		console.log(`  repo: ${args.repositoryOwner}/${args.repositoryRepo}`);
 		console.log(`  branch: ${args.repositoryBranch}`);
+		console.log(`  model: ${args.model}`);
+		console.log(`  maxTurns: ${args.maxTurns}`);
+		console.log(`  timeoutMinutes: ${args.timeoutMinutes}`);
+		console.log(`  diffPreviewLines: ${args.diffPreviewLines}`);
 		console.log(`  agentProfileTemplateId: ${agentProfileTemplateId}`);
 		console.log(`  githubConnection: ${connectionExternalId ?? "none"}`);
 		console.log(`  open: /workflows/${created.id}`);
@@ -574,6 +667,6 @@ async function main() {
 }
 
 main().catch((error) => {
-	console.error("Failed to create codex workflow:", error);
+	console.error("Failed to create long-running codex workflow:", error);
 	process.exit(1);
 });
