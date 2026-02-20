@@ -16,6 +16,4 @@ export { WorkflowDetailHeader } from "./workflow-detail-header";
 export { WorkflowDetailTabs } from "./workflow-detail-tabs";
 export { WorkflowFilters } from "./workflow-filters";
 export { WorkflowGraphPlaceholder } from "./workflow-graph-placeholder";
-export { WorkflowNameStats } from "./workflow-name-stats";
-export { WorkflowNamesTable } from "./workflow-names-table";
 export { WorkflowPageTabs } from "./workflow-page-tabs";

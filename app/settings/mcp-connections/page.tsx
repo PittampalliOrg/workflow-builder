@@ -128,6 +128,11 @@ export default function McpConnectionsSettingsPage() {
 	};
 
 	const handleDelete = async (connectionId: string) => {
+		const target = connections.find((conn) => conn.id === connectionId);
+		if (target?.sourceType === McpConnectionSourceType.HOSTED_WORKFLOW) {
+			toast.error("Hosted workflow MCP connection cannot be deleted");
+			return;
+		}
 		try {
 			setBusyId(connectionId);
 			await api.mcpConnection.delete(connectionId);
@@ -366,57 +371,67 @@ export default function McpConnectionsSettingsPage() {
 										</TableCell>
 									</TableRow>
 								) : (
-									connections.map((conn) => (
-										<TableRow key={conn.id}>
-											<TableCell className="font-medium">
-												{conn.displayName}
-											</TableCell>
-											<TableCell>{conn.sourceType}</TableCell>
-											<TableCell>{statusBadge(conn.status)}</TableCell>
-											<TableCell className="font-mono text-xs">
-												{conn.serverUrl ?? "—"}
-											</TableCell>
-											<TableCell className="text-right">
-												<div className="flex justify-end gap-1">
-													<Button
-														disabled={busyId === conn.id}
-														onClick={() => handleSync(conn.id)}
-														size="icon"
-														type="button"
-														variant="ghost"
-													>
-														<RefreshCw className="size-4" />
-													</Button>
-													<Button
-														disabled={busyId === conn.id}
-														onClick={() =>
-															handleSetStatus(
-																conn.id,
-																conn.status === "ENABLED"
-																	? "DISABLED"
-																	: "ENABLED",
-															)
-														}
-														size="sm"
-														type="button"
-														variant="outline"
-													>
-														{conn.status === "ENABLED" ? "Disable" : "Enable"}
-													</Button>
-													<Button
-														className="text-destructive"
-														disabled={busyId === conn.id}
-														onClick={() => handleDelete(conn.id)}
-														size="icon"
-														type="button"
-														variant="ghost"
-													>
-														<Trash2 className="size-4" />
-													</Button>
-												</div>
-											</TableCell>
-										</TableRow>
-									))
+									connections.map((conn) => {
+										const isHosted =
+											conn.sourceType ===
+											McpConnectionSourceType.HOSTED_WORKFLOW;
+										return (
+											<TableRow key={conn.id}>
+												<TableCell className="font-medium">
+													{conn.displayName}
+												</TableCell>
+												<TableCell>{conn.sourceType}</TableCell>
+												<TableCell>{statusBadge(conn.status)}</TableCell>
+												<TableCell className="font-mono text-xs">
+													{conn.serverUrl ?? "—"}
+												</TableCell>
+												<TableCell className="text-right">
+													<div className="flex justify-end gap-1">
+														<Button
+															disabled={busyId === conn.id}
+															onClick={() => handleSync(conn.id)}
+															size="icon"
+															type="button"
+															variant="ghost"
+														>
+															<RefreshCw className="size-4" />
+														</Button>
+														<Button
+															disabled={busyId === conn.id}
+															onClick={() =>
+																handleSetStatus(
+																	conn.id,
+																	conn.status === "ENABLED"
+																		? "DISABLED"
+																		: "ENABLED",
+																)
+															}
+															size="sm"
+															type="button"
+															variant="outline"
+														>
+															{conn.status === "ENABLED" ? "Disable" : "Enable"}
+														</Button>
+														<Button
+															className="text-destructive"
+															disabled={busyId === conn.id || isHosted}
+															onClick={() => handleDelete(conn.id)}
+															size="icon"
+															title={
+																isHosted
+																	? "Hosted workflow MCP connection cannot be deleted"
+																	: "Delete"
+															}
+															type="button"
+															variant="ghost"
+														>
+															<Trash2 className="size-4" />
+														</Button>
+													</div>
+												</TableCell>
+											</TableRow>
+										);
+									})
 								)}
 							</TableBody>
 						</Table>

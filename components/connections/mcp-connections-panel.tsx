@@ -14,7 +14,10 @@ import {
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api-client";
-import type { McpConnection } from "@/lib/types/mcp-connection";
+import {
+	McpConnectionSourceType,
+	type McpConnection,
+} from "@/lib/types/mcp-connection";
 
 function statusBadge(status: string) {
 	if (status === "ENABLED") {
@@ -80,6 +83,11 @@ export function McpConnectionsPanel() {
 	};
 
 	const onDelete = async (id: string) => {
+		const target = rows.find((row) => row.id === id);
+		if (target?.sourceType === McpConnectionSourceType.HOSTED_WORKFLOW) {
+			toast.error("Hosted workflow MCP connection cannot be deleted");
+			return;
+		}
 		try {
 			setBusyId(id);
 			await api.mcpConnection.delete(id);
@@ -117,53 +125,64 @@ export function McpConnectionsPanel() {
 							</TableCell>
 						</TableRow>
 					) : (
-						rows.map((row) => (
-							<TableRow key={row.id}>
-								<TableCell className="font-medium">{row.displayName}</TableCell>
-								<TableCell>{row.sourceType}</TableCell>
-								<TableCell>{statusBadge(row.status)}</TableCell>
-								<TableCell className="font-mono text-xs">
-									{row.serverUrl ?? "—"}
-								</TableCell>
-								<TableCell className="text-right">
-									<div className="flex justify-end gap-1">
-										<Button
-											disabled={busyId === row.id}
-											onClick={() => onSync(row.id)}
-											size="icon"
-											type="button"
-											variant="ghost"
-										>
-											<RefreshCw className="size-4" />
-										</Button>
-										<Button
-											disabled={busyId === row.id}
-											onClick={() =>
-												onSetStatus(
-													row.id,
-													row.status === "ENABLED" ? "DISABLED" : "ENABLED",
-												)
-											}
-											size="sm"
-											type="button"
-											variant="outline"
-										>
-											{row.status === "ENABLED" ? "Disable" : "Enable"}
-										</Button>
-										<Button
-											className="text-destructive"
-											disabled={busyId === row.id}
-											onClick={() => onDelete(row.id)}
-											size="icon"
-											type="button"
-											variant="ghost"
-										>
-											<Trash2 className="size-4" />
-										</Button>
-									</div>
-								</TableCell>
-							</TableRow>
-						))
+						rows.map((row) => {
+							const isHosted =
+								row.sourceType === McpConnectionSourceType.HOSTED_WORKFLOW;
+							return (
+								<TableRow key={row.id}>
+									<TableCell className="font-medium">
+										{row.displayName}
+									</TableCell>
+									<TableCell>{row.sourceType}</TableCell>
+									<TableCell>{statusBadge(row.status)}</TableCell>
+									<TableCell className="font-mono text-xs">
+										{row.serverUrl ?? "—"}
+									</TableCell>
+									<TableCell className="text-right">
+										<div className="flex justify-end gap-1">
+											<Button
+												disabled={busyId === row.id}
+												onClick={() => onSync(row.id)}
+												size="icon"
+												type="button"
+												variant="ghost"
+											>
+												<RefreshCw className="size-4" />
+											</Button>
+											<Button
+												disabled={busyId === row.id}
+												onClick={() =>
+													onSetStatus(
+														row.id,
+														row.status === "ENABLED" ? "DISABLED" : "ENABLED",
+													)
+												}
+												size="sm"
+												type="button"
+												variant="outline"
+											>
+												{row.status === "ENABLED" ? "Disable" : "Enable"}
+											</Button>
+											<Button
+												className="text-destructive"
+												disabled={busyId === row.id || isHosted}
+												onClick={() => onDelete(row.id)}
+												size="icon"
+												title={
+													isHosted
+														? "Hosted workflow MCP connection cannot be deleted"
+														: "Delete"
+												}
+												type="button"
+												variant="ghost"
+											>
+												<Trash2 className="size-4" />
+											</Button>
+										</div>
+									</TableCell>
+								</TableRow>
+							);
+						})
 					)}
 				</TableBody>
 			</Table>

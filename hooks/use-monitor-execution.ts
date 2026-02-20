@@ -1,7 +1,16 @@
 import useSWR from "swr";
 import type { WorkflowDetail } from "@/lib/types/workflow-ui";
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const fetcher = async (url: string) => {
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) {
+    const message =
+      typeof data?.error === "string" ? data.error : `Request failed: ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+};
 
 /**
  * Hook to fetch a single workflow execution detail

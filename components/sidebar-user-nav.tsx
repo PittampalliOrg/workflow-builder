@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { ChevronUp } from "lucide-react";
 import Image from "next/image";
 import { useTheme } from "next-themes";
@@ -21,6 +22,10 @@ import type { User } from "@/lib/db/schema";
 export function SidebarUserNav({ user }: { user: User }) {
   const { isPending } = useSession();
   const { setTheme, resolvedTheme } = useTheme();
+  // Prevent hydration mismatch: server always renders the pending skeleton,
+  // so the first client render must also show the skeleton until mounted.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   const handleSignOut = async () => {
     await signOut();
@@ -31,7 +36,7 @@ export function SidebarUserNav({ user }: { user: User }) {
       <SidebarMenuItem>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            {isPending ? (
+            {!mounted || isPending ? (
               <SidebarMenuButton className="h-10 justify-between bg-background data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground">
                 <div className="flex flex-row gap-2">
                   <div className="size-6 animate-pulse rounded-full bg-zinc-500/30" />

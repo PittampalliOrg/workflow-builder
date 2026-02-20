@@ -1174,7 +1174,7 @@ app.post("/api/workspaces/clone", async (req, res) => {
 						: undefined,
 		});
 
-		res.json({ success: true, result });
+		res.json({ success: result.success, result });
 	} catch (err) {
 		res.status(400).json({
 			success: false,
@@ -1218,7 +1218,7 @@ app.post("/api/workspaces/command", async (req, res) => {
 						: undefined,
 		});
 
-		res.json({ success: true, result });
+		res.json({ success: result.success, result });
 	} catch (err) {
 		res.status(400).json({
 			success: false,

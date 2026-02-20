@@ -18,8 +18,8 @@ type DiscoveredServer = {
 /**
  * GET /api/mcp-chat/servers/discover
  *
- * Returns project-managed MCP connections that are enabled
- * and have a usable server URL.
+ * Legacy endpoint for MCP Chat server discovery.
+ * Prefer /api/mcp-connections for managed-connection state.
  */
 export async function GET(request: Request) {
 	try {

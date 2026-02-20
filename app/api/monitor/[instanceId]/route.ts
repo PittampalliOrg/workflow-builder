@@ -1,185 +1,222 @@
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, or } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { getWorkflowOrchestratorUrl } from "@/lib/config-service";
+import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import {
-  workflowExecutionLogs,
-  workflowExecutions,
-  workflows,
+	workflowExecutionLogs,
+	workflowExecutions,
+	workflows,
 } from "@/lib/db/schema";
 import {
-  mapWorkflowStatus,
-  toWorkflowDetail,
+	calculateDuration,
+	mapExecutionLogsToEvents,
+	mapWorkflowStatus,
+	toWorkflowDetail,
 } from "@/lib/transforms/workflow-ui";
+import type {
+	DaprExecutionEvent,
+	WorkflowDetail,
+	WorkflowPhase,
+} from "@/lib/types/workflow-ui";
 
 export const dynamic = "force-dynamic";
 
-/**
- * Dapr workflow status response from orchestrator
- */
-type DaprWorkflowStatus = {
-  instanceId: string;
-  workflowId: string;
-  runtimeStatus:
-    | "RUNNING"
-    | "COMPLETED"
-    | "FAILED"
-    | "TERMINATED"
-    | "PENDING"
-    | "SUSPENDED"
-    | "UNKNOWN";
-  phase?: string;
-  progress?: number;
-  message?: string;
-  currentNodeId?: string;
-  currentNodeName?: string;
-  outputs?: unknown;
-  error?: string;
-  startedAt?: string;
-  completedAt?: string;
-};
+function toWorkflowPhase(phase: string | undefined): WorkflowPhase | undefined {
+	if (!phase) return undefined;
+	if (phase === "clone") return phase;
+	if (phase === "exploration") return phase;
+	if (phase === "planning") return phase;
+	if (phase === "awaiting_approval") return phase;
+	if (phase === "executing") return phase;
+	if (phase === "completed") return phase;
+	if (phase === "failed") return phase;
+	return undefined;
+}
 
-/**
- * Fetch real-time workflow status from Dapr via orchestrator
- */
-async function fetchDaprWorkflowStatus(
-  daprInstanceId: string
-): Promise<DaprWorkflowStatus | null> {
-  try {
-    const orchestratorUrl = await getWorkflowOrchestratorUrl();
-    const url = `${orchestratorUrl}/api/v2/workflows/${encodeURIComponent(daprInstanceId)}/status`;
+function mapHistoryEventType(eventType: string): DaprExecutionEvent["eventType"] {
+	if (eventType === "ExecutionCompleted") return eventType;
+	if (eventType === "OrchestratorStarted") return eventType;
+	if (eventType === "TaskCompleted") return eventType;
+	if (eventType === "TaskScheduled") return eventType;
+	if (eventType === "EventRaised") return eventType;
+	return "TaskCompleted";
+}
 
-    const response = await fetch(url, {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
-      // Short timeout to avoid blocking if orchestrator is unavailable
-      signal: AbortSignal.timeout(3000),
-    });
-
-    if (!response.ok) {
-      console.warn(
-        `[Monitor] Failed to fetch Dapr status for ${daprInstanceId}: ${response.status}`
-      );
-      return null;
-    }
-
-    return (await response.json()) as DaprWorkflowStatus;
-  } catch (error) {
-    // Don't fail the request if Dapr status is unavailable
-    console.warn(
-      `[Monitor] Could not fetch Dapr status for ${daprInstanceId}:`,
-      error
-    );
-    return null;
-  }
+function toExecutionHistoryEvent(
+	event: Awaited<
+		ReturnType<typeof genericOrchestratorClient.getWorkflowHistory>
+	>["events"][number],
+): DaprExecutionEvent {
+	return {
+		eventId: typeof event.eventId === "number" ? event.eventId : null,
+		eventType: mapHistoryEventType(event.eventType),
+		name: typeof event.name === "string" ? event.name : null,
+		timestamp:
+			typeof event.timestamp === "string"
+				? event.timestamp
+				: new Date().toISOString(),
+		input: event.input,
+		output: event.output,
+		metadata:
+			event.metadata && typeof event.metadata === "object"
+				? {
+						status:
+							typeof event.metadata.status === "string"
+								? event.metadata.status
+								: undefined,
+						taskId:
+							typeof event.metadata.taskId === "string"
+								? event.metadata.taskId
+								: undefined,
+					}
+				: undefined,
+	};
 }
 
 /**
  * GET /api/monitor/[instanceId]
- * Get detailed information for a single workflow execution
- * Merges PostgreSQL data with real-time Dapr status
+ * Dapr-first detail endpoint with DB enrichment/fallback.
  */
 export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ instanceId: string }> }
+	_request: NextRequest,
+	{ params }: { params: Promise<{ instanceId: string }> },
 ) {
-  try {
-    const { instanceId } = await params;
+	try {
+		const { instanceId } = await params;
 
-    // Fetch execution with workflow from PostgreSQL
-    const [result] = await db
-      .select({
-        execution: workflowExecutions,
-        workflow: workflows,
-      })
-      .from(workflowExecutions)
-      .innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
-      .where(eq(workflowExecutions.id, instanceId))
-      .limit(1);
+		const [dbResult] = await db
+			.select({
+				execution: workflowExecutions,
+				workflow: workflows,
+			})
+			.from(workflowExecutions)
+			.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+			.where(
+				or(
+					eq(workflowExecutions.id, instanceId),
+					eq(workflowExecutions.daprInstanceId, instanceId),
+				),
+			)
+			.limit(1);
 
-    if (!result) {
-      return NextResponse.json(
-        { error: "Workflow execution not found" },
-        { status: 404 }
-      );
-    }
+		const logs = dbResult
+			? await db
+					.select()
+					.from(workflowExecutionLogs)
+					.where(eq(workflowExecutionLogs.executionId, dbResult.execution.id))
+					.orderBy(asc(workflowExecutionLogs.timestamp))
+			: [];
 
-    // Fetch execution logs from PostgreSQL
-    const logs = await db
-      .select()
-      .from(workflowExecutionLogs)
-      .where(eq(workflowExecutionLogs.executionId, instanceId))
-      .orderBy(asc(workflowExecutionLogs.timestamp));
+		const daprInstanceId = dbResult?.execution.daprInstanceId || instanceId;
+		let daprStatus:
+			| Awaited<ReturnType<typeof genericOrchestratorClient.getWorkflowStatus>>
+			| null = null;
+		let daprHistory:
+			| Awaited<ReturnType<typeof genericOrchestratorClient.getWorkflowHistory>>
+			| null = null;
 
-    // Transform PostgreSQL data to UI format
-    const detail = toWorkflowDetail(result.execution, result.workflow, logs);
+		try {
+			const orchestratorUrl = await getWorkflowOrchestratorUrl();
+			daprStatus = await genericOrchestratorClient.getWorkflowStatus(
+				orchestratorUrl,
+				daprInstanceId,
+			);
+			daprHistory = await genericOrchestratorClient.getWorkflowHistory(
+				orchestratorUrl,
+				daprInstanceId,
+			);
+		} catch (error) {
+			console.warn(
+				`[Monitor] Failed to fetch Dapr status/history for ${daprInstanceId}:`,
+				error,
+			);
+		}
 
-    // If we have a Dapr instance ID, fetch real-time status from Dapr
-    const daprInstanceId = result.execution.daprInstanceId;
-    if (daprInstanceId) {
-      const daprStatus = await fetchDaprWorkflowStatus(daprInstanceId);
+		if (!dbResult && !daprStatus) {
+			return NextResponse.json(
+				{ error: "Workflow execution not found" },
+				{ status: 404 },
+			);
+		}
 
-      if (daprStatus) {
-        // Merge Dapr real-time status with PostgreSQL data
-        // Dapr status is authoritative for running workflows
-        detail.daprStatus = {
-          runtimeStatus: daprStatus.runtimeStatus,
-          phase: daprStatus.phase,
-          progress: daprStatus.progress,
-          message: daprStatus.message,
-          currentNodeId: daprStatus.currentNodeId,
-          currentNodeName: daprStatus.currentNodeName,
-          error: daprStatus.error,
-        };
+		if (daprStatus) {
+			const startTime =
+				daprStatus.startedAt ||
+				(dbResult ? new Date(dbResult.execution.startedAt).toISOString() : null) ||
+				new Date().toISOString();
+			const endTime =
+				daprStatus.completedAt ||
+				(dbResult?.execution.completedAt
+					? new Date(dbResult.execution.completedAt).toISOString()
+					: null);
+			const phase = toWorkflowPhase(daprStatus.phase);
+			const history =
+				daprHistory?.events?.map(toExecutionHistoryEvent) ||
+				(dbResult
+					? mapExecutionLogsToEvents(
+							logs,
+							dbResult.execution.startedAt,
+							dbResult.execution.completedAt,
+							dbResult.execution.status,
+							dbResult.execution.input,
+						)
+					: []);
 
-        // Update status from Dapr if it's a known valid status
-        // UNKNOWN means Dapr doesn't have the workflow (purged/not found) - trust PostgreSQL instead
-        if (
-          daprStatus.runtimeStatus &&
-          daprStatus.runtimeStatus !== "UNKNOWN"
-        ) {
-          const daprMappedStatus = mapWorkflowStatus(daprStatus.runtimeStatus);
+			const detail: WorkflowDetail = {
+				instanceId: daprStatus.instanceId,
+				workflowType:
+					daprStatus.workflowName || daprStatus.workflowId || "workflow",
+				appId: "workflow-orchestrator",
+				status: mapWorkflowStatus(daprStatus.runtimeStatus),
+				startTime,
+				endTime,
+				customStatus:
+					phase ||
+					daprStatus.progress !== undefined ||
+					daprStatus.message ||
+					daprStatus.currentNodeName
+						? {
+								phase: phase || "executing",
+								progress: daprStatus.progress ?? 0,
+								message: daprStatus.message || "",
+								currentTask: daprStatus.currentNodeName || undefined,
+							}
+						: undefined,
+				workflowName: dbResult?.workflow.name || daprStatus.workflowName || undefined,
+				executionDuration: calculateDuration(startTime, endTime),
+				input: dbResult?.execution.input || {},
+				output: daprStatus.outputs || dbResult?.execution.output || {},
+				executionHistory: history,
+				daprStatus: {
+					runtimeStatus: daprStatus.runtimeStatus as
+						| "RUNNING"
+						| "COMPLETED"
+						| "FAILED"
+						| "CANCELED"
+						| "TERMINATED"
+						| "PENDING"
+						| "SUSPENDED"
+						| "STALLED"
+						| "UNKNOWN",
+					phase: daprStatus.phase,
+					progress: daprStatus.progress,
+					message: daprStatus.message,
+					currentNodeId: daprStatus.currentNodeId,
+					currentNodeName: daprStatus.currentNodeName,
+					error: daprStatus.error,
+				},
+			};
+			return NextResponse.json(detail);
+		}
 
-          // Dapr is authoritative for active workflows
-          // If Dapr says it's RUNNING but DB says completed, trust Dapr (DB hasn't caught up)
-          // If Dapr says COMPLETED/FAILED but DB says running, trust Dapr (more current)
-          if (daprMappedStatus !== detail.status) {
-            detail.status = daprMappedStatus;
-          }
-        }
-        // If Dapr status is UNKNOWN, PostgreSQL status is authoritative (workflow may be purged)
-
-        // Update phase and progress from Dapr (more real-time)
-        if (daprStatus.phase) {
-          detail.customStatus = {
-            ...detail.customStatus,
-            phase: daprStatus.phase as
-              | "clone"
-              | "exploration"
-              | "planning"
-              | "awaiting_approval"
-              | "executing"
-              | "completed"
-              | "failed",
-            progress: daprStatus.progress ?? detail.customStatus?.progress ?? 0,
-            message: daprStatus.message ?? detail.customStatus?.message ?? "",
-            currentTask: daprStatus.currentNodeName,
-          };
-        }
-
-        // Update error from Dapr if present
-        if (daprStatus.error && !detail.output) {
-          detail.output = { error: daprStatus.error };
-        }
-      }
-    }
-
-    return NextResponse.json(detail);
-  } catch (error) {
-    console.error("Error fetching workflow execution detail:", error);
-    return NextResponse.json(
-      { error: "Failed to fetch workflow execution detail" },
-      { status: 500 }
-    );
-  }
+		const fallback = toWorkflowDetail(dbResult!.execution, dbResult!.workflow, logs);
+		return NextResponse.json(fallback);
+	} catch (error) {
+		console.error("Error fetching workflow execution detail:", error);
+		return NextResponse.json(
+			{ error: "Failed to fetch workflow execution detail" },
+			{ status: 500 },
+		);
+	}
 }

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
 
 from dapr.ext.workflow import DaprWorkflowClient
@@ -248,6 +249,7 @@ class WorkflowStatusResponse(BaseModel):
     """Workflow status response."""
     instanceId: str
     workflowId: str
+    workflowName: str | None = None
     runtimeStatus: str
     traceId: str | None = None
     phase: str | None = None
@@ -260,6 +262,49 @@ class WorkflowStatusResponse(BaseModel):
     error: str | None = None
     startedAt: str | None = None
     completedAt: str | None = None
+
+
+class WorkflowListItemResponse(BaseModel):
+    """Workflow list item response."""
+    instanceId: str
+    workflowId: str
+    workflowName: str | None = None
+    runtimeStatus: str
+    traceId: str | None = None
+    phase: str | None = None
+    progress: int = 0
+    message: str | None = None
+    currentNodeId: str | None = None
+    currentNodeName: str | None = None
+    error: str | None = None
+    startedAt: str | None = None
+    completedAt: str | None = None
+
+
+class WorkflowListResponse(BaseModel):
+    """Workflow list response."""
+    workflows: list[WorkflowListItemResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class WorkflowHistoryEventResponse(BaseModel):
+    """Workflow history event response."""
+    eventId: int | None = None
+    eventType: str
+    timestamp: str | None = None
+    name: str | None = None
+    input: Any = None
+    output: Any = None
+    metadata: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
+
+
+class WorkflowHistoryResponse(BaseModel):
+    """Workflow history response."""
+    instanceId: str
+    events: list[WorkflowHistoryEventResponse]
 
 
 # --- Helper Functions ---
@@ -715,18 +760,244 @@ def map_runtime_status(dapr_status: str) -> str:
         "WORKFLOW_RUNTIME_STATUS_RUNNING": "RUNNING",
         "WORKFLOW_RUNTIME_STATUS_COMPLETED": "COMPLETED",
         "WORKFLOW_RUNTIME_STATUS_FAILED": "FAILED",
+        "WORKFLOW_RUNTIME_STATUS_CANCELED": "CANCELED",
         "WORKFLOW_RUNTIME_STATUS_TERMINATED": "TERMINATED",
         "WORKFLOW_RUNTIME_STATUS_PENDING": "PENDING",
         "WORKFLOW_RUNTIME_STATUS_SUSPENDED": "SUSPENDED",
+        "WORKFLOW_RUNTIME_STATUS_STALLED": "STALLED",
         # Handle string values
         "RUNNING": "RUNNING",
         "COMPLETED": "COMPLETED",
         "FAILED": "FAILED",
+        "CANCELED": "CANCELED",
         "TERMINATED": "TERMINATED",
         "PENDING": "PENDING",
         "SUSPENDED": "SUSPENDED",
+        "STALLED": "STALLED",
     }
     return status_map.get(str(dapr_status), "UNKNOWN")
+
+
+def _workflow_id_from_instance(instance_id: str) -> str:
+    """Extract workflow ID from instance ID."""
+    parts = instance_id.rsplit("-", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+        return parts[0]
+    return instance_id.split("-")[0]
+
+
+def _parse_json_value(value: Any) -> Any:
+    """Parse serialized JSON payloads from Dapr workflow state."""
+    parsed = value
+    while isinstance(parsed, str):
+        text = parsed.strip()
+        if not text:
+            return parsed
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            return parsed
+    return parsed
+
+
+def _state_runtime_status(state: Any) -> str:
+    """Normalize workflow runtime status name."""
+    runtime_status = "UNKNOWN"
+    if hasattr(state, "runtime_status") and state.runtime_status:
+        runtime_status = (
+            state.runtime_status.name
+            if hasattr(state.runtime_status, "name")
+            else str(state.runtime_status)
+        )
+    return map_runtime_status(runtime_status)
+
+
+def _state_to_dict(state: Any) -> dict[str, Any]:
+    """Convert workflow state object to dict when possible."""
+    if hasattr(state, "to_json"):
+        state_dict = state.to_json()
+        if isinstance(state_dict, dict):
+            return state_dict
+    return {}
+
+
+def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, Any]:
+    """Build normalized workflow status payload."""
+    runtime_status = _state_runtime_status(state)
+    state_dict = _state_to_dict(state)
+
+    phase = None
+    progress = 0
+    message = None
+    current_node_id = None
+    current_node_name = None
+    approval_event_name = None
+    trace_id = None
+    outputs = None
+    error = None
+
+    custom_status = _parse_json_value(state_dict.get("serialized_custom_status"))
+    if isinstance(custom_status, dict):
+        phase = custom_status.get("phase")
+        progress = custom_status.get("progress", 0)
+        message = custom_status.get("message")
+        current_node_id = custom_status.get("currentNodeId")
+        current_node_name = custom_status.get("currentNodeName")
+        approval_event_name = custom_status.get("approvalEventName")
+        trace_id = custom_status.get("traceId") or custom_status.get("trace_id")
+
+    serialized_output = _parse_json_value(state_dict.get("serialized_output"))
+    if isinstance(serialized_output, dict):
+        outputs = serialized_output
+    elif serialized_output is not None:
+        outputs = {"raw": serialized_output}
+
+    failure = state_dict.get("failure_details")
+    if isinstance(failure, dict):
+        failure_message = failure.get("message")
+        if isinstance(failure_message, str) and failure_message:
+            error = failure_message
+
+    started_at = None
+    if hasattr(state, "created_at") and state.created_at:
+        started_at = (
+            state.created_at.isoformat()
+            if hasattr(state.created_at, "isoformat")
+            else str(state.created_at)
+        )
+
+    completed_at = None
+    if runtime_status in ("COMPLETED", "FAILED", "TERMINATED"):
+        if hasattr(state, "last_updated_at") and state.last_updated_at:
+            completed_at = (
+                state.last_updated_at.isoformat()
+                if hasattr(state.last_updated_at, "isoformat")
+                else str(state.last_updated_at)
+            )
+
+    workflow_name = None
+    if hasattr(state, "name") and state.name:
+        workflow_name = str(state.name)
+    if not workflow_name and isinstance(state_dict.get("name"), str):
+        workflow_name = state_dict["name"]
+
+    workflow_id = _workflow_id_from_instance(instance_id)
+
+    return {
+        "instanceId": instance_id,
+        "workflowId": workflow_id,
+        "workflowName": workflow_name,
+        "runtimeStatus": runtime_status,
+        "traceId": trace_id,
+        "phase": phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
+        "progress": progress if isinstance(progress, int) else 0,
+        "message": message,
+        "currentNodeId": current_node_id,
+        "currentNodeName": current_node_name,
+        "approvalEventName": approval_event_name,
+        "outputs": outputs,
+        "error": error,
+        "startedAt": started_at,
+        "completedAt": completed_at,
+    }
+
+
+def _get_taskhub_stub(client: DaprWorkflowClient):
+    """Get internal durabletask gRPC stub from DaprWorkflowClient."""
+    internal = getattr(client, "_DaprWorkflowClient__obj", None)
+    if internal is None:
+        raise RuntimeError("Dapr workflow client internal taskhub is unavailable")
+    stub = getattr(internal, "_stub", None)
+    if stub is None:
+        raise RuntimeError("Dapr workflow client internal gRPC stub is unavailable")
+    return stub
+
+
+def _list_instance_ids(
+    client: DaprWorkflowClient,
+    continuation_token: str | None = None,
+    page_size: int = 200,
+) -> tuple[list[str], str | None]:
+    """List workflow instance IDs using Dapr 1.17 APIs."""
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    request = pb.ListInstanceIDsRequest(pageSize=page_size)
+    if continuation_token:
+        request.continuationToken = continuation_token
+
+    response = _get_taskhub_stub(client).ListInstanceIDs(request)
+    next_token = getattr(response, "continuationToken", None) or None
+    return list(response.instanceIds), next_token
+
+
+def _normalize_history_event(event: Any) -> dict[str, Any]:
+    """Normalize a durabletask HistoryEvent protobuf object."""
+    from google.protobuf.json_format import MessageToDict
+
+    payload_name = "unknown"
+    payload = None
+    for field_descriptor, value in event.ListFields():
+        if field_descriptor.name in ("eventId", "timestamp", "router"):
+            continue
+        payload_name = field_descriptor.name
+        payload = value
+        break
+
+    payload_dict = (
+        MessageToDict(payload, preserving_proto_field_name=True)
+        if payload is not None
+        else {}
+    )
+
+    name_value = None
+    for key in ("name", "event_name", "instance_id", "task_execution_id", "task_scheduled_id"):
+        value = payload_dict.get(key)
+        if isinstance(value, (str, int)):
+            name_value = str(value)
+            break
+
+    input_value = payload_dict.get("input")
+    if isinstance(input_value, dict):
+        input_value = input_value.get("value", input_value)
+    output_value = payload_dict.get("result")
+    if isinstance(output_value, dict):
+        output_value = output_value.get("value", output_value)
+    if output_value is None and "failure_details" in payload_dict:
+        output_value = payload_dict.get("failure_details")
+
+    metadata: dict[str, Any] = {}
+    if "orchestration_status" in payload_dict:
+        metadata["status"] = map_runtime_status(str(payload_dict["orchestration_status"]))
+    task_id = payload_dict.get("task_scheduled_id") or payload_dict.get("task_execution_id")
+    if isinstance(task_id, (str, int)):
+        metadata["taskId"] = str(task_id)
+
+    timestamp = None
+    if hasattr(event, "timestamp") and event.HasField("timestamp"):
+        timestamp = event.timestamp.ToDatetime().isoformat()
+
+    event_id = int(event.eventId) if getattr(event, "eventId", 0) > 0 else None
+    event_type = payload_name[0:1].upper() + payload_name[1:]
+
+    return {
+        "eventId": event_id,
+        "eventType": event_type,
+        "timestamp": timestamp,
+        "name": name_value,
+        "input": _parse_json_value(input_value),
+        "output": _parse_json_value(output_value),
+        "metadata": metadata or None,
+        "raw": payload_dict or None,
+    }
+
+
+def _get_instance_history(client: DaprWorkflowClient, instance_id: str) -> list[dict[str, Any]]:
+    """Get workflow execution history events via Dapr 1.17 APIs."""
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    request = pb.GetInstanceHistoryRequest(instanceId=instance_id)
+    response = _get_taskhub_stub(client).GetInstanceHistory(request)
+    return [_normalize_history_event(event) for event in response.events]
 
 
 # --- Routes ---
@@ -978,6 +1249,91 @@ def get_workflow_detail(instance_id: str):
     return data
 
 
+@app.get("/api/v2/workflows", response_model=WorkflowListResponse)
+def list_workflows(
+    status: str | None = None,
+    search: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """
+    List workflow instances.
+
+    GET /api/v2/workflows
+    """
+    try:
+        normalized_limit = max(1, min(limit, 200))
+        normalized_offset = max(0, offset)
+        status_filter = {
+            part.strip().upper()
+            for part in (status or "").split(",")
+            if part.strip()
+        }
+        search_filter = (search or "").strip().lower()
+
+        client = get_workflow_client()
+        instance_ids: list[str] = []
+        continuation_token: str | None = None
+        max_scan = 5000
+
+        while len(instance_ids) < max_scan:
+            page_ids, continuation_token = _list_instance_ids(
+                client,
+                continuation_token=continuation_token,
+                page_size=200,
+            )
+            if not page_ids:
+                break
+            instance_ids.extend(page_ids)
+            if not continuation_token:
+                break
+
+        items: list[dict[str, Any]] = []
+        for instance_id in instance_ids[:max_scan]:
+            state = client.get_workflow_state(
+                instance_id=instance_id,
+                fetch_payloads=True,
+            )
+            if state is None:
+                continue
+
+            payload = _build_workflow_status_payload(instance_id, state)
+            runtime_status = str(payload.get("runtimeStatus") or "UNKNOWN").upper()
+            if status_filter and runtime_status not in status_filter:
+                continue
+
+            if search_filter:
+                fields = [
+                    str(payload.get("instanceId") or ""),
+                    str(payload.get("workflowId") or ""),
+                    str(payload.get("workflowName") or ""),
+                    str(payload.get("phase") or ""),
+                    str(payload.get("message") or ""),
+                ]
+                if not any(search_filter in field.lower() for field in fields):
+                    continue
+
+            items.append(payload)
+
+        items.sort(
+            key=lambda item: str(item.get("startedAt") or ""),
+            reverse=True,
+        )
+        total = len(items)
+        page = items[normalized_offset : normalized_offset + normalized_limit]
+        workflows = [WorkflowListItemResponse(**item) for item in page]
+
+        return WorkflowListResponse(
+            workflows=workflows,
+            total=total,
+            limit=normalized_limit,
+            offset=normalized_offset,
+        )
+    except Exception as e:
+        logger.error(f"[Workflow Routes] Failed to list workflows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v2/workflows/{instance_id}/status", response_model=WorkflowStatusResponse)
 def get_workflow_status(instance_id: str):
     """
@@ -991,105 +1347,40 @@ def get_workflow_status(instance_id: str):
 
         if state is None:
             raise HTTPException(status_code=404, detail="Workflow not found")
-
-        # Get runtime status
-        runtime_status = "UNKNOWN"
-        if hasattr(state, "runtime_status") and state.runtime_status:
-            runtime_status = (
-                state.runtime_status.name
-                if hasattr(state.runtime_status, "name")
-                else str(state.runtime_status)
-            )
-
-        runtime_status = map_runtime_status(runtime_status)
-
-        # Parse custom status and output
-        phase = None
-        progress = 0
-        message = None
-        current_node_id = None
-        current_node_name = None
-        approval_event_name = None
-        trace_id = None
-        outputs = None
-        error = None
-        started_at = None
-        completed_at = None
-
-        if hasattr(state, "to_json"):
-            state_dict = state.to_json()
-            if isinstance(state_dict, dict):
-                # Custom status
-                custom_str = state_dict.get("serialized_custom_status")
-                if custom_str:
-                    try:
-                        parsed = json.loads(custom_str)
-                        while isinstance(parsed, str):
-                            parsed = json.loads(parsed)
-                        if isinstance(parsed, dict):
-                            phase = parsed.get("phase")
-                            progress = parsed.get("progress", 0)
-                            message = parsed.get("message")
-                            current_node_id = parsed.get("currentNodeId")
-                            current_node_name = parsed.get("currentNodeName")
-                            approval_event_name = parsed.get("approvalEventName")
-                            trace_id = parsed.get("traceId") or parsed.get("trace_id")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                # Output
-                output_str = state_dict.get("serialized_output")
-                if output_str:
-                    try:
-                        parsed = json.loads(output_str)
-                        while isinstance(parsed, str):
-                            parsed = json.loads(parsed)
-                        outputs = parsed if isinstance(parsed, dict) else {"raw": str(parsed)}
-                    except (json.JSONDecodeError, TypeError):
-                        outputs = {"raw": str(output_str)}
-
-                # Failure details
-                failure = state_dict.get("failure_details")
-                if failure:
-                    error = failure.get("message")
-
-        # Timestamps
-        if hasattr(state, "created_at") and state.created_at:
-            started_at = (
-                state.created_at.isoformat()
-                if hasattr(state.created_at, "isoformat")
-                else str(state.created_at)
-            )
-
-        if runtime_status in ("COMPLETED", "FAILED"):
-            if hasattr(state, "last_updated_at") and state.last_updated_at:
-                completed_at = (
-                    state.last_updated_at.isoformat()
-                    if hasattr(state.last_updated_at, "isoformat")
-                    else str(state.last_updated_at)
-                )
-
-        return WorkflowStatusResponse(
-            instanceId=instance_id,
-            workflowId=instance_id.split("-")[0],
-            runtimeStatus=runtime_status,
-            traceId=trace_id,
-            phase=phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
-            progress=progress,
-            message=message,
-            currentNodeId=current_node_id,
-            currentNodeName=current_node_name,
-            approvalEventName=approval_event_name,
-            outputs=outputs,
-            error=error,
-            startedAt=started_at,
-            completedAt=completed_at,
-        )
+        payload = _build_workflow_status_payload(instance_id, state)
+        return WorkflowStatusResponse(**payload)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to get workflow status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v2/workflows/{instance_id}/history", response_model=WorkflowHistoryResponse)
+def get_workflow_history(instance_id: str):
+    """
+    Get workflow execution history.
+
+    GET /api/v2/workflows/:instanceId/history
+    """
+    try:
+        client = get_workflow_client()
+        state = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
+        if state is None:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        events = _get_instance_history(client, instance_id)
+        events.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+
+        return WorkflowHistoryResponse(
+            instanceId=instance_id,
+            events=[WorkflowHistoryEventResponse(**event) for event in events],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Workflow Routes] Failed to get workflow history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

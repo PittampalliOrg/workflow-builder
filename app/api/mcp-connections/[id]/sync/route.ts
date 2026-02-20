@@ -2,11 +2,15 @@ import { NextResponse } from "next/server";
 import { normalizePieceName } from "@/lib/activepieces/installed-pieces";
 import { getSession } from "@/lib/auth-helpers";
 import {
+	getPopulatedMcpServerByProjectId,
+	syncHostedWorkflowMcpConnection,
+} from "@/lib/db/mcp";
+import {
 	getMcpConnectionById,
 	updateMcpConnectionSync,
 } from "@/lib/db/mcp-connections";
 import { toMcpConnectionDto } from "@/lib/mcp-connections/serialize";
-import { discoverPieceServer } from "@/lib/mcp-runtime/service";
+import { ensurePieceServer } from "@/lib/mcp-runtime/service";
 import { getUserProjectRole } from "@/lib/project-service";
 import { discoverTools } from "@/lib/mcp-chat/mcp-client-manager";
 
@@ -40,24 +44,91 @@ export async function POST(
 		return NextResponse.json({ error: "Not found" }, { status: 404 });
 	}
 
+	if (row.sourceType === "hosted_workflow") {
+		const server = await getPopulatedMcpServerByProjectId(
+			session.user.projectId,
+		);
+		const synced = await syncHostedWorkflowMcpConnection({
+			projectId: session.user.projectId,
+			status: server.status,
+			actorUserId: session.user.id,
+			request,
+		});
+
+		// Derive tool list from the hosted MCP workflows
+		const hostedTools = server.flows
+			.filter((f) => f.enabled)
+			.map((f) => ({
+				name: f.trigger.toolName,
+				description: f.trigger.toolDescription || undefined,
+			}));
+		if (hostedTools.length > 0 || synced.metadata) {
+			const existingMeta = (synced.metadata as Record<string, unknown>) ?? {};
+			const updated = await updateMcpConnectionSync({
+				id,
+				projectId: session.user.projectId,
+				status: synced.status as "ENABLED" | "DISABLED" | "ERROR",
+				lastError: synced.lastError,
+				metadata: {
+					...existingMeta,
+					toolCount: hostedTools.length,
+					tools: hostedTools,
+				},
+				actorUserId: session.user.id,
+			});
+			if (updated) {
+				return NextResponse.json(toMcpConnectionDto(updated));
+			}
+		}
+
+		return NextResponse.json(toMcpConnectionDto(synced));
+	}
+
 	if (row.sourceType === "nimble_piece") {
 		const pieceName = normalizePieceName(row.pieceName ?? "");
-		const runtime = await discoverPieceServer(pieceName);
+		if (!pieceName) {
+			return NextResponse.json(
+				{ error: "Piece name is required for nimble_piece rows" },
+				{ status: 400 },
+			);
+		}
+		const runtime = await ensurePieceServer({
+			pieceName,
+		});
+		const serverUrl = runtime.server?.url ?? row.serverUrl;
+
+		// Discover tools from the running server
+		let toolsMeta: { toolCount: number; tools: { name: string; description?: string }[] } = { toolCount: 0, tools: [] };
+		if (serverUrl && runtime.server?.healthy) {
+			try {
+				const discovered = await discoverTools(serverUrl, row.displayName, session.user.id);
+				toolsMeta = {
+					toolCount: discovered.length,
+					tools: discovered.map((t) => ({ name: t.name, description: t.description })),
+				};
+			} catch {
+				// Tool discovery failed — still update runtime info
+			}
+		}
+
 		const updated = await updateMcpConnectionSync({
 			id,
 			projectId: session.user.projectId,
-			serverUrl: runtime?.url ?? row.serverUrl,
-			registryRef: runtime?.registryRef ?? row.registryRef,
-			status: runtime?.healthy
+			serverUrl,
+			registryRef: runtime.server?.registryRef ?? row.registryRef,
+			status: runtime.server?.healthy
 				? "ENABLED"
 				: row.status === "DISABLED"
 					? "DISABLED"
 					: "ERROR",
-			lastError: runtime?.healthy ? null : "Runtime server unavailable",
-			metadata: runtime
+			lastError: runtime.server?.healthy
+				? null
+				: (runtime.error ?? "Runtime server unavailable"),
+			metadata: runtime.server
 				? {
-						provider: runtime.provider,
-						serviceName: runtime.serviceName,
+						provider: runtime.server.provider,
+						serviceName: runtime.server.serviceName,
+						...toolsMeta,
 					}
 				: (row.metadata as Record<string, unknown> | null),
 			actorUserId: session.user.id,
@@ -80,6 +151,7 @@ export async function POST(
 				metadata: {
 					...(row.metadata as Record<string, unknown> | null),
 					toolCount: tools.length,
+					tools: tools.map((t) => ({ name: t.name, description: t.description })),
 				},
 				actorUserId: session.user.id,
 			});

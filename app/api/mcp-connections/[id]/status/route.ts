@@ -1,27 +1,22 @@
-import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { normalizePieceName } from "@/lib/activepieces/installed-pieces";
 import { getSession } from "@/lib/auth-helpers";
-import { db } from "@/lib/db";
+import {
+	syncHostedWorkflowMcpConnection,
+	updateMcpServerStatus,
+} from "@/lib/db/mcp";
 import {
 	getMcpConnectionById,
 	updateMcpConnectionStatus,
 	updateMcpConnectionSync,
 } from "@/lib/db/mcp-connections";
-import { appConnections } from "@/lib/db/schema";
 import { toMcpConnectionDto } from "@/lib/mcp-connections/serialize";
 import { ensurePieceServer } from "@/lib/mcp-runtime/service";
 import { getUserProjectRole } from "@/lib/project-service";
-import { AppConnectionStatus } from "@/lib/types/app-connection";
 import type { McpConnectionStatus } from "@/lib/types/mcp-connection";
 
 function canWrite(role: string) {
 	return role === "ADMIN" || role === "EDITOR";
-}
-
-function candidatesForPieceName(pieceName: string): string[] {
-	const normalized = normalizePieceName(pieceName);
-	return [normalized, `@activepieces/piece-${normalized}`];
 }
 
 export async function POST(
@@ -55,6 +50,20 @@ export async function POST(
 		return NextResponse.json({ error: "Not found" }, { status: 404 });
 	}
 
+	if (current.sourceType === "hosted_workflow") {
+		const server = await updateMcpServerStatus({
+			projectId: session.user.projectId,
+			status: body.status,
+		});
+		const synced = await syncHostedWorkflowMcpConnection({
+			projectId: session.user.projectId,
+			status: server.status,
+			actorUserId: session.user.id,
+			request,
+		});
+		return NextResponse.json(toMcpConnectionDto(synced));
+	}
+
 	if (body.status === "DISABLED") {
 		const row = await updateMcpConnectionStatus({
 			id,
@@ -75,20 +84,8 @@ export async function POST(
 			);
 		}
 
-		const activeConnection = await db
-			.select({ externalId: appConnections.externalId })
-			.from(appConnections)
-			.where(
-				and(
-					eq(appConnections.status, AppConnectionStatus.ACTIVE),
-					inArray(appConnections.pieceName, candidatesForPieceName(pieceName)),
-				),
-			)
-			.limit(1);
-
 		const ensured = await ensurePieceServer({
 			pieceName,
-			connectionExternalId: activeConnection[0]?.externalId,
 		});
 		const synced = await updateMcpConnectionSync({
 			id,

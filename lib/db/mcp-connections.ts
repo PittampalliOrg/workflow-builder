@@ -146,6 +146,74 @@ export async function createCustomMcpConnection(params: {
 	return created;
 }
 
+export async function upsertHostedWorkflowMcpConnection(params: {
+	projectId: string;
+	displayName?: string;
+	serverUrl?: string | null;
+	registryRef?: string | null;
+	status: McpConnectionStatus;
+	metadata?: Record<string, unknown> | null;
+	lastError?: string | null;
+	actorUserId?: string | null;
+}): Promise<McpConnection> {
+	const now = new Date();
+	const displayName =
+		params.displayName?.trim() || "Workflow Builder Hosted MCP";
+	const existing = await db.query.mcpConnections.findFirst({
+		where: and(
+			eq(mcpConnections.projectId, params.projectId),
+			eq(mcpConnections.sourceType, "hosted_workflow"),
+		),
+	});
+
+	if (existing) {
+		// Merge metadata so tool lists from sync aren't overwritten
+		const existingMeta = (existing.metadata as Record<string, unknown>) ?? {};
+		const mergedMeta = params.metadata
+			? { ...existingMeta, ...params.metadata }
+			: existingMeta;
+
+		const [updated] = await db
+			.update(mcpConnections)
+			.set({
+				displayName,
+				serverUrl: params.serverUrl ?? existing.serverUrl,
+				registryRef: params.registryRef ?? existing.registryRef,
+				status: params.status,
+				lastSyncAt: now,
+				lastError: params.lastError ?? null,
+				metadata: Object.keys(mergedMeta).length > 0 ? mergedMeta : null,
+				updatedBy: params.actorUserId ?? null,
+				updatedAt: now,
+			})
+			.where(eq(mcpConnections.id, existing.id))
+			.returning();
+		return updated;
+	}
+
+	const [created] = await db
+		.insert(mcpConnections)
+		.values({
+			id: generateId(),
+			projectId: params.projectId,
+			sourceType: "hosted_workflow",
+			pieceName: null,
+			displayName,
+			registryRef: params.registryRef ?? "mcp-gateway",
+			serverUrl: params.serverUrl ?? null,
+			status: params.status,
+			lastSyncAt: now,
+			lastError: params.lastError ?? null,
+			metadata: params.metadata ?? null,
+			createdBy: params.actorUserId ?? null,
+			updatedBy: params.actorUserId ?? null,
+			createdAt: now,
+			updatedAt: now,
+		})
+		.returning();
+	return created;
+}
+
 export async function updateMcpConnectionStatus(params: {
 	id: string;
 	projectId: string;

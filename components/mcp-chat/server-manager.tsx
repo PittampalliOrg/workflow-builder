@@ -1,13 +1,15 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { useAtom } from "jotai";
+import Link from "next/link";
+import { useCallback, useMemo, useState } from "react";
 import {
-	mcpServersAtom,
-	setServersFromManaged,
-	toggleServer,
-	updateServerStatus,
-} from "@/lib/mcp-chat/mcp-servers-store";
+	CloudCog,
+	ExternalLink,
+	Loader2,
+	RefreshCw,
+	Server,
+	Wrench,
+} from "lucide-react";
 import {
 	Sheet,
 	SheetContent,
@@ -16,224 +18,189 @@ import {
 	SheetTrigger,
 } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
-	Server,
-	Trash2,
-	Plus,
-	Loader2,
-	RefreshCw,
-	Wrench,
-	CloudCog,
-} from "lucide-react";
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import { api } from "@/lib/api-client";
-import { McpConnectionSourceType } from "@/lib/types/mcp-connection";
+import {
+	McpConnectionSourceType,
+	type McpConnection,
+	type McpConnectionCatalogItem,
+} from "@/lib/types/mcp-connection";
 
-type DiscoveredServer = {
-	id: string;
-	name: string;
-	pieceName: string;
-	url: string;
-	healthy: boolean;
-	enabled: boolean;
-	toolCount: number;
-	toolNames: string[];
-	status: string;
+type ServerManagerProps = {
+	connections: McpConnection[];
+	catalog: McpConnectionCatalogItem[];
+	loading: boolean;
+	loadError: string | null;
+	onRefresh: () => Promise<void>;
 };
 
-export function ServerManager() {
-	const [servers, setServers] = useAtom(mcpServersAtom);
-	const [url, setUrl] = useState("");
-	const [name, setName] = useState("");
-	const [loading, setLoading] = useState(false);
-	const [catalogLoading, setCatalogLoading] = useState(false);
-	const [catalogError, setCatalogError] = useState<string | null>(null);
-	const [serverError, setServerError] = useState<string | null>(null);
-	const [catalog, setCatalog] = useState<
-		Array<{
-			pieceName: string;
-			displayName: string;
-			activeConnectionCount: number;
-			enabled: boolean;
-		}>
-	>([]);
+function sourceBadge(sourceType: McpConnection["sourceType"]) {
+	if (sourceType === McpConnectionSourceType.HOSTED_WORKFLOW) {
+		return <Badge variant="secondary">Hosted</Badge>;
+	}
+	if (sourceType === McpConnectionSourceType.NIMBLE_PIECE) {
+		return <Badge variant="outline">Piece</Badge>;
+	}
+	return <Badge variant="outline">Custom</Badge>;
+}
+
+function statusBadge(status: McpConnection["status"]) {
+	if (status === "ENABLED") {
+		return (
+			<Badge className="bg-emerald-500/10 text-emerald-600">Enabled</Badge>
+		);
+	}
+	if (status === "ERROR") {
+		return <Badge variant="destructive">Error</Badge>;
+	}
+	return <Badge variant="secondary">Disabled</Badge>;
+}
+
+function getToolCount(connection: McpConnection): number {
+	const metadata = connection.metadata as Record<string, unknown> | null;
+	const raw = metadata?.toolCount;
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+}
+
+function sortManagedConnections(left: McpConnection, right: McpConnection) {
+	const order = (row: McpConnection) =>
+		row.sourceType === McpConnectionSourceType.HOSTED_WORKFLOW ? 0 : 1;
+	const bySource = order(left) - order(right);
+	if (bySource !== 0) {
+		return bySource;
+	}
+	return left.displayName.localeCompare(right.displayName);
+}
+
+export function ServerManager({
+	connections,
+	catalog,
+	loading,
+	loadError,
+	onRefresh,
+}: ServerManagerProps) {
 	const [busyId, setBusyId] = useState<string | null>(null);
+	const [actionError, setActionError] = useState<string | null>(null);
 
-	const refreshManagedServers = useCallback(async () => {
-		setLoading(true);
-		setServerError(null);
-		try {
-			const res = await fetch("/api/mcp-chat/servers/discover");
-			const data = (await res.json()) as {
-				servers: DiscoveredServer[];
-				error?: string;
-			};
-			if (!res.ok) {
-				throw new Error(data.error || "Failed to discover servers");
-			}
+	const sortedConnections = useMemo(
+		() => [...connections].sort(sortManagedConnections),
+		[connections],
+	);
+	const enableableCatalog = useMemo(
+		() =>
+			catalog
+				.filter((item) => !item.enabled && item.hasActiveConnections)
+				.sort((left, right) => {
+					if (right.activeConnectionCount !== left.activeConnectionCount) {
+						return right.activeConnectionCount - left.activeConnectionCount;
+					}
+					return left.displayName.localeCompare(right.displayName);
+				}),
+		[catalog],
+	);
 
-			setServersFromManaged(
-				setServers,
-				data.servers.map((server) => ({
-					connectionId: server.id,
-					name: server.name,
-					url: server.url,
-					toolCount: server.toolCount,
-					toolNames: server.toolNames,
-					enabled: server.enabled && Boolean(server.url),
-				})),
-			);
-		} catch (error) {
-			setServerError(
-				error instanceof Error ? error.message : "Failed to load MCP servers",
-			);
-		} finally {
-			setLoading(false);
-		}
-	}, [setServers]);
+	const enabledCount = connections.filter(
+		(row) => row.status === "ENABLED",
+	).length;
+	const errorCount = connections.filter((row) => row.status === "ERROR").length;
 
-	const refreshCatalog = useCallback(async () => {
-		setCatalogLoading(true);
-		setCatalogError(null);
-		try {
-			const result = await api.mcpConnection.catalog();
-			setCatalog(
-				result.data
-					.filter((item) => !item.enabled && item.hasActiveConnections)
-					.map((item) => ({
-						pieceName: item.pieceName,
-						displayName: item.displayName,
-						activeConnectionCount: item.activeConnectionCount,
-						enabled: item.enabled,
-					})),
-			);
-		} catch (error) {
-			setCatalogError(
-				error instanceof Error ? error.message : "Failed to load catalog",
-			);
-		} finally {
-			setCatalogLoading(false);
-		}
-	}, []);
-
-	const refreshAll = useCallback(async () => {
-		await Promise.all([refreshManagedServers(), refreshCatalog()]);
-	}, [refreshManagedServers, refreshCatalog]);
+	const handleRefresh = useCallback(async () => {
+		setActionError(null);
+		await onRefresh();
+	}, [onRefresh]);
 
 	const handleEnablePiece = useCallback(
 		async (pieceName: string) => {
 			try {
 				setBusyId(`enable:${pieceName}`);
-				await api.mcpConnection.create({
+				setActionError(null);
+				const created = await api.mcpConnection.create({
 					sourceType: McpConnectionSourceType.NIMBLE_PIECE,
 					pieceName,
 				});
-				await refreshAll();
+				await api.mcpConnection.sync(created.id);
+				await onRefresh();
 			} catch (error) {
-				setCatalogError(
+				setActionError(
 					error instanceof Error ? error.message : "Failed to enable piece MCP",
 				);
 			} finally {
 				setBusyId(null);
 			}
 		},
-		[refreshAll],
+		[onRefresh],
 	);
 
-	const handleAddCustom = useCallback(async () => {
-		const trimmedUrl = url.trim();
-		const trimmedName = name.trim();
-		if (!(trimmedUrl && trimmedName)) {
-			return;
-		}
-
-		try {
-			setBusyId("add-custom");
-			await api.mcpConnection.create({
-				sourceType: McpConnectionSourceType.CUSTOM_URL,
-				displayName: trimmedName,
-				serverUrl: trimmedUrl,
-			});
-			setUrl("");
-			setName("");
-			await refreshManagedServers();
-		} catch (error) {
-			setServerError(
-				error instanceof Error ? error.message : "Failed to add custom server",
-			);
-		} finally {
-			setBusyId(null);
-		}
-	}, [name, refreshManagedServers, url]);
-
-	const handleRemove = useCallback(
-		async (id: string) => {
+	const handleToggle = useCallback(
+		async (row: McpConnection) => {
 			try {
-				setBusyId(id);
-				await api.mcpConnection.delete(id);
-				await refreshAll();
+				setBusyId(row.id);
+				setActionError(null);
+				const nextStatus = row.status === "ENABLED" ? "DISABLED" : "ENABLED";
+				await api.mcpConnection.setStatus(row.id, nextStatus);
+				await onRefresh();
 			} catch (error) {
-				setServerError(
-					error instanceof Error ? error.message : "Failed to remove server",
+				setActionError(
+					error instanceof Error
+						? error.message
+						: "Failed to update connection status",
 				);
 			} finally {
 				setBusyId(null);
 			}
 		},
-		[refreshAll],
-	);
-
-	const handleToggle = useCallback(
-		async (id: string, enabled: boolean) => {
-			toggleServer(setServers, id);
-			try {
-				await api.mcpConnection.setStatus(id, enabled ? "DISABLED" : "ENABLED");
-				await refreshAll();
-			} catch (error) {
-				updateServerStatus(setServers, id, "error", {
-					error:
-						error instanceof Error
-							? error.message
-							: "Failed to update server status",
-				});
-			}
-		},
-		[refreshAll, setServers],
+		[onRefresh],
 	);
 
 	const handleSync = useCallback(
-		async (id: string) => {
+		async (connectionId: string) => {
 			try {
-				setBusyId(id);
-				await api.mcpConnection.sync(id);
-				await refreshAll();
+				setBusyId(`sync:${connectionId}`);
+				setActionError(null);
+				await api.mcpConnection.sync(connectionId);
+				await onRefresh();
 			} catch (error) {
-				setServerError(
+				setActionError(
 					error instanceof Error ? error.message : "Failed to sync",
 				);
 			} finally {
 				setBusyId(null);
 			}
 		},
-		[refreshAll],
+		[onRefresh],
 	);
-
-	const enabledCount = servers.filter((s) => s.enabled).length;
 
 	return (
 		<Sheet
 			onOpenChange={(open) => {
 				if (open) {
-					void refreshAll();
+					void handleRefresh();
 				}
 			}}
 		>
 			<SheetTrigger asChild>
 				<Button variant="outline" size="sm" className="gap-1.5 text-xs">
-					<Server className="h-3.5 w-3.5" />
-					Servers
+					<span className="relative">
+						<Server className="h-3.5 w-3.5" />
+						<span
+							className={cn(
+								"absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full border border-background",
+								errorCount > 0
+									? "bg-destructive"
+									: enabledCount > 0
+										? "bg-emerald-500"
+										: "bg-muted-foreground/40",
+							)}
+						/>
+					</span>
+					<span className="hidden sm:inline">Servers</span>
 					{enabledCount > 0 && (
 						<Badge
 							variant="secondary"
@@ -242,23 +209,30 @@ export function ServerManager() {
 							{enabledCount}
 						</Badge>
 					)}
+					{errorCount > 0 && (
+						<Badge className="bg-destructive text-[10px]">{errorCount}</Badge>
+					)}
 				</Button>
 			</SheetTrigger>
-			<SheetContent className="w-[420px] sm:w-[460px]">
+
+			<SheetContent className="w-[440px] sm:w-[520px]">
 				<SheetHeader>
 					<SheetTitle>MCP Servers</SheetTitle>
 				</SheetHeader>
 
 				<div className="mt-6 space-y-6">
-					<div className="flex items-center justify-end">
+					<div className="flex items-center justify-between gap-2">
+						<div className="text-xs text-muted-foreground">
+							Project-level MCP connections used by MCP Chat.
+						</div>
 						<Button
 							variant="outline"
 							size="sm"
 							className="gap-1.5 text-xs"
-							onClick={() => void refreshAll()}
-							disabled={loading || catalogLoading}
+							onClick={() => void handleRefresh()}
+							disabled={loading}
 						>
-							{loading || catalogLoading ? (
+							{loading ? (
 								<Loader2 className="h-3 w-3 animate-spin" />
 							) : (
 								<RefreshCw className="h-3 w-3" />
@@ -267,25 +241,133 @@ export function ServerManager() {
 						</Button>
 					</div>
 
+					{(loadError || actionError) && (
+						<p className="text-xs text-destructive">
+							{actionError ?? loadError}
+						</p>
+					)}
+
+					<div className="space-y-3">
+						<div className="flex items-center justify-between">
+							<h3 className="text-sm font-medium">
+								Managed Servers ({sortedConnections.length})
+							</h3>
+							<Button
+								asChild
+								size="sm"
+								variant="ghost"
+								className="gap-1 text-xs"
+							>
+								<Link href="/settings/mcp-connections">
+									Manage Details
+									<ExternalLink className="h-3 w-3" />
+								</Link>
+							</Button>
+						</div>
+						{loading ? (
+							<p className="text-xs text-muted-foreground">
+								Loading servers...
+							</p>
+						) : sortedConnections.length === 0 ? (
+							<div className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+								No managed MCP servers yet.
+							</div>
+						) : (
+							<div className="space-y-2">
+								{sortedConnections.map((row) => {
+									const isBusy =
+										busyId === row.id || busyId === `sync:${row.id}`;
+									const toolCount = getToolCount(row);
+									return (
+										<div
+											key={row.id}
+											className="space-y-2 rounded-lg border p-3"
+										>
+											<div className="flex items-start justify-between gap-3">
+												<div className="min-w-0 flex-1">
+													<div className="flex flex-wrap items-center gap-2">
+														<div className="truncate text-sm font-medium">
+															{row.displayName}
+														</div>
+														{sourceBadge(row.sourceType)}
+														{statusBadge(row.status)}
+													</div>
+													<p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+														{row.serverUrl ?? "No server URL yet"}
+													</p>
+													<div className="mt-1 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+														<span>{toolCount} tools</span>
+														{row.lastSyncAt && (
+															<span>
+																Synced{" "}
+																{new Date(row.lastSyncAt).toLocaleString()}
+															</span>
+														)}
+													</div>
+												</div>
+												<div className="flex shrink-0 items-center gap-1">
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<div>
+																<Switch
+																	checked={row.status === "ENABLED"}
+																	disabled={isBusy}
+																	onCheckedChange={() => void handleToggle(row)}
+																/>
+															</div>
+														</TooltipTrigger>
+														<TooltipContent side="top">
+															{row.status === "ENABLED" ? "Disable server" : "Enable server"}
+														</TooltipContent>
+													</Tooltip>
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="ghost"
+																size="icon"
+																className="h-7 w-7"
+																disabled={isBusy}
+																onClick={() => void handleSync(row.id)}
+															>
+																{busyId === `sync:${row.id}` ? (
+																	<Loader2 className="h-3.5 w-3.5 animate-spin" />
+																) : (
+																	<RefreshCw className="h-3.5 w-3.5" />
+																)}
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent side="top">Sync tools</TooltipContent>
+													</Tooltip>
+												</div>
+											</div>
+											{row.lastError && (
+												<p className="text-xs text-destructive">
+													{row.lastError}
+												</p>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						)}
+					</div>
+
 					<div className="space-y-3">
 						<div className="flex items-center gap-2">
 							<CloudCog className="h-4 w-4 text-muted-foreground" />
-							<h3 className="text-sm font-medium">Enable Piece MCP</h3>
+							<h3 className="text-sm font-medium">Available to Enable</h3>
 						</div>
-						{catalogError && (
-							<p className="text-xs text-destructive">{catalogError}</p>
-						)}
-						{catalogLoading ? (
+						{loading ? (
 							<p className="text-xs text-muted-foreground">
 								Loading catalog...
 							</p>
-						) : catalog.length === 0 ? (
+						) : enableableCatalog.length === 0 ? (
 							<p className="text-xs text-muted-foreground">
-								No additional pieces with active app connections to enable.
+								No additional pieces with active app connections are available.
 							</p>
 						) : (
 							<div className="space-y-2">
-								{catalog.slice(0, 10).map((item) => (
+								{enableableCatalog.map((item) => (
 									<div
 										key={item.pieceName}
 										className="flex items-center justify-between rounded-lg border border-dashed bg-muted/40 p-2.5"
@@ -294,7 +376,8 @@ export function ServerManager() {
 											<div className="truncate text-sm font-medium">
 												{item.displayName}
 											</div>
-											<div className="text-xs text-muted-foreground">
+											<div className="flex items-center gap-2 text-xs text-muted-foreground">
+												<Wrench className="h-3 w-3" />
 												{item.activeConnectionCount} active connection
 												{item.activeConnectionCount === 1 ? "" : "s"}
 											</div>
@@ -306,131 +389,14 @@ export function ServerManager() {
 											disabled={busyId === `enable:${item.pieceName}`}
 											className="ml-2 gap-1 text-xs"
 										>
-											<Plus className="h-3 w-3" />
+											{busyId === `enable:${item.pieceName}` ? (
+												<Loader2 className="h-3 w-3 animate-spin" />
+											) : null}
 											Enable
 										</Button>
 									</div>
 								))}
 							</div>
-						)}
-					</div>
-
-					<div className="space-y-3">
-						<div className="flex items-center gap-2">
-							<Wrench className="h-4 w-4 text-muted-foreground" />
-							<h3 className="text-sm font-medium">Add Custom Server</h3>
-						</div>
-						<Input
-							placeholder="Display name"
-							value={name}
-							onChange={(e) => setName(e.target.value)}
-						/>
-						<Input
-							placeholder="Server URL (e.g. http://svc:3100/mcp)"
-							value={url}
-							onChange={(e) => setUrl(e.target.value)}
-						/>
-						<Button
-							onClick={() => void handleAddCustom()}
-							disabled={busyId === "add-custom" || !(name.trim() && url.trim())}
-							size="sm"
-							className="w-full gap-1.5"
-						>
-							{busyId === "add-custom" ? (
-								<Loader2 className="h-3.5 w-3.5 animate-spin" />
-							) : (
-								<Plus className="h-3.5 w-3.5" />
-							)}
-							Add Server
-						</Button>
-						{serverError && (
-							<p className="text-xs text-destructive">{serverError}</p>
-						)}
-					</div>
-
-					<div className="space-y-3">
-						<h3 className="text-sm font-medium">
-							Managed Servers ({servers.length})
-						</h3>
-						{loading ? (
-							<p className="text-xs text-muted-foreground">
-								Loading servers...
-							</p>
-						) : servers.length === 0 ? (
-							<div className="py-6 text-center text-sm text-muted-foreground">
-								No MCP servers enabled.
-							</div>
-						) : (
-							servers.map((server) => (
-								<div
-									key={server.id}
-									className="space-y-2 rounded-lg border p-3"
-								>
-									<div className="flex items-start justify-between gap-2">
-										<div className="min-w-0 flex-1">
-											<div className="flex items-center gap-2">
-												<span
-													className={`h-2 w-2 shrink-0 rounded-full ${
-														server.status === "connected"
-															? "bg-green-500"
-															: server.status === "error"
-																? "bg-red-500"
-																: server.status === "connecting"
-																	? "bg-yellow-500 animate-pulse"
-																	: "bg-gray-400"
-													}`}
-												/>
-												<span className="truncate text-sm font-medium">
-													{server.name}
-												</span>
-												{server.toolCount > 0 && (
-													<Badge
-														variant="secondary"
-														className="shrink-0 px-1.5 py-0 text-[10px]"
-													>
-														{server.toolCount} tool
-														{server.toolCount === 1 ? "" : "s"}
-													</Badge>
-												)}
-											</div>
-											<p className="mt-0.5 truncate pl-4 text-xs text-muted-foreground">
-												{server.url}
-											</p>
-										</div>
-										<div className="flex shrink-0 items-center gap-1">
-											<Switch
-												checked={server.enabled}
-												onCheckedChange={() =>
-													void handleToggle(server.id, server.enabled)
-												}
-											/>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-7 w-7"
-												disabled={busyId === server.id}
-												onClick={() => void handleSync(server.id)}
-											>
-												<RefreshCw className="h-3.5 w-3.5" />
-											</Button>
-											<Button
-												variant="ghost"
-												size="icon"
-												className="h-7 w-7 text-muted-foreground hover:text-destructive"
-												disabled={busyId === server.id}
-												onClick={() => void handleRemove(server.id)}
-											>
-												<Trash2 className="h-3.5 w-3.5" />
-											</Button>
-										</div>
-									</div>
-									{server.error && (
-										<p className="pl-4 text-xs text-destructive">
-											{server.error}
-										</p>
-									)}
-								</div>
-							))
 						)}
 					</div>
 				</div>

@@ -36,6 +36,12 @@ export async function DELETE(
 	if (!row) {
 		return NextResponse.json({ error: "Not found" }, { status: 404 });
 	}
+	if (row.sourceType === "hosted_workflow") {
+		return NextResponse.json(
+			{ error: "Hosted workflow MCP connection cannot be deleted" },
+			{ status: 409 },
+		);
+	}
 
 	const deleted = await deleteMcpConnection({
 		id,

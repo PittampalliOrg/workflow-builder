@@ -87,12 +87,17 @@ export function useMcpChat(
 		setError(null);
 	}, []);
 
+	const clearError = useCallback(() => {
+		setError(null);
+	}, []);
+
 	return {
 		messages,
 		setMessages,
 		sendMessage,
 		status,
 		error,
+		clearError,
 		clearMessages,
 	};
 }

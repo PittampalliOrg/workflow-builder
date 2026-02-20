@@ -23,6 +23,7 @@
 		"@activepieces/piece-contextual-ai": "0.1.3",
 		"@activepieces/piece-discord": "0.4.3",
 		"@activepieces/piece-dropbox": "0.6.3",
+		"@activepieces/piece-github": "0.6.4",
 		"@activepieces/piece-gmail": "0.11.3",
 		"@activepieces/piece-google-calendar": "0.8.3",
 		"@activepieces/piece-google-docs": "0.3.3",

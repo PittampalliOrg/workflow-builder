@@ -71,6 +71,7 @@ export function mapWorkflowStatus(
     case "ERROR":
     case "FAILED":
       return "FAILED";
+    case "CANCELED":
     case "CANCELLED":
     case "TERMINATED":
       return "CANCELLED";

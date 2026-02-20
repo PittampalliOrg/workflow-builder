@@ -114,6 +114,49 @@ type MastraToolResponse = {
 	message?: unknown;
 };
 
+function asNumber(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return value;
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	if (!trimmed) return undefined;
+	const parsed = Number.parseInt(trimmed, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function getMastraNestedFailure(
+	toolId: string,
+	parsedMastra: MastraToolResponse | undefined,
+): string | undefined {
+	if (!parsedMastra || !isPlainObject(parsedMastra.result)) {
+		return undefined;
+	}
+
+	const nested = parsedMastra.result;
+	const nestedSuccess =
+		typeof nested.success === "boolean" ? nested.success : undefined;
+	const nestedExitCode =
+		asNumber(nested.exitCode) ?? asNumber(nested.exit_code);
+	const nestedError =
+		typeof nested.error === "string"
+			? nested.error
+			: typeof nested.stderr === "string" && nested.stderr.trim()
+				? nested.stderr
+				: undefined;
+
+	if (nestedSuccess === false) {
+		return nestedError || `Mastra tool "${toolId}" failed`;
+	}
+
+	if (nestedExitCode !== undefined && nestedExitCode !== 0) {
+		return (
+			nestedError ||
+			`Mastra tool "${toolId}" failed with exit code ${nestedExitCode}`
+		);
+	}
+
+	return undefined;
+}
+
 function parseJsonResponse(responseText: string): unknown {
 	if (!responseText) {
 		return null;
@@ -123,6 +166,78 @@ function parseJsonResponse(responseText: string): unknown {
 	} catch {
 		return null;
 	}
+}
+
+async function waitForDurableRunResult(input: {
+	functionUrl: string;
+	workflowId: string;
+	timeoutMs: number;
+}): Promise<{
+	success: boolean;
+	status: string;
+	result?: unknown;
+	error?: string;
+}> {
+	const startedAt = Date.now();
+	while (Date.now() - startedAt < input.timeoutMs) {
+		const response = await fetch(
+			`${input.functionUrl}/api/run/${encodeURIComponent(input.workflowId)}`,
+			{
+				method: "GET",
+				headers: { Accept: "application/json" },
+			},
+		);
+		if (!response.ok) {
+			const body = await response.text().catch(() => "");
+			return {
+				success: false,
+				status: "failed",
+				error: `Failed polling durable run (${response.status}): ${body.slice(0, 300)}`,
+			};
+		}
+
+		const payload = parseJsonResponse(await response.text());
+		if (!isPlainObject(payload)) {
+			return {
+				success: false,
+				status: "failed",
+				error: "Durable run status response was not JSON object",
+			};
+		}
+
+		const status =
+			typeof payload.status === "string" ? payload.status.toLowerCase() : "running";
+		if (status === "running") {
+			await new Promise((resolve) => setTimeout(resolve, 1500));
+			continue;
+		}
+
+		if (status === "completed") {
+			return {
+				success: payload.success === true,
+				status,
+				result: payload.result,
+				error:
+					typeof payload.error === "string" ? payload.error : undefined,
+			};
+		}
+
+		return {
+			success: false,
+			status,
+			result: payload.result,
+			error:
+				typeof payload.error === "string"
+					? payload.error
+					: `Durable run ended with status ${status}`,
+		};
+	}
+
+	return {
+		success: false,
+		status: "failed",
+		error: `Durable run timed out after ${input.timeoutMs}ms`,
+	};
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -761,6 +876,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
+									waitForCompletion: mode === "execute_direct",
 									cleanupWorkspace: args.cleanupWorkspace,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
@@ -912,6 +1028,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							parsed && typeof parsed === "object"
 								? (parsed as MastraToolResponse)
 								: undefined;
+						let resolvedMastra = parsedMastra;
 
 						if (!httpResponse.ok) {
 							const errorFromBody =
@@ -923,271 +1040,171 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							);
 						}
 
-						if (typeof parsedMastra?.success === "boolean") {
-							if (!parsedMastra.success) {
+						if (
+							isAgentRun &&
+							mode === "execute_direct" &&
+							resolvedMastra?.success === true
+						) {
+							const workflowId =
+								typeof resolvedMastra.workflow_id === "string"
+									? resolvedMastra.workflow_id
+									: typeof resolvedMastra.workflowId === "string"
+										? resolvedMastra.workflowId
+										: "";
+							if (workflowId) {
+								const timeoutMinutes = asNumber(args.timeoutMinutes) ?? 15;
+								const wait = await waitForDurableRunResult({
+									functionUrl,
+									workflowId,
+									timeoutMs: Math.max(timeoutMinutes * 60_000, 90_000),
+								});
+								if (!wait.success) {
+									response = {
+										success: false,
+										error:
+											wait.error ||
+											`Durable run "${workflowId}" failed`,
+										duration_ms: 0,
+									};
+								} else {
+									resolvedMastra = {
+										...resolvedMastra,
+										success: true,
+										status: wait.status,
+										result:
+											wait.result !== undefined
+												? wait.result
+												: resolvedMastra.result,
+									};
+								}
+							}
+						}
+
+						if (!response && typeof resolvedMastra?.success === "boolean") {
+							if (!resolvedMastra.success) {
+								const nestedFailure = getMastraNestedFailure(
+									toolId,
+									resolvedMastra,
+								);
 								response = {
 									success: false,
 									error:
-										typeof parsedMastra.error === "string"
-											? parsedMastra.error
-											: `Mastra tool "${toolId}" failed`,
+										typeof resolvedMastra.error === "string"
+											? resolvedMastra.error
+											: nestedFailure || `Mastra tool "${toolId}" failed`,
 									duration_ms: 0,
 								};
 							} else {
-								response = {
+								const nestedFailure = getMastraNestedFailure(
+									toolId,
+									resolvedMastra,
+								);
+								if (nestedFailure) {
+									response = {
+										success: false,
+										error: nestedFailure,
+										duration_ms: 0,
+									};
+								} else {
+									response = {
 									success: true,
 									data: {
 										toolId:
-											typeof parsedMastra.toolId === "string"
-												? parsedMastra.toolId
+											typeof resolvedMastra.toolId === "string"
+												? resolvedMastra.toolId
 												: toolId,
 										result:
-											parsedMastra.result !== undefined
-												? parsedMastra.result
-												: parsedMastra,
-										...(parsedMastra.result &&
-										typeof parsedMastra.result === "object"
-											? (parsedMastra.result as Record<string, unknown>)
+											resolvedMastra.result !== undefined
+												? resolvedMastra.result
+												: resolvedMastra,
+										...(resolvedMastra.result &&
+										typeof resolvedMastra.result === "object"
+											? (resolvedMastra.result as Record<string, unknown>)
 											: {}),
-										plan: parsedMastra.plan,
+										plan: resolvedMastra.plan,
 										workflowId:
-											typeof parsedMastra.workflowId === "string"
-												? parsedMastra.workflowId
-												: typeof parsedMastra.workflow_id === "string"
-													? parsedMastra.workflow_id
+											typeof resolvedMastra.workflowId === "string"
+												? resolvedMastra.workflowId
+												: typeof resolvedMastra.workflow_id === "string"
+													? resolvedMastra.workflow_id
 													: undefined,
 										workspaceRef:
-											typeof (parsedMastra as Record<string, unknown>)
+											typeof (resolvedMastra as Record<string, unknown>)
 												.workspaceRef === "string"
-												? ((parsedMastra as Record<string, unknown>)
+												? ((resolvedMastra as Record<string, unknown>)
 														.workspaceRef as string)
 												: undefined,
 										executionId:
-											typeof (parsedMastra as Record<string, unknown>)
+											typeof (resolvedMastra as Record<string, unknown>)
 												.executionId === "string"
-												? ((parsedMastra as Record<string, unknown>)
+												? ((resolvedMastra as Record<string, unknown>)
 														.executionId as string)
 												: undefined,
 										rootPath:
-											typeof (parsedMastra as Record<string, unknown>)
+											typeof (resolvedMastra as Record<string, unknown>)
 												.rootPath === "string"
-												? ((parsedMastra as Record<string, unknown>)
+												? ((resolvedMastra as Record<string, unknown>)
 														.rootPath as string)
 												: undefined,
 										backend:
-											typeof (parsedMastra as Record<string, unknown>)
+											typeof (resolvedMastra as Record<string, unknown>)
 												.backend === "string"
-												? ((parsedMastra as Record<string, unknown>)
+												? ((resolvedMastra as Record<string, unknown>)
 														.backend as string)
 												: undefined,
 										cleanedWorkspaceRefs: Array.isArray(
-											(parsedMastra as Record<string, unknown>)
+											(resolvedMastra as Record<string, unknown>)
 												.cleanedWorkspaceRefs,
 										)
-											? ((parsedMastra as Record<string, unknown>)
+											? ((resolvedMastra as Record<string, unknown>)
 													.cleanedWorkspaceRefs as unknown[])
 											: undefined,
 										status:
-											typeof parsedMastra.status === "string"
-												? parsedMastra.status
+											typeof resolvedMastra.status === "string"
+												? resolvedMastra.status
 												: undefined,
 										message:
-											typeof parsedMastra.message === "string"
-												? parsedMastra.message
+											typeof resolvedMastra.message === "string"
+												? resolvedMastra.message
 												: undefined,
 									},
 									duration_ms: 0,
 								};
+								}
 							}
 						} else if (
-							parsedMastra &&
-							(typeof parsedMastra.workflowId === "string" ||
-								typeof parsedMastra.workflow_id === "string")
+							!response &&
+							resolvedMastra &&
+							(typeof resolvedMastra.workflowId === "string" ||
+								typeof resolvedMastra.workflow_id === "string")
 						) {
 							response = {
 								success: true,
 								data: {
 									toolId,
 									workflowId:
-										typeof parsedMastra.workflowId === "string"
-											? parsedMastra.workflowId
-											: typeof parsedMastra.workflow_id === "string"
-												? parsedMastra.workflow_id
+										typeof resolvedMastra.workflowId === "string"
+											? resolvedMastra.workflowId
+											: typeof resolvedMastra.workflow_id === "string"
+												? resolvedMastra.workflow_id
 												: undefined,
-									plan: parsedMastra.plan,
+									plan: resolvedMastra.plan,
 									status:
-										typeof parsedMastra.status === "string"
-											? parsedMastra.status
+										typeof resolvedMastra.status === "string"
+											? resolvedMastra.status
 											: undefined,
 									message:
-										typeof parsedMastra.message === "string"
-											? parsedMastra.message
+										typeof resolvedMastra.message === "string"
+											? resolvedMastra.message
 											: undefined,
 								},
 								duration_ms: 0,
 							};
-						} else {
+						} else if (!response) {
 							throw new Error(
 								`Invalid response from durable-agent: ${responseText.slice(0, 300)}`,
 							);
 						}
-					} catch (httpError) {
-						clearTimeout(timeoutId);
-						timing.executionMs = Date.now() - executionStartTime;
-						if (httpError instanceof Error && httpError.name === "AbortError") {
-							throw new Error(
-								`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
-							);
-						}
-						throw httpError;
-					}
-				} else if (target.appId === "durable-agent") {
-					console.log(
-						`[Execute Route] Invoking durable-agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
-					);
-
-					const controller = new AbortController();
-					const timeoutId = setTimeout(
-						() => controller.abort(),
-						HTTP_TIMEOUT_MS,
-					);
-					const executionStartTime = Date.now();
-
-					try {
-						const resolvedInput = body.input as Record<string, unknown>;
-						const toolId = stepName;
-						let targetUrl: string;
-						let requestBody: string;
-						const loopPolicy = buildLoopPolicyInput(resolvedInput);
-						const model = parseDurableModelInput(resolvedInput);
-						const agentConfig = parseDurableAgentConfig(resolvedInput);
-
-						if (toolId === "run") {
-							const mode =
-								typeof resolvedInput.mode === "string"
-									? resolvedInput.mode.toLowerCase()
-									: "plan_mode";
-							if (mode === "plan_mode") {
-								targetUrl = `${functionUrl}/api/plan`;
-								requestBody = JSON.stringify({
-									prompt: resolvedInput.prompt || resolvedInput.input || "",
-									cwd: resolvedInput.cwd || "",
-									model,
-									maxTurns: resolvedInput.maxTurns,
-									timeoutMinutes: resolvedInput.timeoutMinutes,
-									instructions: resolvedInput.instructions,
-									tools: resolvedInput.tools,
-									agentConfig,
-									loopPolicy,
-									workspaceRef: resolvedInput.workspaceRef || "",
-									parentExecutionId: body.execution_id,
-									executionId: body.db_execution_id || body.execution_id,
-									dbExecutionId: body.db_execution_id ?? undefined,
-									workflowId: body.workflow_id,
-									nodeId: body.node_id,
-									nodeName: body.node_name,
-								});
-							} else {
-								targetUrl = `${functionUrl}/api/run`;
-								requestBody = JSON.stringify({
-									prompt: resolvedInput.prompt || resolvedInput.input || "",
-									cwd: resolvedInput.cwd || "",
-									model,
-									maxTurns: resolvedInput.maxTurns,
-									timeoutMinutes: resolvedInput.timeoutMinutes,
-									instructions: resolvedInput.instructions,
-									tools: resolvedInput.tools,
-									agentConfig,
-									loopPolicy,
-									stopCondition: resolvedInput.stopCondition,
-									requireFileChanges: resolvedInput.requireFileChanges,
-									cleanupWorkspace: resolvedInput.cleanupWorkspace,
-									workspaceRef: resolvedInput.workspaceRef || "",
-									parentExecutionId: body.execution_id,
-									executionId: body.db_execution_id || body.execution_id,
-									dbExecutionId: body.db_execution_id ?? undefined,
-									workflowId: body.workflow_id,
-									nodeId: body.node_id,
-									nodeName: body.node_name,
-								});
-							}
-						} else if (toolId === "plan") {
-							targetUrl = `${functionUrl}/api/plan`;
-							requestBody = JSON.stringify({
-								prompt: resolvedInput.prompt || resolvedInput.input || "",
-								cwd: resolvedInput.cwd || "",
-								model,
-								maxTurns: resolvedInput.maxTurns,
-								timeoutMinutes: resolvedInput.timeoutMinutes,
-								instructions: resolvedInput.instructions,
-								tools: resolvedInput.tools,
-								agentConfig,
-								loopPolicy,
-								workspaceRef: resolvedInput.workspaceRef || "",
-								parentExecutionId: body.execution_id,
-								executionId: body.db_execution_id || body.execution_id,
-								dbExecutionId: body.db_execution_id ?? undefined,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
-							});
-						} else if (toolId === "execute") {
-							targetUrl = `${functionUrl}/api/execute-plan`;
-							requestBody = JSON.stringify({
-								prompt: resolvedInput.prompt || "",
-								plan: resolvedInput.planJson || resolvedInput.plan || null,
-								cwd: resolvedInput.cwd || "",
-								maxTurns: resolvedInput.maxTurns,
-								loopPolicy,
-								cleanupWorkspace: resolvedInput.cleanupWorkspace,
-								parentExecutionId: body.execution_id,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
-							});
-						} else {
-							// Direct tool call
-							targetUrl = `${functionUrl}/api/tools/${encodeURIComponent(toolId)}`;
-							requestBody = JSON.stringify({
-								args: resolvedInput,
-							});
-						}
-
-						const httpResponse = await fetch(targetUrl, {
-							method: "POST",
-							headers: { "Content-Type": "application/json" },
-							body: requestBody,
-							signal: controller.signal,
-						});
-						clearTimeout(timeoutId);
-						timing.executionMs = Date.now() - executionStartTime;
-
-						const responseText = await httpResponse.text();
-						let parsedResponse: Record<string, unknown>;
-						try {
-							parsedResponse = JSON.parse(responseText) as Record<
-								string,
-								unknown
-							>;
-						} catch {
-							parsedResponse = { raw: responseText };
-						}
-
-						if (!httpResponse.ok) {
-							throw new Error(
-								`durable-agent returned ${httpResponse.status}: ${responseText.slice(0, 300)}`,
-							);
-						}
-
-						response = {
-							success: parsedResponse.success !== false,
-							data: {
-								toolId,
-								result: parsedResponse.result || parsedResponse,
-								workflow_id: parsedResponse.workflow_id,
-							},
-							duration_ms: timing.executionMs,
-						};
 					} catch (httpError) {
 						clearTimeout(timeoutId);
 						timing.executionMs = Date.now() - executionStartTime;

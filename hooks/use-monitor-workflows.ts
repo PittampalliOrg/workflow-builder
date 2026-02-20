@@ -20,7 +20,16 @@ type UseMonitorWorkflowsOptions = {
   refreshInterval?: number;
 };
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json());
+const fetcher = async (url: string) => {
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) {
+    const message =
+      typeof data?.error === "string" ? data.error : `Request failed: ${res.status}`;
+    throw new Error(message);
+  }
+  return data;
+};
 
 /**
  * Hook to fetch workflow executions with optional filtering

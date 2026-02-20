@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Maximize2, Minimize2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useTheme } from "next-themes";
 
 type ToolWidgetProps = {
@@ -37,6 +38,7 @@ export function ToolWidget({
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const [iframeHeight, setIframeHeight] = useState(400);
 	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [iframeLoaded, setIframeLoaded] = useState(false);
 	const { resolvedTheme } = useTheme();
 	const initializedRef = useRef(false);
 
@@ -313,6 +315,16 @@ export function ToolWidget({
 		};
 	}, [handleMessage]);
 
+	// Escape key to close fullscreen
+	useEffect(() => {
+		if (!isFullscreen) return;
+		const handler = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setIsFullscreen(false);
+		};
+		window.addEventListener("keydown", handler);
+		return () => window.removeEventListener("keydown", handler);
+	}, [isFullscreen]);
+
 	// Send theme updates to initialized widgets
 	useEffect(() => {
 		const iframe = iframeRef.current;
@@ -331,6 +343,8 @@ export function ToolWidget({
 		c.toUpperCase(),
 	);
 
+	const argCount = Object.keys(toolArgs).length;
+
 	const content = (
 		<Card
 			className={
@@ -340,14 +354,29 @@ export function ToolWidget({
 			}
 		>
 			<CardHeader className="flex flex-row items-center justify-between py-2 px-4">
-				<Badge variant="outline" className="text-xs font-mono">
-					{label}
-				</Badge>
+				<div className="flex items-center gap-2">
+					<Badge variant="outline" className="text-xs font-mono">
+						{label}
+					</Badge>
+					{argCount > 0 && (
+						<Badge
+							variant="secondary"
+							className="text-[10px] px-1.5 py-0"
+						>
+							{argCount} arg{argCount !== 1 ? "s" : ""}
+						</Badge>
+					)}
+				</div>
 				<Button
 					variant="ghost"
 					size="icon"
 					className="h-6 w-6"
 					onClick={() => setIsFullscreen(!isFullscreen)}
+					title={
+						isFullscreen
+							? "Exit fullscreen (Esc)"
+							: "Fullscreen (Esc to close)"
+					}
 				>
 					{isFullscreen ? (
 						<Minimize2 className="h-3 w-3" />
@@ -356,16 +385,28 @@ export function ToolWidget({
 					)}
 				</Button>
 			</CardHeader>
-			<CardContent className={`p-0 ${isFullscreen ? "flex-1" : ""}`}>
+			<CardContent
+				className={`p-0 relative ${isFullscreen ? "flex-1" : ""}`}
+			>
+				{!iframeLoaded && (
+					<div className="absolute inset-0 p-4 space-y-3">
+						<Skeleton className="h-6 w-2/3" />
+						<Skeleton className="h-4 w-full" />
+						<Skeleton className="h-4 w-4/5" />
+						<Skeleton className="h-32 w-full" />
+						<Skeleton className="h-4 w-1/2" />
+					</div>
+				)}
 				<iframe
 					ref={iframeRef}
 					srcDoc={uiHtml}
 					sandbox="allow-scripts allow-same-origin"
-					className="w-full border-0"
+					className={`w-full border-0 transition-opacity duration-200 ${iframeLoaded ? "opacity-100" : "opacity-0"}`}
 					style={{
 						height: isFullscreen ? "100%" : `${iframeHeight}px`,
 					}}
 					title={`${label} widget`}
+					onLoad={() => setIframeLoaded(true)}
 				/>
 			</CardContent>
 		</Card>

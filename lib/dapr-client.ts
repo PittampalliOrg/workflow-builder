@@ -46,6 +46,7 @@ export type GenericStartWorkflowResult = {
 export type GenericWorkflowStatus = {
 	instanceId: string;
 	workflowId: string;
+	workflowName?: string;
 	runtimeStatus: string; // "RUNNING" | "COMPLETED" | "FAILED" | "TERMINATED" | "PENDING"
 	traceId?: string;
 	phase: string; // "pending" | "running" | "awaiting_approval" | "completed" | "failed"
@@ -58,6 +59,45 @@ export type GenericWorkflowStatus = {
 	error?: string;
 	startedAt?: string;
 	completedAt?: string;
+};
+
+export type GenericWorkflowListItem = {
+	instanceId: string;
+	workflowId: string;
+	workflowName?: string;
+	runtimeStatus: string;
+	traceId?: string;
+	phase?: string;
+	progress?: number;
+	message?: string;
+	currentNodeId?: string;
+	currentNodeName?: string;
+	error?: string;
+	startedAt?: string;
+	completedAt?: string;
+};
+
+export type GenericWorkflowListResponse = {
+	workflows: GenericWorkflowListItem[];
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type GenericWorkflowHistoryEvent = {
+	eventId?: number | null;
+	eventType: string;
+	timestamp?: string | null;
+	name?: string | null;
+	input?: unknown;
+	output?: unknown;
+	metadata?: Record<string, unknown> | null;
+	raw?: Record<string, unknown> | null;
+};
+
+export type GenericWorkflowHistoryResponse = {
+	instanceId: string;
+	events: GenericWorkflowHistoryEvent[];
 };
 
 /**
@@ -111,6 +151,32 @@ export const genericOrchestratorClient = {
 		instanceId: string,
 	): Promise<GenericWorkflowStatus> =>
 		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/status`),
+
+	listWorkflows: (
+		orchestratorUrl: string,
+		options?: {
+			search?: string;
+			status?: string[];
+			limit?: number;
+			offset?: number;
+		},
+	): Promise<GenericWorkflowListResponse> => {
+		const params = new URLSearchParams();
+		if (options?.search?.trim()) params.set("search", options.search.trim());
+		if (options?.status?.length) params.set("status", options.status.join(","));
+		if (typeof options?.limit === "number") params.set("limit", String(options.limit));
+		if (typeof options?.offset === "number") params.set("offset", String(options.offset));
+		const query = params.toString();
+		return daprFetch(
+			`${orchestratorUrl}/api/v2/workflows${query ? `?${query}` : ""}`,
+		);
+	},
+
+	getWorkflowHistory: (
+		orchestratorUrl: string,
+		instanceId: string,
+	): Promise<GenericWorkflowHistoryResponse> =>
+		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/history`),
 
 	/**
 	 * Raise an external event to a running workflow.

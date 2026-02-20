@@ -32,7 +32,8 @@ export type DaprExecutionEventType =
   | "OrchestratorStarted"
   | "TaskCompleted"
   | "TaskScheduled"
-  | "EventRaised";
+  | "EventRaised"
+  | (string & {});
 
 /**
  * Metadata for execution events
@@ -55,23 +56,6 @@ export type DaprExecutionEvent = {
   input?: unknown;
   output?: unknown;
   metadata?: DaprExecutionEventMetadata;
-};
-
-// ============================================================================
-// Workflow Name Stats Types
-// ============================================================================
-
-/**
- * Aggregated statistics for a workflow type (name + appId combination)
- * Used in the "Workflow names" tab to show summary stats
- */
-export type WorkflowNameStats = {
-  name: string; // workflowType
-  appId: string;
-  totalExecutions: number;
-  runningCount: number;
-  successCount: number;
-  failedCount: number;
 };
 
 // ============================================================================
@@ -227,9 +211,11 @@ export type DaprRuntimeStatus =
   | "RUNNING"
   | "COMPLETED"
   | "FAILED"
+  | "CANCELED"
   | "TERMINATED"
   | "PENDING"
   | "SUSPENDED"
+  | "STALLED"
   | "UNKNOWN";
 
 /**
