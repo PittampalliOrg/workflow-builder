@@ -280,6 +280,7 @@ function buildWorkflowGraph(input: {
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const enabledTools = JSON.stringify(["read", "write", "edit", "list", "bash"]);
+	const durableTools = JSON.stringify(["read", "write", "edit", "list", "bash"]);
 
 	const cloneConfig: Record<string, string> = {
 		actionType: "workspace/clone",
@@ -299,7 +300,12 @@ function buildWorkflowGraph(input: {
 	const reviewNamesCommand = `if [ -d .git ]; then
 git status --short
 echo "--- changed files ---"
-git diff --name-only
+CHANGED="$(git diff --name-only)"
+echo "$CHANGED"
+if [ -z "$CHANGED" ]; then
+  echo "No file changes detected after durable run."
+  exit 2
+fi
 else
 echo "No .git metadata found (clone strips git metadata)."
 echo "Listing files as fallback review:"
@@ -370,6 +376,9 @@ fi`;
 					mode: "execute_direct",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
+					tools: durableTools,
+					instructions:
+						"Use repository tools directly. Perform concrete file edits with read/write/edit/list/bash tools before finalizing.",
 					workspaceRef: workspaceRefTemplate,
 					maxTurns: "80",
 					requireFileChanges: "true",

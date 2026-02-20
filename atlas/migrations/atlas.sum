@@ -1,4 +1,4 @@
-h1:w+5g60BuyTHqeoBRWsFl7ITMuMBuoIZuNVOsFixnfUs=
+h1:eFNL/RsOxpuNOdB+PrzH/+aKNGgzGPlpb8sWmCp+QMs=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -8,3 +8,4 @@ h1:w+5g60BuyTHqeoBRWsFl7ITMuMBuoIZuNVOsFixnfUs=
 20260217200000_add_workspace_change_artifact_files.sql h1:hjmL6/Mkv0iPoH6g7Cdmm0p9L7ztVqhbYZqfQ3rkiMk=
 20260219103000_add_workflow_ai_tool_messages.sql h1:z5qnh3tq317NSNT/0BbjuQ9PvlUsT34Z52oXPWttWGo=
 20260219143000_add_mcp_connections.sql h1:BZtn988bGpyRor0OiVvOXdMr3J4N3nuHqf3fEUgtLl0=
+20260220113000_upgrade_coding_agent_profile_for_opencode.sql h1:HukiMEDB1toZnaqI0xyOGAw70+zjjHguZbrAGhMEexY=
