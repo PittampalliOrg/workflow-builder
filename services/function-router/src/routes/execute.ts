@@ -32,6 +32,7 @@ import {
 	recordResponseTime,
 	resolveOpenFunctionUrl,
 } from "../core/openfunction-resolver.js";
+import { resolveCloneRepository } from "../core/gitea-repository.js";
 import { lookupFunction } from "../core/registry.js";
 import type {
 	ExecuteRequest,
@@ -123,11 +124,42 @@ function asNumber(value: unknown): number | undefined {
 	return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function isNoFileChangeReviewResult(
+	pluginId: string,
+	toolId: string,
+	parsedMastra: MastraToolResponse | undefined,
+): boolean {
+	if (pluginId !== "workspace" || toolId !== "command" || !parsedMastra) {
+		return false;
+	}
+	if (!isPlainObject(parsedMastra.result)) {
+		return false;
+	}
+	const nested = parsedMastra.result;
+	const nestedExitCode =
+		asNumber(nested.exitCode) ?? asNumber(nested.exit_code);
+	if (nestedExitCode !== 2) {
+		return false;
+	}
+	const text = [
+		typeof nested.stdout === "string" ? nested.stdout : "",
+		typeof nested.stderr === "string" ? nested.stderr : "",
+		typeof parsedMastra.error === "string" ? parsedMastra.error : "",
+	]
+		.join("\n")
+		.toLowerCase();
+	return text.includes("no file changes detected after durable run");
+}
+
 function getMastraNestedFailure(
+	pluginId: string,
 	toolId: string,
 	parsedMastra: MastraToolResponse | undefined,
 ): string | undefined {
 	if (!parsedMastra || !isPlainObject(parsedMastra.result)) {
+		return undefined;
+	}
+	if (isNoFileChangeReviewResult(pluginId, toolId, parsedMastra)) {
 		return undefined;
 	}
 
@@ -144,13 +176,12 @@ function getMastraNestedFailure(
 				: undefined;
 
 	if (nestedSuccess === false) {
-		return nestedError || `Mastra tool "${toolId}" failed`;
+		return nestedError || `Tool "${toolId}" failed`;
 	}
 
 	if (nestedExitCode !== undefined && nestedExitCode !== 0) {
 		return (
-			nestedError ||
-			`Mastra tool "${toolId}" failed with exit code ${nestedExitCode}`
+			nestedError || `Tool "${toolId}" failed with exit code ${nestedExitCode}`
 		);
 	}
 
@@ -206,7 +237,9 @@ async function waitForDurableRunResult(input: {
 		}
 
 		const status =
-			typeof payload.status === "string" ? payload.status.toLowerCase() : "running";
+			typeof payload.status === "string"
+				? payload.status.toLowerCase()
+				: "running";
 		if (status === "running") {
 			await new Promise((resolve) => setTimeout(resolve, 1500));
 			continue;
@@ -217,8 +250,7 @@ async function waitForDurableRunResult(input: {
 				success: payload.success === true,
 				status,
 				result: payload.result,
-				error:
-					typeof payload.error === "string" ? payload.error : undefined,
+				error: typeof payload.error === "string" ? payload.error : undefined,
 			};
 		}
 
@@ -309,7 +341,7 @@ function parseMastraToolInput(
 
 	if (!toolId) {
 		throw new Error(
-			"Mastra tool ID is required. Set the Tool field in this action node.",
+			"Tool ID is required. Set the Tool field in this action node.",
 		);
 	}
 
@@ -321,12 +353,12 @@ function parseMastraToolInput(
 			parsed = JSON.parse(argsRaw.trim());
 		} catch (error) {
 			throw new Error(
-				`Invalid Mastra args JSON: ${error instanceof Error ? error.message : String(error)}`,
+				`Invalid tool args JSON: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
 
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-			throw new Error("Mastra args JSON must be an object.");
+			throw new Error("Tool args JSON must be an object.");
 		}
 
 		return { toolId, args: parsed as Record<string, unknown> };
@@ -741,7 +773,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 		});
 
 		try {
-			let response: ExecuteResponse;
+			let response: ExecuteResponse | null = null;
 
 			if (target.type === "knative" || target.type === "openfunction") {
 				// Route to Knative service via direct HTTP
@@ -756,7 +788,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 				if (target.appId === "durable-agent") {
 					console.log(
-						`[Execute Route] Invoking Mastra agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
+						`[Execute Route] Invoking durable-agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
 
 					const controller = new AbortController();
@@ -833,17 +865,25 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const loopPolicy = buildLoopPolicyInput(args);
 						const model = parseDurableModelInput(args);
 						const agentConfig = parseDurableAgentConfig(args);
+						const runMode =
+							typeof args.mode === "string"
+								? args.mode.trim().toLowerCase()
+								: "plan_mode";
+						const hasWorkspaceRef =
+							typeof args.workspaceRef === "string" &&
+							args.workspaceRef.trim().length > 0;
 
 						if (isAgentRun) {
-							const mode =
-								typeof args.mode === "string"
-									? args.mode.trim().toLowerCase()
-									: "plan_mode";
-							if (mode === "plan_mode") {
+							if (runMode === "plan_mode") {
 								targetUrl = `${functionUrl}/api/plan`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									cwd: args.cwd ?? "",
+									executionMode:
+										typeof args.workspaceRef === "string" &&
+										args.workspaceRef.trim().length > 0
+											? "sandboxed"
+											: undefined,
 									model,
 									maxTurns: args.maxTurns,
 									timeoutMinutes: args.timeoutMinutes,
@@ -863,10 +903,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									nodeName: body.node_name,
 								});
 							} else {
-								targetUrl = `${functionUrl}/api/run`;
+								targetUrl = hasWorkspaceRef
+									? `${functionUrl}/api/run-sandboxed`
+									: `${functionUrl}/api/run`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									cwd: args.cwd ?? "",
+									executionMode:
+										typeof args.workspaceRef === "string" &&
+										args.workspaceRef.trim().length > 0
+											? "sandboxed"
+											: undefined,
 									model,
 									maxTurns: args.maxTurns,
 									timeoutMinutes: args.timeoutMinutes,
@@ -876,7 +923,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
-									waitForCompletion: mode === "execute_direct",
+									waitForCompletion: runMode === "execute_direct",
 									cleanupWorkspace: args.cleanupWorkspace,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
@@ -895,6 +942,11 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? "",
 								cwd: args.cwd ?? "",
+								executionMode:
+									typeof args.workspaceRef === "string" &&
+									args.workspaceRef.trim().length > 0
+										? "sandboxed"
+										: undefined,
 								model,
 								maxTurns: args.maxTurns,
 								timeoutMinutes: args.timeoutMinutes,
@@ -927,6 +979,11 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								prompt: args.prompt ?? "",
 								plan,
 								cwd: args.cwd ?? "",
+								executionMode:
+									typeof args.workspaceRef === "string" &&
+									args.workspaceRef.trim().length > 0
+										? "sandboxed"
+										: undefined,
 								maxTurns: args.maxTurns,
 								loopPolicy,
 								cleanupWorkspace: args.cleanupWorkspace,
@@ -952,17 +1009,68 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								nodeName: body.node_name,
 							});
 						} else if (isWorkspaceClone) {
+							const repositoryUrl =
+								typeof args.repositoryUrl === "string"
+									? args.repositoryUrl.trim()
+									: "";
+							const repositoryOwner =
+								typeof args.repositoryOwner === "string"
+									? args.repositoryOwner.trim()
+									: "";
+							const repositoryRepo =
+								typeof args.repositoryRepo === "string"
+									? args.repositoryRepo.trim()
+									: "";
+							const repositoryBranch =
+								typeof args.repositoryBranch === "string"
+									? args.repositoryBranch.trim()
+									: "";
+							const repositoryUsername =
+								typeof args.repositoryUsername === "string"
+									? args.repositoryUsername.trim()
+									: "";
+							const repositoryToken =
+								typeof args.repositoryToken === "string"
+									? args.repositoryToken.trim()
+									: "";
+							const githubToken =
+								typeof args.githubToken === "string"
+									? args.githubToken.trim()
+									: "";
+
+							if (!repositoryBranch) {
+								throw new Error(
+									"workspace/clone requires repositoryBranch and repository source",
+								);
+							}
+
+							const resolved = await resolveCloneRepository({
+								repositoryUrl,
+								repositoryOwner,
+								repositoryRepo,
+								repositoryUsername,
+								repositoryToken,
+								githubToken,
+							});
+							if (resolved.ensuredInGitea) {
+								console.log(
+									`[Execute Route] workspace/clone ensured Gitea repo ${resolved.repositoryOwner}/${resolved.repositoryRepo}`,
+								);
+							}
+
 							targetUrl = `${functionUrl}/api/workspaces/clone`;
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
 								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
-								repositoryOwner: args.repositoryOwner,
-								repositoryRepo: args.repositoryRepo,
-								repositoryBranch: args.repositoryBranch,
+								repositoryUrl: resolved.repositoryUrl,
+								repositoryOwner: resolved.repositoryOwner,
+								repositoryRepo: resolved.repositoryRepo,
+								repositoryBranch,
+								repositoryUsername: resolved.repositoryUsername,
 								targetDir: args.targetDir,
-								repositoryToken: args.repositoryToken,
-								githubToken: args.githubToken,
+								repositoryToken: resolved.repositoryToken,
+								githubToken,
 								timeoutMs: args.timeoutMs,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
@@ -1036,13 +1144,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									? parsedMastra.error
 									: responseText;
 							throw new Error(
-								`Mastra agent HTTP ${httpResponse.status}: ${errorFromBody.slice(0, 300)}`,
+								`durable-agent HTTP ${httpResponse.status}: ${errorFromBody.slice(0, 300)}`,
 							);
 						}
 
 						if (
 							isAgentRun &&
-							mode === "execute_direct" &&
+							runMode === "execute_direct" &&
 							resolvedMastra?.success === true
 						) {
 							const workflowId =
@@ -1061,9 +1169,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								if (!wait.success) {
 									response = {
 										success: false,
-										error:
-											wait.error ||
-											`Durable run "${workflowId}" failed`,
+										error: wait.error || `Durable run "${workflowId}" failed`,
 										duration_ms: 0,
 									};
 								} else {
@@ -1083,19 +1189,42 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						if (!response && typeof resolvedMastra?.success === "boolean") {
 							if (!resolvedMastra.success) {
 								const nestedFailure = getMastraNestedFailure(
+									pluginId,
 									toolId,
 									resolvedMastra,
 								);
-								response = {
-									success: false,
-									error:
-										typeof resolvedMastra.error === "string"
-											? resolvedMastra.error
-											: nestedFailure || `Mastra tool "${toolId}" failed`,
-									duration_ms: 0,
-								};
+								if (
+									isNoFileChangeReviewResult(pluginId, toolId, resolvedMastra)
+								) {
+									response = {
+										success: true,
+										data: {
+											toolId:
+												typeof resolvedMastra.toolId === "string"
+													? resolvedMastra.toolId
+													: toolId,
+											result:
+												resolvedMastra.result !== undefined
+													? resolvedMastra.result
+													: resolvedMastra,
+											noFileChanges: true,
+											message: "No file changes detected after durable run.",
+										},
+										duration_ms: 0,
+									};
+								} else {
+									response = {
+										success: false,
+										error:
+											typeof resolvedMastra.error === "string"
+												? resolvedMastra.error
+												: nestedFailure || `Tool "${toolId}" failed`,
+										duration_ms: 0,
+									};
+								}
 							} else {
 								const nestedFailure = getMastraNestedFailure(
+									pluginId,
 									toolId,
 									resolvedMastra,
 								);
@@ -1107,69 +1236,69 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									};
 								} else {
 									response = {
-									success: true,
-									data: {
-										toolId:
-											typeof resolvedMastra.toolId === "string"
-												? resolvedMastra.toolId
-												: toolId,
-										result:
-											resolvedMastra.result !== undefined
-												? resolvedMastra.result
-												: resolvedMastra,
-										...(resolvedMastra.result &&
-										typeof resolvedMastra.result === "object"
-											? (resolvedMastra.result as Record<string, unknown>)
-											: {}),
-										plan: resolvedMastra.plan,
-										workflowId:
-											typeof resolvedMastra.workflowId === "string"
-												? resolvedMastra.workflowId
-												: typeof resolvedMastra.workflow_id === "string"
-													? resolvedMastra.workflow_id
+										success: true,
+										data: {
+											toolId:
+												typeof resolvedMastra.toolId === "string"
+													? resolvedMastra.toolId
+													: toolId,
+											result:
+												resolvedMastra.result !== undefined
+													? resolvedMastra.result
+													: resolvedMastra,
+											...(resolvedMastra.result &&
+											typeof resolvedMastra.result === "object"
+												? (resolvedMastra.result as Record<string, unknown>)
+												: {}),
+											plan: resolvedMastra.plan,
+											workflowId:
+												typeof resolvedMastra.workflowId === "string"
+													? resolvedMastra.workflowId
+													: typeof resolvedMastra.workflow_id === "string"
+														? resolvedMastra.workflow_id
+														: undefined,
+											workspaceRef:
+												typeof (resolvedMastra as Record<string, unknown>)
+													.workspaceRef === "string"
+													? ((resolvedMastra as Record<string, unknown>)
+															.workspaceRef as string)
 													: undefined,
-										workspaceRef:
-											typeof (resolvedMastra as Record<string, unknown>)
-												.workspaceRef === "string"
+											executionId:
+												typeof (resolvedMastra as Record<string, unknown>)
+													.executionId === "string"
+													? ((resolvedMastra as Record<string, unknown>)
+															.executionId as string)
+													: undefined,
+											rootPath:
+												typeof (resolvedMastra as Record<string, unknown>)
+													.rootPath === "string"
+													? ((resolvedMastra as Record<string, unknown>)
+															.rootPath as string)
+													: undefined,
+											backend:
+												typeof (resolvedMastra as Record<string, unknown>)
+													.backend === "string"
+													? ((resolvedMastra as Record<string, unknown>)
+															.backend as string)
+													: undefined,
+											cleanedWorkspaceRefs: Array.isArray(
+												(resolvedMastra as Record<string, unknown>)
+													.cleanedWorkspaceRefs,
+											)
 												? ((resolvedMastra as Record<string, unknown>)
-														.workspaceRef as string)
+														.cleanedWorkspaceRefs as unknown[])
 												: undefined,
-										executionId:
-											typeof (resolvedMastra as Record<string, unknown>)
-												.executionId === "string"
-												? ((resolvedMastra as Record<string, unknown>)
-														.executionId as string)
-												: undefined,
-										rootPath:
-											typeof (resolvedMastra as Record<string, unknown>)
-												.rootPath === "string"
-												? ((resolvedMastra as Record<string, unknown>)
-														.rootPath as string)
-												: undefined,
-										backend:
-											typeof (resolvedMastra as Record<string, unknown>)
-												.backend === "string"
-												? ((resolvedMastra as Record<string, unknown>)
-														.backend as string)
-												: undefined,
-										cleanedWorkspaceRefs: Array.isArray(
-											(resolvedMastra as Record<string, unknown>)
-												.cleanedWorkspaceRefs,
-										)
-											? ((resolvedMastra as Record<string, unknown>)
-													.cleanedWorkspaceRefs as unknown[])
-											: undefined,
-										status:
-											typeof resolvedMastra.status === "string"
-												? resolvedMastra.status
-												: undefined,
-										message:
-											typeof resolvedMastra.message === "string"
-												? resolvedMastra.message
-												: undefined,
-									},
-									duration_ms: 0,
-								};
+											status:
+												typeof resolvedMastra.status === "string"
+													? resolvedMastra.status
+													: undefined,
+											message:
+												typeof resolvedMastra.message === "string"
+													? resolvedMastra.message
+													: undefined,
+										},
+										duration_ms: 0,
+									};
 								}
 							}
 						} else if (
@@ -1209,11 +1338,21 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						clearTimeout(timeoutId);
 						timing.executionMs = Date.now() - executionStartTime;
 						if (httpError instanceof Error && httpError.name === "AbortError") {
-							throw new Error(
-								`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
-							);
+							response = {
+								success: false,
+								error: `Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
+								duration_ms: 0,
+							};
+						} else {
+							response = {
+								success: false,
+								error:
+									httpError instanceof Error
+										? httpError.message
+										: `Failed to invoke ${target.appId}`,
+								duration_ms: 0,
+							};
 						}
-						throw httpError;
 					}
 				} else {
 					const isApRoute = target.appId === "fn-activepieces";

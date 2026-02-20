@@ -21,6 +21,10 @@ const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
 	process.env.DURABLE_AGENT_OPTIONS_TIMEOUT_MS || "5000",
 	10,
 );
+const GITEA_API_BASE_URL =
+	process.env.GITEA_API_URL ||
+	"http://my-gitea-http.gitea.svc.cluster.local:3000";
+const GITEA_REPO_OWNER = (process.env.GITEA_REPO_OWNER || "giteaAdmin").trim();
 
 type DropdownOption = {
 	label: string;
@@ -173,6 +177,10 @@ type GithubRepo = {
 
 type GithubBranch = {
 	name: string;
+};
+
+type GiteaBranch = {
+	name?: string;
 };
 
 type DurableToolsResponse = {
@@ -353,6 +361,117 @@ async function getBranchOptions(
 		}));
 }
 
+function getGiteaAuth(input: Record<string, unknown>): {
+	username: string;
+	password: string;
+} | null {
+	const username =
+		(typeof input.repositoryUsername === "string"
+			? input.repositoryUsername
+			: process.env.GITEA_USERNAME || ""
+		).trim();
+	const password =
+		(typeof input.repositoryToken === "string"
+			? input.repositoryToken
+			: process.env.GITEA_PASSWORD || ""
+		).trim();
+	if (!username || !password) {
+		return null;
+	}
+	return { username, password };
+}
+
+async function giteaRequest(path: string, input: {
+	method?: string;
+	body?: unknown;
+	auth?: { username: string; password: string } | null;
+}): Promise<Response> {
+	const headers: Record<string, string> = {};
+	if (input.body !== undefined) {
+		headers["Content-Type"] = "application/json";
+	}
+	if (input.auth?.username && input.auth.password) {
+		headers.Authorization = `Basic ${Buffer.from(`${input.auth.username}:${input.auth.password}`).toString("base64")}`;
+	}
+	return await fetch(`${GITEA_API_BASE_URL}${path}`, {
+		method: input.method || "GET",
+		headers,
+		body: input.body === undefined ? undefined : JSON.stringify(input.body),
+		signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+	});
+}
+
+async function ensureWorkspaceCloneRepoInGitea(input: {
+	repo: string;
+	githubOwner: string;
+	githubToken: string;
+	auth: { username: string; password: string } | null;
+}): Promise<void> {
+	const lookup = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(input.repo)}`,
+		{ auth: input.auth },
+	);
+	if (lookup.status === 200) {
+		return;
+	}
+	if (lookup.status !== 404) {
+		const body = await lookup.text();
+		throw new Error(
+			`Gitea repo lookup failed (${lookup.status}): ${body.slice(0, 200)}`,
+		);
+	}
+	if (!input.auth) {
+		throw new Error(
+			"Gitea credentials are required to import missing repositories. Set repositoryUsername/repositoryToken on the clone action or provide GITEA_USERNAME/GITEA_PASSWORD env vars.",
+		);
+	}
+
+	const upstream = input.githubToken
+		? `https://${input.githubToken}@github.com/${input.githubOwner}/${input.repo}.git`
+		: `https://github.com/${input.githubOwner}/${input.repo}.git`;
+	const create = await giteaRequest("/api/v1/repos/migrate", {
+		method: "POST",
+		auth: input.auth,
+		body: {
+			clone_addr: upstream,
+			repo_name: input.repo,
+			repo_owner: GITEA_REPO_OWNER,
+			service: "git",
+			mirror: false,
+			private: false,
+			description: "Imported by workflow-builder clone action",
+		},
+	});
+	if (create.status === 201 || create.status === 409) {
+		return;
+	}
+	const body = await create.text();
+	throw new Error(
+		`Gitea repository import failed (${create.status}): ${body.slice(0, 200)}`,
+	);
+}
+
+async function getGiteaBranchOptions(input: {
+	repo: string;
+	auth: { username: string; password: string } | null;
+}): Promise<DropdownOption[]> {
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(input.repo)}/branches?limit=100`,
+		{ auth: input.auth },
+	);
+	if (!response.ok) {
+		const body = await response.text();
+		throw new Error(
+			`Gitea branches request failed (${response.status}): ${body.slice(0, 200)}`,
+		);
+	}
+	const rows = (await response.json()) as GiteaBranch[];
+	return rows
+		.map((row) => (typeof row.name === "string" ? row.name.trim() : ""))
+		.filter((row) => Boolean(row))
+		.map((row) => ({ label: row, value: row }));
+}
+
 /**
  * POST /api/builtin/options
  *
@@ -496,6 +615,25 @@ export async function POST(request: Request) {
 				}
 				if (!repo) {
 					response = buildDisabledResponse("Select a repository first");
+					break;
+				}
+				if (normalizedActionName === "workspace/clone") {
+					const auth = getGiteaAuth(input);
+					await ensureWorkspaceCloneRepoInGitea({
+						repo,
+						githubOwner: owner,
+						githubToken: token,
+						auth,
+					});
+					response = {
+						options: filterOptions(
+							await getGiteaBranchOptions({
+								repo,
+								auth,
+							}),
+							rawBody.searchValue,
+						),
+					};
 					break;
 				}
 				response = {

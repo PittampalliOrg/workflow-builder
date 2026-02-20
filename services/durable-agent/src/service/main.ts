@@ -19,6 +19,8 @@
  * - GET  /api/workspaces/executions/:executionId/patch — Export combined patch
  * - GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — Fetch aggregated file snapshot
  * - POST /api/run              — Fire-and-forget agent run
+ * - POST /api/run/:workflowId/terminate — Terminate a durable run by workflow id
+ * - POST /api/runs/terminate-by-parent — Terminate active runs by parent workflow id
  * - POST /api/plan             — Synchronous planning
  * - POST /api/execute-plan     — Fire-and-forget plan execution
  * - GET  /api/dapr/subscribe   — Dapr subscription discovery
@@ -136,6 +138,12 @@ type AgentConfigPayload = {
 	maxTurns?: number;
 	timeoutMinutes?: number;
 	tools?: string[]; // List of tool names to enable (subset of workspace tools)
+	configuration?: {
+		storeName: string;
+		configName?: string;
+		keys?: string[];
+		metadata?: Record<string, string>;
+	};
 };
 const FALLBACK_AGENT_INSTRUCTIONS =
 	"You are a concise development assistant. Execute the task directly and return useful output.";
@@ -151,6 +159,22 @@ let scorers: ScorerLike[] = [];
 let reconcileLoopStarted = false;
 let reconcilingRuns = false;
 let startupInitRetryTimer: NodeJS.Timeout | null = null;
+
+const WORKFLOW_STATUS_RUNNING = 0;
+const WORKFLOW_STATUS_COMPLETED = 1;
+const WORKFLOW_STATUS_FAILED = 3;
+const WORKFLOW_STATUS_TERMINATED = 5;
+
+type ActiveRun = {
+	agentWorkflowId: string;
+	daprInstanceId: string;
+	parentExecutionId: string;
+	workspaceRef?: string;
+	mode: "run" | "execute_plan";
+};
+
+const activeRuns = new Map<string, ActiveRun>();
+const activeRunIdsByParent = new Map<string, Set<string>>();
 
 // Merged tools from all sources (populated in initAgent)
 let allMergedTools: Record<
@@ -172,6 +196,8 @@ function agentConfigHash(config: AgentConfigPayload): string {
 		i: normalizedInstructions.slice(0, 200),
 		m: config.modelSpec,
 		t: config.tools?.sort(),
+		x: config.maxTurns,
+		y: config.timeoutMinutes,
 	});
 	// Simple string hash
 	let hash = 0;
@@ -184,6 +210,586 @@ function agentConfigHash(config: AgentConfigPayload): string {
 function normalizeAgentInstructions(instructions: string | undefined): string {
 	const trimmed = typeof instructions === "string" ? instructions.trim() : "";
 	return trimmed.length > 0 ? trimmed : FALLBACK_AGENT_INSTRUCTIONS;
+}
+
+type AgentConfigOverrides = {
+	name?: string;
+	modelSpec?: string;
+	instructions?: string;
+	tools?: string[];
+	maxTurns?: number;
+	timeoutMinutes?: number;
+	role?: string;
+	goal?: string;
+	systemPrompt?: string;
+};
+
+type AgentConfigStoreTarget = {
+	storeName: string;
+	keys: string[];
+	metadata: Record<string, string>;
+	cacheKey: string;
+};
+
+type AgentConfigSubscription = {
+	target: AgentConfigStoreTarget;
+	overrides?: AgentConfigOverrides;
+	subscriptionID?: string;
+	starting?: Promise<void>;
+};
+
+const DAPR_HTTP_HOST = process.env.DAPR_HOST?.trim() || "127.0.0.1";
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT?.trim() || "3500";
+const configStoreSubscriptions = new Map<string, AgentConfigSubscription>();
+
+function toConfigString(value: unknown): string | undefined {
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		return trimmed.length > 0 ? trimmed : undefined;
+	}
+	if (typeof value === "number" || typeof value === "boolean") {
+		return String(value);
+	}
+	return undefined;
+}
+
+function toConfigNumber(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+		return Math.floor(value);
+	}
+	if (typeof value === "string") {
+		const parsed = Number.parseInt(value.trim(), 10);
+		if (Number.isFinite(parsed) && parsed > 0) {
+			return parsed;
+		}
+	}
+	return undefined;
+}
+
+function toConfigTools(value: unknown): string[] | undefined {
+	if (Array.isArray(value)) {
+		const tools = value
+			.filter((item): item is string => typeof item === "string")
+			.map((item) => item.trim())
+			.filter(Boolean);
+		return tools.length > 0 ? [...new Set(tools)] : undefined;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (!trimmed) return undefined;
+		if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+			try {
+				return toConfigTools(JSON.parse(trimmed));
+			} catch {
+				return undefined;
+			}
+		}
+		const tools = trimmed
+			.split(",")
+			.map((item) => item.trim())
+			.filter(Boolean);
+		return tools.length > 0 ? [...new Set(tools)] : undefined;
+	}
+	if (value && typeof value === "object") {
+		const tools = Object.entries(value as Record<string, unknown>)
+			.filter(([, enabled]) => enabled === true || enabled === "true")
+			.map(([tool]) => tool.trim())
+			.filter(Boolean);
+		return tools.length > 0 ? [...new Set(tools)] : undefined;
+	}
+	return undefined;
+}
+
+function normalizeConfigKey(key: string): string {
+	return key
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "_");
+}
+
+function applyConfigOverride(
+	overrides: AgentConfigOverrides,
+	key: string,
+	value: unknown,
+): void {
+	const normalized = normalizeConfigKey(key);
+	if (normalized === "name" || normalized === "agent_name") {
+		const parsed = toConfigString(value);
+		if (parsed) overrides.name = parsed;
+		return;
+	}
+	if (
+		normalized === "model" ||
+		normalized === "model_spec" ||
+		normalized === "modelspec" ||
+		normalized === "llm_model"
+	) {
+		const parsed = toConfigString(value);
+		if (parsed) overrides.modelSpec = parsed;
+		return;
+	}
+	if (normalized === "instructions" || normalized === "agent_instructions") {
+		const parsed = Array.isArray(value)
+			? value
+					.filter((item): item is string => typeof item === "string")
+					.map((item) => item.trim())
+					.filter(Boolean)
+					.join("\n")
+			: toConfigString(value);
+		if (parsed) overrides.instructions = parsed;
+		return;
+	}
+	if (normalized === "system_prompt" || normalized === "agent_system_prompt") {
+		const parsed = toConfigString(value);
+		if (parsed) overrides.systemPrompt = parsed;
+		return;
+	}
+	if (normalized === "role" || normalized === "agent_role") {
+		const parsed = toConfigString(value);
+		if (parsed) overrides.role = parsed;
+		return;
+	}
+	if (normalized === "goal" || normalized === "agent_goal") {
+		const parsed = toConfigString(value);
+		if (parsed) overrides.goal = parsed;
+		return;
+	}
+	if (normalized === "tools" || normalized === "agent_tools") {
+		const parsed = toConfigTools(value);
+		if (parsed) overrides.tools = parsed;
+		return;
+	}
+	if (
+		normalized === "max_turns" ||
+		normalized === "max_turn" ||
+		normalized === "max_iterations" ||
+		normalized === "maxturns"
+	) {
+		const parsed = toConfigNumber(value);
+		if (parsed) overrides.maxTurns = parsed;
+		return;
+	}
+	if (normalized === "timeout_minutes" || normalized === "timeoutminutes") {
+		const parsed = toConfigNumber(value);
+		if (parsed) overrides.timeoutMinutes = parsed;
+	}
+}
+
+function buildConfigStoreInstructions(
+	overrides: AgentConfigOverrides | undefined,
+): string | undefined {
+	if (!overrides) return undefined;
+	if (overrides.instructions) return overrides.instructions;
+	const parts = [
+		overrides.systemPrompt,
+		overrides.role ? `Role: ${overrides.role}` : undefined,
+		overrides.goal ? `Goal: ${overrides.goal}` : undefined,
+	].filter((item): item is string => Boolean(item && item.trim()));
+	if (parts.length === 0) return undefined;
+	return parts.join("\n\n");
+}
+
+function createConfigStoreTarget(
+	configuration: AgentConfigPayload["configuration"] | undefined,
+): AgentConfigStoreTarget | undefined {
+	if (!configuration?.storeName?.trim()) {
+		return undefined;
+	}
+	const storeName = configuration.storeName.trim();
+	const configName = configuration.configName?.trim();
+	const keys = (configuration.keys || [])
+		.map((key) => key.trim())
+		.filter(Boolean);
+	const metadata = Object.fromEntries(
+		Object.entries(configuration.metadata || {})
+			.map(([key, value]) => [key.trim(), value.trim()] as const)
+			.filter(([key, value]) => Boolean(key) && Boolean(value)),
+	);
+	const effectiveKeys =
+		keys.length > 0 ? [...new Set(keys)] : configName ? [configName] : [];
+	const cacheKey = JSON.stringify({
+		storeName,
+		keys: [...effectiveKeys].sort(),
+		metadata: Object.entries(metadata).sort(([a], [b]) => a.localeCompare(b)),
+	});
+	return {
+		storeName,
+		keys: effectiveKeys,
+		metadata,
+		cacheKey,
+	};
+}
+
+function parseConfigStoreOverrides(
+	items: Record<string, { value?: unknown }>,
+): AgentConfigOverrides | undefined {
+	const overrides: AgentConfigOverrides = {};
+	for (const [key, rawItem] of Object.entries(items)) {
+		const rawValue = rawItem?.value;
+		if (typeof rawValue !== "string") {
+			applyConfigOverride(overrides, key, rawValue);
+			continue;
+		}
+		try {
+			const parsed = JSON.parse(rawValue);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				for (const [nestedKey, nestedValue] of Object.entries(parsed)) {
+					applyConfigOverride(overrides, nestedKey, nestedValue);
+				}
+				continue;
+			}
+			applyConfigOverride(overrides, key, parsed);
+		} catch {
+			applyConfigOverride(overrides, key, rawValue);
+		}
+	}
+	return Object.keys(overrides).length > 0 ? overrides : undefined;
+}
+
+function normalizeConfigStoreItems(
+	items: unknown,
+): Record<string, { value?: unknown }> {
+	if (Array.isArray(items)) {
+		return Object.fromEntries(
+			items.flatMap((item) => {
+				if (!item || typeof item !== "object" || Array.isArray(item)) {
+					return [];
+				}
+				const value = item as Record<string, unknown>;
+				const key = typeof value.key === "string" ? value.key.trim() : "";
+				if (!key) return [];
+				return [[key, { value: value.value }] as const];
+			}),
+		);
+	}
+	if (items && typeof items === "object" && !Array.isArray(items)) {
+		const value = items as Record<string, unknown>;
+		if (typeof value.key === "string") {
+			const key = value.key.trim();
+			if (!key) return {};
+			return { [key]: { value: value.value } };
+		}
+		return Object.fromEntries(
+			Object.entries(value).map(([key, entry]) => {
+				if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+					return [key, { value: entry }] as const;
+				}
+				const item = entry as Record<string, unknown>;
+				if (!("value" in item)) {
+					return [key, { value: entry }] as const;
+				}
+				return [key, { value: item.value }] as const;
+			}),
+		);
+	}
+	return {};
+}
+
+function applyConfigStorePush(input: {
+	storeName?: string;
+	key?: string;
+	payload: unknown;
+}): { matched: number; updated: number } {
+	const storeName = input.storeName?.trim();
+	const key = input.key?.trim();
+	const payload =
+		input.payload &&
+		typeof input.payload === "object" &&
+		!Array.isArray(input.payload)
+			? (input.payload as Record<string, unknown>)
+			: undefined;
+	const subscriptionID =
+		typeof payload?.id === "string" ? payload.id.trim() : "";
+	const items = normalizeConfigStoreItems(payload?.items ?? payload);
+	const overrides = parseConfigStoreOverrides(items);
+	if (!overrides) {
+		return { matched: 0, updated: 0 };
+	}
+	let matched = 0;
+	let updated = 0;
+	for (const subscription of configStoreSubscriptions.values()) {
+		if (
+			subscriptionID &&
+			subscription.subscriptionID &&
+			subscription.subscriptionID !== subscriptionID
+		) {
+			continue;
+		}
+		if (storeName && subscription.target.storeName !== storeName) {
+			continue;
+		}
+		if (
+			key &&
+			subscription.target.keys.length > 0 &&
+			!subscription.target.keys.includes(key)
+		) {
+			continue;
+		}
+		matched += 1;
+		const previous = JSON.stringify(subscription.overrides || {});
+		const merged = {
+			...(subscription.overrides || {}),
+			...overrides,
+		};
+		const current = JSON.stringify(merged);
+		subscription.overrides = merged;
+		if (previous !== current) {
+			updated += 1;
+		}
+	}
+	if (updated > 0) {
+		agentCache.clear();
+	}
+	if (matched > 0) {
+		console.log(
+			`[durable-agent] Dynamic config push received store=${storeName || "<unknown>"} key=${key || "<batch>"} subscription=${subscriptionID || "<none>"} matched=${matched} updated=${updated}`,
+		);
+	}
+	return { matched, updated };
+}
+
+async function fetchConfigStoreOverrides(
+	target: AgentConfigStoreTarget,
+): Promise<AgentConfigOverrides | undefined> {
+	const url = new URL(
+		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(target.storeName)}`,
+	);
+	for (const key of target.keys) {
+		url.searchParams.append("key", key);
+	}
+	for (const [key, value] of Object.entries(target.metadata)) {
+		url.searchParams.set(`metadata.${key}`, value);
+	}
+	const response = await fetch(url.toString(), {
+		method: "GET",
+		signal: AbortSignal.timeout(5000),
+	});
+	if (!response.ok) {
+		throw new Error(`configuration get failed (${response.status})`);
+	}
+	const payload = (await response.json()) as
+		| { items?: Record<string, { value?: unknown }> }
+		| Record<string, { value?: unknown }>;
+	const items =
+		payload &&
+		typeof payload === "object" &&
+		"items" in payload &&
+		payload.items &&
+		typeof payload.items === "object" &&
+		!Array.isArray(payload.items)
+			? (payload.items as Record<string, { value?: unknown }>)
+			: (payload as Record<string, { value?: unknown }>);
+	return parseConfigStoreOverrides(items);
+}
+
+async function subscribeConfigStoreTarget(
+	subscription: AgentConfigSubscription,
+): Promise<void> {
+	try {
+		subscription.overrides = await fetchConfigStoreOverrides(
+			subscription.target,
+		);
+	} catch (err) {
+		console.warn(
+			`[durable-agent] Failed initial config load for store '${subscription.target.storeName}':`,
+			err,
+		);
+	}
+	try {
+		const url = new URL(
+			`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(subscription.target.storeName)}/subscribe`,
+		);
+		for (const key of subscription.target.keys) {
+			url.searchParams.append("key", key);
+		}
+		for (const [key, value] of Object.entries(subscription.target.metadata)) {
+			url.searchParams.set(`metadata.${key}`, value);
+		}
+		const response = await fetch(url.toString(), {
+			method: "GET",
+			signal: AbortSignal.timeout(5000),
+		});
+		if (!response.ok) {
+			throw new Error(`configuration subscribe failed (${response.status})`);
+		}
+		const payload = (await response.json()) as { id?: unknown };
+		const subscriptionID =
+			typeof payload.id === "string" ? payload.id.trim() : "";
+		if (!subscriptionID) {
+			throw new Error("configuration subscribe returned empty id");
+		}
+		subscription.subscriptionID = subscriptionID;
+		console.log(
+			`[durable-agent] Subscribed to config store '${subscription.target.storeName}' (${subscription.target.keys.length} keys) id=${subscriptionID}`,
+		);
+	} catch (err) {
+		console.warn(
+			`[durable-agent] Failed config subscription for store '${subscription.target.storeName}':`,
+			err,
+		);
+	}
+}
+
+function ensureConfigStoreSubscription(
+	target: AgentConfigStoreTarget,
+): AgentConfigSubscription {
+	let subscription = configStoreSubscriptions.get(target.cacheKey);
+	if (!subscription) {
+		subscription = { target };
+		configStoreSubscriptions.set(target.cacheKey, subscription);
+	}
+	if (!subscription.subscriptionID && !subscription.starting) {
+		subscription.starting = subscribeConfigStoreTarget(subscription).finally(
+			() => {
+				if (subscription) {
+					subscription.starting = undefined;
+				}
+			},
+		);
+	}
+	return subscription;
+}
+
+async function unsubscribeConfigStoreTarget(
+	subscription: AgentConfigSubscription,
+): Promise<void> {
+	if (!subscription.subscriptionID) {
+		return;
+	}
+	const encodedStore = encodeURIComponent(subscription.target.storeName);
+	const encodedID = encodeURIComponent(subscription.subscriptionID);
+	const urls = [
+		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodedStore}/${encodedID}/unsubscribe`,
+		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0-alpha1/configuration/${encodedStore}/${encodedID}/unsubscribe`,
+	];
+	let lastError = "unknown";
+	for (const url of urls) {
+		const response = await fetch(url, {
+			method: "GET",
+			signal: AbortSignal.timeout(5000),
+		});
+		if (response.ok) {
+			return;
+		}
+		lastError = String(response.status);
+	}
+	throw new Error(`configuration unsubscribe failed (${lastError})`);
+}
+
+async function stopConfigStoreSubscriptions(): Promise<void> {
+	const stops = [...configStoreSubscriptions.values()].flatMap(
+		(subscription) => {
+			if (!subscription.subscriptionID) {
+				return [];
+			}
+			return [
+				Promise.resolve(unsubscribeConfigStoreTarget(subscription)).catch(
+					(err) => {
+						console.warn(
+							"[durable-agent] Failed stopping config subscription:",
+							err,
+						);
+					},
+				),
+			];
+		},
+	);
+	configStoreSubscriptions.clear();
+	await Promise.all(stops);
+}
+
+async function loadConfigStoreOverrides(
+	configuration: AgentConfigPayload["configuration"] | undefined,
+): Promise<AgentConfigOverrides | undefined> {
+	const target = createConfigStoreTarget(configuration);
+	if (!target) return undefined;
+	try {
+		const subscription = ensureConfigStoreSubscription(target);
+		if (subscription.overrides !== undefined) {
+			return subscription.overrides;
+		}
+		const overrides = await fetchConfigStoreOverrides(target);
+		subscription.overrides = overrides;
+		return overrides;
+	} catch (err) {
+		console.warn(
+			`[durable-agent] Failed loading config store '${target.storeName}':`,
+			err,
+		);
+		return undefined;
+	}
+}
+
+async function resolveRequestAgentConfig(input: {
+	body: Record<string, unknown>;
+	inlineName: string;
+}): Promise<AgentConfigPayload | undefined> {
+	const requestConfig =
+		input.body.agentConfig && typeof input.body.agentConfig === "object"
+			? (input.body.agentConfig as AgentConfigPayload)
+			: undefined;
+	const storeOverrides = await loadConfigStoreOverrides(
+		requestConfig?.configuration,
+	);
+
+	const inlineModel =
+		typeof input.body.model === "string" ? input.body.model.trim() : "";
+	const inlineInstructions =
+		typeof input.body.instructions === "string"
+			? input.body.instructions
+			: undefined;
+	const inlineTools = toConfigTools(input.body.tools);
+
+	const modelSpec =
+		requestConfig?.modelSpec?.trim() ||
+		storeOverrides?.modelSpec?.trim() ||
+		inlineModel ||
+		undefined;
+	if (!modelSpec) {
+		return undefined;
+	}
+
+	const toolsFromRequest = requestConfig?.tools?.length
+		? [
+				...new Set(
+					requestConfig.tools.map((tool) => tool.trim()).filter(Boolean),
+				),
+			]
+		: undefined;
+	const instructionsCandidate =
+		requestConfig?.instructions ??
+		buildConfigStoreInstructions(storeOverrides) ??
+		inlineInstructions;
+	const name =
+		requestConfig?.name?.trim() ||
+		storeOverrides?.name?.trim() ||
+		input.inlineName;
+
+	return {
+		name,
+		modelSpec,
+		instructions: normalizeAgentInstructions(instructionsCandidate),
+		...(requestConfig?.maxTurns
+			? { maxTurns: requestConfig.maxTurns }
+			: storeOverrides?.maxTurns
+				? { maxTurns: storeOverrides.maxTurns }
+				: {}),
+		...(requestConfig?.timeoutMinutes
+			? { timeoutMinutes: requestConfig.timeoutMinutes }
+			: storeOverrides?.timeoutMinutes
+				? { timeoutMinutes: storeOverrides.timeoutMinutes }
+				: {}),
+		...(toolsFromRequest
+			? { tools: toolsFromRequest }
+			: storeOverrides?.tools
+				? { tools: storeOverrides.tools }
+				: inlineTools
+					? { tools: inlineTools }
+					: {}),
+		...(requestConfig?.configuration
+			? { configuration: requestConfig.configuration }
+			: {}),
+	};
 }
 
 function resolveNormalizedModel(modelSpecRaw: string) {
@@ -528,6 +1134,116 @@ function parseOptionalLoopPolicy(input: unknown): LoopPolicy | undefined {
 	return undefined;
 }
 
+function trackActiveRun(input: ActiveRun): void {
+	activeRuns.set(input.agentWorkflowId, input);
+	if (!input.parentExecutionId) return;
+	let set = activeRunIdsByParent.get(input.parentExecutionId);
+	if (!set) {
+		set = new Set<string>();
+		activeRunIdsByParent.set(input.parentExecutionId, set);
+	}
+	set.add(input.agentWorkflowId);
+}
+
+function untrackActiveRun(agentWorkflowId: string): void {
+	const run = activeRuns.get(agentWorkflowId);
+	if (!run) return;
+	activeRuns.delete(agentWorkflowId);
+	if (!run.parentExecutionId) return;
+	const set = activeRunIdsByParent.get(run.parentExecutionId);
+	if (!set) return;
+	set.delete(agentWorkflowId);
+	if (set.size === 0) {
+		activeRunIdsByParent.delete(run.parentExecutionId);
+	}
+}
+
+async function resolveActiveRun(input: {
+	agentWorkflowId?: string;
+	daprInstanceId?: string;
+	parentExecutionId?: string;
+}): Promise<ActiveRun | undefined> {
+	const agentWorkflowId = String(input.agentWorkflowId || "").trim();
+	if (agentWorkflowId) {
+		const tracked = activeRuns.get(agentWorkflowId);
+		if (tracked) return tracked;
+		const fromDb = await workflowRunTracker.getById(agentWorkflowId);
+		if (fromDb) {
+			return {
+				agentWorkflowId: fromDb.agentWorkflowId,
+				daprInstanceId: fromDb.daprInstanceId,
+				parentExecutionId: fromDb.parentExecutionId,
+				workspaceRef: fromDb.workspaceRef,
+				mode: fromDb.mode === "execute_plan" ? "execute_plan" : "run",
+			};
+		}
+	}
+
+	const daprInstanceId = String(input.daprInstanceId || "").trim();
+	if (daprInstanceId) {
+		for (const run of activeRuns.values()) {
+			if (run.daprInstanceId === daprInstanceId) return run;
+		}
+	}
+
+	const parentExecutionId = String(input.parentExecutionId || "").trim();
+	if (!parentExecutionId) return undefined;
+	const ids = activeRunIdsByParent.get(parentExecutionId);
+	if (!ids || ids.size === 0) return undefined;
+	const first = [...ids][0];
+	return activeRuns.get(first);
+}
+
+function activeRunsForParent(parentExecutionId: string): ActiveRun[] {
+	const ids = activeRunIdsByParent.get(parentExecutionId);
+	if (!ids || ids.size === 0) return [];
+	return [...ids]
+		.map((id) => activeRuns.get(id))
+		.filter((item): item is ActiveRun => Boolean(item));
+}
+
+async function terminateDaprInstance(input: {
+	daprInstanceId: string;
+	reason: string;
+}): Promise<{ success: boolean; error?: string; alreadyStopped?: boolean }> {
+	const instanceId = String(input.daprInstanceId || "").trim();
+	if (!instanceId)
+		return { success: false, error: "daprInstanceId is required" };
+	if (!workflowClient)
+		return { success: false, error: "workflow runtime unavailable" };
+
+	try {
+		const state = await workflowClient.getWorkflowState(instanceId, true);
+		const status = state?.runtimeStatus;
+		if (
+			status === WORKFLOW_STATUS_COMPLETED ||
+			status === WORKFLOW_STATUS_FAILED ||
+			status === WORKFLOW_STATUS_TERMINATED
+		) {
+			return { success: true, alreadyStopped: true };
+		}
+		const client = workflowClient as unknown as {
+			terminateWorkflow?: (
+				instanceId: string,
+				output?: string,
+			) => Promise<void>;
+		};
+		if (!client.terminateWorkflow) {
+			return {
+				success: false,
+				error: "DaprWorkflowClient.terminateWorkflow unavailable",
+			};
+		}
+		await client.terminateWorkflow(instanceId, input.reason);
+		return { success: true };
+	} catch (err) {
+		return {
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 function isMutatingToolName(name: string): boolean {
 	const normalized = name.trim().toLowerCase();
 	if (!normalized) return false;
@@ -828,7 +1544,7 @@ async function waitForWorkflowCompletion(
 			`[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`,
 		);
 
-		if (statusNum === 1) {
+		if (statusNum === WORKFLOW_STATUS_COMPLETED) {
 			// COMPLETED
 			let result: Record<string, unknown> = {};
 			if (state.serializedOutput) {
@@ -841,7 +1557,10 @@ async function waitForWorkflowCompletion(
 			return { success: true, result };
 		}
 
-		if (statusNum === 3 || statusNum === 5) {
+		if (
+			statusNum === WORKFLOW_STATUS_FAILED ||
+			statusNum === WORKFLOW_STATUS_TERMINATED
+		) {
 			// FAILED or TERMINATED
 			let error = "Workflow failed";
 			if ((state as any).failureDetails?.message) {
@@ -929,7 +1648,7 @@ async function getWorkflowCompletionSnapshot(instanceId: string): Promise<{
 			return { done: true, success: false, error: "Workflow state not found" };
 		}
 		const statusNum = state.runtimeStatus;
-		if (statusNum === 1) {
+		if (statusNum === WORKFLOW_STATUS_COMPLETED) {
 			let result: Record<string, unknown> = {};
 			if (state.serializedOutput) {
 				try {
@@ -940,7 +1659,10 @@ async function getWorkflowCompletionSnapshot(instanceId: string): Promise<{
 			}
 			return { done: true, success: true, result };
 		}
-		if (statusNum === 3 || statusNum === 5) {
+		if (
+			statusNum === WORKFLOW_STATUS_FAILED ||
+			statusNum === WORKFLOW_STATUS_TERMINATED
+		) {
 			let error = "Workflow failed";
 			if ((state as any).failureDetails?.message) {
 				error = (state as any).failureDetails.message;
@@ -1008,6 +1730,49 @@ async function reconcileUnpublishedRuns(): Promise<void> {
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
+
+app.post("/configuration", (req, res) => {
+	try {
+		const result = applyConfigStorePush({ payload: req.body });
+		res.json({ ok: true, ...result });
+	} catch (err) {
+		res.status(400).json({
+			ok: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/configuration/:storeName", (req, res) => {
+	try {
+		const result = applyConfigStorePush({
+			storeName: req.params.storeName,
+			payload: req.body,
+		});
+		res.json({ ok: true, ...result });
+	} catch (err) {
+		res.status(400).json({
+			ok: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/configuration/:storeName/:key", (req, res) => {
+	try {
+		const result = applyConfigStorePush({
+			storeName: req.params.storeName,
+			key: req.params.key,
+			payload: req.body,
+		});
+		res.json({ ok: true, ...result });
+	} catch (err) {
+		res.status(400).json({
+			ok: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
 
 // Health check
 app.get("/api/health", (_req, res) => {
@@ -1115,6 +1880,10 @@ app.post("/api/workspaces/profile", async (req, res) => {
 
 app.post("/api/workspaces/clone", async (req, res) => {
 	try {
+		const repositoryUrl =
+			typeof req.body?.repositoryUrl === "string"
+				? req.body.repositoryUrl
+				: "";
 		const repositoryOwner =
 			typeof req.body?.repositoryOwner === "string"
 				? req.body.repositoryOwner
@@ -1123,14 +1892,26 @@ app.post("/api/workspaces/clone", async (req, res) => {
 			typeof req.body?.repositoryRepo === "string"
 				? req.body.repositoryRepo
 				: "";
-		if (!repositoryOwner.trim() || !repositoryRepo.trim()) {
+		const repositoryBranch =
+			typeof req.body?.repositoryBranch === "string"
+				? req.body.repositoryBranch
+				: "";
+		const repositoryUsername =
+			typeof req.body?.repositoryUsername === "string"
+				? req.body.repositoryUsername
+				: "";
+		if (
+			!repositoryBranch.trim() ||
+			(!repositoryUrl.trim() &&
+				(!repositoryOwner.trim() || !repositoryRepo.trim()))
+		) {
 			res.status(400).json({
 				success: false,
-				error: "repositoryOwner and repositoryRepo are required",
+				error:
+					"repositoryBranch and either repositoryUrl or repositoryOwner/repositoryRepo are required",
 			});
 			return;
 		}
-
 		const result = await workspaceSessions.cloneRepository({
 			workspaceRef:
 				typeof req.body?.workspaceRef === "string"
@@ -1148,12 +1929,11 @@ app.post("/api/workspaces/clone", async (req, res) => {
 					: typeof req.body?.__durable_instance_id === "string"
 						? req.body.__durable_instance_id
 						: undefined,
+			repositoryUrl,
 			repositoryOwner,
 			repositoryRepo,
-			repositoryBranch:
-				typeof req.body?.repositoryBranch === "string"
-					? req.body.repositoryBranch
-					: undefined,
+			repositoryBranch,
+			repositoryUsername,
 			targetDir:
 				typeof req.body?.targetDir === "string"
 					? req.body.targetDir
@@ -1587,70 +2367,26 @@ app.post("/api/run", async (req, res) => {
 			`[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${runPrompt.slice(0, 80)}"`,
 		);
 
-		// Per-request maxTurns override
+		const requestAgentConfig = await resolveRequestAgentConfig({
+			body: req.body as Record<string, unknown>,
+			inlineName: "inline-agent",
+		});
 		const maxTurns = req.body?.maxTurns
 			? parseInt(String(req.body.maxTurns), 10)
-			: undefined;
+			: requestAgentConfig?.maxTurns;
 
-		// Resolve agent: use per-request agentConfig if provided, otherwise default
-		const agentConfig =
-			req.body?.agentConfig && typeof req.body.agentConfig === "object"
-				? (req.body.agentConfig as AgentConfigPayload)
-				: undefined;
 		let activeAgent = agent!;
-		let activeAgentOverridden = false;
-		if (agentConfig?.name && agentConfig?.modelSpec) {
+		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
 			try {
-				activeAgent = await getOrCreateConfiguredAgent({
-					...agentConfig,
-					instructions: normalizeAgentInstructions(agentConfig.instructions),
-				});
-				activeAgentOverridden = true;
+				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
 				console.log(
-					`[durable-agent] Using configured agent: ${agentConfig.name}`,
+					`[durable-agent] Using configured agent: ${requestAgentConfig.name}`,
 				);
 			} catch (err) {
 				console.warn(
 					`[durable-agent] Failed to create configured agent, falling back to default:`,
 					err,
 				);
-			}
-		}
-
-		// Inline config fallback: when no saved agent but model/instructions provided inline
-		if (!activeAgentOverridden && req.body?.model) {
-			const toolsRaw = req.body.tools;
-			let toolsList: string[] = [];
-			if (typeof toolsRaw === "string") {
-				try {
-					toolsList = JSON.parse(toolsRaw) as string[];
-				} catch {
-					/* ignore */
-				}
-			} else if (Array.isArray(toolsRaw)) {
-				toolsList = toolsRaw.filter((t): t is string => typeof t === "string");
-			}
-
-			const inlineConfig: AgentConfigPayload = {
-				name: "inline-agent",
-				instructions: normalizeAgentInstructions(
-					req.body.instructions as string | undefined,
-				),
-				modelSpec: req.body.model as string,
-				tools: toolsList.length > 0 ? toolsList : undefined,
-			};
-			if (inlineConfig.modelSpec) {
-				try {
-					activeAgent = await getOrCreateConfiguredAgent(inlineConfig);
-					console.log(
-						`[durable-agent] Using inline agent config: model=${inlineConfig.modelSpec}`,
-					);
-				} catch (err) {
-					console.warn(
-						`[durable-agent] Failed to create inline agent, falling back to default:`,
-						err,
-					);
-				}
 			}
 		}
 
@@ -1666,6 +2402,13 @@ app.post("/api/run", async (req, res) => {
 		if (workspaceRef) {
 			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
 		}
+		trackActiveRun({
+			agentWorkflowId,
+			daprInstanceId: instanceId,
+			parentExecutionId,
+			workspaceRef: workspaceRef || undefined,
+			mode: "run",
+		});
 
 		console.log(
 			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
@@ -1783,6 +2526,7 @@ app.post("/api/run", async (req, res) => {
 				}
 			} finally {
 				workspaceSessions.unbindDurableInstance(instanceId);
+				untrackActiveRun(agentWorkflowId);
 			}
 		})();
 
@@ -1795,6 +2539,182 @@ app.post("/api/run", async (req, res) => {
 		});
 	} catch (err) {
 		res.status(400).json({ success: false, error: String(err) });
+	}
+});
+
+app.post("/api/run/:workflowId/terminate", async (req, res) => {
+	try {
+		await initAgent();
+
+		const workflowId =
+			typeof req.params.workflowId === "string"
+				? req.params.workflowId.trim()
+				: "";
+		if (!workflowId) {
+			res.status(400).json({ success: false, error: "workflowId is required" });
+			return;
+		}
+
+		const reason =
+			typeof req.body?.reason === "string" && req.body.reason.trim()
+				? req.body.reason.trim()
+				: "terminated via durable-agent API";
+		const cleanupWorkspace =
+			parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
+		const daprInstanceIdHint =
+			typeof req.body?.daprInstanceId === "string"
+				? req.body.daprInstanceId.trim()
+				: "";
+		const parentExecutionIdHint =
+			typeof req.body?.parentExecutionId === "string"
+				? req.body.parentExecutionId.trim()
+				: "";
+		const workspaceRefHint =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+
+		const run = await resolveActiveRun({
+			agentWorkflowId: workflowId,
+			daprInstanceId: daprInstanceIdHint,
+			parentExecutionId: parentExecutionIdHint,
+		});
+		const daprInstanceId = run?.daprInstanceId || daprInstanceIdHint;
+		if (!daprInstanceId) {
+			res.status(404).json({
+				success: false,
+				error: "Run not found",
+				workflow_id: workflowId,
+			});
+			return;
+		}
+
+		const terminated = await terminateDaprInstance({
+			daprInstanceId,
+			reason,
+		});
+		if (!terminated.success) {
+			res.status(503).json({
+				success: false,
+				error: terminated.error || "Failed to terminate run",
+				workflow_id: workflowId,
+				dapr_instance_id: daprInstanceId,
+			});
+			return;
+		}
+
+		const workspaceRef = run?.workspaceRef || workspaceRefHint;
+		let cleanedWorkspace = false;
+		if (cleanupWorkspace && workspaceRef) {
+			cleanedWorkspace =
+				await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+		}
+		untrackActiveRun(run?.agentWorkflowId || workflowId);
+
+		res.json({
+			success: true,
+			workflow_id: workflowId,
+			dapr_instance_id: daprInstanceId,
+			alreadyStopped: terminated.alreadyStopped === true,
+			cleanedWorkspace,
+			workspaceRef: workspaceRef || undefined,
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/runs/terminate-by-parent", async (req, res) => {
+	try {
+		await initAgent();
+
+		const parentExecutionId =
+			typeof req.body?.parentExecutionId === "string"
+				? req.body.parentExecutionId.trim()
+				: "";
+		if (!parentExecutionId) {
+			res.status(400).json({
+				success: false,
+				error: "parentExecutionId is required",
+			});
+			return;
+		}
+
+		const reason =
+			typeof req.body?.reason === "string" && req.body.reason.trim()
+				? req.body.reason.trim()
+				: "terminated due to parent workflow termination";
+		const cleanupWorkspace =
+			parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
+
+		const fromMemory = activeRunsForParent(parentExecutionId);
+		const fromDb = await workflowRunTracker.listScheduledByParentExecutionId(
+			parentExecutionId,
+			100,
+		);
+		const merged = new Map<string, ActiveRun>();
+		for (const run of fromMemory) {
+			merged.set(run.agentWorkflowId, run);
+		}
+		for (const run of fromDb) {
+			if (merged.has(run.agentWorkflowId)) continue;
+			merged.set(run.agentWorkflowId, {
+				agentWorkflowId: run.agentWorkflowId,
+				daprInstanceId: run.daprInstanceId,
+				parentExecutionId: run.parentExecutionId,
+				workspaceRef: run.workspaceRef,
+				mode: run.mode === "execute_plan" ? "execute_plan" : "run",
+			});
+		}
+		const runs = [...merged.values()];
+		const results: Array<{
+			workflow_id: string;
+			dapr_instance_id: string;
+			success: boolean;
+			alreadyStopped?: boolean;
+			cleanedWorkspace?: boolean;
+			workspaceRef?: string;
+			error?: string;
+		}> = [];
+		for (const run of runs) {
+			const terminated = await terminateDaprInstance({
+				daprInstanceId: run.daprInstanceId,
+				reason,
+			});
+			let cleanedWorkspace = false;
+			if (cleanupWorkspace && run.workspaceRef) {
+				cleanedWorkspace = await workspaceSessions.cleanupByWorkspaceRef(
+					run.workspaceRef,
+				);
+			}
+			untrackActiveRun(run.agentWorkflowId);
+			results.push({
+				workflow_id: run.agentWorkflowId,
+				dapr_instance_id: run.daprInstanceId,
+				success: terminated.success,
+				alreadyStopped: terminated.alreadyStopped,
+				cleanedWorkspace,
+				workspaceRef: run.workspaceRef,
+				error: terminated.error,
+			});
+		}
+
+		res.json({
+			success: true,
+			parentExecutionId,
+			total: runs.length,
+			terminated: results.filter((item) => item.success).length,
+			failed: results.filter((item) => !item.success).length,
+			results,
+		});
+	} catch (err) {
+		res.status(500).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 });
 
@@ -1852,7 +2772,11 @@ app.post("/api/plan", async (req, res) => {
 			cwd = session.clonePath || session.rootPath;
 		}
 
-		const maxTurnsRaw = req.body?.maxTurns;
+		const requestAgentConfig = await resolveRequestAgentConfig({
+			body: req.body as Record<string, unknown>,
+			inlineName: "inline-plan-agent",
+		});
+		const maxTurnsRaw = req.body?.maxTurns ?? requestAgentConfig?.maxTurns;
 		let planningMaxTurns = 24;
 		if (maxTurnsRaw != null) {
 			const parsed = Number.parseInt(String(maxTurnsRaw), 10);
@@ -1862,58 +2786,16 @@ app.post("/api/plan", async (req, res) => {
 		}
 		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
 
-		// Resolve agent: prefer explicit agentConfig, then inline model config, else default.
-		const agentConfig =
-			req.body?.agentConfig && typeof req.body.agentConfig === "object"
-				? (req.body.agentConfig as AgentConfigPayload)
-				: undefined;
+		// Resolve agent: prefer merged request/config-store settings, else default.
 		let activeAgent = agent!;
-		let activeAgentOverridden = false;
-		if (agentConfig?.name && agentConfig?.modelSpec) {
+		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
 			try {
-				activeAgent = await getOrCreateConfiguredAgent({
-					...agentConfig,
-					instructions: normalizeAgentInstructions(agentConfig.instructions),
-				});
-				activeAgentOverridden = true;
+				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
 			} catch (err) {
 				console.warn(
 					`[durable-agent] Failed to create configured planning agent, falling back to default:`,
 					err,
 				);
-			}
-		}
-		if (!activeAgentOverridden && req.body?.model) {
-			const toolsRaw = req.body.tools;
-			let toolsList: string[] = [];
-			if (typeof toolsRaw === "string") {
-				try {
-					toolsList = JSON.parse(toolsRaw) as string[];
-				} catch {
-					/* ignore */
-				}
-			} else if (Array.isArray(toolsRaw)) {
-				toolsList = toolsRaw.filter((t): t is string => typeof t === "string");
-			}
-
-			const inlineConfig: AgentConfigPayload = {
-				name: "inline-plan-agent",
-				instructions: normalizeAgentInstructions(
-					req.body.instructions as string | undefined,
-				),
-				modelSpec: req.body.model as string,
-				tools: toolsList.length > 0 ? toolsList : undefined,
-				maxTurns: planningMaxTurns,
-			};
-			if (inlineConfig.modelSpec) {
-				try {
-					activeAgent = await getOrCreateConfiguredAgent(inlineConfig);
-				} catch (err) {
-					console.warn(
-						`[durable-agent] Failed to create inline planning agent, falling back to default:`,
-						err,
-					);
-				}
 			}
 		}
 
@@ -2227,6 +3109,21 @@ app.post("/api/execute-plan", async (req, res) => {
 		}
 
 		await initAgent();
+		const requestAgentConfig = await resolveRequestAgentConfig({
+			body: req.body as Record<string, unknown>,
+			inlineName: "inline-execute-plan-agent",
+		});
+		let activeAgent = agent!;
+		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
+			try {
+				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
+			} catch (err) {
+				console.warn(
+					`[durable-agent] Failed to create configured execute-plan agent, falling back to default:`,
+					err,
+				);
+			}
+		}
 
 		eventBus.setWorkflowContext({
 			workflowId: agentWorkflowId,
@@ -2247,11 +3144,11 @@ app.post("/api/execute-plan", async (req, res) => {
 		// Per-request maxTurns override
 		const maxTurns = req.body?.maxTurns
 			? parseInt(String(req.body.maxTurns), 10)
-			: undefined;
+			: requestAgentConfig?.maxTurns;
 
 		// Schedule workflow
 		const instanceId = await workflowClient!.scheduleNewWorkflow(
-			agent!.agentWorkflow,
+			activeAgent.agentWorkflow,
 			{
 				task: executionPrompt,
 				...(maxTurns ? { maxIterations: maxTurns } : {}),
@@ -2261,6 +3158,13 @@ app.post("/api/execute-plan", async (req, res) => {
 		if (workspaceRef) {
 			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
 		}
+		trackActiveRun({
+			agentWorkflowId,
+			daprInstanceId: instanceId,
+			parentExecutionId,
+			workspaceRef: workspaceRef || undefined,
+			mode: "execute_plan",
+		});
 		const trackedRunId = agentWorkflowId;
 		if (executionId && workflowId && nodeId) {
 			await workflowRunTracker.trackScheduled({
@@ -2407,6 +3311,7 @@ app.post("/api/execute-plan", async (req, res) => {
 				}
 			} finally {
 				workspaceSessions.unbindDurableInstance(instanceId);
+				untrackActiveRun(agentWorkflowId);
 			}
 		})();
 
@@ -2456,6 +3361,7 @@ async function shutdown(signal: string) {
 	console.log(`[durable-agent] Received ${signal}, shutting down...`);
 	try {
 		if (mcpDisconnect) await mcpDisconnect();
+		await stopConfigStoreSubscriptions();
 		await workspaceSessions.destroyAll();
 		if (agent) await agent.stop();
 		await sandbox.destroy();
@@ -2471,6 +3377,12 @@ app.listen(PORT, HOST, async () => {
 	console.log(`[durable-agent] Server listening on http://${HOST}:${PORT}`);
 	console.log(
 		`[durable-agent]   POST /api/run          — start agent workflow`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/run/:workflowId/terminate — terminate a durable run`,
+	);
+	console.log(
+		`[durable-agent]   POST /api/runs/terminate-by-parent — terminate active runs for a parent workflow`,
 	);
 	console.log(`[durable-agent]   POST /api/plan         — generate plan`);
 	console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);

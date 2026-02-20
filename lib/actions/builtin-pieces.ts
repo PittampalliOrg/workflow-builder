@@ -98,6 +98,41 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					},
 				},
 				{
+					label: "Dynamic Runtime Config (Dapr)",
+					type: "group",
+					fields: [
+						{
+							key: "configStoreName",
+							label: "Config Store Name",
+							type: "text",
+							required: false,
+							placeholder: "azureappconfig-workflow-builder",
+						},
+						{
+							key: "configName",
+							label: "Config Item Name (optional)",
+							type: "text",
+							required: false,
+							placeholder: "agents/opendev",
+						},
+						{
+							key: "configKeys",
+							label: "Config Keys (optional)",
+							type: "template-input",
+							required: false,
+							placeholder: "modelSpec,instructions,maxTurns,timeoutMinutes",
+						},
+						{
+							key: "configMetadata",
+							label: "Config Metadata JSON (optional)",
+							type: "template-textarea",
+							required: false,
+							rows: 4,
+							placeholder: '{\n  "label": "workflow-builder"\n}',
+						},
+					],
+				},
+				{
 					key: "prompt",
 					label: "Prompt / Goal",
 					type: "template-textarea",
@@ -315,67 +350,88 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 				{ field: "backend", description: "Workspace backend (k8s/local)" },
 			],
 		},
-		{
-			slug: "clone",
-			label: "Workspace Clone Repository",
-			description:
-				"Clone a GitHub repository into an execution-scoped workspace session",
-			category: "Workspace",
-			configFields: [
-				{
-					key: "workspaceRef",
-					label: "Workspace Ref",
+			{
+				slug: "clone",
+				label: "Workspace Clone Repository",
+				description:
+					"Clone via internal Gitea into an execution-scoped workspace (auto-imports from GitHub when missing)",
+				category: "Workspace",
+				configFields: [
+					{
+						key: "workspaceRef",
+						label: "Workspace Ref",
 					type: "template-input",
 					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
 					required: true,
-				},
-				{
-					key: "repositoryOwner",
-					label: "Repository Owner",
-					type: "dynamic-select",
-					required: true,
-					placeholder: "Select owner",
-					dynamicOptions: {
-						provider: "builtin",
-						pieceName: "workspace",
+					},
+					{
+						key: "repositoryUrl",
+						label: "Repository URL (optional)",
+						type: "template-input",
+						placeholder:
+							"https://gitea.cnoe.localtest.me:8443/giteaAdmin/repo.git",
+						required: false,
+					},
+					{
+						key: "repositoryOwner",
+						label: "GitHub Owner",
+						type: "dynamic-select",
+						required: false,
+						placeholder: "Select owner",
+						dynamicOptions: {
+							provider: "builtin",
+							pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryOwner",
 						refreshers: [],
 					},
 				},
-				{
-					key: "repositoryRepo",
-					label: "Repository",
-					type: "dynamic-select",
-					required: true,
-					placeholder: "Select repository",
-					dynamicOptions: {
-						provider: "builtin",
-						pieceName: "workspace",
+					{
+						key: "repositoryRepo",
+						label: "GitHub Repository",
+						type: "dynamic-select",
+						required: false,
+						placeholder: "Select repository",
+						dynamicOptions: {
+							provider: "builtin",
+							pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryRepo",
 						refreshers: ["repositoryOwner"],
 					},
 				},
-				{
-					key: "repositoryBranch",
-					label: "Branch",
-					type: "dynamic-select",
-					required: false,
+					{
+						key: "repositoryBranch",
+						label: "Branch",
+						type: "dynamic-select",
+						required: true,
 					placeholder: "Select branch",
-					defaultValue: "main",
 					dynamicOptions: {
 						provider: "builtin",
 						pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryBranch",
-						refreshers: ["repositoryOwner", "repositoryRepo"],
+							refreshers: ["repositoryOwner", "repositoryRepo"],
+						},
 					},
-				},
-				{
-					key: "targetDir",
-					label: "Target Directory (optional)",
-					type: "template-input",
+					{
+						key: "repositoryUsername",
+						label: "Repository Username (optional)",
+						type: "template-input",
+						placeholder: "giteaAdmin",
+						required: false,
+					},
+					{
+						key: "repositoryToken",
+						label: "Repository Token (optional)",
+						type: "template-input",
+						placeholder: "{{secrets.REPO_TOKEN}}",
+						required: false,
+					},
+					{
+						key: "targetDir",
+						label: "Target Directory (optional)",
+						type: "template-input",
 					placeholder: "repo",
 					required: false,
 				},
@@ -436,8 +492,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 		{
 			slug: "file",
 			label: "Workspace File Operation",
-			description:
-				"Read, write, edit, or list files in a workspace",
+			description: "Read, write, edit, or list files in a workspace",
 			category: "Workspace",
 			configFields: [
 				{

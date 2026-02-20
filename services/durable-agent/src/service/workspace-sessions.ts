@@ -142,9 +142,11 @@ export type ExecuteWorkspaceCloneInput = {
 	workspaceRef?: string;
 	executionId?: string;
 	durableInstanceId?: string;
+	repositoryUrl?: string;
 	repositoryOwner?: string;
 	repositoryRepo?: string;
-	repositoryBranch?: string;
+	repositoryBranch: string;
+	repositoryUsername?: string;
 	targetDir?: string;
 	repositoryToken?: string;
 	githubToken?: string;
@@ -183,6 +185,19 @@ function normalizePathKey(input: string): string {
 
 function shellEscape(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function isNoFileChangesReviewResult(input: {
+	success: boolean;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+}): boolean {
+	if (input.success || input.exitCode !== 2) {
+		return false;
+	}
+	const text = `${input.stdout}\n${input.stderr}`.toLowerCase();
+	return text.includes("no file changes detected after durable run");
 }
 
 class WorkspaceSessionManager {
@@ -496,6 +511,14 @@ class WorkspaceSessionManager {
 			timeout: timeoutMs,
 			cwd: commandCwd,
 		});
+		const normalized = isNoFileChangesReviewResult(result)
+			? {
+					...result,
+					success: true,
+					exitCode: 0,
+					stderr: "",
+				}
+			: result;
 
 		const changeSummary = await this.captureWorkspaceChangeSummary({
 			session,
@@ -506,12 +529,12 @@ class WorkspaceSessionManager {
 
 		this.touch(session);
 		return {
-			stdout: result.stdout,
-			stderr: result.stderr,
-			exitCode: result.exitCode,
-			success: result.success,
-			executionTimeMs: result.executionTimeMs,
-			timedOut: result.timedOut,
+			stdout: normalized.stdout,
+			stderr: normalized.stderr,
+			exitCode: normalized.exitCode,
+			success: normalized.success,
+			executionTimeMs: normalized.executionTimeMs,
+			timedOut: normalized.timedOut,
 			sandbox: this.buildSandboxMetadata(session),
 			...(changeSummary ? { changeSummary } : {}),
 		};
@@ -526,19 +549,31 @@ class WorkspaceSessionManager {
 		);
 		this.assertEnabled(session, "clone");
 
+		const repositoryUrl = String(input.repositoryUrl || "").trim();
 		const owner = String(input.repositoryOwner || "").trim();
 		const repo = String(input.repositoryRepo || "").trim();
-		const branch = String(input.repositoryBranch || "main").trim() || "main";
+		const branch = String(input.repositoryBranch || "").trim();
+		const username = String(input.repositoryUsername || "").trim();
 		const token =
 			String(input.repositoryToken || "").trim() ||
 			String(input.githubToken || "").trim();
 
-		if (!owner || !repo) {
-			throw new Error("repositoryOwner and repositoryRepo are required");
+		if (!branch) {
+			throw new Error("repositoryBranch is required");
+		}
+		if (!repositoryUrl && (!owner || !repo)) {
+			throw new Error(
+				"repositoryBranch and either repositoryUrl or repositoryOwner/repositoryRepo are required",
+			);
+		}
+
+		const repoName = repo || this.resolveRepoNameFromUrl(repositoryUrl);
+		if (!repoName) {
+			throw new Error("Unable to resolve repository name for clone target");
 		}
 
 		const cloneDir = this.resolveCloneTargetDir(
-			repo,
+			repoName,
 			String(input.targetDir || "").trim(),
 		);
 		const timeoutMs =
@@ -554,9 +589,13 @@ class WorkspaceSessionManager {
 			});
 		}
 
-		const repoUrl = token
-			? `https://${token}@github.com/${owner}/${repo}.git`
-			: `https://github.com/${owner}/${repo}.git`;
+		const repoUrl = this.resolveRepositoryUrl({
+			repositoryUrl,
+			repositoryOwner: owner,
+			repositoryRepo: repo,
+			repositoryUsername: username,
+			token,
+		});
 
 		const gitCheck = await session.sandbox.executeCommand(
 			"command -v git",
@@ -599,7 +638,6 @@ class WorkspaceSessionManager {
 		if (revParse.success && revParse.exitCode === 0) {
 			commitHash = revParse.stdout.trim();
 		}
-
 		const lsFiles = await session.sandbox.executeCommand(
 			`cd ${shellEscape(cloneDir)} && git ls-files --cached`,
 			undefined,
@@ -656,7 +694,7 @@ class WorkspaceSessionManager {
 		return {
 			success: true,
 			clonePath: clonePathAbsolute,
-			repository: `${owner}/${repo}`,
+			repository: owner && repo ? `${owner}/${repo}` : repoName,
 			branch,
 			commitHash,
 			fileCount,
@@ -1466,6 +1504,59 @@ class WorkspaceSessionManager {
 		}
 
 		return normalized.replace(/^\.\/+/, "");
+	}
+
+	private resolveRepoNameFromUrl(repositoryUrl: string): string {
+		if (!repositoryUrl) return "";
+		try {
+			const url = new URL(repositoryUrl);
+			const parts = url.pathname.split("/").filter(Boolean);
+			const value = parts[parts.length - 1] || "";
+			return value.replace(/\.git$/i, "").trim();
+		} catch {
+			return "";
+		}
+	}
+
+	private resolveRepositoryUrl(input: {
+		repositoryUrl: string;
+		repositoryOwner: string;
+		repositoryRepo: string;
+		repositoryUsername: string;
+		token: string;
+	}): string {
+		if (!input.repositoryUrl) {
+			const base = `https://github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+			if (!input.token) return base;
+			if (!input.repositoryUsername) {
+				return `https://${input.token}@github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+			}
+			return `https://${encodeURIComponent(input.repositoryUsername)}:${encodeURIComponent(input.token)}@github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+		}
+
+		if (!input.token) {
+			return input.repositoryUrl;
+		}
+
+		try {
+			const parsed = new URL(input.repositoryUrl);
+			if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+				return input.repositoryUrl;
+			}
+			const user =
+				input.repositoryUsername || (parsed.hostname === "github.com" ? input.token : "");
+			if (!user) {
+				return input.repositoryUrl;
+			}
+			parsed.username = user;
+			parsed.password =
+				input.repositoryUsername || parsed.hostname !== "github.com"
+					? input.token
+					: "";
+			return parsed.toString();
+		} catch {
+			return input.repositoryUrl;
+		}
 	}
 
 	private assertEnabled(

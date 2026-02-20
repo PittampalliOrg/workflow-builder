@@ -45,6 +45,59 @@ function shellEscape(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
+function resolveRepoNameFromUrl(repositoryUrl: string): string {
+	if (!repositoryUrl) return "";
+	try {
+		const url = new URL(repositoryUrl);
+		const parts = url.pathname.split("/").filter(Boolean);
+		const value = parts[parts.length - 1] || "";
+		return value.replace(/\.git$/i, "").trim();
+	} catch {
+		return "";
+	}
+}
+
+function resolveRepositoryUrl(input: {
+	repositoryUrl: string;
+	repositoryOwner: string;
+	repositoryRepo: string;
+	repositoryUsername: string;
+	token: string;
+}): string {
+	if (!input.repositoryUrl) {
+		const base = `https://github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+		if (!input.token) return base;
+		if (!input.repositoryUsername) {
+			return `https://${input.token}@github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+		}
+		return `https://${encodeURIComponent(input.repositoryUsername)}:${encodeURIComponent(input.token)}@github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`;
+	}
+
+	if (!input.token) {
+		return input.repositoryUrl;
+	}
+
+	try {
+		const parsed = new URL(input.repositoryUrl);
+		if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+			return input.repositoryUrl;
+		}
+		const user =
+			input.repositoryUsername || (parsed.hostname === "github.com" ? input.token : "");
+		if (!user) {
+			return input.repositoryUrl;
+		}
+		parsed.username = user;
+		parsed.password =
+			input.repositoryUsername || parsed.hostname !== "github.com"
+				? input.token
+				: "";
+		return parsed.toString();
+	} catch {
+		return input.repositoryUrl;
+	}
+}
+
 export const TOOL_NAMES = [
 	"read_file",
 	"write_file",
@@ -359,18 +412,30 @@ export async function executeTool(
 async function executeClone(
 	args: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+	const repositoryUrl = ((args.repositoryUrl as string) || "").trim();
 	const owner = ((args.repositoryOwner as string) || "").trim();
 	const repo = ((args.repositoryRepo as string) || "").trim();
-	const branch = ((args.repositoryBranch as string) || "main").trim();
+	const branch = ((args.repositoryBranch as string) || "").trim();
+	const username = ((args.repositoryUsername as string) || "").trim();
 	const token =
 		((args.repositoryToken as string) || "").trim() ||
 		((args.githubToken as string) || "").trim();
 
-	if (!owner || !repo) {
-		throw new Error("repositoryOwner and repositoryRepo are required");
+	if (!branch) {
+		throw new Error("repositoryBranch is required");
+	}
+	if (!repositoryUrl && (!owner || !repo)) {
+		throw new Error(
+			"repositoryBranch and either repositoryUrl or repositoryOwner/repositoryRepo are required",
+		);
 	}
 
-	const cloneDir = repo;
+	const repoName = repo || resolveRepoNameFromUrl(repositoryUrl);
+	if (!repoName) {
+		throw new Error("Unable to resolve repository name for clone target");
+	}
+
+	const cloneDir = repoName;
 
 	// Idempotent: remove existing directory
 	const dirExists = await filesystem.exists(cloneDir);
@@ -378,9 +443,13 @@ async function executeClone(
 		await filesystem.deleteFile(cloneDir, { recursive: true, force: true });
 	}
 
-	const repoUrl = token
-		? `https://${token}@github.com/${owner}/${repo}.git`
-		: `https://github.com/${owner}/${repo}.git`;
+	const repoUrl = resolveRepositoryUrl({
+		repositoryUrl,
+		repositoryOwner: owner,
+		repositoryRepo: repo,
+		repositoryUsername: username,
+		token,
+	});
 
 	// Clone in sandbox
 	let commitHash = "unknown";
@@ -432,7 +501,7 @@ async function executeClone(
 		success: true,
 		clonePath: cloneDir,
 		commitHash,
-		repository: `${owner}/${repo}`,
+		repository: owner && repo ? `${owner}/${repo}` : repoName,
 		file_count: fileCount,
 	};
 }
