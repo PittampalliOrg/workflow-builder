@@ -223,8 +223,8 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
                     "loopPolicy": input_data.get("loopPolicy"),
                     "agentConfig": input_data.get("agentConfig"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("dbExecutionId")
-                    or input_data.get("executionId", ""),
+                    "executionId": input_data.get("executionId", "")
+                    or input_data.get("dbExecutionId", ""),
                     "dbExecutionId": input_data.get("dbExecutionId", ""),
                     "workflowId": input_data.get("workflowId", ""),
                     "nodeId": input_data.get("nodeId", ""),
@@ -287,8 +287,8 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "loopPolicy": input_data.get("loopPolicy"),
                     "approval": input_data.get("approval"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("dbExecutionId")
-                    or input_data.get("executionId", ""),
+                    "executionId": input_data.get("executionId", "")
+                    or input_data.get("dbExecutionId", ""),
                     "dbExecutionId": input_data.get("dbExecutionId", ""),
                     "workflowId": input_data.get("workflowId", ""),
                     "nodeId": input_data.get("nodeId", ""),

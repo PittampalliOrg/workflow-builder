@@ -36,6 +36,7 @@ interceptConsole();
 import express from "express";
 import { DaprWorkflowClient } from "@dapr/dapr";
 import { nanoid } from "nanoid";
+import { existsSync } from "node:fs";
 import { openai } from "@ai-sdk/openai";
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
@@ -2784,7 +2785,26 @@ app.post("/api/plan", async (req, res) => {
 				planningMaxTurns = parsed;
 			}
 		}
+		const timeoutMinutesRaw =
+			req.body?.timeoutMinutes ?? requestAgentConfig?.timeoutMinutes;
+		let planningTimeoutSeconds = PLAN_TIMEOUT_SECONDS;
+		if (timeoutMinutesRaw != null) {
+			const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
+			if (Number.isFinite(parsed) && parsed > 0) {
+				planningTimeoutSeconds = Math.min(
+					Math.max(parsed * 60 + 30, 90),
+					4 * 60 * 60,
+				);
+			}
+		}
 		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
+		const repositoryRootForPrompt =
+			cwd && existsSync(cwd) ? cwd : undefined;
+		if (cwd && !repositoryRootForPrompt) {
+			console.warn(
+				`[durable-agent] Plan mode cwd does not exist locally, omitting repositoryRoot from prompt: ${cwd}`,
+			);
+		}
 
 		// Resolve agent: prefer merged request/config-store settings, else default.
 		let activeAgent = agent!;
@@ -2801,7 +2821,7 @@ app.post("/api/plan", async (req, res) => {
 
 		const planningPrompt = buildPlanModePrompt({
 			userPrompt: prompt,
-			repositoryRoot: cwd || undefined,
+			repositoryRoot: repositoryRootForPrompt,
 		});
 		eventBus.emitEvent("planning_started", { prompt, planningMaxTurns });
 
@@ -2814,6 +2834,7 @@ app.post("/api/plan", async (req, res) => {
 			task: planningPrompt.prompt,
 			maxIterations: planningMaxTurns,
 			workspaceRef: workspaceRef || undefined,
+			timeoutSeconds: planningTimeoutSeconds,
 			loopPolicy,
 		});
 		planningInstanceIds.push(initialPlanningAttempt.instanceId);
@@ -2844,7 +2865,7 @@ app.post("/api/plan", async (req, res) => {
 				userPrompt: prompt,
 				priorResponse: planningText,
 				attempt: repairAttemptsUsed,
-				repositoryRoot: cwd || undefined,
+				repositoryRoot: repositoryRootForPrompt,
 				promptProfile: planningPrompt.profile,
 			});
 			const repairAttempt = await runPlanningAttempt({
@@ -2852,6 +2873,7 @@ app.post("/api/plan", async (req, res) => {
 				task: repairPrompt.prompt,
 				maxIterations: PLAN_REPAIR_MAX_TURNS,
 				workspaceRef: workspaceRef || undefined,
+				timeoutSeconds: planningTimeoutSeconds,
 				loopPolicy,
 			});
 			planningInstanceIds.push(repairAttempt.instanceId);

@@ -1441,6 +1441,7 @@ def process_agent_child_workflow(
         "cwd": resolved_config.get("cwd"),
         "model": resolved_config.get("model"),
         "maxTurns": max_turns,
+        "timeoutMinutes": timeout_minutes,
         "stopCondition": resolved_config.get("stopCondition"),
         "requireFileChanges": resolved_config.get("requireFileChanges"),
         "cleanupWorkspace": resolved_config.get("cleanupWorkspace"),
@@ -1452,7 +1453,7 @@ def process_agent_child_workflow(
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
         "parentExecutionId": ctx.instance_id,
-        "executionId": db_execution_id or execution_id,
+        "executionId": execution_id,
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),
@@ -1464,7 +1465,6 @@ def process_agent_child_workflow(
         activity_input["planJson"] = resolved_config.get("planJson")
         activity_input["artifactRef"] = resolved_config.get("artifactRef")
         activity_input["cwd"] = resolved_config.get("cwd", "")
-        activity_input["timeoutMinutes"] = timeout_minutes
 
     start_result = yield ctx.call_activity(
         call_activity_fn,

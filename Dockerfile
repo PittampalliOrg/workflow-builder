@@ -49,7 +49,8 @@ RUN npm install -g esbuild && \
     esbuild scripts/seed-functions.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-functions.bundle.js && \
     esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js && \
     esbuild scripts/sync-oauth-apps.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-oauth-apps.bundle.js && \
-    esbuild scripts/seed-dev-user.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-dev-user.bundle.js
+    esbuild scripts/seed-dev-user.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-dev-user.bundle.js && \
+    esbuild scripts/seed-workflows.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-workflows.bundle.js
 
 # Run plugin discovery and build
 RUN pnpm discover-plugins && pnpm next build
@@ -96,6 +97,7 @@ COPY --from=builder /app/scripts/seed-functions.bundle.js ./scripts/seed-functio
 COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sync-activepieces-pieces.bundle.js
 COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
 COPY --from=builder /app/scripts/seed-dev-user.bundle.js ./scripts/seed-dev-user.bundle.js
+COPY --from=builder /app/scripts/seed-workflows.bundle.js ./scripts/seed-workflows.bundle.js
 
 USER nextjs
 
