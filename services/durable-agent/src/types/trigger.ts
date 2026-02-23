@@ -9,6 +9,10 @@ import type { LoopPolicy } from "./loop-policy.js";
 export interface TriggerAction {
 	task?: string;
 	workflow_instance_id?: string;
+	/** Optional workspace context propagated into tool args. */
+	workspaceRef?: string;
+	/** Optional parent execution id propagated into tool args. */
+	executionId?: string;
 	/** Per-request max iterations override (falls back to agent default). */
 	maxIterations?: number;
 	/** Declarative loop controls (stopWhen + prepareStep style options). */

@@ -19,6 +19,7 @@ import psycopg2
 import requests
 
 from core.config import config
+from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
 from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
@@ -41,83 +42,6 @@ def _coerce_duration_ms(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return parsed if parsed >= 0 else None
-
-
-SUMMARY_OUTPUT_KEYS = (
-    "text",
-    "toolCalls",
-    "fileChanges",
-    "patch",
-    "patchRef",
-    "changeSummary",
-    "artifactRef",
-    "plan",
-    "planMarkdown",
-    "planPolicy",
-    "tasks",
-    "daprInstanceId",
-    "workspaceRef",
-    "cleanup",
-)
-
-
-def _has_file_changes(candidate: dict[str, Any]) -> bool:
-    """True when output shape indicates changed files."""
-    file_changes = candidate.get("fileChanges")
-    if isinstance(file_changes, list) and len(file_changes) > 0:
-        return True
-
-    summary = candidate.get("changeSummary")
-    if not isinstance(summary, dict):
-        return False
-
-    changed = summary.get("changed")
-    if isinstance(changed, bool) and changed:
-        return True
-
-    stats = summary.get("stats")
-    if isinstance(stats, dict):
-        files = stats.get("files")
-        additions = stats.get("additions")
-        deletions = stats.get("deletions")
-        if isinstance(files, int) and files > 0:
-            return True
-        if isinstance(additions, int) and additions > 0:
-            return True
-        if isinstance(deletions, int) and deletions > 0:
-            return True
-
-    return False
-
-
-def _extract_summary_fields_from_outputs(outputs: Any) -> dict[str, Any]:
-    """
-    Pull top-level summary fields (fileChanges/changeSummary/etc.) from the
-    most relevant node output so workflow_executions.output is UI-friendly.
-    """
-    if not isinstance(outputs, dict):
-        return {}
-
-    values = [v for v in outputs.values() if isinstance(v, dict)]
-    if not values:
-        return {}
-
-    # Prefer the latest output that actually includes file change data.
-    source: dict[str, Any] | None = None
-    for value in reversed(values):
-        if _has_file_changes(value):
-            source = value
-            break
-
-    # Fallback to the latest object output.
-    if source is None:
-        source = values[-1]
-
-    return {
-        key: source.get(key)
-        for key in SUMMARY_OUTPUT_KEYS
-        if source.get(key) is not None
-    }
 
 
 def _get_database_url() -> str:
@@ -192,7 +116,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     with start_activity_span("activity.persist_results_to_db", otel, attrs):
         try:
-            summary_fields = _extract_summary_fields_from_outputs(outputs)
+            summary_fields = extract_summary_fields_from_outputs(outputs)
             for key in SUMMARY_OUTPUT_KEYS:
                 explicit = input_data.get(key)
                 if explicit is not None:

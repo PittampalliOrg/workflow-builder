@@ -32,7 +32,21 @@ export function ExecutionStatusBadge({
 		);
 	}
 
-	if (normalized === "running" || normalized === "pending") {
+	if (normalized === "pending") {
+		return (
+			<Badge
+				className={cn(
+					"border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300",
+					className,
+				)}
+				variant="outline"
+			>
+				Pending
+			</Badge>
+		);
+	}
+
+	if (normalized === "running") {
 		return (
 			<Badge
 				className={cn(

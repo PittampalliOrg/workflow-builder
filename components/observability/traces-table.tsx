@@ -45,6 +45,8 @@ export function TracesTable({ traces, isLoading }: TracesTableProps) {
 						<TableHead>Name</TableHead>
 						<TableHead>Workflow</TableHead>
 						<TableHead>Execution</TableHead>
+						<TableHead>Node</TableHead>
+						<TableHead>Activity</TableHead>
 						<TableHead>Started</TableHead>
 						<TableHead>Duration</TableHead>
 						<TableHead>Spans</TableHead>
@@ -72,7 +74,17 @@ export function TracesTable({ traces, isLoading }: TracesTableProps) {
 							<TableCell className="font-mono text-xs">
 								{trace.executionId
 									? `${trace.executionId.slice(0, 12)}...`
-									: "-"}
+									: trace.parentExecutionId
+										? `${trace.parentExecutionId.slice(0, 12)}...`
+										: trace.daprInstanceId
+											? `${trace.daprInstanceId.slice(0, 12)}...`
+											: "-"}
+							</TableCell>
+							<TableCell className="max-w-[220px] truncate">
+								{trace.nodeName ?? trace.nodeId ?? "-"}
+							</TableCell>
+							<TableCell className="max-w-[220px] truncate">
+								{trace.activityName ?? "-"}
 							</TableCell>
 							<TableCell>
 								<span title={new Date(trace.startedAt).toLocaleString()}>

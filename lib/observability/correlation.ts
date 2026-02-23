@@ -98,6 +98,14 @@ export function extractTraceCorrelation(trace: JaegerTrace): CorrelationIds {
 			"workflow.dbExecutionId",
 			"db.execution_id",
 			"dbExecutionId",
+			"workflow.execution_id",
+			"workflow.executionId",
+			"execution_id",
+			"executionId",
+			"workflow.parent_execution_id",
+			"workflow.parentExecutionId",
+			"parent_execution_id",
+			"parentExecutionId",
 		]);
 
 		if (executionId) {
@@ -109,6 +117,8 @@ export function extractTraceCorrelation(trace: JaegerTrace): CorrelationIds {
 			"workflow.instanceId",
 			"dapr.instance_id",
 			"daprInstanceId",
+			"instance_id",
+			"instanceId",
 		]);
 
 		if (instanceId) {
@@ -119,6 +129,8 @@ export function extractTraceCorrelation(trace: JaegerTrace): CorrelationIds {
 			"workflow.id",
 			"workflow_id",
 			"workflowId",
+			"workflow.workflow_id",
+			"workflow.workflowId",
 		]);
 		if (workflowId) {
 			correlation.workflowIds.add(workflowId);
@@ -200,6 +212,11 @@ function pickLatest(
 
 function executionToContext(
 	execution: CorrelatedExecution | null,
+	correlationConfidence:
+		| "execution"
+		| "instance"
+		| "workflow"
+		| "unknown" = "unknown",
 ): JaegerTraceContext {
 	if (!execution) {
 		return {
@@ -208,6 +225,7 @@ function executionToContext(
 			executionId: null,
 			daprInstanceId: null,
 			phase: null,
+			correlationConfidence,
 		};
 	}
 
@@ -217,6 +235,7 @@ function executionToContext(
 		executionId: execution.executionId,
 		daprInstanceId: execution.daprInstanceId,
 		phase: execution.phase,
+		correlationConfidence,
 	};
 }
 
@@ -227,14 +246,14 @@ export function resolveTraceContextFromIndex(
 	for (const executionId of correlation.executionIds) {
 		const execution = index.byExecutionId.get(executionId);
 		if (execution) {
-			return executionToContext(execution);
+			return executionToContext(execution, "execution");
 		}
 	}
 
 	for (const instanceId of correlation.instanceIds) {
 		const execution = index.byInstanceId.get(instanceId);
 		if (execution) {
-			return executionToContext(execution);
+			return executionToContext(execution, "instance");
 		}
 	}
 
@@ -242,11 +261,11 @@ export function resolveTraceContextFromIndex(
 		const executions = index.byWorkflowId.get(workflowId);
 		const latest = executions ? pickLatest(executions) : null;
 		if (latest) {
-			return executionToContext(latest);
+			return executionToContext(latest, "workflow");
 		}
 	}
 
-	return executionToContext(null);
+	return executionToContext(null, "unknown");
 }
 
 export async function findTraceContextForProject(
@@ -280,7 +299,7 @@ export async function findTraceContextForProject(
 	}
 
 	if (predicates.length === 0) {
-		return executionToContext(null);
+		return executionToContext(null, "unknown");
 	}
 
 	const rows = await db
@@ -301,7 +320,7 @@ export async function findTraceContextForProject(
 		.limit(50);
 
 	if (rows.length === 0) {
-		return executionToContext(null);
+		return executionToContext(null, "unknown");
 	}
 
 	const candidates = rows.map(toExecution);
@@ -328,5 +347,16 @@ export async function findTraceContextForProject(
 		return b.startedAt.getTime() - a.startedAt.getTime();
 	});
 
-	return executionToContext(sorted[0] ?? null);
+	const best = sorted[0] ?? null;
+	if (!best) {
+		return executionToContext(null, "unknown");
+	}
+	const confidence = correlation.executionIds.has(best.executionId)
+		? "execution"
+		: best.daprInstanceId && correlation.instanceIds.has(best.daprInstanceId)
+			? "instance"
+			: correlation.workflowIds.has(best.workflowId)
+				? "workflow"
+				: "unknown";
+	return executionToContext(best, confidence);
 }

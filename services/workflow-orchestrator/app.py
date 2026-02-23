@@ -59,6 +59,10 @@ from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from activities.fetch_child_workflow import fetch_child_workflow
+from activities.track_agent_run import (
+    track_agent_run_scheduled,
+    track_agent_run_completed,
+)
 
 # OpenTelemetry
 from tracing import setup_tracing, inject_current_context
@@ -118,6 +122,8 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
+    wfr.register_activity(track_agent_run_scheduled)
+    wfr.register_activity(track_agent_run_completed)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
     wfr.register_activity(send_ap_step_update)

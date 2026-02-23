@@ -34,6 +34,11 @@ export type NormalizedLoopPolicy = {
 	prepareRules: NormalizedPrepareRule[];
 	declarationOnlyTools: LoopDeclarationOnlyTool[];
 	doneToolResponseField?: string;
+	compactionEnabled: boolean;
+	compactionPreserveRecentMessages: number;
+	compactionMinMessagesToCompact: number;
+	compactionMaxAutoRetries: number;
+	compactionCheckpointEverySteps?: number;
 };
 
 export type LoopStopEvaluation = {
@@ -54,6 +59,9 @@ const DEFAULT_DONE_TOOL_NAME = "done";
 const DEFAULT_DONE_TOOL_DESCRIPTION =
 	"Signal that you have completed all required work.";
 const DEFAULT_DONE_TOOL_RESPONSE_FIELD = "answer";
+const DEFAULT_COMPACTION_PRESERVE_MESSAGES = 8;
+const DEFAULT_COMPACTION_MIN_MESSAGES = 6;
+const DEFAULT_COMPACTION_MAX_AUTO_RETRIES = 1;
 const celEnvironment = celEnv();
 const compiledCelPrograms = new Map<
 	string,
@@ -369,6 +377,34 @@ export function normalizeLoopPolicy(raw: unknown): NormalizedLoopPolicy {
 	const defaultToolChoice = normalizeToolChoice(policy.defaultToolChoice);
 	const defaultActiveTools = normalizeStringArray(policy.defaultActiveTools);
 	const doneTool = buildDoneToolDeclaration(policy);
+	const compactionRecord = asRecord(policy.compaction);
+	const compactionEnabled = compactionRecord?.enabled !== false;
+	const preserveRecentMessagesRaw = asNumber(
+		compactionRecord?.preserveRecentMessages,
+	);
+	const minMessagesToCompactRaw = asNumber(
+		compactionRecord?.minMessagesToCompact,
+	);
+	const maxAutoRetriesRaw = asNumber(compactionRecord?.maxAutoRetries);
+	const checkpointEveryStepsRaw = asNumber(
+		compactionRecord?.checkpointEverySteps,
+	);
+	const compactionPreserveRecentMessages =
+		preserveRecentMessagesRaw != null
+			? Math.max(1, Math.floor(preserveRecentMessagesRaw))
+			: DEFAULT_COMPACTION_PRESERVE_MESSAGES;
+	const compactionMinMessagesToCompact =
+		minMessagesToCompactRaw != null
+			? Math.max(0, Math.floor(minMessagesToCompactRaw))
+			: DEFAULT_COMPACTION_MIN_MESSAGES;
+	const compactionMaxAutoRetries =
+		maxAutoRetriesRaw != null
+			? Math.max(0, Math.floor(maxAutoRetriesRaw))
+			: DEFAULT_COMPACTION_MAX_AUTO_RETRIES;
+	const compactionCheckpointEverySteps =
+		checkpointEveryStepsRaw != null && checkpointEveryStepsRaw > 0
+			? Math.floor(checkpointEveryStepsRaw)
+			: undefined;
 
 	return {
 		stopWhen,
@@ -378,6 +414,13 @@ export function normalizeLoopPolicy(raw: unknown): NormalizedLoopPolicy {
 		...(defaultActiveTools ? { defaultActiveTools } : {}),
 		declarationOnlyTools: doneTool ? [doneTool.tool] : [],
 		...(doneTool ? { doneToolResponseField: doneTool.responseField } : {}),
+		compactionEnabled,
+		compactionPreserveRecentMessages,
+		compactionMinMessagesToCompact,
+		compactionMaxAutoRetries,
+		...(compactionCheckpointEverySteps
+			? { compactionCheckpointEverySteps }
+			: {}),
 	};
 }
 

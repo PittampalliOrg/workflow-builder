@@ -126,6 +126,33 @@ describe("normalizeJaegerTraceSummary", () => {
 		expect(summary?.status).toBe("unknown");
 	});
 
+	it("extracts node/activity/parent execution fields from common action tags", () => {
+		const trace: JaegerTrace = {
+			traceID: "trace-action-tags",
+			spans: [
+				{
+					traceID: "trace-action-tags",
+					spanID: "root",
+					operationName: "activity.execute_action",
+					startTime: 5_000_000,
+					duration: 2_000,
+					tags: [
+						{ key: "node.id", value: "node-1" },
+						{ key: "node.name", value: "Execute Plan" },
+						{ key: "action.type", value: "durable_execute_plan" },
+						{ key: "parentExecutionId", value: "exec-parent-1" },
+					],
+				},
+			],
+		};
+
+		const summary = normalizeJaegerTraceSummary(trace, baseContext);
+		expect(summary?.nodeId).toBe("node-1");
+		expect(summary?.nodeName).toBe("Execute Plan");
+		expect(summary?.activityName).toBe("durable_execute_plan");
+		expect(summary?.parentExecutionId).toBe("exec-parent-1");
+	});
+
 	it("returns null when trace has no spans", () => {
 		const trace: JaegerTrace = {
 			traceID: "trace-empty",

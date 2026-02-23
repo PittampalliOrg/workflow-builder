@@ -122,7 +122,10 @@ export default function WorkflowRunsPage() {
 							<TableRow>
 								<TableHead>Run</TableHead>
 								<TableHead>Status</TableHead>
+								<TableHead>Runtime</TableHead>
 								<TableHead>Phase</TableHead>
+								<TableHead>Current Node</TableHead>
+								<TableHead>Telemetry</TableHead>
 								<TableHead>Started</TableHead>
 								<TableHead>Duration</TableHead>
 								<TableHead>Dapr Instance</TableHead>
@@ -137,8 +140,30 @@ export default function WorkflowRunsPage() {
 									</TableCell>
 									<TableCell>
 										<ExecutionStatusBadge status={execution.status} />
+										{execution.statusDiverged && (
+											<div className="mt-1 text-amber-600 text-xs">
+												runtime differs
+											</div>
+										)}
 									</TableCell>
-									<TableCell>{execution.phase ?? "-"}</TableCell>
+									<TableCell>{execution.runtimeStatus ?? "-"}</TableCell>
+									<TableCell>
+										{execution.runtimeStatus
+											? (execution.phase ?? "-")
+											: (execution.phase ?? "-")}
+									</TableCell>
+									<TableCell className="max-w-[240px] truncate">
+										{execution.currentNodeName ?? "-"}
+									</TableCell>
+									<TableCell className="text-xs">
+										{[
+											execution.hasPlanArtifacts ? "plan" : null,
+											execution.hasChildRuns ? "child" : null,
+											execution.hasExternalEvents ? "event" : null,
+										]
+											.filter(Boolean)
+											.join(", ") || "-"}
+									</TableCell>
 									<TableCell>
 										<span
 											title={new Date(execution.startedAt).toLocaleString()}

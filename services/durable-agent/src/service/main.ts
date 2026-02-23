@@ -1135,6 +1135,126 @@ function parseOptionalLoopPolicy(input: unknown): LoopPolicy | undefined {
 	return undefined;
 }
 
+type ContextPolicyPreset = "off" | "conservative" | "balanced" | "aggressive";
+
+function parseContextPolicyPreset(
+	input: unknown,
+): ContextPolicyPreset | undefined {
+	if (typeof input !== "string") return undefined;
+	const normalized = input.trim().toLowerCase();
+	if (
+		normalized === "off" ||
+		normalized === "conservative" ||
+		normalized === "balanced" ||
+		normalized === "aggressive"
+	) {
+		return normalized;
+	}
+	return undefined;
+}
+
+function createLoopPolicyPreset(
+	preset: ContextPolicyPreset,
+): LoopPolicy | undefined {
+	if (preset === "off") return undefined;
+	if (preset === "conservative") {
+		return {
+			prepareStep: {
+				trimMessagesTo: 96,
+				truncateToolResultChars: 6000,
+				appendInstructions:
+					"Be concise and avoid repeating previously completed analysis.",
+				rules: [
+					{ fromStep: 8, trimMessagesTo: 72, truncateToolResultChars: 4000 },
+				],
+			},
+			compaction: {
+				enabled: true,
+				maxAutoRetries: 1,
+				preserveRecentMessages: 10,
+				minMessagesToCompact: 8,
+				checkpointEverySteps: 10,
+			},
+		};
+	}
+	if (preset === "aggressive") {
+		return {
+			prepareStep: {
+				trimMessagesTo: 36,
+				truncateToolResultChars: 1800,
+				appendInstructions:
+					"Respond concisely and avoid repeating previous outputs or large snippets.",
+				rules: [
+					{ fromStep: 4, trimMessagesTo: 24, truncateToolResultChars: 1000 },
+				],
+			},
+			compaction: {
+				enabled: true,
+				maxAutoRetries: 1,
+				preserveRecentMessages: 6,
+				minMessagesToCompact: 4,
+				checkpointEverySteps: 4,
+			},
+		};
+	}
+	// balanced default
+	return {
+		prepareStep: {
+			trimMessagesTo: 64,
+			truncateToolResultChars: 4000,
+			appendInstructions:
+				"Be concise and avoid repeating prior context unless needed for correctness.",
+			rules: [
+				{ fromStep: 6, trimMessagesTo: 40, truncateToolResultChars: 2500 },
+			],
+		},
+		compaction: {
+			enabled: true,
+			maxAutoRetries: 1,
+			preserveRecentMessages: 8,
+			minMessagesToCompact: 6,
+			checkpointEverySteps: 8,
+		},
+	};
+}
+
+function mergeLoopPolicies(
+	base: LoopPolicy | undefined,
+	override: LoopPolicy | undefined,
+): LoopPolicy | undefined {
+	if (!base) return override;
+	if (!override) return base;
+	return {
+		...base,
+		...override,
+		prepareStep: {
+			...(base.prepareStep ?? {}),
+			...(override.prepareStep ?? {}),
+			rules: [
+				...(base.prepareStep?.rules ?? []),
+				...(override.prepareStep?.rules ?? []),
+			],
+		},
+		doneTool: {
+			...(base.doneTool ?? {}),
+			...(override.doneTool ?? {}),
+		},
+		compaction: {
+			...(base.compaction ?? {}),
+			...(override.compaction ?? {}),
+		},
+	};
+}
+
+function resolveLoopPolicyFromRequest(
+	body: Record<string, unknown>,
+): LoopPolicy | undefined {
+	const preset = parseContextPolicyPreset(body.contextPolicyPreset);
+	const presetPolicy = preset ? createLoopPolicyPreset(preset) : undefined;
+	const explicitPolicy = parseOptionalLoopPolicy(body.loopPolicy);
+	return mergeLoopPolicies(presetPolicy, explicitPolicy);
+}
+
 function trackActiveRun(input: ActiveRun): void {
 	activeRuns.set(input.agentWorkflowId, input);
 	if (!input.parentExecutionId) return;
@@ -1882,9 +2002,7 @@ app.post("/api/workspaces/profile", async (req, res) => {
 app.post("/api/workspaces/clone", async (req, res) => {
 	try {
 		const repositoryUrl =
-			typeof req.body?.repositoryUrl === "string"
-				? req.body.repositoryUrl
-				: "";
+			typeof req.body?.repositoryUrl === "string" ? req.body.repositoryUrl : "";
 		const repositoryOwner =
 			typeof req.body?.repositoryOwner === "string"
 				? req.body.repositoryOwner
@@ -2329,7 +2447,9 @@ app.post("/api/run", async (req, res) => {
 			typeof req.body?.stopCondition === "string"
 				? req.body.stopCondition.trim()
 				: "";
-		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
+		const loopPolicy = resolveLoopPolicyFromRequest(
+			(req.body as Record<string, unknown>) ?? {},
+		);
 		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
 		const explicitRequireFileChanges = parseOptionalBoolean(
 			req.body?.requireFileChanges,
@@ -2480,6 +2600,20 @@ app.post("/api/run", async (req, res) => {
 					loopStopCondition: completion.result?.stop_condition,
 					requiresApproval: completion.result?.requires_approval,
 					usageTotals: completion.result?.usage_totals,
+					compactionApplied:
+						completion.result?.compaction_applied === true ||
+						((completion.result?.compaction_count as number | undefined) ?? 0) >
+							0,
+					compactionCount:
+						typeof completion.result?.compaction_count === "number"
+							? completion.result.compaction_count
+							: 0,
+					contextOverflowRecovered:
+						completion.result?.context_overflow_recovered === true,
+					lastCompactionReason:
+						typeof completion.result?.last_compaction_reason === "string"
+							? completion.result.last_compaction_reason
+							: undefined,
 					fileChanges,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,
@@ -2797,9 +2931,10 @@ app.post("/api/plan", async (req, res) => {
 				);
 			}
 		}
-		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
-		const repositoryRootForPrompt =
-			cwd && existsSync(cwd) ? cwd : undefined;
+		const loopPolicy = resolveLoopPolicyFromRequest(
+			(req.body as Record<string, unknown>) ?? {},
+		);
+		const repositoryRootForPrompt = cwd && existsSync(cwd) ? cwd : undefined;
 		if (cwd && !repositoryRootForPrompt) {
 			console.warn(
 				`[durable-agent] Plan mode cwd does not exist locally, omitting repositoryRoot from prompt: ${cwd}`,
@@ -3052,7 +3187,9 @@ app.post("/api/execute-plan", async (req, res) => {
 			req.body?.cleanupWorkspace,
 		);
 		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
-		const loopPolicy = parseOptionalLoopPolicy(req.body?.loopPolicy);
+		const loopPolicy = resolveLoopPolicyFromRequest(
+			(req.body as Record<string, unknown>) ?? {},
+		);
 		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
 		const requestedWorkspaceRef =
 			typeof req.body?.workspaceRef === "string"
@@ -3272,6 +3409,20 @@ app.post("/api/execute-plan", async (req, res) => {
 					loopStopCondition: completion.result?.stop_condition,
 					requiresApproval: completion.result?.requires_approval,
 					usageTotals: completion.result?.usage_totals,
+					compactionApplied:
+						completion.result?.compaction_applied === true ||
+						((completion.result?.compaction_count as number | undefined) ?? 0) >
+							0,
+					compactionCount:
+						typeof completion.result?.compaction_count === "number"
+							? completion.result.compaction_count
+							: 0,
+					contextOverflowRecovered:
+						completion.result?.context_overflow_recovered === true,
+					lastCompactionReason:
+						typeof completion.result?.last_compaction_reason === "string"
+							? completion.result.last_compaction_reason
+							: undefined,
 					fileChanges,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,

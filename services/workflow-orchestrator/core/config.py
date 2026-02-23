@@ -51,6 +51,10 @@ class OrchestratorConfig:
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     MASTRA_AGENT_APP_ID: str = "mastra-agent-tanstack"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
+    DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflow"
+    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflow"
+    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflow"
 
     # Tracks whether Dapr Configuration was used
     _loaded_from_dapr: bool = field(default=False, repr=False)
@@ -81,6 +85,10 @@ class OrchestratorConfig:
                 "FUNCTION_ROUTER_APP_ID",
                 "MASTRA_AGENT_APP_ID",
                 "DURABLE_AGENT_APP_ID",
+                "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
+                "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
+                "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -125,6 +133,22 @@ class OrchestratorConfig:
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-tanstack"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
+                "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
+                "true",
+            ),
+            "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "durableRunWorkflow",
+            ),
+            "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME": (
+                "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
+                "durablePlanWorkflow",
+            ),
+            "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
+                "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
+                "durableRunWorkflow",
+            ),
         }
 
         for attr, (env_var, default) in field_map.items():

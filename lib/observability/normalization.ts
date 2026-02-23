@@ -12,6 +12,7 @@ type TraceContext = {
 	executionId: string | null;
 	daprInstanceId: string | null;
 	phase: string | null;
+	correlationConfidence?: "execution" | "instance" | "workflow" | "unknown";
 };
 
 function getTagValue(tags: JaegerTag[] | undefined, key: string): unknown {
@@ -25,6 +26,19 @@ function getStringTag(
 	for (const key of keys) {
 		const value = getTagValue(tags, key);
 		if (typeof value === "string" && value.trim()) {
+			return value;
+		}
+	}
+	return null;
+}
+
+function getFirstStringTagAcrossSpans(
+	spans: JaegerSpan[],
+	keys: string[],
+): string | null {
+	for (const span of spans) {
+		const value = getStringTag(span.tags, keys);
+		if (value) {
 			return value;
 		}
 	}
@@ -223,6 +237,44 @@ export function normalizeJaegerTraceSummary(
 		}
 	}
 
+	const nodeId = getFirstStringTagAcrossSpans(spans, [
+		"workflow.node_id",
+		"workflow.nodeId",
+		"node.id",
+		"node_id",
+		"nodeId",
+	]);
+	const nodeName = getFirstStringTagAcrossSpans(spans, [
+		"workflow.node_name",
+		"workflow.nodeName",
+		"node.name",
+		"node_name",
+		"nodeName",
+	]);
+	const activityName = getFirstStringTagAcrossSpans(spans, [
+		"workflow.activity_name",
+		"workflow.activityName",
+		"workflow.activity",
+		"activity.name",
+		"activity.type",
+		"action.type",
+		"actionType",
+	]);
+	const agentRunId = getFirstStringTagAcrossSpans(spans, [
+		"workflow.agent_run_id",
+		"workflow.agentRunId",
+	]);
+	const agentWorkflowId = getFirstStringTagAcrossSpans(spans, [
+		"workflow.agent_workflow_id",
+		"workflow.agentWorkflowId",
+	]);
+	const parentExecutionId = getFirstStringTagAcrossSpans(spans, [
+		"workflow.parent_execution_id",
+		"workflow.parentExecutionId",
+		"parent_execution_id",
+		"parentExecutionId",
+	]);
+
 	return {
 		traceId,
 		name: rootSpan?.operationName ?? "trace",
@@ -237,6 +289,13 @@ export function normalizeJaegerTraceSummary(
 		executionId: context.executionId,
 		daprInstanceId: context.daprInstanceId,
 		phase: context.phase,
+		nodeId,
+		nodeName,
+		activityName,
+		agentRunId,
+		agentWorkflowId,
+		parentExecutionId,
+		correlationConfidence: context.correlationConfidence ?? "unknown",
 	};
 }
 

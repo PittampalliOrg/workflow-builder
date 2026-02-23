@@ -82,6 +82,18 @@ export interface LoopDoneToolConfig {
 	responseField?: string;
 }
 
+export interface LoopCompactionPolicy {
+	enabled?: boolean;
+	/** Number of trailing messages to preserve verbatim when compacting. */
+	preserveRecentMessages?: number;
+	/** Minimum total message count before compaction can apply. */
+	minMessagesToCompact?: number;
+	/** Auto compact-and-retry budget when context overflow is detected. */
+	maxAutoRetries?: number;
+	/** Optional periodic compaction cadence (in turns). */
+	checkpointEverySteps?: number;
+}
+
 export interface LoopPolicy {
 	stopWhen?: LoopStopCondition | LoopStopCondition[];
 	prepareStep?: LoopPrepareStepPolicy;
@@ -89,6 +101,7 @@ export interface LoopPolicy {
 	defaultToolChoice?: LoopToolChoice;
 	defaultActiveTools?: string[];
 	doneTool?: LoopDoneToolConfig;
+	compaction?: LoopCompactionPolicy;
 }
 
 export interface LoopUsage {

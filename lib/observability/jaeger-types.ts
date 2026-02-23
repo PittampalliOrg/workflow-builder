@@ -63,3 +63,74 @@ export type JaegerTraceResponse = {
 	total?: number;
 	errors?: string[] | null;
 };
+
+export type OtlpAnyValue = {
+	stringValue?: string;
+	boolValue?: boolean;
+	intValue?: string | number;
+	doubleValue?: number;
+	arrayValue?: {
+		values?: OtlpAnyValue[];
+	};
+	kvlistValue?: {
+		values?: OtlpKeyValue[];
+	};
+	bytesValue?: string;
+};
+
+export type OtlpKeyValue = {
+	key?: string;
+	value?: OtlpAnyValue;
+};
+
+export type OtlpSpanStatus = {
+	code?: number | string;
+	message?: string;
+};
+
+export type OtlpSpan = {
+	traceId?: string;
+	spanId?: string;
+	parentSpanId?: string;
+	name?: string;
+	kind?: number | string;
+	startTimeUnixNano?: string | number;
+	endTimeUnixNano?: string | number;
+	attributes?: OtlpKeyValue[];
+	status?: OtlpSpanStatus;
+};
+
+export type OtlpScopeSpans = {
+	spans?: OtlpSpan[];
+};
+
+export type OtlpResource = {
+	attributes?: OtlpKeyValue[];
+};
+
+export type OtlpResourceSpans = {
+	resource?: OtlpResource;
+	scopeSpans?: OtlpScopeSpans[];
+};
+
+export type TempoSearchTrace = {
+	traceID?: string;
+	traceId?: string;
+	rootServiceName?: string;
+	rootTraceName?: string;
+	startTimeUnixNano?: string;
+	durationMs?: number;
+};
+
+export type TempoSearchResponse = {
+	traces?: TempoSearchTrace[];
+	metrics?: Record<string, unknown>;
+};
+
+export type TempoTraceResponse = {
+	batches?: OtlpResourceSpans[];
+	trace?: {
+		resourceSpans?: OtlpResourceSpans[];
+	};
+	metrics?: Record<string, unknown>;
+};

@@ -20,6 +20,7 @@ import { RunDetailSheet } from "./run-detail-sheet";
 type RunTraceTabProps = {
 	workflowId: string;
 	executionId: string;
+	daprInstanceId?: string | null;
 	selectedTraceId: string | null;
 	selectedSpanId: string | null;
 	onSelectedTraceIdChange: (id: string | null) => void;
@@ -39,6 +40,7 @@ function findSelectedSpan(
 export function RunTraceTab({
 	workflowId,
 	executionId,
+	daprInstanceId,
 	selectedTraceId,
 	selectedSpanId,
 	onSelectedTraceIdChange,
@@ -67,14 +69,15 @@ export function RunTraceTab({
 			.filter((trace) => {
 				return (
 					trace.executionId === executionId ||
-					trace.daprInstanceId === executionId
+					trace.parentExecutionId === executionId ||
+					(daprInstanceId ? trace.daprInstanceId === daprInstanceId : false)
 				);
 			})
 			.sort(
 				(a, b) =>
 					new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
 			);
-	}, [executionId, traces]);
+	}, [daprInstanceId, executionId, traces]);
 
 	useEffect(() => {
 		if (executionTraces.length === 0) {

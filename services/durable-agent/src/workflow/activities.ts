@@ -77,6 +77,8 @@ export interface RunToolPayload {
 	toolCall: ToolCall;
 	instanceId: string;
 	order: number;
+	workspaceRef?: string;
+	executionId?: string;
 }
 
 export interface SaveToolResultsPayload {
@@ -87,6 +89,23 @@ export interface SaveToolResultsPayload {
 		name: string;
 	}>;
 	instanceId: string;
+}
+
+export interface CompactConversationPayload {
+	instanceId: string;
+	reason?: string;
+	preserveRecentMessages?: number;
+	minMessagesToCompact?: number;
+	maxSummaryItems?: number;
+}
+
+export interface CompactConversationResult {
+	applied: boolean;
+	reason: string;
+	beforeMessages: number;
+	afterMessages: number;
+	preservedMessages: number;
+	summarizedMessages: number;
 }
 
 export interface BroadcastPayload {
@@ -107,6 +126,24 @@ export interface FinalizeWorkflowPayload {
 }
 
 export type GetAvailableAgentsPayload = {};
+
+function messageFromError(err: unknown): string {
+	if (err instanceof Error) return err.message;
+	return String(err ?? "");
+}
+
+function isContextOverflowError(err: unknown): boolean {
+	const message = messageFromError(err).toLowerCase();
+	return (
+		message.includes("context_length_exceeded") ||
+		message.includes("maximum context length") ||
+		message.includes("context window") ||
+		message.includes("too many tokens") ||
+		message.includes("prompt is too long") ||
+		message.includes("prompt_tokens") ||
+		message.includes("input is too large")
+	);
+}
 
 // --------------------------------------------------------------------------
 // Activity factory functions
@@ -388,20 +425,28 @@ export function createCallLlm(
 				: systemPrompt;
 
 		// Call LLM with tool declarations (no auto-execute)
-		const result = await callLlmAdapter(
-			effectiveModel,
-			effectiveSystemPrompt,
-			preparedMessages,
-			activeTools,
-			{
-				instanceId: payload.instanceId,
-				turn: turnCount,
-				agentName,
-				toolChoice: payload.toolChoice,
-				declarationOnlyTools,
-				approvalRequiredTools,
-			},
-		);
+		let result: LlmCallResult;
+		try {
+			result = await callLlmAdapter(
+				effectiveModel,
+				effectiveSystemPrompt,
+				preparedMessages,
+				activeTools,
+				{
+					instanceId: payload.instanceId,
+					turn: turnCount,
+					agentName,
+					toolChoice: payload.toolChoice,
+					declarationOnlyTools,
+					approvalRequiredTools,
+				},
+			);
+		} catch (err) {
+			if (isContextOverflowError(err)) {
+				throw new Error(`CONTEXT_OVERFLOW:${messageFromError(err)}`);
+			}
+			throw err;
+		}
 
 		// Build and persist assistant message
 		const assistantMsg: AgentWorkflowMessage = {
@@ -495,6 +540,12 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 						? {
 								...(args as Record<string, unknown>),
 								__durable_instance_id: payload.instanceId,
+								...(payload.workspaceRef
+									? { workspaceRef: payload.workspaceRef }
+									: {}),
+								...(payload.executionId
+									? { executionId: payload.executionId }
+									: {}),
 							}
 						: args;
 				let result: unknown;
@@ -610,6 +661,136 @@ export function createSaveToolResults(
 		console.log(
 			`[saveToolResults] instance=${payload.instanceId} saved ${payload.toolResults.length} result(s)`,
 		);
+	};
+}
+
+function buildCompactSummary(input: {
+	reason: string;
+	summarizedMessages: AgentWorkflowMessage[];
+	maxSummaryItems: number;
+}): string {
+	const { reason, summarizedMessages, maxSummaryItems } = input;
+	const firstUser = summarizedMessages.find(
+		(msg) =>
+			msg.role === "user" && typeof msg.content === "string" && msg.content,
+	);
+	const assistantNotes = summarizedMessages
+		.filter(
+			(msg) =>
+				msg.role === "assistant" &&
+				typeof msg.content === "string" &&
+				msg.content.trim(),
+		)
+		.slice(-maxSummaryItems)
+		.map((msg) => `- ${msg.content!.trim().slice(0, 220)}`);
+	const toolNames = [
+		...new Set(
+			summarizedMessages
+				.filter((msg) => msg.role === "tool" && msg.name)
+				.map((msg) => msg.name as string),
+		),
+	];
+	const toolSummary =
+		toolNames.length > 0
+			? `Tools used: ${toolNames.slice(0, maxSummaryItems).join(", ")}`
+			: "Tools used: none";
+	const lines = [
+		`Conversation compacted (${reason}). Preserve this summary as authoritative context.`,
+		firstUser?.content
+			? `Original task: ${firstUser.content.trim().slice(0, 400)}`
+			: "Original task: unavailable",
+		toolSummary,
+	];
+	if (assistantNotes.length > 0) {
+		lines.push("Key assistant points:");
+		lines.push(...assistantNotes);
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Compact historical conversation into a synthetic summary message while
+ * preserving the most recent N messages verbatim.
+ */
+export function createCompactConversation(stateManager: DaprAgentState) {
+	return async function compactConversation(
+		_ctx: WorkflowActivityContext,
+		payload: CompactConversationPayload,
+	): Promise<CompactConversationResult> {
+		let state = await stateManager.loadState();
+		let entry = state.instances[payload.instanceId];
+		if (!entry) {
+			state = await stateManager.ensureInstance(
+				payload.instanceId,
+				"Recovered workflow state",
+			);
+			entry = state.instances[payload.instanceId];
+			if (!entry) {
+				throw new Error(
+					`Failed to recover state entry for instance ${payload.instanceId}`,
+				);
+			}
+		}
+
+		const preserveRecentMessages =
+			typeof payload.preserveRecentMessages === "number"
+				? Math.max(1, Math.floor(payload.preserveRecentMessages))
+				: 8;
+		const minMessagesToCompact =
+			typeof payload.minMessagesToCompact === "number"
+				? Math.max(0, Math.floor(payload.minMessagesToCompact))
+				: 6;
+		const maxSummaryItems =
+			typeof payload.maxSummaryItems === "number"
+				? Math.max(1, Math.floor(payload.maxSummaryItems))
+				: 12;
+		const reason = payload.reason?.trim() || "automatic";
+
+		const beforeMessages = entry.messages.length;
+		const compactableCount = beforeMessages - preserveRecentMessages;
+		if (beforeMessages === 0 || compactableCount < minMessagesToCompact) {
+			return {
+				applied: false,
+				reason,
+				beforeMessages,
+				afterMessages: beforeMessages,
+				preservedMessages: Math.min(beforeMessages, preserveRecentMessages),
+				summarizedMessages: 0,
+			};
+		}
+
+		const splitIndex = Math.max(0, beforeMessages - preserveRecentMessages);
+		const summarizedMessages = entry.messages.slice(0, splitIndex);
+		const preservedTail = entry.messages.slice(splitIndex);
+		const summaryContent = buildCompactSummary({
+			reason,
+			summarizedMessages,
+			maxSummaryItems,
+		});
+		const summaryMsg: AgentWorkflowMessage = {
+			id: randomUUID(),
+			role: "system",
+			content: summaryContent,
+			timestamp: new Date().toISOString(),
+		};
+		entry.messages = [summaryMsg, ...preservedTail];
+		entry.last_message =
+			entry.messages[entry.messages.length - 1] ?? summaryMsg;
+		await stateManager.saveState(state);
+
+		const afterMessages = entry.messages.length;
+		console.log(
+			`[compactConversation] instance=${payload.instanceId} reason=${reason} before=${beforeMessages} after=${afterMessages}`,
+		);
+
+		return {
+			applied: true,
+			reason,
+			beforeMessages,
+			afterMessages,
+			preservedMessages: preservedTail.length,
+			summarizedMessages: summarizedMessages.length,
+		};
 	};
 }
 

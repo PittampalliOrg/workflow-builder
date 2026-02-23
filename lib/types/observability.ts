@@ -22,6 +22,13 @@ export type ObservabilityTraceSummary = {
 	executionId: string | null;
 	daprInstanceId: string | null;
 	phase: string | null;
+	nodeId?: string | null;
+	nodeName?: string | null;
+	activityName?: string | null;
+	agentRunId?: string | null;
+	agentWorkflowId?: string | null;
+	parentExecutionId?: string | null;
+	correlationConfidence?: "execution" | "instance" | "workflow" | "unknown";
 };
 
 export type ObservabilitySpan = {

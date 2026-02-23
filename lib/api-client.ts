@@ -26,6 +26,14 @@ import type {
 	McpConnectionCatalogItem,
 	McpConnectionStatus,
 } from "./types/mcp-connection";
+import type {
+	DurableAgentRunSummary,
+	DurableExecutionConsistency,
+	DurableExternalEventSummary,
+	DurablePlanArtifactSummary,
+	DurableRuntimeSnapshot,
+	DurableTimelineEvent,
+} from "./types/durable-timeline";
 import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
@@ -655,6 +663,13 @@ export const workflowApi = {
 				daprInstanceId: string | null;
 				phase: string | null;
 				progress: number | null;
+				runtimeStatus?: string | null;
+				currentNodeName?: string | null;
+				approvalEventName?: string | null;
+				statusDiverged?: boolean;
+				hasChildRuns?: boolean;
+				hasPlanArtifacts?: boolean;
+				hasExternalEvents?: boolean;
 			}>
 		>(`/api/workflows/${id}/executions`),
 
@@ -706,16 +721,33 @@ export const workflowApi = {
 				completedAt: Date | null;
 				duration: string | null;
 			}>;
+			runtime?: DurableRuntimeSnapshot | null;
+			timeline: DurableTimelineEvent[];
+			agentRuns: DurableAgentRunSummary[];
+			externalEvents: DurableExternalEventSummary[];
+			planArtifacts: DurablePlanArtifactSummary[];
+			consistency: DurableExecutionConsistency;
 		}>(`/api/workflows/executions/${executionId}/logs`),
 
 	// Get execution status
 	getExecutionStatus: (executionId: string) =>
 		apiCall<{
 			status: string;
+			runtimeStatus: string | null;
+			phase: string | null;
+			progress: number | null;
+			message: string | null;
+			currentNodeId: string | null;
+			currentNodeName: string | null;
+			approvalEventName: string | null;
 			nodeStatuses: Array<{
 				nodeId: string;
+				nodeName?: string;
+				activityName?: string | null;
 				status: "pending" | "running" | "success" | "error";
+				timestamp?: string | null;
 			}>;
+			consistency?: DurableExecutionConsistency;
 		}>(`/api/workflows/executions/${executionId}/status`),
 
 	// List persisted file-change artifacts for an execution
@@ -868,10 +900,11 @@ export type DaprWorkflowStatusResponse = {
 	phase: string | null;
 	progress: number | null;
 	message: string | null;
-	currentActivity: string | null;
 	currentNodeId: string | null;
 	currentNodeName: string | null;
 	approvalEventName: string | null;
+	runtime?: DurableRuntimeSnapshot | null;
+	consistency?: DurableExecutionConsistency;
 	createdAt?: string;
 	lastUpdatedAt?: string;
 };

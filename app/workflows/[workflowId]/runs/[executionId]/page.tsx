@@ -10,8 +10,11 @@ import {
 } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ExecutionChangesPanel } from "@/components/workflow-runs/execution-changes-panel";
+import { RunArtifactsTab } from "@/components/workflow-runs/run-artifacts-tab";
+import { RunChildRunsTab } from "@/components/workflow-runs/run-child-runs-tab";
 import { RunLogsTab } from "@/components/workflow-runs/run-logs-tab";
 import { RunOverviewTab } from "@/components/workflow-runs/run-overview-tab";
+import { RunTimelineTab } from "@/components/workflow-runs/run-timeline-tab";
 import { RunTraceTab } from "@/components/workflow-runs/run-trace-tab";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { SidebarToggle } from "@/components/sidebar-toggle";
@@ -28,13 +31,31 @@ type ExecutionStatusResponse = Awaited<
 	ReturnType<typeof api.workflow.getExecutionStatus>
 >;
 
-type WorkspaceTab = "overview" | "changes" | "logs" | "trace";
+type WorkspaceTab =
+	| "overview"
+	| "timeline"
+	| "activities"
+	| "child-runs"
+	| "artifacts"
+	| "changes"
+	| "trace";
 
-const VALID_TABS: WorkspaceTab[] = ["overview", "changes", "logs", "trace"];
+const VALID_TABS: WorkspaceTab[] = [
+	"overview",
+	"timeline",
+	"activities",
+	"child-runs",
+	"artifacts",
+	"changes",
+	"trace",
+];
 
 function normalizeTab(value: string | null): WorkspaceTab {
 	if (!value) {
 		return "overview";
+	}
+	if (value === "logs") {
+		return "activities";
 	}
 	return VALID_TABS.includes(value as WorkspaceTab)
 		? (value as WorkspaceTab)
@@ -114,6 +135,7 @@ export default function WorkflowRunDetailPage() {
 	const activeTab = normalizeTab(searchParams.get("tab"));
 	const selectedFilePath = searchParams.get("file");
 	const selectedLogId = searchParams.get("logId");
+	const selectedNodeId = searchParams.get("nodeId");
 	const selectedTraceId = searchParams.get("traceId");
 	const selectedSpanId = searchParams.get("spanId");
 
@@ -193,7 +215,8 @@ export default function WorkflowRunDetailPage() {
 					updateQuery({
 						tab: nextTab,
 						file: nextTab === "changes" ? selectedFilePath : null,
-						logId: nextTab === "logs" ? selectedLogId : null,
+						logId: nextTab === "activities" ? selectedLogId : null,
+						nodeId: nextTab === "timeline" ? selectedNodeId : null,
 						traceId: nextTab === "trace" ? selectedTraceId : null,
 						spanId: nextTab === "trace" ? selectedSpanId : null,
 					});
@@ -245,11 +268,23 @@ export default function WorkflowRunDetailPage() {
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="overview">
 									Overview
 								</TabsTrigger>
+								<TabsTrigger className="h-7 px-2.5 text-xs" value="timeline">
+									Timeline ({details.timeline?.length ?? 0})
+								</TabsTrigger>
+								<TabsTrigger className="h-7 px-2.5 text-xs" value="activities">
+									Activities ({details.logs.length})
+								</TabsTrigger>
+								<TabsTrigger className="h-7 px-2.5 text-xs" value="child-runs">
+									Child Runs ({details.agentRuns?.length ?? 0})
+								</TabsTrigger>
+								<TabsTrigger className="h-7 px-2.5 text-xs" value="artifacts">
+									Artifacts (
+									{(details.planArtifacts?.length ?? 0) +
+										(details.externalEvents?.length ?? 0)}
+									)
+								</TabsTrigger>
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="changes">
 									Changes
-								</TabsTrigger>
-								<TabsTrigger className="h-7 px-2.5 text-xs" value="logs">
-									Logs ({details.logs.length})
 								</TabsTrigger>
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="trace">
 									Trace
@@ -272,6 +307,41 @@ export default function WorkflowRunDetailPage() {
 						monitorSummary={monitorSummary}
 						runtimeStatus={runtimeStatus}
 						workflowId={workflowId}
+						durableSummary={{
+							timelineCount: details.timeline?.length ?? 0,
+							childRunCount: details.agentRuns?.length ?? 0,
+							artifactCount: details.planArtifacts?.length ?? 0,
+							externalEventCount: details.externalEvents?.length ?? 0,
+							consistency: details.consistency,
+						}}
+					/>
+				</TabsContent>
+
+				<TabsContent className="mt-0 space-y-3" value="timeline">
+					<RunTimelineTab
+						nodeIdFilter={selectedNodeId}
+						timeline={details.timeline ?? []}
+					/>
+				</TabsContent>
+
+				<TabsContent className="mt-0 space-y-3" value="activities">
+					<RunLogsTab
+						logs={details.logs}
+						onSelectedLogIdChange={(logId) =>
+							updateQuery({ logId, tab: "activities" })
+						}
+						selectedLogId={selectedLogId}
+					/>
+				</TabsContent>
+
+				<TabsContent className="mt-0 space-y-3" value="child-runs">
+					<RunChildRunsTab agentRuns={details.agentRuns ?? []} />
+				</TabsContent>
+
+				<TabsContent className="mt-0 space-y-3" value="artifacts">
+					<RunArtifactsTab
+						externalEvents={details.externalEvents ?? []}
+						planArtifacts={details.planArtifacts ?? []}
 					/>
 				</TabsContent>
 
@@ -285,18 +355,9 @@ export default function WorkflowRunDetailPage() {
 					/>
 				</TabsContent>
 
-				<TabsContent className="mt-0 space-y-3" value="logs">
-					<RunLogsTab
-						logs={details.logs}
-						onSelectedLogIdChange={(logId) =>
-							updateQuery({ logId, tab: "logs" })
-						}
-						selectedLogId={selectedLogId}
-					/>
-				</TabsContent>
-
 				<TabsContent className="mt-0 space-y-3" value="trace">
 					<RunTraceTab
+						daprInstanceId={details.execution.daprInstanceId}
 						executionId={executionId}
 						onSelectedSpanIdChange={(spanId) =>
 							updateQuery({ spanId, tab: "trace" })

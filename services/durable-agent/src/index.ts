@@ -27,6 +27,7 @@ export type {
 	LoopPrepareStepRule,
 	LoopPrepareStepPolicy,
 	LoopDoneToolConfig,
+	LoopCompactionPolicy,
 	LoopPolicy,
 	LoopUsage,
 	LoopStepRecord,
@@ -77,6 +78,7 @@ export {
 	createCallLlm,
 	createRunTool,
 	createSaveToolResults,
+	createCompactConversation,
 	createFinalizeWorkflow,
 } from "./workflow/index.js";
 

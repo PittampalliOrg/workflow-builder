@@ -31,8 +31,12 @@ const DATABASE_URL =
 const WORKFLOW_ID = "lazxidq045szbb9ke4dny";
 const WORKFLOW_NAME = "Opencode Agent Plan Then Execute PR";
 const WORKFLOW_DESCRIPTION =
-	"Two-step opencode flow: planning first, execution second, then commit/push/PR";
+	"Multi-step opencode flow: planning, execution, change verification, then commit/push/PR";
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
+const PLANNER_MAX_TURNS = 120;
+const PLANNER_TIMEOUT_MINUTES = 45;
+const EXECUTOR_MAX_TURNS = 260;
+const EXECUTOR_TIMEOUT_MINUTES = 120;
 
 const IDs = {
 	trigger: "tr_1771706813719",
@@ -41,6 +45,7 @@ const IDs = {
 	branch: "br_1771706813719",
 	plan: "pl_1771706813719",
 	execute: "ex_1771706813719",
+	verifyChanges: "vr_1771706813719",
 	commitPushPr: "cp_1771706813719",
 	cleanup: "cu_1771706813719",
 };
@@ -53,9 +58,13 @@ const EDGE_IDS = [
 	"e5_1771706813719",
 	"e6_1771706813719",
 	"e7_1771706813719",
+	"e8_1771706813719",
 ];
 
-const AGENT_INSTRUCTIONS =
+const PLANNER_INSTRUCTIONS =
+	"You are a planning agent. Inspect repository context with read-only actions and produce an execution-ready plan only. Do not modify files, do not run mutating commands, and do not claim edits were made. Return concise, ordered steps that can be executed directly.";
+
+const EXECUTOR_INSTRUCTIONS =
 	"You are an autonomous coding agent operating on a real git workspace. Inspect relevant files before changing code, then make concrete file edits instead of returning only a plan. When code changes are requested, run targeted validation commands and iterate until failures are addressed. Prefer direct replacement of stale legacy code when a better implementation is required. Before finishing, confirm git diff is non-empty and report changed files, validation commands, and any remaining risks.";
 
 async function resolveGithubUserId(db: ReturnType<typeof drizzle>) {
@@ -267,22 +276,23 @@ function buildNodes(profileVersion: number) {
 					mode: "plan_mode",
 					model: "openai/gpt-5.2-codex",
 					prompt:
-						"Analyze the repository and produce a concise implementation plan to create OPENCODE_PLAN_EXECUTION_E2E.md at repository root. The file must contain: title 'Opencode Plan+Execute E2E', one sentence saying it was produced by plan+execute workflow, and exactly 3 bullets: plan-summary, edits-performed, validation-note. Return a clear, step-by-step plan in <proposed_plan> format.",
-					maxTurns: "260",
-					timeoutMinutes: "120",
+						"Analyze this feature-flags repository and produce an execution-ready plan for a complex multi-file implementation of flag-governance tooling.\n\nRequired deliverables:\n1) tools/flag_rules.py\n   - pure helper functions for schema checks and cross-environment comparisons.\n2) tools/flag_consistency.py\n   - CLI with subcommands: validate and matrix.\n   - validate checks all environment YAML files under default/development/staging/production for:\n     - unique segment keys\n     - unique flag keys\n     - segment references in rollouts/rules point to existing segments\n     - variant rules have distributions summing to 100\n   - matrix prints a markdown table summarizing each flag key across environments (enabled state and variant count).\n3) tools/test_flag_rules.py\n   - unit tests for helper logic.\n4) tools/test_flag_consistency.py\n   - integration-style unit tests for validate success/failure scenarios using temporary fixture files.\n5) tools/README.md\n   - usage examples for validate and matrix.\n6) README.md update\n   - add a section referencing the new tooling.\n\nValidation expectation for execute step:\n- python3 -m py_compile tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py\n- python3 -m unittest tools/test_flag_rules.py tools/test_flag_consistency.py\n- python3 tools/flag_consistency.py validate --root .\n\nReturn a concise, ordered plan in <proposed_plan> format.",
+					maxTurns: String(PLANNER_MAX_TURNS),
+					timeoutMinutes: String(PLANNER_TIMEOUT_MINUTES),
+					contextPolicyPreset: "conservative",
 					workspaceRef,
 					cwd: clonePath,
 					agentConfig: {
-						name: "Coding Agent",
-						tools: ["glob", "grep", "read", "edit", "write", "bash"],
-						maxTurns: 260,
+						name: "Planning Agent",
+						tools: ["glob", "grep", "read"],
 						modelSpec: "openai/gpt-5.2-codex",
-						instructions: AGENT_INSTRUCTIONS,
-						timeoutMinutes: 120,
+						maxTurns: PLANNER_MAX_TURNS,
+						instructions: PLANNER_INSTRUCTIONS,
+						timeoutMinutes: PLANNER_TIMEOUT_MINUTES,
 					},
 					agentProfileRef: {
 						id: AGENT_PROFILE_TEMPLATE_ID,
-						name: "Coding Agent",
+						name: "Planning Agent",
 						slug: "coding-agent",
 						version: profileVersion,
 					},
@@ -305,22 +315,24 @@ function buildNodes(profileVersion: number) {
 					mode: "execute_direct",
 					model: "openai/gpt-5.2-codex",
 					prompt:
-						"Execute the approved plan below and perform real file edits in the repository.\n\n<plan>\n{{@pl_1771706813719:Plan Changes.result.planMarkdown}}\n</plan>\n\nRequired outcome: OPENCODE_PLAN_EXECUTION_E2E.md exists at repo root with the requested title, sentence, and exactly three bullets.",
-					maxTurns: "260",
-					timeoutMinutes: "120",
+						"Execute the approved plan artifact and implement the full multi-file flag-governance tooling.\n\nRequired outcomes:\n- tools/flag_rules.py with reusable helper logic for validation and comparison.\n- tools/flag_consistency.py implements validate + matrix commands using the shared helpers.\n- tools/test_flag_rules.py with direct unit coverage for helper functions.\n- tools/test_flag_consistency.py with end-to-end validator coverage against temporary fixtures.\n- tools/README.md documents usage.\n- README.md includes a section linking to the new tooling.\n- Run and report:\n  - python3 -m py_compile tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py\n  - python3 -m unittest tools/test_flag_rules.py tools/test_flag_consistency.py\n  - python3 tools/flag_consistency.py validate --root .",
+					maxTurns: String(EXECUTOR_MAX_TURNS),
+					timeoutMinutes: String(EXECUTOR_TIMEOUT_MINUTES),
+					contextPolicyPreset: "balanced",
 					workspaceRef,
 					cwd: clonePath,
+					artifactRef: `{{@${IDs.plan}:Plan Changes.artifactRef}}`,
 					stopCondition:
-						"Stop when OPENCODE_PLAN_EXECUTION_E2E.md exists with required content.",
+						"Stop when modified files include tools/flag_rules.py, tools/flag_consistency.py, tools/test_flag_rules.py, tools/test_flag_consistency.py, tools/README.md, and README.md, and validation commands pass.",
 					cleanupWorkspace: "false",
-					requireFileChanges: "true",
+					requireFileChanges: "false",
 					agentConfig: {
 						name: "Coding Agent",
 						tools: ["glob", "grep", "read", "edit", "write", "bash"],
-						maxTurns: 260,
 						modelSpec: "openai/gpt-5.2-codex",
-						instructions: AGENT_INSTRUCTIONS,
-						timeoutMinutes: 120,
+						maxTurns: EXECUTOR_MAX_TURNS,
+						instructions: EXECUTOR_INSTRUCTIONS,
+						timeoutMinutes: EXECUTOR_TIMEOUT_MINUTES,
 					},
 					agentProfileRef: {
 						id: AGENT_PROFILE_TEMPLATE_ID,
@@ -335,16 +347,91 @@ function buildNodes(profileVersion: number) {
 			},
 		},
 		{
-			id: IDs.commitPushPr,
+			id: IDs.verifyChanges,
 			type: "action",
 			position: { x: 800, y: 0 },
+			data: {
+				label: "Verify Multi-file Changes",
+				description: "Ensure complex task produced required file edits",
+				type: "action",
+				config: {
+					command: `set -euo pipefail
+REQUIRED_FILES="tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py tools/README.md README.md"
+for f in $REQUIRED_FILES; do
+	if [ ! -f "$f" ]; then
+		echo "Missing required file: $f"
+		exit 2
+	fi
+done
+CHANGED=$(git status --porcelain -- tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py tools/README.md README.md | awk '{print $2}' | sort -u)
+echo "--- changed required files ---"
+printf '%s\n' "$CHANGED"
+COUNT=$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')
+echo "CHANGED_COUNT=$COUNT"
+if [ "$COUNT" -lt 5 ]; then
+	echo "Expected changes across at least 5 required files."
+	exit 2
+fi
+FORBIDDEN=$(git status --porcelain | awk '{print $2}' | grep -E '(^|/)(__pycache__/|.*\\.pyc$|.*\\.pyo$)' || true)
+if [ -n "$FORBIDDEN" ]; then
+	echo "Generated Python cache files detected (must not be committed):"
+	echo "$FORBIDDEN"
+	exit 2
+fi`,
+					timeoutMs: "120000",
+					actionType: "workspace/command",
+					workspaceRef,
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: IDs.commitPushPr,
+			type: "action",
+			position: { x: 1060, y: 0 },
 			data: {
 				label: "Commit Push PR",
 				description: "Commit changes, push branch, create PR to main",
 				type: "action",
 				config: {
-					command:
-						'set -euo pipefail; BR=opencode-planexec-{{@pf_1771706813719:Workspace Profile.executionId}}; git add -A; if git diff --cached --quiet; then echo "No staged changes after execute step"; exit 2; fi; git commit -m "feat: add plan+execute opencode e2e note"; git remote set-url origin http://giteaAdmin:developer@my-gitea-http.gitea.svc.cluster.local:3000/giteaAdmin/feature-flags.git; git push -u origin "$BR"; PR=$(curl -sS -u giteaAdmin:developer -H "Content-Type: application/json" -X POST http://my-gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/giteaAdmin/feature-flags/pulls -d "{\\"title\\":\\"Opencode plan+execute workflow: opencode-planexec-{{@pf_1771706813719:Workspace Profile.executionId}}\\",\\"head\\":\\"$BR\\",\\"base\\":\\"main\\",\\"body\\":\\"Automated workflow run with separate planning and execution steps.\\"}"); echo "$PR" | jq -r \'["PR_NUMBER="+(.number|tostring),"PR_URL="+(.html_url//""),"PR_STATE="+(.state//"")] | .[]\'; echo BRANCH=$BR; echo COMMIT=$(git rev-parse HEAD); echo REMOTE=$(git remote get-url origin)',
+					command: `set -euo pipefail
+BR=opencode-planexec-{{@pf_1771706813719:Workspace Profile.executionId}}
+
+# Clean common Python cache artifacts before staging.
+find . -type d -name "__pycache__" -prune -exec rm -rf {} +
+find . -type f \\( -name "*.pyc" -o -name "*.pyo" \\) -delete
+
+git add -A
+BAD=$(git diff --cached --name-only | grep -E '(^|/)(__pycache__/|.*\\.pyc$|.*\\.pyo$)' || true)
+if [ -n "$BAD" ]; then
+	echo "Refusing to commit generated Python cache artifacts:"
+	echo "$BAD"
+	exit 2
+fi
+if git diff --cached --quiet; then
+	echo "No staged changes after execute step"
+	exit 2
+fi
+
+git commit -m "feat: add comprehensive feature-flag governance tooling"
+git remote set-url origin http://giteaAdmin:developer@my-gitea-http.gitea.svc.cluster.local:3000/giteaAdmin/feature-flags.git
+git push -u origin "$BR"
+
+PR_PAYLOAD=$(jq -nc \
+	--arg title "Opencode workflow: comprehensive feature-flag governance tooling ({{@pf_1771706813719:Workspace Profile.executionId}})" \
+	--arg head "$BR" \
+	--arg base "main" \
+	--arg body "Automated plan+execute workflow implementing a complex multi-file feature-flag governance toolchain." \
+	'{title:$title,head:$head,base:$base,body:$body}')
+PR=$(curl -sS -u giteaAdmin:developer \
+	-H "Content-Type: application/json" \
+	-X POST \
+	http://my-gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/giteaAdmin/feature-flags/pulls \
+	-d "$PR_PAYLOAD")
+echo "$PR" | jq -r '["PR_NUMBER="+(.number|tostring),"PR_URL="+(.html_url//""),"PR_STATE="+(.state//"")] | .[]'
+echo BRANCH=$BR
+echo COMMIT=$(git rev-parse HEAD)
+echo REMOTE=$(git remote get-url origin)`,
 					timeoutMs: "180000",
 					actionType: "workspace/command",
 					workspaceRef,
@@ -355,7 +442,7 @@ function buildNodes(profileVersion: number) {
 		{
 			id: IDs.cleanup,
 			type: "action",
-			position: { x: 1060, y: 0 },
+			position: { x: 1320, y: 0 },
 			data: {
 				label: "Workspace Cleanup",
 				description: "Cleanup workspace",
@@ -416,12 +503,20 @@ function buildEdges() {
 			id: EDGE_IDS[5],
 			type: "animated",
 			source: IDs.execute,
-			target: IDs.commitPushPr,
+			target: IDs.verifyChanges,
 			sourceHandle: null,
 			targetHandle: null,
 		},
 		{
 			id: EDGE_IDS[6],
+			type: "animated",
+			source: IDs.verifyChanges,
+			target: IDs.commitPushPr,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: EDGE_IDS[7],
 			type: "animated",
 			source: IDs.commitPushPr,
 			target: IDs.cleanup,

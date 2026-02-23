@@ -4,8 +4,11 @@ import { getWorkflowOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import {
+	workflowAgentRuns,
 	workflowExecutionLogs,
 	workflowExecutions,
+	workflowExternalEvents,
+	workflowPlanArtifacts,
 	workflows,
 } from "@/lib/db/schema";
 import {
@@ -14,6 +17,15 @@ import {
 	mapWorkflowStatus,
 	toWorkflowDetail,
 } from "@/lib/transforms/workflow-ui";
+import {
+	buildDurableTimeline,
+	buildExecutionConsistency,
+	toDurableAgentRunSummary,
+	toDurableExternalEventSummary,
+	toDurablePlanArtifactSummary,
+	toDurableRuntimeSnapshot,
+} from "@/lib/transforms/durable-timeline";
+import type { DurableTimelineEvent } from "@/lib/types/durable-timeline";
 import type {
 	DaprExecutionEvent,
 	WorkflowDetail,
@@ -34,13 +46,15 @@ function toWorkflowPhase(phase: string | undefined): WorkflowPhase | undefined {
 	return undefined;
 }
 
-function mapHistoryEventType(eventType: string): DaprExecutionEvent["eventType"] {
+function mapHistoryEventType(
+	eventType: string,
+): DaprExecutionEvent["eventType"] {
 	if (eventType === "ExecutionCompleted") return eventType;
 	if (eventType === "OrchestratorStarted") return eventType;
 	if (eventType === "TaskCompleted") return eventType;
 	if (eventType === "TaskScheduled") return eventType;
 	if (eventType === "EventRaised") return eventType;
-	return "TaskCompleted";
+	return eventType || "TaskCompleted";
 }
 
 function toExecutionHistoryEvent(
@@ -72,6 +86,32 @@ function toExecutionHistoryEvent(
 					}
 				: undefined,
 	};
+}
+
+function mapTimelineToExecutionHistory(
+	timeline: DurableTimelineEvent[],
+): DaprExecutionEvent[] {
+	return timeline.map((event, index) => ({
+		eventId: index + 1,
+		eventType: event.kind,
+		name: event.nodeName ?? event.label,
+		timestamp: event.ts,
+		input: event.input,
+		output: event.output,
+		metadata: {
+			status: event.status ?? undefined,
+			taskId: event.nodeId ?? undefined,
+			elapsed:
+				typeof event.durationMs === "number"
+					? `${event.durationMs}ms`
+					: undefined,
+			durationMs: event.durationMs ?? undefined,
+			source: event.source,
+			nodeId: event.nodeId ?? undefined,
+			nodeName: event.nodeName ?? undefined,
+			activityName: event.activityName ?? undefined,
+		},
+	}));
 }
 
 /**
@@ -107,14 +147,42 @@ export async function GET(
 					.where(eq(workflowExecutionLogs.executionId, dbResult.execution.id))
 					.orderBy(asc(workflowExecutionLogs.timestamp))
 			: [];
+		const [externalEvents, planArtifacts, agentRuns] = dbResult
+			? await Promise.all([
+					db
+						.select()
+						.from(workflowExternalEvents)
+						.where(
+							eq(workflowExternalEvents.executionId, dbResult.execution.id),
+						)
+						.orderBy(asc(workflowExternalEvents.createdAt)),
+					db
+						.select()
+						.from(workflowPlanArtifacts)
+						.where(
+							eq(
+								workflowPlanArtifacts.workflowExecutionId,
+								dbResult.execution.id,
+							),
+						)
+						.orderBy(asc(workflowPlanArtifacts.createdAt)),
+					db
+						.select()
+						.from(workflowAgentRuns)
+						.where(
+							eq(workflowAgentRuns.workflowExecutionId, dbResult.execution.id),
+						)
+						.orderBy(asc(workflowAgentRuns.createdAt)),
+				])
+			: [[], [], []];
 
 		const daprInstanceId = dbResult?.execution.daprInstanceId || instanceId;
-		let daprStatus:
-			| Awaited<ReturnType<typeof genericOrchestratorClient.getWorkflowStatus>>
-			| null = null;
-		let daprHistory:
-			| Awaited<ReturnType<typeof genericOrchestratorClient.getWorkflowHistory>>
-			| null = null;
+		let daprStatus: Awaited<
+			ReturnType<typeof genericOrchestratorClient.getWorkflowStatus>
+		> | null = null;
+		let daprHistory: Awaited<
+			ReturnType<typeof genericOrchestratorClient.getWorkflowHistory>
+		> | null = null;
 
 		try {
 			const orchestratorUrl = await getWorkflowOrchestratorUrl();
@@ -143,7 +211,9 @@ export async function GET(
 		if (daprStatus) {
 			const startTime =
 				daprStatus.startedAt ||
-				(dbResult ? new Date(dbResult.execution.startedAt).toISOString() : null) ||
+				(dbResult
+					? new Date(dbResult.execution.startedAt).toISOString()
+					: null) ||
 				new Date().toISOString();
 			const endTime =
 				daprStatus.completedAt ||
@@ -151,17 +221,36 @@ export async function GET(
 					? new Date(dbResult.execution.completedAt).toISOString()
 					: null);
 			const phase = toWorkflowPhase(daprStatus.phase);
-			const history =
-				daprHistory?.events?.map(toExecutionHistoryEvent) ||
-				(dbResult
-					? mapExecutionLogsToEvents(
-							logs,
-							dbResult.execution.startedAt,
-							dbResult.execution.completedAt,
-							dbResult.execution.status,
-							dbResult.execution.input,
-						)
-					: []);
+			const runtime = toDurableRuntimeSnapshot(daprStatus);
+			const timeline =
+				dbResult &&
+				buildDurableTimeline({
+					execution: dbResult.execution,
+					orchestratorHistory: daprHistory?.events ?? [],
+					logs,
+					externalEvents,
+					planArtifacts,
+					agentRuns,
+				});
+			const history = timeline
+				? mapTimelineToExecutionHistory(timeline)
+				: daprHistory?.events?.map(toExecutionHistoryEvent) ||
+					(dbResult
+						? mapExecutionLogsToEvents(
+								logs,
+								dbResult.execution.startedAt,
+								dbResult.execution.completedAt,
+								dbResult.execution.status,
+								dbResult.execution.input,
+							)
+						: []);
+			const consistency =
+				dbResult &&
+				buildExecutionConsistency({
+					dbStatus: dbResult.execution.status,
+					dbPhase: dbResult.execution.phase,
+					runtime,
+				});
 
 			const detail: WorkflowDetail = {
 				instanceId: daprStatus.instanceId,
@@ -183,11 +272,26 @@ export async function GET(
 								currentTask: daprStatus.currentNodeName || undefined,
 							}
 						: undefined,
-				workflowName: dbResult?.workflow.name || daprStatus.workflowName || undefined,
+				workflowName:
+					dbResult?.workflow.name || daprStatus.workflowName || undefined,
 				executionDuration: calculateDuration(startTime, endTime),
 				input: dbResult?.execution.input || {},
 				output: daprStatus.outputs || dbResult?.execution.output || {},
 				executionHistory: history,
+				timeline: timeline ?? undefined,
+				agentRuns:
+					dbResult && agentRuns.length > 0
+						? toDurableAgentRunSummary(agentRuns)
+						: [],
+				externalEvents:
+					dbResult && externalEvents.length > 0
+						? toDurableExternalEventSummary(externalEvents)
+						: [],
+				planArtifacts:
+					dbResult && planArtifacts.length > 0
+						? toDurablePlanArtifactSummary(planArtifacts)
+						: [],
+				consistency: consistency ?? undefined,
 				daprStatus: {
 					runtimeStatus: daprStatus.runtimeStatus as
 						| "RUNNING"
@@ -210,7 +314,29 @@ export async function GET(
 			return NextResponse.json(detail);
 		}
 
-		const fallback = toWorkflowDetail(dbResult!.execution, dbResult!.workflow, logs);
+		const fallback = toWorkflowDetail(
+			dbResult!.execution,
+			dbResult!.workflow,
+			logs,
+		);
+		const fallbackTimeline = buildDurableTimeline({
+			execution: dbResult!.execution,
+			orchestratorHistory: [],
+			logs,
+			externalEvents,
+			planArtifacts,
+			agentRuns,
+		});
+		fallback.timeline = fallbackTimeline;
+		fallback.executionHistory = mapTimelineToExecutionHistory(fallbackTimeline);
+		fallback.agentRuns = toDurableAgentRunSummary(agentRuns);
+		fallback.externalEvents = toDurableExternalEventSummary(externalEvents);
+		fallback.planArtifacts = toDurablePlanArtifactSummary(planArtifacts);
+		fallback.consistency = buildExecutionConsistency({
+			dbStatus: dbResult!.execution.status,
+			dbPhase: dbResult!.execution.phase,
+			runtime: null,
+		});
 		return NextResponse.json(fallback);
 	} catch (error) {
 		console.error("Error fetching workflow execution detail:", error);

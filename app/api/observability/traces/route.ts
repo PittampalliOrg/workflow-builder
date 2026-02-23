@@ -23,6 +23,11 @@ const MAX_LIMIT = 100;
 const MAX_JAEGER_FETCH_LIMIT = 250;
 const TRACE_LOOKBACK_LIMIT = 3000;
 const DEFAULT_JAEGER_QUERY_SERVICE = "workflow-builder";
+const SEARCH_TAG_KEYS = [
+	"workflow.db_execution_id",
+	"workflow.instance_id",
+	"workflow.parent_execution_id",
+];
 
 function parseDate(raw: string | null): Date | undefined {
 	if (!raw) {
@@ -92,6 +97,12 @@ function matchesSearch(
 		workflowId: string | null;
 		executionId: string | null;
 		daprInstanceId: string | null;
+		nodeName?: string | null;
+		nodeId?: string | null;
+		activityName?: string | null;
+		agentRunId?: string | null;
+		agentWorkflowId?: string | null;
+		parentExecutionId?: string | null;
 	},
 ): boolean {
 	if (!search) {
@@ -110,6 +121,12 @@ function matchesSearch(
 		candidate.workflowId,
 		candidate.executionId,
 		candidate.daprInstanceId,
+		candidate.nodeName,
+		candidate.nodeId,
+		candidate.activityName,
+		candidate.agentRunId,
+		candidate.agentWorkflowId,
+		candidate.parentExecutionId,
 	].some(
 		(field) => typeof field === "string" && field.toLowerCase().includes(value),
 	);
@@ -185,9 +202,8 @@ export async function GET(request: Request) {
 		);
 
 		// Query all relevant services in parallel and merge results.
-		// Let rejected lookups fail the request, but tolerate non-array responses
-		// so partial/mock responses don't crash merge logic.
-		const traceArrays = await Promise.all(
+		// Continue when some service lookups fail, but fail when all fail.
+		const traceResults = await Promise.allSettled(
 			jaegerServices.map((svc) =>
 				searchJaegerTraces({
 					service: svc,
@@ -197,6 +213,21 @@ export async function GET(request: Request) {
 				}),
 			),
 		);
+		const traceArrays: Array<Awaited<ReturnType<typeof searchJaegerTraces>>> =
+			[];
+		const errors: unknown[] = [];
+		for (const result of traceResults) {
+			if (result.status === "fulfilled") {
+				if (Array.isArray(result.value)) {
+					traceArrays.push(result.value);
+				}
+				continue;
+			}
+			errors.push(result.reason);
+		}
+		if (traceArrays.length === 0 && errors.length > 0) {
+			throw errors[0];
+		}
 
 		// Deduplicate by traceID, keeping the version with the most spans.
 		const traceMap = new Map<
@@ -215,6 +246,36 @@ export async function GET(request: Request) {
 					(trace.spans?.length ?? 0) > (existing.spans?.length ?? 0)
 				) {
 					traceMap.set(id, trace);
+				}
+			}
+		}
+
+		const searchTerm = filters.search?.trim();
+		if (searchTerm) {
+			const targetedResults = await Promise.allSettled(
+				SEARCH_TAG_KEYS.map((key) =>
+					searchJaegerTraces({
+						from,
+						to,
+						limit: jaegerLimit,
+						tags: [`${key}=${searchTerm}`],
+					}),
+				),
+			);
+			for (const result of targetedResults) {
+				if (result.status !== "fulfilled" || !Array.isArray(result.value)) {
+					continue;
+				}
+				for (const trace of result.value) {
+					const id = trace.traceID ?? trace.traceId ?? "";
+					if (!id) continue;
+					const existing = traceMap.get(id);
+					if (
+						!existing ||
+						(trace.spans?.length ?? 0) > (existing.spans?.length ?? 0)
+					) {
+						traceMap.set(id, trace);
+					}
 				}
 			}
 		}

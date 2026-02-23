@@ -20,6 +20,7 @@ export type {
 	LoopPrepareStepRule,
 	LoopPrepareStepPolicy,
 	LoopDoneToolConfig,
+	LoopCompactionPolicy,
 	LoopPolicy,
 	LoopUsage,
 	LoopStepRecord,

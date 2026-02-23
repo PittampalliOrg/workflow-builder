@@ -3,9 +3,10 @@ export type { AgentActivities, AgentWorkflowResult } from "./agent-workflow.js";
 export { createOrchestrationWorkflow } from "./orchestration-workflow.js";
 export type { OrchestrationActivities } from "./orchestration-workflow.js";
 export {
-  createRecordInitialEntry,
-  createCallLlm,
-  createRunTool,
-  createSaveToolResults,
-  createFinalizeWorkflow,
+	createRecordInitialEntry,
+	createCallLlm,
+	createRunTool,
+	createSaveToolResults,
+	createCompactConversation,
+	createFinalizeWorkflow,
 } from "./activities.js";

@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useMemo } from "react";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { Button } from "@/components/ui/button";
-import { parseDaprAgentOutput } from "@/lib/transforms/workflow-ui";
+import {
+	parseDaprAgentOutput,
+	parseExecutionOutcomeSummary,
+} from "@/lib/transforms/workflow-ui";
+import type { DurableExecutionConsistency } from "@/lib/types/durable-timeline";
 
 type RunExecution = {
 	id: string;
@@ -22,10 +26,18 @@ type RunExecution = {
 
 type RuntimeStatus = {
 	status: string;
+	runtimeStatus?: string | null;
+	phase?: string | null;
+	progress?: number | null;
+	message?: string | null;
+	currentNodeId?: string | null;
+	currentNodeName?: string | null;
+	approvalEventName?: string | null;
 	nodeStatuses: Array<{
 		nodeId: string;
 		status: "pending" | "running" | "success" | "error";
 	}>;
+	consistency?: DurableExecutionConsistency;
 } | null;
 
 type MonitorSummary = {
@@ -39,6 +51,13 @@ type RunOverviewTabProps = {
 	runtimeStatus: RuntimeStatus;
 	workflowId: string;
 	monitorSummary?: MonitorSummary;
+	durableSummary?: {
+		timelineCount: number;
+		childRunCount: number;
+		artifactCount: number;
+		externalEventCount: number;
+		consistency?: DurableExecutionConsistency;
+	};
 };
 
 function prettyJson(value: unknown): string {
@@ -50,6 +69,7 @@ export function RunOverviewTab({
 	runtimeStatus,
 	workflowId,
 	monitorSummary,
+	durableSummary,
 }: RunOverviewTabProps) {
 	const taskSummary = useMemo(() => {
 		const parsed = parseDaprAgentOutput(execution.output);
@@ -67,6 +87,11 @@ export function RunOverviewTab({
 			{ completed: 0, failed: 0, total: 0 },
 		);
 	}, [execution.output]);
+
+	const outcomeSummary = useMemo(
+		() => parseExecutionOutcomeSummary(execution.output),
+		[execution.output],
+	);
 
 	const observabilityLink = `/observability?entityId=${encodeURIComponent(workflowId)}&search=${encodeURIComponent(execution.id)}`;
 
@@ -104,7 +129,16 @@ export function RunOverviewTab({
 				<div className="rounded-md border bg-muted/20 px-3 py-2">
 					<p className="text-muted-foreground text-xs">Current Phase</p>
 					<p className="mt-1 text-sm">
-						{monitorSummary?.currentPhase ?? execution.phase ?? "-"}
+						{runtimeStatus?.phase ??
+							monitorSummary?.currentPhase ??
+							execution.phase ??
+							"-"}
+					</p>
+				</div>
+				<div className="rounded-md border bg-muted/20 px-3 py-2">
+					<p className="text-muted-foreground text-xs">Current Node</p>
+					<p className="mt-1 text-sm">
+						{runtimeStatus?.currentNodeName ?? "-"}
 					</p>
 				</div>
 				<div className="rounded-md border bg-muted/20 px-3 py-2">
@@ -121,7 +155,33 @@ export function RunOverviewTab({
 						{taskSummary.total > 0 ? taskSummary.failed : "-"}
 					</p>
 				</div>
+				<div className="rounded-md border bg-muted/20 px-3 py-2">
+					<p className="text-muted-foreground text-xs">Timeline Events</p>
+					<p className="mt-1 text-sm">{durableSummary?.timelineCount ?? "-"}</p>
+				</div>
+				<div className="rounded-md border bg-muted/20 px-3 py-2">
+					<p className="text-muted-foreground text-xs">Child Runs</p>
+					<p className="mt-1 text-sm">{durableSummary?.childRunCount ?? "-"}</p>
+				</div>
+				<div className="rounded-md border bg-muted/20 px-3 py-2">
+					<p className="text-muted-foreground text-xs">Plan Artifacts</p>
+					<p className="mt-1 text-sm">{durableSummary?.artifactCount ?? "-"}</p>
+				</div>
+				<div className="rounded-md border bg-muted/20 px-3 py-2">
+					<p className="text-muted-foreground text-xs">External Events</p>
+					<p className="mt-1 text-sm">
+						{durableSummary?.externalEventCount ?? "-"}
+					</p>
+				</div>
 			</div>
+
+			{(durableSummary?.consistency?.statusDiverged ??
+				runtimeStatus?.consistency?.statusDiverged) && (
+				<div className="rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-amber-700 text-sm dark:text-amber-300">
+					Runtime and DB execution state diverged. Runtime is shown as source of
+					truth while the workflow is active.
+				</div>
+			)}
 
 			<div className="flex flex-wrap items-center gap-2">
 				<Button asChild size="sm" variant="outline">
@@ -131,6 +191,46 @@ export function RunOverviewTab({
 					<Link href={observabilityLink}>Open Observability</Link>
 				</Button>
 			</div>
+
+			{outcomeSummary && (
+				<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+					<div className="rounded-md border bg-muted/20 px-3 py-2">
+						<p className="text-muted-foreground text-xs">Branch</p>
+						<p className="mt-1 truncate font-mono text-sm">
+							{outcomeSummary.branch ?? "-"}
+						</p>
+					</div>
+					<div className="rounded-md border bg-muted/20 px-3 py-2">
+						<p className="text-muted-foreground text-xs">Commit</p>
+						<p className="mt-1 truncate font-mono text-sm">
+							{outcomeSummary.commit ?? "-"}
+						</p>
+					</div>
+					<div className="rounded-md border bg-muted/20 px-3 py-2">
+						<p className="text-muted-foreground text-xs">Pull Request</p>
+						{outcomeSummary.prUrl ? (
+							<Link
+								className="mt-1 block truncate text-primary text-sm underline-offset-2 hover:underline"
+								href={outcomeSummary.prUrl}
+								rel="noreferrer"
+								target="_blank"
+							>
+								{`#${outcomeSummary.prNumber ?? "?"} (${outcomeSummary.prState ?? "unknown"})`}
+							</Link>
+						) : (
+							<p className="mt-1 text-sm">-</p>
+						)}
+					</div>
+					<div className="rounded-md border bg-muted/20 px-3 py-2">
+						<p className="text-muted-foreground text-xs">Changed Files</p>
+						<p className="mt-1 text-sm">
+							{typeof outcomeSummary.changedFileCount === "number"
+								? outcomeSummary.changedFileCount
+								: "-"}
+						</p>
+					</div>
+				</div>
+			)}
 
 			<div className="grid gap-3 lg:grid-cols-2">
 				<div className="rounded-md border bg-background p-3">

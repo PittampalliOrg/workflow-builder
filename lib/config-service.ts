@@ -28,7 +28,7 @@ const DEFAULTS: Record<string, string> = {
 	[CONFIG_KEYS.WORKFLOW_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
 	[CONFIG_KEYS.GENERIC_ORCHESTRATOR_URL]: "http://workflow-orchestrator:8080",
 	[CONFIG_KEYS.JAEGER_QUERY_URL]:
-		"http://jaeger-query.observability.svc.cluster.local:16686",
+		"http://tempo.observability.svc.cluster.local:3200",
 };
 
 // Environment variable mappings

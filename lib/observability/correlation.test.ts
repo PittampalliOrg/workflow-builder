@@ -76,6 +76,27 @@ describe("extractTraceCorrelation", () => {
 		expect(correlation.instanceIds.size).toBe(0);
 		expect(correlation.workflowIds.size).toBe(0);
 	});
+
+	it("extracts parent execution and workflow aliases used by child runs", () => {
+		const trace: JaegerTrace = {
+			traceID: "trace-child",
+			spans: [
+				{
+					spanID: "s1",
+					tags: [
+						{ key: "parentExecutionId", value: "exec-parent-1" },
+						{ key: "workflow.workflow_id", value: "wf-parent-1" },
+						{ key: "instanceId", value: "inst-child-1" },
+					],
+				},
+			],
+		};
+
+		const correlation = extractTraceCorrelation(trace);
+		expect(Array.from(correlation.executionIds)).toEqual(["exec-parent-1"]);
+		expect(Array.from(correlation.workflowIds)).toEqual(["wf-parent-1"]);
+		expect(Array.from(correlation.instanceIds)).toEqual(["inst-child-1"]);
+	});
 });
 
 describe("resolveTraceContextFromIndex", () => {
@@ -168,6 +189,7 @@ describe("resolveTraceContextFromIndex", () => {
 			executionId: null,
 			daprInstanceId: null,
 			phase: null,
+			correlationConfidence: "unknown",
 		});
 	});
 });

@@ -17,6 +17,8 @@ import type {
 import type {
 	RecordInitialEntryPayload,
 	CallLlmPayload,
+	CompactConversationPayload,
+	CompactConversationResult,
 	RunToolPayload,
 	SaveToolResultsPayload,
 	FinalizeWorkflowPayload,
@@ -54,6 +56,10 @@ export interface AgentWorkflowResult {
 		toolNames: string[];
 		toolCalls: ToolCall[];
 	};
+	compaction_count?: number;
+	compaction_applied?: boolean;
+	context_overflow_recovered?: boolean;
+	last_compaction_reason?: string;
 	usage_totals?: {
 		inputTokens: number;
 		outputTokens: number;
@@ -68,6 +74,10 @@ export interface AgentActivities {
 		payload: RecordInitialEntryPayload,
 	) => Promise<void>;
 	callLlm: (ctx: any, payload: CallLlmPayload) => Promise<LlmCallResult>;
+	compactConversation: (
+		ctx: any,
+		payload: CompactConversationPayload,
+	) => Promise<CompactConversationResult>;
 	runTool: (
 		ctx: any,
 		payload: RunToolPayload,
@@ -145,6 +155,15 @@ function buildCelBindings(input: {
 	};
 }
 
+function messageFromUnknownError(err: unknown): string {
+	if (err instanceof Error) return err.message;
+	return String(err ?? "");
+}
+
+function isContextOverflowErrorMessage(err: unknown): boolean {
+	return messageFromUnknownError(err).includes("CONTEXT_OVERFLOW:");
+}
+
 /**
  * Create the agent workflow generator function.
  *
@@ -211,6 +230,9 @@ export function createAgentWorkflow(
 					name: string;
 			  }>
 			| undefined;
+		let compactionCount = 0;
+		let contextOverflowRecovered = false;
+		let lastCompactionReason = "";
 
 		try {
 			for (turn = 1; turn <= effectiveMaxIterations; turn++) {
@@ -222,27 +244,88 @@ export function createAgentWorkflow(
 					steps: stepHistory,
 					approvalRequiredTools: [...loopPolicy.approvalRequiredTools],
 				});
+				if (
+					loopPolicy.compactionEnabled &&
+					loopPolicy.compactionCheckpointEverySteps &&
+					turn > 1 &&
+					turn % loopPolicy.compactionCheckpointEverySteps === 0
+				) {
+					const checkpointResult: CompactConversationResult =
+						yield ctx.callActivity(activities.compactConversation, {
+							instanceId,
+							reason: "checkpoint",
+							preserveRecentMessages:
+								loopPolicy.compactionPreserveRecentMessages,
+							minMessagesToCompact: loopPolicy.compactionMinMessagesToCompact,
+						} satisfies CompactConversationPayload);
+					if (checkpointResult.applied) {
+						compactionCount += 1;
+						lastCompactionReason = "checkpoint";
+					}
+				}
 				const preparedStep = prepareLoopStep(loopPolicy, turn, preStepBindings);
-				const assistantResponse: LlmCallResult = yield ctx.callActivity(
-					activities.callLlm,
-					{
-						instanceId,
-						// Only pass the user task on the first turn
-						task: turn === 1 ? task : undefined,
-						// Pass previous tool results so callLlm can repair state after crashes
-						previousToolResults,
-						modelSpec: preparedStep.modelSpec,
-						activeTools: preparedStep.activeTools,
-						toolChoice: preparedStep.toolChoice,
-						trimMessagesTo: preparedStep.trimMessagesTo,
-						truncateToolResultChars: preparedStep.truncateToolResultChars,
-						appendInstructions: preparedStep.appendInstructions,
-						declarationOnlyTools: preparedStep.declarationOnlyTools,
-						approvalRequiredTools: [...loopPolicy.approvalRequiredTools],
-					} satisfies CallLlmPayload,
-				);
+				let assistantResponse: LlmCallResult | undefined;
+				let overflowRetryCount = 0;
+				while (!assistantResponse) {
+					try {
+						assistantResponse = yield ctx.callActivity(activities.callLlm, {
+							instanceId,
+							// Only pass the user task on the first turn
+							task: turn === 1 ? task : undefined,
+							// Pass previous tool results so callLlm can repair state after crashes
+							previousToolResults,
+							modelSpec: preparedStep.modelSpec,
+							activeTools: preparedStep.activeTools,
+							toolChoice: preparedStep.toolChoice,
+							trimMessagesTo: preparedStep.trimMessagesTo,
+							truncateToolResultChars: preparedStep.truncateToolResultChars,
+							appendInstructions: preparedStep.appendInstructions,
+							declarationOnlyTools: preparedStep.declarationOnlyTools,
+							approvalRequiredTools: [...loopPolicy.approvalRequiredTools],
+						} satisfies CallLlmPayload);
+						if (overflowRetryCount > 0) {
+							contextOverflowRecovered = true;
+						}
+					} catch (err) {
+						if (
+							isContextOverflowErrorMessage(err) &&
+							loopPolicy.compactionEnabled &&
+							overflowRetryCount < loopPolicy.compactionMaxAutoRetries
+						) {
+							const compactResult: CompactConversationResult =
+								yield ctx.callActivity(activities.compactConversation, {
+									instanceId,
+									reason: "context_overflow",
+									preserveRecentMessages:
+										loopPolicy.compactionPreserveRecentMessages,
+									minMessagesToCompact:
+										loopPolicy.compactionMinMessagesToCompact,
+								} satisfies CompactConversationPayload);
+							if (compactResult.applied) {
+								compactionCount += 1;
+								lastCompactionReason = "context_overflow";
+							}
+							overflowRetryCount += 1;
+							previousToolResults = undefined;
+							continue;
+						}
+						if (isContextOverflowErrorMessage(err)) {
+							finalStopReason = "context_overflow_unresolved";
+							finalMessage = {
+								role: "assistant",
+								content:
+									"I hit the model context limit and could not recover automatically. Please reduce task scope or increase compaction settings.",
+							};
+							break;
+						}
+						throw err;
+					}
+				}
 				// Clear after passing — only needed for the first callLlm after tool execution
 				previousToolResults = undefined;
+				if (!assistantResponse) {
+					break;
+				}
 
 				for (const declared of assistantResponse.declared_tools ?? []) {
 					executableByToolName.set(declared.name, declared.executable);
@@ -318,6 +401,8 @@ export function createAgentWorkflow(
 							toolCall: tc,
 							instanceId,
 							order: idx,
+							workspaceRef: input.workspaceRef,
+							executionId: input.executionId,
 						} satisfies RunToolPayload),
 					);
 					const toolResults: Array<{
@@ -430,9 +515,19 @@ export function createAgentWorkflow(
 			...(staticToolCalls ? { static_tool_calls: staticToolCalls } : {}),
 			all_tool_calls: allToolCalls,
 			final_answer: finalMessage.content ?? "",
-			...(finalStopReason ? { stop_reason: finalStopReason } : {}),
+			...(finalStopReason
+				? { stop_reason: finalStopReason }
+				: contextOverflowRecovered
+					? { stop_reason: "context_overflow_recovered" }
+					: {}),
 			...(finalStopCondition ? { stop_condition: finalStopCondition } : {}),
 			...(approvalRequired ? { requires_approval: approvalRequired } : {}),
+			compaction_count: compactionCount,
+			compaction_applied: compactionCount > 0,
+			context_overflow_recovered: contextOverflowRecovered,
+			...(lastCompactionReason
+				? { last_compaction_reason: lastCompactionReason }
+				: {}),
 			usage_totals: usageTotals,
 		};
 		return result;

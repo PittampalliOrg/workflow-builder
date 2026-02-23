@@ -221,6 +221,7 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
                     "instructions": input_data.get("instructions"),
                     "tools": input_data.get("tools"),
                     "loopPolicy": input_data.get("loopPolicy"),
+                    "contextPolicyPreset": input_data.get("contextPolicyPreset"),
                     "agentConfig": input_data.get("agentConfig"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
                     "executionId": input_data.get("executionId", "")
@@ -283,8 +284,14 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "plan": plan,
                     "artifactRef": input_data.get("artifactRef", ""),
                     "cwd": input_data.get("cwd", ""),
+                    "model": input_data.get("model"),
+                    "instructions": input_data.get("instructions"),
+                    "tools": input_data.get("tools"),
+                    "agentConfig": input_data.get("agentConfig"),
                     "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                    "requireFileChanges": input_data.get("requireFileChanges"),
                     "loopPolicy": input_data.get("loopPolicy"),
+                    "contextPolicyPreset": input_data.get("contextPolicyPreset"),
                     "approval": input_data.get("approval"),
                     "parentExecutionId": input_data.get("parentExecutionId", ""),
                     "executionId": input_data.get("executionId", "")
@@ -294,6 +301,7 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                     "nodeId": input_data.get("nodeId", ""),
                     "nodeName": input_data.get("nodeName", ""),
                     "workspaceRef": input_data.get("workspaceRef", ""),
+                    "timeoutMinutes": input_data.get("timeoutMinutes"),
                 }
                 if input_data.get("maxTurns"):
                     payload["maxTurns"] = input_data["maxTurns"]

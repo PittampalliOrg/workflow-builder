@@ -24,6 +24,14 @@ function extractExecutionId(span: ObservabilitySpan | null): string | null {
 		"workflow.dbExecutionId",
 		"db.execution_id",
 		"dbExecutionId",
+		"workflow.execution_id",
+		"workflow.executionId",
+		"execution_id",
+		"executionId",
+		"workflow.parent_execution_id",
+		"workflow.parentExecutionId",
+		"parent_execution_id",
+		"parentExecutionId",
 		"workflow.instance_id",
 		"workflow.instanceId",
 	];
@@ -43,7 +51,29 @@ function extractWorkflowId(span: ObservabilitySpan | null): string | null {
 		return null;
 	}
 
-	const candidates = ["workflow.id", "workflow_id", "workflowId"];
+	const candidates = [
+		"workflow.id",
+		"workflow_id",
+		"workflowId",
+		"workflow.workflow_id",
+		"workflow.workflowId",
+	];
+	for (const key of candidates) {
+		const value = span.attributes[key];
+		if (typeof value === "string" && value.trim()) {
+			return value;
+		}
+	}
+
+	return null;
+}
+
+function extractNodeId(span: ObservabilitySpan | null): string | null {
+	if (!span) {
+		return null;
+	}
+
+	const candidates = ["workflow.node_id", "workflow.nodeId"];
 	for (const key of candidates) {
 		const value = span.attributes[key];
 		if (typeof value === "string" && value.trim()) {
@@ -73,6 +103,7 @@ export function SpanDetailsPanel({
 
 	const executionId = extractExecutionId(span) ?? fallbackExecutionId ?? null;
 	const workflowId = extractWorkflowId(span) ?? fallbackWorkflowId ?? null;
+	const nodeId = extractNodeId(span);
 
 	if (!span) {
 		return (
@@ -144,7 +175,9 @@ export function SpanDetailsPanel({
 								)}
 								{executionId && workflowId && (
 									<Button asChild size="sm" variant="outline">
-										<Link href={`/workflows/${workflowId}/runs/${executionId}`}>
+										<Link
+											href={`/workflows/${workflowId}/runs/${executionId}?tab=timeline${nodeId ? `&nodeId=${encodeURIComponent(nodeId)}` : ""}`}
+										>
 											Open workflow run
 										</Link>
 									</Button>

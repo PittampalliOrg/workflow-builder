@@ -33,10 +33,14 @@ function toWorkflowListItem(
 		workflowType: item.workflowName || item.workflowId || "workflow",
 		appId: "workflow-orchestrator",
 		status: mapWorkflowStatus(item.runtimeStatus),
+		runtimeStatus: item.runtimeStatus,
 		startTime: item.startedAt || new Date().toISOString(),
 		endTime: item.completedAt || null,
 		customStatus:
-			phase || item.progress !== undefined || item.message || item.currentNodeName
+			phase ||
+			item.progress !== undefined ||
+			item.message ||
+			item.currentNodeName
 				? {
 						phase: phase || "executing",
 						progress: item.progress ?? 0,
@@ -45,6 +49,12 @@ function toWorkflowListItem(
 					}
 				: undefined,
 		workflowName: item.workflowName || undefined,
+		currentNodeName: item.currentNodeName || null,
+		approvalEventName: null,
+		statusDiverged: false,
+		hasChildRuns: false,
+		hasPlanArtifacts: false,
+		hasExternalEvents: false,
 	};
 }
 
@@ -53,6 +63,7 @@ function toRuntimeStatusFilter(
 ): string[] | undefined {
 	if (!statuses?.length) return undefined;
 	const mapped = statuses.flatMap((status) => {
+		if (status === "PENDING") return ["PENDING"];
 		if (status === "RUNNING") return ["RUNNING", "PENDING"];
 		if (status === "COMPLETED") return ["COMPLETED"];
 		if (status === "FAILED") return ["FAILED"];

@@ -78,6 +78,12 @@ export default function TraceDetailPage() {
 		);
 	}
 
+	const effectiveExecutionId =
+		trace.trace.executionId ??
+		trace.trace.parentExecutionId ??
+		trace.trace.daprInstanceId ??
+		null;
+
 	return (
 		<div className="container mx-auto space-y-6 py-6">
 			<div className="flex items-center justify-between">
@@ -125,7 +131,7 @@ export default function TraceDetailPage() {
 				</div>
 			</div>
 
-			<div className="grid gap-4 rounded-lg border bg-background p-4 md:grid-cols-2">
+			<div className="grid gap-4 rounded-lg border bg-background p-4 md:grid-cols-2 xl:grid-cols-3">
 				<div>
 					<p className="text-muted-foreground text-xs">Workflow</p>
 					<p className="mt-1 text-sm">
@@ -135,7 +141,7 @@ export default function TraceDetailPage() {
 				<div>
 					<p className="text-muted-foreground text-xs">Execution</p>
 					<p className="mt-1 font-mono text-sm">
-						{trace.trace.executionId ?? trace.trace.daprInstanceId ?? "-"}
+						{effectiveExecutionId ?? "-"}
 					</p>
 				</div>
 				<div>
@@ -146,20 +152,36 @@ export default function TraceDetailPage() {
 					<p className="text-muted-foreground text-xs">Phase</p>
 					<p className="mt-1 text-sm">{trace.trace.phase ?? "-"}</p>
 				</div>
+				<div>
+					<p className="text-muted-foreground text-xs">Node</p>
+					<p className="mt-1 text-sm">
+						{trace.trace.nodeName ?? trace.trace.nodeId ?? "-"}
+					</p>
+				</div>
+				<div>
+					<p className="text-muted-foreground text-xs">Activity</p>
+					<p className="mt-1 text-sm">{trace.trace.activityName ?? "-"}</p>
+				</div>
+				<div>
+					<p className="text-muted-foreground text-xs">Correlation</p>
+					<p className="mt-1 text-sm">
+						{trace.trace.correlationConfidence ?? "-"}
+					</p>
+				</div>
 			</div>
 
 			<div className="flex flex-wrap gap-2">
-				{trace.trace.executionId && (
+				{effectiveExecutionId && (
 					<Button asChild size="sm" variant="outline">
-						<Link href={`/monitor/${trace.trace.executionId}`}>
+						<Link href={`/monitor/${effectiveExecutionId}`}>
 							Open monitor view
 						</Link>
 					</Button>
 				)}
-				{trace.trace.workflowId && trace.trace.executionId && (
+				{trace.trace.workflowId && effectiveExecutionId && (
 					<Button asChild size="sm" variant="outline">
 						<Link
-							href={`/workflows/${trace.trace.workflowId}/runs/${trace.trace.executionId}`}
+							href={`/workflows/${trace.trace.workflowId}/runs/${effectiveExecutionId}?tab=trace`}
 						>
 							Open workflow run
 						</Link>
@@ -181,7 +203,7 @@ export default function TraceDetailPage() {
 						spans={trace.spans}
 					/>
 					<SpanDetailsPanel
-						fallbackExecutionId={trace.trace.executionId}
+						fallbackExecutionId={effectiveExecutionId}
 						fallbackWorkflowId={trace.trace.workflowId}
 						span={selectedSpan}
 					/>

@@ -57,6 +57,28 @@ describe("loop policy", () => {
 		expect(prepared.modelSpec).toBe("openai/gpt-4o");
 	});
 
+	it("normalizes compaction defaults and overrides", () => {
+		const defaults = normalizeLoopPolicy({});
+		expect(defaults.compactionEnabled).toBe(true);
+		expect(defaults.compactionMaxAutoRetries).toBe(1);
+		expect(defaults.compactionPreserveRecentMessages).toBe(8);
+
+		const overrides = normalizeLoopPolicy({
+			compaction: {
+				enabled: true,
+				maxAutoRetries: 2,
+				preserveRecentMessages: 5,
+				minMessagesToCompact: 3,
+				checkpointEverySteps: 4,
+			},
+		});
+		expect(overrides.compactionEnabled).toBe(true);
+		expect(overrides.compactionMaxAutoRetries).toBe(2);
+		expect(overrides.compactionPreserveRecentMessages).toBe(5);
+		expect(overrides.compactionMinMessagesToCompact).toBe(3);
+		expect(overrides.compactionCheckpointEverySteps).toBe(4);
+	});
+
 	it("matches built-in and CEL stop conditions", () => {
 		const policy = normalizeLoopPolicy({
 			stopWhen: [

@@ -31,6 +31,7 @@ import {
 	createCallLlm,
 	createRunTool,
 	createSaveToolResults,
+	createCompactConversation,
 	createFinalizeWorkflow,
 } from "./workflow/activities.js";
 import {
@@ -80,6 +81,9 @@ export class DurableAgent {
 	private boundCallLlm: ReturnType<typeof createCallLlm>;
 	private boundRunTool: ReturnType<typeof createRunTool>;
 	private boundSaveToolResults: ReturnType<typeof createSaveToolResults>;
+	private boundCompactConversation: ReturnType<
+		typeof createCompactConversation
+	>;
 	private boundFinalizeWorkflow: ReturnType<typeof createFinalizeWorkflow>;
 
 	// Workflow generators
@@ -185,6 +189,9 @@ export class DurableAgent {
 			this.stateManager,
 			this.memory,
 		);
+		this.boundCompactConversation = createCompactConversation(
+			this.stateManager,
+		);
 		this.boundFinalizeWorkflow = createFinalizeWorkflow(this.stateManager);
 
 		// Create agent workflow
@@ -193,6 +200,7 @@ export class DurableAgent {
 			callLlm: this.boundCallLlm,
 			runTool: this.boundRunTool,
 			saveToolResults: this.boundSaveToolResults,
+			compactConversation: this.boundCompactConversation,
 			finalizeWorkflow: this.boundFinalizeWorkflow,
 		};
 		this.agentWorkflow = createAgentWorkflow(activities, this.maxIterations);
@@ -384,6 +392,7 @@ export class DurableAgent {
 		runtime.registerActivity(this.boundCallLlm);
 		runtime.registerActivity(this.boundRunTool);
 		runtime.registerActivity(this.boundSaveToolResults);
+		runtime.registerActivity(this.boundCompactConversation);
 		runtime.registerActivity(this.boundFinalizeWorkflow);
 
 		// Register orchestration if configured

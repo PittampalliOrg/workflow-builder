@@ -23,9 +23,13 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
+from core.config import config as orchestrator_config
 from core.template_resolver import resolve_templates, NodeOutputs
 from core.ap_condition_evaluator import evaluate_conditions
 from core.cel_loop import eval_cel_boolean, get_loop_iteration_for_evaluation
+from core.output_summary import (
+    extract_summary_fields_from_outputs as _extract_summary_fields_from_outputs,
+)
 from core.set_state import resolve_set_state_updates
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state
@@ -43,6 +47,14 @@ logger = logging.getLogger(__name__)
 
 # Create workflow runtime
 wfr = wf.WorkflowRuntime()
+
+MUTATING_TOOL_NAMES = {
+    "write_file",
+    "edit_file",
+    "delete_file",
+    "mkdir",
+    "execute_command",
+}
 
 def is_unresolved_template(value: str) -> bool:
     """Check if a string value is an unresolved template like {{PlanNode.workflow_id}}."""
@@ -166,78 +178,238 @@ def _try_parse_json(value: Any) -> Any:
     except Exception:
         return value
 
-SUMMARY_OUTPUT_KEYS = (
-    "text",
-    "toolCalls",
-    "fileChanges",
-    "patch",
-    "patchRef",
-    "changeSummary",
-    "artifactRef",
-    "plan",
-    "planMarkdown",
-    "planPolicy",
-    "tasks",
-    "daprInstanceId",
-    "workspaceRef",
-    "cleanup",
-)
-
-
-def _node_output_has_file_changes(candidate: dict[str, Any]) -> bool:
-    file_changes = candidate.get("fileChanges")
-    if isinstance(file_changes, list) and len(file_changes) > 0:
-        return True
-
-    summary = candidate.get("changeSummary")
-    if not isinstance(summary, dict):
-        return False
-
-    changed = summary.get("changed")
-    if isinstance(changed, bool) and changed:
-        return True
-
-    stats = summary.get("stats")
-    if isinstance(stats, dict):
-        files = stats.get("files")
-        additions = stats.get("additions")
-        deletions = stats.get("deletions")
-        if isinstance(files, int) and files > 0:
+def _parse_optional_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
             return True
-        if isinstance(additions, int) and additions > 0:
+        if normalized == "false":
+            return False
+    return None
+
+
+def _is_native_child_workflow_enabled(
+    resolved_config: dict[str, Any],
+) -> bool:
+    # Hard cutoff: all durable agent execution paths use native Dapr child workflows.
+    # Legacy external-event bridge mode is no longer supported.
+    return True
+
+
+def _stop_condition_implies_file_changes(stop_condition: str) -> bool:
+    normalized = stop_condition.lower()
+    terms = (
+        "file changes",
+        "files are updated",
+        "code changes",
+        "files updated",
+        "changes are complete",
+        "edited files",
+        "modified files",
+        "apply changes",
+        "write files",
+        "edit files",
+    )
+    return any(term in normalized for term in terms)
+
+
+def _build_run_prompt(
+    base_prompt: str,
+    stop_condition: str | None,
+    require_file_changes: bool,
+    cwd: str | None = None,
+) -> str:
+    cwd_context = ""
+    if isinstance(cwd, str) and cwd.strip():
+        cwd_context = (
+            f"Repository root: {cwd.strip()}\n"
+            "Always operate relative to this repository root for file and directory paths.\n\n"
+        )
+
+    normalized_stop = stop_condition.strip() if isinstance(stop_condition, str) else ""
+    if not normalized_stop:
+        return f"{cwd_context}{base_prompt}"
+
+    file_change_guard = (
+        "\n\nCRITICAL: You must make real file mutations (write/edit/delete/mkdir) before finalizing. "
+        "Do not stop at analysis or directory listing."
+        if require_file_changes
+        else ""
+    )
+    return (
+        f"{cwd_context}{base_prompt}\n\n"
+        f"## Stop Condition\n{normalized_stop}\n\n"
+        "Execute autonomously until the stop condition is satisfied. "
+        "Do not ask for confirmation before proceeding."
+        f"{file_change_guard}"
+    )
+
+
+def _unwrap_child_result_payload(result: dict[str, Any]) -> dict[str, Any]:
+    nested = result.get("result")
+    if isinstance(nested, dict):
+        return nested
+    return result
+
+
+def _extract_tool_calls_from_child_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    payload = _unwrap_child_result_payload(result)
+    all_calls = payload.get("all_tool_calls")
+    if isinstance(all_calls, list):
+        return [c for c in all_calls if isinstance(c, dict)]
+    calls = payload.get("tool_calls")
+    if isinstance(calls, list):
+        return [c for c in calls if isinstance(c, dict)]
+    camel_calls = payload.get("toolCalls")
+    if isinstance(camel_calls, list):
+        return [c for c in camel_calls if isinstance(c, dict)]
+    return []
+
+
+def _has_mutating_tool_calls(tool_calls: list[dict[str, Any]]) -> bool:
+    for call in tool_calls:
+        tool_name = str(call.get("tool_name") or "").strip().lower()
+        if not tool_name:
+            fn = call.get("function")
+            if isinstance(fn, dict):
+                tool_name = str(fn.get("name") or "").strip().lower()
+        if (
+            tool_name in MUTATING_TOOL_NAMES
+            or tool_name.endswith("write_file")
+            or tool_name.endswith("edit_file")
+            or tool_name.endswith("delete_file")
+            or tool_name.endswith("mkdir")
+            or tool_name.endswith("execute_command")
+        ):
             return True
-        if isinstance(deletions, int) and deletions > 0:
+    return False
+
+
+def _child_result_explicitly_reports_no_changes(result: dict[str, Any]) -> bool:
+    payload = _unwrap_child_result_payload(result)
+
+    direct_flags = (
+        payload.get("changed"),
+        payload.get("hasChanges"),
+        payload.get("fileChangesApplied"),
+        payload.get("file_changes_applied"),
+    )
+    for flag in direct_flags:
+        parsed = _parse_optional_bool(flag)
+        if parsed is False:
             return True
+        if parsed is True:
+            return False
+
+    summary = payload.get("summary")
+    if isinstance(summary, dict):
+        for key in ("changed", "hasChanges"):
+            parsed = _parse_optional_bool(summary.get(key))
+            if parsed is False:
+                return True
+            if parsed is True:
+                return False
+
+    for key in ("files", "changedFiles", "changed_files", "fileChanges"):
+        files = payload.get(key)
+        if isinstance(files, list):
+            return len(files) == 0
 
     return False
 
 
-def _extract_summary_fields_from_outputs(outputs: dict[str, Any]) -> dict[str, Any]:
-    """
-    Surface the most relevant agent/file-change payload at top level, so
-    workflow_executions.output stays useful even when final node is cleanup.
-    """
-    if not isinstance(outputs, dict):
-        return {}
-
-    values = [v for v in outputs.values() if isinstance(v, dict)]
-    if not values:
-        return {}
-
-    source: dict[str, Any] | None = None
-    for value in reversed(values):
-        if _node_output_has_file_changes(value):
-            source = value
-            break
-
-    if source is None:
-        source = values[-1]
-
+def _to_compact_agent_result(
+    *,
+    raw_result: dict[str, Any],
+    workflow_id: str,
+    dapr_instance_id: str,
+    child_workflow_name: str,
+    child_app_id: str,
+) -> dict[str, Any]:
+    payload = _unwrap_child_result_payload(raw_result)
+    text = (
+        payload.get("final_answer")
+        or payload.get("content")
+        or payload.get("last_message")
+        or ""
+    )
+    tool_calls = _extract_tool_calls_from_child_result(raw_result)
     return {
-        key: source.get(key)
-        for key in SUMMARY_OUTPUT_KEYS
-        if source.get(key) is not None
+        "success": bool(raw_result.get("success", True)),
+        "agentWorkflowId": workflow_id,
+        "daprInstanceId": dapr_instance_id,
+        "childWorkflowName": child_workflow_name,
+        "childAppId": child_app_id,
+        "text": text,
+        "toolCalls": tool_calls,
+        "loopStopReason": payload.get("stop_reason"),
+        "loopStopCondition": payload.get("stop_condition"),
+        "requiresApproval": payload.get("requires_approval"),
+        "usageTotals": payload.get("usage_totals"),
+        "compactionApplied": bool(payload.get("compaction_applied", False)),
+        "compactionCount": payload.get("compaction_count", 0),
+        "contextOverflowRecovered": bool(
+            payload.get("context_overflow_recovered", False)
+        ),
+        "lastCompactionReason": payload.get("last_compaction_reason"),
     }
+
+
+def _build_plan_execution_text(plan: dict[str, Any]) -> str:
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return "1. Execute requested changes using available tools."
+
+    lines: list[str] = []
+    for idx, task in enumerate(tasks, 1):
+        if not isinstance(task, dict):
+            continue
+        tool = str(task.get("tool") or "tool")
+        task_id = str(task.get("id") or f"task-{idx}")
+        title = str(task.get("title") or "Task")
+        instructions = str(task.get("instructions") or "").strip()
+        reasoning = str(task.get("reasoning") or "").strip()
+        blocked_by = task.get("blockedBy")
+        deps = ""
+        if isinstance(blocked_by, list) and blocked_by:
+            deps = f" [blockedBy: {', '.join(str(dep) for dep in blocked_by)}]"
+        reason_suffix = f" — {reasoning}" if reasoning else ""
+        lines.append(
+            f"{idx}. [{tool}] ({task_id}) {title}: {instructions}{reason_suffix}{deps}"
+        )
+    return "\n".join(lines) if lines else "1. Execute requested changes using available tools."
+
+
+def _build_execute_plan_prompt(
+    *,
+    plan: dict[str, Any],
+    task_prompt: str,
+    cwd: str | None,
+    require_file_changes: bool,
+) -> str:
+    goal = str(plan.get("goal") or "").strip()
+    plan_text = _build_plan_execution_text(plan)
+    cwd_context = f"Working directory: {cwd.strip()}\n\n" if isinstance(cwd, str) and cwd.strip() else ""
+    mutation_requirement = (
+        "\nCRITICAL: This execution requires real file mutations. Before finalizing, you MUST perform write/edit/delete/mkdir operations and produce concrete file changes."
+        if require_file_changes
+        else ""
+    )
+    effective_task = task_prompt.strip() if task_prompt.strip() else goal
+    return (
+        f"{cwd_context}"
+        "You are now in EXECUTION MODE.\n"
+        "Do not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n"
+        f"## Task\n{effective_task}\n\n"
+        "## Execution Plan\n"
+        "Follow this plan step-by-step:\n"
+        f"{plan_text}\n\n"
+        "IMPORTANT: Execute all applicable steps with tools. "
+        "If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. "
+        f"If a step fails, record the error and proceed with the next step.{mutation_requirement}"
+    )
 
 
 def _cleanup_execution_workspaces_for_workflow(
@@ -1373,12 +1545,12 @@ def process_agent_child_workflow(
     otel_ctx: dict | None = None,
 ):
     """
-    Invoke a durable/* or mastra/execute action via durable-agent and wait for completion.
+    Invoke durable/* or mastra/execute actions through durable-agent.
 
-    The durable-agent service runs the agent workflow and publishes an
-    `agent_completed` event containing `parent_execution_id`. The workflow-orchestrator
-    subscription handler forwards that to this parent workflow as an external event:
-      agent_completed_{agent_workflow_id}
+    For execute_direct and approved execute_plan paths, this uses a native Dapr
+    child workflow call to the durable-agent app. Plan artifact generation
+    (plan_mode) still uses durable-agent plan APIs because it returns artifact
+    metadata and approval-specific payloads.
     """
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
@@ -1387,12 +1559,18 @@ def process_agent_child_workflow(
     if mode not in ("plan_mode", "execute_direct"):
         mode = "execute_direct"
 
+    configured_artifact_ref = resolved_config.get("artifactRef")
+    artifact_ref = (
+        str(configured_artifact_ref).strip()
+        if isinstance(configured_artifact_ref, str)
+        else ""
+    )
     prompt = str(resolved_config.get("prompt", "") or "").strip()
     if not prompt and action_type == "mastra/execute":
         prompt = "Execute the provided plan"
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
-    if not prompt and mode == "execute_direct":
+    if not prompt and mode == "execute_direct" and not artifact_ref:
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
 
     agent_config = resolved_config.get("agentConfig")
@@ -1423,18 +1601,24 @@ def process_agent_child_workflow(
     except (TypeError, ValueError):
         max_turns = None
 
-    if action_type == "mastra/execute":
+    if action_type == "mastra/execute" or (mode == "execute_direct" and artifact_ref):
+        run_mode = "execute_plan"
         from activities.call_agent_service import call_durable_execute_plan
         call_activity_fn = call_durable_execute_plan
-        run_mode = "execute_plan"
     elif mode == "plan_mode":
+        run_mode = "plan_mode"
         from activities.call_agent_service import call_durable_plan
         call_activity_fn = call_durable_plan
-        run_mode = "plan_mode"
     else:
+        run_mode = "execute_direct"
         from activities.call_agent_service import call_durable_agent_run
         call_activity_fn = call_durable_agent_run
-        run_mode = "execute_direct"
+    native_child_workflow_enabled = _is_native_child_workflow_enabled(resolved_config)
+    use_native_child_workflow = native_child_workflow_enabled and run_mode == "execute_direct"
+    native_child_task_override: str | None = None
+    tracked_execution_id = str(db_execution_id or execution_id or "").strip()
+    if not tracked_execution_id:
+        tracked_execution_id = str(execution_id or "").strip()
 
     activity_input = {
         "prompt": prompt,
@@ -1443,6 +1627,8 @@ def process_agent_child_workflow(
         "maxTurns": max_turns,
         "timeoutMinutes": timeout_minutes,
         "stopCondition": resolved_config.get("stopCondition"),
+        "loopPolicy": resolved_config.get("loopPolicy"),
+        "contextPolicyPreset": resolved_config.get("contextPolicyPreset"),
         "requireFileChanges": resolved_config.get("requireFileChanges"),
         "cleanupWorkspace": resolved_config.get("cleanupWorkspace"),
         "agentConfig": agent_config,
@@ -1453,7 +1639,7 @@ def process_agent_child_workflow(
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
         "parentExecutionId": ctx.instance_id,
-        "executionId": execution_id,
+        "executionId": tracked_execution_id,
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),
@@ -1463,21 +1649,49 @@ def process_agent_child_workflow(
 
     if action_type == "mastra/execute" or run_mode == "execute_plan":
         activity_input["planJson"] = resolved_config.get("planJson")
-        activity_input["artifactRef"] = resolved_config.get("artifactRef")
+        activity_input["artifactRef"] = artifact_ref
         activity_input["cwd"] = resolved_config.get("cwd", "")
 
-    start_result = yield ctx.call_activity(
-        call_activity_fn,
-        input=activity_input,
-    )
+    if run_mode == "execute_plan" and action_type == "mastra/execute":
+        parsed_plan = _try_parse_json(activity_input.get("planJson"))
+        if isinstance(parsed_plan, dict):
+            stop_condition_raw = resolved_config.get("stopCondition")
+            stop_condition = (
+                str(stop_condition_raw).strip()
+                if isinstance(stop_condition_raw, str)
+                else ""
+            )
+            explicit_require_file_changes = _parse_optional_bool(
+                resolved_config.get("requireFileChanges")
+            )
+            require_file_changes = (
+                explicit_require_file_changes
+                if explicit_require_file_changes is not None
+                else bool(stop_condition)
+                and _stop_condition_implies_file_changes(stop_condition)
+            )
+            native_child_task_override = _build_execute_plan_prompt(
+                plan=parsed_plan,
+                task_prompt=prompt,
+                cwd=resolved_config.get("cwd"),
+                require_file_changes=require_file_changes,
+            )
+            use_native_child_workflow = native_child_workflow_enabled
 
-    if not isinstance(start_result, dict) or not start_result.get("success", False):
-        return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
+    if use_native_child_workflow:
+        start_result: dict[str, Any] = {"success": True}
+    else:
+        start_result = yield ctx.call_activity(
+            call_activity_fn,
+            input=activity_input,
+        )
+        if not isinstance(start_result, dict) or not start_result.get("success", False):
+            return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode":
-        artifact_ref = start_result.get("artifactRef")
-        if not isinstance(artifact_ref, str) or not artifact_ref.strip():
+        plan_artifact_ref = start_result.get("artifactRef")
+        if not isinstance(plan_artifact_ref, str) or not plan_artifact_ref.strip():
             return {
                 "success": False,
                 "error": "Plan mode did not return artifactRef",
@@ -1485,7 +1699,7 @@ def process_agent_child_workflow(
             }
 
         planned_payload = {
-            "artifactRef": artifact_ref,
+            "artifactRef": plan_artifact_ref,
             "plan": start_result.get("plan"),
             "tasks": start_result.get("tasks"),
             "planMarkdown": start_result.get("planMarkdown"),
@@ -1587,32 +1801,262 @@ def process_agent_child_workflow(
             "_otel": otel_ctx,
         })
 
-        from activities.call_agent_service import call_durable_execute_plan
-
-        execute_input = {
-            **activity_input,
-            "artifactRef": artifact_ref,
-            "planJson": start_result.get("plan"),
-            "timeoutMinutes": timeout_minutes,
-            "approval": approval_result,
-        }
-        execute_start_result = yield ctx.call_activity(
-            call_durable_execute_plan,
-            input=execute_input,
-        )
-        if not isinstance(execute_start_result, dict) or not execute_start_result.get("success", False):
+        approved_plan = start_result.get("plan")
+        if not isinstance(approved_plan, dict):
             return {
                 "success": False,
-                "error": (
-                    execute_start_result.get("error")
-                    if isinstance(execute_start_result, dict)
-                    else "Failed to start approved plan execution"
-                ),
+                "error": "Approved plan payload missing or invalid",
                 **planned_payload,
             }
 
-        start_result = execute_start_result
+        # Default plan_mode behavior is plan-only with explicit approval.
+        # A separate execute node can consume artifactRef and run execution.
+        execute_after_approval = (
+            _parse_optional_bool(resolved_config.get("executeAfterApproval")) is True
+        )
+        if not execute_after_approval:
+            return {
+                "success": True,
+                "approved": True,
+                "approval": approval_result,
+                **planned_payload,
+            }
+
+        stop_condition_raw = resolved_config.get("stopCondition")
+        stop_condition = (
+            str(stop_condition_raw).strip() if isinstance(stop_condition_raw, str) else ""
+        )
+        explicit_require_file_changes = _parse_optional_bool(
+            resolved_config.get("requireFileChanges")
+        )
+        require_file_changes = (
+            explicit_require_file_changes
+            if explicit_require_file_changes is not None
+            else bool(stop_condition) and _stop_condition_implies_file_changes(stop_condition)
+        )
+        native_child_task_override = _build_execute_plan_prompt(
+            plan=approved_plan,
+            task_prompt=prompt,
+            cwd=resolved_config.get("cwd"),
+            require_file_changes=require_file_changes,
+        )
+        use_native_child_workflow = native_child_workflow_enabled
         run_mode = "execute_plan"
+
+        if not use_native_child_workflow:
+            from activities.call_agent_service import call_durable_execute_plan
+
+            execute_plan_input = {
+                **activity_input,
+                "planJson": approved_plan,
+                "artifactRef": planned_payload.get("artifactRef") if planned_payload else "",
+                "cwd": resolved_config.get("cwd", ""),
+                "approval": approval_result,
+            }
+            start_result = yield ctx.call_activity(
+                call_durable_execute_plan,
+                input=execute_plan_input,
+            )
+            if (
+                not isinstance(start_result, dict)
+                or not start_result.get("success", False)
+            ):
+                return (
+                    start_result
+                    if isinstance(start_result, dict)
+                    else {"success": False, "error": "Failed to start execute-plan run"}
+                )
+
+    if use_native_child_workflow:
+        node_id = str(node.get("id") or "unknown")
+        child_workflow_name = (
+            orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
+            if run_mode == "execute_plan"
+            else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+        ) or "durableRunWorkflow"
+        mode_suffix = "execute-plan" if run_mode == "execute_plan" else "run"
+        child_instance_id = f"{ctx.instance_id}__durable__{node_id}__{mode_suffix}"
+        stop_condition_raw = resolved_config.get("stopCondition")
+        stop_condition = (
+            str(stop_condition_raw).strip() if isinstance(stop_condition_raw, str) else ""
+        )
+        explicit_require_file_changes = _parse_optional_bool(
+            resolved_config.get("requireFileChanges")
+        )
+        require_file_changes = (
+            explicit_require_file_changes
+            if explicit_require_file_changes is not None
+            else bool(stop_condition) and _stop_condition_implies_file_changes(stop_condition)
+        )
+        run_prompt = (
+            native_child_task_override
+            if isinstance(native_child_task_override, str)
+            and native_child_task_override.strip()
+            else _build_run_prompt(
+                prompt,
+                stop_condition,
+                require_file_changes,
+                resolved_config.get("cwd"),
+            )
+        )
+        child_input: dict[str, Any] = {
+            "task": run_prompt,
+            "workspaceRef": resolved_config.get("workspaceRef"),
+            "executionId": tracked_execution_id,
+        }
+        if max_turns is not None and max_turns > 0:
+            child_input["maxIterations"] = max_turns
+        if activity_input.get("loopPolicy") is not None:
+            child_input["loopPolicy"] = activity_input.get("loopPolicy")
+
+        if db_execution_id:
+            try:
+                from activities.track_agent_run import track_agent_run_scheduled
+
+                yield ctx.call_activity(
+                    track_agent_run_scheduled,
+                    input={
+                        "id": child_instance_id,
+                        "workflowExecutionId": db_execution_id,
+                        "workflowId": workflow_id,
+                        "nodeId": node_id,
+                        "mode": "execute_plan" if run_mode == "execute_plan" else "run",
+                        "agentWorkflowId": child_instance_id,
+                        "daprInstanceId": child_instance_id,
+                        "parentExecutionId": ctx.instance_id,
+                        "workspaceRef": resolved_config.get("workspaceRef"),
+                        "artifactRef": (
+                            planned_payload.get("artifactRef")
+                            if isinstance(planned_payload, dict)
+                            else None
+                        ),
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    f"[Agent Workflow] Failed to persist native child scheduled row for {child_instance_id}: {track_err}"
+                )
+
+        logger.info(
+            f"[Agent Workflow] Starting native durable child: workflow={child_workflow_name} app_id={orchestrator_config.DURABLE_AGENT_APP_ID} instance={child_instance_id}"
+        )
+        child_task = ctx.call_child_workflow(
+            child_workflow_name,
+            input=child_input,
+            instance_id=child_instance_id,
+            app_id=orchestrator_config.DURABLE_AGENT_APP_ID,
+        )
+        timeout_timer = ctx.create_timer(timedelta(minutes=timeout_minutes))
+        completed_task = yield wf.when_any([child_task, timeout_timer])
+
+        if completed_task == timeout_timer:
+            logger.warning(
+                f"[Agent Workflow] Native child timed out after {timeout_minutes} minutes: {child_instance_id}"
+            )
+            terminate_result: dict[str, Any] = {"success": False}
+            try:
+                from activities.call_agent_service import terminate_durable_agent_run
+
+                terminate_result = yield ctx.call_activity(
+                    terminate_durable_agent_run,
+                    input={
+                        "agentWorkflowId": child_instance_id,
+                        "daprInstanceId": child_instance_id,
+                        "parentExecutionId": ctx.instance_id,
+                        "workspaceRef": resolved_config.get("workspaceRef"),
+                        "cleanupWorkspace": True,
+                        "reason": (
+                            "terminated because parent workflow timed out waiting for "
+                            f"native durable child ({timeout_minutes} minutes)"
+                        ),
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as terminate_err:
+                logger.warning(
+                    f"[Agent Workflow] Failed to terminate timed out native child {child_instance_id}: {terminate_err}"
+                )
+                terminate_result = {"success": False, "error": str(terminate_err)}
+            timeout_payload = {
+                "success": False,
+                "agentWorkflowId": child_instance_id,
+                "daprInstanceId": child_instance_id,
+                "childWorkflowName": child_workflow_name,
+                "childAppId": orchestrator_config.DURABLE_AGENT_APP_ID,
+                "error": f"Agent timed out after {timeout_minutes} minutes",
+                "termination": terminate_result,
+                **(planned_payload or {}),
+            }
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_completed
+
+                    yield ctx.call_activity(
+                        track_agent_run_completed,
+                        input={
+                            "id": child_instance_id,
+                            "success": False,
+                            "result": timeout_payload,
+                            "error": timeout_payload.get("error"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to persist native child completion row for {child_instance_id}: {track_err}"
+                    )
+            return {
+                **timeout_payload,
+            }
+
+        raw_result = child_task.get_result()
+        if not isinstance(raw_result, dict):
+            raw_result = {"content": str(raw_result)}
+        result_payload = _to_compact_agent_result(
+            raw_result=raw_result,
+            workflow_id=child_instance_id,
+            dapr_instance_id=child_instance_id,
+            child_workflow_name=child_workflow_name,
+            child_app_id=orchestrator_config.DURABLE_AGENT_APP_ID,
+        )
+        if require_file_changes and not _has_mutating_tool_calls(
+            result_payload.get("toolCalls", [])
+        ):
+            # Some child runtimes do not return complete tool-call telemetry.
+            # Only hard-fail when the child result explicitly reports no changes.
+            if _child_result_explicitly_reports_no_changes(raw_result):
+                result_payload["success"] = False
+                result_payload["error"] = (
+                    "Stop condition requires file changes, but child result explicitly reports no file changes."
+                )
+            else:
+                result_payload["fileChangeVerification"] = "unknown"
+                result_payload["fileChangeVerificationWarning"] = (
+                    "Could not verify file changes from child tool-call telemetry; proceeding."
+                )
+        native_result_payload = {**(planned_payload or {}), **result_payload}
+        if db_execution_id:
+            try:
+                from activities.track_agent_run import track_agent_run_completed
+
+                native_success = bool(native_result_payload.get("success", True))
+                native_error = native_result_payload.get("error")
+                yield ctx.call_activity(
+                    track_agent_run_completed,
+                    input={
+                        "id": child_instance_id,
+                        "success": native_success,
+                        "result": native_result_payload,
+                        "error": str(native_error) if native_error else None,
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    f"[Agent Workflow] Failed to persist native child completion row for {child_instance_id}: {track_err}"
+                )
+        return native_result_payload
 
     agent_workflow_id = (
         start_result.get("workflow_id")
@@ -1631,7 +2075,7 @@ def process_agent_child_workflow(
         }
 
     logger.info(
-        f"[Agent Workflow] Started agent run: {agent_workflow_id}. Waiting for completion..."
+        f"[Agent Workflow] Started bridged agent run: {agent_workflow_id}. Waiting for completion event..."
     )
 
     completion_event = ctx.wait_for_external_event(f"agent_completed_{agent_workflow_id}")

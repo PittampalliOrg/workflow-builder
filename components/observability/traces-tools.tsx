@@ -65,7 +65,7 @@ export function TracesTools({
 					<p className="text-muted-foreground text-xs">Search</p>
 					<Input
 						onChange={(event) => onSearchChange(event.target.value)}
-						placeholder="Trace, workflow, execution..."
+						placeholder="Trace, workflow, execution, node, activity..."
 						value={search}
 					/>
 				</div>

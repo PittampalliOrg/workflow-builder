@@ -7,190 +7,191 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
 } from "@/components/ui/popover";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
 } from "@/components/ui/select";
 import type {
-  WorkflowFilters as WorkflowFiltersType,
-  WorkflowUIStatus,
+	WorkflowFilters as WorkflowFiltersType,
+	WorkflowUIStatus,
 } from "@/lib/types/workflow-ui";
 import { cn } from "@/lib/utils";
 
 const ALL_STATUSES: WorkflowUIStatus[] = [
-  "RUNNING",
-  "COMPLETED",
-  "FAILED",
-  "CANCELLED",
-  "SUSPENDED",
-  "TERMINATED",
+	"PENDING",
+	"RUNNING",
+	"COMPLETED",
+	"FAILED",
+	"CANCELLED",
+	"SUSPENDED",
+	"TERMINATED",
 ];
 
 type WorkflowFiltersProps = {
-  filters: WorkflowFiltersType;
-  onFiltersChange: (filters: WorkflowFiltersType) => void;
-  availableAppIds?: string[];
+	filters: WorkflowFiltersType;
+	onFiltersChange: (filters: WorkflowFiltersType) => void;
+	availableAppIds?: string[];
 };
 
 export function WorkflowFilters({
-  filters,
-  onFiltersChange,
-  availableAppIds = ["workflow-orchestrator"],
+	filters,
+	onFiltersChange,
+	availableAppIds = ["workflow-orchestrator"],
 }: WorkflowFiltersProps) {
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const [tempFilters, setTempFilters] = useState<WorkflowFiltersType>(filters);
+	const [popoverOpen, setPopoverOpen] = useState(false);
+	const [tempFilters, setTempFilters] = useState<WorkflowFiltersType>(filters);
 
-  const handleSearchChange = (value: string) => {
-    onFiltersChange({ ...filters, search: value || undefined });
-  };
+	const handleSearchChange = (value: string) => {
+		onFiltersChange({ ...filters, search: value || undefined });
+	};
 
-  const handleStatusToggle = (status: WorkflowUIStatus) => {
-    const currentStatuses = tempFilters.status || [];
-    const newStatuses = currentStatuses.includes(status)
-      ? currentStatuses.filter((s) => s !== status)
-      : [...currentStatuses, status];
-    setTempFilters({
-      ...tempFilters,
-      status: newStatuses.length ? newStatuses : undefined,
-    });
-  };
+	const handleStatusToggle = (status: WorkflowUIStatus) => {
+		const currentStatuses = tempFilters.status || [];
+		const newStatuses = currentStatuses.includes(status)
+			? currentStatuses.filter((s) => s !== status)
+			: [...currentStatuses, status];
+		setTempFilters({
+			...tempFilters,
+			status: newStatuses.length ? newStatuses : undefined,
+		});
+	};
 
-  const handleAppIdChange = (value: string) => {
-    setTempFilters({
-      ...tempFilters,
-      appId: value === "all" ? undefined : value,
-    });
-  };
+	const handleAppIdChange = (value: string) => {
+		setTempFilters({
+			...tempFilters,
+			appId: value === "all" ? undefined : value,
+		});
+	};
 
-  const handleClearAll = () => {
-    setTempFilters({ search: filters.search });
-  };
+	const handleClearAll = () => {
+		setTempFilters({ search: filters.search });
+	};
 
-  const handleApply = () => {
-    onFiltersChange({ ...tempFilters, search: filters.search });
-    setPopoverOpen(false);
-  };
+	const handleApply = () => {
+		onFiltersChange({ ...tempFilters, search: filters.search });
+		setPopoverOpen(false);
+	};
 
-  const handleCancel = () => {
-    setTempFilters(filters);
-    setPopoverOpen(false);
-  };
+	const handleCancel = () => {
+		setTempFilters(filters);
+		setPopoverOpen(false);
+	};
 
-  const activeFilterCount =
-    (filters.status?.length || 0) + (filters.appId ? 1 : 0);
+	const activeFilterCount =
+		(filters.status?.length || 0) + (filters.appId ? 1 : 0);
 
-  return (
-    <div className="flex items-center gap-3">
-      {/* Search Input */}
-      <div className="relative max-w-sm flex-1">
-        <Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          className="pl-9"
-          onChange={(e) => handleSearchChange(e.target.value)}
-          placeholder="Search workflows..."
-          value={filters.search || ""}
-        />
-        {filters.search && (
-          <Button
-            className="absolute top-1/2 right-1 h-6 w-6 -translate-y-1/2"
-            onClick={() => handleSearchChange("")}
-            size="icon"
-            variant="ghost"
-          >
-            <X className="h-3 w-3" />
-          </Button>
-        )}
-      </div>
+	return (
+		<div className="flex items-center gap-3">
+			{/* Search Input */}
+			<div className="relative max-w-sm flex-1">
+				<Search className="absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+				<Input
+					className="pl-9"
+					onChange={(e) => handleSearchChange(e.target.value)}
+					placeholder="Search workflows..."
+					value={filters.search || ""}
+				/>
+				{filters.search && (
+					<Button
+						className="absolute top-1/2 right-1 h-6 w-6 -translate-y-1/2"
+						onClick={() => handleSearchChange("")}
+						size="icon"
+						variant="ghost"
+					>
+						<X className="h-3 w-3" />
+					</Button>
+				)}
+			</div>
 
-      {/* Filters Popover */}
-      <Popover onOpenChange={setPopoverOpen} open={popoverOpen}>
-        <PopoverTrigger asChild>
-          <Button className="gap-2" variant="outline">
-            <Filter className="h-4 w-4" />
-            Filters
-            {activeFilterCount > 0 && (
-              <span className="ml-1 rounded-full bg-primary px-1.5 py-0.5 text-primary-foreground text-xs">
-                {activeFilterCount}
-              </span>
-            )}
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent align="end" className="w-80">
-          <div className="space-y-4">
-            {/* App ID Filter */}
-            <div className="space-y-2">
-              <Label className="font-medium text-sm">App ID</Label>
-              <Select
-                onValueChange={handleAppIdChange}
-                value={tempFilters.appId || "all"}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="All apps" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All apps</SelectItem>
-                  {availableAppIds.map((appId) => (
-                    <SelectItem key={appId} value={appId}>
-                      {appId}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+			{/* Filters Popover */}
+			<Popover onOpenChange={setPopoverOpen} open={popoverOpen}>
+				<PopoverTrigger asChild>
+					<Button className="gap-2" variant="outline">
+						<Filter className="h-4 w-4" />
+						Filters
+						{activeFilterCount > 0 && (
+							<span className="ml-1 rounded-full bg-primary px-1.5 py-0.5 text-primary-foreground text-xs">
+								{activeFilterCount}
+							</span>
+						)}
+					</Button>
+				</PopoverTrigger>
+				<PopoverContent align="end" className="w-80">
+					<div className="space-y-4">
+						{/* App ID Filter */}
+						<div className="space-y-2">
+							<Label className="font-medium text-sm">App ID</Label>
+							<Select
+								onValueChange={handleAppIdChange}
+								value={tempFilters.appId || "all"}
+							>
+								<SelectTrigger>
+									<SelectValue placeholder="All apps" />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="all">All apps</SelectItem>
+									{availableAppIds.map((appId) => (
+										<SelectItem key={appId} value={appId}>
+											{appId}
+										</SelectItem>
+									))}
+								</SelectContent>
+							</Select>
+						</div>
 
-            {/* Status Filter - using toggle badges instead of checkboxes */}
-            <div className="space-y-2">
-              <Label className="font-medium text-sm">Status</Label>
-              <div className="flex flex-wrap gap-2">
-                {ALL_STATUSES.map((status) => {
-                  const isSelected = tempFilters.status?.includes(status);
-                  return (
-                    <Badge
-                      className={cn(
-                        "cursor-pointer select-none transition-colors",
-                        isSelected && "bg-primary"
-                      )}
-                      key={status}
-                      onClick={() => handleStatusToggle(status)}
-                      variant={isSelected ? "default" : "outline"}
-                    >
-                      {isSelected && <Check className="mr-1 h-3 w-3" />}
-                      {status}
-                    </Badge>
-                  );
-                })}
-              </div>
-            </div>
+						{/* Status Filter - using toggle badges instead of checkboxes */}
+						<div className="space-y-2">
+							<Label className="font-medium text-sm">Status</Label>
+							<div className="flex flex-wrap gap-2">
+								{ALL_STATUSES.map((status) => {
+									const isSelected = tempFilters.status?.includes(status);
+									return (
+										<Badge
+											className={cn(
+												"cursor-pointer select-none transition-colors",
+												isSelected && "bg-primary",
+											)}
+											key={status}
+											onClick={() => handleStatusToggle(status)}
+											variant={isSelected ? "default" : "outline"}
+										>
+											{isSelected && <Check className="mr-1 h-3 w-3" />}
+											{status}
+										</Badge>
+									);
+								})}
+							</div>
+						</div>
 
-            {/* Actions */}
-            <div className="flex items-center justify-between border-t pt-2">
-              <Button
-                className="text-muted-foreground"
-                onClick={handleClearAll}
-                size="sm"
-                variant="ghost"
-              >
-                Clear all
-              </Button>
-              <div className="flex gap-2">
-                <Button onClick={handleCancel} size="sm" variant="outline">
-                  Cancel
-                </Button>
-                <Button onClick={handleApply} size="sm">
-                  Apply
-                </Button>
-              </div>
-            </div>
-          </div>
-        </PopoverContent>
-      </Popover>
-    </div>
-  );
+						{/* Actions */}
+						<div className="flex items-center justify-between border-t pt-2">
+							<Button
+								className="text-muted-foreground"
+								onClick={handleClearAll}
+								size="sm"
+								variant="ghost"
+							>
+								Clear all
+							</Button>
+							<div className="flex gap-2">
+								<Button onClick={handleCancel} size="sm" variant="outline">
+									Cancel
+								</Button>
+								<Button onClick={handleApply} size="sm">
+									Apply
+								</Button>
+							</div>
+						</div>
+					</div>
+				</PopoverContent>
+			</Popover>
+		</div>
+	);
 }

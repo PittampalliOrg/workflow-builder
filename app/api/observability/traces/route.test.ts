@@ -205,6 +205,59 @@ describe("GET /api/observability/traces", () => {
 		expect(json.traces[0]?.name).toBe("alpha trace");
 	});
 
+	it("matches search terms against parent execution id", async () => {
+		const traceA = makeTrace("a", 3_000_000);
+		const traceB = makeTrace("b", 2_000_000);
+		mockSearchJaegerTraces.mockResolvedValueOnce([traceA, traceB]);
+		mockExtractTraceCorrelation
+			.mockReturnValueOnce({
+				executionIds: new Set(["exec-a"]),
+				instanceIds: new Set<string>(),
+				workflowIds: new Set(["wf-a"]),
+			})
+			.mockReturnValueOnce({
+				executionIds: new Set(["exec-b"]),
+				instanceIds: new Set<string>(),
+				workflowIds: new Set(["wf-b"]),
+			});
+		mockResolveTraceContextFromIndex
+			.mockReturnValueOnce({
+				workflowId: "wf-a",
+				workflowName: "Alpha Workflow",
+				executionId: "exec-a",
+				daprInstanceId: "inst-a",
+				phase: "running",
+			})
+			.mockReturnValueOnce({
+				workflowId: "wf-b",
+				workflowName: "Beta Workflow",
+				executionId: "exec-b",
+				daprInstanceId: "inst-b",
+				phase: "running",
+			});
+		mockNormalizeJaegerTraceSummary
+			.mockReturnValueOnce({
+				...makeSummary("a", "2026-02-16T00:00:03.000Z", "wf-a"),
+				parentExecutionId: "exec-parent-a",
+			})
+			.mockReturnValueOnce({
+				...makeSummary("b", "2026-02-16T00:00:02.000Z", "wf-b"),
+				parentExecutionId: "exec-parent-b",
+			});
+
+		const response = await GET(
+			new Request(
+				"http://localhost/api/observability/traces?search=exec-parent-b",
+			),
+		);
+		const json = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(json.traces).toHaveLength(1);
+		expect(json.traces[0]?.traceId).toBe("b");
+		expect(json.traces[0]?.parentExecutionId).toBe("exec-parent-b");
+	});
+
 	it("decodes cursor into the jaeger query window and emits nextCursor", async () => {
 		const cursor = Buffer.from(
 			JSON.stringify({ to: "2026-02-15T01:00:00.000Z" }),

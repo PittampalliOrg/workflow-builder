@@ -165,6 +165,28 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "50",
 				},
 				{
+					key: "contextPolicyPreset",
+					label: "Context Policy Preset",
+					type: "select",
+					required: false,
+					defaultValue: "balanced",
+					options: [
+						{ label: "Balanced", value: "balanced" },
+						{ label: "Conservative", value: "conservative" },
+						{ label: "Aggressive", value: "aggressive" },
+						{ label: "Off", value: "off" },
+					],
+				},
+				{
+					key: "loopPolicy",
+					label: "Loop Policy JSON (optional)",
+					type: "template-textarea",
+					required: false,
+					rows: 6,
+					placeholder:
+						'{\n  "prepareStep": {\n    "trimMessagesTo": 64,\n    "truncateToolResultChars": 4000\n  },\n  "compaction": {\n    "enabled": true,\n    "maxAutoRetries": 1,\n    "preserveRecentMessages": 8\n  }\n}',
+				},
+				{
 					key: "stopCondition",
 					label: "Stop Condition (optional)",
 					type: "template-textarea",
@@ -175,14 +197,15 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{
 					key: "requireFileChanges",
-					label: "Require File Changes",
+					label: "File Change Policy",
 					type: "select",
 					required: false,
-					defaultValue: "true",
+					defaultValue: "auto",
 					showWhen: { field: "mode", equals: "execute_direct" },
 					options: [
-						{ label: "Enabled", value: "true" },
-						{ label: "Disabled", value: "false" },
+						{ label: "Auto (Infer)", value: "auto" },
+						{ label: "Enforce", value: "true" },
+						{ label: "Allow", value: "false" },
 					],
 				},
 				{
@@ -271,6 +294,23 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 					field: "usageTotals",
 					description: "Accumulated token usage across loop steps",
 				},
+				{
+					field: "compactionApplied",
+					description: "Whether conversation compaction ran during execution",
+				},
+				{
+					field: "compactionCount",
+					description: "Number of compaction operations applied",
+				},
+				{
+					field: "contextOverflowRecovered",
+					description:
+						"True when overflow was auto-recovered via compact+retry",
+				},
+				{
+					field: "lastCompactionReason",
+					description: "Last compaction trigger reason",
+				},
 				{ field: "usage", description: "Token usage statistics" },
 				{
 					field: "agentWorkflowId",
@@ -350,88 +390,88 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 				{ field: "backend", description: "Workspace backend (k8s/local)" },
 			],
 		},
-			{
-				slug: "clone",
-				label: "Workspace Clone Repository",
-				description:
-					"Clone via internal Gitea into an execution-scoped workspace (auto-imports from GitHub when missing)",
-				category: "Workspace",
-				configFields: [
-					{
-						key: "workspaceRef",
-						label: "Workspace Ref",
+		{
+			slug: "clone",
+			label: "Workspace Clone Repository",
+			description:
+				"Clone via internal Gitea into an execution-scoped workspace (auto-imports from GitHub when missing)",
+			category: "Workspace",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
 					type: "template-input",
 					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
 					required: true,
-					},
-					{
-						key: "repositoryUrl",
-						label: "Repository URL (optional)",
-						type: "template-input",
-						placeholder:
-							"https://gitea.cnoe.localtest.me:8443/giteaAdmin/repo.git",
-						required: false,
-					},
-					{
-						key: "repositoryOwner",
-						label: "GitHub Owner",
-						type: "dynamic-select",
-						required: false,
-						placeholder: "Select owner",
-						dynamicOptions: {
-							provider: "builtin",
-							pieceName: "workspace",
+				},
+				{
+					key: "repositoryUrl",
+					label: "Repository URL (optional)",
+					type: "template-input",
+					placeholder:
+						"https://gitea.cnoe.localtest.me:8443/giteaAdmin/repo.git",
+					required: false,
+				},
+				{
+					key: "repositoryOwner",
+					label: "GitHub Owner",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select owner",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryOwner",
 						refreshers: [],
 					},
 				},
-					{
-						key: "repositoryRepo",
-						label: "GitHub Repository",
-						type: "dynamic-select",
-						required: false,
-						placeholder: "Select repository",
-						dynamicOptions: {
-							provider: "builtin",
-							pieceName: "workspace",
+				{
+					key: "repositoryRepo",
+					label: "GitHub Repository",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select repository",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryRepo",
 						refreshers: ["repositoryOwner"],
 					},
 				},
-					{
-						key: "repositoryBranch",
-						label: "Branch",
-						type: "dynamic-select",
-						required: true,
+				{
+					key: "repositoryBranch",
+					label: "Branch",
+					type: "dynamic-select",
+					required: true,
 					placeholder: "Select branch",
 					dynamicOptions: {
 						provider: "builtin",
 						pieceName: "workspace",
 						actionName: "workspace/clone",
 						propName: "repositoryBranch",
-							refreshers: ["repositoryOwner", "repositoryRepo"],
-						},
+						refreshers: ["repositoryOwner", "repositoryRepo"],
 					},
-					{
-						key: "repositoryUsername",
-						label: "Repository Username (optional)",
-						type: "template-input",
-						placeholder: "giteaAdmin",
-						required: false,
-					},
-					{
-						key: "repositoryToken",
-						label: "Repository Token (optional)",
-						type: "template-input",
-						placeholder: "{{secrets.REPO_TOKEN}}",
-						required: false,
-					},
-					{
-						key: "targetDir",
-						label: "Target Directory (optional)",
-						type: "template-input",
+				},
+				{
+					key: "repositoryUsername",
+					label: "Repository Username (optional)",
+					type: "template-input",
+					placeholder: "giteaAdmin",
+					required: false,
+				},
+				{
+					key: "repositoryToken",
+					label: "Repository Token (optional)",
+					type: "template-input",
+					placeholder: "{{secrets.REPO_TOKEN}}",
+					required: false,
+				},
+				{
+					key: "targetDir",
+					label: "Target Directory (optional)",
+					type: "template-input",
 					placeholder: "repo",
 					required: false,
 				},
