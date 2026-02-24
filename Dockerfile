@@ -50,7 +50,8 @@ RUN npm install -g esbuild && \
     esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js && \
     esbuild scripts/sync-oauth-apps.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-oauth-apps.bundle.js && \
     esbuild scripts/seed-dev-user.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-dev-user.bundle.js && \
-    esbuild scripts/seed-workflows.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-workflows.bundle.js
+    esbuild scripts/seed-workflows.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-workflows.bundle.js && \
+    esbuild custom-proxy.js --bundle --platform=node --target=node22 --outfile=custom-proxy.bundle.js
 
 # Run plugin discovery and build
 RUN pnpm discover-plugins && pnpm next build
@@ -98,7 +99,7 @@ COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sy
 COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
 COPY --from=builder /app/scripts/seed-dev-user.bundle.js ./scripts/seed-dev-user.bundle.js
 COPY --from=builder /app/scripts/seed-workflows.bundle.js ./scripts/seed-workflows.bundle.js
-COPY --chown=nextjs:nodejs custom-proxy.js ./
+COPY --from=builder --chown=nextjs:nodejs /app/custom-proxy.bundle.js ./custom-proxy.js
 
 USER nextjs
 
