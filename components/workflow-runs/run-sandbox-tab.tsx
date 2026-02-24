@@ -45,7 +45,7 @@ export function RunSandboxTab({
 	}
 
 	if (templateName === "aio-browser") {
-		const vncUrl = `/api/sandbox-aio/${podIp}/vnc/index.html?autoconnect=true`;
+		const vncUrl = `/api/sandbox-aio/${podIp}/vnc/index.html?autoconnect=true&resize=remote&path=api/sandbox-aio/${podIp}/websockify`;
 
 		return (
 			<Tabs defaultValue="vnc" className="h-[calc(100vh-12rem)] min-h-[600px] flex flex-col">
