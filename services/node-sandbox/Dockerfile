@@ -21,13 +21,17 @@ RUN apt-get update && \
       python3-pip \
       s3fs \
       sed \
+      tigervnc-standalone-server \
       tk-dev \
       unzip \
       util-linux \
       uuid-dev \
+      x11-utils \
       zip \
       gh && \
     rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 
 ENV YARN_VERSION=1.22.19
 RUN curl -fsSLO --compressed "https://yarnpkg.com/downloads/${YARN_VERSION}/yarn-v${YARN_VERSION}.tar.gz" && \
@@ -36,6 +40,9 @@ RUN curl -fsSLO --compressed "https://yarnpkg.com/downloads/${YARN_VERSION}/yarn
     ln -sfn "/opt/yarn-v${YARN_VERSION}/bin/yarn" /usr/local/bin/yarn && \
     ln -sfn "/opt/yarn-v${YARN_VERSION}/bin/yarnpkg" /usr/local/bin/yarnpkg && \
     rm "yarn-v${YARN_VERSION}.tar.gz"
+
+# Claude Code CLI for headless planning mode in sandbox runs
+RUN npm install -g @anthropic-ai/claude-code@2.1.50 && claude --version
 
 # node image provides user "node" with UID/GID 1000.
 RUN mkdir -p /app /home/node/workspace && \

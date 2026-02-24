@@ -13,7 +13,7 @@
  */
 
 const http = require("node:http");
-const { execFile } = require("node:child_process");
+const { execFile, spawn } = require("node:child_process");
 const { writeFileSync, readFileSync, statSync } = require("node:fs");
 const { basename, join, normalize, resolve } = require("node:path");
 
@@ -21,6 +21,19 @@ const PORT = parseInt(process.env.PORT || "8888", 10);
 const WORK_DIR = process.env.WORKSPACE_DIR || "/app";
 const SHELL = process.env.SANDBOX_SHELL || "/bin/bash";
 const HOME_DIR = process.env.HOME || "/home/node";
+
+// ── VNC Server ──────────────────────────────────────────────
+const vncServer = spawn("Xtigervnc", [":1", "-geometry", "1280x1024", "-SecurityTypes", "None"], {
+    stdio: 'inherit',
+    env: process.env
+});
+vncServer.on('error', (err) => {
+    console.error('[node-sandbox] Failed to start VNC server:', err);
+});
+vncServer.on('exit', (code) => {
+    console.log(`[node-sandbox] VNC server exited with code ${code}`);
+});
+
 const WORKSPACE_ALIASES = [
 	"/workspace",
 	"/home/node/workspace",
@@ -153,11 +166,12 @@ function executeCommand(command, timeoutMs = 120000, envOverrides = {}) {
 				timeout: timeoutMs,
 				maxBuffer: 10 * 1024 * 1024, // 10MB
 				env: {
-					...process.env,
-					HOME: HOME_DIR,
-					WORKSPACE_DIR: WORK_DIR,
-					...sanitizeEnvOverrides(envOverrides),
-				},
+					                                        ...process.env,
+					                                        HOME: HOME_DIR,
+					                                        WORKSPACE_DIR: WORK_DIR,
+					                                        DISPLAY: ":1",
+					                                        ...sanitizeEnvOverrides(envOverrides),
+					                                },
 			},
 			(error, stdout, stderr) => {
 				let exitCode = 0;
@@ -200,6 +214,7 @@ const server = http.createServer(async (req, res) => {
 
 	// Execute command
 	if (path === "/execute" && method === "POST") {
+		let keepAlive;
 		try {
 			const body = await parseJson(req);
 			const command = body.command;
@@ -208,10 +223,23 @@ const server = http.createServer(async (req, res) => {
 			}
 			const timeoutMs = Number(body.timeout) || 120000;
 			const envOverrides = sanitizeEnvOverrides(body.env);
+
+			res.writeHead(200, { "Content-Type": "application/json" });
+			keepAlive = setInterval(() => {
+				res.write(" ");
+			}, 15000);
+
 			const result = await executeCommand(command, timeoutMs, envOverrides);
-			return sendJson(res, 200, result);
+			clearInterval(keepAlive);
+			res.end(JSON.stringify(result));
+			return;
 		} catch (err) {
-			return sendJson(res, 400, { error: err.message });
+			if (keepAlive) clearInterval(keepAlive);
+			if (!res.headersSent) {
+				return sendJson(res, 400, { error: err.message });
+			}
+			res.end();
+			return;
 		}
 	}
 
