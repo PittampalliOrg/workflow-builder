@@ -51,6 +51,7 @@ from activities.call_agent_service import (
     call_durable_agent_run,
     call_durable_plan,
     call_durable_execute_plan,
+    call_durable_execute_plan_dag,
     terminate_durable_agent_run,
     terminate_durable_runs_by_parent_execution,
     cleanup_execution_workspaces,
@@ -120,6 +121,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
+    wfr.register_activity(call_durable_execute_plan_dag)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
     wfr.register_activity(track_agent_run_scheduled)

@@ -8,7 +8,7 @@ type WorkflowAgentRunRow = {
 	workflow_execution_id: string;
 	workflow_id: string;
 	node_id: string;
-	mode: "run" | "plan" | "execute_plan";
+	mode: "run" | "plan" | "execute_plan" | "execute_plan_dag";
 	agent_workflow_id: string;
 	dapr_instance_id: string;
 	parent_execution_id: string;
@@ -29,7 +29,7 @@ export type TrackedWorkflowAgentRun = {
 	workflowExecutionId: string;
 	workflowId: string;
 	nodeId: string;
-	mode: "run" | "plan" | "execute_plan";
+	mode: "run" | "plan" | "execute_plan" | "execute_plan_dag";
 	agentWorkflowId: string;
 	daprInstanceId: string;
 	parentExecutionId: string;
@@ -50,7 +50,7 @@ type TrackInput = {
 	workflowExecutionId: string;
 	workflowId: string;
 	nodeId: string;
-	mode: "run" | "plan" | "execute_plan";
+	mode: "run" | "plan" | "execute_plan" | "execute_plan_dag";
 	agentWorkflowId: string;
 	daprInstanceId: string;
 	parentExecutionId: string;

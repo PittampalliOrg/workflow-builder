@@ -8,6 +8,7 @@ import type {
 	DurableExternalEventSummary,
 	DurablePlanArtifactSummary,
 	DurableRuntimeSnapshot,
+	DurableTaskSummary,
 	DurableTimelineEvent,
 	DurableTimelineEventKind,
 } from "@/lib/types/durable-timeline";
@@ -64,6 +65,7 @@ type PlanArtifactLike = {
 	createdAt: Date | string;
 	updatedAt: Date | string;
 	metadata: Record<string, unknown> | null;
+	planJson?: unknown;
 };
 
 type AgentRunLike = {
@@ -177,6 +179,7 @@ function parseActivityMode(
 		return "execute_plan";
 	}
 	if (
+		normalized.includes("durable/claude-plan") ||
 		normalized.includes("durable/plan") ||
 		normalized.includes("call_durable_plan")
 	) {
@@ -768,6 +771,27 @@ export function toDurableExternalEventSummary(
 	}));
 }
 
+function extractTaskSummary(
+	planJson: unknown,
+): DurableTaskSummary | null {
+	if (!planJson || typeof planJson !== "object") return null;
+	const plan = planJson as { tasks?: Array<{ status?: string }> };
+	if (!Array.isArray(plan.tasks)) return null;
+	return plan.tasks.reduce(
+		(acc, t) => {
+			acc.total++;
+			const s = (t.status ?? "pending").toLowerCase();
+			if (s === "completed") acc.completed++;
+			else if (s === "failed") acc.failed++;
+			else if (s === "skipped") acc.skipped++;
+			else if (s === "in_progress") acc.inProgress++;
+			else acc.pending++;
+			return acc;
+		},
+		{ total: 0, completed: 0, failed: 0, skipped: 0, inProgress: 0, pending: 0 },
+	);
+}
+
 export function toDurablePlanArtifactSummary(
 	artifacts: PlanArtifactLike[],
 ): DurablePlanArtifactSummary[] {
@@ -783,6 +807,7 @@ export function toDurablePlanArtifactSummary(
 		createdAt: toIso(artifact.createdAt) ?? new Date(0).toISOString(),
 		updatedAt: toIso(artifact.updatedAt) ?? new Date(0).toISOString(),
 		metadata: artifact.metadata,
+		taskSummary: extractTaskSummary(artifact.planJson),
 	}));
 }
 

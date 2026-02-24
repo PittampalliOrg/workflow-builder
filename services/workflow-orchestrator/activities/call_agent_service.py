@@ -189,8 +189,10 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
         f"{DURABLE_AGENT_APP_ID}/method/api/plan"
     )
     otel = input_data.get("_otel") or {}
+    planning_backend = str(input_data.get("planningBackend") or "").strip().lower()
+    action_type = "durable/claude-plan" if planning_backend == "claude_code_v1" else "durable/plan"
     attrs = {
-        "action.type": "durable/plan",
+        "action.type": action_type,
         "workflow.instance_id": input_data.get("parentExecutionId") or "",
         "workflow.id": input_data.get("workflowId") or "",
         "node.id": input_data.get("nodeId") or "",
@@ -218,6 +220,7 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
                     "model": input_data.get("model"),
                     "maxTurns": input_data.get("maxTurns"),
                     "timeoutMinutes": timeout_minutes,
+                    "planningBackend": input_data.get("planningBackend"),
                     "instructions": input_data.get("instructions"),
                     "tools": input_data.get("tools"),
                     "loopPolicy": input_data.get("loopPolicy"),
@@ -313,6 +316,81 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Durable Execute Plan] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_durable_execute_plan_dag(ctx, input_data: dict) -> dict:
+    """
+    Start a DAG plan execution on durable-agent service.
+
+    Executes a claude_task_graph_v1 plan as a Dapr workflow where each task
+    is a separate Claude Code CLI activity with dependency scheduling.
+
+    Expected input_data:
+      - artifactRef: str (plan artifact reference)
+      - workspaceRef: str (workspace session reference)
+      - cwd: str (working directory)
+      - model: str | None
+      - maxTaskRetries: int | None (default: 1)
+      - taskTimeoutMinutes: int | None (default: 15)
+      - overallTimeoutMinutes: int | None (default: 120)
+      - cleanupWorkspace: bool | None (default: True)
+      - parentExecutionId: str
+      - executionId: str
+      - workflowId: str
+      - nodeId: str
+      - nodeName: str
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DURABLE_AGENT_APP_ID}/method/api/execute-plan-dag"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "durable/execute-plan-dag",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    plan = input_data.get("planJson") or input_data.get("plan")
+    if isinstance(plan, str):
+        import json as _json
+        try:
+            plan = _json.loads(plan)
+        except Exception:
+            pass
+
+    with start_activity_span("activity.call_durable_execute_plan_dag", otel, attrs):
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                payload = {
+                    "plan": plan,
+                    "artifactRef": input_data.get("artifactRef", ""),
+                    "cwd": input_data.get("cwd", ""),
+                    "model": input_data.get("model"),
+                    "maxTaskRetries": input_data.get("maxTaskRetries"),
+                    "taskTimeoutMinutes": input_data.get("taskTimeoutMinutes"),
+                    "overallTimeoutMinutes": input_data.get("overallTimeoutMinutes"),
+                    "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                    "parentExecutionId": input_data.get("parentExecutionId", ""),
+                    "executionId": input_data.get("executionId", "")
+                    or input_data.get("dbExecutionId", ""),
+                    "dbExecutionId": input_data.get("dbExecutionId", ""),
+                    "workflowId": input_data.get("workflowId", ""),
+                    "nodeId": input_data.get("nodeId", ""),
+                    "nodeName": input_data.get("nodeName", ""),
+                    "workspaceRef": input_data.get("workspaceRef", ""),
+                }
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Durable execute plan DAG",
+                )
+        except Exception as e:
+            logger.error(f"[Call Durable Execute Plan DAG] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

@@ -16,6 +16,7 @@ type WorkspaceSessionRow = {
 	command_timeout_ms: number;
 	status: "active" | "cleaned" | "error";
 	last_error: string | null;
+	sandbox_state: Record<string, unknown> | null;
 };
 
 export type PersistedWorkspaceSession = {
@@ -31,6 +32,7 @@ export type PersistedWorkspaceSession = {
 	commandTimeoutMs: number;
 	status: "active" | "cleaned" | "error";
 	lastError?: string;
+	sandboxState?: Record<string, unknown>;
 };
 
 function parseEnabledTools(input: string[] | string): string[] {
@@ -60,6 +62,7 @@ function toPersisted(row: WorkspaceSessionRow): PersistedWorkspaceSession {
 		commandTimeoutMs: row.command_timeout_ms,
 		status: row.status,
 		lastError: row.last_error || undefined,
+		sandboxState: row.sandbox_state || undefined,
 	};
 }
 
@@ -173,6 +176,22 @@ class WorkspaceSessionStore {
 		`;
 	}
 
+	async markSandboxState(
+		workspaceRef: string,
+		sandboxState: Record<string, unknown>,
+	): Promise<void> {
+		const sql = this.ensureSql();
+		const jsonValue = sandboxState as unknown as Parameters<typeof sql.json>[0];
+		await sql`
+			update workflow_workspace_sessions
+			set
+				sandbox_state = ${sql.json(jsonValue)},
+				updated_at = now(),
+				last_accessed_at = now()
+			where workspace_ref = ${workspaceRef}
+		`;
+	}
+
 	async markTouched(workspaceRef: string): Promise<void> {
 		const sql = this.ensureSql();
 		await sql`
@@ -215,7 +234,8 @@ class WorkspaceSessionStore {
 				require_read_before_write,
 				command_timeout_ms,
 				status,
-				last_error
+				last_error,
+				sandbox_state
 			from workflow_workspace_sessions
 			where workspace_ref = ${workspaceRef} and status = 'active'
 			limit 1
@@ -240,7 +260,8 @@ class WorkspaceSessionStore {
 				require_read_before_write,
 				command_timeout_ms,
 				status,
-				last_error
+				last_error,
+				sandbox_state
 			from workflow_workspace_sessions
 			where workflow_execution_id = ${workflowExecutionId} and status = 'active'
 			order by updated_at desc
@@ -266,7 +287,8 @@ class WorkspaceSessionStore {
 				require_read_before_write,
 				command_timeout_ms,
 				status,
-				last_error
+				last_error,
+				sandbox_state
 			from workflow_workspace_sessions
 			where durable_instance_id = ${durableInstanceId} and status = 'active'
 			limit 1

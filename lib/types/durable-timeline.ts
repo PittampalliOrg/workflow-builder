@@ -74,6 +74,15 @@ export type DurableExternalEventSummary = {
 	payload: unknown;
 };
 
+export type DurableTaskSummary = {
+	total: number;
+	completed: number;
+	failed: number;
+	skipped: number;
+	inProgress: number;
+	pending: number;
+};
+
 export type DurablePlanArtifactSummary = {
 	id: string;
 	nodeId: string;
@@ -86,6 +95,7 @@ export type DurablePlanArtifactSummary = {
 	createdAt: string;
 	updatedAt: string;
 	metadata: Record<string, unknown> | null;
+	taskSummary: DurableTaskSummary | null;
 };
 
 export type DurableRuntimeSnapshot = {

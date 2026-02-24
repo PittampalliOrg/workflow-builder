@@ -34,6 +34,17 @@ vncServer.on('exit', (code) => {
     console.log(`[node-sandbox] VNC server exited with code ${code}`);
 });
 
+const wsProxy = spawn("websockify", ["--web", "/usr/share/novnc/", "6080", "localhost:5901"], {
+    stdio: 'inherit',
+    env: process.env
+});
+wsProxy.on('error', (err) => {
+    console.error('[node-sandbox] Failed to start websockify:', err);
+});
+wsProxy.on('exit', (code) => {
+    console.log(`[node-sandbox] websockify exited with code ${code}`);
+});
+
 const WORKSPACE_ALIASES = [
 	"/workspace",
 	"/home/node/workspace",

@@ -188,7 +188,7 @@ class PlanArtifactStore {
 					user_id = ${userId},
 					workspace_ref = ${input.workspaceRef ?? null},
 					clone_path = ${input.clonePath ?? null},
-					artifact_type = ${input.artifactType ?? "task_graph_v1"},
+					artifact_type = ${input.artifactType ?? "claude_task_graph_v1"},
 					artifact_version = ${input.artifactVersion ?? 1},
 					status = ${input.status ?? "draft"},
 					goal = ${goal},
@@ -248,7 +248,7 @@ class PlanArtifactStore {
 				${nodeId},
 				${input.workspaceRef ?? null},
 				${input.clonePath ?? null},
-				${input.artifactType ?? "task_graph_v1"},
+				${input.artifactType ?? "claude_task_graph_v1"},
 				${input.artifactVersion ?? 1},
 				${input.status ?? "draft"},
 				${goal},
@@ -311,9 +311,23 @@ class PlanArtifactStore {
 		return row ? toPersisted(row) : null;
 	}
 
+	async updatePlanJson(
+		artifactRef: string,
+		planJson: Record<string, unknown>,
+	): Promise<void> {
+		const sql = this.ensureSql();
+		const ref = artifactRef.trim();
+		if (!ref) return;
+		await sql`
+			update workflow_plan_artifacts
+			set plan_json = ${sql.json(planJson as any)}, updated_at = now()
+			where id = ${ref}
+		`;
+	}
+
 	async markStatus(
 		artifactRef: string,
-		status: "executed" | "failed" | "approved" | "superseded",
+		status: "executed" | "failed" | "approved" | "superseded" | "executing",
 	): Promise<void> {
 		const sql = this.ensureSql();
 		const ref = artifactRef.trim();

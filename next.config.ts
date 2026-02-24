@@ -30,8 +30,8 @@ const nextConfig: NextConfig = {
 	async rewrites() {
 		return [
 			{
-				source: "/api/sandbox-vnc/:podIp/:path*",
-				destination: "http://:podIp:6080/:path*",
+				source: "/api/sandbox-vnc/:ip/:path*",
+				destination: "http://:ip:6080/:path*",
 			},
 		];
 	},

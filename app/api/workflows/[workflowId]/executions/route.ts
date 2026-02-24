@@ -68,6 +68,7 @@ export async function GET(
 									inArray(workflowExecutionLogs.executionId, executionIds),
 									inArray(workflowExecutionLogs.activityName, [
 										"durable/run",
+										"durable/claude-plan",
 										"durable/plan",
 										"durable/execute-plan",
 										"mastra/execute",

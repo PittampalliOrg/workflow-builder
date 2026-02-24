@@ -18,7 +18,7 @@ import {
 	type ExecutionFileSnapshot,
 } from "./change-artifacts.js";
 import { K8sRemoteFilesystem } from "./k8s-remote-filesystem.js";
-import { K8sSandbox } from "./k8s-sandbox.js";
+import { K8sSandbox, type K8sSandboxPersistedState } from "./k8s-sandbox.js";
 import {
 	LocalFilesystem,
 	LocalSandbox,
@@ -50,12 +50,24 @@ export type WorkspaceFileOperation = Exclude<
 	"execute_command" | "clone"
 >;
 
+/** Info needed to re-clone a repository after sandbox re-provisioning. */
+type CloneInfo = {
+	repositoryUrl: string;
+	repositoryOwner: string;
+	repositoryRepo: string;
+	repositoryBranch: string;
+	repositoryUsername: string;
+	repositoryToken: string;
+	cloneDir: string;
+};
+
 type WorkspaceSession = {
 	workspaceRef: string;
 	executionId: string;
 	name: string;
 	rootPath: string;
 	clonePath?: string;
+	cloneInfo?: CloneInfo;
 	backend: "k8s" | "local";
 	sandbox: Sandbox;
 	filesystem: Filesystem;
@@ -125,6 +137,7 @@ export type ExecuteWorkspaceCommandInput = {
 	durableInstanceId?: string;
 	command: string;
 	timeoutMs?: number;
+	env?: Record<string, string>;
 };
 
 export type ExecuteWorkspaceFileInput = {
@@ -472,6 +485,16 @@ class WorkspaceSessionManager {
 				commandTimeoutMs: session.commandTimeoutMs,
 				status: "active",
 			});
+			// Persist sandbox pod metadata for reconnection after restart
+			if (session.backend === "k8s" && session.sandbox instanceof K8sSandbox) {
+				const sandboxState = session.sandbox.getPersistedState();
+				if (sandboxState) {
+					await workspaceSessionStore.markSandboxState(
+						session.workspaceRef,
+						sandboxState as unknown as Record<string, unknown>,
+					);
+				}
+			}
 		} catch (err) {
 			console.warn(
 				`[workspace-sessions] Failed persisting workspace session ${session.workspaceRef}:`,
@@ -510,6 +533,7 @@ class WorkspaceSessionManager {
 		const result = await session.sandbox.executeCommand(command, undefined, {
 			timeout: timeoutMs,
 			cwd: commandCwd,
+			env: input.env,
 		});
 		const normalized = isNoFileChangesReviewResult(result)
 			? {
@@ -678,6 +702,15 @@ class WorkspaceSessionManager {
 		});
 		const clonePathAbsolute = pathPosix.join(session.rootPath, cloneDir);
 		session.clonePath = clonePathAbsolute;
+		session.cloneInfo = {
+			repositoryUrl: repositoryUrl,
+			repositoryOwner: owner,
+			repositoryRepo: repo,
+			repositoryBranch: branch,
+			repositoryUsername: username,
+			repositoryToken: token,
+			cloneDir,
+		};
 		try {
 			await workspaceSessionStore.markClonePath(
 				session.workspaceRef,
@@ -914,6 +947,7 @@ class WorkspaceSessionManager {
 	}): Promise<WorkspaceSession> {
 		let sandbox: Sandbox;
 		let filesystem: Filesystem;
+		let k8sSandboxRef: K8sSandbox | null = null;
 
 		if (SANDBOX_BACKEND === "k8s") {
 			const k8sSandbox = new K8sSandbox({
@@ -922,6 +956,7 @@ class WorkspaceSessionManager {
 			});
 			await k8sSandbox.start();
 			sandbox = k8sSandbox;
+			k8sSandboxRef = k8sSandbox;
 			filesystem = new K8sRemoteFilesystem({
 				sandbox: k8sSandbox,
 				basePath: input.rootPath,
@@ -959,7 +994,7 @@ class WorkspaceSessionManager {
 		}
 
 		const now = Date.now();
-		return {
+		const session: WorkspaceSession = {
 			workspaceRef: `ws_${nanoid(12)}`,
 			executionId: input.executionId,
 			name: input.name,
@@ -976,6 +1011,91 @@ class WorkspaceSessionManager {
 			createdAt: now,
 			lastAccessedAt: now,
 		};
+
+		// Register reprovision callback so workspace state (directories, cloned repos) is
+		// restored transparently when the sandbox pod is replaced.
+		if (k8sSandboxRef) {
+			k8sSandboxRef.onReprovision = async () => {
+				await this.restoreWorkspaceAfterReprovision(session);
+			};
+		}
+
+		return session;
+	}
+
+	/**
+	 * Restore workspace state after the sandbox pod was re-provisioned.
+	 * Creates workspace directory, re-clones repositories, and re-initializes
+	 * the change tracking git repo on the new pod.
+	 */
+	private async restoreWorkspaceAfterReprovision(
+		session: WorkspaceSession,
+	): Promise<void> {
+		console.log(
+			`[workspace-sessions] Restoring workspace after sandbox re-provision (ref=${session.workspaceRef})`,
+		);
+
+		// 1. Re-create workspace root directory
+		await session.sandbox.executeCommand(
+			`mkdir -p ${shellEscape(session.rootPath)}`,
+			undefined,
+			{ timeout: 15_000, cwd: "/" },
+		);
+
+		// 2. Re-clone repository if one was previously cloned
+		if (session.cloneInfo) {
+			const info = session.cloneInfo;
+			const repoUrl = this.resolveRepositoryUrl({
+				repositoryUrl: info.repositoryUrl,
+				repositoryOwner: info.repositoryOwner,
+				repositoryRepo: info.repositoryRepo,
+				repositoryUsername: info.repositoryUsername,
+				token: info.repositoryToken,
+			});
+
+			const cloneResult = await session.sandbox.executeCommand(
+				`GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch ${shellEscape(info.repositoryBranch)} ${shellEscape(repoUrl)} ${shellEscape(info.cloneDir)}`,
+				undefined,
+				{
+					timeout: Math.max(session.commandTimeoutMs, 120_000),
+					cwd: session.rootPath,
+				},
+			);
+
+			if (!cloneResult.success || cloneResult.exitCode !== 0) {
+				const stderr = cloneResult.stderr || "unknown clone error";
+				const sanitized = info.repositoryToken
+					? stderr.replaceAll(info.repositoryToken, "***")
+					: stderr;
+				console.error(
+					`[workspace-sessions] Re-clone failed after re-provision: ${sanitized}`,
+				);
+				throw new Error(`Re-clone failed after sandbox re-provision: ${sanitized}`);
+			}
+
+			if (STRIP_CLONE_GIT_DIR) {
+				await session.sandbox.executeCommand(
+					`rm -rf ${shellEscape(pathPosix.join(info.cloneDir, ".git"))}`,
+					undefined,
+					{
+						timeout: 30_000,
+						cwd: session.rootPath,
+					},
+				);
+			}
+
+			console.log(
+				`[workspace-sessions] Re-cloned ${info.cloneDir} after sandbox re-provision`,
+			);
+		}
+
+		// 3. Re-initialize change tracking git repo
+		const newTrackingGitDir = await this.initializeTrackingRepository({
+			sandbox: session.sandbox,
+			rootPath: session.rootPath,
+			executionId: session.executionId,
+		});
+		session.trackingGitDir = newTrackingGitDir ?? undefined;
 	}
 
 	private async initializeTrackingRepository(input: {
@@ -1408,6 +1528,17 @@ class WorkspaceSessionManager {
 		}
 
 		try {
+			// Try reconnecting to existing K8s sandbox pod first (preserves cloned data)
+			if (record.backend === "k8s" && record.sandboxState) {
+				const reconnected = await this.tryReconnectToSandbox(record);
+				if (reconnected) {
+					return reconnected;
+				}
+				console.log(
+					`[workspace-sessions] Reconnect failed for ${record.workspaceRef}, creating new sandbox`,
+				);
+			}
+
 			const session = await this.createSession({
 				executionId: record.workflowExecutionId,
 				name: record.name,
@@ -1444,6 +1575,95 @@ class WorkspaceSessionManager {
 			} catch {
 				// Best effort.
 			}
+			return null;
+		}
+	}
+
+	/**
+	 * Attempt to reconnect to an existing K8s sandbox pod using persisted state.
+	 * If the pod is still alive and reachable, reuse it (preserving cloned data).
+	 */
+	private async tryReconnectToSandbox(
+		record: PersistedWorkspaceSession,
+	): Promise<WorkspaceSession | null> {
+		const state = record.sandboxState as unknown as K8sSandboxPersistedState | undefined;
+		if (
+			!state ||
+			!state.claimName ||
+			!state.podName ||
+			!state.podIp
+		) {
+			return null;
+		}
+
+		try {
+			const reconnected = await K8sSandbox.reconnect(state, {
+				workingDirectory: record.rootPath,
+				timeout: record.commandTimeoutMs,
+			});
+			if (!reconnected) return null;
+
+			const filesystem = new K8sRemoteFilesystem({
+				sandbox: reconnected,
+				basePath: record.rootPath,
+				timeout: record.commandTimeoutMs,
+			});
+
+			const enabledTools = new Set<WorkspaceToolName>();
+			for (const t of record.enabledTools) {
+				const normalized = normalizeToolName(t);
+				if (normalized) enabledTools.add(normalized);
+			}
+			if (enabledTools.size === 0) {
+				for (const t of WORKSPACE_TOOL_NAMES) enabledTools.add(t);
+			}
+
+			const now = Date.now();
+			const session: WorkspaceSession = {
+				workspaceRef: record.workspaceRef,
+				executionId: record.workflowExecutionId,
+				name: record.name,
+				rootPath: record.rootPath,
+				clonePath: record.clonePath,
+				backend: "k8s",
+				sandbox: reconnected,
+				filesystem,
+				enabledTools,
+				requireReadBeforeWrite: record.requireReadBeforeWrite,
+				commandTimeoutMs: record.commandTimeoutMs,
+				readPaths: new Set<string>(),
+				changeSequence: 0,
+				createdAt: now,
+				lastAccessedAt: now,
+			};
+
+			// Register reprovision callback on reconnected sandbox
+			reconnected.onReprovision = async () => {
+				await this.restoreWorkspaceAfterReprovision(session);
+			};
+
+			this.sessions.set(session.workspaceRef, session);
+			this.executionToWorkspace.set(
+				record.workflowExecutionId,
+				record.workspaceRef,
+			);
+			if (record.durableInstanceId) {
+				this.durableInstanceToWorkspace.set(
+					record.durableInstanceId,
+					record.workspaceRef,
+				);
+			}
+
+			console.log(
+				`[workspace-sessions] Reconnected workspace ${record.workspaceRef} to sandbox pod ${state.podName} (${state.podIp})`,
+			);
+			this.touch(session);
+			return session;
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed reconnecting to sandbox pod for ${record.workspaceRef}:`,
+				err,
+			);
 			return null;
 		}
 	}
@@ -1544,7 +1764,8 @@ class WorkspaceSessionManager {
 				return input.repositoryUrl;
 			}
 			const user =
-				input.repositoryUsername || (parsed.hostname === "github.com" ? input.token : "");
+				input.repositoryUsername ||
+				(parsed.hostname === "github.com" ? input.token : "");
 			if (!user) {
 				return input.repositoryUrl;
 			}

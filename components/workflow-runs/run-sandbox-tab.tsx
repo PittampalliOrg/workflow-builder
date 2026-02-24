@@ -38,7 +38,7 @@ export function RunSandboxTab({
 		return <div className="p-4 text-sm text-muted-foreground">Waiting for sandbox allocation...</div>;
 	}
 
-	const vncUrl = `/api/sandbox-vnc/${podIp}/vnc.html?autoconnect=true&resize=remote`;
+	const vncUrl = `/api/sandbox-vnc/${podIp}/vnc.html?autoconnect=true&resize=remote&path=api/sandbox-vnc/${podIp}/websockify`;
 
 	return (
 		<Card className="h-[calc(100vh-12rem)] min-h-[600px] overflow-hidden">

@@ -224,8 +224,8 @@ export async function resolveCloneRepository(
 				repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
 				repositoryOwner: giteaOwner,
 				repositoryRepo: giteaRepo,
-				repositoryUsername: input.repositoryUsername,
-				repositoryToken: input.repositoryToken,
+				repositoryUsername: auth?.username || "",
+				repositoryToken: auth?.password || "",
 				ensuredInGitea: ensured,
 			};
 		}
@@ -263,8 +263,8 @@ export async function resolveCloneRepository(
 		repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
 		repositoryOwner: giteaOwner,
 		repositoryRepo: giteaRepo,
-		repositoryUsername: input.repositoryUsername,
-		repositoryToken: input.repositoryToken,
+		repositoryUsername: auth?.username || "",
+		repositoryToken: auth?.password || "",
 		ensuredInGitea: ensured,
 	};
 }

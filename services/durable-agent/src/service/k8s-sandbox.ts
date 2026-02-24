@@ -58,6 +58,16 @@ export interface K8sSandboxOptions {
 	onDestroy?: () => Promise<void>;
 }
 
+/** Persisted sandbox metadata for reconnecting after pod restart. */
+export interface K8sSandboxPersistedState {
+	claimName: string;
+	sandboxName: string;
+	podName: string;
+	podIp: string;
+	namespace: string;
+	templateName: string;
+}
+
 // ── K8s API Helpers ───────────────────────────────────────────
 
 function readK8sToken(): string {
@@ -81,6 +91,11 @@ function k8sRequest(method: string, path: string, body?: object): Promise<any> {
 		const token = readK8sToken();
 		const ca = readK8sCa();
 
+		const contentType =
+			method === "PATCH"
+				? "application/merge-patch+json"
+				: "application/json";
+
 		const req = httpsRequest(
 			{
 				hostname: K8S_HOST,
@@ -89,7 +104,7 @@ function k8sRequest(method: string, path: string, body?: object): Promise<any> {
 				method,
 				headers: {
 					Authorization: `Bearer ${token}`,
-					"Content-Type": "application/json",
+					"Content-Type": contentType,
 					Accept: "application/json",
 				},
 				ca,
@@ -148,6 +163,13 @@ export class K8sSandbox {
 	private podIp: string | null = null;
 	private loggedImageWarning = false;
 	private _destroying = false;
+	private _reprovisioning = false;
+
+	/**
+	 * Optional callback invoked after the sandbox is re-provisioned (new pod ready).
+	 * Used by workspace-sessions to re-clone repositories into the new pod.
+	 */
+	onReprovision?: () => Promise<void>;
 
 	get workingDirectory(): string {
 		return this._workingDirectory;
@@ -172,6 +194,21 @@ export class K8sSandbox {
 			sandboxName: this.sandboxName,
 			podName: this.podName,
 			podIp: this.podIp,
+		};
+	}
+
+	/** Get persisted state for reconnection after durable-agent restart. */
+	getPersistedState(): K8sSandboxPersistedState | null {
+		if (!this.claimName || !this.sandboxName || !this.podName || !this.podIp) {
+			return null;
+		}
+		return {
+			claimName: this.claimName,
+			sandboxName: this.sandboxName,
+			podName: this.podName,
+			podIp: this.podIp,
+			namespace: this.sandboxNamespace,
+			templateName: this.templateName,
 		};
 	}
 
@@ -203,6 +240,40 @@ export class K8sSandbox {
 
 	// ── Lifecycle ─────────────────────────────────────────────
 
+	/**
+	 * Reconnect to an existing sandbox pod using persisted state.
+	 * Returns a K8sSandbox instance connected to the existing pod,
+	 * or null if the pod is no longer reachable.
+	 */
+	static async reconnect(
+		persisted: K8sSandboxPersistedState,
+		options?: Pick<K8sSandboxOptions, "workingDirectory" | "timeout">,
+	): Promise<K8sSandbox | null> {
+		const sandbox = new K8sSandbox({
+			templateName: persisted.templateName,
+			namespace: persisted.namespace,
+			workingDirectory: options?.workingDirectory,
+			timeout: options?.timeout,
+		});
+		sandbox.claimName = persisted.claimName;
+		sandbox.sandboxName = persisted.sandboxName;
+		sandbox.podName = persisted.podName;
+		sandbox.podIp = persisted.podIp;
+
+		// Verify the pod is still alive and reachable
+		const healthy = await sandbox.waitForHttpReady(15_000);
+		if (!healthy) {
+			console.warn(
+				`[k8s-sandbox] Reconnect failed: pod ${persisted.podName} (${persisted.podIp}) not reachable`,
+			);
+			return null;
+		}
+		console.log(
+			`[k8s-sandbox] Reconnected to existing sandbox: pod=${persisted.podName}, ip=${persisted.podIp}`,
+		);
+		return sandbox;
+	}
+
 	async start(): Promise<void> {
 		console.log(
 			`[k8s-sandbox] Creating SandboxClaim (template=${this.templateName}, namespace=${this.sandboxNamespace})`,
@@ -211,6 +282,7 @@ export class K8sSandbox {
 		this.claimName = `durable-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 		const claimPath = `/apis/${CLAIM_API_GROUP}/${CLAIM_API_VERSION}/namespaces/${this.sandboxNamespace}/${CLAIM_PLURAL}`;
+
 		await k8sRequest("POST", claimPath, {
 			apiVersion: `${CLAIM_API_GROUP}/${CLAIM_API_VERSION}`,
 			kind: "SandboxClaim",
@@ -239,9 +311,31 @@ export class K8sSandbox {
 		this.podName = podEndpoint.podName;
 		this.podIp = podEndpoint.podIp;
 
+		// Verify HTTP server is actually accepting connections before declaring ready
+		const ready = await this.waitForHttpReady(30_000);
+		if (!ready) {
+			throw new Error(
+				`Sandbox pod ${this.podName} (${this.podIp}) HTTP server not ready after provisioning`,
+			);
+		}
+
 		console.log(
 			`[k8s-sandbox] Sandbox ready: sandbox=${sandboxName}, pod=${this.podName}, ip=${this.podIp}`,
 		);
+
+		// Set a shutdown time on the Sandbox to auto-cleanup stale sandboxes
+		// (recommended by agent-sandbox best practices — see issue #271)
+		try {
+			const ttlHours = 4;
+			const shutdownTime = new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();
+			const sandboxPath = `/apis/agents.x-k8s.io/v1alpha1/namespaces/${this.sandboxNamespace}/sandboxes/${sandboxName}`;
+			await k8sRequest("PATCH", sandboxPath, {
+				spec: { shutdownTime },
+			});
+			console.log(`[k8s-sandbox] Set shutdownTime=${shutdownTime} on sandbox=${sandboxName}`);
+		} catch (err) {
+			console.warn(`[k8s-sandbox] Failed to set shutdownTime: ${err}`);
+		}
 
 		await this._onStart?.();
 	}
@@ -282,7 +376,7 @@ export class K8sSandbox {
 	async executeCommand(
 		command: string,
 		args?: string[],
-		options?: { timeout?: number; cwd?: string },
+		options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 	): Promise<CommandResult> {
 		if (!this.podIp) {
 			throw new Error("K8s sandbox not ready — call start() first");
@@ -300,7 +394,11 @@ export class K8sSandbox {
 		const startTime = Date.now();
 
 		try {
-			const result = await this.callSandboxExecute(wrappedCommand, timeout);
+			const result = await this.callSandboxExecute(
+				wrappedCommand,
+				timeout,
+				options?.env,
+			);
 			const executionTimeMs = Date.now() - startTime;
 
 			return {
@@ -331,9 +429,71 @@ export class K8sSandbox {
 
 	// ── Private Helpers ───────────────────────────────────────
 
+	/**
+	 * Wait for the sandbox HTTP server (port 8888) to accept connections.
+	 * Polls GET /health with short timeouts until it responds or deadline is reached.
+	 */
+	private async waitForHttpReady(deadlineMs: number): Promise<boolean> {
+		if (!this.podIp) return false;
+		const start = Date.now();
+		while (Date.now() - start < deadlineMs) {
+			try {
+				const controller = new AbortController();
+				const timer = setTimeout(() => controller.abort(), 3000);
+				const res = await fetch(`http://${this.podIp}:8888/health`, {
+					signal: controller.signal,
+				});
+				clearTimeout(timer);
+				if (res.ok) return true;
+			} catch {
+				// Server not ready yet
+			}
+			await new Promise((r) => setTimeout(r, 500));
+		}
+		return false;
+	}
+
 	private async callSandboxExecute(
 		command: string,
 		timeoutMs: number,
+		env?: Record<string, string>,
+	): Promise<{ stdout: string; stderr: string; exit_code: number }> {
+		try {
+			return await this._fetchExecute(command, timeoutMs, env);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			// "fetch failed" means the pod is unreachable (terminated/evicted).
+			// Attempt one transparent re-provision before propagating the error.
+			// Skip if already inside a reprovision cycle (prevents recursion from onReprovision callback).
+			if (
+				!this._reprovisioning &&
+				(msg.includes("fetch failed") ||
+					msg.includes("ECONNREFUSED") ||
+					msg.includes("ECONNRESET"))
+			) {
+				console.warn(
+					`[k8s-sandbox] Sandbox pod unreachable (${msg}), re-provisioning...`,
+				);
+				try {
+					await this.reprovision();
+					console.log(
+						`[k8s-sandbox] Re-provisioned sandbox: pod=${this.podName}, ip=${this.podIp}. Retrying command.`,
+					);
+					return await this._fetchExecute(command, timeoutMs, env);
+				} catch (reprovisionErr) {
+					console.error(
+						`[k8s-sandbox] Re-provision failed: ${reprovisionErr instanceof Error ? reprovisionErr.message : String(reprovisionErr)}`,
+					);
+				}
+			}
+			throw err;
+		}
+	}
+
+	private async _fetchExecute(
+		command: string,
+		timeoutMs: number,
+		env?: Record<string, string>,
 	): Promise<{ stdout: string; stderr: string; exit_code: number }> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -342,7 +502,11 @@ export class K8sSandbox {
 			const res = await fetch(`http://${this.podIp}:8888/execute`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ command }),
+				body: JSON.stringify({
+					command,
+					timeout: timeoutMs,
+					...(env ? { env } : {}),
+				}),
 				signal: controller.signal,
 			});
 
@@ -358,6 +522,44 @@ export class K8sSandbox {
 			};
 		} finally {
 			clearTimeout(timer);
+		}
+	}
+
+	/**
+	 * Delete the current SandboxClaim (if any) and provision a fresh sandbox pod.
+	 * Used when the current pod becomes unreachable mid-execution.
+	 * Calls onReprovision callback (if set) to restore workspace state (e.g. re-clone repos).
+	 */
+	private async reprovision(): Promise<void> {
+		this._reprovisioning = true;
+		try {
+			// Clean up old claim (best-effort)
+			if (this.claimName) {
+				try {
+					const claimPath = `/apis/${CLAIM_API_GROUP}/${CLAIM_API_VERSION}/namespaces/${this.sandboxNamespace}/${CLAIM_PLURAL}/${this.claimName}`;
+					await k8sRequest("DELETE", claimPath);
+					console.log(
+						`[k8s-sandbox] Deleted stale SandboxClaim "${this.claimName}"`,
+					);
+				} catch {
+					// Claim may already be gone
+				}
+			}
+			this.claimName = null;
+			this.sandboxName = null;
+			this.podName = null;
+			this.podIp = null;
+			this._destroying = false;
+
+			// Re-run the full provisioning flow
+			await this.start();
+
+			// Restore workspace state (re-clone repos, etc.)
+			if (this.onReprovision) {
+				await this.onReprovision();
+			}
+		} finally {
+			this._reprovisioning = false;
 		}
 	}
 

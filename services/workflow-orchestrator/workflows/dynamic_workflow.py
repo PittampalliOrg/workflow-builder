@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import timedelta
 from typing import Any
@@ -55,6 +56,10 @@ MUTATING_TOOL_NAMES = {
     "mkdir",
     "execute_command",
 }
+
+STRICT_DURABLE_PLAN_CONTRACT = str(
+    os.environ.get("DURABLE_PLAN_CONTRACT_STRICT", "true")
+).strip().lower() not in {"0", "false", "no", "off"}
 
 def is_unresolved_template(value: str) -> bool:
     """Check if a string value is an unresolved template like {{PlanNode.workflow_id}}."""
@@ -368,8 +373,8 @@ def _build_plan_execution_text(plan: dict[str, Any]) -> str:
             continue
         tool = str(task.get("tool") or "tool")
         task_id = str(task.get("id") or f"task-{idx}")
-        title = str(task.get("title") or "Task")
-        instructions = str(task.get("instructions") or "").strip()
+        title = str(task.get("subject") or task.get("title") or "Task")
+        instructions = str(task.get("description") or task.get("instructions") or "").strip()
         reasoning = str(task.get("reasoning") or "").strip()
         blocked_by = task.get("blockedBy")
         deps = ""
@@ -592,8 +597,17 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             if node_type in ("action", "activity"):
                 action_type = config.get("actionType", "")
 
-                # Long-running child workflows (bypass function-router)
-                if action_type.startswith("durable/") or action_type == "mastra/execute":
+                # Long-running child workflows (bypass function-router).
+                # Keep durable/materialize-plan on the regular action path because
+                # it is a synchronous tool endpoint that does not require prompt/mode.
+                if action_type in (
+                    "durable/run",
+                    "durable/plan",
+                    "durable/claude-plan",
+                    "durable/execute-plan",
+                    "durable/execute-plan-dag",
+                    "mastra/execute",
+                ):
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
                     node_start_time = time.time()
@@ -1555,8 +1569,13 @@ def process_agent_child_workflow(
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
-    mode = str(resolved_config.get("mode", "plan_mode") or "plan_mode").strip().lower()
+    default_mode = "plan_mode"
+    mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
+        mode = "execute_direct"
+    if action_type == "durable/claude-plan":
+        mode = "plan_mode"
+    if action_type == "durable/execute-plan-dag":
         mode = "execute_direct"
 
     configured_artifact_ref = resolved_config.get("artifactRef")
@@ -1568,6 +1587,8 @@ def process_agent_child_workflow(
     prompt = str(resolved_config.get("prompt", "") or "").strip()
     if not prompt and action_type == "mastra/execute":
         prompt = "Execute the provided plan"
+    if not prompt and action_type == "durable/execute-plan-dag":
+        prompt = "Execute the plan as a DAG workflow"
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "execute_direct" and not artifact_ref:
@@ -1601,7 +1622,11 @@ def process_agent_child_workflow(
     except (TypeError, ValueError):
         max_turns = None
 
-    if action_type == "mastra/execute" or (mode == "execute_direct" and artifact_ref):
+    if action_type == "durable/execute-plan-dag":
+        run_mode = "execute_plan_dag"
+        from activities.call_agent_service import call_durable_execute_plan_dag
+        call_activity_fn = call_durable_execute_plan_dag
+    elif action_type == "mastra/execute" or (mode == "execute_direct" and artifact_ref):
         run_mode = "execute_plan"
         from activities.call_agent_service import call_durable_execute_plan
         call_activity_fn = call_durable_execute_plan
@@ -1635,6 +1660,7 @@ def process_agent_child_workflow(
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
         "workspaceRef": resolved_config.get("workspaceRef"),
+        "planningBackend": "claude_code_v1" if action_type == "durable/claude-plan" else resolved_config.get("planningBackend"),
         "integrations": integrations,
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
@@ -1646,6 +1672,16 @@ def process_agent_child_workflow(
         "approvalTimeoutMinutes": approval_timeout_minutes,
         "_otel": otel_ctx,
     }
+
+    if run_mode == "execute_plan_dag":
+        activity_input["artifactRef"] = artifact_ref
+        activity_input["cwd"] = resolved_config.get("cwd", "")
+        activity_input["maxTaskRetries"] = resolved_config.get("maxTaskRetries")
+        activity_input["taskTimeoutMinutes"] = resolved_config.get("taskTimeoutMinutes")
+        activity_input["overallTimeoutMinutes"] = resolved_config.get("overallTimeoutMinutes")
+        plan_input = resolved_config.get("planJson") or resolved_config.get("plan")
+        if plan_input:
+            activity_input["plan"] = plan_input
 
     if action_type == "mastra/execute" or run_mode == "execute_plan":
         activity_input["planJson"] = resolved_config.get("planJson")
@@ -1690,6 +1726,26 @@ def process_agent_child_workflow(
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode":
+        if action_type == "durable/claude-plan":
+            schema_version = str(start_result.get("schemaVersion") or "").strip()
+            storage_backend = str(start_result.get("storageBackend") or "").strip()
+            if STRICT_DURABLE_PLAN_CONTRACT and (
+                schema_version != "claude_task_graph_v1"
+                or storage_backend != "workflow_plan_artifacts"
+            ):
+                return {
+                    "success": False,
+                    "error": (
+                        "durable/claude-plan contract mismatch: expected "
+                        "schemaVersion=claude_task_graph_v1 and "
+                        "storageBackend=workflow_plan_artifacts; got "
+                        f"schemaVersion={schema_version or '<missing>'} "
+                        f"storageBackend={storage_backend or '<missing>'}. "
+                        "Deploy a durable-agent image that supports persisted plan artifacts."
+                    ),
+                    "result": start_result,
+                }
+
         plan_artifact_ref = start_result.get("artifactRef")
         if not isinstance(plan_artifact_ref, str) or not plan_artifact_ref.strip():
             return {
@@ -1704,6 +1760,8 @@ def process_agent_child_workflow(
             "tasks": start_result.get("tasks"),
             "planMarkdown": start_result.get("planMarkdown"),
             "planPolicy": start_result.get("planPolicy"),
+            "schemaVersion": start_result.get("schemaVersion"),
+            "storageBackend": start_result.get("storageBackend"),
             "planning": {
                 "daprPlanningInstanceId": start_result.get("daprPlanningInstanceId"),
             },

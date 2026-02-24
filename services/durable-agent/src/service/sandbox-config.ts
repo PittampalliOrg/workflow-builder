@@ -104,7 +104,7 @@ export interface Sandbox {
 	executeCommand(
 		command: string,
 		args?: string[],
-		options?: { timeout?: number; cwd?: string },
+		options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 	): Promise<CommandResult>;
 	getSandboxPodIp?(): string | null;
 	getDebugInfo?(): Record<string, unknown>;
@@ -166,10 +166,17 @@ export class LocalSandbox implements Sandbox {
 	async executeCommand(
 		command: string,
 		args?: string[],
-		options?: { timeout?: number; cwd?: string },
+		options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 	): Promise<CommandResult> {
 		const timeout = options?.timeout ?? this._timeout;
 		const cwd = options?.cwd ?? this.workDir;
+		const envOverrides = Object.fromEntries(
+			Object.entries(options?.env ?? {})
+				.filter(
+					([key, value]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && value.length > 0,
+				)
+				.map(([key, value]) => [key, value]),
+		);
 
 		let fullCommand: string;
 		if (args && args.length > 0) {
@@ -190,7 +197,7 @@ export class LocalSandbox implements Sandbox {
 				{
 					cwd,
 					timeout,
-					env: { ...buildAllowedEnv(), HOME: cwd },
+					env: { ...buildAllowedEnv(), HOME: cwd, ...envOverrides },
 					maxBuffer: 10 * 1024 * 1024, // 10MB
 				},
 			);
@@ -367,13 +374,15 @@ console.log(`[sandbox] Backend: ${SANDBOX_BACKEND}`);
  */
 export async function executeCommandViaSandbox(
 	command: string,
-	opts?: { timeout?: number },
+	opts?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
 	const timeout =
 		opts?.timeout ?? parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
 
 	const result = await sandbox.executeCommand("sh", ["-c", command], {
 		timeout,
+		cwd: opts?.cwd,
+		env: opts?.env,
 	});
 	return {
 		stdout: result.stdout,

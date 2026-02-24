@@ -22,6 +22,7 @@
  * - POST /api/run/:workflowId/terminate — Terminate a durable run by workflow id
  * - POST /api/runs/terminate-by-parent — Terminate active runs by parent workflow id
  * - POST /api/plan             — Synchronous planning
+ * - POST /api/plan/materialize — Materialize persisted plan artifact into workspace files
  * - POST /api/execute-plan     — Fire-and-forget plan execution
  * - GET  /api/dapr/subscribe   — Dapr subscription discovery
  * - POST /api/dapr/sub         — Inbound Dapr events
@@ -37,6 +38,8 @@ import express from "express";
 import { DaprWorkflowClient } from "@dapr/dapr";
 import { nanoid } from "nanoid";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { posix as pathPosix } from "node:path";
 import { openai } from "@ai-sdk/openai";
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
@@ -48,13 +51,21 @@ import {
 	handleDaprSubscriptionEvent,
 	getDaprSubscriptions,
 } from "./completion-publisher.js";
+import { PlanGenerationError, generatePlanFromMarkdown } from "./planner.js";
 import {
-	PlanGenerationError,
-	generatePlanFromMarkdown,
-	validatePlanForExecution,
-} from "./planner.js";
-import type { Plan } from "./planner.js";
+	ClaudePlanGenerationError,
+	generateClaudeTaskPlan,
+} from "./claude-code-planner.js";
+import {
+	type ClaudeTaskPlan,
+	validateClaudeTaskPlan,
+} from "./claude-plan-schema.js";
 import { planArtifacts } from "./plan-artifacts.js";
+import {
+	createExecuteClaudeTask as createDagExecuteClaudeTaskActivity,
+	createPersistDagState as createDagPersistStateActivity,
+	type DagExecutorResult,
+} from "./dag-executor.js";
 import { workflowRunTracker } from "./run-tracker.js";
 import type { DaprEvent } from "./types.js";
 import {
@@ -171,7 +182,7 @@ type ActiveRun = {
 	daprInstanceId: string;
 	parentExecutionId: string;
 	workspaceRef?: string;
-	mode: "run" | "execute_plan";
+	mode: "run" | "execute_plan" | "execute_plan_dag";
 };
 
 const activeRuns = new Map<string, ActiveRun>();
@@ -990,8 +1001,29 @@ Be concise and direct. Use the appropriate tool for each task.`,
 				},
 			});
 
-			// Start the agent (registers workflows + starts runtime)
-			await agent.start();
+			// Create shared runtime, register agent + DAG executor, then start
+			const { WorkflowRuntime } = await import("@dapr/dapr");
+			const sharedRuntime = new WorkflowRuntime();
+			agent.register(sharedRuntime);
+
+			// Register DAG executor workflow + activities on the same runtime
+			const { createDagExecutorWorkflow } = await import("./dag-executor.js");
+			const dagExecutor = createDagExecutorWorkflow({
+				workspaceSessions,
+				planArtifacts,
+			});
+			sharedRuntime.registerWorkflow(dagExecutor.implementation);
+			sharedRuntime.registerActivity(
+				createDagExecuteClaudeTaskActivity({ workspaceSessions }),
+			);
+			sharedRuntime.registerActivity(
+				createDagPersistStateActivity({ planArtifacts }),
+			);
+
+			await sharedRuntime.start();
+			console.log(
+				"[durable-agent] Shared runtime started (agent + DAG executor)",
+			);
 
 			// Create workflow client for scheduling
 			workflowClient = new DaprWorkflowClient();
@@ -1103,6 +1135,10 @@ type PlanModePolicy = {
 	mutatingToolCalls: number;
 	totalToolCalls: number;
 };
+
+function sha256Hex(content: string): string {
+	return createHash("sha256").update(content).digest("hex");
+}
 
 function parseOptionalBoolean(input: unknown): boolean | undefined {
 	if (typeof input === "boolean") return input;
@@ -1450,19 +1486,23 @@ function didRunMutateFiles(
 	return Boolean(changeSummary?.changed || changeSummary?.files.length);
 }
 
-function planHasExecutableTasks(plan: Plan): boolean {
-	return plan.tasks.length > 0 && plan.steps.length > 0;
+function planHasExecutableTasks(plan: ClaudeTaskPlan): boolean {
+	return plan.tasks.length > 0;
 }
 
-function buildPlanExecutionText(plan: Plan): string {
+function buildPlanExecutionText(plan: ClaudeTaskPlan): string {
 	return plan.tasks
 		.map((task, index) => {
 			const deps =
 				task.blockedBy.length > 0
 					? ` [blockedBy: ${task.blockedBy.join(", ")}]`
 					: "";
+			const toolPrefix =
+				typeof task.tool === "string" && task.tool.trim().length > 0
+					? `[${task.tool.trim()}] `
+					: "";
 			const why = task.reasoning ? ` — ${task.reasoning}` : "";
-			return `${index + 1}. [${task.tool}] (${task.id}) ${task.title}: ${task.instructions}${why}${deps}`;
+			return `${index + 1}. ${toolPrefix}(${task.id}) ${task.subject}: ${task.description}${why}${deps}`;
 		})
 		.join("\n");
 }
@@ -1482,8 +1522,10 @@ function planTaskImpliesFileMutation(tool: string): boolean {
 	);
 }
 
-function planLikelyRequiresFileChanges(plan: Plan): boolean {
-	return plan.tasks.some((task) => planTaskImpliesFileMutation(task.tool));
+function planLikelyRequiresFileChanges(plan: ClaudeTaskPlan): boolean {
+	return plan.tasks.some((task) =>
+		planTaskImpliesFileMutation(typeof task.tool === "string" ? task.tool : ""),
+	);
 }
 
 /**
@@ -2906,6 +2948,148 @@ app.post("/api/plan", async (req, res) => {
 		if (!cwd && session) {
 			cwd = session.clonePath || session.rootPath;
 		}
+		const planningBackendRaw =
+			typeof req.body?.planningBackend === "string"
+				? req.body.planningBackend.trim().toLowerCase()
+				: "";
+		const planningBackend = planningBackendRaw;
+
+		if (planningBackend === "claude_code_v1") {
+			const timeoutMinutesRaw = req.body?.timeoutMinutes;
+			let timeoutMinutes = 10;
+			if (timeoutMinutesRaw != null) {
+				const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
+				if (Number.isFinite(parsed) && parsed > 0) {
+					timeoutMinutes = parsed;
+				}
+			}
+			const timeoutMs = Math.min(
+				Math.max(timeoutMinutes * 60_000, 60_000),
+				60 * 60_000,
+			);
+			const planningModel =
+				typeof req.body?.model === "string" && req.body.model.trim()
+					? req.body.model.trim()
+					: undefined;
+			const envOverrides: Record<string, string> = {};
+			if (
+				typeof process.env.ANTHROPIC_API_KEY === "string" &&
+				process.env.ANTHROPIC_API_KEY.trim()
+			) {
+				envOverrides.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY.trim();
+			}
+			if (
+				typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" &&
+				process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()
+			) {
+				envOverrides.CLAUDE_CODE_OAUTH_TOKEN =
+					process.env.CLAUDE_CODE_OAUTH_TOKEN.trim();
+			}
+
+			eventBus.emitEvent("planning_started", {
+				prompt,
+				backend: "claude_code_v1",
+			});
+			const { plan, meta: generationMeta } = await generateClaudeTaskPlan({
+				userPrompt: prompt,
+				repositoryRoot: cwd || undefined,
+				model: planningModel,
+				timeoutMs,
+				executeCommand: async (command, commandTimeoutMs) => {
+					if (workspaceRef) {
+						const result = await workspaceSessions.executeCommand({
+							workspaceRef,
+							executionId,
+							command,
+							timeoutMs: commandTimeoutMs,
+							env:
+								Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+						});
+						return {
+							stdout: result.stdout,
+							stderr: result.stderr,
+							exitCode: result.exitCode,
+							success: result.success,
+						};
+					}
+					const result = await sandbox.executeCommand("sh", ["-c", command], {
+						timeout: commandTimeoutMs,
+						cwd: cwd || undefined,
+						env:
+							Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+					});
+					return {
+						stdout: result.stdout,
+						stderr: result.stderr,
+						exitCode: result.exitCode,
+						success: result.success,
+					};
+				},
+			});
+
+			if (!executionId || !workflowId || !nodeId) {
+				res.status(400).json({
+					success: false,
+					error: {
+						code: "PLAN_ARTIFACT_CONTEXT_REQUIRED",
+						message:
+							"executionId, workflowId, and nodeId are required for claude plan artifact persistence",
+					},
+				});
+				return;
+			}
+
+			let artifactRef: string;
+			try {
+				const artifact = await planArtifacts.save({
+					workflowExecutionId: executionId,
+					workflowId,
+					nodeId,
+					workspaceRef: workspaceRef || undefined,
+					clonePath: cwd || undefined,
+					goal: plan.goal,
+					plan: plan as unknown as Record<string, unknown>,
+					sourcePrompt: prompt,
+					artifactType: plan.artifactType,
+					metadata: {
+						planningBackend: "claude_code_v1",
+						generationMeta,
+						parentExecutionId: parentExecutionId || undefined,
+					},
+				});
+				artifactRef = artifact.artifactRef;
+			} catch (persistErr) {
+				res.status(500).json({
+					success: false,
+					error: {
+						code: "PLAN_ARTIFACT_PERSIST_FAILED",
+						message:
+							persistErr instanceof Error
+								? persistErr.message
+								: String(persistErr),
+					},
+				});
+				return;
+			}
+
+			eventBus.emitEvent("planning_completed", {
+				goal: plan.goal,
+				stepCount: plan.tasks.length,
+				estimatedToolCalls: plan.estimated_tool_calls,
+				backend: "claude_code_v1",
+			});
+			res.json({
+				success: true,
+				plan,
+				artifactRef,
+				schemaVersion: "claude_task_graph_v1",
+				storageBackend: "workflow_plan_artifacts",
+				generationMeta,
+				tasks: plan.tasks,
+				...(workspaceRef ? { workspaceRef } : {}),
+			});
+			return;
+		}
 
 		const requestAgentConfig = await resolveRequestAgentConfig({
 			body: req.body as Record<string, unknown>,
@@ -3132,6 +3316,7 @@ app.post("/api/plan", async (req, res) => {
 			plan,
 			artifactRef,
 			schemaVersion: "task_graph_v1",
+			storageBackend: "workflow_plan_artifacts",
 			generationMeta,
 			planMarkdown,
 			planPolicy,
@@ -3145,6 +3330,17 @@ app.post("/api/plan", async (req, res) => {
 			daprPlanningInstanceIds: planningInstanceIds,
 		});
 	} catch (err) {
+		if (err instanceof ClaudePlanGenerationError) {
+			res.status(422).json({
+				success: false,
+				error: {
+					code: err.code,
+					message: err.message,
+					details: err.details,
+				},
+			});
+			return;
+		}
 		if (err instanceof PlanGenerationError) {
 			res.status(422).json({
 				success: false,
@@ -3159,6 +3355,182 @@ app.post("/api/plan", async (req, res) => {
 			return;
 		}
 		res.status(500).json({ success: false, error: String(err) });
+	}
+});
+
+app.post("/api/plan/materialize", async (req, res) => {
+	try {
+		const artifactRef =
+			typeof req.body?.artifactRef === "string"
+				? req.body.artifactRef.trim()
+				: "";
+		if (!artifactRef) {
+			res.status(400).json({
+				success: false,
+				error: "artifactRef is required",
+			});
+			return;
+		}
+
+		const executionId =
+			typeof req.body?.executionId === "string"
+				? req.body.executionId.trim()
+				: typeof req.body?.dbExecutionId === "string"
+					? req.body.dbExecutionId.trim()
+					: "";
+		const workflowId =
+			typeof req.body?.workflowId === "string"
+				? req.body.workflowId.trim()
+				: "";
+		const nodeId =
+			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+		let workspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+		if (!workspaceRef && executionId) {
+			workspaceRef =
+				(await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+					executionId,
+				)) || "";
+		}
+		if (!workspaceRef) {
+			res.status(400).json({
+				success: false,
+				error: "workspaceRef is required",
+			});
+			return;
+		}
+
+		const session =
+			await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
+		if (!session) {
+			res.status(400).json({
+				success: false,
+				error: `workspaceRef not found: ${workspaceRef}`,
+			});
+			return;
+		}
+
+		const artifact = await planArtifacts.get(artifactRef);
+		if (!artifact) {
+			res.status(404).json({
+				success: false,
+				error: `Plan artifact not found: ${artifactRef}`,
+			});
+			return;
+		}
+
+		const parsedPlan = validateClaudeTaskPlan(artifact.plan);
+		if (!parsedPlan.success) {
+			res.status(422).json({
+				success: false,
+				error: {
+					code: "INVALID_PLAN_ARTIFACT_SCHEMA",
+					message:
+						"Stored plan artifact does not match claude_task_graph_v1 schema",
+					details: parsedPlan.issues,
+				},
+			});
+			return;
+		}
+		const plan = parsedPlan.plan;
+
+		const cloneRoot =
+			session.clonePath || artifact.clonePath || session.rootPath;
+		const requestedOutputDir =
+			typeof req.body?.outputDir === "string" ? req.body.outputDir.trim() : "";
+		const outputDir = requestedOutputDir
+			? requestedOutputDir.startsWith("/")
+				? pathPosix.normalize(requestedOutputDir)
+				: pathPosix.normalize(pathPosix.join(cloneRoot, requestedOutputDir))
+			: pathPosix.normalize(
+					pathPosix.join(cloneRoot, ".workflow/plans", artifactRef),
+				);
+
+		const tasksJsonPath = pathPosix.join(outputDir, "tasks.json");
+		const planJsonPath = pathPosix.join(outputDir, "plan.json");
+		const metadataPath = pathPosix.join(outputDir, "metadata.json");
+
+		const tasksJson = `${JSON.stringify(plan.tasks, null, 2)}\n`;
+		const planJson = `${JSON.stringify(plan, null, 2)}\n`;
+		const tasksJsonSha256 = sha256Hex(tasksJson);
+		const planJsonSha256 = sha256Hex(planJson);
+		const metadata = {
+			artifactRef,
+			artifactType: plan.artifactType,
+			schemaVersion: "claude_task_graph_v1",
+			storageBackend: "workflow_plan_artifacts",
+			goal: plan.goal,
+			estimatedToolCalls: plan.estimated_tool_calls,
+			taskCount: plan.tasks.length,
+			workflowExecutionId: artifact.workflowExecutionId,
+			workflowId: workflowId || artifact.workflowId,
+			nodeId: nodeId || artifact.nodeId,
+			workspaceRef,
+			outputDir,
+			files: {
+				tasksJsonPath,
+				planJsonPath,
+				metadataPath,
+			},
+			hashes: {
+				tasksJsonSha256,
+				planJsonSha256,
+			},
+			materializedAt: new Date().toISOString(),
+		};
+		const metadataJson = `${JSON.stringify(metadata, null, 2)}\n`;
+		const metadataJsonSha256 = sha256Hex(metadataJson);
+
+		await workspaceSessions.executeFileOperation({
+			workspaceRef,
+			executionId: executionId || undefined,
+			operation: "write_file",
+			path: tasksJsonPath,
+			content: tasksJson,
+		});
+		await workspaceSessions.executeFileOperation({
+			workspaceRef,
+			executionId: executionId || undefined,
+			operation: "write_file",
+			path: planJsonPath,
+			content: planJson,
+		});
+		await workspaceSessions.executeFileOperation({
+			workspaceRef,
+			executionId: executionId || undefined,
+			operation: "write_file",
+			path: metadataPath,
+			content: metadataJson,
+		});
+
+		res.json({
+			success: true,
+			artifactRef,
+			schemaVersion: "claude_task_graph_v1",
+			storageBackend: "workflow_plan_artifacts",
+			workspaceRef,
+			result: {
+				artifactRef,
+				goal: plan.goal,
+				taskCount: plan.tasks.length,
+				outputDir,
+				tasksJsonPath,
+				planJsonPath,
+				metadataPath,
+				hashes: {
+					tasksJsonSha256,
+					planJsonSha256,
+					metadataJsonSha256,
+				},
+			},
+		});
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
 	}
 });
 
@@ -3234,20 +3606,20 @@ app.post("/api/execute-plan", async (req, res) => {
 			return;
 		}
 
-		const parsedPlan = validatePlanForExecution(planInput);
+		const parsedPlan = validateClaudeTaskPlan(planInput);
 		if (!parsedPlan.success) {
 			res.status(400).json({
 				success: false,
 				error: {
 					code: "INVALID_PLAN_SCHEMA",
 					message:
-						"Plan must match canonical task_graph_v1 schema with non-empty tasks and steps",
+						"Plan must match claude_task_graph_v1 schema with non-empty tasks",
 					details: parsedPlan.issues,
 				},
 			});
 			return;
 		}
-		const plan: Plan = parsedPlan.plan;
+		const plan: ClaudeTaskPlan = parsedPlan.plan;
 		if (!planHasExecutableTasks(plan)) {
 			res.status(400).json({
 				success: false,
@@ -3501,6 +3873,316 @@ app.post("/api/execute-plan", async (req, res) => {
 	}
 });
 
+// ── Execute Plan DAG ──────────────────────────────────────────
+// Executes a claude_task_graph_v1 plan as a Dapr workflow with per-task
+// Claude Code CLI activities. Each task is dependency-scheduled.
+
+app.post("/api/execute-plan-dag", async (req, res) => {
+	try {
+		const artifactRef =
+			typeof req.body?.artifactRef === "string"
+				? req.body.artifactRef.trim()
+				: "";
+		const cwd =
+			typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+		const model =
+			typeof req.body?.model === "string" && req.body.model.trim()
+				? req.body.model.trim()
+				: undefined;
+		const maxTaskRetries =
+			typeof req.body?.maxTaskRetries === "number"
+				? Math.max(0, Math.floor(req.body.maxTaskRetries))
+				: 1;
+		const taskTimeoutMinutes =
+			typeof req.body?.taskTimeoutMinutes === "number"
+				? Math.max(1, Math.floor(req.body.taskTimeoutMinutes))
+				: 15;
+		const overallTimeoutMinutes =
+			typeof req.body?.overallTimeoutMinutes === "number"
+				? Math.max(1, Math.floor(req.body.overallTimeoutMinutes))
+				: 120;
+		const parentExecutionId =
+			typeof req.body?.parentExecutionId === "string"
+				? req.body.parentExecutionId.trim()
+				: "";
+		const executionId =
+			typeof req.body?.executionId === "string"
+				? req.body.executionId.trim()
+				: typeof req.body?.dbExecutionId === "string"
+					? req.body.dbExecutionId.trim()
+					: "";
+		const workflowId =
+			typeof req.body?.workflowId === "string"
+				? req.body.workflowId.trim()
+				: "";
+		const nodeId =
+			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+		const cleanupWorkspaceRequested = parseOptionalBoolean(
+			req.body?.cleanupWorkspace,
+		);
+		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
+
+		const requestedWorkspaceRef =
+			typeof req.body?.workspaceRef === "string"
+				? req.body.workspaceRef.trim()
+				: "";
+
+		let planInput = req.body?.plan as unknown;
+		let workspaceRef =
+			requestedWorkspaceRef ||
+			(executionId
+				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+						executionId,
+					)) || ""
+				: "");
+		let resolvedCwd = cwd;
+
+		// Load plan from artifact if not provided inline
+		if (!planInput && artifactRef) {
+			const artifact = await planArtifacts.get(artifactRef);
+			if (!artifact) {
+				res.status(404).json({
+					success: false,
+					error: `Plan artifact not found: ${artifactRef}`,
+				});
+				return;
+			}
+			if (artifact.plan && typeof artifact.plan === "object") {
+				planInput = artifact.plan;
+			}
+			if (!workspaceRef && artifact.workspaceRef) {
+				workspaceRef = artifact.workspaceRef;
+			}
+			if (!resolvedCwd && artifact.clonePath) {
+				resolvedCwd = artifact.clonePath;
+			}
+		}
+
+		if (!workspaceRef) {
+			res.status(400).json({
+				success: false,
+				error: "workspaceRef is required for DAG execution",
+			});
+			return;
+		}
+		if (
+			!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))
+		) {
+			res.status(400).json({
+				success: false,
+				error: `workspaceRef not found: ${workspaceRef}`,
+			});
+			return;
+		}
+
+		const parsedPlan = validateClaudeTaskPlan(planInput);
+		if (!parsedPlan.success) {
+			res.status(400).json({
+				success: false,
+				error: {
+					code: "INVALID_PLAN_SCHEMA",
+					message:
+						"Plan must match claude_task_graph_v1 schema with non-empty tasks",
+					details: parsedPlan.issues,
+				},
+			});
+			return;
+		}
+		const plan: ClaudeTaskPlan = parsedPlan.plan;
+		if (!planHasExecutableTasks(plan)) {
+			res.status(400).json({
+				success: false,
+				error: {
+					code: "INVALID_PLAN_SCHEMA",
+					message: "Plan must contain executable tasks",
+				},
+			});
+			return;
+		}
+
+		if (artifactRef) {
+			await planArtifacts.markStatus(artifactRef, "approved");
+			await planArtifacts.markStatus(artifactRef, "executing");
+		}
+
+		await initAgent();
+
+		const agentWorkflowId = `dag-exec-${nanoid(12)}`;
+		const { createDagExecutorWorkflow } = await import("./dag-executor.js");
+		const dagExecutor = createDagExecutorWorkflow({
+			workspaceSessions,
+			planArtifacts,
+		});
+
+		const instanceId = await workflowClient!.scheduleNewWorkflow(
+			dagExecutor.implementation,
+			{
+				plan,
+				artifactRef,
+				workspaceRef,
+				cwd: resolvedCwd,
+				goal: plan.goal,
+				model,
+				maxTaskRetries,
+				taskTimeoutMs: taskTimeoutMinutes * 60 * 1000,
+				overallTimeoutMs: overallTimeoutMinutes * 60 * 1000,
+				executionId,
+				workflowId,
+				nodeId,
+			},
+		);
+
+		await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+		trackActiveRun({
+			agentWorkflowId,
+			daprInstanceId: instanceId,
+			parentExecutionId,
+			workspaceRef: workspaceRef || undefined,
+			mode: "execute_plan_dag",
+		});
+		const trackedRunId = agentWorkflowId;
+		if (executionId && workflowId && nodeId) {
+			await workflowRunTracker.trackScheduled({
+				id: trackedRunId,
+				workflowExecutionId: executionId,
+				workflowId,
+				nodeId,
+				mode: "execute_plan_dag",
+				agentWorkflowId,
+				daprInstanceId: instanceId,
+				parentExecutionId,
+				workspaceRef: workspaceRef || undefined,
+				artifactRef: artifactRef || undefined,
+			});
+		}
+
+		// Fire-and-forget: wait for DAG workflow completion, then publish event
+		(async () => {
+			try {
+				const completion = await waitForWorkflowCompletion(instanceId);
+				const dagResult = (completion.result ?? {}) as Partial<DagExecutorResult>;
+
+				const changeSummary =
+					workspaceRef && executionId
+						? await buildAgentChangeSummary(executionId, instanceId)
+						: undefined;
+
+				let cleanup: {
+					requested: boolean;
+					performed: boolean;
+					success: boolean;
+					workspaceRef?: string;
+					error?: string;
+				} = {
+					requested: cleanupWorkspace,
+					performed: false,
+					success: !cleanupWorkspace || !workspaceRef,
+				};
+				if (cleanupWorkspace && workspaceRef) {
+					try {
+						const cleaned =
+							await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+						cleanup = {
+							requested: true,
+							performed: true,
+							success: cleaned,
+							workspaceRef,
+						};
+					} catch (cleanupErr) {
+						cleanup = {
+							requested: true,
+							performed: true,
+							success: false,
+							workspaceRef,
+							error:
+								cleanupErr instanceof Error
+									? cleanupErr.message
+									: String(cleanupErr),
+						};
+					}
+				}
+
+				const completionResult = {
+					text: dagResult.terminationReason ?? "DAG execution completed",
+					completedTasks: dagResult.completedTasks ?? 0,
+					failedTasks: dagResult.failedTasks ?? 0,
+					skippedTasks: dagResult.skippedTasks ?? 0,
+					totalTasks: dagResult.totalTasks ?? 0,
+					taskResults: dagResult.taskResults ?? {},
+					terminationReason: dagResult.terminationReason ?? "unknown",
+					changeSummary,
+					artifactRef: artifactRef || undefined,
+					daprInstanceId: instanceId,
+					cleanup,
+				};
+				const completionSuccess =
+					completion.success && (dagResult.success ?? false);
+
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: completionSuccess,
+						result: completionResult,
+						error: completion.error,
+					});
+				}
+
+				const published = await publishCompletionEvent({
+					agentWorkflowId,
+					parentExecutionId,
+					success: completionSuccess,
+					result: completionResult,
+					error: completion.error,
+				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
+				if (artifactRef) {
+					await planArtifacts.markStatus(
+						artifactRef,
+						completionSuccess ? "executed" : "failed",
+					);
+				}
+			} catch (err) {
+				const errorMsg = err instanceof Error ? err.message : String(err);
+				if (executionId && workflowId && nodeId) {
+					await workflowRunTracker.markCompleted({
+						id: trackedRunId,
+						success: false,
+						error: errorMsg,
+					});
+				}
+				const published = await publishCompletionEvent({
+					agentWorkflowId,
+					parentExecutionId,
+					success: false,
+					error: errorMsg,
+				});
+				if (published && executionId && workflowId && nodeId) {
+					await workflowRunTracker.markEventPublished(trackedRunId);
+				}
+				if (artifactRef) {
+					await planArtifacts.markStatus(artifactRef, "failed");
+				}
+			} finally {
+				workspaceSessions.unbindDurableInstance(instanceId);
+				untrackActiveRun(agentWorkflowId);
+			}
+		})();
+
+		res.json({
+			success: true,
+			workflow_id: agentWorkflowId,
+			dapr_instance_id: instanceId,
+			cleanupWorkspace,
+			...(artifactRef ? { artifactRef } : {}),
+			...(workspaceRef ? { workspaceRef } : {}),
+		});
+	} catch (err) {
+		res.status(400).json({ success: false, error: String(err) });
+	}
+});
+
 // Dapr subscription discovery
 app.get("/api/dapr/subscribe", (_req, res) => {
 	res.json(getDaprSubscriptions());
@@ -3558,7 +4240,13 @@ app.listen(PORT, HOST, async () => {
 		`[durable-agent]   POST /api/runs/terminate-by-parent — terminate active runs for a parent workflow`,
 	);
 	console.log(`[durable-agent]   POST /api/plan         — generate plan`);
+	console.log(
+		`[durable-agent]   POST /api/plan/materialize — materialize plan files in workspace`,
+	);
 	console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);
+	console.log(
+		`[durable-agent]   POST /api/execute-plan-dag — execute plan as DAG workflow`,
+	);
 	console.log(
 		`[durable-agent]   POST /api/tools/:id    — direct tool execution`,
 	);

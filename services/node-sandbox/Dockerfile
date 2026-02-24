@@ -22,6 +22,8 @@ RUN apt-get update && \
       s3fs \
       sed \
       tigervnc-standalone-server \
+      novnc \
+      websockify \
       tk-dev \
       unzip \
       util-linux \
