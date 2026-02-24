@@ -125,7 +125,7 @@ const PLAN_REPAIR_MAX_TURNS = Math.max(
 );
 const PLAN_TIMEOUT_SECONDS = Math.max(
 	60,
-	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "600", 10),
+	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "3600", 10),
 );
 const STARTUP_INIT_REQUIRED = ["1", "true", "yes", "on"].includes(
 	String(process.env.DURABLE_REQUIRE_STARTUP_INIT || "")
@@ -1019,6 +1019,19 @@ Be concise and direct. Use the appropriate tool for each task.`,
 			sharedRuntime.registerActivity(
 				createDagPersistStateActivity({ planArtifacts }),
 			);
+			sharedRuntime.registerActivity(async function durablePlanActivity() {
+				console.log(
+					"[durable-agent] Executing dummy durablePlanActivity to satisfy legacy workflow replay",
+				);
+				return {};
+			});
+			sharedRuntime.registerWorkflow(async function* durablePlanWorkflow() {
+				console.log(
+					"[durable-agent] Executing dummy durablePlanWorkflow to satisfy legacy workflow replay",
+				);
+				yield undefined;
+				return {};
+			});
 
 			await sharedRuntime.start();
 			console.log(
@@ -3883,8 +3896,7 @@ app.post("/api/execute-plan-dag", async (req, res) => {
 			typeof req.body?.artifactRef === "string"
 				? req.body.artifactRef.trim()
 				: "";
-		const cwd =
-			typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
 		const model =
 			typeof req.body?.model === "string" && req.body.model.trim()
 				? req.body.model.trim()
@@ -3965,9 +3977,7 @@ app.post("/api/execute-plan-dag", async (req, res) => {
 			});
 			return;
 		}
-		if (
-			!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))
-		) {
+		if (!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))) {
 			res.status(400).json({
 				success: false,
 				error: `workspaceRef not found: ${workspaceRef}`,
@@ -4060,7 +4070,8 @@ app.post("/api/execute-plan-dag", async (req, res) => {
 		(async () => {
 			try {
 				const completion = await waitForWorkflowCompletion(instanceId);
-				const dagResult = (completion.result ?? {}) as Partial<DagExecutorResult>;
+				const dagResult = (completion.result ??
+					{}) as Partial<DagExecutorResult>;
 
 				const changeSummary =
 					workspaceRef && executionId

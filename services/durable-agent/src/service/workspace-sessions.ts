@@ -651,6 +651,52 @@ class WorkspaceSessionManager {
 			throw new Error(`git clone failed: ${sanitized}`);
 		}
 
+		// Configure git credential store so subsequent push/pull commands
+		// can authenticate without interactive prompts. The credential entry
+		// is written to a file inside the clone dir's .git so it is scoped
+		// to this sandbox session and cleaned up with the workspace.
+		console.log(
+			`[workspace-sessions] Credential store check: username=${JSON.stringify(username)}, token=${token ? "***" : "(empty)"}, STRIP_CLONE_GIT_DIR=${STRIP_CLONE_GIT_DIR}, cloneDir=${cloneDir}, rootPath=${session.rootPath}`,
+		);
+		if (username && token && !STRIP_CLONE_GIT_DIR) {
+			try {
+				const parsed = new URL(repoUrl);
+				const credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
+				const credStorePath = pathPosix.join(
+					cloneDir,
+					".git",
+					".git-credentials",
+				);
+				const credCmd = `cd ${shellEscape(cloneDir)} && git config credential.helper 'store --file=${shellEscape(credStorePath)}' && printf '%s\\n' ${shellEscape(credentialLine)} > ${shellEscape(credStorePath)}`;
+				console.log(
+					`[workspace-sessions] Setting up git credential store at ${credStorePath}`,
+				);
+				const credResult = await session.sandbox.executeCommand(
+					credCmd,
+					undefined,
+					{ timeout: Math.min(timeoutMs, 15_000), cwd: session.rootPath },
+				);
+				if (!credResult.success || credResult.exitCode !== 0) {
+					console.warn(
+						`[workspace-sessions] Credential store command failed: exit=${credResult.exitCode}, stderr=${credResult.stderr}`,
+					);
+				} else {
+					console.log(
+						"[workspace-sessions] Git credential store configured successfully",
+					);
+				}
+			} catch (err) {
+				console.warn(
+					"[workspace-sessions] Failed to configure git credential store (push may require explicit auth):",
+					err,
+				);
+			}
+		} else {
+			console.log(
+				"[workspace-sessions] Skipping credential store: conditions not met",
+			);
+		}
+
 		const revParse = await session.sandbox.executeCommand(
 			`cd ${shellEscape(cloneDir)} && git rev-parse HEAD`,
 			undefined,
@@ -1070,7 +1116,35 @@ class WorkspaceSessionManager {
 				console.error(
 					`[workspace-sessions] Re-clone failed after re-provision: ${sanitized}`,
 				);
-				throw new Error(`Re-clone failed after sandbox re-provision: ${sanitized}`);
+				throw new Error(
+					`Re-clone failed after sandbox re-provision: ${sanitized}`,
+				);
+			}
+
+			if (
+				info.repositoryUsername &&
+				info.repositoryToken &&
+				!STRIP_CLONE_GIT_DIR
+			) {
+				try {
+					const parsed = new URL(repoUrl);
+					const credentialLine = `${parsed.protocol}//${encodeURIComponent(info.repositoryUsername)}:${encodeURIComponent(info.repositoryToken)}@${parsed.host}`;
+					const credStorePath = pathPosix.join(
+						info.cloneDir,
+						".git",
+						".git-credentials",
+					);
+					await session.sandbox.executeCommand(
+						`cd ${shellEscape(info.cloneDir)} && git config credential.helper 'store --file=${shellEscape(credStorePath)}' && printf '%s\\n' ${shellEscape(credentialLine)} > ${shellEscape(credStorePath)}`,
+						undefined,
+						{ timeout: 15_000, cwd: session.rootPath },
+					);
+				} catch (err) {
+					console.warn(
+						"[workspace-sessions] Failed to configure git credential store on re-clone:",
+						err,
+					);
+				}
 			}
 
 			if (STRIP_CLONE_GIT_DIR) {
@@ -1586,13 +1660,10 @@ class WorkspaceSessionManager {
 	private async tryReconnectToSandbox(
 		record: PersistedWorkspaceSession,
 	): Promise<WorkspaceSession | null> {
-		const state = record.sandboxState as unknown as K8sSandboxPersistedState | undefined;
-		if (
-			!state ||
-			!state.claimName ||
-			!state.podName ||
-			!state.podIp
-		) {
+		const state = record.sandboxState as unknown as
+			| K8sSandboxPersistedState
+			| undefined;
+		if (!state || !state.claimName || !state.podName || !state.podIp) {
 			return null;
 		}
 
