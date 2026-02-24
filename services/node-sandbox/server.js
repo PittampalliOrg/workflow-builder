@@ -3,6 +3,7 @@
  *
  * Drop-in replacement for python-runtime-sandbox that provides:
  *   - POST /execute  — run a shell command, return { stdout, stderr, exit_code }
+ *                      supports optional env overrides via body.env
  *   - POST /upload   — accept multipart file upload (saves to /app/)
  *   - GET  /download/{path} — return file bytes for remote filesystem reads
  *   - GET  /          — readiness probe
@@ -91,6 +92,23 @@ function sendText(res, status, text) {
 	res.end(text);
 }
 
+function sanitizeEnvOverrides(input) {
+	if (!input || typeof input !== "object" || Array.isArray(input)) {
+		return {};
+	}
+	const out = {};
+	for (const [key, value] of Object.entries(input)) {
+		if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) {
+			continue;
+		}
+		if (typeof value !== "string" || value.length === 0) {
+			continue;
+		}
+		out[key] = value;
+	}
+	return out;
+}
+
 function resolveSafePath(inputPath) {
 	const normalizedWorkDir = normalize(resolve(WORK_DIR));
 	let requested = String(inputPath || "");
@@ -125,7 +143,7 @@ function resolveSafePath(inputPath) {
 
 // ── Execute Command ──────────────────────────────────────────
 
-function executeCommand(command, timeoutMs = 120000) {
+function executeCommand(command, timeoutMs = 120000, envOverrides = {}) {
 	return new Promise((resolve) => {
 		execFile(
 			SHELL,
@@ -134,7 +152,12 @@ function executeCommand(command, timeoutMs = 120000) {
 				cwd: WORK_DIR,
 				timeout: timeoutMs,
 				maxBuffer: 10 * 1024 * 1024, // 10MB
-				env: { ...process.env, HOME: HOME_DIR, WORKSPACE_DIR: WORK_DIR },
+				env: {
+					...process.env,
+					HOME: HOME_DIR,
+					WORKSPACE_DIR: WORK_DIR,
+					...sanitizeEnvOverrides(envOverrides),
+				},
 			},
 			(error, stdout, stderr) => {
 				let exitCode = 0;
@@ -184,7 +207,8 @@ const server = http.createServer(async (req, res) => {
 				return sendJson(res, 400, { error: "command is required" });
 			}
 			const timeoutMs = Number(body.timeout) || 120000;
-			const result = await executeCommand(command, timeoutMs);
+			const envOverrides = sanitizeEnvOverrides(body.env);
+			const result = await executeCommand(command, timeoutMs, envOverrides);
 			return sendJson(res, 200, result);
 		} catch (err) {
 			return sendJson(res, 400, { error: err.message });
@@ -243,6 +267,11 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
 	console.log(`[node-sandbox] Listening on port ${PORT} (workdir=${WORK_DIR})`);
 });
+
+// Disable HTTP timeouts for long-running /execute tasks
+server.setTimeout(0);
+server.requestTimeout = 0;
+server.headersTimeout = 0;
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
