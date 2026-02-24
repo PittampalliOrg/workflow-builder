@@ -268,3 +268,58 @@ export async function resolveCloneRepository(
 		ensuredInGitea: ensured,
 	};
 }
+
+export async function createGiteaPullRequest(input: {
+	repositoryOwner: string;
+	repositoryRepo: string;
+	repositoryUsername?: string;
+	repositoryToken?: string;
+	headBranch: string;
+	baseBranch: string;
+	title: string;
+	body?: string;
+}) {
+	const owner = input.repositoryOwner.trim() || GITEA_REPO_OWNER;
+	const repo = input.repositoryRepo.trim();
+	const auth = giteaAuth({
+		repositoryUrl: "",
+		repositoryOwner: owner,
+		repositoryRepo: repo,
+		repositoryUsername: input.repositoryUsername || "",
+		repositoryToken: input.repositoryToken || "",
+		githubToken: "",
+	});
+
+	if (!auth) {
+		throw new Error(
+			"Gitea credentials are required to create a PR. Set repositoryUsername/repositoryToken or configure GITEA_USERNAME/GITEA_PASSWORD.",
+		);
+	}
+
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls`,
+		{
+			method: "POST",
+			auth,
+			body: {
+				head: input.headBranch,
+				base: input.baseBranch,
+				title: input.title,
+				body: input.body || "Automated PR created by Workflow Builder",
+			},
+		},
+	);
+
+	if (response.status === 201) {
+		const pr = await response.json();
+		return { success: true, url: pr.html_url, prNumber: pr.number };
+	}
+	
+	const text = await response.text();
+	if (response.status === 409) {
+		// 409 Conflict usually means PR already exists
+		return { success: true, url: null, message: "Pull request already exists" };
+	}
+	
+	throw new Error(`Failed to create pull request (${response.status}): ${text.slice(0, 300)}`);
+}

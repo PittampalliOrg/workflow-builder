@@ -843,6 +843,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						// Route to the appropriate durable-agent endpoint
 						const isAgentRun = toolId === "run";
 						const isPlan = toolId === "plan";
+						const isClaudePlan = toolId === "claude-plan";
+						const isMaterializePlan = toolId === "materialize-plan";
 						const isExecutePlan = toolId === "execute";
 						const isWorkspaceProfile =
 							pluginId === "workspace" && toolId === "profile";
@@ -854,6 +856,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							pluginId === "workspace" && toolId === "file";
 						const isWorkspaceCleanup =
 							pluginId === "workspace" && toolId === "cleanup";
+						const isWorkspaceCreatePullRequest =
+							pluginId === "workspace" && toolId === "create-pull-request";
 						const workspaceExecutionId =
 							typeof body.db_execution_id === "string" &&
 							body.db_execution_id.trim()
@@ -937,7 +941,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									nodeName: body.node_name,
 								});
 							}
-						} else if (isPlan) {
+						} else if (isPlan || isClaudePlan) {
 							targetUrl = `${functionUrl}/api/plan`;
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? "",
@@ -950,6 +954,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								model,
 								maxTurns: args.maxTurns,
 								timeoutMinutes: args.timeoutMinutes,
+								planningBackend: isClaudePlan ? "claude_code_v1" : undefined,
 								instructions: args.instructions,
 								tools: args.tools,
 								agentConfig,
@@ -959,6 +964,25 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 										? args.workspaceRef
 										: undefined,
 								parentExecutionId: body.execution_id,
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isMaterializePlan) {
+							targetUrl = `${functionUrl}/api/plan/materialize`;
+							requestBody = JSON.stringify({
+								artifactRef:
+									typeof args.artifactRef === "string" ? args.artifactRef : "",
+								workspaceRef:
+									typeof args.workspaceRef === "string"
+										? args.workspaceRef
+										: undefined,
+								outputDir:
+									typeof args.outputDir === "string"
+										? args.outputDir
+										: undefined,
 								executionId: workspaceExecutionId,
 								dbExecutionId: body.db_execution_id ?? undefined,
 								workflowId: body.workflow_id,
@@ -1118,14 +1142,33 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({ args });
 						}
 
-						const httpResponse = await fetch(targetUrl, {
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-							},
-							body: requestBody,
-							signal: controller.signal,
-						});
+						let httpResponse: Response;
+						if (isWorkspaceCreatePullRequest) {
+							const { createGiteaPullRequest } = await import("../core/gitea-repository.js");
+							const prResult = await createGiteaPullRequest({
+								repositoryOwner: args.repositoryOwner,
+								repositoryRepo: args.repositoryRepo,
+								repositoryUsername: args.repositoryUsername,
+								repositoryToken: args.repositoryToken,
+								headBranch: args.headBranch,
+								baseBranch: args.baseBranch,
+								title: args.title,
+								body: args.body,
+							});
+							httpResponse = new Response(JSON.stringify({ text: "Success", ...prResult }), {
+								status: 200,
+								headers: { "Content-Type": "application/json" }
+							});
+						} else {
+							httpResponse = await fetch(targetUrl, {
+								method: "POST",
+								headers: {
+									"Content-Type": "application/json",
+								},
+								body: requestBody,
+								signal: controller.signal,
+							});
+						}
 
 						clearTimeout(timeoutId);
 						timing.executionMs = Date.now() - executionStartTime;
