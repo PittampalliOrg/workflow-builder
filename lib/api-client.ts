@@ -769,6 +769,13 @@ export const workflowApi = {
 			patch: string;
 		}>(`/api/workflows/executions/${executionId}/changes/${changeSetId}`),
 
+	// Get execution sandbox pod IP
+	getExecutionSandbox: (workflowId: string, executionId: string) =>
+		apiCall<{
+			podIp?: string;
+			error?: string;
+		}>(`/api/workflows/${workflowId}/executions/${executionId}/sandbox`),
+
 	// Fetch combined patch across all included change sets
 	getExecutionPatch: (
 		executionId: string,
@@ -823,6 +830,44 @@ export const workflowApi = {
 			`/api/workflows/executions/${executionId}/files/snapshot/${pathSegments.join("/")}${query ? `?${query}` : ""}`,
 		);
 	},
+
+	// Get full plan artifact (including planJson with tasks)
+	getPlanArtifact: (artifactId: string) =>
+		apiCall<{
+			success: boolean;
+			artifact: {
+				id: string;
+				nodeId: string;
+				status: string;
+				artifactType: string;
+				artifactVersion: number;
+				goal: string;
+				workspaceRef: string | null;
+				clonePath: string | null;
+				planJson: {
+					artifactType: string;
+					goal: string;
+					estimated_tool_calls: number;
+					tasks: Array<{
+						id: string;
+						subject: string;
+						description: string;
+						status: string;
+						blocked?: boolean;
+						blockedBy: string[];
+						tool?: string;
+						targetPaths: string[];
+						acceptanceCriteria: string[];
+						reasoning?: string;
+					}>;
+				} | null;
+				planMarkdown: string | null;
+				sourcePrompt: string | null;
+				metadata: Record<string, unknown> | null;
+				createdAt: string;
+				updatedAt: string;
+			};
+		}>(`/api/workflows/plan-artifacts/${encodeURIComponent(artifactId)}`),
 
 	// Download workflow
 	download: (id: string) =>

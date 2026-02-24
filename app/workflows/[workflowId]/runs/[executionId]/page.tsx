@@ -16,6 +16,7 @@ import { RunLogsTab } from "@/components/workflow-runs/run-logs-tab";
 import { RunOverviewTab } from "@/components/workflow-runs/run-overview-tab";
 import { RunTimelineTab } from "@/components/workflow-runs/run-timeline-tab";
 import { RunTraceTab } from "@/components/workflow-runs/run-trace-tab";
+import { RunSandboxTab } from "@/components/workflow-runs/run-sandbox-tab";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,8 @@ type WorkspaceTab =
 	| "child-runs"
 	| "artifacts"
 	| "changes"
-	| "trace";
+	| "trace"
+	| "sandbox";
 
 const VALID_TABS: WorkspaceTab[] = [
 	"overview",
@@ -48,6 +50,7 @@ const VALID_TABS: WorkspaceTab[] = [
 	"artifacts",
 	"changes",
 	"trace",
+	"sandbox",
 ];
 
 function normalizeTab(value: string | null): WorkspaceTab {
@@ -289,6 +292,9 @@ export default function WorkflowRunDetailPage() {
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="trace">
 									Trace
 								</TabsTrigger>
+								<TabsTrigger className="h-7 px-2.5 text-xs" value="sandbox">
+									Sandbox
+								</TabsTrigger>
 							</TabsList>
 						</div>
 						<div className="hidden items-center gap-3 text-muted-foreground text-xs sm:flex">
@@ -340,6 +346,7 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="artifacts">
 					<RunArtifactsTab
+						executionId={executionId}
 						externalEvents={details.externalEvents ?? []}
 						planArtifacts={details.planArtifacts ?? []}
 					/>
@@ -367,6 +374,13 @@ export default function WorkflowRunDetailPage() {
 						}
 						selectedSpanId={selectedSpanId}
 						selectedTraceId={selectedTraceId}
+						workflowId={workflowId}
+					/>
+				</TabsContent>
+
+				<TabsContent className="mt-0 space-y-3" value="sandbox">
+					<RunSandboxTab
+						executionId={executionId}
 						workflowId={workflowId}
 					/>
 				</TabsContent>

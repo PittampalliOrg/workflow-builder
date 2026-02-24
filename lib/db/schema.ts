@@ -412,7 +412,7 @@ export type WorkflowPlanArtifactStatus =
 	| "executed"
 	| "failed";
 
-export type WorkflowPlanArtifactType = "task_graph_v1";
+export type WorkflowPlanArtifactType = "claude_task_graph_v1";
 
 /**
  * Durable plan artifacts produced during workflow execution.
@@ -438,7 +438,7 @@ export const workflowPlanArtifacts = pgTable(
 		clonePath: text("clone_path"),
 		artifactType: text("artifact_type")
 			.notNull()
-			.default("task_graph_v1")
+			.default("claude_task_graph_v1")
 			.$type<WorkflowPlanArtifactType>(),
 		artifactVersion: integer("artifact_version").notNull().default(1),
 		status: text("status")
@@ -497,6 +497,7 @@ export const workflowWorkspaceSessions = pgTable(
 			.default("active")
 			.$type<WorkflowWorkspaceSessionStatus>(),
 		lastError: text("last_error"),
+		sandboxState: jsonb("sandbox_state").$type<Record<string, unknown> | null>(),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 		lastAccessedAt: timestamp("last_accessed_at").notNull().defaultNow(),

@@ -27,6 +27,14 @@ const nextConfig: NextConfig = {
 			},
 		],
 	},
+	async rewrites() {
+		return [
+			{
+				source: "/api/sandbox-vnc/:podIp/:path*",
+				destination: "http://:podIp:6080/:path*",
+			},
+		];
+	},
 };
 
 export default nextConfig;
