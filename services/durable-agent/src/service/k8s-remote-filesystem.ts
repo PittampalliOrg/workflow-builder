@@ -12,8 +12,6 @@
 
 import type { K8sSandbox } from "./k8s-sandbox.js";
 
-const SANDBOX_PORT = 8888;
-
 // ── Types ─────────────────────────────────────────────────────
 
 export interface FileEntry {
@@ -47,6 +45,8 @@ export class K8sRemoteFilesystem {
 	private readonly sandbox: K8sSandbox;
 	private readonly _basePath: string;
 	private readonly _timeout: number;
+	private readonly _port: number;
+	private readonly _endpointConfig: ReturnType<K8sSandbox["getEndpointConfig"]>;
 
 	get basePath(): string {
 		return this._basePath;
@@ -56,6 +56,8 @@ export class K8sRemoteFilesystem {
 		this.sandbox = options.sandbox;
 		this._basePath = options.basePath || "/app";
 		this._timeout = options.timeout || 30_000;
+		this._endpointConfig = this.sandbox.getEndpointConfig();
+		this._port = this._endpointConfig.port;
 	}
 
 	// ── Lifecycle ────────────────────────────────────────────
@@ -82,7 +84,7 @@ export class K8sRemoteFilesystem {
 
 		try {
 			const res = await fetch(
-				`http://${podIp}:${SANDBOX_PORT}/download/${encodeURIComponent(absPath)}`,
+				`http://${podIp}:${this._port}/download/${encodeURIComponent(absPath)}`,
 				{ signal: controller.signal },
 			);
 
@@ -117,8 +119,8 @@ export class K8sRemoteFilesystem {
 
 		const buf = this.toBuffer(content);
 
-		// For large files (>1MB), use the /upload endpoint
-		if (buf.length > 1_048_576) {
+		// For large files (>1MB), use the /upload endpoint (node-sandbox only)
+		if (buf.length > 1_048_576 && this._endpointConfig.executePath === "/execute") {
 			await this.uploadFile(absPath, buf);
 			return;
 		}
@@ -239,7 +241,7 @@ export class K8sRemoteFilesystem {
 
 	// ── Private Helpers ──────────────────────────────────────
 
-	/** Execute a shell command on the sandbox pod via POST /execute. */
+	/** Execute a shell command on the sandbox pod via the template-configured execute endpoint. */
 	private async exec(
 		shellCmd: string,
 		skipBasePath = false,
@@ -252,23 +254,24 @@ export class K8sRemoteFilesystem {
 
 		try {
 			const wrappedCmd = `/bin/sh -c ${this.shellEscape(shellCmd)}`;
-			const res = await fetch(`http://${podIp}:${SANDBOX_PORT}/execute`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ command: wrappedCmd }),
-				signal: controller.signal,
-			});
+			const res = await fetch(
+				`http://${podIp}:${this._port}/${this._endpointConfig.executePath}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(
+						this._endpointConfig.executeBodyFn(wrappedCmd, this._timeout),
+					),
+					signal: controller.signal,
+				},
+			);
 
 			if (!res.ok) {
 				const text = await res.text();
-				throw new Error(`Sandbox /execute returned ${res.status}: ${text}`);
+				throw new Error(`Sandbox exec returned ${res.status}: ${text}`);
 			}
 
-			return (await res.json()) as {
-				stdout: string;
-				stderr: string;
-				exit_code: number;
-			};
+			return this._endpointConfig.normalizeResponse(await res.json());
 		} finally {
 			clearTimeout(timer);
 		}
@@ -292,7 +295,7 @@ export class K8sRemoteFilesystem {
 			const blob = new Blob([buf as unknown as BlobPart]);
 			formData.append("file", blob, fileName);
 
-			const res = await fetch(`http://${podIp}:${SANDBOX_PORT}/upload`, {
+			const res = await fetch(`http://${podIp}:${this._port}/upload`, {
 				method: "POST",
 				body: formData,
 				signal: controller.signal,

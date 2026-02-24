@@ -55,6 +55,7 @@ export async function GET(
 
 		return NextResponse.json({
 			podIp,
+			templateName: sandboxState?.templateName || "dapr-agent",
 		});
 	} catch (error) {
 		console.error("Failed to get sandbox status:", error);

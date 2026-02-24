@@ -773,6 +773,7 @@ export const workflowApi = {
 	getExecutionSandbox: (workflowId: string, executionId: string) =>
 		apiCall<{
 			podIp?: string;
+			templateName?: string;
 			error?: string;
 		}>(`/api/workflows/${workflowId}/executions/${executionId}/sandbox`),
 

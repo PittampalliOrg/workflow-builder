@@ -129,6 +129,7 @@ export type WorkspaceProfileInput = {
 	enabledTools?: string[];
 	requireReadBeforeWrite?: boolean;
 	commandTimeoutMs?: number;
+	sandboxTemplate?: string;
 };
 
 export type ExecuteWorkspaceCommandInput = {
@@ -458,7 +459,7 @@ class WorkspaceSessionManager {
 			);
 		}
 
-		const rootPath = this.resolveRootPath(executionId, input.rootPath);
+		const rootPath = this.resolveRootPath(executionId, input.rootPath, input.sandboxTemplate);
 		const session = await this.createSession({
 			executionId,
 			name: input.name?.trim() || `workspace-${executionId}`,
@@ -469,6 +470,7 @@ class WorkspaceSessionManager {
 				typeof input.commandTimeoutMs === "number" && input.commandTimeoutMs > 0
 					? Math.floor(input.commandTimeoutMs)
 					: parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10),
+			sandboxTemplate: input.sandboxTemplate,
 		});
 
 		this.sessions.set(session.workspaceRef, session);
@@ -990,14 +992,18 @@ class WorkspaceSessionManager {
 		enabledTools?: string[];
 		requireReadBeforeWrite: boolean;
 		commandTimeoutMs: number;
+		sandboxTemplate?: string;
 	}): Promise<WorkspaceSession> {
 		let sandbox: Sandbox;
 		let filesystem: Filesystem;
 		let k8sSandboxRef: K8sSandbox | null = null;
 
 		if (SANDBOX_BACKEND === "k8s") {
+			const template = input.sandboxTemplate || process.env.SANDBOX_TEMPLATE || "dapr-agent";
+			const workingDir = template === "aio-browser" ? "/home/gem" : input.rootPath;
 			const k8sSandbox = new K8sSandbox({
-				workingDirectory: input.rootPath,
+				templateName: template,
+				workingDirectory: workingDir,
 				timeout: input.commandTimeoutMs,
 			});
 			await k8sSandbox.start();
@@ -1739,12 +1745,16 @@ class WorkspaceSessionManager {
 		}
 	}
 
-	private resolveRootPath(executionId: string, requested?: string): string {
+	private resolveRootPath(executionId: string, requested?: string, sandboxTemplate?: string): string {
 		const requestedPath = String(requested || "").trim();
 		if (SANDBOX_BACKEND === "k8s") {
-			const base = this.defaultRoot.startsWith("/")
-				? this.defaultRoot
-				: pathPosix.join("/app", this.defaultRoot);
+			const templateBase = sandboxTemplate === "aio-browser" ? "/home/gem" : "/app";
+			const defaultRootForTemplate = sandboxTemplate === "aio-browser"
+				? pathPosix.join(templateBase, "workspaces")
+				: this.defaultRoot;
+			const base = defaultRootForTemplate.startsWith("/")
+				? defaultRootForTemplate
+				: pathPosix.join(templateBase, defaultRootForTemplate);
 			if (requestedPath) {
 				if (requestedPath.startsWith("/")) return requestedPath;
 				return pathPosix.join(base, sanitizeSegment(requestedPath));

@@ -2043,6 +2043,10 @@ app.post("/api/workspaces/profile", async (req, res) => {
 							req.body.commandTimeoutMs.trim()
 						? parseInt(req.body.commandTimeoutMs, 10)
 						: undefined,
+			sandboxTemplate:
+				typeof req.body?.sandboxTemplate === "string"
+					? req.body.sandboxTemplate.trim()
+					: undefined,
 		});
 
 		res.json({ success: true, ...profile });

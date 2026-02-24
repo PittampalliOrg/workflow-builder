@@ -78,9 +78,9 @@ function isGiteaHost(host: string): boolean {
 	return GITEA_HOSTS.has(host.trim().toLowerCase());
 }
 
-function giteaAuth(input: CloneResolutionInput):
-	| { username: string; password: string }
-	| undefined {
+function giteaAuth(
+	input: CloneResolutionInput,
+): { username: string; password: string } | undefined {
 	if (input.repositoryUsername && input.repositoryToken) {
 		return {
 			username: input.repositoryUsername,
@@ -101,18 +101,25 @@ function buildGiteaCloneUrl(owner: string, repo: string): string {
 	return `${base}/${owner}/${repo}.git`;
 }
 
-function buildGitHubUpstream(owner: string, repo: string, token: string): string {
+function buildGitHubUpstream(
+	owner: string,
+	repo: string,
+	token: string,
+): string {
 	if (!token) {
 		return `https://github.com/${owner}/${repo}.git`;
 	}
 	return `https://${token}@github.com/${owner}/${repo}.git`;
 }
 
-async function giteaRequest(path: string, input: {
-	method?: string;
-	body?: unknown;
-	auth?: { username: string; password: string };
-}): Promise<Response> {
+async function giteaRequest(
+	path: string,
+	input: {
+		method?: string;
+		body?: unknown;
+		auth?: { username: string; password: string };
+	},
+): Promise<Response> {
 	const headers: Record<string, string> = {};
 	if (input.body !== undefined) {
 		headers["Content-Type"] = "application/json";
@@ -200,8 +207,8 @@ export async function resolveCloneRepository(
 				repositoryUrl: buildGiteaCloneUrl(parsed.owner, parsed.repo),
 				repositoryOwner: parsed.owner,
 				repositoryRepo: parsed.repo,
-				repositoryUsername: input.repositoryUsername,
-				repositoryToken: input.repositoryToken,
+				repositoryUsername: auth?.username || input.repositoryUsername,
+				repositoryToken: auth?.password || input.repositoryToken,
 				ensuredInGitea: true,
 			};
 		}
@@ -279,7 +286,9 @@ export async function createGiteaPullRequest(input: {
 	title: string;
 	body?: string;
 }) {
-	const owner = input.repositoryOwner.trim() || GITEA_REPO_OWNER;
+	// Always use GITEA_REPO_OWNER — repos are mirrored from GitHub under the
+	// Gitea admin user, so the provided owner (e.g. a GitHub org) won't exist.
+	const owner = GITEA_REPO_OWNER;
 	const repo = input.repositoryRepo.trim();
 	const auth = giteaAuth({
 		repositoryUrl: "",
@@ -314,12 +323,14 @@ export async function createGiteaPullRequest(input: {
 		const pr = await response.json();
 		return { success: true, url: pr.html_url, prNumber: pr.number };
 	}
-	
+
 	const text = await response.text();
 	if (response.status === 409) {
 		// 409 Conflict usually means PR already exists
 		return { success: true, url: null, message: "Pull request already exists" };
 	}
-	
-	throw new Error(`Failed to create pull request (${response.status}): ${text.slice(0, 300)}`);
+
+	throw new Error(
+		`Failed to create pull request (${response.status}): ${text.slice(0, 300)}`,
+	);
 }

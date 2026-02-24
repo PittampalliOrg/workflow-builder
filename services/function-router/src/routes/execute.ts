@@ -1028,6 +1028,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								enabledTools: args.enabledTools,
 								requireReadBeforeWrite: args.requireReadBeforeWrite,
 								commandTimeoutMs: args.commandTimeoutMs,
+								sandboxTemplate: args.sandboxTemplate,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,

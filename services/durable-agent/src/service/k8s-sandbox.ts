@@ -3,7 +3,7 @@
  *
  * Standalone implementation (no @mastra/core dependency) using kubernetes-sigs/agent-sandbox.
  * Creates a SandboxClaim CR, waits for the pod to be provisioned (from the warm pool),
- * and routes commands via HTTP to the sandbox pod's /execute endpoint (port 8888).
+ * and routes commands via HTTP to the sandbox pod (port/endpoints configured per template).
  *
  * Prerequisites:
  * - agent-sandbox controller + CRDs deployed in cluster
@@ -27,6 +27,52 @@ const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT || "443";
 const CLAIM_API_GROUP = "extensions.agents.x-k8s.io";
 const CLAIM_API_VERSION = "v1alpha1";
 const CLAIM_PLURAL = "sandboxclaims";
+
+// ── Template-specific endpoint config ─────────────────────────
+type ExecuteResult = { stdout: string; stderr: string; exit_code: number };
+
+type TemplateConfig = {
+	port: number;
+	healthPath: string;
+	executePath: string;
+	executeBodyFn: (cmd: string, timeoutMs: number, env?: Record<string, string>) => object;
+	normalizeResponse: (json: any) => ExecuteResult;
+};
+
+const TEMPLATE_CONFIG: Record<string, TemplateConfig> = {
+	"dapr-agent": {
+		port: 8888,
+		healthPath: "health",
+		executePath: "execute",
+		executeBodyFn: (cmd, timeoutMs, env) => ({
+			command: cmd,
+			timeout: timeoutMs,
+			...(env ? { env } : {}),
+		}),
+		normalizeResponse: (json) => json as ExecuteResult,
+	},
+	"aio-browser": {
+		port: 8080,
+		healthPath: "v1/docs",
+		executePath: "v1/shell/exec",
+		executeBodyFn: (cmd, timeoutMs) => ({
+			command: cmd,
+			timeout: Math.floor(timeoutMs / 1000),
+		}),
+		// AIO returns { success, data: { output, exit_code, ... } }
+		normalizeResponse: (json) => ({
+			stdout: json?.data?.output ?? "",
+			stderr: "",
+			exit_code: json?.data?.exit_code ?? (json?.success ? 0 : 1),
+		}),
+	},
+};
+
+const DEFAULT_TEMPLATE_CONFIG: TemplateConfig = TEMPLATE_CONFIG["dapr-agent"];
+
+function getTemplateConfig(templateName: string): TemplateConfig {
+	return TEMPLATE_CONFIG[templateName] || DEFAULT_TEMPLATE_CONFIG;
+}
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -149,6 +195,7 @@ export class K8sSandbox {
 	readonly name = "K8sSandbox";
 
 	private readonly templateName: string;
+	private readonly config: TemplateConfig;
 	private readonly sandboxNamespace: string;
 	private readonly _workingDirectory: string;
 	private readonly _timeout: number;
@@ -178,6 +225,26 @@ export class K8sSandbox {
 	/** Get the sandbox pod's cluster IP (null if not yet provisioned). */
 	getSandboxPodIp(): string | null {
 		return this.podIp;
+	}
+
+	/** Get the sandbox HTTP port for the current template. */
+	getPort(): number {
+		return this.config.port;
+	}
+
+	/** Get endpoint config for remote filesystem operations. */
+	getEndpointConfig(): {
+		port: number;
+		executePath: string;
+		executeBodyFn: (cmd: string, timeoutMs: number) => object;
+		normalizeResponse: (json: any) => ExecuteResult;
+	} {
+		return {
+			port: this.config.port,
+			executePath: this.config.executePath,
+			executeBodyFn: this.config.executeBodyFn,
+			normalizeResponse: this.config.normalizeResponse,
+		};
 	}
 
 	/** Structured sandbox metadata for workflow outputs and diagnostics. */
@@ -216,6 +283,7 @@ export class K8sSandbox {
 		this.id = `k8s-sandbox-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 		this.templateName =
 			options.templateName || process.env.SANDBOX_TEMPLATE || "dapr-agent";
+		this.config = getTemplateConfig(this.templateName);
 		this.sandboxNamespace =
 			options.namespace || process.env.SANDBOX_NAMESPACE || "agent-sandbox";
 		this._workingDirectory =
@@ -430,8 +498,8 @@ export class K8sSandbox {
 	// ── Private Helpers ───────────────────────────────────────
 
 	/**
-	 * Wait for the sandbox HTTP server (port 8888) to accept connections.
-	 * Polls GET /health with short timeouts until it responds or deadline is reached.
+	 * Wait for the sandbox HTTP server to accept connections.
+	 * Polls the template's health endpoint with short timeouts until it responds or deadline is reached.
 	 */
 	private async waitForHttpReady(deadlineMs: number): Promise<boolean> {
 		if (!this.podIp) return false;
@@ -440,7 +508,7 @@ export class K8sSandbox {
 			try {
 				const controller = new AbortController();
 				const timer = setTimeout(() => controller.abort(), 3000);
-				const res = await fetch(`http://${this.podIp}:8888/health`, {
+				const res = await fetch(`http://${this.podIp}:${this.config.port}/${this.config.healthPath}`, {
 					signal: controller.signal,
 				});
 				clearTimeout(timer);
@@ -494,19 +562,15 @@ export class K8sSandbox {
 		command: string,
 		timeoutMs: number,
 		env?: Record<string, string>,
-	): Promise<{ stdout: string; stderr: string; exit_code: number }> {
+	): Promise<ExecuteResult> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		try {
-			const res = await fetch(`http://${this.podIp}:8888/execute`, {
+			const res = await fetch(`http://${this.podIp}:${this.config.port}/${this.config.executePath}`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					command,
-					timeout: timeoutMs,
-					...(env ? { env } : {}),
-				}),
+				body: JSON.stringify(this.config.executeBodyFn(command, timeoutMs, env)),
 				signal: controller.signal,
 			});
 
@@ -515,11 +579,7 @@ export class K8sSandbox {
 				throw new Error(`Sandbox /execute returned ${res.status}: ${text}`);
 			}
 
-			return (await res.json()) as {
-				stdout: string;
-				stderr: string;
-				exit_code: number;
-			};
+			return this.config.normalizeResponse(await res.json());
 		} finally {
 			clearTimeout(timer);
 		}
