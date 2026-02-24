@@ -41,7 +41,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
 # Build-time environment variables
-ARG NEXT_PUBLIC_APP_URL="https://workflow-builder.cnoe.localtest.me:8443"
+ARG NEXT_PUBLIC_APP_URL="https://workflow-builder-ryzen.tail286401.ts.net"
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
 
 # Bundle scripts for runtime use (self-contained with dependencies)
@@ -98,10 +98,11 @@ COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sy
 COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
 COPY --from=builder /app/scripts/seed-dev-user.bundle.js ./scripts/seed-dev-user.bundle.js
 COPY --from=builder /app/scripts/seed-workflows.bundle.js ./scripts/seed-workflows.bundle.js
+COPY --chown=nextjs:nodejs custom-proxy.js ./
 
 USER nextjs
 
 EXPOSE 3000
 
 # Migrations run via GitOps (ArgoCD job). App should start without attempting schema changes.
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "PORT=3001 node server.js & PORT=3000 node custom-proxy.js"]
