@@ -137,6 +137,9 @@ importers:
       elkjs:
         specifier: ^0.11.0
         version: 0.11.0
+      http-proxy:
+        specifier: ^1.18.1
+        version: 1.18.1
       jose:
         specifier: ^6.1.3
         version: 6.1.3
@@ -913,6 +916,9 @@ importers:
       '@activepieces/piece-dropbox':
         specifier: 0.6.3
         version: 0.6.3
+      '@activepieces/piece-github':
+        specifier: 0.6.4
+        version: 0.6.4
       '@activepieces/piece-gmail':
         specifier: 0.11.3
         version: 0.11.3
@@ -1228,6 +1234,9 @@ packages:
   '@activepieces/piece-dropbox@0.6.3':
     resolution: {integrity: sha512-EumEuxkmr7Ggxo1pFI/jLcajfEJlVEYd1QU37gDBjU9J032U1/y4uTsi2aa1dP/3kR23qKz38odborOeAuuKdA==}
 
+  '@activepieces/piece-github@0.6.4':
+    resolution: {integrity: sha512-DjFLh4rsq3fMbtcC3aqhr4Bs9Ix6uQZ7d53FINWSnmIhzxsHxDelKGlOpTXNFYwy3IaHcWPTWeJwPhekgsVGaw==}
+
   '@activepieces/piece-gmail@0.11.3':
     resolution: {integrity: sha512-s+Moaq3UNn36Wek0gb5K5At35PoqESLPfrv+NZFmw0Qklyi1zedL/g+r6UI8twoENZagUBep9ZLs+t66RSoOfw==}
 
@@ -1330,8 +1339,14 @@ packages:
   '@activepieces/pieces-framework@0.25.2':
     resolution: {integrity: sha512-T6sBDocyAZLaGXkBLE1ryikoKO3qwkJ0RWzCWuubyRXfMRg83O+Riyl3p8mm2ZDeFR45XR7xm2Wj5/iENG5DgQ==}
 
+  '@activepieces/pieces-framework@0.25.3':
+    resolution: {integrity: sha512-EVnGBekW21JdjdEZIj7q/Qgqoqg3TxPzU/FQ4TvMjgXijKi5b9fncGAELsLiCM6A91bLmAadhvTl5sx5+p047Q==}
+
   '@activepieces/shared@0.34.0':
     resolution: {integrity: sha512-lD/go9FNtsl2Ft2Qyj1w5o2BPU8hfaTaIhsrNuN/3lQl+xTEcXMBEe31osWMeA4S+qu0BYAmGoh9FAd8EqJRMw==}
+
+  '@activepieces/shared@0.37.0':
+    resolution: {integrity: sha512-hI3cw2iQFjpQt6lAZSB6UWcoBo/Qc2BHePjdGxAyF1ZQBhpK+jcVtdr3Wt+BWB5703JhliLDEV5lPq4azprrzg==}
 
   '@ai-sdk/anthropic@3.0.44':
     resolution: {integrity: sha512-ke1NldgohWJ7sWLqm9Um9TVIOrtg8Y8AecWeB6PgaLt+paTPisAsyNfe8FNOVusuv58ugLBqY/78AkhUmbjXHA==}
@@ -7615,6 +7630,10 @@ packages:
     resolution: {integrity: sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig==}
     engines: {node: '>= 14'}
 
+  http-proxy@1.18.1:
+    resolution: {integrity: sha512-7mz/721AbnJwIVbnaSv1Cz3Am0ZLT/UBwkC92VlxhXv/k/BBQfM2fXElQNC27BVGr0uwUpplYPQM9LnaBMR5NQ==}
+    engines: {node: '>=8.0.0'}
+
   http-shutdown@1.2.2:
     resolution: {integrity: sha512-S9wWkJ/VSY9/k4qcjG318bqJNruzE4HySUhFYknwmu6LBP97KLLfwNf+n4V1BHurvFNkSKLFnK/RsuUnRTf9Vw==}
     engines: {iojs: '>= 1.0.0', node: '>= 0.12.0'}
@@ -10611,6 +10630,29 @@ snapshots:
       - supports-color
       - utf-8-validate
 
+  '@activepieces/piece-github@0.6.4':
+    dependencies:
+      '@activepieces/pieces-common': 0.11.5
+      '@activepieces/pieces-framework': 0.25.3(zod@4.1.13)
+      '@activepieces/shared': 0.37.0
+      '@sinclair/typebox': 0.34.11
+      ai: 6.0.68(zod@4.1.13)
+      axios: 1.13.1
+      axios-retry: 4.4.1(axios@1.13.1)
+      deepmerge-ts: 7.1.0
+      form-data: 4.0.4
+      mime-types: 2.1.35
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+      zod: 4.1.13
+    transitivePeerDependencies:
+      - bufferutil
+      - debug
+      - supports-color
+      - utf-8-validate
+
   '@activepieces/piece-gmail@0.11.3':
     dependencies:
       '@activepieces/pieces-common': 0.11.5
@@ -11527,11 +11569,41 @@ snapshots:
       - utf-8-validate
       - zod
 
+  '@activepieces/pieces-framework@0.25.3(zod@4.1.13)':
+    dependencies:
+      '@activepieces/shared': 0.34.0
+      '@sinclair/typebox': 0.34.11
+      ai: 6.0.68(zod@4.1.13)
+      deepmerge-ts: 7.1.0
+      i18next: 23.13.0
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+      - zod
+
   '@activepieces/shared@0.34.0':
     dependencies:
       '@sinclair/typebox': 0.34.11
       deepmerge-ts: 7.1.0
       i18next: 23.13.0
+      nanoid: 3.3.8
+      semver: 7.6.0
+      socket.io-client: 4.8.1
+      tslib: 2.6.2
+    transitivePeerDependencies:
+      - bufferutil
+      - supports-color
+      - utf-8-validate
+
+  '@activepieces/shared@0.37.0':
+    dependencies:
+      '@sinclair/typebox': 0.34.11
+      deepmerge-ts: 7.1.0
       nanoid: 3.3.8
       semver: 7.6.0
       socket.io-client: 4.8.1
@@ -18442,6 +18514,14 @@ snapshots:
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
+
+  http-proxy@1.18.1:
+    dependencies:
+      eventemitter3: 4.0.7
+      follow-redirects: 1.15.11
+      requires-port: 1.0.0
+    transitivePeerDependencies:
+      - debug
 
   http-shutdown@1.2.2: {}
 

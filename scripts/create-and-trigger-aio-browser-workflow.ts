@@ -57,7 +57,7 @@ async function main() {
 					name: "aio-browser-demo",
 					enabledTools: '["read_file","write_file","edit_file","list_files","delete_file","mkdir","file_stat","execute_command"]',
 					requireReadBeforeWrite: "false",
-					commandTimeoutMs: "60000",
+					commandTimeoutMs: "360000",
 					sandboxTemplate: "aio-browser",
 				},
 				status: "idle",
@@ -72,7 +72,7 @@ async function main() {
 				type: "action",
 				config: {
 					actionType: "workspace/command",
-					command: "echo '=== AIO Browser Sandbox ===' && whoami && pwd && echo '--- System info ---' && uname -a && echo '--- Chrome check ---' && which google-chrome || which chromium-browser || echo 'no chrome found' && echo '--- VNC check ---' && ls /tmp/.X* 2>/dev/null || echo 'no X display' && echo '--- Done ---'",
+					command: "echo '=== AIO Browser Sandbox ===' && whoami && pwd && uname -a && echo '--- Chrome check ---' && (which google-chrome || which chromium-browser || echo 'no chrome found') && echo '--- VNC check ---' && (ls /tmp/.X* 2>/dev/null || echo 'no X display') && echo '' && echo '=== Sandbox will stay alive for 5 minutes ===' && echo 'Access VNC / browser now!' && sleep 300 && echo '--- Done ---'",
 					workspaceRef: `{{@${profileId}:AIO Workspace Profile.workspaceRef}}`,
 				},
 				status: "idle",

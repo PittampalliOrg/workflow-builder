@@ -23,26 +23,70 @@ const SHELL = process.env.SANDBOX_SHELL || "/bin/bash";
 const HOME_DIR = process.env.HOME || "/home/node";
 
 // ── VNC Server ──────────────────────────────────────────────
-const vncServer = spawn("Xtigervnc", [":1", "-geometry", "1280x1024", "-SecurityTypes", "None"], {
-    stdio: 'inherit',
-    env: process.env
+const vncServer = spawn(
+	"Xtigervnc",
+	[":1", "-geometry", "1280x1024", "-SecurityTypes", "None"],
+	{
+		stdio: "inherit",
+		env: process.env,
+	},
+);
+vncServer.on("error", (err) => {
+	console.error("[node-sandbox] Failed to start VNC server:", err);
 });
-vncServer.on('error', (err) => {
-    console.error('[node-sandbox] Failed to start VNC server:', err);
-});
-vncServer.on('exit', (code) => {
-    console.log(`[node-sandbox] VNC server exited with code ${code}`);
+vncServer.on("exit", (code) => {
+	console.log(`[node-sandbox] VNC server exited with code ${code}`);
 });
 
-const wsProxy = spawn("websockify", ["--web", "/usr/share/novnc/", "6080", "localhost:5901"], {
-    stdio: 'inherit',
-    env: process.env
+// Give X server a second to start before launching WM and terminal
+setTimeout(() => {
+	try {
+		writeFileSync("/tmp/sandbox.log", "Sandbox started...\n");
+	} catch (e) {}
+
+	const wm = spawn("fluxbox", [], {
+		stdio: "inherit",
+		env: { ...process.env, DISPLAY: ":1" },
+	});
+	wm.on("error", (err) =>
+		console.error("[node-sandbox] Failed to start fluxbox:", err),
+	);
+
+	const term = spawn(
+		"xterm",
+		[
+			"-geometry",
+			"120x40+10+10",
+			"-T",
+			"Sandbox Logs",
+			"-e",
+			"tail",
+			"-f",
+			"/tmp/sandbox.log",
+		],
+		{
+			stdio: "inherit",
+			env: { ...process.env, DISPLAY: ":1" },
+		},
+	);
+	term.on("error", (err) =>
+		console.error("[node-sandbox] Failed to start xterm:", err),
+	);
+}, 1000);
+
+const wsProxy = spawn(
+	"websockify",
+	["--web", "/usr/share/novnc/", "6080", "localhost:5901"],
+	{
+		stdio: "inherit",
+		env: process.env,
+	},
+);
+wsProxy.on("error", (err) => {
+	console.error("[node-sandbox] Failed to start websockify:", err);
 });
-wsProxy.on('error', (err) => {
-    console.error('[node-sandbox] Failed to start websockify:', err);
-});
-wsProxy.on('exit', (code) => {
-    console.log(`[node-sandbox] websockify exited with code ${code}`);
+wsProxy.on("exit", (code) => {
+	console.log(`[node-sandbox] websockify exited with code ${code}`);
 });
 
 const WORKSPACE_ALIASES = [
@@ -169,37 +213,86 @@ function resolveSafePath(inputPath) {
 
 function executeCommand(command, timeoutMs = 120000, envOverrides = {}) {
 	return new Promise((resolve) => {
-		execFile(
-			SHELL,
-			["-lc", command],
-			{
-				cwd: WORK_DIR,
-				timeout: timeoutMs,
-				maxBuffer: 10 * 1024 * 1024, // 10MB
-				env: {
-					                                        ...process.env,
-					                                        HOME: HOME_DIR,
-					                                        WORKSPACE_DIR: WORK_DIR,
-					                                        DISPLAY: ":1",
-					                                        ...sanitizeEnvOverrides(envOverrides),
-					                                },
+		const { spawn } = require("node:child_process");
+		const { appendFileSync } = require("node:fs");
+
+		const child = spawn(SHELL, ["-lc", command], {
+			cwd: WORK_DIR,
+			env: {
+				...process.env,
+				HOME: HOME_DIR,
+				WORKSPACE_DIR: WORK_DIR,
+				DISPLAY: ":1",
+				...sanitizeEnvOverrides(envOverrides),
 			},
-			(error, stdout, stderr) => {
-				let exitCode = 0;
-				if (error) {
-					exitCode = error.code ?? 1;
-					if (error.killed) exitCode = 124; // timeout
-					if (!stderr && error.message) {
-						stderr = error.message;
-					}
-				}
-				resolve({
-					stdout: stdout || "",
-					stderr: stderr || "",
-					exit_code: exitCode,
-				});
-			},
-		);
+		});
+
+		const stdoutBuf = [];
+		const stderrBuf = [];
+		let totalOut = 0;
+		let totalErr = 0;
+		const maxBuffer = 10 * 1024 * 1024; // 10MB
+
+		try {
+			appendFileSync("/tmp/sandbox.log", `\n$ ${command}\n`);
+		} catch (e) {}
+
+		child.stdout.on("data", (chunk) => {
+			try {
+				appendFileSync("/tmp/sandbox.log", chunk);
+			} catch (e) {}
+			if (totalOut < maxBuffer) {
+				stdoutBuf.push(chunk);
+				totalOut += chunk.length;
+			}
+		});
+
+		child.stderr.on("data", (chunk) => {
+			try {
+				appendFileSync("/tmp/sandbox.log", chunk);
+			} catch (e) {}
+			if (totalErr < maxBuffer) {
+				stderrBuf.push(chunk);
+				totalErr += chunk.length;
+			}
+		});
+
+		let isDone = false;
+		let timeoutTimer;
+
+		const done = (code, signal, err) => {
+			if (isDone) return;
+			isDone = true;
+			if (timeoutTimer) clearTimeout(timeoutTimer);
+
+			let exitCode = code ?? 0;
+			if (err) exitCode = err.code ?? 1;
+			if (signal === "SIGTERM" || signal === "SIGKILL") exitCode = 124;
+
+			try {
+				appendFileSync("/tmp/sandbox.log", `\n[Exit Code: ${exitCode}]\n`);
+			} catch (e) {}
+
+			let stderrStr = Buffer.concat(stderrBuf).toString("utf8");
+			if (err && !stderrStr) {
+				stderrStr = err.message;
+			}
+
+			resolve({
+				stdout: Buffer.concat(stdoutBuf).toString("utf8"),
+				stderr: stderrStr,
+				exit_code: exitCode,
+			});
+		};
+
+		child.on("error", (err) => done(null, null, err));
+		child.on("close", (code, signal) => done(code, signal, null));
+
+		if (timeoutMs > 0) {
+			timeoutTimer = setTimeout(() => {
+				child.kill("SIGKILL");
+			}, timeoutMs);
+		}
 	});
 }
 

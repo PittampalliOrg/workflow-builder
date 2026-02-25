@@ -24,6 +24,8 @@ RUN apt-get update && \
       tigervnc-standalone-server \
       novnc \
       websockify \
+      fluxbox \
+      xterm \
       tk-dev \
       unzip \
       util-linux \

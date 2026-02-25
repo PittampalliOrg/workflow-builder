@@ -16,7 +16,7 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 const DURABLE_AGENT_API_BASE_URL =
 	process.env.DURABLE_AGENT_API_BASE_URL ||
-	"http://durable-agent.dapr-agents.svc.cluster.local:8001";
+	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
 const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
 	process.env.DURABLE_AGENT_OPTIONS_TIMEOUT_MS || "5000",
 	10,
@@ -191,13 +191,7 @@ type DurableToolsResponse = {
 	}>;
 };
 
-const DURABLE_AGENT_FALLBACK_TOOLS = [
-	"read",
-	"write",
-	"edit",
-	"list",
-	"bash",
-];
+const DURABLE_AGENT_FALLBACK_TOOLS = ["read", "write", "edit", "list", "bash"];
 
 async function getDurableToolOptions(
 	searchValue?: string,
@@ -365,27 +359,30 @@ function getGiteaAuth(input: Record<string, unknown>): {
 	username: string;
 	password: string;
 } | null {
-	const username =
-		(typeof input.repositoryUsername === "string"
+	const username = (
+		typeof input.repositoryUsername === "string"
 			? input.repositoryUsername
 			: process.env.GITEA_USERNAME || ""
-		).trim();
-	const password =
-		(typeof input.repositoryToken === "string"
+	).trim();
+	const password = (
+		typeof input.repositoryToken === "string"
 			? input.repositoryToken
 			: process.env.GITEA_PASSWORD || ""
-		).trim();
+	).trim();
 	if (!username || !password) {
 		return null;
 	}
 	return { username, password };
 }
 
-async function giteaRequest(path: string, input: {
-	method?: string;
-	body?: unknown;
-	auth?: { username: string; password: string } | null;
-}): Promise<Response> {
+async function giteaRequest(
+	path: string,
+	input: {
+		method?: string;
+		body?: unknown;
+		auth?: { username: string; password: string } | null;
+	},
+): Promise<Response> {
 	const headers: Record<string, string> = {};
 	if (input.body !== undefined) {
 		headers["Content-Type"] = "application/json";
