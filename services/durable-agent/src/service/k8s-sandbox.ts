@@ -55,10 +55,20 @@ const TEMPLATE_CONFIG: Record<string, TemplateConfig> = {
 		port: 8080,
 		healthPath: "v1/docs",
 		executePath: "v1/shell/exec",
-		executeBodyFn: (cmd, timeoutMs) => ({
-			command: cmd,
-			timeout: Math.floor(timeoutMs / 1000),
-		}),
+		executeBodyFn: (cmd, timeoutMs, env) => {
+			// AIO /v1/shell/exec has no env field — prepend exports to the command.
+			let fullCmd = cmd;
+			if (env && Object.keys(env).length > 0) {
+				const exports = Object.entries(env)
+					.map(([k, v]) => `export ${k}=${shellEscapeValue(v)}`)
+					.join(" && ");
+				fullCmd = `${exports} && ${cmd}`;
+			}
+			return {
+				command: fullCmd,
+				timeout: Math.floor(timeoutMs / 1000),
+			};
+		},
 		// AIO returns { success, data: { output, exit_code, ... } }
 		normalizeResponse: (json) => ({
 			stdout: json?.data?.output ?? "",
@@ -129,6 +139,11 @@ function readK8sCa(): Buffer | undefined {
 
 function shellEscape(input: string): string {
 	return `'${input.replace(/'/g, "'\"'\"'")}'`;
+}
+
+/** Shell-escape a value for use in `export KEY=VALUE`. */
+function shellEscapeValue(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /** Low-level K8s API request using node:https. */
