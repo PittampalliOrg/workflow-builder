@@ -6,3 +6,4 @@
 # Privileged trigger: 2026-03-01T10:51:17Z
 # Final trigger: 2026-03-01T10:53:49Z
 # 2026-03-01T11:27:23Z - PodSecurity fix verified
+# 2026-03-01T11:28:15Z - retry after Funnel reconnect
