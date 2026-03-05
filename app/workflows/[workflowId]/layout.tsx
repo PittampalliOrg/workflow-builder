@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
+import { getConfigAsync } from "@/lib/dapr/config-provider";
 
 type WorkflowLayoutProps = {
   children: ReactNode;
@@ -40,7 +41,7 @@ export async function generateMetadata({
   }
 
   const baseUrl =
-    process.env.NEXT_PUBLIC_APP_URL || "https://workflow-builder.dev";
+    (await getConfigAsync("NEXT_PUBLIC_APP_URL")) || process.env.NEXT_PUBLIC_APP_URL || "https://workflow-builder.dev";
   const workflowUrl = `${baseUrl}/workflows/${workflowId}`;
   const ogImageUrl = isPublic
     ? `${baseUrl}/api/og/workflow/${workflowId}`

@@ -11,6 +11,7 @@ interface WindowWithEnv extends Window {
     NEXT_PUBLIC_AUTH_PROVIDERS?: string;
     NEXT_PUBLIC_GITHUB_CLIENT_ID?: string;
     NEXT_PUBLIC_GOOGLE_CLIENT_ID?: string;
+    NEXT_PUBLIC_APP_URL?: string;
   };
 }
 

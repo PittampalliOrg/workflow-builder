@@ -17,15 +17,18 @@ function normalizeBaseUrl(value: string | null | undefined): string | null {
 }
 
 export function resolvePublicMcpGatewayBaseUrl(params?: {
-	request?: Request;
-	fallbackOrigin?: string;
+        request?: Request;
+        fallbackOrigin?: string;
 }): string | null {
-	const explicit =
-		normalizeBaseUrl(process.env.MCP_GATEWAY_BASE_URL) ??
-		normalizeBaseUrl(process.env.NEXT_PUBLIC_MCP_GATEWAY_BASE_URL) ??
-		normalizeBaseUrl(process.env.NEXT_PUBLIC_APP_URL);
-	if (explicit) {
-		return explicit;
+        const explicit =
+                normalizeBaseUrl(process.env.MCP_GATEWAY_BASE_URL) ??
+                normalizeBaseUrl(process.env.NEXT_PUBLIC_MCP_GATEWAY_BASE_URL) ??
+                normalizeBaseUrl(
+                        typeof window !== "undefined"
+                                ? (window as any).ENV?.NEXT_PUBLIC_APP_URL
+                                : process.env.NEXT_PUBLIC_APP_URL
+                );
+        if (explicit) {		return explicit;
 	}
 
 	const fallback =

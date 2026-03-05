@@ -74,6 +74,7 @@ const RootLayout = ({ children }: RootLayoutProps) => (
 						NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
 						NEXT_PUBLIC_GITHUB_CLIENT_ID:
 							process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
+						NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
 						NEXT_PUBLIC_GOOGLE_CLIENT_ID:
 							process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
 					})}`,
