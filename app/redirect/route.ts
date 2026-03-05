@@ -92,9 +92,10 @@ export async function GET(request: Request) {
 	        // Same-tab fallback: when the popup is blocked, we navigate the main tab to
 	        // the provider. In that case, window.opener is null and we need to return
 	        // to /connections to finish the flow.
+	        // We also fall back to this if the browser severed window.opener (e.g. strict COOP or partitioned tabs).
 	        var sameTabState = null;
 	        try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (_) {}
-	        var shouldReturnToConnections = !window.opener && payload && payload.state && sameTabState === payload.state;
+	        var shouldReturnToConnections = !window.opener && payload && payload.state;
 	        if (shouldReturnToConnections) {
 	          try { sessionStorage.removeItem("oauth2_same_tab_state"); } catch (_) {}
 	          try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (_) {}
@@ -103,6 +104,16 @@ export async function GET(request: Request) {
 
 	        if (payload && payload.code) {
 	          setTimeout(function () { window.close(); }, 750);
+	          // Give it a bit longer, if it didn't close, give the user a button to manually return
+	          setTimeout(function () {
+	            var btn = document.createElement("button");
+	            btn.innerText = "Return to App";
+	            btn.style.marginTop = "16px";
+	            btn.style.padding = "8px 16px";
+	            btn.style.cursor = "pointer";
+	            btn.onclick = function() { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); };
+	            document.querySelector(".card").appendChild(btn);
+	          }, 2000);
 	        }
 	      })();
 	    </script>

@@ -1054,7 +1054,7 @@ export function ConfigureConnectionOverlay({
 
 			// Channel 1: postMessage (works when COOP doesn't block window.opener)
 			const messageHandler = (event: MessageEvent) => {
-				if (event.origin !== window.location.origin) return;
+				if (event.origin !== window.location.origin && (!explicitOrigin || event.origin !== explicitOrigin)) return;
 				const data = event.data;
 				if (!data || typeof data !== "object") return;
 				if (!(data.code || data.error)) return;

@@ -761,7 +761,7 @@ export function NewConnectionDialog({
 
 			// Channel 1: postMessage
 			const messageHandler = (event: MessageEvent) => {
-				if (event.origin !== window.location.origin) return;
+				if (event.origin !== window.location.origin && (!explicitOrigin || event.origin !== explicitOrigin)) return;
 				const d = event.data;
 				if (!d || typeof d !== "object") return;
 				if (!d.code && !d.error) return;
