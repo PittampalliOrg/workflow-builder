@@ -450,6 +450,7 @@ export function NewConnectionDialog({
 			const popup = window.open(
 				`${window.location.origin}/oauth2/popup`,
 				"_blank",
+				"width=600,height=700",
 			);
 
 			if (!popup) {
