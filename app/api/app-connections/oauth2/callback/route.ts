@@ -80,14 +80,13 @@ export function GET(request: Request) {
 	  // the provider. In that case, window.opener is null and we need to return
 	  // to /connections to finish the flow.
 	  var sameTabState = null;
-	  try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (e) {}
-	  var shouldReturnToConnections = !window.opener && payload && payload.state && sameTabState === payload.state;
+	  try { sameTabState = localStorage.getItem("oauth2_same_tab_state"); } catch (e) {}
+	  var shouldReturnToConnections = !window.opener && payload && payload.state;
 	  if (shouldReturnToConnections) {
-	    try { sessionStorage.removeItem("oauth2_same_tab_state"); } catch (e) {}
+	    try { localStorage.removeItem("oauth2_same_tab_state"); } catch (e) {}
 	    try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (e) {}
 	    return;
-	  }
-	  // Auto-close after a brief delay to let both channels deliver.
+	  }	  // Auto-close after a brief delay to let both channels deliver.
 	  // Leave the window open on error so the user can read what happened.
 	  if (payload && payload.code) {
 	    setTimeout(function() { window.close(); }, 1000);

@@ -94,10 +94,10 @@ export async function GET(request: Request) {
 	        // to /connections to finish the flow.
 	        // We also fall back to this if the browser severed window.opener (e.g. strict COOP or partitioned tabs).
 	        var sameTabState = null;
-	        try { sameTabState = sessionStorage.getItem("oauth2_same_tab_state"); } catch (_) {}
+	        try { sameTabState = localStorage.getItem("oauth2_same_tab_state"); } catch (_) {}
 	        var shouldReturnToConnections = !window.opener && payload && payload.state;
 	        if (shouldReturnToConnections) {
-	          try { sessionStorage.removeItem("oauth2_same_tab_state"); } catch (_) {}
+	          try { localStorage.removeItem("oauth2_same_tab_state"); } catch (_) {}
 	          try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (_) {}
 	          return;
 	        }

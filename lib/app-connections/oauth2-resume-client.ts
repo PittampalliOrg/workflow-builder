@@ -33,11 +33,11 @@ export type OAuth2CallbackResult =
 export function saveOAuth2Pending(pending: OAuth2PendingResume) {
 	if (typeof window === "undefined") return;
 	try {
-		sessionStorage.setItem(
+		localStorage.setItem(
 			oauth2PendingKey(pending.state),
 			JSON.stringify(pending),
 		);
-		sessionStorage.setItem(OAUTH2_SAME_TAB_STATE_KEY, pending.state);
+		localStorage.setItem(OAUTH2_SAME_TAB_STATE_KEY, pending.state);
 	} catch {
 		// ignore
 	}
@@ -46,7 +46,7 @@ export function saveOAuth2Pending(pending: OAuth2PendingResume) {
 export function loadOAuth2Pending(state: string): OAuth2PendingResume | null {
 	if (typeof window === "undefined") return null;
 	try {
-		const raw = sessionStorage.getItem(oauth2PendingKey(state));
+		const raw = localStorage.getItem(oauth2PendingKey(state));
 		if (!raw) return null;
 		return JSON.parse(raw) as OAuth2PendingResume;
 	} catch {
@@ -57,7 +57,7 @@ export function loadOAuth2Pending(state: string): OAuth2PendingResume | null {
 export function clearOAuth2Pending(state: string) {
 	if (typeof window === "undefined") return;
 	try {
-		sessionStorage.removeItem(oauth2PendingKey(state));
+		localStorage.removeItem(oauth2PendingKey(state));
 	} catch {
 		// ignore
 	}
