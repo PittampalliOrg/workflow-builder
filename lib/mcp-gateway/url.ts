@@ -26,8 +26,7 @@ export function resolvePublicMcpGatewayBaseUrl(params?: {
                 normalizeBaseUrl(
                         typeof window !== "undefined"
                                 ? (window as any).ENV?.NEXT_PUBLIC_APP_URL
-                                : process.env.NEXT_PUBLIC_APP_URL
-                );
+                                : (process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL)                );
         if (explicit) {		return explicit;
 	}
 

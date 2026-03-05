@@ -68,19 +68,18 @@ const RootLayout = ({ children }: RootLayoutProps) => (
 	<html lang="en" suppressHydrationWarning>
 		<head>
 			<script
-				// biome-ignore lint/security/noDangerouslySetInnerHtml: required to expose selected env vars to the client at runtime
-				dangerouslySetInnerHTML={{
-					__html: `window.ENV=${JSON.stringify({
-						NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
-						NEXT_PUBLIC_GITHUB_CLIENT_ID:
-							process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
-						NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL,
-						NEXT_PUBLIC_GOOGLE_CLIENT_ID:
-							process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
-					})}`,
-				}}
-			/>
-		</head>
+			// biome-ignore lint/security/noDangerouslySetInnerHtml: required to expose selected env vars to the client at runtime
+			dangerouslySetInnerHTML={{
+			__html: `window.ENV=${JSON.stringify({
+			NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
+			NEXT_PUBLIC_GITHUB_CLIENT_ID:
+				process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
+			NEXT_PUBLIC_APP_URL: process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL,
+			NEXT_PUBLIC_GOOGLE_CLIENT_ID:
+				process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+			})}`,
+			}}
+			/>		</head>
 		<body className={cn(sans.variable, mono.variable, "antialiased")}>
 			<ThemeProvider
 				attribute="class"

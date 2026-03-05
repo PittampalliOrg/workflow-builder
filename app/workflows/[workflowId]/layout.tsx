@@ -41,7 +41,7 @@ export async function generateMetadata({
   }
 
   const baseUrl =
-    (await getConfigAsync("NEXT_PUBLIC_APP_URL")) || process.env.NEXT_PUBLIC_APP_URL || "https://workflow-builder.dev";
+    (await getConfigAsync("NEXT_PUBLIC_APP_URL")) || process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "https://workflow-builder.dev";
   const workflowUrl = `${baseUrl}/workflows/${workflowId}`;
   const ogImageUrl = isPublic
     ? `${baseUrl}/api/og/workflow/${workflowId}`

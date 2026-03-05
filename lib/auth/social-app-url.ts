@@ -33,7 +33,7 @@ export async function resolveSocialAppUrl(request: Request): Promise<string> {
 		// If Dapr config is unavailable, continue with env/request fallbacks.
 	}
 
-	const envUrl = process.env.NEXT_PUBLIC_APP_URL;
+	const envUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL;
 	if (envUrl) {
 		return trimTrailingSlash(envUrl);
 	}

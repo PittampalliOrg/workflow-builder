@@ -164,7 +164,7 @@ export async function GET(
 	request: Request,
 	{ params }: { params: Promise<{ provider: string }> },
 ) {
-	let appUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+	let appUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
 	try {
 		const { provider } = await params;
