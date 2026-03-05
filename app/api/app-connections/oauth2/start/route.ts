@@ -10,6 +10,7 @@ import {
 import { getSession } from "@/lib/auth-helpers";
 import { getPieceMetadataByName } from "@/lib/db/piece-metadata";
 import { getOAuthAppByPieceName } from "@/lib/db/oauth-apps";
+import { resolveSocialAppUrl } from "@/lib/auth/social-app-url";
 
 export async function POST(request: Request) {
 	try {
@@ -66,8 +67,9 @@ export async function POST(request: Request) {
 		}
 
 		// Resolve redirectUrl: from request body or derive from request origin
+		const appUrl = await resolveSocialAppUrl(request);
 		const redirectUrl =
-			body.redirectUrl || `${new URL(request.url).origin}/redirect`;
+			body.redirectUrl || `${appUrl}/redirect`;
 
 		const verifier = generatePkceVerifier();
 		const pkceEnabled = oauthAuth.pkce ?? false;

@@ -409,7 +409,13 @@ export function NewConnectionDialog({
 			processingRef.current = false;
 			popupNavigatedRef.current = false;
 
-			const redirectUrl = `${window.location.origin}/redirect`;
+			const explicitOrigin =
+				typeof window !== "undefined"
+					? (window as any).ENV?.NEXT_PUBLIC_APP_URL
+					: null;
+			const redirectUrl = explicitOrigin
+				? `${explicitOrigin}/redirect`
+				: `${window.location.origin}/redirect`;
 			const resolvedDisplayName =
 				displayName.trim() || `${selectedPiece.displayName} Connection`;
 
