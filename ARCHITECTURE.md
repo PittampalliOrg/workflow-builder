@@ -1,11 +1,11 @@
 # Workflow Builder Architecture Summary
 
-**Last Updated**: 2026-02-05
+**Last Updated**: 2026-03-11
 **Status**: Production Ready
 
 ## System Overview
 
-Visual workflow builder with serverless function execution on Dapr + Kubernetes.
+Visual workflow builder with Dapr workflow orchestration, durable AI agents, and hosted MCP integration on Kubernetes.
 
 ## Core Principles
 
@@ -36,22 +36,19 @@ Visual workflow builder with serverless function execution on Dapr + Kubernetes.
 ┌─────────────────────────────────────────────────────────┐
 │ Function Execution Layer                                │
 │ - function-router service (smart dispatcher)            │
-│ - Routes to OpenFunctions (Knative serverless)          │
-│ - Registry-based routing with wildcard support          │
+│ - Routes system actions to fn-system                    │
+│ - Routes agent actions to durable-agent                 │
+│ - Uses fn-activepieces only as retained AP fallback     │
 └────────────────┬────────────────────────────────────────┘
                  │
                  ▼ Direct HTTP
 ┌─────────────────────────────────────────────────────────┐
-│  OpenFunctions (Knative Services)                       │
-│  • fn-openai - OpenAI text & image generation          │
-│  • fn-slack - Slack messaging                          │
-│  • fn-github - GitHub operations                        │
-│  • fn-resend - Email delivery                          │
-│  • fn-stripe - Payment processing                       │
-│  • fn-linear - Issue tracking                          │
-│  • fn-firecrawl - Web scraping                         │
-│  • fn-perplexity - AI-powered search                   │
-│  Scale-to-zero when idle, <10s cold start              │
+│  Runtime Services                                       │
+│  • durable-agent - primary AI agent runtime            │
+│  • fn-system - built-in system actions                 │
+│  • mcp-gateway - hosted MCP entrypoint                 │
+│  • fn-activepieces - retained AP fallback              │
+│  • legacy/optional MCP services remain in source       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -110,10 +107,13 @@ Return workflow result → Save to database → Update UI
 
 | Component | Role | Language | Deployment |
 |-----------|------|----------|------------|
-| workflow-builder | UI + BFF | Next.js 16 | K8s Deployment |
-| workflow-orchestrator | Workflow engine | TypeScript | K8s + Dapr |
+| workflow-builder | UI + BFF | Next.js 16 | K8s Deployment / DevSpace |
+| workflow-orchestrator | Workflow engine | Python | K8s + Dapr |
+| durable-agent | Durable agent runtime | TypeScript | K8s + Dapr |
 | function-router | Function dispatcher | TypeScript | K8s + Dapr |
-| fn-* (8 services) | OpenFunctions | TypeScript | Knative Services |
+| fn-system | System action executor | TypeScript | Service path |
+| mcp-gateway | Hosted MCP entrypoint | TypeScript | K8s Deployment |
+| fn-activepieces | Retained AP fallback | TypeScript | Not part of current core local runtime |
 | postgresql | Workflows & functions | PostgreSQL 15 | StatefulSet |
 | redis | Dapr state | Redis 7 | StatefulSet |
 
@@ -172,8 +172,8 @@ export const generateText = async (input, context) => {
 
 **Cluster**: Kind (local) or production Kubernetes
 **Namespace**: workflow-builder
-**Ingress**: https://workflow-builder.cnoe.localtest.me:8443
-**Registry**: Gitea (gitea.cnoe.localtest.me:8443/giteaadmin/)
+**Ingress**: https://workflow-builder-ryzen.tail286401.ts.net
+**Registry**: Gitea (historical push path: `gitea.cnoe.localtest.me:8443/giteaadmin/`)
 
 **Auto-Deploy Flow** (cluster-recreate):
 1. PostgreSQL (wave 10)
@@ -185,8 +185,17 @@ export const generateText = async (input, context) => {
 
 **Frontend** (hot-reload):
 ```bash
+docker build -f Dockerfile.devspace \
+  -t gitea.cnoe.localtest.me/giteaadmin/nodejs-22-devspace:latest .
+kind load docker-image \
+  gitea.cnoe.localtest.me/giteaadmin/nodejs-22-devspace:latest \
+  --name ryzen
 devspace dev  # File sync enabled for app/, components/, lib/
 ```
+
+If `devspace dev` stalls on `ImagePullBackOff`, the shared dev image is missing
+from the kind nodes. Load the image, then delete the stuck `workflow-builder-devspace-*`
+pod so the ReplicaSet recreates it against the local image cache.
 
 **Backend** (rebuild required):
 ```bash

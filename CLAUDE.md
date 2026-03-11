@@ -57,7 +57,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 - **Auth**: Better Auth (email/password, social login, JWT API keys)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: durable-agent (Dapr Workflow ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service
-- **Mastra Agent** (legacy/secondary): mastra-agent-tanstack — still deployed for MCP/monitoring
+- **Mastra Agent** (legacy/secondary): mastra-agent-tanstack — retained in source, not part of the current core runtime
 - **Function Execution**: function-router → fn-system, fn-activepieces, durable-agent
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
@@ -85,15 +85,13 @@ pnpm test:e2e         # Run Playwright E2E tests
 |---------|------|------|
 | **workflow-orchestrator** | 8080 | Python Dapr workflow engine, topological node execution |
 | **durable-agent** | 8001 | Primary AI agent — Dapr Workflow ReAct loop, AI SDK 6 |
-| **mastra-agent-tanstack** | 3000 | Secondary agent — Mastra SDK, MCP endpoint, monitoring UI |
-| **mastra-agent-mcp** | 3300 | Mastra agent as pure MCP server |
 | **function-router** | 8080 | Routes actions to fn-system/fn-activepieces/durable-agent |
 | **fn-system** | 8080 | System actions: http-request, database-query, condition |
-| **fn-activepieces** | 8080 | Executes AP piece actions (default fallback) |
-| **workflow-mcp-server** | 3200 | Workflow CRUD MCP tools + React Flow UI |
-| **piece-mcp-server** | dynamic | AP piece MCP tools + MCP Apps UI |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
-| **node-sandbox** | 8888 | HTTP runtime sandbox |
+| **fn-activepieces** | 8080 | Retained AP executor, not part of the current core local runtime |
+| **workflow-mcp-server** | 3200 | Retained MCP server, not part of the current core local runtime |
+| **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
+| **node-sandbox** | 8888 | Sandbox image / helper runtime |
 
 > See `docs/services.md` for full endpoint details and build commands.
 
@@ -139,13 +137,13 @@ lib/
 services/
   workflow-orchestrator/             # Python Dapr workflow orchestrator
   durable-agent/                     # Durable AI agent (PRIMARY)
-  mastra-agent-tanstack/             # Mastra AI agent (SECONDARY)
-  mastra-agent-mcp/                  # Mastra agent MCP server
+  mastra-agent-tanstack/             # Legacy Mastra agent service
+  mastra-agent-mcp/                  # Legacy Mastra MCP service
   function-router/                   # Function execution router
   fn-activepieces/                   # AP piece executor
   fn-system/                         # System functions
-  workflow-mcp-server/               # Workflow MCP tools
-  piece-mcp-server/                  # AP piece MCP tools
+  workflow-mcp-server/               # Optional workflow MCP tools
+  piece-mcp-server/                  # Optional AP piece MCP tools
   mcp-gateway/                       # Hosted MCP gateway
 
 components/workflow/
@@ -212,9 +210,9 @@ pnpm seed-functions    # Seeds functions table from plugins
 ## MCP Integration
 
 Three MCP server types:
-1. **workflow-mcp-server** (Port 3200): Workflow CRUD + node manipulation tools
-2. **piece-mcp-server**: AP piece actions as MCP tools
-3. **mcp-gateway**: Hosted MCP endpoint for external AI clients
+1. **mcp-gateway**: Hosted MCP endpoint for external AI clients
+2. **workflow-mcp-server**: Optional workflow MCP tool server retained in source
+3. **piece-mcp-server**: Optional AP piece MCP server retained in source
 
 MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in `components/mcp-chat/tool-widget.tsx`).
 

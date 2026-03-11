@@ -1,6 +1,25 @@
 # Services Reference
 
-Detailed descriptions of all backend services in the workflow-builder system.
+Detailed descriptions of the backend services in the workflow-builder system.
+
+## Runtime Classification
+
+Current `kind-ryzen` core runtime:
+- `workflow-orchestrator`
+- `durable-agent`
+- `function-router`
+- `fn-system`
+- `mcp-gateway`
+
+Retained in source, but not part of the current core local runtime:
+- `fn-activepieces`
+- `workflow-mcp-server`
+- `piece-mcp-server`
+- `node-sandbox`
+
+Legacy services retained in source only:
+- `mastra-agent-tanstack`
+- `mastra-agent-mcp`
 
 ## workflow-orchestrator (Python)
 
@@ -23,7 +42,7 @@ durable-agent. Also runs Activepieces flows via a linked-list step walker.
   - `agent/*`, `durable/*` → `call_durable_agent_run()` → durable-agent `/api/run`
   - `mastra/execute` → `call_durable_execute_plan()` → durable-agent `/api/execute-plan`
 - **Output persistence** (`activities/persist_results_to_db.py`): At workflow completion (success or error), persists final output to `workflow_executions.output` in PostgreSQL. Belt-and-suspenders with the status polling endpoint.
-- **Config** (`core/config.py`): `DURABLE_AGENT_APP_ID=durable-agent`, `MASTRA_AGENT_APP_ID=mastra-agent-tanstack`, `FUNCTION_ROUTER_APP_ID=function-router`
+- **Config** (`core/config.py`): `DURABLE_AGENT_APP_ID=durable-agent`, `FUNCTION_ROUTER_APP_ID=function-router`; `MASTRA_AGENT_APP_ID` remains only as legacy compatibility surface
 - **AP workflow** (`workflows/ap_workflow.py`): Walks AP's linked-list flow format natively with step handlers for PIECE, CODE, ROUTER (condition branching), and LOOP_ON_ITEMS.
 
 ## durable-agent (TypeScript/Express)
@@ -52,8 +71,8 @@ has built-in retries, and uses deterministic replay for durability.
 
 ## mastra-agent-tanstack (TypeScript/TanStack Start)
 
-Secondary AI agent service using Mastra SDK. Still deployed for MCP endpoint access and
-monitoring UI, but no longer primary for agent routing (durable-agent handles that).
+Legacy Mastra agent service retained in source. It is no longer the primary agent runtime
+and is not part of the current `kind-ryzen` core deployment.
 
 - **Port**: 3000 (TanStack Start)
 - **Dapr app-id**: `mastra-agent-tanstack`
@@ -74,8 +93,8 @@ monitoring UI, but no longer primary for agent routing (durable-agent handles th
 
 ## mastra-agent-mcp (TypeScript)
 
-Secondary Mastra agent exposed as a pure MCP server with monitoring UI.
-Uses older @mastra/core ^0.10.0.
+Legacy standalone Mastra MCP server retained in source. It is not part of the current
+workflow-builder runtime.
 
 - **Port**: 3300
 - **Dapr app-id**: `mastra-agent-mcp`
@@ -111,6 +130,9 @@ Built-in system actions executed as a Knative service.
 
 Executes Activepieces piece actions. Ships with AP piece npm packages pre-installed.
 
+This remains a logical routing target for AP piece actions, but it is not part of the
+current core `kind-ryzen` runtime set.
+
 - **Port**: 8080
 - **Key endpoints**: `POST /execute`, `POST /options`, `GET /health`
 - **Context**: Stubbed AP execution context (no-op store/files, real auth)
@@ -119,6 +141,9 @@ Executes Activepieces piece actions. Ships with AP piece npm packages pre-instal
 
 MCP server exposing workflow CRUD, node/edge manipulation, execution, and approval tools.
 Includes embedded React Flow UI for MCP Apps integration.
+
+This service still has manifests/build hooks in source, but it is not part of the current
+core workflow execution path.
 
 - **Port**: 3200
 - **MCP endpoint**: `/mcp` (Streamable HTTP)
@@ -131,6 +156,9 @@ Includes embedded React Flow UI for MCP Apps integration.
 
 MCP server that exposes Activepieces piece actions as MCP tools with interactive UI.
 Ships with 42 AP piece npm packages for broader coverage than fn-activepieces.
+
+This service is retained because MCP provisioning code still references it, not because it
+is part of the current core runtime.
 
 - **Port**: Dynamic
 - **MCP endpoint**: `/mcp`
@@ -149,6 +177,9 @@ and delegates execution to the workflow-builder Next.js app via internal endpoin
 ## node-sandbox (Node.js)
 
 Simple HTTP runtime sandbox. Drop-in replacement for python-runtime-sandbox.
+
+This is an infrastructure helper image, not a long-running workflow-builder service in the
+current local runtime.
 
 - **Port**: 8888
 - **Endpoints**: `GET /` (readiness), `GET /health`, `POST /execute` (shell command), `POST /upload` (file upload)
