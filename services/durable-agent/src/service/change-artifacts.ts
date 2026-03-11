@@ -151,6 +151,10 @@ type BlobPayloadEnvelope = {
 	compressed: boolean;
 };
 
+type BlobPayloadRow = {
+	payload_text: string;
+};
+
 const COMPRESS_THRESHOLD_BYTES = parseInt(
 	process.env.WORKSPACE_CHANGE_COMPRESS_THRESHOLD_BYTES || "4096",
 	10,
@@ -164,6 +168,7 @@ const PERSISTENCE_REQUIRED =
 const RECON_DATABASE_URL =
 	process.env.WORKSPACE_RECON_DATABASE_URL || process.env.DATABASE_URL || "";
 const RECON_BLOB_BINDING = process.env.WORKSPACE_RECON_BLOB_BINDING || "";
+const BLOB_STORAGE_MODE = RECON_BLOB_BINDING.trim() ? "binding" : "database";
 const RECON_BLOB_PREFIX = (
 	process.env.WORKSPACE_RECON_BLOB_PREFIX || "workspace-change-artifacts"
 ).replace(/\/+$/, "");
@@ -172,6 +177,10 @@ const RECON_BLOB_OP_CREATE =
 const RECON_BLOB_OP_GET = process.env.WORKSPACE_RECON_BLOB_OP_GET || "get";
 const RECON_BLOB_OP_DELETE =
 	process.env.WORKSPACE_RECON_BLOB_OP_DELETE || "delete";
+const RECON_BLOB_NAME_METADATA_KEY =
+	process.env.WORKSPACE_RECON_BLOB_NAME_METADATA_KEY || "blobName";
+const RECON_BLOB_CONTENT_TYPE_METADATA_KEY =
+	process.env.WORKSPACE_RECON_BLOB_CONTENT_TYPE_METADATA_KEY || "contentType";
 
 function normalizeStorageRef(executionId: string, changeSetId: string): string {
 	const cleanExecution = executionId.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -186,6 +195,19 @@ function normalizeFileStorageRef(
 ): string {
 	const cleanExecution = executionId.replace(/[^a-zA-Z0-9._-]/g, "-");
 	return `${RECON_BLOB_PREFIX}/${cleanExecution}/${changeSetId}/files/${fileIndex}-${variant}.txt`;
+}
+
+function buildBlobMetadata(
+	storageRef: string,
+	contentType?: string,
+): Record<string, string> {
+	const metadata: Record<string, string> = {
+		[RECON_BLOB_NAME_METADATA_KEY]: storageRef,
+	};
+	if (contentType && RECON_BLOB_CONTENT_TYPE_METADATA_KEY.trim()) {
+		metadata[RECON_BLOB_CONTENT_TYPE_METADATA_KEY] = contentType;
+	}
+	return metadata;
 }
 
 function toIsoString(input: string | Date): string {
@@ -278,6 +300,8 @@ class WorkspaceChangeArtifactStore {
 	private readonly daprClient = new DaprClient();
 	private initPromise: Promise<void> | null = null;
 	private initialized = false;
+	private persistenceAvailable = false;
+	private initializationError: Error | null = null;
 
 	constructor() {
 		this.sql = RECON_DATABASE_URL
@@ -300,6 +324,7 @@ class WorkspaceChangeArtifactStore {
 
 	async save(input: SaveChangeArtifactInput): Promise<ChangeArtifactMetadata> {
 		await this.ensureInitialized();
+		this.assertPersistenceAvailable();
 		if (!this.sql) {
 			throw new Error(
 				"Workspace change persistence database is not configured",
@@ -522,6 +547,9 @@ class WorkspaceChangeArtifactStore {
 		changeSetId: string,
 	): Promise<{ metadata: ChangeArtifactMetadata; patch: string } | null> {
 		await this.ensureInitialized();
+		if (!this.persistenceAvailable) {
+			return null;
+		}
 		const metadata = await this.getMetadataByChangeSetId(changeSetId);
 		if (!metadata) {
 			return null;
@@ -534,6 +562,9 @@ class WorkspaceChangeArtifactStore {
 		executionId: string,
 	): Promise<ChangeArtifactMetadata[]> {
 		await this.ensureInitialized();
+		if (!this.persistenceAvailable) {
+			return [];
+		}
 		const id = executionId.trim();
 		if (!id) {
 			return [];
@@ -627,6 +658,10 @@ class WorkspaceChangeArtifactStore {
 		patch: string;
 		changeSets: ChangeArtifactMetadata[];
 	}> {
+		await this.ensureInitialized();
+		if (!this.persistenceAvailable) {
+			return { patch: "", changeSets: [] };
+		}
 		const includeExcluded = opts?.includeExcluded === true;
 		const durableInstanceId = opts?.durableInstanceId;
 		const all = await this.listByExecutionId(executionId);
@@ -656,6 +691,9 @@ class WorkspaceChangeArtifactStore {
 		opts?: { durableInstanceId?: string },
 	): Promise<ExecutionFileSnapshot | null> {
 		await this.ensureInitialized();
+		if (!this.persistenceAvailable) {
+			return null;
+		}
 		if (!this.sql) {
 			throw new Error(
 				"Workspace change persistence database is not configured",
@@ -859,26 +897,64 @@ class WorkspaceChangeArtifactStore {
 			payload: payloadBytes.toString("base64"),
 			compressed,
 		};
+		if (BLOB_STORAGE_MODE === "database") {
+			if (!this.sql) {
+				throw new Error(
+					"Workspace change persistence database is not configured",
+				);
+			}
+			await this.sql`
+				insert into workspace_change_artifact_blob_payloads (
+					storage_ref,
+					payload_text,
+					created_at
+				)
+				values (
+					${storageRef},
+					${JSON.stringify(envelope)},
+					now()
+				)
+				on conflict (storage_ref)
+				do update set
+					payload_text = excluded.payload_text,
+					created_at = excluded.created_at
+			`;
+			return;
+		}
 		await this.daprClient.binding.send(
 			RECON_BLOB_BINDING,
 			RECON_BLOB_OP_CREATE,
 			JSON.stringify(envelope),
-			{
-				blobName: storageRef,
-				contentType: "application/json",
-			},
+			buildBlobMetadata(storageRef, "application/json"),
 		);
 	}
 
 	private async readBlobPayload(storageRef: string): Promise<Buffer> {
-		const rawResponse = (await this.daprClient.binding.send(
-			RECON_BLOB_BINDING,
-			RECON_BLOB_OP_GET,
-			"",
-			{
-				blobName: storageRef,
-			},
-		)) as unknown;
+		const rawResponse =
+			BLOB_STORAGE_MODE === "database"
+				? await (async () => {
+						if (!this.sql) {
+							throw new Error(
+								"Workspace change persistence database is not configured",
+							);
+						}
+						const rows = await this.sql<BlobPayloadRow[]>`
+						select payload_text
+						from workspace_change_artifact_blob_payloads
+						where storage_ref = ${storageRef}
+						limit 1
+					`;
+						if (rows.length === 0) {
+							throw new Error(`Blob payload not found for ${storageRef}`);
+						}
+						return rows[0].payload_text;
+					})()
+				: ((await this.daprClient.binding.send(
+						RECON_BLOB_BINDING,
+						RECON_BLOB_OP_GET,
+						"",
+						buildBlobMetadata(storageRef),
+					)) as unknown);
 		let parsed: BlobPayloadEnvelope;
 
 		if (rawResponse && typeof rawResponse === "object") {
@@ -943,13 +1019,21 @@ class WorkspaceChangeArtifactStore {
 
 	private async deleteBlobPayload(storageRef: string): Promise<void> {
 		try {
+			if (BLOB_STORAGE_MODE === "database") {
+				if (!this.sql) {
+					return;
+				}
+				await this.sql`
+					delete from workspace_change_artifact_blob_payloads
+					where storage_ref = ${storageRef}
+				`;
+				return;
+			}
 			await this.daprClient.binding.send(
 				RECON_BLOB_BINDING,
 				RECON_BLOB_OP_DELETE,
 				"",
-				{
-					blobName: storageRef,
-				},
+				buildBlobMetadata(storageRef),
 			);
 		} catch {
 			// best-effort cleanup only
@@ -963,7 +1047,18 @@ class WorkspaceChangeArtifactStore {
 		if (!this.initPromise) {
 			this.initPromise = this.initialize();
 		}
-		await this.initPromise;
+		try {
+			await this.initPromise;
+		} catch (error) {
+			this.initializationError =
+				error instanceof Error ? error : new Error(String(error));
+			if (PERSISTENCE_REQUIRED) {
+				throw this.initializationError;
+			}
+			console.warn(
+				`[workspace-change-artifacts] Optional persistence disabled: ${this.initializationError.message}`,
+			);
+		}
 		this.initialized = true;
 	}
 
@@ -974,14 +1069,7 @@ class WorkspaceChangeArtifactStore {
 					"WORKSPACE_RECON_DATABASE_URL or DATABASE_URL must be set for workspace change persistence",
 				);
 			}
-			return;
-		}
-		if (!RECON_BLOB_BINDING) {
-			if (PERSISTENCE_REQUIRED) {
-				throw new Error(
-					"WORKSPACE_RECON_BLOB_BINDING must be set for workspace change persistence",
-				);
-			}
+			this.persistenceAvailable = false;
 			return;
 		}
 		if (!this.sql) {
@@ -1050,11 +1138,42 @@ class WorkspaceChangeArtifactStore {
 			create index if not exists idx_workspace_change_artifact_files_path_sequence
 			on workspace_change_artifact_files (path, sequence)
 		`;
-		await this.verifyBlobBindingRoundTrip();
+		await this.sql`
+			create table if not exists workspace_change_artifact_blob_payloads (
+				storage_ref text primary key,
+				payload_text text not null,
+				created_at timestamptz not null default now()
+			)
+		`;
+		try {
+			if (BLOB_STORAGE_MODE === "binding") {
+				await this.verifyBlobBindingRoundTrip();
+			}
+			this.persistenceAvailable = true;
+			this.initializationError = null;
+			console.log(
+				`[workspace-change-artifacts] Persistence initialized (db=postgres, storage=${BLOB_STORAGE_MODE === "binding" ? `binding:${RECON_BLOB_BINDING}` : "database"}, prefix=${RECON_BLOB_PREFIX})`,
+			);
+		} catch (error) {
+			this.persistenceAvailable = false;
+			this.initializationError =
+				error instanceof Error ? error : new Error(String(error));
+			if (PERSISTENCE_REQUIRED) {
+				throw this.initializationError;
+			}
+		}
+	}
 
-		console.log(
-			`[workspace-change-artifacts] Persistence initialized (db=postgres, binding=${RECON_BLOB_BINDING}, prefix=${RECON_BLOB_PREFIX})`,
-		);
+	private assertPersistenceAvailable(): void {
+		if (this.persistenceAvailable) {
+			return;
+		}
+		if (this.initializationError) {
+			throw new Error(
+				`Workspace change persistence is unavailable: ${this.initializationError.message}`,
+			);
+		}
+		throw new Error("Workspace change persistence is unavailable");
 	}
 
 	private async verifyBlobBindingRoundTrip(): Promise<void> {
