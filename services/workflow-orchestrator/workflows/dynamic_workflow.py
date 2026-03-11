@@ -60,6 +60,165 @@ MUTATING_TOOL_NAMES = {
 STRICT_DURABLE_PLAN_CONTRACT = str(
     os.environ.get("DURABLE_PLAN_CONTRACT_STRICT", "true")
 ).strip().lower() not in {"0", "false", "no", "off"}
+WORKFLOW_STATUS_PATCH_NAME = "workflow-status-v2"
+CONTINUE_AS_NEW_PATCH_NAME = "dynamic-workflow-continue-as-new-v1"
+
+
+def _is_patch_enabled(ctx: wf.DaprWorkflowContext, patch_name: str) -> bool:
+    """Guard new replay-sensitive behavior behind Dapr patch checks when available."""
+    checker = getattr(ctx, "is_patched", None)
+    if callable(checker):
+        try:
+            return bool(checker(patch_name))
+        except Exception:
+            return False
+    # Older runtimes may not expose patch checks; default to enabled for new instances.
+    return True
+
+
+def _build_status_payload(
+    ctx: wf.DaprWorkflowContext,
+    payload: dict[str, Any],
+    workflow_version: str | None,
+) -> dict[str, Any]:
+    if workflow_version and _is_patch_enabled(ctx, WORKFLOW_STATUS_PATCH_NAME):
+        payload["workflowVersion"] = workflow_version
+    return payload
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _restore_runtime_state(
+    input_data: dict[str, Any],
+    trigger_data: dict[str, Any],
+) -> tuple[
+    dict[str, Any],
+    NodeOutputs,
+    set[str],
+    dict[str, int],
+    set[str],
+    dict[str, dict[str, Any]],
+    int,
+    int,
+]:
+    runtime_state = input_data.get("_runtime")
+    if not isinstance(runtime_state, dict):
+        runtime_state = {}
+
+    restored_state_vars = runtime_state.get("stateVars")
+    state_vars = restored_state_vars if isinstance(restored_state_vars, dict) else {}
+
+    restored_outputs = runtime_state.get("nodeOutputs")
+    node_outputs: NodeOutputs = (
+        restored_outputs if isinstance(restored_outputs, dict) else {}
+    )
+    if "trigger" not in node_outputs:
+        node_outputs["trigger"] = {
+            "label": "Trigger",
+            "actionType": "",
+            "data": trigger_data,
+        }
+    node_outputs["state"] = {
+        "label": "State",
+        "actionType": "state",
+        "data": {"success": True, "data": state_vars},
+    }
+
+    restored_completed = runtime_state.get("completedNodeIds")
+    completed_node_ids = {
+        str(node_id).strip()
+        for node_id in restored_completed
+        if str(node_id).strip()
+    } if isinstance(restored_completed, list) else set()
+
+    restored_loop_iterations = runtime_state.get("loopIterations")
+    loop_iterations = {
+        str(node_id).strip(): _safe_int(iteration, 0)
+        for node_id, iteration in restored_loop_iterations.items()
+        if str(node_id).strip()
+    } if isinstance(restored_loop_iterations, dict) else {}
+
+    restored_skipped = runtime_state.get("skippedNodeIds")
+    skipped_node_ids = {
+        str(node_id).strip()
+        for node_id in restored_skipped
+        if str(node_id).strip()
+    } if isinstance(restored_skipped, list) else set()
+
+    restored_skip_reasons = runtime_state.get("skippedReasonByNodeId")
+    skipped_reason_by_node_id = (
+        restored_skip_reasons if isinstance(restored_skip_reasons, dict) else {}
+    )
+
+    next_node_index = max(0, _safe_int(runtime_state.get("nextNodeIndex"), 0))
+    completed_since_checkpoint = max(
+        0,
+        _safe_int(runtime_state.get("completedNodeExecutionsSinceCheckpoint"), 0),
+    )
+
+    return (
+        state_vars,
+        node_outputs,
+        completed_node_ids,
+        loop_iterations,
+        skipped_node_ids,
+        skipped_reason_by_node_id,
+        next_node_index,
+        completed_since_checkpoint,
+    )
+
+
+def _should_continue_as_new(
+    ctx: wf.DaprWorkflowContext,
+    completed_since_checkpoint: int,
+) -> bool:
+    if not _is_patch_enabled(ctx, CONTINUE_AS_NEW_PATCH_NAME):
+        return False
+    threshold = max(
+        0,
+        _safe_int(
+            getattr(
+                orchestrator_config,
+                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
+                0,
+            ),
+            0,
+        ),
+    )
+    return threshold > 0 and completed_since_checkpoint >= threshold
+
+
+def _continue_dynamic_workflow_as_new(
+    ctx: wf.DaprWorkflowContext,
+    input_data: dict[str, Any],
+    *,
+    next_node_index: int,
+    state_vars: dict[str, Any],
+    node_outputs: NodeOutputs,
+    completed_node_ids: set[str],
+    loop_iterations: dict[str, int],
+    skipped_node_ids: set[str],
+    skipped_reason_by_node_id: dict[str, dict[str, Any]],
+    continue_as_new_count: int,
+) -> None:
+    next_input = dict(input_data)
+    next_input["_runtime"] = {
+        "nextNodeIndex": next_node_index,
+        "stateVars": state_vars,
+        "nodeOutputs": node_outputs,
+        "completedNodeIds": sorted(completed_node_ids),
+        "loopIterations": loop_iterations,
+        "skippedNodeIds": sorted(skipped_node_ids),
+        "skippedReasonByNodeId": skipped_reason_by_node_id,
+        "completedNodeExecutionsSinceCheckpoint": 0,
+        "continueAsNewCount": continue_as_new_count + 1,
+    }
+    ctx.continue_as_new(next_input)
 
 def is_unresolved_template(value: str) -> bool:
     """Check if a string value is an unresolved template like {{PlanNode.workflow_id}}."""
@@ -461,7 +620,6 @@ def _return_with_workspace_cleanup(
     return result
 
 
-@wfr.workflow(name="dynamic_workflow")
 def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     """
     Dynamic Workflow - The main interpreter function
@@ -490,35 +648,15 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     node_connection_map = input_data.get("nodeConnectionMap") or {}
     otel_ctx = input_data.get("_otel") or {}
     trace_id = _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+    workflow_version = (
+        str(input_data.get("_workflowVersion") or "").strip() or None
+    )
 
     start_time = time.time()
     execution_id = ctx.instance_id
     workflow_id = definition.get("id", "unknown")
 
     logger.info(f"[Dynamic Workflow] Starting workflow: {definition.get('name')} ({execution_id})")
-
-    state_vars: dict[str, Any] = {}
-
-    # Initialize node outputs with trigger data + workflow state variables.
-    # `state` is a reserved virtual node ID so templates can reference:
-    # - {{state.someKey}}
-    # - {{State.someKey}}
-    node_outputs: NodeOutputs = {
-        "trigger": {"label": "Trigger", "actionType": "", "data": trigger_data},
-        "state": {
-            "label": "State",
-            "actionType": "state",
-            "data": {"success": True, "data": state_vars},
-        },
-    }
-
-    # Set initial status
-    ctx.set_custom_status(json.dumps({
-        "phase": "running",
-        "progress": 0,
-        "message": "Workflow started",
-        "traceId": trace_id,
-    }))
 
     # Create a map of nodes for quick lookup
     nodes = definition.get("nodes", [])
@@ -528,14 +666,43 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     edges = definition.get("edges", []) or []
     edges_by_source = _edges_by_source(edges)
     total_nodes = len(execution_order)
-    completed_node_ids: set[str] = set()
-    loop_iterations: dict[str, int] = {}
-    skipped_node_ids: set[str] = set()
-    skipped_reason_by_node_id: dict[str, dict[str, Any]] = {}
+    (
+        state_vars,
+        node_outputs,
+        completed_node_ids,
+        loop_iterations,
+        skipped_node_ids,
+        skipped_reason_by_node_id,
+        i,
+        completed_since_checkpoint,
+    ) = _restore_runtime_state(input_data, trigger_data)
+    continue_as_new_count = _safe_int(
+        (input_data.get("_runtime") or {}).get("continueAsNewCount"),
+        0,
+    ) if isinstance(input_data.get("_runtime"), dict) else 0
+
+    # Set initial status
+    ctx.set_custom_status(
+        json.dumps(
+            _build_status_payload(
+                ctx,
+                {
+                    "phase": "running",
+                    "progress": calculate_progress(len(completed_node_ids), total_nodes),
+                    "message": (
+                        "Workflow continued with compacted history"
+                        if continue_as_new_count > 0
+                        else "Workflow started"
+                    ),
+                    "traceId": trace_id,
+                },
+                workflow_version,
+            )
+        )
+    )
 
     try:
         # Execute nodes in order
-        i = 0
         while i < len(execution_order):
             node_id = execution_order[i]
             node = node_map.get(node_id)
@@ -578,14 +745,22 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 continue
 
             # Update status with current node
-            ctx.set_custom_status(json.dumps({
-                "phase": "running",
-                "progress": calculate_progress(len(completed_node_ids), total_nodes),
-                "message": f"Executing: {node.get('label')}",
-                "currentNodeId": node.get("id"),
-                "currentNodeName": node.get("label"),
-                "traceId": trace_id,
-            }))
+            ctx.set_custom_status(
+                json.dumps(
+                    _build_status_payload(
+                        ctx,
+                        {
+                            "phase": "running",
+                            "progress": calculate_progress(len(completed_node_ids), total_nodes),
+                            "message": f"Executing: {node.get('label')}",
+                            "currentNodeId": node.get("id"),
+                            "currentNodeName": node.get("label"),
+                            "traceId": trace_id,
+                        },
+                        workflow_version,
+                    )
+                )
+            )
 
             logger.info(f"[Dynamic Workflow] Processing node: {node.get('label')} ({node.get('type')})")
 
@@ -1424,6 +1599,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             }
 
             completed_node_ids.add(node.get("id"))
+            completed_since_checkpoint += 1
             i += 1
 
             # Reserved workflow control channel.
@@ -1443,17 +1619,64 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 # Never let control parsing break workflow execution.
                 pass
 
+            if _should_continue_as_new(ctx, completed_since_checkpoint):
+                logger.info(
+                    "[Dynamic Workflow] Continuing as new to compact history: execution=%s next_index=%s compactions=%s",
+                    execution_id,
+                    i,
+                    continue_as_new_count + 1,
+                )
+                ctx.set_custom_status(
+                    json.dumps(
+                        _build_status_payload(
+                            ctx,
+                            {
+                                "phase": "running",
+                                "progress": calculate_progress(
+                                    len(completed_node_ids), total_nodes
+                                ),
+                                "message": "Compacting workflow history",
+                                "currentNodeId": None,
+                                "currentNodeName": None,
+                                "traceId": trace_id,
+                            },
+                            workflow_version,
+                        )
+                    )
+                )
+                _continue_dynamic_workflow_as_new(
+                    ctx,
+                    input_data,
+                    next_node_index=i,
+                    state_vars=state_vars,
+                    node_outputs=node_outputs,
+                    completed_node_ids=completed_node_ids,
+                    loop_iterations=loop_iterations,
+                    skipped_node_ids=skipped_node_ids,
+                    skipped_reason_by_node_id=skipped_reason_by_node_id,
+                    continue_as_new_count=continue_as_new_count,
+                )
+                return None
+
         # Workflow completed successfully
         duration_ms = int((time.time() - start_time) * 1000)
 
-        ctx.set_custom_status(json.dumps({
-            "phase": "completed",
-            "progress": 100,
-            "message": "Workflow completed successfully",
-            "currentNodeId": None,
-            "currentNodeName": None,
-            "traceId": trace_id,
-        }))
+        ctx.set_custom_status(
+            json.dumps(
+                _build_status_payload(
+                    ctx,
+                    {
+                        "phase": "completed",
+                        "progress": 100,
+                        "message": "Workflow completed successfully",
+                        "currentNodeId": None,
+                        "currentNodeName": None,
+                        "traceId": trace_id,
+                    },
+                    workflow_version,
+                )
+            )
+        )
 
         # Persist final outputs
         yield ctx.call_activity(persist_state, input={
@@ -1502,12 +1725,20 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
         logger.error(f"[Dynamic Workflow] Workflow failed: {e}")
 
-        ctx.set_custom_status(json.dumps({
-            "phase": "failed",
-            "progress": calculate_progress(len(completed_node_ids), total_nodes),
-            "message": f"Error: {error_message}",
-            "traceId": trace_id,
-        }))
+        ctx.set_custom_status(
+            json.dumps(
+                _build_status_payload(
+                    ctx,
+                    {
+                        "phase": "failed",
+                        "progress": calculate_progress(len(completed_node_ids), total_nodes),
+                        "message": f"Error: {error_message}",
+                        "traceId": trace_id,
+                    },
+                    workflow_version,
+                )
+            )
+        )
 
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
 
@@ -1771,6 +2002,17 @@ def process_agent_child_workflow(
         approval_event_name = (
             f"durable_plan_approval_{node_id}_{ctx.instance_id}".lower()
         )
+        auto_approve_plan = (
+            _parse_optional_bool(resolved_config.get("autoApprovePlan")) is True
+        )
+        auto_approval_reason = (
+            str(resolved_config.get("autoApproveReason") or "").strip()
+            or "Auto-approved by workflow configuration"
+        )
+        auto_approval_actor = (
+            str(resolved_config.get("autoApproveActor") or "").strip()
+            or "system:auto-approve"
+        )
 
         if db_execution_id:
             yield ctx.call_activity(log_approval_request, input={
@@ -1781,57 +2023,78 @@ def process_agent_child_workflow(
                 "_otel": otel_ctx,
             })
 
-        ctx.set_custom_status(json.dumps({
-            "phase": "awaiting_approval",
-            "progress": 50,
-            "message": f"Plan ready for approval: {node.get('label')}",
-            "currentNodeId": node.get("id"),
-            "currentNodeName": node.get("label") or node.get("id"),
-            "approvalEventName": approval_event_name,
-            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
-        }))
-
-        yield ctx.call_activity(publish_phase_changed, input={
-            "workflowId": workflow_id,
-            "executionId": execution_id,
-            "phase": "awaiting_approval",
-            "progress": 50,
-            "message": f"Plan ready for approval: {node.get('label')}",
-            "_otel": otel_ctx,
-        })
-
-        approval_event = ctx.wait_for_external_event(approval_event_name)
-        timeout_timer = ctx.create_timer(timedelta(minutes=approval_timeout_minutes))
-        completed_task = yield wf.when_any([approval_event, timeout_timer])
-
-        if completed_task == timeout_timer:
+        if auto_approve_plan:
+            approval_result = {
+                "approved": True,
+                "reason": auto_approval_reason,
+                "approvedBy": auto_approval_actor,
+                "respondedBy": auto_approval_actor,
+                "autoApproved": True,
+            }
             if db_execution_id:
-                yield ctx.call_activity(log_approval_timeout, input={
+                yield ctx.call_activity(log_approval_response, input={
                     "executionId": db_execution_id,
                     "nodeId": node.get("id"),
                     "eventName": approval_event_name,
-                    "timeoutSeconds": approval_timeout_minutes * 60,
+                    "approved": True,
+                    "reason": auto_approval_reason,
+                    "respondedBy": auto_approval_actor,
+                    "payload": approval_result,
                     "_otel": otel_ctx,
                 })
-            return {
-                "success": False,
-                "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
-                **planned_payload,
-            }
+            approved = True
+        else:
+            ctx.set_custom_status(json.dumps({
+                "phase": "awaiting_approval",
+                "progress": 50,
+                "message": f"Plan ready for approval: {node.get('label')}",
+                "currentNodeId": node.get("id"),
+                "currentNodeName": node.get("label") or node.get("id"),
+                "approvalEventName": approval_event_name,
+                "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+            }))
 
-        approval_result = approval_event.get_result() or {}
-        if db_execution_id:
-            yield ctx.call_activity(log_approval_response, input={
-                "executionId": db_execution_id,
-                "nodeId": node.get("id"),
-                "eventName": approval_event_name,
-                "approved": approval_result.get("approved", False),
-                "reason": approval_result.get("reason"),
-                "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
-                "payload": approval_result,
+            yield ctx.call_activity(publish_phase_changed, input={
+                "workflowId": workflow_id,
+                "executionId": execution_id,
+                "phase": "awaiting_approval",
+                "progress": 50,
+                "message": f"Plan ready for approval: {node.get('label')}",
                 "_otel": otel_ctx,
             })
-        approved = bool(approval_result.get("approved"))
+
+            approval_event = ctx.wait_for_external_event(approval_event_name)
+            timeout_timer = ctx.create_timer(timedelta(minutes=approval_timeout_minutes))
+            completed_task = yield wf.when_any([approval_event, timeout_timer])
+
+            if completed_task == timeout_timer:
+                if db_execution_id:
+                    yield ctx.call_activity(log_approval_timeout, input={
+                        "executionId": db_execution_id,
+                        "nodeId": node.get("id"),
+                        "eventName": approval_event_name,
+                        "timeoutSeconds": approval_timeout_minutes * 60,
+                        "_otel": otel_ctx,
+                    })
+                return {
+                    "success": False,
+                    "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
+                    **planned_payload,
+                }
+
+            approval_result = approval_event.get_result() or {}
+            if db_execution_id:
+                yield ctx.call_activity(log_approval_response, input={
+                    "executionId": db_execution_id,
+                    "nodeId": node.get("id"),
+                    "eventName": approval_event_name,
+                    "approved": approval_result.get("approved", False),
+                    "reason": approval_result.get("reason"),
+                    "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                    "payload": approval_result,
+                    "_otel": otel_ctx,
+                })
+            approved = bool(approval_result.get("approved"))
         if not approved:
             reason = approval_result.get("reason") or "Plan was rejected"
             return {
@@ -1844,7 +2107,11 @@ def process_agent_child_workflow(
         ctx.set_custom_status(json.dumps({
             "phase": "executing",
             "progress": 55,
-            "message": f"Plan approved, executing: {node.get('label')}",
+            "message": (
+                f"Plan auto-approved, executing: {node.get('label')}"
+                if approval_result.get("autoApproved")
+                else f"Plan approved, executing: {node.get('label')}"
+            ),
             "currentNodeId": node.get("id"),
             "currentNodeName": node.get("label") or node.get("id"),
             "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
@@ -1855,7 +2122,11 @@ def process_agent_child_workflow(
             "executionId": execution_id,
             "phase": "executing",
             "progress": 55,
-            "message": f"Plan approved, executing: {node.get('label')}",
+            "message": (
+                f"Plan auto-approved, executing: {node.get('label')}"
+                if approval_result.get("autoApproved")
+                else f"Plan approved, executing: {node.get('label')}"
+            ),
             "_otel": otel_ctx,
         })
 

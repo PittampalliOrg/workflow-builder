@@ -282,6 +282,9 @@ function buildNodes(profileVersion: number) {
 					maxTurns: String(PLANNER_MAX_TURNS),
 					timeoutMinutes: String(PLANNER_TIMEOUT_MINUTES),
 					contextPolicyPreset: "conservative",
+					autoApprovePlan: "true",
+					autoApproveReason: "Auto-approved for workflow smoke execution",
+					autoApproveActor: "system:workflow-smoke",
 					workspaceRef,
 					cwd: clonePath,
 					agentConfig: {
