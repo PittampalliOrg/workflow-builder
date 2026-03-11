@@ -40,7 +40,6 @@ import { nanoid } from "nanoid";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { posix as pathPosix } from "node:path";
-import { openai } from "@ai-sdk/openai";
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
 import { sandbox, filesystem } from "./sandbox-config.js";
@@ -127,6 +126,13 @@ const PLAN_TIMEOUT_SECONDS = Math.max(
 	60,
 	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "3600", 10),
 );
+const EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS = Math.max(
+	0,
+	parseInt(
+		process.env.DURABLE_EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS || "1",
+		10,
+	),
+);
 const STARTUP_INIT_REQUIRED = ["1", "true", "yes", "on"].includes(
 	String(process.env.DURABLE_REQUIRE_STARTUP_INIT || "")
 		.trim()
@@ -136,6 +142,12 @@ const STARTUP_INIT_RETRY_MS = Math.max(
 	5_000,
 	parseInt(process.env.DURABLE_STARTUP_INIT_RETRY_MS || "30000", 10),
 );
+const DURABLE_RUN_WORKFLOW_NAME =
+	process.env.DURABLE_RUN_WORKFLOW_NAME?.trim() || "durableRunWorkflowV1";
+const DURABLE_PLAN_WORKFLOW_NAME =
+	process.env.DURABLE_PLAN_WORKFLOW_NAME?.trim() || "durablePlanWorkflowV1";
+const DAG_EXECUTOR_WORKFLOW_NAME =
+	process.env.DAG_EXECUTOR_WORKFLOW_NAME?.trim() || "dagExecutorWorkflowV1";
 
 // ── Agent Config Types ────────────────────────────────────────
 
@@ -252,7 +264,74 @@ type AgentConfigSubscription = {
 
 const DAPR_HTTP_HOST = process.env.DAPR_HOST?.trim() || "127.0.0.1";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT?.trim() || "3500";
+const MIN_DAPR_RUNTIME_VERSION =
+	process.env.MIN_DAPR_RUNTIME_VERSION?.trim() ||
+	process.env.DAPR_MIN_RUNTIME_VERSION?.trim() ||
+	"1.17.0";
+const ENFORCE_MIN_DAPR_VERSION = ["1", "true", "yes", "on"].includes(
+	String(
+		process.env.ENFORCE_MIN_DAPR_VERSION ||
+			process.env.DAPR_ENFORCE_MIN_VERSION ||
+			"",
+	)
+		.trim()
+		.toLowerCase(),
+);
 const configStoreSubscriptions = new Map<string, AgentConfigSubscription>();
+
+function parseSemver(
+	version: string | null | undefined,
+): [number, number, number] {
+	const text = String(version || "")
+		.trim()
+		.replace(/^v/, "");
+	const [majorRaw = "0", minorRaw = "0", patchRaw = "0"] = text.split(".");
+	const patchDigits = (patchRaw.match(/^\d+/)?.[0] ?? "0").trim();
+	return [
+		Number.parseInt(majorRaw, 10) || 0,
+		Number.parseInt(minorRaw, 10) || 0,
+		Number.parseInt(patchDigits, 10) || 0,
+	];
+}
+
+async function verifyDaprRuntimeVersion(): Promise<void> {
+	const metadataUrl = `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`;
+	try {
+		const response = await fetch(metadataUrl, {
+			method: "GET",
+			signal: AbortSignal.timeout(5_000),
+		});
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status}`);
+		}
+		const payload = (await response.json()) as {
+			runtimeVersion?: string;
+		};
+		const runtimeVersion = (payload.runtimeVersion || "").trim();
+		const [rMaj, rMin, rPatch] = parseSemver(runtimeVersion);
+		const [mMaj, mMin, mPatch] = parseSemver(MIN_DAPR_RUNTIME_VERSION);
+		const runtimeOk =
+			rMaj > mMaj ||
+			(rMaj === mMaj && (rMin > mMin || (rMin === mMin && rPatch >= mPatch)));
+		if (!runtimeOk) {
+			const message = `[durable-agent] Dapr runtime ${runtimeVersion || "<unknown>"} is below required ${MIN_DAPR_RUNTIME_VERSION}`;
+			if (ENFORCE_MIN_DAPR_VERSION) {
+				throw new Error(message);
+			}
+			console.warn(message);
+			return;
+		}
+		console.log(
+			`[durable-agent] Dapr runtime ${runtimeVersion} satisfies minimum ${MIN_DAPR_RUNTIME_VERSION}`,
+		);
+	} catch (error) {
+		const message = `[durable-agent] Failed to verify Dapr runtime version (minimum ${MIN_DAPR_RUNTIME_VERSION}): ${error}`;
+		if (ENFORCE_MIN_DAPR_VERSION) {
+			throw new Error(message);
+		}
+		console.warn(message);
+	}
+}
 
 function toConfigString(value: unknown): string | undefined {
 	if (typeof value === "string") {
@@ -901,6 +980,7 @@ async function initAgent(): Promise<void> {
 
 	initializingPromise = (async () => {
 		try {
+			await verifyDaprRuntimeVersion();
 			await hydrateRuntimeSecretsFromDapr();
 			// Fail fast at startup if durable change persistence is misconfigured.
 			await workspaceSessions.ensureChangeArtifactPersistence();
@@ -918,8 +998,8 @@ async function initAgent(): Promise<void> {
 				: undefined;
 			const model = modelSpec
 				? resolveModel(modelSpec)
-				: openai.chat(
-						normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL"),
+				: resolveModel(
+						`openai/${normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL")}`,
 					);
 
 			if (modelSpecRaw) {
@@ -1013,6 +1093,14 @@ Be concise and direct. Use the appropriate tool for each task.`,
 				planArtifacts,
 			});
 			sharedRuntime.registerWorkflow(dagExecutor.implementation);
+			sharedRuntime.registerWorkflowWithName(
+				DURABLE_RUN_WORKFLOW_NAME,
+				agent.agentWorkflow,
+			);
+			sharedRuntime.registerWorkflowWithName(
+				DAG_EXECUTOR_WORKFLOW_NAME,
+				dagExecutor.implementation,
+			);
 			sharedRuntime.registerActivity(
 				createDagExecuteClaudeTaskActivity({ workspaceSessions }),
 			);
@@ -1032,6 +1120,16 @@ Be concise and direct. Use the appropriate tool for each task.`,
 				yield undefined;
 				return {};
 			});
+			sharedRuntime.registerWorkflowWithName(
+				DURABLE_PLAN_WORKFLOW_NAME,
+				async function* durablePlanWorkflowV1() {
+					console.log(
+						"[durable-agent] Executing dummy durablePlanWorkflowV1 to satisfy versioned workflow replay",
+					);
+					yield undefined;
+					return {};
+				},
+			);
 
 			await sharedRuntime.start();
 			console.log(
@@ -1497,6 +1595,27 @@ function didRunMutateFiles(
 ): boolean {
 	if (fileChanges.length > 0) return true;
 	return Boolean(changeSummary?.changed || changeSummary?.files.length);
+}
+
+function buildNoFileChangeRepairPrompt(
+	basePrompt: string,
+	previousText: string,
+	attempt: number,
+): string {
+	const priorResponse = previousText.trim();
+	return `${basePrompt}
+
+## Repair Attempt ${attempt}
+The previous execution attempt was invalid because it completed without any write/edit/delete file operations.
+
+Requirements for this retry:
+- Use mutating file tools to create or update the required repository files.
+- Directory creation, inspection, and explanation are not sufficient.
+- Do not ask for confirmation or say "let me know if you want changes".
+- Continue until the required files exist and validation commands pass.
+
+Previous non-compliant completion:
+${priorResponse || "<empty>"}`;
 }
 
 function planHasExecutableTasks(plan: ClaudeTaskPlan): boolean {
@@ -2563,10 +2682,23 @@ app.post("/api/run", async (req, res) => {
 					`[durable-agent] Using configured agent: ${requestAgentConfig.name}`,
 				);
 			} catch (err) {
-				console.warn(
-					`[durable-agent] Failed to create configured agent, falling back to default:`,
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(
+					`[durable-agent] Failed to create configured agent: ${message}`,
 					err,
 				);
+				res.status(422).json({
+					success: false,
+					error: {
+						code: "CONFIGURED_AGENT_INIT_FAILED",
+						message,
+						details: {
+							agentName: requestAgentConfig.name,
+							modelSpec: requestAgentConfig.modelSpec,
+						},
+					},
+				});
+				return;
 			}
 		}
 
@@ -3148,10 +3280,23 @@ app.post("/api/plan", async (req, res) => {
 			try {
 				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
 			} catch (err) {
-				console.warn(
-					`[durable-agent] Failed to create configured planning agent, falling back to default:`,
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(
+					`[durable-agent] Failed to create configured planning agent: ${message}`,
 					err,
 				);
+				res.status(422).json({
+					success: false,
+					error: {
+						code: "CONFIGURED_PLANNING_AGENT_INIT_FAILED",
+						message,
+						details: {
+							agentName: requestAgentConfig.name,
+							modelSpec: requestAgentConfig.modelSpec,
+						},
+					},
+				});
+				return;
 			}
 		}
 
@@ -3647,11 +3792,35 @@ app.post("/api/execute-plan", async (req, res) => {
 			});
 			return;
 		}
+		const stopCondition =
+			typeof req.body?.stopCondition === "string"
+				? req.body.stopCondition.trim()
+				: "";
 		const explicitRequireFileChanges = parseOptionalBoolean(
 			req.body?.requireFileChanges,
 		);
+		const stopConditionRequiresFileChanges =
+			Boolean(stopCondition) && stopConditionImpliesFileChanges(stopCondition);
+		if (
+			explicitRequireFileChanges === false &&
+			stopConditionRequiresFileChanges
+		) {
+			res.status(400).json({
+				success: false,
+				error: {
+					code: "INVALID_EXECUTE_PLAN_CONFIG",
+					message:
+						"requireFileChanges=false conflicts with a stopCondition that requires modified files",
+					details: {
+						stopCondition,
+					},
+				},
+			});
+			return;
+		}
 		const requireFileChanges =
-			explicitRequireFileChanges ?? planLikelyRequiresFileChanges(plan);
+			explicitRequireFileChanges ??
+			(planLikelyRequiresFileChanges(plan) || stopConditionRequiresFileChanges);
 		if (artifactRef) {
 			await planArtifacts.markStatus(artifactRef, "approved");
 		}
@@ -3666,10 +3835,23 @@ app.post("/api/execute-plan", async (req, res) => {
 			try {
 				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
 			} catch (err) {
-				console.warn(
-					`[durable-agent] Failed to create configured execute-plan agent, falling back to default:`,
+				const message = err instanceof Error ? err.message : String(err);
+				console.error(
+					`[durable-agent] Failed to create configured execute-plan agent: ${message}`,
 					err,
 				);
+				res.status(422).json({
+					success: false,
+					error: {
+						code: "CONFIGURED_EXECUTE_PLAN_AGENT_INIT_FAILED",
+						message,
+						details: {
+							agentName: requestAgentConfig.name,
+							modelSpec: requestAgentConfig.modelSpec,
+						},
+					},
+				});
+				return;
 			}
 		}
 
@@ -3684,10 +3866,13 @@ app.post("/api/execute-plan", async (req, res) => {
 		const cwdContext = resolvedCwd
 			? `Working directory: ${resolvedCwd}\n\n`
 			: "";
-		const mutationRequirement = requireFileChanges
-			? "\nCRITICAL: This execution requires real file mutations. Before finalizing, you MUST perform write/edit/delete/mkdir operations and produce concrete file changes."
-			: "";
-		const executionPrompt = `${cwdContext}You are now in EXECUTION MODE.\nDo not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: Execute all applicable steps with tools. If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. If a step fails, record the error and proceed with the next step.${mutationRequirement}`;
+		const executionBasePrompt = `${cwdContext}You are now in EXECUTION MODE.\nDo not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: Execute all applicable steps with tools. If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. If a step fails, record the error and proceed with the next step.`;
+		const executionPrompt = buildRunPrompt(
+			executionBasePrompt,
+			stopCondition,
+			requireFileChanges,
+			undefined,
+		);
 
 		// Per-request maxTurns override
 		const maxTurns = req.body?.maxTurns
@@ -3732,26 +3917,82 @@ app.post("/api/execute-plan", async (req, res) => {
 		// Fire-and-forget
 		(async () => {
 			try {
-				const completion = await waitForWorkflowCompletion(instanceId);
-
-				// Extract tool calls from all turns
-				const toolCalls = extractToolCalls(completion.result);
-				const fileChanges = extractFileChanges(toolCalls);
-				const changeSummary =
+				const attemptInstanceIds = [instanceId];
+				let finalInstanceId = instanceId;
+				let completion = await waitForWorkflowCompletion(instanceId);
+				let toolCalls = extractToolCalls(completion.result);
+				let fileChanges = extractFileChanges(toolCalls);
+				let changeSummary =
 					workspaceRef && executionId
-						? await buildAgentChangeSummary(executionId, instanceId)
+						? await buildAgentChangeSummary(executionId, finalInstanceId)
 						: undefined;
-				const hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
-				const fileChangeGuardViolation =
-					requireFileChanges && completion.success && !hasFileMutations
-						? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
-						: undefined;
-
-				const text =
+				let hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+				let text =
 					(completion.result?.final_answer as string) ??
 					(completion.result?.last_message as string) ??
 					(completion.result?.content as string) ??
 					JSON.stringify(completion.result ?? {});
+				let fileChangeGuardViolation =
+					requireFileChanges && completion.success && !hasFileMutations
+						? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
+						: undefined;
+				let repairAttempts = 0;
+
+				while (
+					fileChangeGuardViolation &&
+					repairAttempts < EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS
+				) {
+					repairAttempts += 1;
+					const repairPrompt = buildNoFileChangeRepairPrompt(
+						executionPrompt,
+						text,
+						repairAttempts,
+					);
+					const repairInstanceId = await workflowClient!.scheduleNewWorkflow(
+						activeAgent.agentWorkflow,
+						{
+							task: repairPrompt,
+							...(maxTurns ? { maxIterations: maxTurns } : {}),
+							...(loopPolicy ? { loopPolicy } : {}),
+						},
+					);
+					finalInstanceId = repairInstanceId;
+					attemptInstanceIds.push(repairInstanceId);
+					if (workspaceRef) {
+						await workspaceSessions.bindDurableInstance(
+							repairInstanceId,
+							workspaceRef,
+						);
+					}
+					trackActiveRun({
+						agentWorkflowId,
+						daprInstanceId: repairInstanceId,
+						parentExecutionId,
+						workspaceRef: workspaceRef || undefined,
+						mode: "execute_plan",
+					});
+					console.warn(
+						`[durable-agent] Execute-plan repair attempt ${repairAttempts} scheduled for ${repairInstanceId} after no file mutations in ${attemptInstanceIds.at(-2)}`,
+					);
+					completion = await waitForWorkflowCompletion(repairInstanceId);
+					toolCalls = extractToolCalls(completion.result);
+					fileChanges = extractFileChanges(toolCalls);
+					changeSummary =
+						workspaceRef && executionId
+							? await buildAgentChangeSummary(executionId, finalInstanceId)
+							: undefined;
+					hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+					text =
+						(completion.result?.final_answer as string) ??
+						(completion.result?.last_message as string) ??
+						(completion.result?.content as string) ??
+						JSON.stringify(completion.result ?? {});
+					fileChangeGuardViolation =
+						requireFileChanges && completion.success && !hasFileMutations
+							? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
+							: undefined;
+				}
+
 				let cleanup: {
 					requested: boolean;
 					performed: boolean;
@@ -3818,9 +4059,11 @@ app.post("/api/execute-plan", async (req, res) => {
 					changeSummary,
 					requireFileChanges,
 					hasFileMutations,
+					repairAttempts,
+					attemptInstanceIds,
 					plan,
 					artifactRef: artifactRef || undefined,
-					daprInstanceId: instanceId,
+					daprInstanceId: finalInstanceId,
 					cleanup,
 				};
 				const completionSuccess =

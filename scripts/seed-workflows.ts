@@ -237,11 +237,13 @@ function buildNodes(profileVersion: number) {
 				config: {
 					actionType: "workspace/clone",
 					workspaceRef,
-					repositoryRepo: "feature-flags",
-					repositoryOwner: "PittampalliOrg",
-					repositoryToken: "developer",
+					repositoryUrl:
+						"http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-smoke.git",
+					repositoryRepo: "workflow-smoke",
+					repositoryOwner: "giteaadmin",
 					repositoryBranch: "main",
-					repositoryUsername: "giteaAdmin",
+					repositoryUsername: "giteaadmin",
+					repositoryToken: "developer",
 				},
 				status: "idle",
 			},
@@ -276,7 +278,7 @@ function buildNodes(profileVersion: number) {
 					mode: "plan_mode",
 					model: "openai/gpt-5.2-codex",
 					prompt:
-						"Analyze this feature-flags repository and produce an execution-ready plan for a complex multi-file implementation of flag-governance tooling.\n\nRequired deliverables:\n1) tools/flag_rules.py\n   - pure helper functions for schema checks and cross-environment comparisons.\n2) tools/flag_consistency.py\n   - CLI with subcommands: validate and matrix.\n   - validate checks all environment YAML files under default/development/staging/production for:\n     - unique segment keys\n     - unique flag keys\n     - segment references in rollouts/rules point to existing segments\n     - variant rules have distributions summing to 100\n   - matrix prints a markdown table summarizing each flag key across environments (enabled state and variant count).\n3) tools/test_flag_rules.py\n   - unit tests for helper logic.\n4) tools/test_flag_consistency.py\n   - integration-style unit tests for validate success/failure scenarios using temporary fixture files.\n5) tools/README.md\n   - usage examples for validate and matrix.\n6) README.md update\n   - add a section referencing the new tooling.\n\nValidation expectation for execute step:\n- python3 -m py_compile tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py\n- python3 -m unittest tools/test_flag_rules.py tools/test_flag_consistency.py\n- python3 tools/flag_consistency.py validate --root .\n\nReturn a concise, ordered plan in <proposed_plan> format.",
+						"Analyze this minimal workflow-smoke repository and produce an execution-ready plan for a small but real multi-file repository improvement.\n\nCurrent repository context:\n- The repository is intentionally minimal.\n- It currently contains a README and is used for workflow smoke tests.\n\nRequired deliverables:\n1) scripts/generate-report.sh\n   - bash script that writes docs/report.md summarizing the repository purpose and current branch.\n2) scripts/verify-repo.sh\n   - bash script that checks required files exist and that docs/report.md contains the expected heading.\n3) docs/report.md\n   - generated project report with at least:\n     - title\n     - repository purpose\n     - workflow smoke note\n4) docs/usage.md\n   - short usage instructions for the two scripts.\n\nValidation expectation for execute step:\n- bash -n scripts/generate-report.sh scripts/verify-repo.sh\n- bash scripts/generate-report.sh\n- bash scripts/verify-repo.sh\n\nReturn a concise, ordered plan in <proposed_plan> format.",
 					maxTurns: String(PLANNER_MAX_TURNS),
 					timeoutMinutes: String(PLANNER_TIMEOUT_MINUTES),
 					contextPolicyPreset: "conservative",
@@ -315,7 +317,7 @@ function buildNodes(profileVersion: number) {
 					mode: "execute_direct",
 					model: "openai/gpt-5.2-codex",
 					prompt:
-						"Execute the approved plan artifact and implement the full multi-file flag-governance tooling.\n\nRequired outcomes:\n- tools/flag_rules.py with reusable helper logic for validation and comparison.\n- tools/flag_consistency.py implements validate + matrix commands using the shared helpers.\n- tools/test_flag_rules.py with direct unit coverage for helper functions.\n- tools/test_flag_consistency.py with end-to-end validator coverage against temporary fixtures.\n- tools/README.md documents usage.\n- README.md includes a section linking to the new tooling.\n- Run and report:\n  - python3 -m py_compile tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py\n  - python3 -m unittest tools/test_flag_rules.py tools/test_flag_consistency.py\n  - python3 tools/flag_consistency.py validate --root .",
+						"Execute the approved plan artifact and implement the repository improvement in this minimal workflow-smoke repo.\n\nYou must create or update exactly these repository files:\n- scripts/generate-report.sh\n- scripts/verify-repo.sh\n- docs/report.md\n- docs/usage.md\n\nHard requirements:\n- Use mutating file tools to create or update those files. Reading files or creating empty directories is not sufficient.\n- scripts/generate-report.sh must write docs/report.md with a '# Repository Report' heading, repository purpose, workflow smoke note, and current branch.\n- scripts/verify-repo.sh must fail if any required file is missing or if docs/report.md does not start with '# Repository Report'.\n- docs/usage.md must explain how to run both scripts.\n- Run and report these commands before finishing:\n  - bash -n scripts/generate-report.sh scripts/verify-repo.sh\n  - bash scripts/generate-report.sh\n  - bash scripts/verify-repo.sh\n- Do not stop after planning, inspection, or directory creation. Finish only after the four required files exist and validation commands pass.",
 					maxTurns: String(EXECUTOR_MAX_TURNS),
 					timeoutMinutes: String(EXECUTOR_TIMEOUT_MINUTES),
 					contextPolicyPreset: "balanced",
@@ -323,9 +325,9 @@ function buildNodes(profileVersion: number) {
 					cwd: clonePath,
 					artifactRef: `{{@${IDs.plan}:Plan Changes.artifactRef}}`,
 					stopCondition:
-						"Stop when modified files include tools/flag_rules.py, tools/flag_consistency.py, tools/test_flag_rules.py, tools/test_flag_consistency.py, tools/README.md, and README.md, and validation commands pass.",
+						"Stop only when scripts/generate-report.sh, scripts/verify-repo.sh, docs/report.md, and docs/usage.md have been created or updated with file-writing tools, and the validation commands pass.",
 					cleanupWorkspace: "false",
-					requireFileChanges: "false",
+					requireFileChanges: "true",
 					agentConfig: {
 						name: "Coding Agent",
 						tools: ["glob", "grep", "read", "edit", "write", "bash"],
@@ -356,22 +358,25 @@ function buildNodes(profileVersion: number) {
 				type: "action",
 				config: {
 					command: `set -euo pipefail
-REQUIRED_FILES="tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py tools/README.md README.md"
+REQUIRED_FILES="scripts/generate-report.sh scripts/verify-repo.sh docs/report.md docs/usage.md"
 for f in $REQUIRED_FILES; do
 	if [ ! -f "$f" ]; then
 		echo "Missing required file: $f"
 		exit 2
 	fi
 done
-CHANGED=$(git status --porcelain -- tools/flag_rules.py tools/flag_consistency.py tools/test_flag_rules.py tools/test_flag_consistency.py tools/README.md README.md | awk '{print $2}' | sort -u)
+CHANGED=$(git status --porcelain -- scripts/generate-report.sh scripts/verify-repo.sh docs/report.md docs/usage.md | awk '{print $2}' | sort -u)
 echo "--- changed required files ---"
 printf '%s\n' "$CHANGED"
 COUNT=$(printf '%s\n' "$CHANGED" | sed '/^$/d' | wc -l | tr -d ' ')
 echo "CHANGED_COUNT=$COUNT"
-if [ "$COUNT" -lt 5 ]; then
-	echo "Expected changes across at least 5 required files."
+if [ "$COUNT" -lt 4 ]; then
+	echo "Expected changes across all 4 required files."
 	exit 2
 fi
+bash -n scripts/generate-report.sh scripts/verify-repo.sh
+bash scripts/generate-report.sh
+bash scripts/verify-repo.sh
 FORBIDDEN=$(git status --porcelain | awk '{print $2}' | grep -E '(^|/)(__pycache__/|.*\\.pyc$|.*\\.pyo$)' || true)
 if [ -n "$FORBIDDEN" ]; then
 	echo "Generated Python cache files detected (must not be committed):"
@@ -413,20 +418,20 @@ if git diff --cached --quiet; then
 	exit 2
 fi
 
-git commit -m "feat: add comprehensive feature-flag governance tooling"
-git remote set-url origin http://giteaAdmin:developer@my-gitea-http.gitea.svc.cluster.local:3000/giteaAdmin/feature-flags.git
+git commit -m "feat: add workflow smoke support files"
+git remote set-url origin http://giteaadmin:developer@gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-smoke.git
 git push -u origin "$BR"
 
 PR_PAYLOAD=$(jq -nc \
-	--arg title "Opencode workflow: comprehensive feature-flag governance tooling ({{@pf_1771706813719:Workspace Profile.executionId}})" \
+	--arg title "Opencode workflow: workflow-smoke support files ({{@pf_1771706813719:Workspace Profile.executionId}})" \
 	--arg head "$BR" \
 	--arg base "main" \
-	--arg body "Automated plan+execute workflow implementing a complex multi-file feature-flag governance toolchain." \
+	--arg body "Automated plan+execute workflow implementing workflow-smoke support files." \
 	'{title:$title,head:$head,base:$base,body:$body}')
-PR=$(curl -sS -u giteaAdmin:developer \
+PR=$(curl -sS -u giteaadmin:developer \
 	-H "Content-Type: application/json" \
 	-X POST \
-	http://my-gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/giteaAdmin/feature-flags/pulls \
+	http://gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/giteaadmin/workflow-smoke/pulls \
 	-d "$PR_PAYLOAD")
 echo "$PR" | jq -r '["PR_NUMBER="+(.number|tostring),"PR_URL="+(.html_url//""),"PR_STATE="+(.state//"")] | .[]'
 echo BRANCH=$BR
