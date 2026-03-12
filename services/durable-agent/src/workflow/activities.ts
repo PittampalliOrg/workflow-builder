@@ -49,6 +49,11 @@ export interface RecordInitialEntryPayload {
 export interface CallLlmPayload {
 	instanceId: string;
 	task?: string;
+	initialTask?: string;
+	previousAssistantTurn?: {
+		content?: string | null;
+		toolCalls?: ToolCall[];
+	};
 	/**
 	 * Tool results from the previous turn, passed from the generator.
 	 * These are durably stored in Dapr's event log (activity outputs).
@@ -145,6 +150,68 @@ function isContextOverflowError(err: unknown): boolean {
 	);
 }
 
+function normalizeConversationHistory(messages: AgentWorkflowMessage[]): {
+	messages: AgentWorkflowMessage[];
+	removedOrphanTools: number;
+	removedBrokenTurns: number;
+} {
+	const normalized: AgentWorkflowMessage[] = [];
+	let removedOrphanTools = 0;
+	let removedBrokenTurns = 0;
+
+	for (let index = 0; index < messages.length; ) {
+		const message = messages[index];
+		if (message.role === "assistant" && (message.tool_calls?.length ?? 0) > 0) {
+			const expectedToolCallIds = new Set(
+				(message.tool_calls ?? []).map((toolCall) => toolCall.id),
+			);
+			const toolMessages: AgentWorkflowMessage[] = [];
+			let cursor = index + 1;
+			while (cursor < messages.length && messages[cursor]?.role === "tool") {
+				toolMessages.push(messages[cursor]!);
+				cursor += 1;
+			}
+			const seenToolIds = new Set(
+				toolMessages
+					.map((toolMessage) => toolMessage.tool_call_id)
+					.filter((toolCallId): toolCallId is string => Boolean(toolCallId)),
+			);
+			const missingToolIds = [...expectedToolCallIds].filter(
+				(toolCallId) => !seenToolIds.has(toolCallId),
+			);
+			if (missingToolIds.length > 0) {
+				removedBrokenTurns += 1 + toolMessages.length;
+				index = cursor;
+				continue;
+			}
+			normalized.push(message);
+			for (const toolMessage of toolMessages) {
+				if (
+					toolMessage.tool_call_id &&
+					expectedToolCallIds.has(toolMessage.tool_call_id)
+				) {
+					normalized.push(toolMessage);
+				} else {
+					removedOrphanTools += 1;
+				}
+			}
+			index = cursor;
+			continue;
+		}
+
+		if (message.role === "tool") {
+			removedOrphanTools += 1;
+			index += 1;
+			continue;
+		}
+
+		normalized.push(message);
+		index += 1;
+	}
+
+	return { messages: normalized, removedOrphanTools, removedBrokenTurns };
+}
+
 // --------------------------------------------------------------------------
 // Activity factory functions
 // --------------------------------------------------------------------------
@@ -215,7 +282,7 @@ export function createCallLlm(
 			);
 			state = await stateManager.ensureInstance(
 				payload.instanceId,
-				payload.task ?? "Recovered workflow state",
+				payload.initialTask ?? payload.task ?? "Recovered workflow state",
 			);
 			entry = state.instances[payload.instanceId];
 			if (!entry) {
@@ -252,6 +319,54 @@ export function createCallLlm(
 		// Repair conversation state after crash recovery.
 		// If any assistant message with tool_calls lacks corresponding tool results,
 		// inject them from the generator's durable activity outputs.
+		const previousAssistantToolCalls =
+			payload.previousAssistantTurn?.toolCalls?.filter(
+				(toolCall): toolCall is ToolCall => Boolean(toolCall?.id),
+			) ?? [];
+		if (previousAssistantToolCalls.length > 0) {
+			const expectedIds = new Set(
+				previousAssistantToolCalls.map((toolCall) => toolCall.id),
+			);
+			const hasMatchingAssistantTurn = entry.messages.some(
+				(message) =>
+					message.role === "assistant" &&
+					(message.tool_calls?.some((toolCall) =>
+						expectedIds.has(toolCall.id),
+					) ??
+						false),
+			);
+			if (!hasMatchingAssistantTurn) {
+				const firstMatchingToolIndex = entry.messages.findIndex(
+					(message) =>
+						message.role === "tool" &&
+						Boolean(
+							message.tool_call_id && expectedIds.has(message.tool_call_id),
+						),
+				);
+				const repairedAssistantTurn: AgentWorkflowMessage = {
+					id: randomUUID(),
+					role: "assistant",
+					content: payload.previousAssistantTurn?.content ?? null,
+					tool_calls: previousAssistantToolCalls,
+					timestamp: new Date().toISOString(),
+				};
+				if (firstMatchingToolIndex >= 0) {
+					// Preserve assistant -> tool ordering when the tool results survived
+					// but the assistant tool-call turn was lost during state recovery.
+					entry.messages.splice(
+						firstMatchingToolIndex,
+						0,
+						repairedAssistantTurn,
+					);
+				} else {
+					entry.messages.push(repairedAssistantTurn);
+				}
+				entry.last_message = repairedAssistantTurn;
+				console.log(
+					`[callLlm] Repaired missing assistant tool-call turn for instance=${payload.instanceId}`,
+				);
+			}
+		}
 		if (payload.previousToolResults?.length) {
 			console.log(
 				`[callLlm] previousToolResults provided: ${payload.previousToolResults.length} result(s), ids=[${payload.previousToolResults.map((t) => t.tool_call_id).join(",")}]`,
@@ -288,37 +403,47 @@ export function createCallLlm(
 			}
 		}
 
-		// Safety check: detect any assistant messages with tool_calls that lack
-		// corresponding tool results (could happen if repair didn't cover all cases)
-		for (let i = 0; i < entry.messages.length; i++) {
-			const msg = entry.messages[i];
-			if (msg.role === "assistant" && msg.tool_calls?.length) {
-				const expectedIds = new Set(msg.tool_calls.map((tc: any) => tc.id));
-				// Find tool results that follow this assistant message
-				for (let j = i + 1; j < entry.messages.length; j++) {
-					if (
-						entry.messages[j].role === "tool" &&
-						entry.messages[j].tool_call_id
-					) {
-						expectedIds.delete(entry.messages[j].tool_call_id!);
-					}
-					if (entry.messages[j].role === "assistant") break; // next turn
-				}
-				if (expectedIds.size > 0) {
-					console.warn(
-						`[callLlm] WARNING: assistant message at index ${i} has ${expectedIds.size} unmatched tool_call_ids: [${[...expectedIds].join(",")}]`,
-					);
-					// Remove the broken assistant message and all following messages
-					// from this point to allow a clean retry
-					console.warn(
-						`[callLlm] Truncating ${entry.messages.length - i} messages from index ${i} to repair conversation`,
-					);
-					entry.messages.length = i;
-					if (i > 0) entry.last_message = entry.messages[i - 1];
-					await stateManager.saveState(state);
-					break;
-				}
+		const normalizedConversation = normalizeConversationHistory(entry.messages);
+		if (
+			normalizedConversation.removedBrokenTurns > 0 ||
+			normalizedConversation.removedOrphanTools > 0
+		) {
+			if (normalizedConversation.removedBrokenTurns > 0) {
+				console.warn(
+					`[callLlm] Removed ${normalizedConversation.removedBrokenTurns} message(s) from broken assistant tool-call turns before LLM call`,
+				);
 			}
+			if (normalizedConversation.removedOrphanTools > 0) {
+				console.warn(
+					`[callLlm] Dropped ${normalizedConversation.removedOrphanTools} orphan tool message(s) before LLM call`,
+				);
+			}
+			entry.messages = normalizedConversation.messages;
+			entry.last_message =
+				entry.messages.length > 0
+					? entry.messages[entry.messages.length - 1]
+					: null;
+			await stateManager.saveState(state);
+		}
+
+		if (entry.messages.length === 0) {
+			const recoveryMessage: AgentWorkflowMessage = {
+				id: randomUUID(),
+				role: "user",
+				content:
+					payload.initialTask ||
+					payload.task ||
+					(entry.input_value && entry.input_value !== "Recovered workflow state"
+						? entry.input_value
+						: "Continue the task using the current repository state."),
+				timestamp: new Date().toISOString(),
+			};
+			console.warn(
+				`[callLlm] Reconstructed fallback conversation state for instance=${payload.instanceId}`,
+			);
+			entry.messages = [recoveryMessage];
+			entry.last_message = recoveryMessage;
+			await stateManager.saveState(state);
 		}
 
 		// Run pre-LLM processors (guardrails) if configured

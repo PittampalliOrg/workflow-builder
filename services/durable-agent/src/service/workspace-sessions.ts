@@ -459,7 +459,11 @@ class WorkspaceSessionManager {
 			);
 		}
 
-		const rootPath = this.resolveRootPath(executionId, input.rootPath, input.sandboxTemplate);
+		const rootPath = this.resolveRootPath(
+			executionId,
+			input.rootPath,
+			input.sandboxTemplate,
+		);
 		const session = await this.createSession({
 			executionId,
 			name: input.name?.trim() || `workspace-${executionId}`,
@@ -664,14 +668,10 @@ class WorkspaceSessionManager {
 			try {
 				const parsed = new URL(repoUrl);
 				const credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
-				const credStorePath = pathPosix.join(
-					cloneDir,
-					".git",
-					".git-credentials",
-				);
+				const credStorePath = pathPosix.join(".git", ".git-credentials");
 				const credCmd = `cd ${shellEscape(cloneDir)} && git config credential.helper 'store --file=${shellEscape(credStorePath)}' && printf '%s\\n' ${shellEscape(credentialLine)} > ${shellEscape(credStorePath)}`;
 				console.log(
-					`[workspace-sessions] Setting up git credential store at ${credStorePath}`,
+					`[workspace-sessions] Setting up git credential store in ${cloneDir}/${credStorePath}`,
 				);
 				const credResult = await session.sandbox.executeCommand(
 					credCmd,
@@ -797,7 +797,11 @@ class WorkspaceSessionManager {
 
 		switch (operation) {
 			case "read_file": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
+				this.assertPathWithinCloneScope(session, path, operation);
 				const content = await session.filesystem.readFile(path, {
 					encoding: "utf-8",
 				});
@@ -807,7 +811,10 @@ class WorkspaceSessionManager {
 			}
 
 			case "write_file": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
 				this.assertPathWithinCloneScope(session, path, operation);
 				await this.enforceReadBeforeWrite(session, path);
 				await session.filesystem.writeFile(path, String(input.content ?? ""), {
@@ -824,7 +831,10 @@ class WorkspaceSessionManager {
 			}
 
 			case "edit_file": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
 				this.assertPathWithinCloneScope(session, path, operation);
 				await this.enforceReadBeforeWrite(session, path);
 				const oldStr = String(input.old_string ?? "");
@@ -852,7 +862,10 @@ class WorkspaceSessionManager {
 			}
 
 			case "list_files": {
-				const path = String(input.path || ".").trim() || ".";
+				const path = this.resolveSessionPath(session, input.path, {
+					defaultToScopeRoot: true,
+				});
+				this.assertPathWithinCloneScope(session, path, operation);
 				const entries = await session.filesystem.readdir(path);
 				this.touch(session);
 				return {
@@ -861,7 +874,10 @@ class WorkspaceSessionManager {
 			}
 
 			case "delete_file": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
 				this.assertPathWithinCloneScope(session, path, operation);
 				await session.filesystem.deleteFile(path, {
 					recursive: true,
@@ -882,7 +898,10 @@ class WorkspaceSessionManager {
 			}
 
 			case "mkdir": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
 				this.assertPathWithinCloneScope(session, path, operation);
 				await session.filesystem.mkdir(path, { recursive: true });
 				const changeSummary = await this.captureWorkspaceChangeSummary({
@@ -896,7 +915,11 @@ class WorkspaceSessionManager {
 			}
 
 			case "file_stat": {
-				const path = this.requirePath(input.path, operation);
+				const path = this.resolveSessionPath(
+					session,
+					this.requirePath(input.path, operation),
+				);
+				this.assertPathWithinCloneScope(session, path, operation);
 				const info = await session.filesystem.stat(path);
 				this.touch(session);
 				return {
@@ -999,8 +1022,10 @@ class WorkspaceSessionManager {
 		let k8sSandboxRef: K8sSandbox | null = null;
 
 		if (SANDBOX_BACKEND === "k8s") {
-			const template = input.sandboxTemplate || process.env.SANDBOX_TEMPLATE || "dapr-agent";
-			const workingDir = template === "aio-browser" ? "/home/gem" : input.rootPath;
+			const template =
+				input.sandboxTemplate || process.env.SANDBOX_TEMPLATE || "dapr-agent";
+			const workingDir =
+				template === "aio-browser" ? "/home/gem" : input.rootPath;
 			const k8sSandbox = new K8sSandbox({
 				templateName: template,
 				workingDirectory: workingDir,
@@ -1135,11 +1160,7 @@ class WorkspaceSessionManager {
 				try {
 					const parsed = new URL(repoUrl);
 					const credentialLine = `${parsed.protocol}//${encodeURIComponent(info.repositoryUsername)}:${encodeURIComponent(info.repositoryToken)}@${parsed.host}`;
-					const credStorePath = pathPosix.join(
-						info.cloneDir,
-						".git",
-						".git-credentials",
-					);
+					const credStorePath = pathPosix.join(".git", ".git-credentials");
 					await session.sandbox.executeCommand(
 						`cd ${shellEscape(info.cloneDir)} && git config credential.helper 'store --file=${shellEscape(credStorePath)}' && printf '%s\\n' ${shellEscape(credentialLine)} > ${shellEscape(credStorePath)}`,
 						undefined,
@@ -1745,13 +1766,19 @@ class WorkspaceSessionManager {
 		}
 	}
 
-	private resolveRootPath(executionId: string, requested?: string, sandboxTemplate?: string): string {
+	private resolveRootPath(
+		executionId: string,
+		requested?: string,
+		sandboxTemplate?: string,
+	): string {
 		const requestedPath = String(requested || "").trim();
 		if (SANDBOX_BACKEND === "k8s") {
-			const templateBase = sandboxTemplate === "aio-browser" ? "/home/gem" : "/app";
-			const defaultRootForTemplate = sandboxTemplate === "aio-browser"
-				? pathPosix.join(templateBase, "workspaces")
-				: this.defaultRoot;
+			const templateBase =
+				sandboxTemplate === "aio-browser" ? "/home/gem" : "/app";
+			const defaultRootForTemplate =
+				sandboxTemplate === "aio-browser"
+					? pathPosix.join(templateBase, "workspaces")
+					: this.defaultRoot;
 			const base = defaultRootForTemplate.startsWith("/")
 				? defaultRootForTemplate
 				: pathPosix.join(templateBase, defaultRootForTemplate);
@@ -1881,6 +1908,25 @@ class WorkspaceSessionManager {
 			throw new Error(`path is required for ${operation}`);
 		}
 		return normalized;
+	}
+
+	private resolveSessionPath(
+		session: WorkspaceSession,
+		path: string | undefined,
+		options?: { defaultToScopeRoot?: boolean },
+	): string {
+		const normalized = String(path || "").trim();
+		const basePath = session.clonePath || session.rootPath;
+		if (!normalized) {
+			if (options?.defaultToScopeRoot) {
+				return pathPosix.normalize(basePath);
+			}
+			throw new Error("path is required");
+		}
+		if (normalized.startsWith("/")) {
+			return pathPosix.normalize(normalized);
+		}
+		return pathPosix.normalize(pathPosix.join(basePath, normalized));
 	}
 
 	private assertPathWithinCloneScope(

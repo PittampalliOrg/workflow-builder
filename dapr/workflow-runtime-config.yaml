@@ -1,0 +1,16 @@
+apiVersion: dapr.io/v1alpha1
+kind: Configuration
+metadata:
+  name: workflow-runtime
+spec:
+  features:
+    - name: WorkflowsRemoteActivityReminder
+      enabled: true
+  workflow:
+    maxConcurrentWorkflowInvocations: 32
+    maxConcurrentActivityInvocations: 128
+    stateRetentionPolicy:
+      anyTerminal: "720h"
+      completed: "24h"
+      failed: "720h"
+      terminated: "720h"

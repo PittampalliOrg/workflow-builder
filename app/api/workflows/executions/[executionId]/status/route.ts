@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import {
 	buildExecutionConsistency,
@@ -29,6 +30,12 @@ export async function GET(
 
 		if (!session?.user) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
 		}
 
 		const execution = await db.query.workflowExecutions.findFirst({

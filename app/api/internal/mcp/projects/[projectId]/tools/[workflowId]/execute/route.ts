@@ -8,6 +8,7 @@ import {
 	createMcpRun,
 	getOrCreateMcpServer,
 } from "@/lib/db/mcp";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import {
 	appConnections,
 	projects,
@@ -121,6 +122,11 @@ function getMcpTriggerConfig(nodes: unknown): {
 export async function POST(request: Request, { params }: RouteParams) {
 	if (!isValidInternalToken(request)) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+	}
+
+	const schemaGuardResponse = await getWorkflowExecutionsSchemaGuardResponse();
+	if (schemaGuardResponse) {
+		return schemaGuardResponse;
 	}
 
 	const { projectId, workflowId } = await params;

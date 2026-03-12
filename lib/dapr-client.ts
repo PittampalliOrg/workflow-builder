@@ -38,6 +38,7 @@ export type GenericStartWorkflowResult = {
 	instanceId: string;
 	workflowId: string;
 	status: string; // "started"
+	workflowVersion?: string;
 };
 
 /**
@@ -47,6 +48,8 @@ export type GenericWorkflowStatus = {
 	instanceId: string;
 	workflowId: string;
 	workflowName?: string;
+	workflowVersion?: string;
+	workflowNameVersioned?: string;
 	runtimeStatus: string; // "RUNNING" | "COMPLETED" | "FAILED" | "TERMINATED" | "PENDING"
 	traceId?: string;
 	phase: string; // "pending" | "running" | "awaiting_approval" | "completed" | "failed"
@@ -57,6 +60,8 @@ export type GenericWorkflowStatus = {
 	approvalEventName?: string;
 	outputs?: Record<string, unknown>;
 	error?: string;
+	stackTrace?: string | null;
+	parentInstanceId?: string | null;
 	startedAt?: string;
 	completedAt?: string;
 };
@@ -65,6 +70,8 @@ export type GenericWorkflowListItem = {
 	instanceId: string;
 	workflowId: string;
 	workflowName?: string;
+	workflowVersion?: string;
+	workflowNameVersioned?: string;
 	runtimeStatus: string;
 	traceId?: string;
 	phase?: string;
@@ -130,6 +137,7 @@ export const genericOrchestratorClient = {
 		integrations?: Record<string, Record<string, string>>,
 		dbExecutionId?: string,
 		nodeConnectionMap?: Record<string, string>,
+		workflowVersion?: string,
 	): Promise<GenericStartWorkflowResult> =>
 		daprFetch(`${orchestratorUrl}/api/v2/workflows`, {
 			method: "POST",
@@ -139,6 +147,7 @@ export const genericOrchestratorClient = {
 				integrations,
 				dbExecutionId,
 				nodeConnectionMap,
+				workflowVersion,
 			}),
 		}),
 
@@ -164,8 +173,10 @@ export const genericOrchestratorClient = {
 		const params = new URLSearchParams();
 		if (options?.search?.trim()) params.set("search", options.search.trim());
 		if (options?.status?.length) params.set("status", options.status.join(","));
-		if (typeof options?.limit === "number") params.set("limit", String(options.limit));
-		if (typeof options?.offset === "number") params.set("offset", String(options.offset));
+		if (typeof options?.limit === "number")
+			params.set("limit", String(options.limit));
+		if (typeof options?.offset === "number")
+			params.set("offset", String(options.offset));
 		const query = params.toString();
 		return daprFetch(
 			`${orchestratorUrl}/api/v2/workflows${query ? `?${query}` : ""}`,
@@ -177,6 +188,40 @@ export const genericOrchestratorClient = {
 		instanceId: string,
 	): Promise<GenericWorkflowHistoryResponse> =>
 		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/history`),
+
+	rerunWorkflow: (
+		orchestratorUrl: string,
+		instanceId: string,
+		options?: { fromEventId?: number; reason?: string },
+	): Promise<{
+		success: boolean;
+		sourceInstanceId: string;
+		fromEventId: number;
+		newInstanceId: string;
+	}> =>
+		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/rerun`, {
+			method: "POST",
+			body: JSON.stringify({
+				fromEventId: options?.fromEventId ?? 0,
+				reason: options?.reason,
+			}),
+		}),
+
+	pauseWorkflow: (
+		orchestratorUrl: string,
+		instanceId: string,
+	): Promise<{ success: boolean; instanceId: string }> =>
+		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/pause`, {
+			method: "POST",
+		}),
+
+	resumeWorkflow: (
+		orchestratorUrl: string,
+		instanceId: string,
+	): Promise<{ success: boolean; instanceId: string }> =>
+		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}/resume`, {
+			method: "POST",
+		}),
 
 	/**
 	 * Raise an external event to a running workflow.
@@ -219,8 +264,24 @@ export const genericOrchestratorClient = {
 	purgeWorkflow: (
 		orchestratorUrl: string,
 		instanceId: string,
-	): Promise<{ success: boolean; instanceId: string }> =>
-		daprFetch(`${orchestratorUrl}/api/v2/workflows/${instanceId}`, {
-			method: "DELETE",
-		}),
+		options?: { force?: boolean; recursive?: boolean },
+	): Promise<{
+		success: boolean;
+		instanceId: string;
+		force?: boolean;
+		recursive?: boolean;
+		deletedInstanceCount?: number;
+		isComplete?: boolean;
+	}> => {
+		const params = new URLSearchParams();
+		if (options?.force) params.set("force", "true");
+		if (options?.recursive) params.set("recursive", "true");
+		const query = params.toString();
+		return daprFetch(
+			`${orchestratorUrl}/api/v2/workflows/${instanceId}${query ? `?${query}` : ""}`,
+			{
+				method: "DELETE",
+			},
+		);
+	},
 };

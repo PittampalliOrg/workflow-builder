@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import {
 	workflowAgentRuns,
 	workflowExecutionLogs,
@@ -24,6 +25,12 @@ export async function GET(
 
 		if (!session?.user) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
 		}
 
 		const workflow = await db.query.workflows.findFirst({
@@ -151,6 +158,7 @@ export async function GET(
 			return {
 				...execution,
 				status,
+				daprWorkflowVersion: runtime?.workflowVersion ?? null,
 				phase: runtime?.phase ?? execution.phase,
 				progress: runtime?.progress ?? execution.progress,
 				runtimeStatus: runtime?.runtimeStatus ?? null,
@@ -188,6 +196,12 @@ export async function DELETE(
 
 		if (!session?.user) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
 		}
 
 		// Verify workflow ownership

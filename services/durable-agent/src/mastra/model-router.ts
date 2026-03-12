@@ -103,12 +103,11 @@ export function registerBuiltinProviders(): void {
 	try {
 		// eslint-disable-next-line @typescript-eslint/no-require-imports
 		const { openai } = require("@ai-sdk/openai") as {
-			openai: {
-				chat: (id: string) => LanguageModel;
+			openai: ((id: string) => LanguageModel) & {
 				embedding: (id: string) => EmbeddingModel;
 			};
 		};
-		registerLlmProvider("openai", (modelId) => openai.chat(modelId));
+		registerLlmProvider("openai", (modelId) => openai(modelId));
 		registerEmbeddingProvider("openai", (modelId) => openai.embedding(modelId));
 		console.log("[model-router] Registered built-in provider: openai");
 	} catch {

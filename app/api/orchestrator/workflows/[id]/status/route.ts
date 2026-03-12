@@ -11,168 +11,194 @@ import { getSession } from "@/lib/auth-helpers";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import { workflowExecutions, workflows } from "@/lib/db/schema";
 
 export async function GET(
-  request: Request,
-  { params }: { params: Promise<{ id: string }> }
+	request: Request,
+	{ params }: { params: Promise<{ id: string }> },
 ) {
-  try {
-    const { id: executionId } = await params;
+	try {
+		const { id: executionId } = await params;
 
-    // Authenticate the request
-    const session = await getSession(request);
+		// Authenticate the request
+		const session = await getSession(request);
 
-    if (!session?.user) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+		if (!session?.user) {
+			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
 
-    // Fetch the execution record
-    const [execution] = await db
-      .select()
-      .from(workflowExecutions)
-      .where(eq(workflowExecutions.id, executionId))
-      .limit(1);
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
+		}
 
-    if (!execution) {
-      return NextResponse.json(
-        { error: "Execution not found" },
-        { status: 404 }
-      );
-    }
+		// Fetch the execution record
+		const [execution] = await db
+			.select()
+			.from(workflowExecutions)
+			.where(eq(workflowExecutions.id, executionId))
+			.limit(1);
 
-    // Check if user has access
-    if (execution.userId !== session.user.id) {
-      // Check if user owns the workflow
-      const [workflow] = await db
-        .select()
-        .from(workflows)
-        .where(eq(workflows.id, execution.workflowId))
-        .limit(1);
+		if (!execution) {
+			return NextResponse.json(
+				{ error: "Execution not found" },
+				{ status: 404 },
+			);
+		}
 
-      if (
-        !workflow ||
-        (workflow.userId !== session.user.id &&
-          workflow.visibility !== "public")
-      ) {
-        return NextResponse.json({ error: "Access denied" }, { status: 403 });
-      }
-    }
+		// Check if user has access
+		if (execution.userId !== session.user.id) {
+			// Check if user owns the workflow
+			const [workflow] = await db
+				.select()
+				.from(workflows)
+				.where(eq(workflows.id, execution.workflowId))
+				.limit(1);
 
-    // If we have a Dapr instance ID, poll the orchestrator
-    if (execution.daprInstanceId) {
-      // Get orchestrator URL from workflow
-      const [workflow] = await db
-        .select()
-        .from(workflows)
-        .where(eq(workflows.id, execution.workflowId))
-        .limit(1);
+			if (
+				!workflow ||
+				(workflow.userId !== session.user.id &&
+					workflow.visibility !== "public")
+			) {
+				return NextResponse.json({ error: "Access denied" }, { status: 403 });
+			}
+		}
 
-      const defaultUrl = await getOrchestratorUrlAsync();
-      const orchestratorUrl = workflow?.daprOrchestratorUrl || defaultUrl;
+		// If we have a Dapr instance ID, poll the orchestrator
+		if (execution.daprInstanceId) {
+			// Get orchestrator URL from workflow
+			const [workflow] = await db
+				.select()
+				.from(workflows)
+				.where(eq(workflows.id, execution.workflowId))
+				.limit(1);
 
-      try {
-        const status = await genericOrchestratorClient.getWorkflowStatus(
-          orchestratorUrl,
-          execution.daprInstanceId
-        );
+			const defaultUrl = await getOrchestratorUrlAsync();
+			const orchestratorUrl = workflow?.daprOrchestratorUrl || defaultUrl;
 
-        // Map runtime status to local status
-        const localStatus = mapRuntimeStatusToLocalStatus(status.runtimeStatus);
+			try {
+				const status = await genericOrchestratorClient.getWorkflowStatus(
+					orchestratorUrl,
+					execution.daprInstanceId,
+				);
 
-        // Update execution record if status changed
-        if (
-          localStatus !== execution.status ||
-          status.phase !== execution.phase ||
-          status.progress !== execution.progress
-        ) {
-          await db
-            .update(workflowExecutions)
-            .set({
-              status: localStatus,
-              phase: status.phase,
-              progress: status.progress,
-              output: status.outputs || null,
-              ...(localStatus === "success" ||
-              localStatus === "error" ||
-              localStatus === "cancelled"
-                ? { completedAt: new Date() }
-                : {}),
-            })
-            .where(eq(workflowExecutions.id, executionId));
-        }
+				// Map runtime status to local status
+				const localStatus = mapRuntimeStatusToLocalStatus(status.runtimeStatus);
 
-        return NextResponse.json({
-          executionId,
-          instanceId: execution.daprInstanceId,
-          workflowId: execution.workflowId,
-          status: localStatus,
-          runtimeStatus: status.runtimeStatus,
-          phase: status.phase,
-          progress: status.progress,
-          message: status.message,
-          currentNodeId: status.currentNodeId,
-          currentNodeName: status.currentNodeName,
-          approvalEventName: status.approvalEventName,
-          outputs: status.outputs,
-          error: status.error,
-          startedAt: execution.startedAt,
-          completedAt: status.completedAt,
-        });
-      } catch (pollError) {
-        console.error("[Orchestrator API] Error polling status:", pollError);
-        // Return cached status if polling fails
-        return NextResponse.json({
-          executionId,
-          instanceId: execution.daprInstanceId,
-          workflowId: execution.workflowId,
-          status: execution.status,
-          phase: execution.phase,
-          progress: execution.progress,
-          startedAt: execution.startedAt,
-          error: "Failed to poll orchestrator",
-        });
-      }
-    }
+				// Update execution record if status changed
+				if (
+					localStatus !== execution.status ||
+					status.phase !== execution.phase ||
+					status.progress !== execution.progress ||
+					status.error !== execution.error ||
+					(status.stackTrace ?? null) !== (execution.errorStackTrace ?? null)
+				) {
+					await db
+						.update(workflowExecutions)
+						.set({
+							status: localStatus,
+							phase: status.phase,
+							progress: status.progress,
+							output: status.outputs || null,
+							error: status.error || null,
+							errorStackTrace: status.stackTrace ?? null,
+							...(localStatus === "success" ||
+							localStatus === "error" ||
+							localStatus === "cancelled"
+								? { completedAt: new Date() }
+								: {}),
+						})
+						.where(eq(workflowExecutions.id, executionId));
+				}
 
-    // Return cached status if no instance ID
-    return NextResponse.json({
-      executionId,
-      workflowId: execution.workflowId,
-      status: execution.status,
-      phase: execution.phase,
-      progress: execution.progress,
-      startedAt: execution.startedAt,
-      completedAt: execution.completedAt,
-    });
-  } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : "Unknown error";
-    console.error("[Orchestrator API] Error getting workflow status:", error);
+				return NextResponse.json({
+					executionId,
+					instanceId: execution.daprInstanceId,
+					workflowId: execution.workflowId,
+					status: localStatus,
+					daprInstanceId: execution.daprInstanceId,
+					daprStatus: status.runtimeStatus,
+					runtimeStatus: status.runtimeStatus,
+					workflowVersion: status.workflowVersion ?? null,
+					workflowNameVersioned: status.workflowNameVersioned ?? null,
+					phase: status.phase,
+					progress: status.progress,
+					message: status.message,
+					currentNodeId: status.currentNodeId,
+					currentNodeName: status.currentNodeName,
+					approvalEventName: status.approvalEventName,
+					outputs: status.outputs,
+					error: status.error,
+					stackTrace: status.stackTrace ?? null,
+					parentInstanceId: status.parentInstanceId ?? null,
+					startedAt: execution.startedAt,
+					completedAt: status.completedAt,
+				});
+			} catch (pollError) {
+				console.error("[Orchestrator API] Error polling status:", pollError);
+				// Return cached status if polling fails
+				return NextResponse.json({
+					executionId,
+					instanceId: execution.daprInstanceId,
+					workflowId: execution.workflowId,
+					status: execution.status,
+					daprInstanceId: execution.daprInstanceId,
+					daprStatus: "UNKNOWN",
+					phase: execution.phase,
+					progress: execution.progress,
+					startedAt: execution.startedAt,
+					error: execution.error || "Failed to poll orchestrator",
+					stackTrace: execution.errorStackTrace ?? null,
+				});
+			}
+		}
 
-    return NextResponse.json(
-      { error: "Failed to get workflow status", message: errorMessage },
-      { status: 500 }
-    );
-  }
+		// Return cached status if no instance ID
+		return NextResponse.json({
+			executionId,
+			workflowId: execution.workflowId,
+			status: execution.status,
+			daprStatus: "UNKNOWN",
+			phase: execution.phase,
+			progress: execution.progress,
+			startedAt: execution.startedAt,
+			completedAt: execution.completedAt,
+			error: execution.error,
+			stackTrace: execution.errorStackTrace ?? null,
+		});
+	} catch (error) {
+		const errorMessage =
+			error instanceof Error ? error.message : "Unknown error";
+		console.error("[Orchestrator API] Error getting workflow status:", error);
+
+		return NextResponse.json(
+			{ error: "Failed to get workflow status", message: errorMessage },
+			{ status: 500 },
+		);
+	}
 }
 
 /**
  * Map Dapr runtime status to local execution status
  */
 function mapRuntimeStatusToLocalStatus(
-  runtimeStatus: string
+	runtimeStatus: string,
 ): "pending" | "running" | "success" | "error" | "cancelled" {
-  switch (runtimeStatus.toUpperCase()) {
-    case "COMPLETED":
-      return "success";
-    case "FAILED":
-      return "error";
-    case "TERMINATED":
-      return "cancelled";
-    case "PENDING":
-      return "pending";
-    default:
-      return "running";
-  }
+	switch (runtimeStatus.toUpperCase()) {
+		case "COMPLETED":
+			return "success";
+		case "FAILED":
+			return "error";
+		case "TERMINATED":
+		case "CANCELED":
+			return "cancelled";
+		case "PENDING":
+			return "pending";
+		case "SUSPENDED":
+			return "running";
+		default:
+			return "running";
+	}
 }

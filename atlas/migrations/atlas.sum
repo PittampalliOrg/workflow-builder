@@ -1,4 +1,4 @@
-h1:8JkJ5Pad8claQa+Ob+INQL+JwkoeijIbK/fbDbNqmYc=
+h1:2IRlNo6Gt3UHkIvqaQfJ/VRonJNnCqSrfdMpHYZYIIM=
 20260210204758_baseline.sql h1:i0a3DxoyU0gEdXV1ecWYZSJ3pr9ZPS7PdMchjQiQNTA=
 20260212120000_add_workflow_ai_messages.sql h1:MKA9YzLVEh8qXhjuZesrAndI3UvekoOSzTUKLLY07Ms=
 20260217110505_add_resource_library_resources.sql h1:nDoJ/rUulmB6koBi6xI9zEwo3x0Q3JZ56na21UhMFDM=
@@ -10,3 +10,5 @@ h1:8JkJ5Pad8claQa+Ob+INQL+JwkoeijIbK/fbDbNqmYc=
 20260219143000_add_mcp_connections.sql h1:BZtn988bGpyRor0OiVvOXdMr3J4N3nuHqf3fEUgtLl0=
 20260220113000_upgrade_coding_agent_profile_for_opencode.sql h1:HukiMEDB1toZnaqI0xyOGAw70+zjjHguZbrAGhMEexY=
 20260223120000_set_claude_plan_artifact_default.sql h1:+43VQ2QFrzcnB+svNd4hsQomuucsxa8WhHq9dyY+Gg0=
+20260223150000_add_sandbox_state_column.sql h1:vCAOOCNpA6yfaH5XMRnGlJpIfUh3lENt/3eqGA8h3iE=
+20260310143000_add_workflow_execution_rerun_fields.sql h1:d6jtWCXyaIV+Fbu8G73Qn7NjoO9OPdB60jMxUqC8xgE=

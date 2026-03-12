@@ -30,6 +30,11 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8001
 ENV HOST="0.0.0.0"
+ENV DURABLE_RUN_WORKFLOW_NAME=durableRunWorkflowV1
+ENV DURABLE_PLAN_WORKFLOW_NAME=durablePlanWorkflowV1
+ENV DAG_EXECUTOR_WORKFLOW_NAME=dagExecutorWorkflowV1
+ENV MIN_DAPR_RUNTIME_VERSION=1.17.0
+ENV ENFORCE_MIN_DAPR_VERSION=false
 
 # Install bubblewrap for local sandbox isolation fallback and git for workspace ops
 RUN apk add --no-cache bubblewrap git && \

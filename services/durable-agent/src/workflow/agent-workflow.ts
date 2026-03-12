@@ -230,6 +230,12 @@ export function createAgentWorkflow(
 					name: string;
 			  }>
 			| undefined;
+		let previousAssistantTurn:
+			| {
+					content?: string | null;
+					toolCalls?: ToolCall[];
+			  }
+			| undefined;
 		let compactionCount = 0;
 		let contextOverflowRecovered = false;
 		let lastCompactionReason = "";
@@ -272,8 +278,10 @@ export function createAgentWorkflow(
 							instanceId,
 							// Only pass the user task on the first turn
 							task: turn === 1 ? task : undefined,
+							initialTask: task,
 							// Pass previous tool results so callLlm can repair state after crashes
 							previousToolResults,
+							previousAssistantTurn,
 							modelSpec: preparedStep.modelSpec,
 							activeTools: preparedStep.activeTools,
 							toolChoice: preparedStep.toolChoice,
@@ -307,6 +315,7 @@ export function createAgentWorkflow(
 							}
 							overflowRetryCount += 1;
 							previousToolResults = undefined;
+							previousAssistantTurn = undefined;
 							continue;
 						}
 						if (isContextOverflowErrorMessage(err)) {
@@ -323,6 +332,7 @@ export function createAgentWorkflow(
 				}
 				// Clear after passing — only needed for the first callLlm after tool execution
 				previousToolResults = undefined;
+				previousAssistantTurn = undefined;
 				if (!assistantResponse) {
 					break;
 				}
@@ -442,6 +452,10 @@ export function createAgentWorkflow(
 					// the generator will replay with these cached results and pass them
 					// to callLlm to repair the conversation state in Redis.
 					previousToolResults = toolResults;
+					previousAssistantTurn = {
+						content: assistantResponse.content ?? null,
+						toolCalls,
+					};
 					stepHistory.push(currentStep);
 					const stopEvaluation = evaluateStopConditions({
 						policy: loopPolicy,

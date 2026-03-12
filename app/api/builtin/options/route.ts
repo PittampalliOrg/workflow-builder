@@ -22,8 +22,7 @@ const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 const GITEA_API_BASE_URL =
-	process.env.GITEA_API_URL ||
-	"http://my-gitea-http.gitea.svc.cluster.local:3000";
+	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
 const GITEA_REPO_OWNER = (process.env.GITEA_REPO_OWNER || "giteaAdmin").trim();
 
 type DropdownOption = {

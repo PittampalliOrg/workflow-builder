@@ -5,6 +5,7 @@ import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import {
 	appConnections,
 	workflowExecutionLogs,
@@ -26,6 +27,12 @@ export async function POST(
 
 		if (!session) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+		}
+
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
 		}
 
 		// Get workflow and verify ownership

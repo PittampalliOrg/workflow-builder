@@ -18,12 +18,101 @@ Dapr rules enforced:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
+from core.config import config as orchestrator_config
 
 logger = logging.getLogger(__name__)
+
+AP_CONTINUE_AS_NEW_PATCH_NAME = "ap-workflow-continue-as-new-v1"
+
+
+def _is_patch_enabled(ctx: wf.DaprWorkflowContext, patch_name: str) -> bool:
+    checker = getattr(ctx, 'is_patched', None)
+    if callable(checker):
+        try:
+            return bool(checker(patch_name))
+        except Exception:
+            return False
+    return True
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _restore_ap_runtime_state(
+    input_data: dict[str, Any],
+    trigger: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    runtime_state = input_data.get('_runtime')
+    if not isinstance(runtime_state, dict):
+        runtime_state = {}
+
+    restored_outputs = runtime_state.get('stepOutputs')
+    step_outputs: dict[str, Any] = (
+        dict(restored_outputs) if isinstance(restored_outputs, dict) else {}
+    )
+
+    trigger_name = trigger.get('name', 'trigger')
+    if trigger_name not in step_outputs:
+        step_outputs[trigger_name] = {
+            'output': trigger.get('settings', {}).get('inputUiInfo', {}).get('currentSelectedData'),
+            'type': 'TRIGGER',
+            'status': 'SUCCEEDED',
+        }
+
+    remaining_action = runtime_state.get('remainingAction')
+    if not isinstance(remaining_action, dict):
+        remaining_action = trigger.get('nextAction')
+
+    return step_outputs, remaining_action, runtime_state
+
+
+def _should_continue_as_new(
+    ctx: wf.DaprWorkflowContext,
+    completed_since_checkpoint: int,
+) -> bool:
+    if not _is_patch_enabled(ctx, AP_CONTINUE_AS_NEW_PATCH_NAME):
+        return False
+    threshold = max(
+        0,
+        _safe_int(
+            getattr(
+                orchestrator_config,
+                'AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS',
+                os.environ.get('AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS', '0'),
+            ),
+            0,
+        ),
+    )
+    return threshold > 0 and completed_since_checkpoint >= threshold
+
+
+def _continue_ap_workflow_as_new(
+    ctx: wf.DaprWorkflowContext,
+    input_data: dict[str, Any],
+    *,
+    remaining_action: dict[str, Any] | None,
+    step_outputs: dict[str, Any],
+    continue_as_new_count: int,
+    started_callback_sent: bool,
+) -> None:
+    next_input = dict(input_data)
+    next_input['_runtime'] = {
+        'remainingAction': remaining_action,
+        'stepOutputs': step_outputs,
+        'completedStepsSinceCheckpoint': 0,
+        'continueAsNewCount': continue_as_new_count + 1,
+        'startedCallbackSent': started_callback_sent,
+    }
+    ctx.continue_as_new(next_input)
 
 
 # --- Utility functions (pure, deterministic — safe in workflow) ---
@@ -111,29 +200,32 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
         f"flow={flow_version.get('displayName', 'unknown')}"
     )
 
-    # Initialize step outputs with trigger data (deterministic)
-    step_outputs: dict[str, Any] = {}
     trigger = flow_version.get('trigger', {})
-
-    if trigger_payload is not None:
-        trigger_name = trigger.get('name', 'trigger')
+    step_outputs, remaining_action, runtime_state = _restore_ap_runtime_state(
+        input_data,
+        trigger,
+    )
+    trigger_name = trigger.get('name', 'trigger')
+    if trigger_payload is not None and trigger_name not in step_outputs:
         step_outputs[trigger_name] = {
             'output': trigger_payload,
             'type': 'TRIGGER',
             'status': 'SUCCEEDED',
         }
-
-    # Store trigger output if not already stored
-    trigger_name = trigger.get('name', 'trigger')
-    if trigger_name not in step_outputs:
-        step_outputs[trigger_name] = {
-            'output': trigger.get('settings', {}).get('inputUiInfo', {}).get('currentSelectedData'),
-            'type': 'TRIGGER',
-            'status': 'SUCCEEDED',
-        }
+    runtime_counters = {
+        'completedStepsSinceCheckpoint': max(
+            0,
+            _safe_int(runtime_state.get('completedStepsSinceCheckpoint'), 0),
+        ),
+        'continueAsNewCount': max(
+            0,
+            _safe_int(runtime_state.get('continueAsNewCount'), 0),
+        ),
+    }
+    started_callback_sent = bool(runtime_state.get('startedCallbackSent'))
 
     # Notify AP that execution has started (via activity — NOT inline HTTP)
-    if callback_url:
+    if callback_url and not started_callback_sent:
         yield ctx.call_activity(send_ap_callback, input={
             'callbackUrl': callback_url,
             'payload': {
@@ -142,12 +234,14 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
                 'daprInstanceId': ctx.instance_id,
             },
         })
+        started_callback_sent = True
 
     try:
         # Walk the AP flow action chain
-        yield from _walk_action_chain(
+        continued_as_new = yield from _walk_action_chain(
             ctx=ctx,
-            action=trigger.get('nextAction'),
+            input_data=input_data,
+            action=remaining_action,
             step_outputs=step_outputs,
             flow_run_id=flow_run_id,
             callback_url=callback_url,
@@ -156,7 +250,17 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
             execute_action=execute_action,
             send_ap_callback=send_ap_callback,
             send_ap_step_update=send_ap_step_update,
+            runtime_counters=runtime_counters,
+            started_callback_sent=started_callback_sent,
         )
+
+        if continued_as_new:
+            return {
+                'status': 'RUNNING',
+                'continuedAsNew': True,
+                'continueAsNewCount': runtime_counters['continueAsNewCount'] + 1,
+                'steps': step_outputs,
+            }
 
         logger.info(
             f"[APWorkflow] Flow completed successfully: run={flow_run_id}, "
@@ -224,6 +328,7 @@ def ap_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any]):
 
 def _walk_action_chain(
     ctx: wf.DaprWorkflowContext,
+    input_data: dict[str, Any],
     action: dict[str, Any] | None,
     step_outputs: dict[str, Any],
     flow_run_id: str,
@@ -233,6 +338,8 @@ def _walk_action_chain(
     execute_action,
     send_ap_callback,
     send_ap_step_update,
+    runtime_counters: dict[str, int],
+    started_callback_sent: bool,
 ):
     """
     Walk an AP action chain (linked list via nextAction).
@@ -270,20 +377,30 @@ def _walk_action_chain(
                 )
 
             elif action_type == 'ROUTER':
-                yield from _handle_router(
+                branch_continued = yield from _handle_router(
                     ctx, current, step_outputs, flow_run_id, callback_url,
                     project_id, platform_id, execute_action,
                     send_ap_callback, send_ap_step_update,
                     resolve_ap_value, evaluate_branches,
+                    input_data,
+                    runtime_counters,
+                    started_callback_sent,
                 )
+                if branch_continued:
+                    return True
 
             elif action_type == 'LOOP_ON_ITEMS':
-                yield from _handle_loop(
+                loop_continued = yield from _handle_loop(
                     ctx, current, step_outputs, flow_run_id, callback_url,
                     project_id, platform_id, execute_action,
                     send_ap_callback, send_ap_step_update,
                     resolve_ap_value,
+                    input_data,
+                    runtime_counters,
+                    started_callback_sent,
                 )
+                if loop_continued:
+                    return True
 
             else:
                 logger.warning(f"[APWalker] Unknown action type: {action_type}")
@@ -312,7 +429,27 @@ def _walk_action_chain(
                 },
             })
 
-        current = current.get('nextAction')
+        runtime_counters['completedStepsSinceCheckpoint'] = (
+            runtime_counters.get('completedStepsSinceCheckpoint', 0) + 1
+        )
+        next_action = current.get('nextAction')
+        if next_action is not None and _should_continue_as_new(
+            ctx,
+            runtime_counters['completedStepsSinceCheckpoint'],
+        ):
+            _continue_ap_workflow_as_new(
+                ctx,
+                input_data,
+                remaining_action=next_action,
+                step_outputs=step_outputs,
+                continue_as_new_count=runtime_counters.get('continueAsNewCount', 0),
+                started_callback_sent=started_callback_sent,
+            )
+            return True
+
+        current = next_action
+
+    return False
 
 
 # --- Step handlers ---
@@ -530,6 +667,9 @@ def _handle_router(
     project_id, platform_id, execute_action,
     send_ap_callback, send_ap_step_update,
     resolve_ap_value, evaluate_branches,
+    input_data,
+    runtime_counters,
+    started_callback_sent,
 ):
     """
     Handle ROUTER action by evaluating conditions and recursing.
@@ -568,8 +708,9 @@ def _handle_router(
         if not should_execute:
             continue
         if i < len(children) and children[i] is not None:
-            yield from _walk_action_chain(
+            continued = yield from _walk_action_chain(
                 ctx=ctx,
+                input_data=input_data,
                 action=children[i],
                 step_outputs=step_outputs,
                 flow_run_id=flow_run_id,
@@ -579,9 +720,15 @@ def _handle_router(
                 execute_action=execute_action,
                 send_ap_callback=send_ap_callback,
                 send_ap_step_update=send_ap_step_update,
+                runtime_counters=runtime_counters,
+                started_callback_sent=started_callback_sent,
             )
+            if continued:
+                return True
         if execution_type == 'EXECUTE_FIRST_MATCH':
             break
+
+    return False
 
 
 def _handle_loop(
@@ -589,6 +736,9 @@ def _handle_loop(
     project_id, platform_id, execute_action,
     send_ap_callback, send_ap_step_update,
     resolve_ap_value,
+    input_data,
+    runtime_counters,
+    started_callback_sent,
 ):
     """
     Handle LOOP_ON_ITEMS action by iterating and recursing.
@@ -625,8 +775,9 @@ def _handle_loop(
         }
 
         if first_loop_action is not None:
-            yield from _walk_action_chain(
+            continued = yield from _walk_action_chain(
                 ctx=ctx,
+                input_data=input_data,
                 action=first_loop_action,
                 step_outputs=step_outputs,
                 flow_run_id=flow_run_id,
@@ -636,7 +787,11 @@ def _handle_loop(
                 execute_action=execute_action,
                 send_ap_callback=send_ap_callback,
                 send_ap_step_update=send_ap_step_update,
+                runtime_counters=runtime_counters,
+                started_callback_sent=started_callback_sent,
             )
+            if continued:
+                return True
 
         iterations.append({'index': i + 1, 'item': item})
 
@@ -648,3 +803,4 @@ def _handle_loop(
             'item_count': len(resolved_items),
         },
     }
+    return False

@@ -1,16 +1,15 @@
 const GITEA_API_URL =
-	process.env.GITEA_API_URL ||
-	"http://my-gitea-http.gitea.svc.cluster.local:3000";
+	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
 const GITEA_REPO_OWNER = process.env.GITEA_REPO_OWNER || "giteaAdmin";
 const GITEA_INTERNAL_CLONE_BASE_URL =
 	process.env.GITEA_INTERNAL_CLONE_BASE_URL ||
-	"http://my-gitea-http.gitea.svc.cluster.local:3000";
+	"http://gitea-http.gitea.svc.cluster.local:3000";
 const GITEA_USERNAME = process.env.GITEA_USERNAME || "";
 const GITEA_PASSWORD = process.env.GITEA_PASSWORD || "";
 
 const GITEA_HOST_ALIASES = (
 	process.env.GITEA_HOST_ALIASES ||
-	"gitea.cnoe.localtest.me:8443,gitea.cnoe.localtest.me,my-gitea-http.gitea.svc.cluster.local:3000,my-gitea-http.gitea.svc.cluster.local"
+	"gitea.cnoe.localtest.me:8443,gitea.cnoe.localtest.me,gitea-http.gitea.svc.cluster.local:3000,gitea-http.gitea.svc.cluster.local,my-gitea-http.gitea.svc.cluster.local:3000,my-gitea-http.gitea.svc.cluster.local"
 )
 	.split(",")
 	.map((value) => value.trim().toLowerCase())

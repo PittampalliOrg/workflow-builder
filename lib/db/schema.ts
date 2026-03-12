@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm";
 import {
 	boolean,
+	foreignKey,
 	index,
 	integer,
 	jsonb,
@@ -378,32 +379,46 @@ export const workflowConnectionRefs = pgTable(
 );
 
 // Workflow executions table to track workflow runs
-export const workflowExecutions = pgTable("workflow_executions", {
-	id: text("id")
-		.primaryKey()
-		.$defaultFn(() => generateId()),
-	workflowId: text("workflow_id")
-		.notNull()
-		.references(() => workflows.id),
-	userId: text("user_id")
-		.notNull()
-		.references(() => users.id),
-	status: text("status")
-		.notNull()
-		.$type<"pending" | "running" | "success" | "error" | "cancelled">(),
-	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
-	input: jsonb("input").$type<Record<string, any>>(),
-	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
-	output: jsonb("output").$type<any>(),
-	error: text("error"),
-	// Dapr execution fields
-	daprInstanceId: text("dapr_instance_id"), // Dapr workflow instance ID for correlation
-	phase: text("phase"), // Current phase from Dapr custom status
-	progress: integer("progress"), // 0-100 progress percentage
-	startedAt: timestamp("started_at").notNull().defaultNow(),
-	completedAt: timestamp("completed_at"),
-	duration: text("duration"), // Duration in milliseconds
-});
+export const workflowExecutions = pgTable(
+	"workflow_executions",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id),
+		userId: text("user_id")
+			.notNull()
+			.references(() => users.id),
+		status: text("status")
+			.notNull()
+			.$type<"pending" | "running" | "success" | "error" | "cancelled">(),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+		input: jsonb("input").$type<Record<string, any>>(),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+		output: jsonb("output").$type<any>(),
+		error: text("error"),
+		// Dapr execution fields
+		daprInstanceId: text("dapr_instance_id"), // Dapr workflow instance ID for correlation
+		phase: text("phase"), // Current phase from Dapr custom status
+		progress: integer("progress"), // 0-100 progress percentage
+		errorStackTrace: text("error_stack_trace"),
+		rerunOfExecutionId: text("rerun_of_execution_id"),
+		rerunSourceInstanceId: text("rerun_source_instance_id"),
+		rerunFromEventId: integer("rerun_from_event_id"),
+		startedAt: timestamp("started_at").notNull().defaultNow(),
+		completedAt: timestamp("completed_at"),
+		duration: text("duration"), // Duration in milliseconds
+	},
+	(table) => ({
+		rerunOfExecutionFk: foreignKey({
+			columns: [table.rerunOfExecutionId],
+			foreignColumns: [table.id],
+			name: "workflow_executions_rerun_of_execution_id_workflow_executions_id_fk",
+		}).onDelete("set null"),
+	}),
+);
 
 export type WorkflowPlanArtifactStatus =
 	| "draft"
@@ -497,7 +512,10 @@ export const workflowWorkspaceSessions = pgTable(
 			.default("active")
 			.$type<WorkflowWorkspaceSessionStatus>(),
 		lastError: text("last_error"),
-		sandboxState: jsonb("sandbox_state").$type<Record<string, unknown> | null>(),
+		sandboxState: jsonb("sandbox_state").$type<Record<
+			string,
+			unknown
+		> | null>(),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 		updatedAt: timestamp("updated_at").notNull().defaultNow(),
 		lastAccessedAt: timestamp("last_accessed_at").notNull().defaultNow(),

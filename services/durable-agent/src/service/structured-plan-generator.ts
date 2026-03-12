@@ -1,5 +1,6 @@
 import { openai } from "@ai-sdk/openai";
 import { generateObject } from "ai";
+import { createRequire } from "node:module";
 import {
 	CanonicalPlanSchema,
 	type CanonicalPlan,
@@ -46,6 +47,7 @@ const RETRY_BASE_MS = Math.max(
 
 type StructuredProvider = "ai-sdk" | "mastra" | "auto";
 type EffectiveProvider = "ai-sdk" | "mastra";
+const require = createRequire(import.meta.url);
 
 export type PlanGenerationMeta = {
 	attempts: number;
@@ -74,14 +76,23 @@ export class PlanGenerationError extends Error {
 	}
 }
 
-function resolveProviderPreference(): StructuredProvider {
+function isMastraAvailable(): boolean {
+	try {
+		require.resolve("@mastra/core/agent");
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function resolveProviderPreference(): EffectiveProvider {
 	const raw = (process.env.PLAN_STRUCTURED_PROVIDER || "auto")
 		.trim()
 		.toLowerCase();
-	if (raw === "ai-sdk" || raw === "mastra" || raw === "auto") {
+	if (raw === "ai-sdk" || raw === "mastra") {
 		return raw;
 	}
-	return "auto";
+	return isMastraAvailable() ? "mastra" : "ai-sdk";
 }
 
 function buildPlanningPrompt(prompt: string, errors: string[]): string {
@@ -108,7 +119,7 @@ async function generateWithAiSdk(
 	prompt: string,
 	validationErrors: string[],
 ): Promise<unknown> {
-	const model = openai.chat(
+	const model = openai(
 		normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL", {
 			logPrefix: "[planner]",
 		}),
@@ -164,7 +175,7 @@ async function generateWithMastra(
 }
 
 async function generateCandidateForAttempt(
-	provider: StructuredProvider,
+	provider: EffectiveProvider,
 	prompt: string,
 	validationErrors: string[],
 ): Promise<{ providerUsed: EffectiveProvider; candidate: unknown }> {
@@ -181,22 +192,10 @@ async function generateCandidateForAttempt(
 		};
 	}
 
-	try {
-		return {
-			providerUsed: "mastra",
-			candidate: await generateWithMastra(prompt, validationErrors),
-		};
-	} catch (error) {
-		console.warn(
-			`[planner] Mastra structured output unavailable, falling back to AI SDK: ${
-				error instanceof Error ? error.message : String(error)
-			}`,
-		);
-		return {
-			providerUsed: "ai-sdk",
-			candidate: await generateWithAiSdk(prompt, validationErrors),
-		};
-	}
+	return {
+		providerUsed: "mastra",
+		candidate: await generateWithMastra(prompt, validationErrors),
+	};
 }
 
 export async function generateCanonicalPlan(input: {
