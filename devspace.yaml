@@ -27,9 +27,13 @@ vars:
 
   # Registry configuration
   GITEA_HOST:
-    default: "gitea.cnoe.localtest.me:8443"
+    default: "gitea.cnoe.localtest.me"
   GITEA_USER:
     default: "giteaadmin"
+
+  # kind-ryzen ingress / auth callback URL
+  APP_PUBLIC_URL:
+    default: "https://workflow-builder-ryzen.tail286401.ts.net"
 
   # Resource configuration
   CPU_REQUEST:
@@ -71,6 +75,18 @@ vars:
       echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest"
     default: "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest"
 
+  CURRENT_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}"
+
+  DEV_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
+    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+
 # ============================================================================
 # Development Configuration
 # ============================================================================
@@ -78,11 +94,11 @@ dev:
   app:
     # Target the deployment by image selector
     namespace: ${APP_NAME}
-    imageSelector: ${GITEA_HOST}/${GITEA_USER}/${APP_NAME}
+    imageSelector: ${CURRENT_IMAGE_REPOSITORY}
     container: ${APP_NAME}
 
     # Use shared devcontainer (instead of per-app image)
-    devImage: ${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace:latest
+    devImage: ${DEV_IMAGE_REPOSITORY}:latest
     workingDir: /app
 
     # Resource requirements for development
@@ -259,9 +275,9 @@ dev:
         value: "http://durable-agent.workflow-builder.svc.cluster.local:8001"
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
-        value: "https://workflow-builder.cnoe.localtest.me:8443"
+        value: ${APP_PUBLIC_URL}
       - name: BETTER_AUTH_URL
-        value: "https://workflow-builder.cnoe.localtest.me:8443"
+        value: ${APP_PUBLIC_URL}
       # Auth providers (enables social login buttons in UI)
       - name: NEXT_PUBLIC_AUTH_PROVIDERS
         value: "email,github,google"
@@ -275,6 +291,5 @@ dev:
       # AP_ENCRYPTION_KEY is provided by envFrom secretRef: workflow-builder-secrets
       # Do NOT override it here — DevSpace inherits the base deployment's envFrom
 
-    # Add Dapr sidecar annotations for config/secret access
-    # Note: DevSpace patches are applied to pod spec, not metadata
-    # Dapr annotations must be added via kubectl after devspace starts
+    # DevSpace attaches to the existing Argo-managed deployment, so the pod
+    # keeps its base Dapr annotations and sidecar configuration.
