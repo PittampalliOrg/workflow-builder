@@ -1066,7 +1066,7 @@ export async function POST(
 				error:
 					error instanceof Error
 						? error.message
-						: "Failed to process AI chat tools request",
+						: "Failed to process workflow AI editing request",
 			},
 			{ status: 500 },
 		);
