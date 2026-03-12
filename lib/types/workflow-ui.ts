@@ -11,6 +11,7 @@ import type {
 	DurablePlanArtifactSummary,
 	DurableTimelineEvent,
 } from "./durable-timeline";
+import type { WorkflowRuntimeGraph } from "./workflow-graph";
 
 // ============================================================================
 // Status Types
@@ -56,6 +57,10 @@ export type DaprExecutionEventMetadata = {
 	nodeName?: string;
 	activityName?: string;
 	durationMs?: number;
+	error?: string;
+	stackTrace?: string;
+	version?: string;
+	rerunSourceInstanceId?: string;
 };
 
 /**
@@ -201,7 +206,9 @@ export type WorkflowCustomStatus = {
  * List item for table view (summary)
  */
 export type WorkflowListItem = {
+	executionId?: string;
 	instanceId: string;
+	daprInstanceId?: string | null;
 	workflowType: string; // e.g., "planExecutionWorkflow", "planningAndExecutionWorkflow"
 	appId: string; // e.g., "workflow-orchestrator", "workflow-builder"
 	status: WorkflowUIStatus;
@@ -211,6 +218,10 @@ export type WorkflowListItem = {
 	customStatus?: WorkflowCustomStatus;
 	/** Workflow name from workflows table */
 	workflowName?: string;
+	/** Runtime workflow version from Dapr */
+	workflowVersion?: string | null;
+	/** Version-qualified workflow name from Dapr */
+	workflowNameVersioned?: string | null;
 	/** Runtime status from orchestrator (if available) */
 	runtimeStatus?: string;
 	/** Current runtime node (if available) */
@@ -254,6 +265,8 @@ export type DaprWorkflowRuntimeStatus = {
 	currentNodeId?: string;
 	currentNodeName?: string;
 	error?: string;
+	stackTrace?: string | null;
+	parentInstanceId?: string | null;
 };
 
 // ============================================================================
@@ -268,6 +281,12 @@ export interface WorkflowDetail extends WorkflowListItem {
 	input: unknown;
 	output: unknown;
 	executionHistory: DaprExecutionEvent[];
+	graph?: WorkflowRuntimeGraph;
+	error?: string | null;
+	errorStackTrace?: string | null;
+	rerunOfExecutionId?: string | null;
+	rerunSourceInstanceId?: string | null;
+	rerunFromEventId?: number | null;
 	/** Real-time status from Dapr (if available) */
 	daprStatus?: DaprWorkflowRuntimeStatus;
 	/** Canonical durable timeline across logs/events/artifacts/child runs */

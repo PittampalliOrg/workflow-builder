@@ -54,17 +54,6 @@ export function useWorkflowAiChat(workflowId: string) {
 		[nodes],
 	);
 
-	const isBlankWorkflow = useMemo(() => {
-		if (edges.length > 0) {
-			return false;
-		}
-		if (realNodes.length !== 1) {
-			return false;
-		}
-		const onlyNode = realNodes[0];
-		return onlyNode?.data?.type === "trigger";
-	}, [edges.length, realNodes]);
-
 	const refreshMessages = useCallback(async () => {
 		setIsLoadingMessages(true);
 		try {
@@ -115,14 +104,16 @@ export function useWorkflowAiChat(workflowId: string) {
 			setMessages((previous) => [...previous, optimisticUserMessage]);
 
 			try {
-				const existingWorkflow =
-					realNodes.length > 0 && !isBlankWorkflow
-						? {
-								nodes: realNodes,
-								edges,
-								name: currentWorkflowName,
-							}
-						: undefined;
+				if (realNodes.length === 0) {
+					throw new Error(
+						"AI workflow chat requires an existing workflow definition to edit.",
+					);
+				}
+				const existingWorkflow = {
+					nodes: realNodes,
+					edges,
+					name: currentWorkflowName,
+				};
 
 				const workflowData = await api.aiChat.generateStream(
 					workflowId,
@@ -197,11 +188,11 @@ export function useWorkflowAiChat(workflowId: string) {
 
 				await refreshMessages();
 			} catch (error) {
-				console.error("Failed to generate workflow from AI chat:", error);
+				console.error("Failed to edit workflow from AI chat:", error);
 				toast.error(
 					error instanceof Error
 						? error.message
-						: "Failed to generate workflow from chat",
+						: "Failed to edit workflow from chat",
 				);
 				await refreshMessages();
 			} finally {
@@ -215,7 +206,6 @@ export function useWorkflowAiChat(workflowId: string) {
 			workflowId,
 			setMessages,
 			realNodes,
-			isBlankWorkflow,
 			edges,
 			currentWorkflowName,
 			setNodes,

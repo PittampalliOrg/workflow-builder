@@ -13,7 +13,7 @@ Usage:
     from core.config import config
 
     # Access values
-    mastra_id = config.MASTRA_AGENT_APP_ID
+    durable_id = config.DURABLE_AGENT_APP_ID
     dapr_host = config.DAPR_HOST
 """
 
@@ -41,6 +41,7 @@ class OrchestratorConfig:
     # Dapr sidecar connection
     DAPR_HOST: str = "localhost"
     DAPR_HTTP_PORT: str = "3500"
+    DAPR_GRPC_PORT: str = "50001"
 
     # Dapr component names
     PUBSUB_NAME: str = "pubsub"
@@ -49,12 +50,21 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
-    MASTRA_AGENT_APP_ID: str = "mastra-agent-tanstack"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
-    DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflow"
-    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflow"
-    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflow"
+    DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
+    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
+    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
+
+    # Workflow versioning and runtime controls (Dapr 1.17+)
+    DYNAMIC_WORKFLOW_VERSION: str = "v1"
+    AP_WORKFLOW_VERSION: str = "v1"
+    DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES: int = 150
+    AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS: int = 75
+
+    # Runtime feature gate and startup checks
+    ENFORCE_MIN_DAPR_VERSION: str = "false"
+    MIN_DAPR_RUNTIME_VERSION: str = "1.17.0"
 
     # Tracks whether Dapr Configuration was used
     _loaded_from_dapr: bool = field(default=False, repr=False)
@@ -71,7 +81,6 @@ class OrchestratorConfig:
         logger.info(
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
-            f"MASTRA_AGENT_APP_ID={self.MASTRA_AGENT_APP_ID}, "
             f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
@@ -83,7 +92,6 @@ class OrchestratorConfig:
 
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
-                "MASTRA_AGENT_APP_ID",
                 "DURABLE_AGENT_APP_ID",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
@@ -92,6 +100,12 @@ class OrchestratorConfig:
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
+                "DYNAMIC_WORKFLOW_VERSION",
+                "AP_WORKFLOW_VERSION",
+                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
+                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
+                "ENFORCE_MIN_DAPR_VERSION",
+                "MIN_DAPR_RUNTIME_VERSION",
             ]
 
             with DaprClient() as client:
@@ -126,12 +140,12 @@ class OrchestratorConfig:
             "LOG_LEVEL": ("LOG_LEVEL", "INFO"),
             "DAPR_HOST": ("DAPR_HOST", "localhost"),
             "DAPR_HTTP_PORT": ("DAPR_HTTP_PORT", "3500"),
+            "DAPR_GRPC_PORT": ("DAPR_GRPC_PORT", "50001"),
             "PUBSUB_NAME": ("PUBSUB_NAME", "pubsub"),
             "STATE_STORE_NAME": ("STATE_STORE_NAME", "workflowstatestore"),
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
-            "MASTRA_AGENT_APP_ID": ("MASTRA_AGENT_APP_ID", "mastra-agent-tanstack"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -139,22 +153,50 @@ class OrchestratorConfig:
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
-                "durableRunWorkflow",
+                "durableRunWorkflowV1",
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
-                "durablePlanWorkflow",
+                "durablePlanWorkflowV1",
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
-                "durableRunWorkflow",
+                "durableRunWorkflowV1",
+            ),
+            "DYNAMIC_WORKFLOW_VERSION": (
+                "DYNAMIC_WORKFLOW_VERSION",
+                "v1",
+            ),
+            "AP_WORKFLOW_VERSION": (
+                "AP_WORKFLOW_VERSION",
+                "v1",
+            ),
+            "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES": (
+                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
+                "150",
+            ),
+            "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS": (
+                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
+                "75",
+            ),
+            "ENFORCE_MIN_DAPR_VERSION": (
+                "ENFORCE_MIN_DAPR_VERSION",
+                "false",
+            ),
+            "MIN_DAPR_RUNTIME_VERSION": (
+                "MIN_DAPR_RUNTIME_VERSION",
+                "1.17.0",
             ),
         }
 
         for attr, (env_var, default) in field_map.items():
             # Priority: Dapr config > env var > default
             value = dapr_values.get(attr) or os.environ.get(env_var, default)
-            if attr == "PORT":
+            if attr in {
+                "PORT",
+                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
+                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
+            }:
                 setattr(self, attr, int(value))
             else:
                 setattr(self, attr, value)

@@ -210,7 +210,7 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 					</div>
 				) : messages.length === 0 ? (
 					<p className="text-muted-foreground text-sm">
-						Ask AI to create or modify this workflow.
+						Ask AI to inspect or edit this workflow.
 					</p>
 				) : (
 					messages.map((message) => (

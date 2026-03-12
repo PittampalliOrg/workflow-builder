@@ -2,41 +2,14 @@ import { generateObject } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { z } from "zod";
-import { compileWorkflowSpecToGraph } from "@/lib/workflow-spec/compile";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
 import { lintWorkflowSpec } from "@/lib/workflow-spec/lint";
-import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
 import {
 	WorkflowSpecSchema,
 	type WorkflowSpec,
 } from "@/lib/workflow-spec/types";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
 import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
-
-type Operation = {
-	op:
-		| "setName"
-		| "setDescription"
-		| "addNode"
-		| "addEdge"
-		| "removeNode"
-		| "removeEdge"
-		| "updateNode";
-	name?: string;
-	description?: string;
-	node?: unknown;
-	edge?: unknown;
-	nodeId?: string;
-	edgeId?: string;
-	updates?: {
-		position?: { x: number; y: number };
-		data?: unknown;
-	};
-};
-
-function encodeMessage(encoder: TextEncoder, message: object): Uint8Array {
-	return encoder.encode(`${JSON.stringify(message)}\n`);
-}
 
 const WorkflowSpecJsonEnvelopeSchema = z.object({
 	// Anthropic structured output schemas have strict limits on optional/union types and
@@ -280,67 +253,4 @@ ${lastRawJson || "{}"}
 	throw new Error(
 		`Failed to generate a valid workflow spec after ${maxAttempts} attempts: ${linted.result.errors[0]?.message ?? "Unknown error"}`,
 	);
-}
-
-function specToOperations(spec: WorkflowSpec): Operation[] {
-	const { nodes, edges } = compileWorkflowSpecToGraph(spec);
-	const normalizedNodes = normalizeWorkflowNodes(nodes) as typeof nodes;
-
-	const ops: Operation[] = [
-		{ op: "setName", name: spec.name },
-		...(spec.description
-			? [{ op: "setDescription" as const, description: spec.description }]
-			: []),
-	];
-
-	for (const node of normalizedNodes) {
-		ops.push({ op: "addNode", node });
-	}
-	for (const edge of edges) {
-		ops.push({ op: "addEdge", edge });
-	}
-
-	return ops;
-}
-
-export async function createWorkflowOperationStreamFromSpec(input: {
-	prompt: string;
-	actionListPrompt: string;
-}): Promise<ReadableStream<Uint8Array>> {
-	const encoder = new TextEncoder();
-
-	return new ReadableStream({
-		async start(controller) {
-			try {
-				const { spec } = await generateWorkflowSpecWithRepairs({
-					prompt: input.prompt,
-					actionListPrompt: input.actionListPrompt,
-					maxAttempts: 3,
-				});
-
-				const operations = specToOperations(spec);
-				for (const op of operations) {
-					controller.enqueue(
-						encodeMessage(encoder, {
-							type: "operation",
-							operation: op,
-						}),
-					);
-				}
-				controller.enqueue(encodeMessage(encoder, { type: "complete" }));
-			} catch (error) {
-				controller.enqueue(
-					encodeMessage(encoder, {
-						type: "error",
-						error:
-							error instanceof Error
-								? error.message
-								: "Failed to generate workflow spec",
-					}),
-				);
-			} finally {
-				controller.close();
-			}
-		},
-	});
 }

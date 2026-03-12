@@ -17,10 +17,6 @@ Retained in source, but not part of the current core local runtime:
 - `piece-mcp-server`
 - `node-sandbox`
 
-Legacy services retained in source only:
-- `mastra-agent-tanstack`
-- `mastra-agent-mcp`
-
 ## workflow-orchestrator (Python)
 
 The generic workflow engine. Interprets workflow definitions from the visual builder,
@@ -42,7 +38,7 @@ durable-agent. Also runs Activepieces flows via a linked-list step walker.
   - `agent/*`, `durable/*` → `call_durable_agent_run()` → durable-agent `/api/run`
   - `mastra/execute` → `call_durable_execute_plan()` → durable-agent `/api/execute-plan`
 - **Output persistence** (`activities/persist_results_to_db.py`): At workflow completion (success or error), persists final output to `workflow_executions.output` in PostgreSQL. Belt-and-suspenders with the status polling endpoint.
-- **Config** (`core/config.py`): `DURABLE_AGENT_APP_ID=durable-agent`, `FUNCTION_ROUTER_APP_ID=function-router`; `MASTRA_AGENT_APP_ID` remains only as legacy compatibility surface
+- **Config** (`core/config.py`): `DURABLE_AGENT_APP_ID=durable-agent`, `FUNCTION_ROUTER_APP_ID=function-router`
 - **AP workflow** (`workflows/ap_workflow.py`): Walks AP's linked-list flow format natively with step handlers for PIECE, CODE, ROUTER (condition branching), and LOOP_ON_ITEMS.
 
 ## durable-agent (TypeScript/Express)
@@ -68,39 +64,6 @@ has built-in retries, and uses deterministic replay for durability.
 - **Completion**: Waits for Dapr workflow completion in background, extracts tool calls + file changes + git diff, publishes completion event via direct service invocation to orchestrator `/api/v2/workflows/{id}/events`
 - **Dapr components**: `durable-statestore` (Redis, actorStateStore), `durable-pubsub` (NATS JetStream) — separate from orchestrator's components due to ArgoCD scoping
 - **Build**: `docker build -f services/durable-agent/Dockerfile services/durable-agent/` (context is service dir, NOT project root)
-
-## mastra-agent-tanstack (TypeScript/TanStack Start)
-
-Legacy Mastra agent service retained in source. It is no longer the primary agent runtime
-and is not part of the current `kind-ryzen` core deployment.
-
-- **Port**: 3000 (TanStack Start)
-- **Dapr app-id**: `mastra-agent-tanstack`
-- **Framework**: TanStack Start 1.x (React Router + Nitro SSR)
-- **Agent SDK**: @mastra/core ^1.4.0 with @ai-sdk/openai
-- **Key endpoints**:
-  - `POST /api/run` - Run agent with prompt (fire-and-forget, publishes completion via Dapr)
-  - `POST /api/plan` - Generate structured execution plan (synchronous)
-  - `POST /api/execute-plan` - Execute a pre-generated plan (fire-and-forget)
-  - `GET /api/tools` - List available workspace tools
-  - `POST /api/tools/{toolId}` - Execute a workspace tool directly
-  - `POST /api/mcp` - MCP endpoint (Streamable HTTP)
-  - `GET /api/health` - Health check with agent status
-  - `GET /api/dapr/subscribe` - Dapr subscription discovery
-- **Workspace tools**: `read_file`, `write_file`, `edit_file`, `list_files`, `delete`, `mkdir`, `file_stat`, `execute_command` (auto-injected by Mastra Workspace)
-- **Sandbox**: Auto-detects K8s (KubernetesSandbox) or local (LocalSandbox with bwrap/seatbelt). Network disabled by default.
-- **Build**: `pnpm run build` (UI via vite → dist-ui/, app via vite → .output/)
-
-## mastra-agent-mcp (TypeScript)
-
-Legacy standalone Mastra MCP server retained in source. It is not part of the current
-workflow-builder runtime.
-
-- **Port**: 3300
-- **Dapr app-id**: `mastra-agent-mcp`
-- **Key endpoints**: `POST /mcp`, `POST /run`, `GET /health`, `GET /dapr/subscribe`
-- **Sessions**: Stateful per-session MCP transport with 30s TTL auto-cleanup
-- **Build**: `pnpm run build:all` (UI via vite → dist/ui/, server via esbuild → dist/index.js)
 
 ## function-router (TypeScript)
 

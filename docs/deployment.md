@@ -41,8 +41,6 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f se
 
 # Optional / retained services (not part of the current core local runtime)
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-activepieces:latest -f services/fn-activepieces/Dockerfile .
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-tanstack:latest -f services/mastra-agent-tanstack/Dockerfile .
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mastra-agent-mcp:latest -f services/mastra-agent-mcp/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-mcp-server:latest -f services/workflow-mcp-server/Dockerfile services/workflow-mcp-server/
 
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/piece-mcp-server:latest -f services/piece-mcp-server/Dockerfile .
@@ -304,7 +302,6 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/durable-agent:latest -f 
 ```bash
 kubectl logs -n workflow-builder -l app=workflow-orchestrator -c workflow-orchestrator --tail=50
 kubectl logs -n workflow-builder -l app=durable-agent -c durable-agent --tail=50
-kubectl logs -n workflow-builder -l app=mastra-agent-tanstack --tail=50
 kubectl logs -n workflow-builder -l app=function-router -c function-router --tail=50
 kubectl logs -n workflow-builder -l app=fn-activepieces --tail=50
 kubectl logs -n workflow-builder -l app=fn-system --tail=50

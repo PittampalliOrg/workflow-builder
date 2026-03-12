@@ -797,7 +797,7 @@ export const PanelInner = () => {
 									<AiChatPanel workflowId={currentWorkflowId} />
 								) : (
 									<div className="p-4 text-muted-foreground text-sm">
-										Save this workflow to enable AI chat.
+										Save this workflow to enable AI workflow editing.
 									</div>
 								)}
 							</div>
@@ -1287,7 +1287,7 @@ export const PanelInner = () => {
 								<AiChatPanel workflowId={currentWorkflowId} />
 							) : (
 								<div className="p-4 text-muted-foreground text-sm">
-									Save this workflow to enable AI chat.
+									Save this workflow to enable AI workflow editing.
 								</div>
 							)}
 						</div>

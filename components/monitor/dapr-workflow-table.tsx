@@ -46,6 +46,7 @@ function StatusIcon({ status }: { status: WorkflowUIStatus }) {
 		case "SUSPENDED":
 			return <Pause className="h-3.5 w-3.5" />;
 		case "CANCELLED":
+		case "TERMINATED":
 			return <X className="h-3.5 w-3.5" />;
 		default:
 			return null;
@@ -66,6 +67,7 @@ function getStatusBadgeClasses(status: WorkflowUIStatus): string {
 		case "SUSPENDED":
 			return "bg-gray-500 hover:bg-gray-600 text-white";
 		case "CANCELLED":
+		case "TERMINATED":
 			return "bg-gray-600 hover:bg-gray-700 text-white";
 		default:
 			return "bg-gray-500 hover:bg-gray-600 text-white";
@@ -167,7 +169,16 @@ function WorkflowRow({ workflow }: { workflow: WorkflowListItem }) {
 					</TooltipContent>
 				</Tooltip>
 			</TableCell>
-			<TableCell className="text-gray-400">{workflow.workflowType}</TableCell>
+			<TableCell>
+				<div className="flex flex-col">
+					<span className="text-gray-200">{workflow.workflowType}</span>
+					{workflow.workflowVersion ? (
+						<span className="font-mono text-[11px] text-gray-500">
+							version {workflow.workflowVersion}
+						</span>
+					) : null}
+				</div>
+			</TableCell>
 			<TableCell className="text-gray-400">{workflow.appId}</TableCell>
 			<TableCell>
 				{customStatus?.currentTask ? (

@@ -3,6 +3,8 @@ import { type NextRequest, NextResponse } from "next/server";
 import { getWorkflowOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
+import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
+import { buildWorkflowRuntimeGraph } from "@/lib/workflow-runtime-graph";
 import {
 	workflowAgentRuns,
 	workflowExecutionLogs,
@@ -83,6 +85,22 @@ function toExecutionHistoryEvent(
 							typeof event.metadata.taskId === "string"
 								? event.metadata.taskId
 								: undefined,
+						error:
+							typeof event.metadata.error === "string"
+								? event.metadata.error
+								: undefined,
+						stackTrace:
+							typeof event.metadata.stackTrace === "string"
+								? event.metadata.stackTrace
+								: undefined,
+						version:
+							typeof event.metadata.version === "string"
+								? event.metadata.version
+								: undefined,
+						rerunSourceInstanceId:
+							typeof event.metadata.rerunSourceInstanceId === "string"
+								? event.metadata.rerunSourceInstanceId
+								: undefined,
 					}
 				: undefined,
 	};
@@ -124,6 +142,12 @@ export async function GET(
 ) {
 	try {
 		const { instanceId } = await params;
+
+		const schemaGuardResponse =
+			await getWorkflowExecutionsSchemaGuardResponse();
+		if (schemaGuardResponse) {
+			return schemaGuardResponse;
+		}
 
 		const [dbResult] = await db
 			.select({
@@ -253,7 +277,9 @@ export async function GET(
 				});
 
 			const detail: WorkflowDetail = {
+				executionId: dbResult?.execution.id,
 				instanceId: daprStatus.instanceId,
+				daprInstanceId: daprStatus.instanceId,
 				workflowType:
 					daprStatus.workflowName || daprStatus.workflowId || "workflow",
 				appId: "workflow-orchestrator",
@@ -274,9 +300,46 @@ export async function GET(
 						: undefined,
 				workflowName:
 					dbResult?.workflow.name || daprStatus.workflowName || undefined,
+				workflowVersion: daprStatus.workflowVersion ?? null,
+				workflowNameVersioned: daprStatus.workflowNameVersioned ?? null,
 				executionDuration: calculateDuration(startTime, endTime),
 				input: dbResult?.execution.input || {},
 				output: daprStatus.outputs || dbResult?.execution.output || {},
+				graph:
+					dbResult?.workflow.nodes && dbResult.workflow.edges
+						? buildWorkflowRuntimeGraph({
+								nodes: dbResult.workflow.nodes as any,
+								edges: dbResult.workflow.edges as any,
+								executionHistory: history,
+								daprStatus: {
+									runtimeStatus: daprStatus.runtimeStatus as
+										| "RUNNING"
+										| "COMPLETED"
+										| "FAILED"
+										| "CANCELED"
+										| "TERMINATED"
+										| "PENDING"
+										| "SUSPENDED"
+										| "STALLED"
+										| "UNKNOWN",
+									phase: daprStatus.phase,
+									progress: daprStatus.progress,
+									message: daprStatus.message,
+									currentNodeId: daprStatus.currentNodeId,
+									currentNodeName: daprStatus.currentNodeName,
+									error: daprStatus.error,
+									stackTrace: daprStatus.stackTrace ?? null,
+									parentInstanceId: daprStatus.parentInstanceId ?? null,
+								},
+							})
+						: undefined,
+				error: daprStatus.error || dbResult?.execution.error || null,
+				errorStackTrace:
+					daprStatus.stackTrace ?? dbResult?.execution.errorStackTrace ?? null,
+				rerunOfExecutionId: dbResult?.execution.rerunOfExecutionId ?? null,
+				rerunSourceInstanceId:
+					dbResult?.execution.rerunSourceInstanceId ?? null,
+				rerunFromEventId: dbResult?.execution.rerunFromEventId ?? null,
 				executionHistory: history,
 				timeline: timeline ?? undefined,
 				agentRuns:
@@ -309,6 +372,8 @@ export async function GET(
 					currentNodeId: daprStatus.currentNodeId,
 					currentNodeName: daprStatus.currentNodeName,
 					error: daprStatus.error,
+					stackTrace: daprStatus.stackTrace ?? null,
+					parentInstanceId: daprStatus.parentInstanceId ?? null,
 				},
 			};
 			return NextResponse.json(detail);
@@ -329,6 +394,12 @@ export async function GET(
 		});
 		fallback.timeline = fallbackTimeline;
 		fallback.executionHistory = mapTimelineToExecutionHistory(fallbackTimeline);
+		fallback.graph = buildWorkflowRuntimeGraph({
+			nodes: dbResult!.workflow.nodes as any,
+			edges: dbResult!.workflow.edges as any,
+			executionHistory: fallback.executionHistory,
+			daprStatus: fallback.daprStatus,
+		});
 		fallback.agentRuns = toDurableAgentRunSummary(agentRuns);
 		fallback.externalEvents = toDurableExternalEventSummary(externalEvents);
 		fallback.planArtifacts = toDurablePlanArtifactSummary(planArtifacts);
@@ -337,6 +408,13 @@ export async function GET(
 			dbPhase: dbResult!.execution.phase,
 			runtime: null,
 		});
+		fallback.error = dbResult!.execution.error;
+		fallback.errorStackTrace = dbResult!.execution.errorStackTrace ?? null;
+		fallback.rerunOfExecutionId =
+			dbResult!.execution.rerunOfExecutionId ?? null;
+		fallback.rerunSourceInstanceId =
+			dbResult!.execution.rerunSourceInstanceId ?? null;
+		fallback.rerunFromEventId = dbResult!.execution.rerunFromEventId ?? null;
 		return NextResponse.json(fallback);
 	} catch (error) {
 		console.error("Error fetching workflow execution detail:", error);

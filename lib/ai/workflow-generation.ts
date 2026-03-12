@@ -2,10 +2,8 @@ import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { flattenConfigFields } from "@/lib/actions/utils";
-import { createWorkflowOperationStreamFromSpec } from "@/lib/ai/workflow-spec-generation";
 import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
-import { buildRelevantActionListPrompt } from "@/lib/ai/action-list-prompt";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
 
 export type Operation = {
@@ -42,7 +40,7 @@ export type WorkflowMessageContext = {
 
 type CreateWorkflowOperationStreamInput = {
 	prompt: string;
-	existingWorkflow?: ExistingWorkflow;
+	existingWorkflow: ExistingWorkflow;
 	messageHistory?: WorkflowMessageContext[];
 };
 
@@ -186,7 +184,7 @@ async function generateAIPieceActionPrompts(): Promise<string> {
 }
 
 function getSystemPrompt(pluginActionPrompts: string): string {
-	return `You are a workflow automation expert. Generate a workflow based on the user's description.
+	return `You are a workflow automation expert. Edit an existing workflow based on the user's request.
 
 CRITICAL: Output your workflow as INDIVIDUAL OPERATIONS, one per line in JSONL format.
 Each line must be a complete, separate JSON object.
@@ -349,10 +347,6 @@ function buildUserPrompt({
 	const historyBlock = formatMessageHistory(messageHistory);
 	const contextualPrompt = `${historyBlock}Current request: ${prompt}`;
 
-	if (!existingWorkflow) {
-		return contextualPrompt;
-	}
-
 	const nodesList = (existingWorkflow.nodes || [])
 		.map((node) => `- ${node.id} (${node.data?.label || "Unlabeled"})`)
 		.join("\n");
@@ -444,39 +438,6 @@ export async function createWorkflowOperationStream(
 	input: CreateWorkflowOperationStreamInput,
 	options: CreateWorkflowOperationStreamOptions = {},
 ): Promise<ReadableStream<Uint8Array>> {
-	const existingNodes = input.existingWorkflow?.nodes || [];
-	const existingEdges = input.existingWorkflow?.edges || [];
-	const nonAddNodes = existingNodes.filter(
-		(n) => (n as { type?: string } | null | undefined)?.type !== "add",
-	);
-	const nonTriggerNodes = nonAddNodes.filter(
-		(n) =>
-			(n as { data?: { type?: string } } | null | undefined)?.data?.type !==
-			"trigger",
-	);
-
-	// Treat "trigger only + no edges" as a blank workflow so we use WorkflowSpec
-	// structured output + deterministic compile/lint/repair for creation.
-	const isBlank =
-		existingEdges.length === 0 &&
-		nonAddNodes.length === 1 &&
-		nonTriggerNodes.length === 0;
-
-	const hasExisting = nonTriggerNodes.length > 0 || existingEdges.length > 0;
-	if (!hasExisting || isBlank) {
-		// New workflow creation: use structured output (WorkflowSpec) + deterministic compiler.
-		const catalog = await loadInstalledWorkflowSpecCatalog();
-		const actionListPrompt = buildRelevantActionListPrompt({
-			catalog,
-			prompt: input.prompt,
-			limit: 80,
-		});
-		return createWorkflowOperationStreamFromSpec({
-			prompt: input.prompt,
-			actionListPrompt,
-		});
-	}
-
 	const pieceActionPrompts = await generateAIPieceActionPrompts();
 	const userPrompt = buildUserPrompt(input);
 
@@ -503,7 +464,7 @@ export async function createWorkflowOperationStream(
 						error:
 							error instanceof Error
 								? error.message
-								: "Failed to generate workflow",
+								: "Failed to edit workflow",
 					}),
 				);
 			} finally {

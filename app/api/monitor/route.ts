@@ -30,6 +30,7 @@ function toWorkflowListItem(
 	const phase = toWorkflowPhase(item.phase);
 	return {
 		instanceId: item.instanceId,
+		daprInstanceId: item.instanceId,
 		workflowType: item.workflowName || item.workflowId || "workflow",
 		appId: "workflow-orchestrator",
 		status: mapWorkflowStatus(item.runtimeStatus),
@@ -49,6 +50,8 @@ function toWorkflowListItem(
 					}
 				: undefined,
 		workflowName: item.workflowName || undefined,
+		workflowVersion: item.workflowVersion ?? null,
+		workflowNameVersioned: item.workflowNameVersioned ?? null,
 		currentNodeName: item.currentNodeName || null,
 		approvalEventName: null,
 		statusDiverged: false,

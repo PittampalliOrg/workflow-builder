@@ -33,6 +33,16 @@ export async function POST(request: Request) {
 				? (existingWorkflow as any)
 				: undefined;
 
+		if (!existingWorkflowObj) {
+			return NextResponse.json(
+				{
+					error:
+						"This endpoint only supports incremental edits to an existing workflow. Use /api/workflows/generate-from-prompt or /api/workflows/create-from-prompt for new workflow generation.",
+				},
+				{ status: 400 },
+			);
+		}
+
 		const baseStream = await createWorkflowOperationStream({
 			prompt,
 			existingWorkflow: existingWorkflowObj,
@@ -53,13 +63,13 @@ export async function POST(request: Request) {
 			},
 		});
 	} catch (error) {
-		console.error("Failed to generate workflow:", error);
+		console.error("Failed to edit workflow with AI:", error);
 		return NextResponse.json(
 			{
 				error:
 					error instanceof Error
 						? error.message
-						: "Failed to generate workflow",
+						: "Failed to edit workflow with AI",
 			},
 			{ status: 500 },
 		);

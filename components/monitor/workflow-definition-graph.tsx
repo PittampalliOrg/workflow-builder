@@ -1,308 +1,281 @@
 "use client";
 
-/**
- * WorkflowDefinitionGraph Component
- *
- * Dynamically visualizes the workflow definition structure using React Flow.
- * Builds the graph from actual execution history data.
- */
-
 import {
-  Background,
-  BackgroundVariant,
-  Controls,
-  type Edge,
-  Handle,
-  MarkerType,
-  type Node,
-  type NodeProps,
-  Position,
-  ReactFlow,
+	Background,
+	BackgroundVariant,
+	Controls,
+	type Edge,
+	Handle,
+	MarkerType,
+	type Node,
+	type NodeMouseHandler,
+	type NodeProps,
+	Position,
+	ReactFlow,
 } from "@xyflow/react";
-import { useMemo } from "react";
 import "@xyflow/react/dist/style.css";
+import { useCallback, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
-import { useDaprWorkflow } from "@/hooks/use-monitor-workflows";
-import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
+import type { WorkflowRuntimeGraph } from "@/lib/types/workflow-graph";
 import { cn } from "@/lib/utils";
 
-// ============================================================================
-// Types
-// ============================================================================
-
 type WorkflowDefinitionGraphProps = {
-  appId: string;
-  /** Instance ID of a completed execution to derive the workflow structure from */
-  sampleInstanceId?: string;
-  className?: string;
+	graph?: WorkflowRuntimeGraph;
+	className?: string;
+	onNodeSelect?: (nodeId: string | null) => void;
 };
 
-interface DefinitionNodeData extends Record<string, unknown> {
-  label: string;
-  type: "start" | "activity" | "end";
+type RuntimeNode = Node<
+	WorkflowRuntimeGraph["nodes"][number]["data"],
+	"workflowRuntimeNode"
+>;
+
+function getNodePalette(status: RuntimeNode["data"]["status"]) {
+	switch (status) {
+		case "running":
+			return {
+				border: "#38bdf8",
+				background: "rgba(56, 189, 248, 0.14)",
+				badge: "bg-sky-500/20 text-sky-200",
+			};
+		case "success":
+			return {
+				border: "#22c55e",
+				background: "rgba(34, 197, 94, 0.14)",
+				badge: "bg-emerald-500/20 text-emerald-200",
+			};
+		case "error":
+			return {
+				border: "#ef4444",
+				background: "rgba(239, 68, 68, 0.14)",
+				badge: "bg-red-500/20 text-red-200",
+			};
+		case "waiting":
+			return {
+				border: "#f59e0b",
+				background: "rgba(245, 158, 11, 0.14)",
+				badge: "bg-amber-500/20 text-amber-100",
+			};
+		default:
+			return {
+				border: "#64748b",
+				background: "rgba(100, 116, 139, 0.14)",
+				badge: "bg-slate-500/20 text-slate-200",
+			};
+	}
 }
 
-type DefinitionNode = Node<DefinitionNodeData, "definitionNode">;
+function RuntimeNodeComponent({ data, selected }: NodeProps<RuntimeNode>) {
+	const palette = getNodePalette(data.status);
+	const isDecision = data.type === "if-else";
+	const showTargetHandle = data.type !== "trigger";
 
-// ============================================================================
-// Custom Node Component
-// ============================================================================
-
-function DefinitionNodeComponent({ data }: NodeProps<DefinitionNode>) {
-  const { label, type } = data;
-
-  const isStartOrEnd = type === "start" || type === "end";
-  const bgColor = "rgba(45, 212, 191, 0.1)";
-  const borderColor = "#2dd4bf";
-
-  return (
-    <>
-      {type !== "start" && (
-        <Handle
-          className="!w-2 !h-2 !bg-teal-400 !border-0"
-          position={Position.Top}
-          type="target"
-        />
-      )}
-      <div
-        className={cn(
-          "min-w-[160px] border-2 px-6 py-3 text-center transition-all",
-          isStartOrEnd ? "rounded-full px-8" : "rounded-lg"
-        )}
-        style={{
-          backgroundColor: bgColor,
-          borderColor,
-        }}
-      >
-        <span className="font-medium text-sm text-white">{label}</span>
-      </div>
-      {type !== "end" && (
-        <Handle
-          className="!w-2 !h-2 !bg-teal-400 !border-0"
-          position={Position.Bottom}
-          type="source"
-        />
-      )}
-    </>
-  );
+	return (
+		<>
+			{showTargetHandle && (
+				<Handle
+					className="!h-2 !w-2 !border-0"
+					position={Position.Top}
+					style={{ backgroundColor: palette.border }}
+					type="target"
+				/>
+			)}
+			<div
+				className={cn(
+					"min-w-[190px] rounded-xl border-2 px-4 py-3 text-left shadow-sm transition-all",
+					selected &&
+						"ring-2 ring-sky-400 ring-offset-2 ring-offset-background",
+					data.isCurrent && "shadow-sky-500/20",
+				)}
+				style={{
+					backgroundColor: palette.background,
+					borderColor: palette.border,
+				}}
+			>
+				<div className="flex items-start justify-between gap-3">
+					<div className="min-w-0">
+						<div className="truncate font-medium text-sm text-white">
+							{data.label}
+						</div>
+						<div className="mt-1 text-[11px] uppercase tracking-wide text-slate-300">
+							{data.type}
+						</div>
+					</div>
+					<div
+						className={cn(
+							"rounded-full px-2 py-0.5 font-medium text-[10px] uppercase tracking-wide",
+							palette.badge,
+						)}
+					>
+						{data.status}
+					</div>
+				</div>
+				{data.description ? (
+					<p className="mt-2 line-clamp-2 text-xs text-slate-300">
+						{data.description}
+					</p>
+				) : null}
+				{data.error ? (
+					<p className="mt-2 line-clamp-2 text-xs text-red-200">{data.error}</p>
+				) : null}
+			</div>
+			{isDecision ? (
+				<>
+					<Handle
+						className="!h-2 !w-2 !border-0"
+						id="true"
+						position={Position.Bottom}
+						style={{
+							backgroundColor: palette.border,
+							left: "32%",
+						}}
+						type="source"
+					/>
+					<Handle
+						className="!h-2 !w-2 !border-0"
+						id="false"
+						position={Position.Bottom}
+						style={{
+							backgroundColor: palette.border,
+							left: "68%",
+						}}
+						type="source"
+					/>
+				</>
+			) : (
+				<Handle
+					className="!h-2 !w-2 !border-0"
+					position={Position.Bottom}
+					style={{ backgroundColor: palette.border }}
+					type="source"
+				/>
+			)}
+		</>
+	);
 }
 
 const nodeTypes = {
-  definitionNode: DefinitionNodeComponent,
+	workflowRuntimeNode: RuntimeNodeComponent,
 };
 
-// ============================================================================
-// Graph Builder
-// ============================================================================
-
-/**
- * Build graph nodes and edges from execution history events.
- * Extracts unique task names and creates a sequential workflow graph.
- */
-function buildGraphFromEvents(events: DaprExecutionEvent[]): {
-  nodes: DefinitionNode[];
-  edges: Edge[];
+function toReactFlowGraph(graph: WorkflowRuntimeGraph): {
+	nodes: RuntimeNode[];
+	edges: Edge[];
 } {
-  if (!events || events.length === 0) {
-    return { nodes: [], edges: [] };
-  }
-
-  // Sort events by timestamp (chronological)
-  const sortedEvents = [...events].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-  );
-
-  // Extract unique task names from TaskCompleted events (in order)
-  const taskNames: string[] = [];
-  const seenTasks = new Set<string>();
-
-  for (const event of sortedEvents) {
-    if (
-      event.eventType === "TaskCompleted" &&
-      event.name &&
-      !seenTasks.has(event.name)
-    ) {
-      seenTasks.add(event.name);
-      taskNames.push(event.name);
-    }
-  }
-
-  // Build nodes
-  const nodes: DefinitionNode[] = [];
-  const CENTER_X = 200;
-  const VERTICAL_SPACING = 80;
-  let yPosition = 0;
-
-  // Start node
-  nodes.push({
-    id: "start",
-    type: "definitionNode",
-    position: { x: CENTER_X, y: yPosition },
-    data: { label: "start", type: "start" },
-  });
-  yPosition += VERTICAL_SPACING;
-
-  // Task nodes
-  for (const taskName of taskNames) {
-    nodes.push({
-      id: `task-${taskName}`,
-      type: "definitionNode",
-      position: { x: CENTER_X, y: yPosition },
-      data: { label: taskName, type: "activity" },
-    });
-    yPosition += VERTICAL_SPACING;
-  }
-
-  // End node
-  nodes.push({
-    id: "end",
-    type: "definitionNode",
-    position: { x: CENTER_X, y: yPosition },
-    data: { label: "end", type: "end" },
-  });
-
-  // Build edges
-  const edges: Edge[] = [];
-  const allNodeIds = nodes.map((n) => n.id);
-
-  for (let i = 0; i < allNodeIds.length - 1; i++) {
-    edges.push({
-      id: `e-${allNodeIds[i]}-${allNodeIds[i + 1]}`,
-      source: allNodeIds[i],
-      target: allNodeIds[i + 1],
-      type: "smoothstep",
-      style: { stroke: "#2dd4bf", strokeWidth: 2 },
-      markerEnd: { type: MarkerType.ArrowClosed, color: "#2dd4bf" },
-    });
-  }
-
-  return { nodes, edges };
+	return {
+		nodes: graph.nodes.map((node) => ({
+			id: node.id,
+			type: "workflowRuntimeNode",
+			position: node.position,
+			data: node.data,
+		})),
+		edges: graph.edges.map((edge) => {
+			const color =
+				edge.status === "active"
+					? "#38bdf8"
+					: edge.status === "traversed"
+						? "#22c55e"
+						: "#64748b";
+			return {
+				id: edge.id,
+				source: edge.source,
+				target: edge.target,
+				sourceHandle: edge.sourceHandle ?? undefined,
+				targetHandle: edge.targetHandle ?? undefined,
+				type: "smoothstep",
+				label: edge.label,
+				animated: edge.status === "active",
+				style: {
+					stroke: color,
+					strokeWidth: edge.status === "active" ? 3 : 2,
+				},
+				labelStyle: {
+					fill: "#cbd5e1",
+					fontSize: 11,
+					fontWeight: 600,
+				},
+				markerEnd: {
+					type: MarkerType.ArrowClosed,
+					color,
+				},
+			};
+		}),
+	};
 }
-
-// ============================================================================
-// Loading/Empty States
-// ============================================================================
-
-function GraphSkeleton() {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-4 py-8">
-      <Skeleton className="h-10 w-32 rounded-full" />
-      <Skeleton className="h-12 w-1" />
-      <Skeleton className="h-10 w-40 rounded-lg" />
-      <Skeleton className="h-12 w-1" />
-      <Skeleton className="h-10 w-40 rounded-lg" />
-      <Skeleton className="h-12 w-1" />
-      <Skeleton className="h-10 w-32 rounded-full" />
-    </div>
-  );
-}
-
-function EmptyGraph({
-  message,
-  subtext,
-}: {
-  message: string;
-  subtext?: string;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2">
-      <p className="text-gray-400 text-sm">{message}</p>
-      {subtext && <p className="text-gray-500 text-xs">{subtext}</p>}
-    </div>
-  );
-}
-
-// ============================================================================
-// Main Component
-// ============================================================================
 
 export function WorkflowDefinitionGraph({
-  appId,
-  sampleInstanceId,
-  className,
+	graph,
+	className,
+	onNodeSelect,
 }: WorkflowDefinitionGraphProps) {
-  // Fetch workflow detail if we have a sample instance ID
-  const { workflow, isLoading } = useDaprWorkflow(
-    sampleInstanceId ? appId : "",
-    sampleInstanceId || "",
-    0 // No refresh needed
-  );
+	const flowGraph = useMemo(
+		() => (graph ? toReactFlowGraph(graph) : { nodes: [], edges: [] }),
+		[graph],
+	);
 
-  // Build graph from execution history
-  const { nodes, edges } = useMemo(() => {
-    if (!workflow?.executionHistory) {
-      return { nodes: [], edges: [] };
-    }
-    return buildGraphFromEvents(workflow.executionHistory);
-  }, [workflow?.executionHistory]);
+	const handleNodeClick: NodeMouseHandler = useCallback(
+		(_, node) => {
+			onNodeSelect?.(node.id);
+		},
+		[onNodeSelect],
+	);
 
-  // Render content based on state
-  const renderContent = () => {
-    if (!sampleInstanceId) {
-      return (
-        <EmptyGraph message="No executions available to show workflow structure" />
-      );
-    }
+	const handlePaneClick = useCallback(() => {
+		onNodeSelect?.(null);
+	}, [onNodeSelect]);
 
-    if (isLoading) {
-      return <GraphSkeleton />;
-    }
-
-    if (nodes.length === 0) {
-      return <EmptyGraph message="No workflow steps found" />;
-    }
-
-    return (
-      <ReactFlow
-        edges={edges}
-        elementsSelectable={false}
-        fitView
-        fitViewOptions={{
-          padding: 0.3,
-          maxZoom: 1,
-        }}
-        maxZoom={1.5}
-        minZoom={0.5}
-        nodes={nodes}
-        nodesConnectable={false}
-        nodesDraggable={false}
-        nodeTypes={nodeTypes}
-        panOnDrag={true}
-        proOptions={{ hideAttribution: true }}
-        zoomOnScroll={true}
-      >
-        <Background
-          className="!bg-[#1a1f2e]"
-          gap={20}
-          size={1}
-          variant={BackgroundVariant.Dots}
-        />
-        <Controls
-          className="!bg-[#1e2433] !border !border-gray-700 !rounded-lg [&>button]:!bg-[#1e2433] [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
-          showInteractive={false}
-        />
-      </ReactFlow>
-    );
-  };
-
-  return (
-    <Card
-      className={cn(
-        "h-full min-h-[400px] border-gray-700 bg-[#1a1f2e]",
-        className
-      )}
-    >
-      <CardHeader className="pb-2">
-        <CardTitle className="font-medium text-base text-gray-200">
-          Workflow Graph
-        </CardTitle>
-        <p className="text-gray-500 text-xs">
-          Structure derived from execution:{" "}
-          {sampleInstanceId?.substring(0, 8) || "N/A"}...
-        </p>
-      </CardHeader>
-      <CardContent className="h-[350px] p-0">{renderContent()}</CardContent>
-    </Card>
-  );
+	return (
+		<Card
+			className={cn(
+				"h-full min-h-[400px] border-gray-700 bg-[#1a1f2e]",
+				className,
+			)}
+		>
+			<CardHeader className="pb-2">
+				<CardTitle className="font-medium text-base text-gray-200">
+					Workflow Graph
+				</CardTitle>
+				<p className="text-gray-500 text-xs">
+					{graph
+						? `${graph.source === "definition+runtime" ? "Definition with runtime overlay" : "Definition-only graph"} · ${graph.layout} layout`
+						: "No workflow graph available"}
+				</p>
+			</CardHeader>
+			<CardContent className="h-[420px] p-0">
+				{graph ? (
+					<ReactFlow
+						edges={flowGraph.edges}
+						elementsSelectable={true}
+						fitView
+						fitViewOptions={{ padding: 0.25, maxZoom: 1.2 }}
+						maxZoom={1.6}
+						minZoom={0.3}
+						nodes={flowGraph.nodes}
+						nodesConnectable={false}
+						nodesDraggable={false}
+						nodeTypes={nodeTypes}
+						onNodeClick={handleNodeClick}
+						onPaneClick={handlePaneClick}
+						panOnDrag
+						proOptions={{ hideAttribution: true }}
+					>
+						<Background
+							className="!bg-[#1a1f2e]"
+							gap={20}
+							size={1}
+							variant={BackgroundVariant.Dots}
+						/>
+						<Controls
+							className="!bg-[#1e2433] !border !border-gray-700 !rounded-lg [&>button]:!bg-[#1e2433] [&>button]:!border-gray-700 [&>button]:!text-gray-400 [&>button:hover]:!bg-gray-700"
+							showInteractive={false}
+						/>
+					</ReactFlow>
+				) : (
+					<div className="flex h-full items-center justify-center text-sm text-slate-400">
+						No workflow graph available
+					</div>
+				)}
+			</CardContent>
+		</Card>
+	);
 }

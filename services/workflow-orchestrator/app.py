@@ -18,12 +18,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import random
+import string
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
+import grpc
+import requests
+import durabletask.internal.orchestrator_service_pb2 as pb
+import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 from dapr.ext.workflow import DaprWorkflowClient
 from fastapi import FastAPI, HTTPException
+from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -47,7 +56,6 @@ from activities.log_external_event import (
     log_approval_timeout,
 )
 from activities.call_agent_service import (
-    call_mastra_agent_run,
     call_durable_agent_run,
     call_durable_plan,
     call_durable_execute_plan,
@@ -81,6 +89,221 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# --- Runtime capability checks ---
+
+def _parse_semver(version: str | None) -> tuple[int, int, int]:
+    text = str(version or "").strip().lstrip("v")
+    parts = text.split(".", 2)
+    major = int(parts[0]) if len(parts) > 0 and parts[0].isdigit() else 0
+    minor = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+    patch_part = parts[2] if len(parts) > 2 else "0"
+    patch_digits = ""
+    for ch in patch_part:
+        if ch.isdigit():
+            patch_digits += ch
+        else:
+            break
+    patch = int(patch_digits or "0")
+    return (major, minor, patch)
+
+
+def _is_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _check_min_dapr_runtime_version() -> None:
+    """
+    Verify sidecar runtime version for workflow features introduced in Dapr 1.17.
+    """
+    min_version = config.MIN_DAPR_RUNTIME_VERSION
+    enforce = _is_truthy(config.ENFORCE_MIN_DAPR_VERSION)
+    metadata_url = f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}/v1.0/metadata"
+    try:
+        response = requests.get(metadata_url, timeout=5)
+        response.raise_for_status()
+        payload = response.json() if response.content else {}
+        runtime_version = str(payload.get("runtimeVersion") or "")
+        if _parse_semver(runtime_version) < _parse_semver(min_version):
+            message = (
+                "[Workflow Orchestrator] Dapr runtime version "
+                f"{runtime_version or '<unknown>'} is below minimum required {min_version}."
+            )
+            if enforce:
+                raise RuntimeError(message)
+            logger.warning(message)
+        else:
+            logger.info(
+                "[Workflow Orchestrator] Dapr runtime version %s satisfies minimum %s",
+                runtime_version,
+                min_version,
+            )
+    except Exception as e:
+        message = (
+            "[Workflow Orchestrator] Failed to verify Dapr runtime version "
+            f"(minimum {min_version}): {e}"
+        )
+        if enforce:
+            raise RuntimeError(message) from e
+        logger.warning(message)
+
+
+_WORKFLOW_RUNTIME_PROBE_INSTANCE_ID = "__workflow_runtime_probe__"
+_TRANSIENT_WORKFLOW_RUNTIME_ERROR_MARKERS = (
+    "the state store is not configured to use the actor runtime",
+    "socket closed",
+    "failed to connect to all addresses",
+    "connection refused",
+    "workflow engine",
+    "statuscode.unavailable",
+)
+
+
+def _get_workflow_runtime_status(timeout_seconds: float = 2.0) -> tuple[bool, dict[str, Any]]:
+    """
+    Probe the local Dapr sidecar and workflow task hub before serving traffic.
+    """
+    details: dict[str, Any] = {
+        "daprHost": config.DAPR_HOST,
+        "daprHttpPort": config.DAPR_HTTP_PORT,
+        "daprGrpcPort": config.DAPR_GRPC_PORT,
+    }
+    errors: list[str] = []
+
+    try:
+        health_response = requests.get(
+            f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}/v1.0/healthz/outbound",
+            timeout=timeout_seconds,
+        )
+        details["sidecarOutboundStatusCode"] = health_response.status_code
+        details["sidecarOutboundHealthy"] = health_response.ok
+        if not health_response.ok:
+            errors.append(
+                f"sidecar outbound health returned {health_response.status_code}"
+            )
+    except Exception as exc:
+        details["sidecarOutboundHealthy"] = False
+        details["sidecarOutboundError"] = str(exc)
+        errors.append(f"sidecar outbound health check failed: {exc}")
+
+    try:
+        metadata_response = requests.get(
+            f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}/v1.0/metadata",
+            timeout=timeout_seconds,
+        )
+        metadata_response.raise_for_status()
+        metadata_payload = metadata_response.json() if metadata_response.content else {}
+        details["runtimeVersion"] = metadata_payload.get("runtimeVersion")
+        details["appId"] = metadata_payload.get("id")
+    except Exception as exc:
+        details["metadataError"] = str(exc)
+        errors.append(f"metadata probe failed: {exc}")
+
+    try:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(
+                instanceId=_WORKFLOW_RUNTIME_PROBE_INSTANCE_ID,
+                getInputsAndOutputs=False,
+            ),
+        )
+        details["taskhubReady"] = True
+        details["taskhubProbeExists"] = bool(getattr(response, "exists", False))
+    except Exception as exc:
+        details["taskhubReady"] = False
+        details["taskhubError"] = str(exc)
+        errors.append(f"taskhub probe failed: {exc}")
+
+    details["errors"] = errors
+    return (len(errors) == 0, details)
+
+
+def _raise_workflow_route_error(operation: str, error: Exception) -> None:
+    """
+    Prefer a clear 503 when Dapr workflow runtime is the actual failing dependency.
+    """
+    error_message = str(error)
+    lowered = error_message.lower()
+    runtime_ready, runtime_status = _get_workflow_runtime_status(timeout_seconds=1.0)
+
+    if (not runtime_ready) or any(
+        marker in lowered for marker in _TRANSIENT_WORKFLOW_RUNTIME_ERROR_MARKERS
+    ):
+        detail = {
+            "code": "workflow_runtime_unavailable",
+            "error": "Dapr workflow runtime is not ready",
+            "operation": operation,
+            "runtimeStatus": runtime_status,
+            "rawError": error_message,
+        }
+        logger.warning(
+            "[Workflow Routes] %s failed while workflow runtime unavailable: %s",
+            operation,
+            detail,
+        )
+        raise HTTPException(status_code=503, detail=detail)
+
+    raise HTTPException(status_code=500, detail=error_message)
+
+
+def _is_taskhub_unimplemented_error(error: Exception) -> bool:
+    return "unimplemented" in str(error).lower()
+
+
+# --- TaskHub gRPC helpers (workflow management APIs) ---
+
+_taskhub_channel: grpc.Channel | None = None
+_taskhub_stub: pb_grpc.TaskHubSidecarServiceStub | None = None
+DYNAMIC_WORKFLOW_NAME = "dynamic_workflow"
+AP_WORKFLOW_NAME = "ap_workflow"
+
+
+def _taskhub_metadata() -> list[tuple[str, str]] | None:
+    token = str(getattr(config, "DAPR_API_TOKEN", "") or "").strip()
+    if token:
+        return [("dapr-api-token", token)]
+    env_token = str(os.environ.get("DAPR_API_TOKEN") or "").strip()
+    if env_token:
+        return [("dapr-api-token", env_token)]
+    return None
+
+
+def _get_taskhub_stub() -> pb_grpc.TaskHubSidecarServiceStub:
+    global _taskhub_channel, _taskhub_stub
+    if _taskhub_stub is not None:
+        return _taskhub_stub
+    target = f"{config.DAPR_HOST}:{config.DAPR_GRPC_PORT}"
+    _taskhub_channel = grpc.insecure_channel(target)
+    _taskhub_stub = pb_grpc.TaskHubSidecarServiceStub(_taskhub_channel)
+    return _taskhub_stub
+
+
+def _taskhub_call(method: str, request: Any) -> Any:
+    stub = _get_taskhub_stub()
+    rpc = getattr(stub, method)
+    metadata = _taskhub_metadata()
+    if metadata:
+        return rpc(request, metadata=metadata)
+    return rpc(request)
+
+
+def _schedule_new_workflow_instance(
+    workflow_name: str,
+    instance_id: str,
+    workflow_input: dict[str, Any],
+    *,
+    workflow_version: str | None = None,
+) -> str:
+    request = pb.CreateInstanceRequest(
+        instanceId=instance_id,
+        name=workflow_name,
+        input=wrappers_pb2.StringValue(value=json.dumps(workflow_input)),
+    )
+    if workflow_version:
+        request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
+    response = _taskhub_call("StartInstance", request)
+    return str(response.instanceId)
+
+
 # --- Lifecycle ---
 
 @asynccontextmanager
@@ -95,6 +318,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize OpenTelemetry (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
     setup_tracing("workflow-orchestrator", app)
+    _check_min_dapr_runtime_version()
 
     # Register activities
     wfr.register_activity(execute_action)
@@ -117,7 +341,6 @@ async def lifespan(app: FastAPI):
     # Persist final results to PostgreSQL
     wfr.register_activity(persist_results_to_db)
     # Agent service activities (durable-agent)
-    wfr.register_activity(call_mastra_agent_run)
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
@@ -134,9 +357,26 @@ async def lifespan(app: FastAPI):
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 
-    # Register workflows
-    wfr.register_workflow(ap_workflow)
-    logger.info("[Workflow Orchestrator] Registered AP workflow")
+    # Register workflows (versioned for Dapr 1.17+ safe evolution).
+    wfr.register_versioned_workflow(
+        dynamic_workflow,
+        name=DYNAMIC_WORKFLOW_NAME,
+        version_name=config.DYNAMIC_WORKFLOW_VERSION,
+        is_latest=True,
+    )
+    wfr.register_versioned_workflow(
+        ap_workflow,
+        name=AP_WORKFLOW_NAME,
+        version_name=config.AP_WORKFLOW_VERSION,
+        is_latest=True,
+    )
+    logger.info(
+        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s",
+        DYNAMIC_WORKFLOW_NAME,
+        config.DYNAMIC_WORKFLOW_VERSION,
+        AP_WORKFLOW_NAME,
+        config.AP_WORKFLOW_VERSION,
+    )
 
     # Start the workflow runtime
     wfr.start()
@@ -145,6 +385,14 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    global _taskhub_channel, _taskhub_stub
+    if _taskhub_channel is not None:
+        try:
+            _taskhub_channel.close()
+        except Exception:
+            pass
+        _taskhub_channel = None
+        _taskhub_stub = None
     wfr.shutdown()
     logger.info("[Workflow Orchestrator] Dapr Workflow Runtime stopped")
 
@@ -195,6 +443,10 @@ class StartWorkflowRequest(BaseModel):
         default=None,
         description="Per-node connection external IDs for credential resolution"
     )
+    workflowVersion: str | None = Field(
+        default=None,
+        description="Optional workflow version to start (Dapr versioned workflow)",
+    )
 
 
 class StartWorkflowResponse(BaseModel):
@@ -202,6 +454,7 @@ class StartWorkflowResponse(BaseModel):
     instanceId: str
     workflowId: str
     status: str = "started"
+    workflowVersion: str | None = None
 
 
 class RaiseEventRequest(BaseModel):
@@ -254,6 +507,7 @@ class ExecuteByIdRequest(BaseModel):
     triggerData: dict[str, Any] = Field(default_factory=dict)
     integrations: dict[str, dict[str, str]] | None = None
     nodeConnectionMap: dict[str, str] | None = None
+    workflowVersion: str | None = None
 
 
 class WorkflowStatusResponse(BaseModel):
@@ -261,6 +515,8 @@ class WorkflowStatusResponse(BaseModel):
     instanceId: str
     workflowId: str
     workflowName: str | None = None
+    workflowVersion: str | None = None
+    workflowNameVersioned: str | None = None
     runtimeStatus: str
     traceId: str | None = None
     phase: str | None = None
@@ -271,6 +527,8 @@ class WorkflowStatusResponse(BaseModel):
     approvalEventName: str | None = None
     outputs: dict[str, Any] | None = None
     error: str | None = None
+    stackTrace: str | None = None
+    parentInstanceId: str | None = None
     startedAt: str | None = None
     completedAt: str | None = None
 
@@ -280,6 +538,8 @@ class WorkflowListItemResponse(BaseModel):
     instanceId: str
     workflowId: str
     workflowName: str | None = None
+    workflowVersion: str | None = None
+    workflowNameVersioned: str | None = None
     runtimeStatus: str
     traceId: str | None = None
     phase: str | None = None
@@ -316,6 +576,15 @@ class WorkflowHistoryResponse(BaseModel):
     """Workflow history response."""
     instanceId: str
     events: list[WorkflowHistoryEventResponse]
+
+
+class RerunWorkflowRequest(BaseModel):
+    """Request to rerun a workflow from a specific history event."""
+    fromEventId: int = Field(
+        default=0,
+        description="History event ID to rerun from. 0 means from start.",
+    )
+    reason: str | None = None
 
 
 # --- Helper Functions ---
@@ -430,7 +699,10 @@ def _create_workflow_execution(
     return execution_id
 
 
-def _mark_workflow_execution_started(execution_id: str, dapr_instance_id: str) -> None:
+def _mark_workflow_execution_started(
+    execution_id: str,
+    dapr_instance_id: str,
+) -> None:
     """Attach dapr instance correlation to an execution row."""
     import psycopg2
 
@@ -776,6 +1048,15 @@ def map_runtime_status(dapr_status: str) -> str:
         "WORKFLOW_RUNTIME_STATUS_PENDING": "PENDING",
         "WORKFLOW_RUNTIME_STATUS_SUSPENDED": "SUSPENDED",
         "WORKFLOW_RUNTIME_STATUS_STALLED": "STALLED",
+        # DurableTask orchestration status names (gRPC management APIs)
+        "ORCHESTRATION_STATUS_RUNNING": "RUNNING",
+        "ORCHESTRATION_STATUS_COMPLETED": "COMPLETED",
+        "ORCHESTRATION_STATUS_FAILED": "FAILED",
+        "ORCHESTRATION_STATUS_CANCELED": "CANCELED",
+        "ORCHESTRATION_STATUS_TERMINATED": "TERMINATED",
+        "ORCHESTRATION_STATUS_PENDING": "PENDING",
+        "ORCHESTRATION_STATUS_SUSPENDED": "SUSPENDED",
+        "ORCHESTRATION_STATUS_STALLED": "STALLED",
         # Handle string values
         "RUNNING": "RUNNING",
         "COMPLETED": "COMPLETED",
@@ -811,32 +1092,60 @@ def _parse_json_value(value: Any) -> Any:
     return parsed
 
 
-def _state_runtime_status(state: Any) -> str:
-    """Normalize workflow runtime status name."""
-    runtime_status = "UNKNOWN"
-    if hasattr(state, "runtime_status") and state.runtime_status:
-        runtime_status = (
-            state.runtime_status.name
-            if hasattr(state.runtime_status, "name")
-            else str(state.runtime_status)
-        )
-    return map_runtime_status(runtime_status)
+def _parse_wrapped_string(wrapper: Any) -> str | None:
+    if wrapper is None:
+        return None
+    value = getattr(wrapper, "value", None)
+    if isinstance(value, str) and value:
+        return value
+    return None
 
 
-def _state_to_dict(state: Any) -> dict[str, Any]:
-    """Convert workflow state object to dict when possible."""
-    if hasattr(state, "to_json"):
-        state_dict = state.to_json()
-        if isinstance(state_dict, dict):
-            return state_dict
-    return {}
+def _timestamp_to_iso(timestamp_field: Any) -> str | None:
+    if timestamp_field is None:
+        return None
+    try:
+        seconds = int(getattr(timestamp_field, "seconds", 0) or 0)
+        nanos = int(getattr(timestamp_field, "nanos", 0) or 0)
+        if seconds == 0 and nanos == 0:
+            return None
+        return timestamp_field.ToDatetime().isoformat()
+    except Exception:
+        return None
 
 
-def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, Any]:
-    """Build normalized workflow status payload."""
-    runtime_status = _state_runtime_status(state)
-    state_dict = _state_to_dict(state)
+def _orchestration_state_status_name(orchestration_state: Any) -> str:
+    """
+    Return best-effort orchestration status enum name.
 
+    Dapr workflow wrappers expose this via WorkflowState.runtime_status, while
+    TaskHub gRPC APIs expose it via orchestrationStatus.
+    """
+    status_attr = getattr(orchestration_state, "orchestrationStatus", None)
+    if status_attr is None:
+        runtime_status = getattr(orchestration_state, "runtime_status", None)
+        if runtime_status is not None:
+            return (
+                runtime_status.name
+                if hasattr(runtime_status, "name")
+                else str(runtime_status)
+            )
+        return "UNKNOWN"
+    try:
+        return pb.OrchestrationStatus.Name(status_attr)
+    except Exception:
+        return str(status_attr)
+
+
+def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -> dict[str, Any]:
+    """Build normalized workflow status payload from TaskHub orchestration state."""
+    runtime_status = map_runtime_status(
+        _orchestration_state_status_name(orchestration_state)
+    )
+    custom_status_raw = _parse_wrapped_string(
+        getattr(orchestration_state, "customStatus", None)
+    )
+    custom_status = _parse_json_value(custom_status_raw)
     phase = None
     progress = 0
     message = None
@@ -844,10 +1153,16 @@ def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, An
     current_node_name = None
     approval_event_name = None
     trace_id = None
+    workflow_version = _parse_wrapped_string(
+        getattr(orchestration_state, "version", None)
+    )
     outputs = None
     error = None
+    stack_trace = None
+    parent_instance_id = _parse_wrapped_string(
+        getattr(orchestration_state, "parentInstanceId", None)
+    )
 
-    custom_status = _parse_json_value(state_dict.get("serialized_custom_status"))
     if isinstance(custom_status, dict):
         phase = custom_status.get("phase")
         progress = custom_status.get("progress", 0)
@@ -856,41 +1171,40 @@ def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, An
         current_node_name = custom_status.get("currentNodeName")
         approval_event_name = custom_status.get("approvalEventName")
         trace_id = custom_status.get("traceId") or custom_status.get("trace_id")
+        workflow_version = (
+            str(custom_status.get("workflowVersion") or "").strip()
+            or workflow_version
+        )
 
-    serialized_output = _parse_json_value(state_dict.get("serialized_output"))
+    serialized_output = _parse_json_value(
+        _parse_wrapped_string(getattr(orchestration_state, "output", None))
+    )
     if isinstance(serialized_output, dict):
         outputs = serialized_output
     elif serialized_output is not None:
         outputs = {"raw": serialized_output}
 
-    failure = state_dict.get("failure_details")
-    if isinstance(failure, dict):
-        failure_message = failure.get("message")
+    failure_details = getattr(orchestration_state, "failureDetails", None)
+    if failure_details is not None:
+        failure_message = str(getattr(failure_details, "errorMessage", "") or "")
         if isinstance(failure_message, str) and failure_message:
             error = failure_message
+        stack_trace = _parse_wrapped_string(getattr(failure_details, "stackTrace", None))
 
-    started_at = None
-    if hasattr(state, "created_at") and state.created_at:
-        started_at = (
-            state.created_at.isoformat()
-            if hasattr(state.created_at, "isoformat")
-            else str(state.created_at)
-        )
+    started_at = _timestamp_to_iso(getattr(orchestration_state, "createdTimestamp", None))
 
     completed_at = None
     if runtime_status in ("COMPLETED", "FAILED", "TERMINATED"):
-        if hasattr(state, "last_updated_at") and state.last_updated_at:
-            completed_at = (
-                state.last_updated_at.isoformat()
-                if hasattr(state.last_updated_at, "isoformat")
-                else str(state.last_updated_at)
-            )
+        completed_at = _timestamp_to_iso(
+            getattr(orchestration_state, "completedTimestamp", None)
+        ) or _timestamp_to_iso(getattr(orchestration_state, "lastUpdatedTimestamp", None))
 
-    workflow_name = None
-    if hasattr(state, "name") and state.name:
-        workflow_name = str(state.name)
-    if not workflow_name and isinstance(state_dict.get("name"), str):
-        workflow_name = state_dict["name"]
+    workflow_name = str(getattr(orchestration_state, "name", "") or "") or None
+    workflow_name_versioned = (
+        f"{workflow_name}@{workflow_version}"
+        if workflow_name and workflow_version
+        else workflow_name
+    )
 
     workflow_id = _workflow_id_from_instance(instance_id)
 
@@ -898,6 +1212,8 @@ def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, An
         "instanceId": instance_id,
         "workflowId": workflow_id,
         "workflowName": workflow_name,
+        "workflowVersion": workflow_version,
+        "workflowNameVersioned": workflow_name_versioned,
         "runtimeStatus": runtime_status,
         "traceId": trace_id,
         "phase": phase or (runtime_status.lower() if runtime_status in ("RUNNING", "PENDING") else None),
@@ -908,37 +1224,47 @@ def _build_workflow_status_payload(instance_id: str, state: Any) -> dict[str, An
         "approvalEventName": approval_event_name,
         "outputs": outputs,
         "error": error,
+        "stackTrace": stack_trace,
+        "parentInstanceId": parent_instance_id,
         "startedAt": started_at,
         "completedAt": completed_at,
     }
 
 
-def _get_taskhub_stub(client: DaprWorkflowClient):
-    """Get internal durabletask gRPC stub from DaprWorkflowClient."""
-    internal = getattr(client, "_DaprWorkflowClient__obj", None)
-    if internal is None:
-        raise RuntimeError("Dapr workflow client internal taskhub is unavailable")
-    stub = getattr(internal, "_stub", None)
-    if stub is None:
-        raise RuntimeError("Dapr workflow client internal gRPC stub is unavailable")
-    return stub
-
-
-def _list_instance_ids(
-    client: DaprWorkflowClient,
+def _query_instances(
+    *,
+    status_filter: set[str] | None = None,
+    fetch_payloads: bool = True,
     continuation_token: str | None = None,
     page_size: int = 200,
-) -> tuple[list[str], str | None]:
-    """List workflow instance IDs using Dapr 1.17 APIs."""
-    import durabletask.internal.orchestrator_service_pb2 as pb
-
-    request = pb.ListInstanceIDsRequest(pageSize=page_size)
+) -> tuple[list[Any], str | None]:
+    """Query orchestration instances using TaskHub management API."""
+    query = pb.InstanceQuery(
+        maxInstanceCount=page_size,
+        fetchInputsAndOutputs=fetch_payloads,
+    )
+    if status_filter:
+        status_to_enum = {
+            "RUNNING": pb.ORCHESTRATION_STATUS_RUNNING,
+            "COMPLETED": pb.ORCHESTRATION_STATUS_COMPLETED,
+            "FAILED": pb.ORCHESTRATION_STATUS_FAILED,
+            "CANCELED": pb.ORCHESTRATION_STATUS_CANCELED,
+            "TERMINATED": pb.ORCHESTRATION_STATUS_TERMINATED,
+            "PENDING": pb.ORCHESTRATION_STATUS_PENDING,
+            "SUSPENDED": pb.ORCHESTRATION_STATUS_SUSPENDED,
+            "STALLED": pb.ORCHESTRATION_STATUS_STALLED,
+        }
+        for status in status_filter:
+            enum_value = status_to_enum.get(status.upper())
+            if enum_value is not None:
+                query.runtimeStatus.append(enum_value)
     if continuation_token:
-        request.continuationToken = continuation_token
-
-    response = _get_taskhub_stub(client).ListInstanceIDs(request)
-    next_token = getattr(response, "continuationToken", None) or None
-    return list(response.instanceIds), next_token
+        query.continuationToken.CopyFrom(
+            wrappers_pb2.StringValue(value=continuation_token)
+        )
+    response = _taskhub_call("QueryInstances", pb.QueryInstancesRequest(query=query))
+    next_token = _parse_wrapped_string(getattr(response, "continuationToken", None))
+    return list(getattr(response, "orchestrationState", []) or []), next_token
 
 
 def _normalize_history_event(event: Any) -> dict[str, Any]:
@@ -982,6 +1308,26 @@ def _normalize_history_event(event: Any) -> dict[str, Any]:
     task_id = payload_dict.get("task_scheduled_id") or payload_dict.get("task_execution_id")
     if isinstance(task_id, (str, int)):
         metadata["taskId"] = str(task_id)
+    failure_details = payload_dict.get("failure_details")
+    if isinstance(failure_details, dict):
+        error_message = failure_details.get("error_message")
+        if isinstance(error_message, str) and error_message:
+            metadata["error"] = error_message
+        stack_trace = failure_details.get("stack_trace")
+        if isinstance(stack_trace, dict):
+            stack_trace = stack_trace.get("value")
+        if isinstance(stack_trace, str) and stack_trace:
+            metadata["stackTrace"] = stack_trace
+    rerun_parent = payload_dict.get("rerun_parent_instance_info")
+    if isinstance(rerun_parent, dict):
+        source_instance_id = rerun_parent.get("instance_id")
+        if isinstance(source_instance_id, str) and source_instance_id:
+            metadata["rerunSourceInstanceId"] = source_instance_id
+    version_value = payload_dict.get("version")
+    if isinstance(version_value, dict):
+        version_value = version_value.get("value")
+    if isinstance(version_value, str) and version_value:
+        metadata["version"] = version_value
 
     timestamp = None
     if hasattr(event, "timestamp") and event.HasField("timestamp"):
@@ -1002,12 +1348,9 @@ def _normalize_history_event(event: Any) -> dict[str, Any]:
     }
 
 
-def _get_instance_history(client: DaprWorkflowClient, instance_id: str) -> list[dict[str, Any]]:
+def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
     """Get workflow execution history events via Dapr 1.17 APIs."""
-    import durabletask.internal.orchestrator_service_pb2 as pb
-
-    request = pb.GetInstanceHistoryRequest(instanceId=instance_id)
-    response = _get_taskhub_stub(client).GetInstanceHistory(request)
+    response = _taskhub_call("GetInstanceHistory", pb.GetInstanceHistoryRequest(instanceId=instance_id))
     return [_normalize_history_event(event) for event in response.events]
 
 
@@ -1026,7 +1369,10 @@ def start_workflow(request: StartWorkflowRequest):
         integrations = request.integrations
         db_execution_id = request.dbExecutionId
 
-        client = get_workflow_client()
+        selected_workflow_version = (
+            request.workflowVersion
+            or config.DYNAMIC_WORKFLOW_VERSION
+        )
 
         # Build the input for the dynamic workflow
         workflow_input = {
@@ -1035,23 +1381,22 @@ def start_workflow(request: StartWorkflowRequest):
             "integrations": integrations,
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
+            "_workflowVersion": selected_workflow_version,
             "_otel": inject_current_context(),
         }
 
         # Generate a unique instance ID
-        import time
-        import random
-        import string
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
         instance_id = f"{definition['id']}-{int(time.time() * 1000)}-{random_suffix}"
 
         logger.info(f"[Workflow Routes] Starting workflow: {definition['name']} ({instance_id})")
 
         # Schedule the workflow
-        result_id = client.schedule_new_workflow(
-            workflow=dynamic_workflow,
-            input=workflow_input,
+        result_id = _schedule_new_workflow_instance(
+            workflow_name=DYNAMIC_WORKFLOW_NAME,
             instance_id=instance_id,
+            workflow_input=workflow_input,
+            workflow_version=selected_workflow_version,
         )
 
         logger.info(f"[Workflow Routes] Workflow scheduled: {result_id}")
@@ -1060,11 +1405,12 @@ def start_workflow(request: StartWorkflowRequest):
             instanceId=result_id,
             workflowId=definition["id"],
             status="started",
+            workflowVersion=selected_workflow_version,
         )
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("start_workflow", e)
 
 
 @app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
@@ -1133,28 +1479,30 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
         )
 
         # 7. Schedule via the existing start_workflow logic
-        client = get_workflow_client()
+        selected_workflow_version = (
+            request.workflowVersion
+            or config.DYNAMIC_WORKFLOW_VERSION
+        )
         workflow_input = {
             "definition": definition,
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
+            "_workflowVersion": selected_workflow_version,
             "_otel": inject_current_context(),
         }
 
-        import time
-        import random
-        import string
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
         instance_id = f"{wf['id']}-{int(time.time() * 1000)}-{random_suffix}"
 
         logger.info(f"[Execute-By-Id] Starting workflow: {wf['name']} ({instance_id})")
 
-        result_id = client.schedule_new_workflow(
-            workflow=dynamic_workflow,
-            input=workflow_input,
+        result_id = _schedule_new_workflow_instance(
+            workflow_name=DYNAMIC_WORKFLOW_NAME,
             instance_id=instance_id,
+            workflow_input=workflow_input,
+            workflow_version=selected_workflow_version,
         )
 
         _mark_workflow_execution_started(db_execution_id, result_id)
@@ -1165,6 +1513,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             instanceId=result_id,
             workflowId=wf["id"],
             status="started",
+            workflowVersion=selected_workflow_version,
         )
 
     except HTTPException:
@@ -1181,7 +1530,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
                 f"[Execute-By-Id] Failed to mark execution start failure: {persist_err}"
             )
         logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("execute_workflow_by_id", e)
 
 
 @app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)
@@ -1197,6 +1546,7 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
     """
     try:
         client = get_workflow_client()
+        selected_workflow_version = config.AP_WORKFLOW_VERSION
 
         workflow_input = {
             "flowRunId": request.flowRunId,
@@ -1210,6 +1560,7 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
             "progressUpdateType": request.progressUpdateType,
             "callbackUrl": request.callbackUrl,
             "flowVersion": request.flowVersion,
+            "_workflowVersion": selected_workflow_version,
         }
 
         # Use the AP flow run ID as the Dapr instance ID (1:1 mapping).
@@ -1224,10 +1575,11 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
 
         # Idempotent start: if the instance already exists, return it.
         try:
-            client.schedule_new_workflow(
-                workflow=ap_workflow,
-                input=workflow_input,
+            _schedule_new_workflow_instance(
+                workflow_name=AP_WORKFLOW_NAME,
                 instance_id=instance_id,
+                workflow_input=workflow_input,
+                workflow_version=selected_workflow_version,
             )
         except Exception:
             existing = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
@@ -1244,7 +1596,7 @@ def start_ap_workflow(request: StartAPWorkflowRequest):
 
     except Exception as e:
         logger.error(f"[AP Workflow] Failed to start AP workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("start_ap_workflow", e)
 
 
 @app.get("/api/workflows/{instance_id}")
@@ -1282,32 +1634,28 @@ def list_workflows(
         }
         search_filter = (search or "").strip().lower()
 
-        client = get_workflow_client()
-        instance_ids: list[str] = []
+        instance_states: list[Any] = []
         continuation_token: str | None = None
         max_scan = 5000
 
-        while len(instance_ids) < max_scan:
-            page_ids, continuation_token = _list_instance_ids(
-                client,
+        while len(instance_states) < max_scan:
+            page_states, continuation_token = _query_instances(
+                status_filter=status_filter if status_filter else None,
+                fetch_payloads=True,
                 continuation_token=continuation_token,
                 page_size=200,
             )
-            if not page_ids:
+            if not page_states:
                 break
-            instance_ids.extend(page_ids)
+            instance_states.extend(page_states)
             if not continuation_token:
                 break
 
         items: list[dict[str, Any]] = []
-        for instance_id in instance_ids[:max_scan]:
-            state = client.get_workflow_state(
-                instance_id=instance_id,
-                fetch_payloads=True,
-            )
-            if state is None:
+        for state in instance_states[:max_scan]:
+            instance_id = str(getattr(state, "instanceId", "") or "")
+            if not instance_id:
                 continue
-
             payload = _build_workflow_status_payload(instance_id, state)
             runtime_status = str(payload.get("runtimeStatus") or "UNKNOWN").upper()
             if status_filter and runtime_status not in status_filter:
@@ -1342,7 +1690,19 @@ def list_workflows(
         )
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to list workflows: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        if _is_taskhub_unimplemented_error(e):
+            raise HTTPException(
+                status_code=501,
+                detail={
+                    "code": "workflow_query_unsupported",
+                    "error": (
+                        "This Dapr runtime does not implement workflow instance listing "
+                        "via QueryInstances"
+                    ),
+                    "rawError": str(e),
+                },
+            )
+        _raise_workflow_route_error("list_workflows", e)
 
 
 @app.get("/api/v2/workflows/{instance_id}/status", response_model=WorkflowStatusResponse)
@@ -1353,19 +1713,20 @@ def get_workflow_status(instance_id: str):
     GET /api/v2/workflows/:instanceId/status
     """
     try:
-        client = get_workflow_client()
-        state = client.get_workflow_state(instance_id=instance_id, fetch_payloads=True)
-
-        if state is None:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=True),
+        )
+        if not getattr(response, "exists", False):
             raise HTTPException(status_code=404, detail="Workflow not found")
-        payload = _build_workflow_status_payload(instance_id, state)
+        payload = _build_workflow_status_payload(instance_id, response.orchestrationState)
         return WorkflowStatusResponse(**payload)
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to get workflow status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("get_workflow_status", e)
 
 
 @app.get("/api/v2/workflows/{instance_id}/history", response_model=WorkflowHistoryResponse)
@@ -1376,12 +1737,14 @@ def get_workflow_history(instance_id: str):
     GET /api/v2/workflows/:instanceId/history
     """
     try:
-        client = get_workflow_client()
-        state = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
-        if state is None:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=False),
+        )
+        if not getattr(response, "exists", False):
             raise HTTPException(status_code=404, detail="Workflow not found")
 
-        events = _get_instance_history(client, instance_id)
+        events = _get_instance_history(instance_id)
         events.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
 
         return WorkflowHistoryResponse(
@@ -1392,7 +1755,53 @@ def get_workflow_history(instance_id: str):
         raise
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to get workflow history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("get_workflow_history", e)
+
+
+@app.post("/api/v2/workflows/{instance_id}/rerun")
+def rerun_workflow(instance_id: str, request: RerunWorkflowRequest = RerunWorkflowRequest()):
+    """
+    Rerun a workflow from a specific history event.
+
+    POST /api/v2/workflows/:instanceId/rerun
+    """
+    try:
+        state_response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=False),
+        )
+        if not getattr(state_response, "exists", False):
+            raise HTTPException(status_code=404, detail="Workflow not found")
+
+        event_id = max(0, int(request.fromEventId))
+        rerun_request = pb.RerunWorkflowFromEventRequest(
+            sourceInstanceID=instance_id,
+            eventID=event_id,
+        )
+        rerun_response = _taskhub_call("RerunWorkflowFromEvent", rerun_request)
+        new_instance_id = str(getattr(rerun_response, "newInstanceID", "") or "")
+        if not new_instance_id:
+            raise RuntimeError("Rerun succeeded but no newInstanceID was returned")
+
+        logger.info(
+            "[Workflow Routes] Rerun scheduled: source=%s event_id=%s new=%s reason=%s",
+            instance_id,
+            event_id,
+            new_instance_id,
+            request.reason,
+        )
+
+        return {
+            "success": True,
+            "sourceInstanceId": instance_id,
+            "fromEventId": event_id,
+            "newInstanceId": new_instance_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[Workflow Routes] Failed to rerun workflow: {e}")
+        _raise_workflow_route_error("rerun_workflow", e)
 
 
 @app.post("/api/v2/workflows/{instance_id}/events")
@@ -1423,7 +1832,7 @@ def raise_event(instance_id: str, request: RaiseEventRequest):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to raise event: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("raise_event", e)
 
 
 @app.post("/api/v2/workflows/{instance_id}/terminate")
@@ -1467,31 +1876,66 @@ def terminate_workflow(instance_id: str, request: TerminateRequest = TerminateRe
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to terminate workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("terminate_workflow", e)
 
 
 @app.delete("/api/v2/workflows/{instance_id}")
-def purge_workflow(instance_id: str):
+def purge_workflow(
+    instance_id: str,
+    force: bool = False,
+    recursive: bool = False,
+):
     """
     Purge a completed workflow.
 
     DELETE /api/v2/workflows/:instanceId
     """
     try:
-        client = get_workflow_client()
+        logger.info(
+            "[Workflow Routes] Purging workflow: %s force=%s recursive=%s",
+            instance_id,
+            force,
+            recursive,
+        )
 
-        logger.info(f"[Workflow Routes] Purging workflow: {instance_id}")
+        child_cleanup = None
+        if force:
+            try:
+                child_cleanup = terminate_durable_runs_by_parent_execution(
+                    parent_execution_id=instance_id,
+                    reason="Force purge cleanup",
+                    cleanup_workspace=True,
+                )
+            except Exception as child_err:
+                logger.warning(
+                    "[Workflow Routes] Child durable run cleanup failed during force purge: %s",
+                    child_err,
+                )
 
-        client.purge_workflow(instance_id=instance_id)
+        purge_request = pb.PurgeInstancesRequest(
+            instanceId=instance_id,
+            recursive=recursive,
+            force=force,
+        )
+        purge_response = _taskhub_call("PurgeInstances", purge_request)
 
         return {
             "success": True,
             "instanceId": instance_id,
+            "force": force,
+            "recursive": recursive,
+            "deletedInstanceCount": int(
+                getattr(purge_response, "deletedInstanceCount", 0) or 0
+            ),
+            "isComplete": bool(
+                getattr(getattr(purge_response, "isComplete", None), "value", True)
+            ),
+            "childCleanup": child_cleanup,
         }
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to purge workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("purge_workflow", e)
 
 
 @app.post("/api/v2/workflows/{instance_id}/pause")
@@ -1515,7 +1959,7 @@ def suspend_workflow(instance_id: str):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to suspend workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("suspend_workflow", e)
 
 
 @app.post("/api/v2/workflows/{instance_id}/resume")
@@ -1539,7 +1983,7 @@ def resume_workflow(instance_id: str):
 
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to resume workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        _raise_workflow_route_error("resume_workflow", e)
 
 
 # --- Pub/Sub Subscription Routes ---
@@ -1645,7 +2089,22 @@ def health_check():
 @app.get("/readyz")
 def readiness_check():
     """Readiness check endpoint."""
-    return {"status": "ready", "service": "workflow-orchestrator"}
+    ready, runtime_status = _get_workflow_runtime_status()
+    if not ready:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "status": "not_ready",
+                "service": "workflow-orchestrator",
+                "code": "workflow_runtime_unavailable",
+                "runtimeStatus": runtime_status,
+            },
+        )
+    return {
+        "status": "ready",
+        "service": "workflow-orchestrator",
+        "runtimeStatus": runtime_status,
+    }
 
 
 @app.get("/config")

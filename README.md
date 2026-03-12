@@ -24,7 +24,7 @@ You can deploy your own version of the workflow builder to Vercel with one click
 - **Code Generation** - Convert workflows to executable TypeScript with `"use workflow"` directive
 - **Execution Tracking** - Monitor workflow runs with detailed logs
 - **Authentication** - Secure user authentication with Better Auth
-- **AI-Powered** - Generate workflows from natural language descriptions using OpenAI
+- **AI-Powered** - Create workflows from natural language prompts and edit saved workflows incrementally with AI
 - **Database** - PostgreSQL with Drizzle ORM for type-safe database access
 - **Modern UI** - Beautiful shadcn/ui components with dark mode support
 
@@ -48,7 +48,7 @@ DATABASE_URL=postgresql://user:password@localhost:5432/workflow_builder
 BETTER_AUTH_SECRET=your-secret-key
 BETTER_AUTH_URL=http://localhost:3000
 
-# AI Gateway (for AI workflow generation)
+# AI Gateway (for prompt-based workflow creation and AI workflow editing)
 AI_GATEWAY_API_KEY=your-openai-api-key
 ```
 
@@ -158,7 +158,9 @@ The generated code includes:
 
 ### AI Generation
 
-- `POST /api/ai/generate-workflow` - Generate workflow from prompt
+- `POST /api/workflows/generate-from-prompt` - Generate a workflow definition from a prompt without persisting it
+- `POST /api/workflows/create-from-prompt` - Generate and persist a workflow from a prompt
+- `POST /api/ai/generate` - Apply incremental AI edits to an existing workflow
 
 ## Database Schema
 

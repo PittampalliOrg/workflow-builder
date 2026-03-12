@@ -57,7 +57,6 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 - **Auth**: Better Auth (email/password, social login, JWT API keys)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: durable-agent (Dapr Workflow ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service
-- **Mastra Agent** (legacy/secondary): mastra-agent-tanstack — retained in source, not part of the current core runtime
 - **Function Execution**: function-router → fn-system, fn-activepieces, durable-agent
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
@@ -137,8 +136,6 @@ lib/
 services/
   workflow-orchestrator/             # Python Dapr workflow orchestrator
   durable-agent/                     # Durable AI agent (PRIMARY)
-  mastra-agent-tanstack/             # Legacy Mastra agent service
-  mastra-agent-mcp/                  # Legacy Mastra MCP service
   function-router/                   # Function execution router
   fn-activepieces/                   # AP piece executor
   fn-system/                         # System functions

@@ -1470,11 +1470,9 @@ export function WorkflowCanvas() {
 				)}
 			</Canvas>
 
-			{currentWorkflowId &&
-				isOwner &&
-				!(activeTab === "ai" && rightPanelWidth) && (
-					<CanvasAiChatInput workflowId={currentWorkflowId} />
-				)}
+			{isOwner && !(activeTab === "ai" && rightPanelWidth) && (
+				<CanvasAiChatInput workflowId={currentWorkflowId ?? undefined} />
+			)}
 
 			{/* Context Menu */}
 			<WorkflowContextMenu

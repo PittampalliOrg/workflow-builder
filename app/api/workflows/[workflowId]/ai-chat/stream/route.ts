@@ -74,6 +74,16 @@ export async function POST(
 			);
 		}
 
+		if (!existingWorkflow) {
+			return NextResponse.json(
+				{
+					error:
+						"This endpoint only supports incremental edits to an existing workflow snapshot.",
+				},
+				{ status: 400 },
+			);
+		}
+
 		let persistenceAvailable = true;
 		try {
 			await db.insert(workflowAiMessages).values({
@@ -191,8 +201,8 @@ export async function POST(
 								role: "assistant",
 								content:
 									error instanceof Error
-										? `Workflow generation failed: ${error.message}`
-										: "Workflow generation failed.",
+										? `Workflow edit failed: ${error.message}`
+										: "Workflow edit failed.",
 								operations: operations as Array<Record<string, unknown>>,
 							});
 						} catch (persistError) {
@@ -219,13 +229,13 @@ export async function POST(
 			},
 		});
 	} catch (error) {
-		console.error("Failed to start workflow AI chat stream:", error);
+		console.error("Failed to start workflow AI edit stream:", error);
 		return NextResponse.json(
 			{
 				error:
 					error instanceof Error
 						? error.message
-						: "Failed to start workflow AI chat stream",
+						: "Failed to start workflow AI edit stream",
 			},
 			{ status: 500 },
 		);

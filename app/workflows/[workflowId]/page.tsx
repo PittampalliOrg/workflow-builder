@@ -3,7 +3,6 @@
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -117,7 +116,6 @@ function checkNodeConnection(
 const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 	const { workflowId } = use(params);
 	const { findActionById } = usePiecesCatalog();
-	const searchParams = useSearchParams();
 	const isMobile = useIsMobile();
 	const [isGenerating, setIsGenerating] = useAtom(isGeneratingAtom);
 	const [_isSaving, setIsSaving] = useAtom(isSavingAtom);
@@ -310,47 +308,6 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		currentRunningNodeIdRef.current = currentRunningNodeId;
 	}, [currentRunningNodeId]);
 
-	// Helper function to generate workflow from AI
-	const generateWorkflowFromAI = useCallback(
-		async (prompt: string) => {
-			setIsGenerating(true);
-			setCurrentWorkflowId(workflowId);
-			setCurrentWorkflowName("AI Generated Workflow");
-
-			try {
-				const workflowData = await api.ai.generate(prompt);
-
-				// Clear selection on all nodes
-				const nodesWithoutSelection = (workflowData.nodes || []).map(
-					(node: WorkflowNode) => ({ ...node, selected: false }),
-				);
-				setNodes(nodesWithoutSelection);
-				setEdges(workflowData.edges || []);
-				setCurrentWorkflowName(workflowData.name || "AI Generated Workflow");
-
-				await api.workflow.update(workflowId, {
-					name: workflowData.name,
-					description: workflowData.description,
-					nodes: workflowData.nodes,
-					edges: workflowData.edges,
-				});
-			} catch (error) {
-				console.error("Failed to generate workflow:", error);
-				toast.error("Failed to generate workflow");
-			} finally {
-				setIsGenerating(false);
-			}
-		},
-		[
-			workflowId,
-			setIsGenerating,
-			setCurrentWorkflowId,
-			setCurrentWorkflowName,
-			setNodes,
-			setEdges,
-		],
-	);
-
 	// Helper function to load existing workflow
 	const loadExistingWorkflow = useCallback(async () => {
 		try {
@@ -423,38 +380,16 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 
 	useEffect(() => {
 		const loadWorkflowData = async () => {
-			const isGeneratingParam = searchParams?.get("generating") === "true";
-			const storedPrompt = sessionStorage.getItem("ai-prompt");
-			const storedWorkflowId = sessionStorage.getItem("generating-workflow-id");
-
 			// Check if state is already loaded for this workflow
 			if (currentWorkflowId === workflowId && nodes.length > 0) {
 				return;
 			}
 
-			// Check if we should generate from AI
-			if (
-				isGeneratingParam &&
-				storedPrompt &&
-				storedWorkflowId === workflowId
-			) {
-				sessionStorage.removeItem("ai-prompt");
-				sessionStorage.removeItem("generating-workflow-id");
-				await generateWorkflowFromAI(storedPrompt);
-			} else {
-				await loadExistingWorkflow();
-			}
+			await loadExistingWorkflow();
 		};
 
-		loadWorkflowData();
-	}, [
-		workflowId,
-		searchParams,
-		currentWorkflowId,
-		nodes.length,
-		generateWorkflowFromAI,
-		loadExistingWorkflow,
-	]);
+		void loadWorkflowData();
+	}, [workflowId, currentWorkflowId, nodes.length, loadExistingWorkflow]);
 
 	// Auto-fix missing connections on workflow load or when connections change
 	useEffect(() => {

@@ -211,6 +211,12 @@ type StreamState = {
 	currentData: WorkflowData;
 };
 
+type ExistingWorkflowSnapshot = {
+	nodes: WorkflowNode[];
+	edges: WorkflowEdge[];
+	name?: string;
+};
+
 export type WorkflowAiChatMessage = {
 	id: string;
 	role: "user" | "assistant" | "system";
@@ -391,11 +397,7 @@ async function streamWorkflowOperations(
 	endpoint: string,
 	body: Record<string, unknown>,
 	onUpdate: (data: WorkflowData) => void,
-	existingWorkflow?: {
-		nodes: WorkflowNode[];
-		edges: WorkflowEdge[];
-		name?: string;
-	},
+	existingWorkflow?: ExistingWorkflowSnapshot,
 ): Promise<WorkflowData> {
 	const response = await fetch(endpoint, {
 		method: "POST",
@@ -470,39 +472,45 @@ async function streamWorkflowOperations(
 }
 
 export const aiApi = {
+	// Incremental edits only. Use workflowApi.generateFromPrompt/createFromPrompt
+	// for new workflow generation from natural language.
 	generate: (
 		prompt: string,
-		existingWorkflow?: {
-			nodes: WorkflowNode[];
-			edges: WorkflowEdge[];
-			name?: string;
-		},
+		existingWorkflow: ExistingWorkflowSnapshot,
 		options?: { mode?: "validated" | "classic" },
-	) =>
-		apiCall<WorkflowData>("/api/ai/generate", {
+	) => {
+		if (!existingWorkflow) {
+			throw new Error(
+				"api.ai.generate only supports incremental edits. Use api.workflow.generateFromPrompt or api.workflow.createFromPrompt for new workflows.",
+			);
+		}
+		return apiCall<WorkflowData>("/api/ai/generate", {
 			method: "POST",
 			body: JSON.stringify({
 				prompt,
 				existingWorkflow,
 				mode: options?.mode,
 			}),
-		}),
+		});
+	},
 	generateStream: async (
 		prompt: string,
 		onUpdate: (data: WorkflowData) => void,
-		existingWorkflow?: {
-			nodes: WorkflowNode[];
-			edges: WorkflowEdge[];
-			name?: string;
-		},
+		existingWorkflow: ExistingWorkflowSnapshot,
 		options?: { mode?: "validated" | "classic" },
-	): Promise<WorkflowData> =>
-		streamWorkflowOperations(
+	): Promise<WorkflowData> => {
+		if (!existingWorkflow) {
+			throw new Error(
+				"api.ai.generateStream only supports incremental edits. Use api.workflow.generateFromPrompt or api.workflow.createFromPrompt for new workflows.",
+			);
+		}
+		return streamWorkflowOperations(
 			"/api/ai/generate",
 			{ prompt, existingWorkflow, mode: options?.mode },
 			onUpdate,
 			existingWorkflow,
-		),
+		);
+	},
 };
 
 export const aiChatApi = {
@@ -531,18 +539,20 @@ export const aiChatApi = {
 		workflowId: string,
 		message: string,
 		onUpdate: (data: WorkflowData) => void,
-		existingWorkflow?: {
-			nodes: WorkflowNode[];
-			edges: WorkflowEdge[];
-			name?: string;
-		},
-	): Promise<WorkflowData> =>
-		streamWorkflowOperations(
+		existingWorkflow: ExistingWorkflowSnapshot,
+	): Promise<WorkflowData> => {
+		if (!existingWorkflow) {
+			throw new Error(
+				"api.aiChat.generateStream only supports incremental edits to an existing workflow.",
+			);
+		}
+		return streamWorkflowOperations(
 			`/api/workflows/${workflowId}/ai-chat/stream`,
 			{ message, existingWorkflow },
 			onUpdate,
 			existingWorkflow,
-		),
+		);
+	},
 };
 
 // User API
@@ -661,6 +671,7 @@ export const workflowApi = {
 				duration: string | null;
 				// Dapr execution fields
 				daprInstanceId: string | null;
+				daprWorkflowVersion?: string | null;
 				phase: string | null;
 				progress: number | null;
 				runtimeStatus?: string | null;
@@ -697,6 +708,7 @@ export const workflowApi = {
 				completedAt: Date | null;
 				duration: string | null;
 				daprInstanceId: string | null;
+				daprWorkflowVersion?: string | null;
 				phase: string | null;
 				progress: number | null;
 				workflow: {
@@ -892,6 +904,36 @@ export const workflowApi = {
 			body: JSON.stringify(input),
 		}),
 
+	generateFromPrompt: (input: {
+		prompt: string;
+		name?: string;
+		description?: string;
+	}) =>
+		apiCall<
+			WorkflowData & {
+				spec: unknown;
+				issues: { errors: unknown[]; warnings: unknown[] };
+			}
+		>("/api/workflows/generate-from-prompt", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+
+	// Create workflow from a natural-language prompt using WorkflowSpec generation
+	createFromPrompt: (input: {
+		prompt: string;
+		name?: string;
+		description?: string;
+	}) =>
+		apiCall<{
+			workflow: SavedWorkflow;
+			spec: unknown;
+			issues: { errors: unknown[]; warnings: unknown[] };
+		}>("/api/workflows/create-from-prompt", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
+
 	// Auto-save with debouncing (kept for backwards compatibility)
 	autoSaveCurrent: (() => {
 		let autosaveTimeout: NodeJS.Timeout | null = null;
@@ -943,14 +985,19 @@ export type DaprWorkflowStatusResponse = {
 	daprInstanceId: string;
 	status: string;
 	daprStatus: string;
+	workflowVersion?: string | null;
+	workflowNameVersioned?: string | null;
 	phase: string | null;
 	progress: number | null;
 	message: string | null;
 	currentNodeId: string | null;
 	currentNodeName: string | null;
 	approvalEventName: string | null;
+	parentInstanceId?: string | null;
 	runtime?: DurableRuntimeSnapshot | null;
 	consistency?: DurableExecutionConsistency;
+	error?: string | null;
+	stackTrace?: string | null;
 	createdAt?: string;
 	lastUpdatedAt?: string;
 };
@@ -959,7 +1006,7 @@ export const daprApi = {
 	// Get Dapr workflow status
 	getStatus: (executionId: string) =>
 		apiCall<DaprWorkflowStatusResponse>(
-			`/api/dapr/workflows/${executionId}/status`,
+			`/api/orchestrator/workflows/${executionId}/status`,
 		),
 
 	// Raise an external event on a workflow execution (approval gates)
@@ -971,6 +1018,70 @@ export const daprApi = {
 				body: JSON.stringify({ eventName, eventData }),
 			},
 		),
+
+	pause: (executionId: string) =>
+		apiCall<{ success: boolean; executionId: string; instanceId: string }>(
+			`/api/orchestrator/workflows/${executionId}/pause`,
+			{ method: "POST" },
+		),
+
+	resume: (executionId: string) =>
+		apiCall<{ success: boolean; executionId: string; instanceId: string }>(
+			`/api/orchestrator/workflows/${executionId}/resume`,
+			{ method: "POST" },
+		),
+
+	terminate: (executionId: string, reason?: string) =>
+		apiCall<{ success: boolean; executionId: string; instanceId: string }>(
+			`/api/orchestrator/workflows/${executionId}/terminate`,
+			{
+				method: "POST",
+				body: JSON.stringify({ reason }),
+			},
+		),
+
+	purge: (
+		executionId: string,
+		options?: { force?: boolean; recursive?: boolean },
+	) => {
+		const params = new URLSearchParams();
+		if (options?.force) params.set("force", "true");
+		if (options?.recursive) params.set("recursive", "true");
+		const query = params.toString();
+		return apiCall<{
+			success: boolean;
+			executionId: string;
+			instanceId: string;
+			force?: boolean;
+			recursive?: boolean;
+			deletedInstanceCount?: number | null;
+			isComplete?: boolean | null;
+		}>(
+			`/api/orchestrator/workflows/${executionId}${query ? `?${query}` : ""}`,
+			{
+				method: "DELETE",
+			},
+		);
+	},
+
+	rerun: (
+		executionId: string,
+		options?: { fromEventId?: number; reason?: string },
+	) =>
+		apiCall<{
+			success: boolean;
+			sourceExecutionId: string;
+			sourceInstanceId: string;
+			newExecutionId: string;
+			newInstanceId: string;
+			fromEventId: number;
+			rerunOfExecutionId?: string | null;
+			rerunSourceInstanceId?: string | null;
+			rerunFromEventId?: number | null;
+		}>(`/api/orchestrator/workflows/${executionId}/rerun`, {
+			method: "POST",
+			body: JSON.stringify(options ?? {}),
+		}),
 };
 
 // Functions API types

@@ -66,15 +66,18 @@ export function mapWorkflowStatus(
 			return "PENDING";
 		case "RUNNING":
 			return "RUNNING";
+		case "SUSPENDED":
+			return "SUSPENDED";
 		case "SUCCESS":
 		case "COMPLETED":
 			return "COMPLETED";
 		case "ERROR":
 		case "FAILED":
 			return "FAILED";
+		case "TERMINATED":
+			return "TERMINATED";
 		case "CANCELED":
 		case "CANCELLED":
-		case "TERMINATED":
 			return "CANCELLED";
 		default:
 			return "RUNNING";
@@ -617,15 +620,27 @@ export function toWorkflowListItem(
 	const endTime = execution.completedAt
 		? parseTimestamp(execution.completedAt)
 		: null;
+	const daprWorkflowVersion =
+		(
+			execution as WorkflowExecution & {
+				daprWorkflowVersion?: string | null;
+			}
+		).daprWorkflowVersion ?? null;
 
 	return {
+		executionId: execution.id,
 		instanceId: execution.id,
+		daprInstanceId: execution.daprInstanceId,
 		workflowType: workflow.daprWorkflowName || "dynamic-workflow",
 		appId: DEFAULT_APP_ID,
 		status: mapWorkflowStatus(execution.status),
 		startTime,
 		endTime,
 		workflowName: workflow.name,
+		workflowVersion: daprWorkflowVersion,
+		workflowNameVersioned: daprWorkflowVersion
+			? `${workflow.daprWorkflowName || "dynamic-workflow"}@${daprWorkflowVersion}`
+			: null,
 		customStatus: execution.phase
 			? {
 					phase: execution.phase as any,

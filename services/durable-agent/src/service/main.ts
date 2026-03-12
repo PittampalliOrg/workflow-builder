@@ -1,8 +1,8 @@
 /**
  * Durable Agent Service Entry Point
  *
- * Express HTTP server exposing the same API surface as mastra-agent-tanstack,
- * but backed by DurableAgent (Dapr Workflow-based durable ReAct loop).
+ * Express HTTP server exposing the current durable workflow agent API surface,
+ * backed by DurableAgent (Dapr Workflow-based durable ReAct loop).
  *
  * Routes:
  * - GET  /api/health           — Health check

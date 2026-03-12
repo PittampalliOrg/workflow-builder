@@ -1,7 +1,18 @@
 "use client";
 
-import { Check, Circle, Radio, WifiOff } from "lucide-react";
+import {
+	Check,
+	Circle,
+	Pause,
+	Play,
+	Radio,
+	RefreshCcw,
+	Square,
+	Trash2,
+	WifiOff,
+} from "lucide-react";
 import { useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -11,6 +22,7 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { api } from "@/lib/api-client";
 import { formatDateTime } from "@/lib/transforms/workflow-ui";
 import {
 	getPhaseColor,
@@ -22,10 +34,48 @@ import { cn } from "@/lib/utils";
 
 type WorkflowDetailHeaderProps = {
 	workflow: WorkflowDetail;
+	onRefresh?: () => void | Promise<void>;
 };
 
-export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
+function isRunnableTerminalStatus(status: WorkflowDetail["status"]): boolean {
+	return (
+		status === "COMPLETED" ||
+		status === "FAILED" ||
+		status === "CANCELLED" ||
+		status === "TERMINATED"
+	);
+}
+
+export function WorkflowDetailHeader({
+	workflow,
+	onRefresh,
+}: WorkflowDetailHeaderProps) {
 	const [copied, setCopied] = useState(false);
+	const [pendingAction, setPendingAction] = useState<string | null>(null);
+	const runtimeStatus =
+		workflow.daprStatus?.runtimeStatus ?? workflow.runtimeStatus;
+	const executionId = workflow.executionId;
+	const canPause = runtimeStatus === "RUNNING" || runtimeStatus === "PENDING";
+	const canResume = runtimeStatus === "SUSPENDED";
+	const canTerminate =
+		runtimeStatus === "RUNNING" ||
+		runtimeStatus === "PENDING" ||
+		runtimeStatus === "SUSPENDED";
+	const canRerun = Boolean(
+		executionId && isRunnableTerminalStatus(workflow.status),
+	);
+	const canPurge = Boolean(
+		executionId &&
+			isRunnableTerminalStatus(workflow.status) &&
+			workflow.daprInstanceId &&
+			runtimeStatus &&
+			runtimeStatus !== "UNKNOWN",
+	);
+	const canForcePurge = Boolean(
+		executionId &&
+			isRunnableTerminalStatus(workflow.status) &&
+			workflow.daprInstanceId,
+	);
 
 	const handleCopyInstanceId = async () => {
 		try {
@@ -34,6 +84,29 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 			setTimeout(() => setCopied(false), 2000);
 		} catch (err) {
 			console.error("Failed to copy:", err);
+		}
+	};
+
+	const runAction = async (
+		action: string,
+		runner: () => Promise<unknown>,
+		successMessage: string,
+	) => {
+		if (!executionId) {
+			toast.error("Workflow execution is missing its database execution ID.");
+			return;
+		}
+		setPendingAction(action);
+		try {
+			await runner();
+			toast.success(successMessage);
+			await onRefresh?.();
+		} catch (error) {
+			toast.error(
+				error instanceof Error ? error.message : `Failed to ${action} workflow`,
+			);
+		} finally {
+			setPendingAction(null);
 		}
 	};
 
@@ -48,32 +121,146 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 				</div>
 			)}
 
-			{/* Instance ID row - Diagrid style */}
-			<div className="flex items-center gap-3">
-				<span className="text-gray-400 text-sm">INSTANCE ID:</span>
-				<code className="font-mono text-sm text-white">
-					{workflow.instanceId}
-				</code>
-				<Button
-					className="h-auto px-0 py-0 text-teal-400 hover:bg-transparent hover:text-teal-300"
-					onClick={handleCopyInstanceId}
-					size="sm"
-					variant="ghost"
-				>
-					{copied ? (
-						<span className="flex items-center gap-1">
-							<Check className="h-3.5 w-3.5" />
-							Copied
-						</span>
-					) : (
-						"Copy"
-					)}
-				</Button>
+			<div className="flex flex-wrap items-center justify-between gap-3">
+				<div className="flex items-center gap-3">
+					<span className="text-gray-400 text-sm">INSTANCE ID:</span>
+					<code className="font-mono text-sm text-white">
+						{workflow.instanceId}
+					</code>
+					<Button
+						className="h-auto px-0 py-0 text-teal-400 hover:bg-transparent hover:text-teal-300"
+						onClick={handleCopyInstanceId}
+						size="sm"
+						variant="ghost"
+					>
+						{copied ? (
+							<span className="flex items-center gap-1">
+								<Check className="h-3.5 w-3.5" />
+								Copied
+							</span>
+						) : (
+							"Copy"
+						)}
+					</Button>
+				</div>
+				<div className="flex flex-wrap items-center gap-2">
+					{canPause ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"pause",
+									() => api.dapr.pause(executionId!),
+									"Workflow paused",
+								)
+							}
+							size="sm"
+							variant="outline"
+						>
+							<Pause className="mr-2 h-4 w-4" />
+							Pause
+						</Button>
+					) : null}
+					{canResume ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"resume",
+									() => api.dapr.resume(executionId!),
+									"Workflow resumed",
+								)
+							}
+							size="sm"
+							variant="outline"
+						>
+							<Play className="mr-2 h-4 w-4" />
+							Resume
+						</Button>
+					) : null}
+					{canTerminate ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"terminate",
+									() =>
+										api.dapr.terminate(
+											executionId!,
+											"Terminated from workflow monitor",
+										),
+									"Workflow terminated",
+								)
+							}
+							size="sm"
+							variant="destructive"
+						>
+							<Square className="mr-2 h-4 w-4" />
+							Terminate
+						</Button>
+					) : null}
+					{canRerun ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"rerun",
+									() =>
+										api.dapr.rerun(executionId!, {
+											reason: "Rerun requested from workflow monitor",
+										}),
+									"Workflow rerun started",
+								)
+							}
+							size="sm"
+							variant="outline"
+						>
+							<RefreshCcw className="mr-2 h-4 w-4" />
+							Rerun
+						</Button>
+					) : null}
+					{canPurge ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"purge",
+									() => api.dapr.purge(executionId!),
+									"Workflow runtime state purged",
+								)
+							}
+							size="sm"
+							variant="outline"
+						>
+							<Trash2 className="mr-2 h-4 w-4" />
+							Purge
+						</Button>
+					) : null}
+					{canForcePurge && !canPurge ? (
+						<Button
+							disabled={pendingAction !== null}
+							onClick={() =>
+								runAction(
+									"force purge",
+									() =>
+										api.dapr.purge(executionId!, {
+											force: true,
+											recursive: true,
+										}),
+									"Workflow runtime state force-purged",
+								)
+							}
+							size="sm"
+							variant="outline"
+						>
+							<Trash2 className="mr-2 h-4 w-4" />
+							Force Purge
+						</Button>
+					) : null}
+				</div>
 			</div>
 
-			{/* Metadata bar - Diagrid style with vertical layout */}
 			<div className="flex flex-wrap gap-8 rounded-lg border border-gray-700 bg-[#1e2433] px-5 py-4">
-				{/* Status */}
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						Status
@@ -96,7 +283,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 							)}
 							{workflow.status}
 						</Badge>
-						{/* Dapr Live Status Indicator */}
 						<TooltipProvider>
 							<Tooltip>
 								<TooltipTrigger asChild>
@@ -151,7 +337,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</div>
 				</div>
 
-				{/* Phase (for agent workflows) */}
 				{workflow.customStatus?.phase && (
 					<div className="flex flex-col gap-1">
 						<span className="text-gray-500 text-xs uppercase tracking-wide">
@@ -168,7 +353,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</div>
 				)}
 
-				{/* Progress (for running agent workflows) */}
 				{workflow.customStatus?.progress != null &&
 					workflow.status === "RUNNING" && (
 						<div className="flex flex-col gap-1">
@@ -187,7 +371,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 						</div>
 					)}
 
-				{/* App ID */}
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						App ID
@@ -197,7 +380,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</span>
 				</div>
 
-				{/* Workflow Type */}
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						Type
@@ -207,7 +389,17 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</span>
 				</div>
 
-				{/* Start Time */}
+				{workflow.workflowVersion ? (
+					<div className="flex flex-col gap-1">
+						<span className="text-gray-500 text-xs uppercase tracking-wide">
+							Version
+						</span>
+						<span className="font-mono text-sm text-white">
+							{workflow.workflowVersion}
+						</span>
+					</div>
+				) : null}
+
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						Start
@@ -217,7 +409,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</span>
 				</div>
 
-				{/* End Time */}
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						End
@@ -227,7 +418,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</span>
 				</div>
 
-				{/* Duration */}
 				<div className="flex flex-col gap-1">
 					<span className="text-gray-500 text-xs uppercase tracking-wide">
 						Duration
@@ -236,9 +426,30 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 						{workflow.executionDuration || "-"}
 					</span>
 				</div>
+
+				{workflow.rerunOfExecutionId ? (
+					<div className="flex flex-col gap-1">
+						<span className="text-gray-500 text-xs uppercase tracking-wide">
+							Rerun Of
+						</span>
+						<span className="font-mono text-sm text-white">
+							{workflow.rerunOfExecutionId}
+						</span>
+					</div>
+				) : null}
+
+				{workflow.rerunFromEventId != null ? (
+					<div className="flex flex-col gap-1">
+						<span className="text-gray-500 text-xs uppercase tracking-wide">
+							Rerun Event
+						</span>
+						<span className="font-mono text-sm text-white">
+							{workflow.rerunFromEventId}
+						</span>
+					</div>
+				) : null}
 			</div>
 
-			{/* Current Node (when running with Dapr status) */}
 			{workflow.status === "RUNNING" &&
 				workflow.daprStatus?.currentNodeName && (
 					<div className="rounded-lg border border-teal-500/30 bg-teal-500/5 px-4 py-3">
@@ -254,7 +465,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</div>
 				)}
 
-			{/* Message (for agent workflows with custom status) */}
 			{workflow.customStatus?.message && (
 				<div className="rounded-lg border border-gray-700 bg-[#1e2433]/50 px-4 py-3">
 					<span className="text-gray-300 text-sm">
@@ -263,7 +473,6 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 				</div>
 			)}
 
-			{/* Dapr Error (if present) */}
 			{workflow.daprStatus?.error && (
 				<div className="rounded-lg border border-red-500/30 bg-red-500/5 px-4 py-3">
 					<div className="flex items-start gap-2">
@@ -276,6 +485,17 @@ export function WorkflowDetailHeader({ workflow }: WorkflowDetailHeaderProps) {
 					</div>
 				</div>
 			)}
+
+			{workflow.errorStackTrace ? (
+				<div className="rounded-lg border border-red-500/20 bg-black/30 px-4 py-3">
+					<div className="mb-2 font-medium text-red-300 text-xs uppercase">
+						Failure Stack Trace
+					</div>
+					<pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-red-200 text-xs">
+						{workflow.errorStackTrace}
+					</pre>
+				</div>
+			) : null}
 		</div>
 	);
 }
