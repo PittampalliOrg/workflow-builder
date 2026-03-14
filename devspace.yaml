@@ -24,6 +24,9 @@ vars:
   LOCAL_PORT: "3002"
   CONTAINER_PORT: "3000"
   SSH_PORT: 2223
+  MS_AGENT_APP_NAME: ms-agent-workflow
+  MS_AGENT_LOCAL_PORT: "3011"
+  MS_AGENT_CONTAINER_PORT: "8081"
 
   # Registry configuration
   GITEA_HOST:
@@ -86,6 +89,13 @@ vars:
       image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+  CURRENT_MS_AGENT_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${MS_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}"
+  MS_AGENT_DEV_IMAGE_REPOSITORY:
+    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
 
 # ============================================================================
 # Development Configuration
@@ -293,3 +303,79 @@ dev:
 
     # DevSpace attaches to the existing Argo-managed deployment, so the pod
     # keeps its base Dapr annotations and sidecar configuration.
+  ms-agent-workflow:
+    namespace: ${APP_NAME}
+    imageSelector: ${CURRENT_MS_AGENT_IMAGE_REPOSITORY}
+    container: ${MS_AGENT_APP_NAME}
+    devImage: ${MS_AGENT_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (MS Agent Workflow) ==="
+        cd /app
+
+        python -m venv .venv
+        . .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .
+
+        exec uvicorn app:app --host 0.0.0.0 --port ${MS_AGENT_CONTAINER_PORT}
+    sync:
+      - path: ./services/ms-agent-workflow/:/app
+        initialSync: mirrorLocal
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-ms-agent-deps
+              command: sh
+              args:
+                - -lc
+                - cd /app && . .venv/bin/activate && pip install -e .
+              failOnError: true
+              onChange:
+                - pyproject.toml
+        excludePaths:
+          - .venv/
+          - __pycache__/
+          - .pytest_cache/
+          - "*.pyc"
+    patches:
+      - op: remove
+        path: spec.containers.name=${MS_AGENT_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${MS_AGENT_APP_NAME}.readinessProbe
+      - op: replace
+        path: spec.containers.name=${MS_AGENT_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${MS_AGENT_LOCAL_PORT}:${MS_AGENT_CONTAINER_PORT}"
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"

@@ -150,6 +150,8 @@ const getProviderLogo = (
 	switch (actionType) {
 		case "durable/run":
 			return <Bot className="size-12 text-emerald-300" strokeWidth={1.5} />;
+		case "ms-agent/run":
+			return <Bot className="size-12 text-cyan-300" strokeWidth={1.5} />;
 		case "system/http-request":
 			return <Zap className="size-12 text-amber-300" strokeWidth={1.5} />;
 		case "system/database-query":
@@ -377,6 +379,9 @@ export const ActionNode = memo(
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
 					: null;
+			}
+			if (actionType === "ms-agent/run") {
+				return "agent-framework/openai";
 			}
 			if (actionType === "Generate Text") {
 				return (data.config?.aiModel as string) || "meta/llama-4-scout";

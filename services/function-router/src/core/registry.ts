@@ -19,6 +19,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
 	"mastra/*": { appId: "durable-agent", type: "knative" },
 	"durable/*": { appId: "durable-agent", type: "knative" },
 	"workspace/*": { appId: "durable-agent", type: "knative" },
+	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -31,6 +32,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
 	"mastra/*": { appId: "durable-agent", type: "knative" },
 	"durable/*": { appId: "durable-agent", type: "knative" },
 	"workspace/*": { appId: "durable-agent", type: "knative" },
+	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

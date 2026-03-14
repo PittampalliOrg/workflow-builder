@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
 
 
 def _post_json_with_details(
@@ -135,6 +136,44 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def terminate_ms_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Terminate a Microsoft Agent child workflow run.
+    """
+    agent_workflow_id = str(
+        input_data.get("agentWorkflowId") or input_data.get("daprInstanceId") or ""
+    ).strip()
+    if not agent_workflow_id:
+        return {"success": False, "error": "agentWorkflowId is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{MS_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id, safe='')}/terminate"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "ms-agent/run-terminate",
+        "agent.workflow_id": agent_workflow_id,
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+    }
+
+    with start_activity_span("activity.terminate_ms_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload={
+                        "reason": input_data.get("reason")
+                        or "terminated by workflow-orchestrator",
+                    },
+                    service_label="MS agent run termination",
+                )
+        except Exception as e:
+            logger.error(f"[Terminate MS Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

@@ -75,6 +75,7 @@ export async function GET(
 									inArray(workflowExecutionLogs.executionId, executionIds),
 									inArray(workflowExecutionLogs.activityName, [
 										"durable/run",
+										"ms-agent/run",
 										"durable/claude-plan",
 										"durable/plan",
 										"durable/execute-plan",

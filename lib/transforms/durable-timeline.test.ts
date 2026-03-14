@@ -75,4 +75,43 @@ describe("deriveDurableAgentRuns", () => {
 			error: "failed",
 		});
 	});
+
+	it("derives run identifiers from ms-agent action logs", () => {
+		const runs = deriveDurableAgentRuns({
+			executionId: "exec-db-3",
+			parentExecutionId: "inst-3",
+			logs: [
+				{
+					id: "log-2",
+					nodeId: "ms-node",
+					nodeName: "Microsoft Agent Node",
+					activityName: "ms-agent/run",
+					status: "success",
+					input: null,
+					output: {
+						result: {
+							agentWorkflowId: "ms-agent-run-log-1",
+							daprInstanceId: "ms-inst-log-1",
+						},
+					},
+					error: null,
+					startedAt: "2026-02-22T11:00:00.000Z",
+					completedAt: "2026-02-22T11:00:05.000Z",
+					timestamp: "2026-02-22T11:00:05.000Z",
+					duration: "5000",
+				},
+			],
+			orchestratorHistory: [],
+		});
+
+		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			id: "ms-agent-run-log-1",
+			agentWorkflowId: "ms-agent-run-log-1",
+			daprInstanceId: "ms-inst-log-1",
+			mode: "run",
+			status: "completed",
+			error: null,
+		});
+	});
 });

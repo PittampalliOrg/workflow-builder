@@ -60,6 +60,7 @@ from activities.call_agent_service import (
     call_durable_plan,
     call_durable_execute_plan,
     call_durable_execute_plan_dag,
+    terminate_ms_agent_run,
     terminate_durable_agent_run,
     terminate_durable_runs_by_parent_execution,
     cleanup_execution_workspaces,
@@ -345,6 +346,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
+    wfr.register_activity(terminate_ms_agent_run)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
     wfr.register_activity(track_agent_run_scheduled)
@@ -587,11 +589,78 @@ class RerunWorkflowRequest(BaseModel):
     reason: str | None = None
 
 
+class RuntimeRegistrationResponse(BaseModel):
+    """Runtime introspection response for debug UIs."""
+    service: str
+    version: str
+    runtime: str
+    ready: bool
+    runtimeStatus: dict[str, Any]
+    features: list[str]
+    registeredWorkflows: list[dict[str, Any]]
+    registeredActivities: list[dict[str, Any]]
+    errors: list[str] = Field(default_factory=list)
+    additional: dict[str, Any] = Field(default_factory=dict)
+
+
 # --- Helper Functions ---
 
 def get_workflow_client() -> DaprWorkflowClient:
     """Get a Dapr workflow client."""
     return DaprWorkflowClient()
+
+
+def _registered_activity_names() -> list[str]:
+    return [
+        execute_action.__name__,
+        persist_state.__name__,
+        get_state.__name__,
+        delete_state.__name__,
+        publish_event.__name__,
+        publish_phase_changed.__name__,
+        publish_workflow_started.__name__,
+        publish_workflow_completed.__name__,
+        publish_workflow_failed.__name__,
+        publish_approval_requested.__name__,
+        log_external_event.__name__,
+        log_approval_request.__name__,
+        log_approval_response.__name__,
+        log_approval_timeout.__name__,
+        log_node_start.__name__,
+        log_node_complete.__name__,
+        persist_results_to_db.__name__,
+        call_durable_agent_run.__name__,
+        call_durable_plan.__name__,
+        call_durable_execute_plan.__name__,
+        call_durable_execute_plan_dag.__name__,
+        terminate_ms_agent_run.__name__,
+        terminate_durable_agent_run.__name__,
+        cleanup_execution_workspaces.__name__,
+        track_agent_run_scheduled.__name__,
+        track_agent_run_completed.__name__,
+        send_ap_callback.__name__,
+        send_ap_step_update.__name__,
+        fetch_child_workflow.__name__,
+    ]
+
+
+def _registered_workflow_descriptors() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": DYNAMIC_WORKFLOW_NAME,
+            "version": config.DYNAMIC_WORKFLOW_VERSION,
+            "aliases": [],
+            "isLatest": True,
+            "source": "service-introspection",
+        },
+        {
+            "name": AP_WORKFLOW_NAME,
+            "version": config.AP_WORKFLOW_VERSION,
+            "aliases": [],
+            "isLatest": True,
+            "source": "service-introspection",
+        },
+    ]
 
 
 # --- Database helpers for execute-by-id ---
@@ -2123,6 +2192,47 @@ def get_config():
             "function-router-integration",
         ],
     }
+
+
+@app.get("/api/v2/runtime/introspect", response_model=RuntimeRegistrationResponse)
+def get_runtime_introspection():
+    """Expose workflow runtime registrations and readiness for debug tooling."""
+    ready, runtime_status = _get_workflow_runtime_status()
+    errors = []
+    runtime_errors = runtime_status.get("errors")
+    if isinstance(runtime_errors, list):
+        errors = [str(item) for item in runtime_errors]
+
+    return RuntimeRegistrationResponse(
+        service="workflow-orchestrator",
+        version="1.0.0",
+        runtime="python-dapr-workflow",
+        ready=ready,
+        runtimeStatus=runtime_status,
+        features=[
+            "dynamic-workflow",
+            "ap-workflow",
+            "child-workflows",
+            "approval-gates",
+            "timers",
+            "function-router-integration",
+        ],
+        registeredWorkflows=_registered_workflow_descriptors(),
+        registeredActivities=[
+            {"name": name, "source": "service-introspection"}
+            for name in _registered_activity_names()
+        ],
+        errors=errors,
+        additional={
+            "config": {
+                "dynamicWorkflowVersion": config.DYNAMIC_WORKFLOW_VERSION,
+                "apWorkflowVersion": config.AP_WORKFLOW_VERSION,
+                "stateStoreName": config.STATE_STORE_NAME,
+                "pubsubName": config.PUBSUB_NAME,
+                "durableAgentAppId": config.DURABLE_AGENT_APP_ID,
+            },
+        },
+    )
 
 
 # Entry point for uvicorn

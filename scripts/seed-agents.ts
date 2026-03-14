@@ -90,6 +90,21 @@ Guidelines:
 		isDefault: false,
 	},
 	{
+		name: "Travel Planner Agent",
+		description:
+			"Sequential travel planning agent for the Microsoft Agent Workflow example.",
+		agentType: "planning" as const,
+		instructions: `You are a trip-planning specialist.
+
+Focus on destination extraction, short itinerary outlines, and polished travel recommendations.
+Be specific, concise, and practical.`,
+		model: { provider: "openai", name: "gpt-4o-mini" },
+		tools: [],
+		maxTurns: 8,
+		timeoutMinutes: 10,
+		isDefault: false,
+	},
+	{
 		name: "Planning Agent",
 		description:
 			"Generates structured execution plans without making changes. Prompt-only, no tools.",
@@ -131,7 +146,9 @@ async function main() {
 	}
 
 	if (!userId) {
-		console.log("[seed-agents] No users found. Run the app and create a user first.");
+		console.log(
+			"[seed-agents] No users found. Run the app and create a user first.",
+		);
 		process.exit(0);
 	}
 
@@ -164,9 +181,7 @@ async function main() {
 		created++;
 	}
 
-	console.log(
-		`[seed-agents] Done. Created: ${created}, Skipped: ${skipped}`,
-	);
+	console.log(`[seed-agents] Done. Created: ${created}, Skipped: ${skipped}`);
 	process.exit(0);
 }
 

@@ -650,6 +650,74 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const MS_AGENT_PIECE: IntegrationDefinition = {
+	type: "ms-agent",
+	label: "Microsoft Agent Workflow",
+	pieceName: "ms-agent",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Run Microsoft Agent Workflow",
+			description:
+				"Run a Python Dapr child workflow backed by dapr-agents activity decorators and Microsoft Agent Framework agents",
+			category: "Microsoft Agent Workflow",
+			configFields: [
+				{
+					key: "workflowTemplateId",
+					label: "Workflow Template",
+					type: "select",
+					required: true,
+					defaultValue: "travel-planner",
+					options: [
+						{
+							label: "Travel Planner",
+							value: "travel-planner",
+						},
+					],
+				},
+				{
+					key: "prompt",
+					label: "Prompt / Goal",
+					type: "template-textarea",
+					placeholder:
+						"Plan a 3-day trip to Lisbon with museums, food, and one easy day trip.",
+					required: true,
+					rows: 6,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "10",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Final workflow result text" },
+				{
+					field: "steps",
+					description:
+						"Outputs produced by the extractor, planner, and expander agents",
+				},
+				{
+					field: "workflowTemplateId",
+					description: "Workflow template used for execution",
+				},
+				{
+					field: "agentWorkflowId",
+					description: "Child workflow instance ID",
+				},
+				{
+					field: "daprInstanceId",
+					description: "Dapr workflow instance ID for tracing",
+				},
+			],
+		},
+	],
+};
+
 const WORKSPACE_PIECE: IntegrationDefinition = {
 	type: "workspace",
 	label: "Workspace",
@@ -738,7 +806,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					label: "Repository URL (optional)",
 					type: "template-input",
 					placeholder:
-						"https://gitea.cnoe.localtest.me:8443/giteaAdmin/repo.git",
+						"https://gitea.cnoe.localtest.me:8443/giteaadmin/repo.git",
 					required: false,
 				},
 				{
@@ -787,7 +855,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					key: "repositoryUsername",
 					label: "Repository Username (optional)",
 					type: "template-input",
-					placeholder: "giteaAdmin",
+					placeholder: "giteaadmin",
 					required: false,
 				},
 				{
@@ -1011,7 +1079,7 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					key: "repositoryUsername",
 					label: "Repository Username (optional)",
 					type: "template-input",
-					placeholder: "giteaAdmin",
+					placeholder: "giteaadmin",
 					required: false,
 				},
 				{
@@ -1031,5 +1099,5 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 };
 
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, WORKSPACE_PIECE, DURABLE_AGENT_PIECE];
+	return [MCP_PIECE, WORKSPACE_PIECE, DURABLE_AGENT_PIECE, MS_AGENT_PIECE];
 }

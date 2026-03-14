@@ -51,10 +51,12 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    MS_AGENT_APP_ID: str = "ms-agent-workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
+    MS_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "msAgentWorkflowV1"
 
     # Workflow versioning and runtime controls (Dapr 1.17+)
     DYNAMIC_WORKFLOW_VERSION: str = "v1"
@@ -97,6 +99,8 @@ class OrchestratorConfig:
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
+                "MS_AGENT_APP_ID",
+                "MS_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -147,6 +151,7 @@ class OrchestratorConfig:
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "MS_AGENT_APP_ID": ("MS_AGENT_APP_ID", "ms-agent-workflow"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "true",
@@ -162,6 +167,10 @@ class OrchestratorConfig:
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "durableRunWorkflowV1",
+            ),
+            "MS_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "MS_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "msAgentWorkflowV1",
             ),
             "DYNAMIC_WORKFLOW_VERSION": (
                 "DYNAMIC_WORKFLOW_VERSION",

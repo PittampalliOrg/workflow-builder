@@ -32,6 +32,10 @@ const WORKFLOW_ID = "lazxidq045szbb9ke4dny";
 const WORKFLOW_NAME = "Opencode Agent Plan Then Execute PR";
 const WORKFLOW_DESCRIPTION =
 	"Multi-step opencode flow: planning, execution, change verification, then commit/push/PR";
+const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
+const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
+const MS_AGENT_WORKFLOW_DESCRIPTION =
+	"Reference workflow that runs the Python Dapr + Microsoft Agent Framework travel planner.";
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -534,6 +538,106 @@ function buildEdges() {
 	];
 }
 
+function buildMsAgentNodes() {
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_msagent_1",
+			type: "trigger",
+			position: { x: -220, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "ac_msagent_1",
+			type: "action",
+			position: { x: 60, y: 0 },
+			data: {
+				label: "Travel Planner",
+				description:
+					"Run the Python Dapr workflow backed by Microsoft Agent Framework agents.",
+				type: "action",
+				config: {
+					actionType: "ms-agent/run",
+					workflowTemplateId: "travel-planner",
+					prompt:
+						"Plan a 3-day trip to Kyoto with temples, local food, and one relaxed evening.",
+					timeoutMinutes: "10",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildMsAgentEdges() {
+	return [
+		{
+			id: "e_msagent_1",
+			type: "animated",
+			source: "tr_msagent_1",
+			target: "ac_msagent_1",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
+async function upsertWorkflow(params: {
+	db: ReturnType<typeof drizzle>;
+	workflowId: string;
+	name: string;
+	description: string;
+	userId: string;
+	projectId: string;
+	nodes: ReturnType<typeof normalizeWorkflowNodes>;
+	edges: ReturnType<typeof buildEdges>;
+}) {
+	const existing = await params.db.query.workflows.findFirst({
+		where: eq(workflows.id, params.workflowId),
+	});
+
+	if (!existing) {
+		await params.db.insert(workflows).values({
+			id: params.workflowId,
+			name: params.name,
+			description: params.description,
+			userId: params.userId,
+			projectId: params.projectId,
+			nodes: params.nodes,
+			edges: params.edges,
+			visibility: "private",
+			engineType: "dapr",
+		});
+		console.log(
+			`[seed-workflows] Created workflow ${params.workflowId} for user ${params.userId}`,
+		);
+		return;
+	}
+
+	await params.db
+		.update(workflows)
+		.set({
+			name: params.name,
+			description: params.description,
+			userId: params.userId,
+			projectId: params.projectId,
+			nodes: params.nodes,
+			edges: params.edges,
+			visibility: "private",
+			engineType: "dapr",
+			updatedAt: new Date(),
+		})
+		.where(eq(workflows.id, params.workflowId));
+	console.log(
+		`[seed-workflows] Reconciled workflow ${params.workflowId} for user ${params.userId}`,
+	);
+}
+
 async function seedWorkflow() {
 	console.log("[seed-workflows] Starting workflow seed...");
 	const sql = postgres(DATABASE_URL, { max: 1 });
@@ -555,45 +659,16 @@ async function seedWorkflow() {
 		const profileVersion = await resolveAgentProfileVersion(db);
 		const nodes = buildNodes(profileVersion);
 		const edges = buildEdges();
-
-		const existing = await db.query.workflows.findFirst({
-			where: eq(workflows.id, WORKFLOW_ID),
+		await upsertWorkflow({
+			db,
+			workflowId: WORKFLOW_ID,
+			name: WORKFLOW_NAME,
+			description: WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes,
+			edges,
 		});
-
-		if (!existing) {
-			await db.insert(workflows).values({
-				id: WORKFLOW_ID,
-				name: WORKFLOW_NAME,
-				description: WORKFLOW_DESCRIPTION,
-				userId,
-				projectId,
-				nodes,
-				edges,
-				visibility: "private",
-				engineType: "dapr",
-			});
-			console.log(
-				`[seed-workflows] Created workflow ${WORKFLOW_ID} for user ${userId}`,
-			);
-		} else {
-			await db
-				.update(workflows)
-				.set({
-					name: WORKFLOW_NAME,
-					description: WORKFLOW_DESCRIPTION,
-					userId,
-					projectId,
-					nodes,
-					edges,
-					visibility: "private",
-					engineType: "dapr",
-					updatedAt: new Date(),
-				})
-				.where(eq(workflows.id, WORKFLOW_ID));
-			console.log(
-				`[seed-workflows] Reconciled workflow ${WORKFLOW_ID} for user ${userId}`,
-			);
-		}
 
 		await db
 			.delete(workflowResourceRefs)
@@ -621,6 +696,17 @@ async function seedWorkflow() {
 		console.log(
 			`[seed-workflows] Reconciled workflow_resource_refs for ${WORKFLOW_ID} (profile version ${profileVersion})`,
 		);
+
+		await upsertWorkflow({
+			db,
+			workflowId: MS_AGENT_WORKFLOW_ID,
+			name: MS_AGENT_WORKFLOW_NAME,
+			description: MS_AGENT_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildMsAgentNodes(),
+			edges: buildMsAgentEdges(),
+		});
 		console.log("[seed-workflows] Completed successfully");
 	} finally {
 		await sql.end();

@@ -253,6 +253,9 @@ function deriveModeFromHistoryTaskName(
 	if (normalized === "call_durable_agent_run") {
 		return "run";
 	}
+	if (normalized === "call_ms_agent_run") {
+		return "run";
+	}
 	return null;
 }
 
@@ -266,6 +269,7 @@ export function deriveDurableAgentRuns(
 		if (
 			!(
 				activityName.includes("durable/") ||
+				activityName.includes("ms-agent/") ||
 				activityName.includes("mastra/execute")
 			)
 		) {
@@ -771,9 +775,7 @@ export function toDurableExternalEventSummary(
 	}));
 }
 
-function extractTaskSummary(
-	planJson: unknown,
-): DurableTaskSummary | null {
+function extractTaskSummary(planJson: unknown): DurableTaskSummary | null {
 	if (!planJson || typeof planJson !== "object") return null;
 	const plan = planJson as { tasks?: Array<{ status?: string }> };
 	if (!Array.isArray(plan.tasks)) return null;
@@ -788,7 +790,14 @@ function extractTaskSummary(
 			else acc.pending++;
 			return acc;
 		},
-		{ total: 0, completed: 0, failed: 0, skipped: 0, inProgress: 0, pending: 0 },
+		{
+			total: 0,
+			completed: 0,
+			failed: 0,
+			skipped: 0,
+			inProgress: 0,
+			pending: 0,
+		},
 	);
 }
 
