@@ -1,11 +1,14 @@
 const GITEA_API_URL =
 	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
-const GITEA_REPO_OWNER = process.env.GITEA_REPO_OWNER || "giteaAdmin";
+const GITEA_REPO_OWNER = process.env.GITEA_REPO_OWNER || "giteaadmin";
 const GITEA_INTERNAL_CLONE_BASE_URL =
 	process.env.GITEA_INTERNAL_CLONE_BASE_URL ||
 	"http://gitea-http.gitea.svc.cluster.local:3000";
 const GITEA_USERNAME = process.env.GITEA_USERNAME || "";
 const GITEA_PASSWORD = process.env.GITEA_PASSWORD || "";
+const GITHUB_API_URL = "https://api.github.com";
+const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
+const GITHUB_USER_AGENT = "workflow-builder-function-router";
 
 const GITEA_HOST_ALIASES = (
 	process.env.GITEA_HOST_ALIASES ||
@@ -33,6 +36,7 @@ type CloneResolutionInput = {
 	repositoryUrl: string;
 	repositoryOwner: string;
 	repositoryRepo: string;
+	repositoryBranch: string;
 	repositoryUsername: string;
 	repositoryToken: string;
 	githubToken: string;
@@ -51,6 +55,14 @@ type ParsedRepoUrl = {
 	host: string;
 	owner: string;
 	repo: string;
+};
+
+type GiteaRepoRecord = {
+	default_branch?: string;
+	empty?: boolean;
+	full_name?: string;
+	name?: string;
+	original_url?: string;
 };
 
 function parseRepositoryUrl(value: string): ParsedRepoUrl | null {
@@ -80,16 +92,16 @@ function isGiteaHost(host: string): boolean {
 function giteaAuth(
 	input: CloneResolutionInput,
 ): { username: string; password: string } | undefined {
-	if (input.repositoryUsername && input.repositoryToken) {
-		return {
-			username: input.repositoryUsername,
-			password: input.repositoryToken,
-		};
-	}
 	if (GITEA_USERNAME && GITEA_PASSWORD) {
 		return {
 			username: GITEA_USERNAME,
 			password: GITEA_PASSWORD,
+		};
+	}
+	if (input.repositoryUsername && input.repositoryToken) {
+		return {
+			username: input.repositoryUsername,
+			password: input.repositoryToken,
 		};
 	}
 	return undefined;
@@ -133,23 +145,172 @@ async function giteaRequest(
 	});
 }
 
+function isGiteaRepoRecord(value: unknown): value is GiteaRepoRecord {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.full_name === "string" || typeof record.name === "string"
+	);
+}
+
+async function getGiteaRepo(
+	owner: string,
+	repo: string,
+): Promise<{ status: number; bodyText: string; repo?: GiteaRepoRecord }> {
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+		{},
+	);
+	const bodyText = await response.text();
+	if (response.status !== 200) {
+		return { status: response.status, bodyText };
+	}
+	try {
+		const parsed = JSON.parse(bodyText) as unknown;
+		if (isGiteaRepoRecord(parsed)) {
+			return { status: response.status, bodyText, repo: parsed };
+		}
+	} catch {
+		// Ignore parse errors and surface the raw body below.
+	}
+	return { status: response.status, bodyText };
+}
+
+async function deleteGiteaRepo(
+	owner: string,
+	repo: string,
+	auth: { username: string; password: string },
+): Promise<void> {
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+		{
+			method: "DELETE",
+			auth,
+		},
+	);
+	if (
+		response.status === 200 ||
+		response.status === 202 ||
+		response.status === 204 ||
+		response.status === 404
+	) {
+		return;
+	}
+	const body = await response.text();
+	throw new Error(
+		`Failed to delete broken Gitea repo ${owner}/${repo} (${response.status}): ${body.slice(0, 300)}`,
+	);
+}
+
+async function assertGitHubRepositoryAccessible(
+	owner: string,
+	repo: string,
+	token: string,
+): Promise<void> {
+	const headers: Record<string, string> = {
+		Accept: GITHUB_ACCEPT_HEADER,
+		"User-Agent": GITHUB_USER_AGENT,
+		"X-GitHub-Api-Version": "2022-11-28",
+	};
+	if (token) {
+		headers.Authorization = `Bearer ${token}`;
+	}
+
+	const response = await fetch(
+		`${GITHUB_API_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+		{
+			headers,
+			signal: AbortSignal.timeout(15_000),
+		},
+	);
+	if (response.status === 200) {
+		return;
+	}
+
+	if (response.status === 404) {
+		throw new Error(
+			token
+				? `GitHub repository ${owner}/${repo} was not found or is not accessible with the configured token.`
+				: `GitHub repository ${owner}/${repo} was not found or requires a GitHub token.`,
+		);
+	}
+
+	const body = await response.text();
+	throw new Error(
+		`GitHub repository lookup failed for ${owner}/${repo} (${response.status}): ${body.slice(0, 300)}`,
+	);
+}
+
+async function assertGiteaBranchExists(
+	owner: string,
+	repo: string,
+	branch: string,
+): Promise<void> {
+	const normalizedBranch = branch.trim();
+	if (!normalizedBranch) {
+		return;
+	}
+
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(normalizedBranch)}`,
+		{},
+	);
+	if (response.status === 200) {
+		return;
+	}
+	if (response.status !== 404) {
+		const body = await response.text();
+		throw new Error(
+			`Gitea branch lookup failed for ${owner}/${repo}@${normalizedBranch} (${response.status}): ${body.slice(0, 300)}`,
+		);
+	}
+
+	const repoLookup = await getGiteaRepo(owner, repo);
+	const originalUrl = repoLookup.repo?.original_url?.trim();
+	if (repoLookup.repo?.empty) {
+		throw new Error(
+			originalUrl
+				? `Gitea repository ${owner}/${repo} is empty, so branch ${normalizedBranch} is unavailable. The configured upstream ${originalUrl} likely failed to import.`
+				: `Gitea repository ${owner}/${repo} is empty, so branch ${normalizedBranch} is unavailable.`,
+		);
+	}
+
+	throw new Error(
+		`Branch ${normalizedBranch} was not found in Gitea repository ${owner}/${repo}.`,
+	);
+}
+
 async function ensureRepoInGitea(input: {
 	owner: string;
 	repo: string;
 	upstream: string;
+	upstreamOwner: string;
+	upstreamRepo: string;
+	upstreamToken: string;
 	auth?: { username: string; password: string };
 }): Promise<boolean> {
-	const existsResponse = await giteaRequest(
-		`/api/v1/repos/${encodeURIComponent(input.owner)}/${encodeURIComponent(input.repo)}`,
-		{ auth: input.auth },
+	await assertGitHubRepositoryAccessible(
+		input.upstreamOwner,
+		input.upstreamRepo,
+		input.upstreamToken,
 	);
-	if (existsResponse.status === 200) {
+
+	const existing = await getGiteaRepo(input.owner, input.repo);
+	if (existing.status === 200 && existing.repo && !existing.repo.empty) {
 		return false;
 	}
-	if (existsResponse.status !== 404) {
-		const body = await existsResponse.text();
+	if (existing.status === 200 && existing.repo?.empty) {
+		if (!input.auth) {
+			throw new Error(
+				`Gitea repo ${input.owner}/${input.repo} exists but is empty. Configure GITEA_USERNAME/GITEA_PASSWORD so workflow-builder can repair the import.`,
+			);
+		}
+		await deleteGiteaRepo(input.owner, input.repo, input.auth);
+	} else if (existing.status !== 404) {
 		throw new Error(
-			`Gitea repo lookup failed (${existsResponse.status}): ${body.slice(0, 300)}`,
+			`Gitea repo lookup failed (${existing.status}): ${existing.bodyText.slice(0, 300)}`,
 		);
 	}
 	if (!input.auth) {
@@ -186,6 +347,7 @@ export async function resolveCloneRepository(
 	const repositoryUrl = input.repositoryUrl.trim();
 	const repositoryOwner = input.repositoryOwner.trim();
 	const repositoryRepo = input.repositoryRepo.trim();
+	const repositoryBranch = input.repositoryBranch.trim();
 	const auth = giteaAuth(input);
 
 	if (repositoryUrl) {
@@ -202,6 +364,11 @@ export async function resolveCloneRepository(
 		}
 
 		if (isGiteaHost(parsed.host)) {
+			await assertGiteaBranchExists(
+				parsed.owner,
+				parsed.repo,
+				repositoryBranch,
+			);
 			return {
 				repositoryUrl: buildGiteaCloneUrl(parsed.owner, parsed.repo),
 				repositoryOwner: parsed.owner,
@@ -224,8 +391,12 @@ export async function resolveCloneRepository(
 				owner: giteaOwner,
 				repo: giteaRepo,
 				upstream,
+				upstreamOwner: parsed.owner,
+				upstreamRepo: parsed.repo,
+				upstreamToken: input.githubToken,
 				auth,
 			});
+			await assertGiteaBranchExists(giteaOwner, giteaRepo, repositoryBranch);
 			return {
 				repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
 				repositoryOwner: giteaOwner,
@@ -263,8 +434,12 @@ export async function resolveCloneRepository(
 		owner: giteaOwner,
 		repo: giteaRepo,
 		upstream,
+		upstreamOwner: repositoryOwner,
+		upstreamRepo: repositoryRepo,
+		upstreamToken: input.githubToken,
 		auth,
 	});
+	await assertGiteaBranchExists(giteaOwner, giteaRepo, repositoryBranch);
 	return {
 		repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
 		repositoryOwner: giteaOwner,
@@ -293,6 +468,7 @@ export async function createGiteaPullRequest(input: {
 		repositoryUrl: "",
 		repositoryOwner: owner,
 		repositoryRepo: repo,
+		repositoryBranch: "",
 		repositoryUsername: input.repositoryUsername || "",
 		repositoryToken: input.repositoryToken || "",
 		githubToken: "",
@@ -319,8 +495,15 @@ export async function createGiteaPullRequest(input: {
 	);
 
 	if (response.status === 201) {
-		const pr = await response.json();
-		return { success: true, url: pr.html_url, prNumber: pr.number };
+		const pr = (await response.json()) as {
+			html_url?: string | null;
+			number?: number | null;
+		};
+		return {
+			success: true,
+			url: pr.html_url ?? null,
+			prNumber: pr.number ?? null,
+		};
 	}
 
 	const text = await response.text();

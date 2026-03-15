@@ -8,7 +8,8 @@
 #   - Integrates with existing OTEL observability stack
 #
 # Usage:
-#   devspace dev       # Start development mode
+#   bash scripts/devspace-dev-ryzen.sh  # Start development mode on the ryzen inner loop for workflow-builder + ms-agent-workflow
+#   devspace dev       # Raw DevSpace entrypoint (does not pause ArgoCD)
 #   devspace enter     # Shell into container
 #   devspace purge     # Clean up devspace resources
 
@@ -302,7 +303,8 @@ dev:
       # Do NOT override it here — DevSpace inherits the base deployment's envFrom
 
     # DevSpace attaches to the existing Argo-managed deployment, so the pod
-    # keeps its base Dapr annotations and sidecar configuration.
+    # keeps its base Dapr annotations and sidecar configuration. Use the
+    # ryzen wrapper script to pause ArgoCD reconcile for the session.
   ms-agent-workflow:
     namespace: ${APP_NAME}
     imageSelector: ${CURRENT_MS_AGENT_IMAGE_REPOSITORY}
@@ -342,8 +344,8 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && . .venv/bin/activate && pip install -e .
-              failOnError: true
+                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+              failOnError: false
               onChange:
                 - pyproject.toml
         excludePaths:
@@ -379,3 +381,6 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
+
+    # Use the shared ryzen wrapper so ArgoCD reconciliation is paused for both
+    # the workflow-builder UI app and this DevSpace-managed replacement.

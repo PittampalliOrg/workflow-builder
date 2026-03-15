@@ -1073,6 +1073,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								repositoryUrl,
 								repositoryOwner,
 								repositoryRepo,
+								repositoryBranch,
 								repositoryUsername,
 								repositoryToken,
 								githubToken,
@@ -1145,21 +1146,54 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 						let httpResponse: Response;
 						if (isWorkspaceCreatePullRequest) {
-							const { createGiteaPullRequest } = await import("../core/gitea-repository.js");
+							const { createGiteaPullRequest } = await import(
+								"../core/gitea-repository.js"
+							);
+							const repositoryOwner =
+								typeof args.repositoryOwner === "string"
+									? args.repositoryOwner.trim()
+									: "";
+							const repositoryRepo =
+								typeof args.repositoryRepo === "string"
+									? args.repositoryRepo.trim()
+									: "";
+							const repositoryUsername =
+								typeof args.repositoryUsername === "string"
+									? args.repositoryUsername.trim()
+									: undefined;
+							const repositoryToken =
+								typeof args.repositoryToken === "string"
+									? args.repositoryToken.trim()
+									: undefined;
+							const headBranch =
+								typeof args.headBranch === "string"
+									? args.headBranch.trim()
+									: "";
+							const baseBranch =
+								typeof args.baseBranch === "string"
+									? args.baseBranch.trim()
+									: "";
+							const title =
+								typeof args.title === "string" ? args.title.trim() : "";
+							const bodyText =
+								typeof args.body === "string" ? args.body.trim() : undefined;
 							const prResult = await createGiteaPullRequest({
-								repositoryOwner: args.repositoryOwner,
-								repositoryRepo: args.repositoryRepo,
-								repositoryUsername: args.repositoryUsername,
-								repositoryToken: args.repositoryToken,
-								headBranch: args.headBranch,
-								baseBranch: args.baseBranch,
-								title: args.title,
-								body: args.body,
+								repositoryOwner,
+								repositoryRepo,
+								repositoryUsername,
+								repositoryToken,
+								headBranch,
+								baseBranch,
+								title,
+								body: bodyText,
 							});
-							httpResponse = new Response(JSON.stringify({ text: "Success", ...prResult }), {
-								status: 200,
-								headers: { "Content-Type": "application/json" }
-							});
+							httpResponse = new Response(
+								JSON.stringify({ text: "Success", ...prResult }),
+								{
+									status: 200,
+									headers: { "Content-Type": "application/json" },
+								},
+							);
 						} else {
 							httpResponse = await fetch(targetUrl, {
 								method: "POST",

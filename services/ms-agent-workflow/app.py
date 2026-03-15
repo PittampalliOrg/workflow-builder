@@ -28,7 +28,7 @@ logging.basicConfig(
 PORT = int(os.environ.get("PORT", "8081"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "travel-planner")
-DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-4o-mini")
+DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.2")
 WORKFLOW_NAME = os.environ.get("MS_AGENT_CHILD_WORKFLOW_RUN_NAME", "msAgentWorkflowV1")
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()

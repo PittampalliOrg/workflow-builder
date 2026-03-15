@@ -88,7 +88,7 @@ Visit [http://localhost:3000](http://localhost:3000) to get started.
 - **Linear**: Create Ticket, Find Issues
 - **Mastra Agent**: Run Mastra Agent
 - **MCP**: Reply to MCP Client
-- **OpenAI**: Generate Text, Generate Image
+- **Microsoft Agent Workflow**: Run Microsoft Agent Workflow
 - **Perplexity**: Search Web, Ask Question, Research Topic
 - **Resend**: Send Email
 - **Slack**: Send Slack Message

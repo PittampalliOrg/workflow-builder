@@ -27,6 +27,10 @@ import type {
 	McpConnectionStatus,
 } from "./types/mcp-connection";
 import type {
+	DaprDebugAppDetailResponse,
+	DaprDebugOverviewResponse,
+} from "./types/dapr-debug";
+import type {
 	DurableAgentRunSummary,
 	DurableExecutionConsistency,
 	DurableExternalEventSummary,
@@ -2070,6 +2074,15 @@ const agentApi = {
 		}),
 };
 
+const daprDebugApi = {
+	getOverview: () =>
+		apiCall<DaprDebugOverviewResponse>("/api/dapr/debug/overview"),
+	getApp: (appId: string) =>
+		apiCall<DaprDebugAppDetailResponse>(
+			`/api/dapr/debug/apps/${encodeURIComponent(appId)}`,
+		),
+};
+
 // Export all APIs as a single object
 export const api = {
 	agent: agentApi,
@@ -2077,6 +2090,7 @@ export const api = {
 	aiChat: aiChatApi,
 	appConnection: appConnectionApi,
 	dapr: daprApi,
+	daprDebug: daprDebugApi,
 	functions: functionsApi,
 	mcpConnection: mcpConnectionApi,
 	mcpServer: mcpServerApi,

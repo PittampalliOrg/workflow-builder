@@ -16,7 +16,7 @@ def test_build_public_result_exposes_text_and_instance_ids() -> None:
     result = _build_public_result(
         instance_id="wf-123",
         template_id="travel-planner",
-        model="gpt-4o-mini",
+        model="gpt-5.2",
         workflow_result={
             "content": "Day 1: North End",
             "steps": [{"agent": "PlannerAgent", "content": "Outline"}],

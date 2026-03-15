@@ -98,7 +98,7 @@ Guidelines:
 
 Focus on destination extraction, short itinerary outlines, and polished travel recommendations.
 Be specific, concise, and practical.`,
-		model: { provider: "openai", name: "gpt-4o-mini" },
+		model: { provider: "openai", name: "gpt-5.2" },
 		tools: [],
 		maxTurns: 8,
 		timeoutMinutes: 10,

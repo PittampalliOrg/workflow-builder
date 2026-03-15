@@ -41,6 +41,14 @@ const msAgentPlugin: IntegrationPlugin = {
 					rows: 5,
 				},
 				{
+					key: "model",
+					label: "Model",
+					type: "text",
+					required: false,
+					defaultValue: "gpt-5.2",
+					placeholder: "gpt-5.2",
+				},
+				{
 					key: "timeoutMinutes",
 					label: "Timeout (minutes)",
 					type: "number",

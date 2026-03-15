@@ -16,6 +16,7 @@ import {
 	Eye,
 	Library,
 	SlidersHorizontal,
+	Bug,
 } from "lucide-react";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
 import {
@@ -42,6 +43,7 @@ import type { User } from "@/lib/db/schema";
 const navigationLinks = [
 	{ href: "/workflows", label: "Builder", icon: PenTool },
 	{ href: "/monitor", label: "Monitor", icon: Activity },
+	{ href: "/dapr", label: "Dapr Debug", icon: Bug },
 	{ href: "/observability", label: "Observability", icon: Eye },
 	{ href: "/agents", label: "Agents", icon: Bot },
 	{ href: "/library", label: "Library", icon: Library },

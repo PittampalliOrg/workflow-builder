@@ -148,6 +148,7 @@ const DURABLE_PLAN_WORKFLOW_NAME =
 	process.env.DURABLE_PLAN_WORKFLOW_NAME?.trim() || "durablePlanWorkflowV1";
 const DAG_EXECUTOR_WORKFLOW_NAME =
 	process.env.DAG_EXECUTOR_WORKFLOW_NAME?.trim() || "dagExecutorWorkflowV1";
+const DURABLE_AGENT_SERVICE_VERSION = "1.0.0";
 
 // ── Agent Config Types ────────────────────────────────────────
 
@@ -188,6 +189,49 @@ const WORKFLOW_STATUS_RUNNING = 0;
 const WORKFLOW_STATUS_COMPLETED = 1;
 const WORKFLOW_STATUS_FAILED = 3;
 const WORKFLOW_STATUS_TERMINATED = 5;
+
+function listRuntimeWorkflowRegistrations() {
+	return [
+		{
+			name: "agentWorkflow",
+			version: null,
+			aliases: [DURABLE_RUN_WORKFLOW_NAME],
+			isLatest: true,
+			source: "service-introspection" as const,
+		},
+		{
+			name: "durablePlanWorkflowV1",
+			version: "v1",
+			aliases: [DURABLE_PLAN_WORKFLOW_NAME],
+			isLatest: true,
+			source: "service-introspection" as const,
+		},
+		{
+			name: "dagExecutorWorkflow",
+			version: "v1",
+			aliases: [DAG_EXECUTOR_WORKFLOW_NAME],
+			isLatest: true,
+			source: "service-introspection" as const,
+		},
+	];
+}
+
+function listRuntimeActivityRegistrations() {
+	return [
+		"recordInitialEntry",
+		"callLlm",
+		"runTool",
+		"saveToolResults",
+		"compactConversation",
+		"finalizeWorkflow",
+		"executeClaudeTask",
+		"persistDagState",
+		"durablePlanActivity",
+	].map((name) => ({
+		name,
+		source: "service-introspection" as const,
+	}));
+}
 
 type ActiveRun = {
 	agentWorkflowId: string;
@@ -2099,6 +2143,84 @@ app.get("/api/ready", (_req, res) => {
 		service: "durable-agent",
 		ready: true,
 		initialized,
+	});
+});
+
+app.get("/api/runtime/introspect", async (_req, res) => {
+	const healthResponse = {
+		daprHost: DAPR_HTTP_HOST,
+		daprHttpPort: DAPR_HTTP_PORT,
+		minRuntimeVersion: MIN_DAPR_RUNTIME_VERSION,
+	};
+	let runtimeStatus: Record<string, unknown> = {
+		...healthResponse,
+		initialized,
+	};
+	const errors: string[] = [];
+
+	try {
+		const metadataResponse = await fetch(
+			`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`,
+			{
+				method: "GET",
+				signal: AbortSignal.timeout(3000),
+			},
+		);
+		if (metadataResponse.ok) {
+			const payload = (await metadataResponse.json()) as Record<
+				string,
+				unknown
+			>;
+			runtimeStatus = {
+				...runtimeStatus,
+				appId: payload.id,
+				runtimeVersion: payload.runtimeVersion,
+				extended: payload,
+			};
+		} else {
+			errors.push(`metadata probe failed with HTTP ${metadataResponse.status}`);
+		}
+	} catch (error) {
+		errors.push(
+			error instanceof Error
+				? error.message
+				: `metadata probe failed: ${String(error)}`,
+		);
+	}
+
+	res.json({
+		service: "durable-agent",
+		version: DURABLE_AGENT_SERVICE_VERSION,
+		runtime: "node-dapr-workflow",
+		ready: initialized,
+		runtimeStatus,
+		features: [
+			"agent-workflow",
+			"dag-executor",
+			"workspace-tools",
+			"plan-execution",
+			"change-artifacts",
+		],
+		registeredWorkflows: listRuntimeWorkflowRegistrations(),
+		registeredActivities: listRuntimeActivityRegistrations(),
+		errors,
+		registry: {
+			enabled: Boolean(agent?.registry),
+			storeName: null,
+			teamName: agent?.registry ? "default" : null,
+			registeredAgents: [],
+		},
+		additional: {
+			toolNames: TOOL_NAMES,
+			activeRuns: activeRuns.size,
+			workspaceBindings: workspaceSessions.getStats().mappedInstances,
+			pubsubName: process.env.PUBSUB_NAME || "pubsub",
+			stateStoreName: process.env.STATE_STORE_NAME || "statestore",
+			orchestratorAppId:
+				process.env.ORCHESTRATOR_APP_ID || "workflow-orchestrator",
+			startupInitRequired: STARTUP_INIT_REQUIRED,
+			startupInitRetryMs: STARTUP_INIT_RETRY_MS,
+		},
 	});
 });
 

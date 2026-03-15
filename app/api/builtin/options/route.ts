@@ -23,7 +23,7 @@ const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
 );
 const GITEA_API_BASE_URL =
 	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
-const GITEA_REPO_OWNER = (process.env.GITEA_REPO_OWNER || "giteaAdmin").trim();
+const GITEA_REPO_OWNER = (process.env.GITEA_REPO_OWNER || "giteaadmin").trim();
 
 type DropdownOption = {
 	label: string;
@@ -180,6 +180,13 @@ type GithubBranch = {
 
 type GiteaBranch = {
 	name?: string;
+};
+
+type GiteaRepo = {
+	empty?: boolean;
+	full_name?: string;
+	name?: string;
+	original_url?: string;
 };
 
 type DurableToolsResponse = {
@@ -359,14 +366,14 @@ function getGiteaAuth(input: Record<string, unknown>): {
 	password: string;
 } | null {
 	const username = (
-		typeof input.repositoryUsername === "string"
+		process.env.GITEA_USERNAME ||
+		(typeof input.repositoryUsername === "string"
 			? input.repositoryUsername
-			: process.env.GITEA_USERNAME || ""
+			: "")
 	).trim();
 	const password = (
-		typeof input.repositoryToken === "string"
-			? input.repositoryToken
-			: process.env.GITEA_PASSWORD || ""
+		process.env.GITEA_PASSWORD ||
+		(typeof input.repositoryToken === "string" ? input.repositoryToken : "")
 	).trim();
 	if (!username || !password) {
 		return null;
@@ -397,23 +404,128 @@ async function giteaRequest(
 	});
 }
 
+function isGiteaRepo(value: unknown): value is GiteaRepo {
+	if (typeof value !== "object" || value === null) {
+		return false;
+	}
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.full_name === "string" || typeof record.name === "string"
+	);
+}
+
+async function getGiteaRepo(repo: string): Promise<{
+	status: number;
+	bodyText: string;
+	repo?: GiteaRepo;
+}> {
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(repo)}`,
+		{},
+	);
+	const bodyText = await response.text();
+	if (response.status !== 200) {
+		return { status: response.status, bodyText };
+	}
+	try {
+		const parsed = JSON.parse(bodyText) as unknown;
+		if (isGiteaRepo(parsed)) {
+			return { status: response.status, bodyText, repo: parsed };
+		}
+	} catch {
+		// Ignore parse errors and surface the raw body below.
+	}
+	return { status: response.status, bodyText };
+}
+
+async function deleteGiteaRepo(
+	repo: string,
+	auth: { username: string; password: string },
+): Promise<void> {
+	const response = await giteaRequest(
+		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(repo)}`,
+		{
+			method: "DELETE",
+			auth,
+		},
+	);
+	if (
+		response.status === 200 ||
+		response.status === 202 ||
+		response.status === 204 ||
+		response.status === 404
+	) {
+		return;
+	}
+	const body = await response.text();
+	throw new Error(
+		`Failed to delete broken Gitea repository ${GITEA_REPO_OWNER}/${repo} (${response.status}): ${body.slice(0, 200)}`,
+	);
+}
+
+async function assertGithubRepoAccessible(
+	owner: string,
+	repo: string,
+	token: string,
+): Promise<void> {
+	const headers: Record<string, string> = {
+		Accept: GITHUB_ACCEPT_HEADER,
+		"User-Agent": "workflow-builder-builtin-options",
+		"X-GitHub-Api-Version": "2022-11-28",
+	};
+	if (token) {
+		headers.Authorization = `Bearer ${token}`;
+	}
+
+	const response = await fetch(
+		`${GITHUB_API_BASE_URL}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+		{
+			headers,
+			signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+		},
+	);
+	if (response.status === 200) {
+		return;
+	}
+	if (response.status === 404) {
+		throw new Error(
+			token
+				? `GitHub repository ${owner}/${repo} was not found or is not accessible with the configured token.`
+				: `GitHub repository ${owner}/${repo} was not found or requires a GitHub token.`,
+		);
+	}
+	const body = await response.text();
+	throw new Error(
+		`GitHub repository lookup failed for ${owner}/${repo} (${response.status}): ${body.slice(0, 200)}`,
+	);
+}
+
 async function ensureWorkspaceCloneRepoInGitea(input: {
 	repo: string;
 	githubOwner: string;
 	githubToken: string;
 	auth: { username: string; password: string } | null;
 }): Promise<void> {
-	const lookup = await giteaRequest(
-		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(input.repo)}`,
-		{ auth: input.auth },
+	await assertGithubRepoAccessible(
+		input.githubOwner,
+		input.repo,
+		input.githubToken,
 	);
-	if (lookup.status === 200) {
+
+	const lookup = await getGiteaRepo(input.repo);
+	if (lookup.status === 200 && lookup.repo && !lookup.repo.empty) {
 		return;
 	}
-	if (lookup.status !== 404) {
-		const body = await lookup.text();
+	if (lookup.status === 200 && lookup.repo?.empty) {
+		if (!input.auth) {
+			throw new Error(
+				`Gitea repository ${GITEA_REPO_OWNER}/${input.repo} exists but is empty. Configure GITEA_USERNAME/GITEA_PASSWORD so workflow-builder can repair the import.`,
+			);
+		}
+		await deleteGiteaRepo(input.repo, input.auth);
+	} else if (lookup.status !== 404) {
 		throw new Error(
-			`Gitea repo lookup failed (${lookup.status}): ${body.slice(0, 200)}`,
+			`Gitea repo lookup failed (${lookup.status}): ${lookup.bodyText.slice(0, 200)}`,
 		);
 	}
 	if (!input.auth) {
@@ -449,11 +561,10 @@ async function ensureWorkspaceCloneRepoInGitea(input: {
 
 async function getGiteaBranchOptions(input: {
 	repo: string;
-	auth: { username: string; password: string } | null;
 }): Promise<DropdownOption[]> {
 	const response = await giteaRequest(
 		`/api/v1/repos/${encodeURIComponent(GITEA_REPO_OWNER)}/${encodeURIComponent(input.repo)}/branches?limit=100`,
-		{ auth: input.auth },
+		{},
 	);
 	if (!response.ok) {
 		const body = await response.text();
@@ -625,7 +736,6 @@ export async function POST(request: Request) {
 						options: filterOptions(
 							await getGiteaBranchOptions({
 								repo,
-								auth,
 							}),
 							rawBody.searchValue,
 						),
