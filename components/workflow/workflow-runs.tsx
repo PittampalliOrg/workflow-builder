@@ -86,7 +86,7 @@ function getOutputConfig(nodeType: string): OutputDisplayConfig | undefined {
 function isBuiltInOutputConfig(
 	config: OutputDisplayConfig | undefined,
 ): config is Extract<OutputDisplayConfig, { field: string }> {
-	return Boolean(config && config.type !== "component");
+	return Boolean(config);
 }
 
 // Helper to extract the displayable value from output based on config
