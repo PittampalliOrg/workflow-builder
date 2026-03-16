@@ -83,6 +83,12 @@ function getOutputConfig(nodeType: string): OutputDisplayConfig | undefined {
 	return OUTPUT_DISPLAY_CONFIGS[nodeType];
 }
 
+function isBuiltInOutputConfig(
+	config: OutputDisplayConfig | undefined,
+): config is Extract<OutputDisplayConfig, { field: string }> {
+	return Boolean(config && config.type !== "component");
+}
+
 // Helper to extract the displayable value from output based on config
 function getOutputDisplayValue(
 	output: unknown,
@@ -362,7 +368,7 @@ function OutputDisplay({
 		pluginConfig?.type !== "component" ? pluginConfig : builtInConfig;
 
 	// Get display value for built-in types (image/video/url)
-	const displayValue = effectiveBuiltInConfig
+	const displayValue = isBuiltInOutputConfig(effectiveBuiltInConfig)
 		? getOutputDisplayValue(output, effectiveBuiltInConfig)
 		: undefined;
 

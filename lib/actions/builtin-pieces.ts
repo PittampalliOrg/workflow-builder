@@ -674,6 +674,10 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 							label: "Travel Planner",
 							value: "travel-planner",
 						},
+						{
+							label: "Code Review",
+							value: "code-review",
+						},
 					],
 				},
 				{
@@ -686,9 +690,91 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					rows: 6,
 				},
 				{
+					key: "reviewFocusAreas",
+					label: "Review Focus Areas",
+					type: "template-input",
+					required: false,
+					placeholder: "security, performance, bugs",
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "cwd",
+					label: "Repository Root (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					required: false,
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "applyFixes",
+					label: "Apply Fixes",
+					type: "select",
+					required: false,
+					defaultValue: "false",
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+					options: [
+						{ label: "Disabled", value: "false" },
+						{ label: "Enabled", value: "true" },
+					],
+				},
+				{
+					key: "maxIterations",
+					label: "Max Iterations",
+					type: "number",
+					required: false,
+					defaultValue: "25",
+					min: 1,
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "instructionsOverlay",
+					label: "Instructions Overlay",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Add extra review or fix-up instructions for this run.",
+					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					label: "Dynamic Runtime Config (Dapr)",
+					type: "group",
+					fields: [
+						{
+							key: "configStoreName",
+							label: "Config Store Name",
+							type: "text",
+							required: false,
+							placeholder: "azureappconfig",
+						},
+						{
+							key: "configKeys",
+							label: "Config Keys (optional)",
+							type: "template-input",
+							required: false,
+							placeholder: "model,instructionsOverlay,maxIterations,toolGroup",
+						},
+						{
+							key: "configMetadata",
+							label: "Config Metadata JSON (optional)",
+							type: "template-textarea",
+							required: false,
+							rows: 4,
+							placeholder: '{\n  "label": "workflow-builder"\n}',
+						},
+					],
+				},
+				{
 					key: "model",
 					label: "Model",
-					type: "text",
+					type: "template-input",
 					required: false,
 					defaultValue: "gpt-5.2",
 					placeholder: "gpt-5.2",
@@ -707,7 +793,23 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 				{
 					field: "steps",
 					description:
-						"Outputs produced by the extractor, planner, and expander agents",
+						"Outputs produced by the template steps in execution order",
+				},
+				{
+					field: "reviewFindings",
+					description: "Prioritized review findings for code-review runs",
+				},
+				{
+					field: "filesAnalyzed",
+					description: "Workspace files read or searched during execution",
+				},
+				{
+					field: "fixesApplied",
+					description: "Workspace files modified during execution",
+				},
+				{
+					field: "patch",
+					description: "Unified diff for edits applied by the workflow",
 				},
 				{
 					field: "workflowTemplateId",

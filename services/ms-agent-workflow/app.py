@@ -6,18 +6,79 @@ import logging
 import os
 import threading
 import time
+from collections import UserDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Literal
 
-import dapr.ext.workflow as wf
-from dapr.ext.workflow import DaprWorkflowContext, DaprWorkflowClient
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
+from config import TemplateConfigResolver, parse_config_keys, parse_config_metadata
+from tools import DEFAULT_WORKSPACE_ROOT, ToolRuntimeContext, resolve_tool_group
+
+try:
+    import dapr.ext.workflow as wf
+    from dapr.ext.workflow import DaprWorkflowContext, DaprWorkflowClient
+except ImportError:  # pragma: no cover - fallback for lightweight test environments
+    class _StubWorkflowRuntime:
+        def activity(self, name: str | None = None):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def workflow(self, name: str | None = None):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def start(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            return None
+
+    class _StubWorkflowModule:
+        WorkflowRuntime = _StubWorkflowRuntime
+
+    class DaprWorkflowContext:  # type: ignore[no-redef]
+        pass
+
+    class DaprWorkflowClient:  # type: ignore[no-redef]
+        def schedule_new_workflow(self, workflow: Any, input: dict[str, Any]) -> str:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def wait_for_workflow_completion(
+            self, instance_id: str, timeout_in_seconds: int
+        ) -> Any:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def get_workflow_state(self, instance_id: str, fetch_payloads: bool = True) -> Any:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def terminate_workflow(self, instance_id: str, output: str | None = None) -> None:
+            return None
+
+    wf = _StubWorkflowModule()
+
+try:
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+except ImportError:  # pragma: no cover - fallback for lightweight test environments
+    class OpenAIChatClient:  # type: ignore[no-redef]
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+    class Agent:  # type: ignore[no-redef]
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def run(self, prompt: str, **_kwargs) -> str:
+            return prompt
+
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -34,8 +95,21 @@ ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()
     == "true"
 )
-SERVICE_VERSION = "1.0.0"
+SERVICE_VERSION = "1.1.0"
 _EVENT_LOOP_THREAD_JOIN_TIMEOUT_SECONDS = 5
+PromptMode = Literal["pass_through", "chain_previous", "template"]
+
+
+@dataclass(frozen=True)
+class TemplateStep:
+    agent_name: str
+    instructions: str
+    description: str
+    prompt_mode: PromptMode = "pass_through"
+    prompt_template: str | None = None
+    tool_group: str | None = None
+    max_iterations: int = 40
+    optional_flag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,9 +117,15 @@ class WorkflowTemplate:
     id: str
     label: str
     description: str
-    extractor_instructions: str
-    planner_instructions: str
-    expander_instructions: str
+    steps: list[TemplateStep]
+    default_model: str | None = None
+    supports_tools: bool = False
+    default_tool_group: str | None = None
+
+
+class SafeFormatMap(UserDict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 
 TEMPLATES: dict[str, WorkflowTemplate] = {
@@ -53,18 +133,101 @@ TEMPLATES: dict[str, WorkflowTemplate] = {
         id="travel-planner",
         label="Travel Planner",
         description="Sequential trip-planning workflow: extract destination, draft outline, expand itinerary.",
-        extractor_instructions=(
-            "Extract the main destination city from the user's request. "
-            "Return only the city or destination name with no extra text."
-        ),
-        planner_instructions=(
-            "Create a concise 3-day outline for the destination. "
-            "Balance culture, food, and leisure in bullet form."
-        ),
-        expander_instructions=(
-            "Expand the outline into a detailed 3-day itinerary. "
-            "Each day must have Morning, Afternoon, and Evening sections."
-        ),
+        steps=[
+            TemplateStep(
+                agent_name="DestinationExtractor",
+                description="Travel Planner destination extraction agent",
+                instructions=(
+                    "Extract the main destination city from the user's request. "
+                    "Return only the city or destination name with no extra text."
+                ),
+                prompt_mode="pass_through",
+            ),
+            TemplateStep(
+                agent_name="PlannerAgent",
+                description="Travel Planner outline planning agent",
+                instructions=(
+                    "Create a concise 3-day outline for the destination. "
+                    "Balance culture, food, and leisure in bullet form."
+                ),
+                prompt_mode="template",
+                prompt_template="Destination: {previous_output}\nCreate a concise 3-day outline.",
+            ),
+            TemplateStep(
+                agent_name="ItineraryAgent",
+                description="Travel Planner itinerary expansion agent",
+                instructions=(
+                    "Expand the outline into a detailed 3-day itinerary. "
+                    "Each day must have Morning, Afternoon, and Evening sections."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Destination: {step_0_output}\n\n"
+                    "Outline:\n{previous_output}\n\n"
+                    "Expand this into a detailed itinerary."
+                ),
+            ),
+        ],
+        default_model=DEFAULT_MODEL,
+    ),
+    "code-review": WorkflowTemplate(
+        id="code-review",
+        label="Code Review",
+        description="Analyze a repository, produce findings, and optionally apply targeted fixes.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="StructureAnalyzer",
+                description="Repository structure analysis agent",
+                instructions=(
+                    "Explore the repository structure before reviewing implementation details. "
+                    "Summarize the languages, key entry points, major directories, and risky areas."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Review this repository rooted at {cwd}.\n"
+                    "Task:\n{task}\n\n"
+                    "Start by understanding the codebase structure and the most relevant files."
+                ),
+                tool_group="read_only",
+                max_iterations=15,
+            ),
+            TemplateStep(
+                agent_name="CodeReviewer",
+                description="Code review agent",
+                instructions=(
+                    "Review the implementation with focus on: {focus_areas}. "
+                    "Produce concrete findings with file paths and line references when possible."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Repository summary:\n{previous_output}\n\n"
+                    "Now perform the code review and produce prioritized findings."
+                ),
+                tool_group="read_only",
+                max_iterations=25,
+            ),
+            TemplateStep(
+                agent_name="FixApplicator",
+                description="Fix application agent",
+                instructions=(
+                    "Apply targeted fixes for the confirmed findings. "
+                    "Keep changes minimal, safe, and consistent with the existing codebase."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Review findings:\n{step_1_output}\n\n"
+                    "Apply the fixes now, then summarize exactly what changed."
+                ),
+                tool_group="read_write",
+                max_iterations=20,
+                optional_flag="applyFixes",
+            ),
+        ],
     ),
 }
 
@@ -91,6 +254,28 @@ def _coerce_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _parse_review_focus_areas(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value if str(item).strip()]
+        return values
+    if not isinstance(value, str):
+        return []
+    values = [part.strip() for part in value.replace("\n", ",").split(",")]
+    return [value for value in values if value]
+
+
 class MicrosoftAgentAdapter:
     def __init__(
         self,
@@ -99,27 +284,30 @@ class MicrosoftAgentAdapter:
         instructions: str,
         description: str,
         model: str,
+        tools: list[Any] | None = None,
         api_key: str | None = None,
     ) -> None:
         self.name = name
         self.instructions = instructions
         self.description = description
         self.model = model
+        self.tools = tools or []
         self.api_key = api_key
 
     def _build_agent(self) -> Agent:
         return Agent(
-            client=OpenAIChatClient(
+            chat_client=OpenAIChatClient(
                 model_id=self.model,
                 api_key=self.api_key,
             ),
             name=self.name,
             description=self.description,
             instructions=self.instructions,
+            tools=self.tools,
         )
 
-    async def run(self, prompt: str) -> str:
-        result = await self._build_agent().run(prompt)
+    async def run(self, prompt: str, **tool_kwargs: Any) -> str:
+        result = await self._build_agent().run(prompt, **tool_kwargs)
         return _coerce_text(result)
 
 
@@ -150,6 +338,9 @@ class AsyncRunner:
 
 
 async_runner: AsyncRunner | None = None
+workflow_client: DaprWorkflowClient | None = None
+config_resolver: TemplateConfigResolver | None = None
+runtime = wf.WorkflowRuntime()
 
 
 def _run_async(awaitable: Any) -> Any:
@@ -166,22 +357,55 @@ def _resolve_template(template_id: str | None) -> WorkflowTemplate:
     return template
 
 
-@lru_cache(maxsize=32)
-def _get_agent_adapter(
-    *,
-    name: str,
-    instructions: str,
-    description: str,
-    model: str,
-    api_key: str | None,
-) -> MicrosoftAgentAdapter:
-    return MicrosoftAgentAdapter(
-        name=name,
-        instructions=instructions,
-        description=description,
-        model=model,
-        api_key=api_key,
+def _format_template_text(template_text: str, values: dict[str, Any]) -> str:
+    return template_text.format_map(
+        SafeFormatMap({key: _coerce_text(value) for key, value in values.items()})
     )
+
+
+def _build_step_context(
+    *,
+    task: str,
+    step_outputs: list[dict[str, Any]],
+    cwd: str | None,
+    review_focus_areas: list[str],
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "task": task,
+        "cwd": cwd or DEFAULT_WORKSPACE_ROOT,
+        "focus_areas": ", ".join(review_focus_areas) if review_focus_areas else "general code quality",
+        "review_focus_areas": ", ".join(review_focus_areas),
+    }
+    if step_outputs:
+        values["previous_output"] = _coerce_text(step_outputs[-1].get("content"))
+        values["previous_agent"] = step_outputs[-1].get("agent")
+    for index, output in enumerate(step_outputs):
+        values[f"step_{index}_output"] = _coerce_text(output.get("content"))
+        values[f"step_{index}_agent"] = output.get("agent")
+    return values
+
+
+def _build_step_prompt(
+    *,
+    step: TemplateStep,
+    task: str,
+    step_context: dict[str, Any],
+) -> str:
+    if step.prompt_mode == "pass_through":
+        return task
+    if step.prompt_mode == "chain_previous":
+        previous_output = str(step_context.get("previous_output") or "").strip()
+        if not previous_output:
+            return task
+        return f"Original task:\n{task}\n\nPrevious step output:\n{previous_output}"
+    if step.prompt_mode == "template" and step.prompt_template:
+        return _format_template_text(step.prompt_template, step_context)
+    return task
+
+
+def _resolve_workspace_root(cwd: str | None) -> str:
+    value = str(cwd or DEFAULT_WORKSPACE_ROOT).strip()
+    return value or DEFAULT_WORKSPACE_ROOT
 
 
 def _run_agent_step(
@@ -191,19 +415,33 @@ def _run_agent_step(
     description: str,
     prompt: str,
     model: str | None,
+    tool_group: str | None = None,
+    workspace_root: str | None = None,
     api_key: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     resolved_model = str(model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    adapter = _get_agent_adapter(
+    tools = resolve_tool_group(tool_group)
+    adapter = MicrosoftAgentAdapter(
         name=agent_name,
         instructions=instructions,
         description=description,
         model=resolved_model,
+        tools=tools,
         api_key=api_key.strip() if isinstance(api_key, str) and api_key.strip() else None,
     )
-    return _run_async(adapter.run(prompt))
 
-runtime = wf.WorkflowRuntime()
+    tool_kwargs: dict[str, Any] = {}
+    tool_context: ToolRuntimeContext | None = None
+    if tools:
+        tool_context = ToolRuntimeContext.from_workspace_root(
+            _resolve_workspace_root(workspace_root)
+        )
+        tool_kwargs["tool_context"] = tool_context
+        tool_kwargs["workspace_root"] = str(tool_context.workspace_root)
+
+    content = _run_async(adapter.run(prompt, **tool_kwargs))
+    summary = tool_context.build_summary() if tool_context is not None else {}
+    return {"content": content, **summary}
 
 
 class WorkflowRunRequest(BaseModel):
@@ -213,6 +451,15 @@ class WorkflowRunRequest(BaseModel):
     openAIApiKey: str | None = None
     waitForCompletion: bool = Field(default=False)
     timeoutMinutes: int = Field(default=10, ge=1, le=60)
+    reviewFocusAreas: list[str] | str | None = None
+    workspaceRef: str | None = None
+    cwd: str | None = None
+    applyFixes: bool | str | None = None
+    maxIterations: int | None = Field(default=None, ge=1, le=200)
+    instructionsOverlay: str | None = None
+    configStoreName: str | None = None
+    configKeys: list[str] | str | None = None
+    configMetadata: dict[str, str] | str | None = None
 
 
 class TerminateWorkflowRequest(BaseModel):
@@ -290,6 +537,10 @@ def _build_public_result(
         "workflowTemplateId": resolved_template_id,
         "model": resolved_model,
         "steps": steps,
+        "reviewFindings": payload.get("reviewFindings"),
+        "filesAnalyzed": payload.get("filesAnalyzed") or [],
+        "fixesApplied": payload.get("fixesApplied") or [],
+        "patch": payload.get("patch") or "",
         "agentWorkflowId": instance_id,
         "daprInstanceId": instance_id,
     }
@@ -308,6 +559,15 @@ def _schedule_workflow(
             "workflowTemplateId": request.workflowTemplateId,
             "model": request.model,
             "openAIApiKey": request.openAIApiKey,
+            "reviewFocusAreas": request.reviewFocusAreas,
+            "workspaceRef": request.workspaceRef,
+            "cwd": request.cwd,
+            "applyFixes": request.applyFixes,
+            "maxIterations": request.maxIterations,
+            "instructionsOverlay": request.instructionsOverlay,
+            "configStoreName": request.configStoreName,
+            "configKeys": request.configKeys,
+            "configMetadata": request.configMetadata,
         },
     )
 
@@ -323,49 +583,56 @@ def _schedule_workflow(
     return instance_id, response
 
 
-@runtime.activity(name="extract_destination")
-def extract_destination(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
+def _resolve_runtime_settings(
+    template: WorkflowTemplate,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    template_config = (config_resolver or TemplateConfigResolver()).resolve(
+        template_id=template.id,
+        store_name=str(input_payload.get("configStoreName") or "").strip() or None,
+        requested_keys=parse_config_keys(input_payload.get("configKeys")),
+        metadata=parse_config_metadata(input_payload.get("configMetadata")),
+    )
+
+    requested_model = str(input_payload.get("model") or "").strip() or None
+    requested_overlay = str(input_payload.get("instructionsOverlay") or "").strip() or None
+    requested_max_iterations = input_payload.get("maxIterations")
+    requested_tool_group = str(input_payload.get("toolGroup") or "").strip() or None
+
+    max_iterations: int | None = None
+    if requested_max_iterations is not None:
+        try:
+            parsed = int(requested_max_iterations)
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed and parsed > 0:
+            max_iterations = parsed
+    elif template_config.max_iterations is not None:
+        max_iterations = template_config.max_iterations
+
+    return {
+        "model": requested_model or template_config.model or template.default_model or DEFAULT_MODEL,
+        "instructions_overlay": requested_overlay or template_config.instructions_overlay,
+        "max_iterations": max_iterations,
+        "tool_group_override": requested_tool_group or template_config.tool_group,
+    }
+
+
+@runtime.activity(name="run_template_step")
+def run_template_step(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="DestinationExtractor",
-        instructions=template.extractor_instructions,
-        description=f"{template.label} destination extraction agent",
-        prompt=str(payload.get("task") or "").strip(),
+    tool_group = payload.get("toolGroup")
+    result = _run_agent_step(
+        agent_name=str(payload.get("agentName") or "Agent"),
+        instructions=str(payload.get("instructions") or "").strip(),
+        description=str(payload.get("description") or "").strip(),
+        prompt=str(payload.get("prompt") or "").strip(),
         model=payload.get("model"),
+        tool_group=str(tool_group).strip() if tool_group else None,
+        workspace_root=payload.get("cwd"),
         api_key=payload.get("openAIApiKey"),
     )
-    return {"content": content}
-
-
-@runtime.activity(name="plan_outline")
-def plan_outline(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
-    payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="PlannerAgent",
-        instructions=template.planner_instructions,
-        description=f"{template.label} outline planning agent",
-        prompt=str(payload.get("task") or "").strip(),
-        model=payload.get("model"),
-        api_key=payload.get("openAIApiKey"),
-    )
-    return {"content": content}
-
-
-@runtime.activity(name="expand_itinerary")
-def expand_itinerary(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
-    payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="ItineraryAgent",
-        instructions=template.expander_instructions,
-        description=f"{template.label} itinerary expansion agent",
-        prompt=str(payload.get("task") or "").strip(),
-        model=payload.get("model"),
-        api_key=payload.get("openAIApiKey"),
-    )
-    return {"content": content}
+    return result
 
 
 @runtime.workflow(name=WORKFLOW_NAME)
@@ -386,52 +653,106 @@ def ms_agent_workflow(
     task = str(input_payload.get("task") or input_payload.get("prompt") or "").strip()
     if not task:
         raise ValueError("task is required")
-    model = str(input_payload.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+    runtime_settings = _resolve_runtime_settings(template, input_payload)
+    model = runtime_settings["model"]
     openai_api_key = (
         str(input_payload.get("openAIApiKey")).strip()
         if input_payload.get("openAIApiKey")
         else None
     )
+    cwd = str(input_payload.get("cwd") or DEFAULT_WORKSPACE_ROOT).strip() or DEFAULT_WORKSPACE_ROOT
+    review_focus_areas = _parse_review_focus_areas(input_payload.get("reviewFocusAreas"))
+    apply_fixes = _parse_bool(input_payload.get("applyFixes"), False)
+    instructions_overlay = runtime_settings["instructions_overlay"]
+    max_iterations_override = runtime_settings["max_iterations"]
+    tool_group_override = runtime_settings["tool_group_override"]
 
-    destination = yield ctx.call_activity(
-        extract_destination,
-        input={
-            "task": task,
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
+    step_outputs: list[dict[str, Any]] = []
+
+    for index, step in enumerate(template.steps):
+        if step.optional_flag == "applyFixes" and not apply_fixes:
+            continue
+
+        step_context = _build_step_context(
+            task=task,
+            step_outputs=step_outputs,
+            cwd=cwd,
+            review_focus_areas=review_focus_areas,
+        )
+        prompt = _build_step_prompt(step=step, task=task, step_context=step_context)
+        instructions = _format_template_text(step.instructions, step_context)
+        if instructions_overlay:
+            instructions = (
+                f"{instructions}\n\n"
+                f"Additional runtime instructions:\n{instructions_overlay}"
+            )
+        effective_max_iterations = max_iterations_override or step.max_iterations
+        if effective_max_iterations > 0:
+            instructions = (
+                f"{instructions}\n\n"
+                f"Do not exceed {effective_max_iterations} reasoning or tool iterations."
+            )
+        tool_group = tool_group_override or step.tool_group or template.default_tool_group
+
+        step_result = yield ctx.call_activity(
+            run_template_step,
+            input={
+                "agentName": step.agent_name,
+                "description": step.description,
+                "instructions": instructions,
+                "prompt": prompt,
+                "model": model,
+                "openAIApiKey": openai_api_key,
+                "toolGroup": tool_group,
+                "cwd": cwd,
+            },
+        )
+        step_outputs.append(
+            {
+                "index": index,
+                "agent": step.agent_name,
+                "content": _coerce_text(step_result.get("content")),
+                "toolGroup": tool_group,
+                "filesAnalyzed": step_result.get("filesAnalyzed") or [],
+                "fixesApplied": step_result.get("fixesApplied") or [],
+                "patch": step_result.get("patch") or "",
+            }
+        )
+
+    final_step = step_outputs[-1] if step_outputs else {"content": ""}
+    aggregated_files = sorted(
+        {
+            path
+            for output in step_outputs
+            for path in (output.get("filesAnalyzed") or [])
+        }
     )
-    destination_text = _coerce_text(destination.get("content"))
-
-    outline = yield ctx.call_activity(
-        plan_outline,
-        input={
-            "task": (
-                f"Destination: {destination_text}\n"
-                "Create a concise 3-day outline."
+    aggregated_fixes = sorted(
+        {
+            path
+            for output in step_outputs
+            for path in (output.get("fixesApplied") or [])
+        }
+    )
+    patch = "\n".join(
+        chunk
+        for chunk in (str(output.get("patch") or "").strip() for output in step_outputs)
+        if chunk
+    ).strip()
+    review_findings = (
+        next(
+            (
+                output.get("content")
+                for output in step_outputs
+                if output.get("agent") == "CodeReviewer"
             ),
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
+            None,
+        )
+        if template.id == "code-review"
+        else None
     )
-    outline_text = _coerce_text(outline.get("content"))
-
-    itinerary = yield ctx.call_activity(
-        expand_itinerary,
-        input={
-            "task": (
-                f"Destination: {destination_text}\n\n"
-                f"Outline:\n{outline_text}\n\n"
-                "Expand this into a detailed itinerary."
-            ),
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
-    )
-    itinerary_text = _coerce_text(itinerary.get("content"))
+    final_text = _coerce_text(final_step.get("content"))
 
     return {
         "success": True,
@@ -440,24 +761,22 @@ def ms_agent_workflow(
         "workflow_template_label": template.label,
         "workflowTemplateLabel": template.label,
         "model": model,
-        "text": itinerary_text,
-        "content": itinerary_text,
-        "final_answer": itinerary_text,
-        "finalAnswer": itinerary_text,
-        "steps": [
-            {"agent": "DestinationExtractor", "content": destination_text},
-            {"agent": "PlannerAgent", "content": outline_text},
-            {"agent": "ItineraryAgent", "content": itinerary_text},
-        ],
+        "text": final_text,
+        "content": final_text,
+        "final_answer": final_text,
+        "finalAnswer": final_text,
+        "steps": step_outputs,
+        "reviewFindings": review_findings,
+        "filesAnalyzed": aggregated_files,
+        "fixesApplied": aggregated_fixes,
+        "patch": patch,
+        "workspaceRef": input_payload.get("workspaceRef"),
     }
-
-
-workflow_client: DaprWorkflowClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global async_runner, workflow_client
+    global async_runner, workflow_client, config_resolver
     if ENABLE_DAPR_AGENTS_INSTRUMENTATION:
         try:
             from dapr_agents.observability import DaprAgentsInstrumentor
@@ -468,6 +787,7 @@ async def lifespan(_app: FastAPI):
     async_runner = AsyncRunner()
     runtime.start()
     workflow_client = DaprWorkflowClient()
+    config_resolver = TemplateConfigResolver()
     logger.info(
         "Microsoft Agent Workflow service started on http://%s:%s",
         HOST,
@@ -484,7 +804,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Microsoft Agent Workflow Service",
-    description="Dapr workflow service that runs a Dapr-agents activity chain backed by Microsoft Agent Framework agents.",
+    description="Dapr workflow service that runs Microsoft Agent Framework agents through template-driven durable workflows.",
     version=SERVICE_VERSION,
     lifespan=lifespan,
 )
@@ -516,6 +836,28 @@ def health() -> dict[str, Any]:
     }
 
 
+def _serialize_template(template: WorkflowTemplate) -> dict[str, Any]:
+    return {
+        "id": template.id,
+        "label": template.label,
+        "description": template.description,
+        "defaultModel": template.default_model or DEFAULT_MODEL,
+        "supportsTools": template.supports_tools,
+        "defaultToolGroup": template.default_tool_group,
+        "steps": [
+            {
+                "agentName": step.agent_name,
+                "description": step.description,
+                "promptMode": step.prompt_mode,
+                "toolGroup": step.tool_group,
+                "maxIterations": step.max_iterations,
+                "optionalFlag": step.optional_flag,
+            }
+            for step in template.steps
+        ],
+    }
+
+
 @app.get("/api/tools")
 def list_tools() -> dict[str, Any]:
     return {
@@ -525,9 +867,19 @@ def list_tools() -> dict[str, Any]:
                 "id": template.id,
                 "description": template.description,
                 "label": template.label,
+                "supportsTools": template.supports_tools,
+                "defaultToolGroup": template.default_tool_group,
             }
             for template in TEMPLATES.values()
         ],
+    }
+
+
+@app.get("/api/templates")
+def list_templates() -> dict[str, Any]:
+    return {
+        "success": True,
+        "templates": [_serialize_template(template) for template in TEMPLATES.values()],
     }
 
 
@@ -544,19 +896,26 @@ def runtime_introspect() -> dict[str, Any]:
                 "aliases": [WORKFLOW_NAME],
             }
         ],
-        "activities": [
-            "extract_destination",
-            "plan_outline",
-            "expand_itinerary",
-        ],
-        "templates": [
-            {
-                "id": template.id,
-                "label": template.label,
-                "description": template.description,
-            }
-            for template in TEMPLATES.values()
-        ],
+        "activities": ["run_template_step"],
+        "toolGroups": {
+            "read_only": ["read_file", "list_files", "grep_search"],
+            "read_write": [
+                "read_file",
+                "list_files",
+                "grep_search",
+                "write_file",
+                "edit_file",
+            ],
+            "all": [
+                "read_file",
+                "list_files",
+                "grep_search",
+                "write_file",
+                "edit_file",
+                "execute_command",
+            ],
+        },
+        "templates": [_serialize_template(template) for template in TEMPLATES.values()],
     }
 
 
@@ -671,6 +1030,15 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
                 "openAIApiKey": _extract_openai_api_key(request.credentials),
                 "waitForCompletion": True,
                 "timeoutMinutes": request.input.get("timeoutMinutes", 10),
+                "reviewFocusAreas": request.input.get("reviewFocusAreas"),
+                "workspaceRef": request.input.get("workspaceRef"),
+                "cwd": request.input.get("cwd"),
+                "applyFixes": request.input.get("applyFixes"),
+                "maxIterations": request.input.get("maxIterations"),
+                "instructionsOverlay": request.input.get("instructionsOverlay"),
+                "configStoreName": request.input.get("configStoreName"),
+                "configKeys": request.input.get("configKeys"),
+                "configMetadata": request.input.get("configMetadata"),
             }
         )
     except ValidationError as exc:

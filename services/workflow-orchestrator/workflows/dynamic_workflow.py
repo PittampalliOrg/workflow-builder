@@ -2250,6 +2250,7 @@ def process_agent_child_workflow(
         child_input: dict[str, Any] = {
             "task": run_prompt,
             "workspaceRef": resolved_config.get("workspaceRef"),
+            "cwd": resolved_config.get("cwd"),
             "executionId": tracked_execution_id,
         }
         if is_ms_agent:
@@ -2258,7 +2259,28 @@ def process_agent_child_workflow(
             )
             if resolved_config.get("model"):
                 child_input["model"] = resolved_config.get("model")
-        if max_turns is not None and max_turns > 0:
+            if resolved_config.get("reviewFocusAreas") is not None:
+                child_input["reviewFocusAreas"] = resolved_config.get("reviewFocusAreas")
+            if resolved_config.get("applyFixes") is not None:
+                child_input["applyFixes"] = resolved_config.get("applyFixes")
+            if resolved_config.get("instructionsOverlay") is not None:
+                child_input["instructionsOverlay"] = resolved_config.get(
+                    "instructionsOverlay"
+                )
+            if resolved_config.get("configStoreName") is not None:
+                child_input["configStoreName"] = resolved_config.get("configStoreName")
+            if resolved_config.get("configKeys") is not None:
+                child_input["configKeys"] = resolved_config.get("configKeys")
+            if resolved_config.get("configMetadata") is not None:
+                child_input["configMetadata"] = resolved_config.get("configMetadata")
+            max_iterations_raw = resolved_config.get("maxIterations", max_turns)
+            try:
+                max_iterations = int(max_iterations_raw) if max_iterations_raw is not None else None
+            except (TypeError, ValueError):
+                max_iterations = None
+            if max_iterations is not None and max_iterations > 0:
+                child_input["maxIterations"] = max_iterations
+        elif max_turns is not None and max_turns > 0:
             child_input["maxIterations"] = max_turns
         if activity_input.get("loopPolicy") is not None:
             child_input["loopPolicy"] = activity_input.get("loopPolicy")

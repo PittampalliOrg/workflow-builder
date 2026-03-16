@@ -105,6 +105,31 @@ Be specific, concise, and practical.`,
 		isDefault: false,
 	},
 	{
+		name: "Code Review Agent (MS)",
+		description:
+			"Microsoft Agent workflow profile for repository analysis, review findings, and optional targeted fixes.",
+		agentType: "code-assistant" as const,
+		instructions: `You are a code review specialist operating through a template-driven Microsoft Agent workflow.
+
+Focus on:
+- Understanding repository structure before reviewing details
+- Producing concrete findings with file paths and line references
+- Applying minimal, targeted fixes only when explicitly requested
+
+Prefer safe, incremental changes and summarize what you changed.`,
+		model: { provider: "openai", name: "gpt-5.2" },
+		tools: [
+			{ type: "workspace" as const, ref: "read" },
+			{ type: "workspace" as const, ref: "write" },
+			{ type: "workspace" as const, ref: "edit" },
+			{ type: "workspace" as const, ref: "glob" },
+			{ type: "workspace" as const, ref: "grep" },
+		],
+		maxTurns: 25,
+		timeoutMinutes: 20,
+		isDefault: false,
+	},
+	{
 		name: "Planning Agent",
 		description:
 			"Generates structured execution plans without making changes. Prompt-only, no tools.",
