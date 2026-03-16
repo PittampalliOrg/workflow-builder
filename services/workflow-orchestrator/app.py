@@ -344,6 +344,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(persist_results_to_db)
     # Agent service activities (durable-agent)
     wfr.register_activity(call_durable_agent_run)
+    wfr.register_activity(call_dapr_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
