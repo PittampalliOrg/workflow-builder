@@ -22,7 +22,6 @@ from tools import (
     TOOL_GROUPS,
     WORKSPACE_ENABLED_TOOLS,
     ToolRuntimeContext,
-    bind_tool_group,
     dumps_json,
     edit_file,
     execute_command,
@@ -74,7 +73,9 @@ try:
     )
     from dapr_agents.memory import ConversationDaprStateMemory
     from dapr_agents.storage.daprstores.stateservice import StateStoreError, StateStoreService
+    from dapr_agents.tool.utils.serialization import serialize_tool_result
     from dapr_agents.workflow.runners.agent import AgentRunner
+    from dapr_agents.types import AgentError, ToolMessage
 except ImportError:  # pragma: no cover
     class OpenAIChatClient:  # type: ignore[no-redef]
         def __init__(self, **_kwargs) -> None:
@@ -202,6 +203,19 @@ except ImportError:  # pragma: no cover
         def terminate_workflow(self, instance_id: str, *, output: Any = None) -> None:
             self._states[instance_id] = output or ""
 
+    class AgentError(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class ToolMessage:  # type: ignore[no-redef]
+        def __init__(self, **kwargs: Any) -> None:
+            self._data = kwargs
+
+        def model_dump(self) -> dict[str, Any]:
+            return dict(self._data)
+
+    def serialize_tool_result(result: Any) -> Any:  # type: ignore[no-redef]
+        return result
+
 
 logging.basicConfig(
     level=getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO),
@@ -228,12 +242,17 @@ DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX = os.environ.get(
     "DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX",
     f"{DAPR_AGENT_STATE_KEY_PREFIX}workspace:",
 )
+DAPR_AGENT_RUN_STATE_KEY_PREFIX = os.environ.get(
+    "DAPR_AGENT_RUN_STATE_KEY_PREFIX",
+    f"{DAPR_AGENT_STATE_KEY_PREFIX}run:",
+)
 DAPR_AGENT_ENABLE_MEMORY = os.environ.get("DAPR_AGENT_ENABLE_MEMORY", "true").strip().lower() == "true"
 DAPR_AGENT_ENABLE_REGISTRY = os.environ.get("DAPR_AGENT_ENABLE_REGISTRY", "true").strip().lower() == "true"
 DAPR_AGENT_LLM_BACKEND = os.environ.get("DAPR_AGENT_LLM_BACKEND", "openai").strip().lower()
 DAPR_AGENT_LLM_COMPONENT = os.environ.get("DAPR_AGENT_LLM_COMPONENT") or os.environ.get(
     "DAPR_LLM_COMPONENT_DEFAULT"
 )
+SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agent")
 
 
 PROFILE_INSTRUCTIONS: dict[str, str] = {
@@ -399,16 +418,49 @@ class WorkspaceSession:
         )
 
 
+@dataclass
+class AgentRunContext:
+    instance_id: str
+    profile: str
+    cwd: str
+    tool_group: str
+    workspace_ref: str | None = None
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "instanceId": self.instance_id,
+            "profile": self.profile,
+            "cwd": self.cwd,
+            "toolGroup": self.tool_group,
+            "workspaceRef": self.workspace_ref,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "AgentRunContext":
+        return cls(
+            instance_id=str(record.get("instanceId") or ""),
+            profile=_normalize_profile(str(record.get("profile") or "custom")),
+            cwd=_resolve_cwd(str(record.get("cwd") or "")),
+            tool_group=_resolve_tool_group(str(record.get("toolGroup") or "all")),
+            workspace_ref=str(record.get("workspaceRef") or "").strip() or None,
+        )
+
+
 workspace_sessions: dict[str, WorkspaceSession] = {}
 sessions_by_execution: dict[str, set[str]] = {}
 runtime = wf.WorkflowRuntime()
 workflow_client = DaprWorkflowClient()
 runner = AgentRunner(name="dapr-agent-runtime", timeout_in_seconds=3600)
 _agent_lock = threading.Lock()
-_agent_cache: dict[tuple[str, str, str], DurableAgent] = {}
+_agent: DurableAgent | None = None
+run_context_cache: dict[str, AgentRunContext] = {}
 workspace_state_store = StateStoreService(
     store_name=DAPR_AGENT_STATE_STORE_NAME,
     key_prefix=DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX,
+)
+run_state_store = StateStoreService(
+    store_name=DAPR_AGENT_STATE_STORE_NAME,
+    key_prefix=DAPR_AGENT_RUN_STATE_KEY_PREFIX,
 )
 
 
@@ -568,7 +620,7 @@ def _build_result_payload(
     workflow_output: str | None,
 ) -> dict[str, Any]:
     text = _coerce_text(workflow_output)
-    cwd = _resolve_cwd(request.cwd)
+    cwd = _resolve_request_cwd(request)
     summary = summarize_command_changes(cwd)
     patch = ""
     try:
@@ -636,8 +688,103 @@ def _default_workspace_root(execution_id: str, requested_root: str | None) -> Pa
     return candidate.expanduser().resolve()
 
 
-def _build_agent_name(profile: str) -> str:
-    return f"dapr-agent-{profile}"
+def _build_agent_name() -> str:
+    return SERVICE_AGENT_NAME
+
+
+def _run_context_key(instance_id: str) -> str:
+    return f"run:{instance_id}"
+
+
+def _persist_run_context(context: AgentRunContext) -> None:
+    run_context_cache[context.instance_id] = context
+    try:
+        run_state_store.save(
+            key=_run_context_key(context.instance_id),
+            value=context.to_record(),
+        )
+    except StateStoreError as exc:
+        logger.warning("Failed to persist run context %s: %s", context.instance_id, exc)
+
+
+def _load_run_context(instance_id: str) -> AgentRunContext | None:
+    cached = run_context_cache.get(instance_id)
+    if cached is not None:
+        return cached
+    try:
+        record = run_state_store.load(
+            key=_run_context_key(instance_id),
+            default={},
+        )
+    except StateStoreError as exc:
+        logger.warning("Failed to load run context %s: %s", instance_id, exc)
+        return None
+    if not record:
+        return None
+    context = AgentRunContext.from_record(record)
+    run_context_cache[context.instance_id] = context
+    return context
+
+
+def _delete_run_context(instance_id: str) -> None:
+    run_context_cache.pop(instance_id, None)
+    try:
+        run_state_store.delete(key=_run_context_key(instance_id))
+    except StateStoreError as exc:
+        logger.warning("Failed to delete run context %s: %s", instance_id, exc)
+
+
+def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
+    if request.cwd:
+        return _resolve_cwd(request.cwd)
+    if request.workspaceRef:
+        session = _workspace_from_ref(request.workspaceRef)
+        return str(session.root_path)
+    return _resolve_cwd(None)
+
+
+class CodingDurableAgent(DurableAgent):
+    def run_tool(self, ctx: wf.WorkflowActivityContext, payload: dict[str, Any]) -> dict[str, Any]:
+        tool_call = payload.get("tool_call", {})
+        fn_name = tool_call["function"]["name"]
+        raw_args = tool_call["function"].get("arguments", "")
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError as exc:
+            raise AgentError(f"Invalid JSON in tool args: {exc}") from exc
+
+        instance_id = str(payload.get("instance_id") or "")
+        run_context = _load_run_context(instance_id)
+        if run_context is None:
+            raise AgentError(f"Missing durable run context for {instance_id}")
+
+        allowed_names = {
+            getattr(tool, "name", None) or getattr(tool, "__name__", "")
+            for tool in resolve_tool_group(run_context.tool_group)
+        }
+        if fn_name not in allowed_names:
+            raise AgentError(
+                f"Tool '{fn_name}' is not allowed for tool group '{run_context.tool_group}'"
+            )
+
+        async def _execute_tool() -> Any:
+            return await self.tool_executor.run_tool(
+                fn_name,
+                **args,
+                workspace_root=run_context.cwd,
+            )
+
+        result = self._run_asyncio_task(_execute_tool())
+        logger.debug("Tool %s returned: %s (type: %s)", fn_name, result, type(result))
+        serialized_result = serialize_tool_result(result)
+        tool_result = ToolMessage(
+            content=serialized_result,
+            role="tool",
+            name=fn_name,
+            tool_call_id=tool_call["id"],
+        )
+        self.text_formatter.print_message(tool_result)
+        return tool_result.model_dump()
 
 
 def _workflow_descriptor(name: str) -> dict[str, Any]:
@@ -656,16 +803,14 @@ def _activity_descriptor(name: str) -> dict[str, Any]:
 
 def _build_agent_registry_metadata(
     *,
-    profile: str,
     model: str,
-    tool_group: str,
 ) -> dict[str, Any]:
     return {
-        "profile": profile,
+        "profiles": sorted(PROFILE_INSTRUCTIONS.keys()),
         "framework": "Dapr Agents",
         "durable": True,
         "workflowName": WORKFLOW_NAME,
-        "toolGroup": tool_group,
+        "toolGroup": "dynamic",
         "defaultModel": model,
         "supportsWorkspaceTools": True,
         "stateStore": DAPR_AGENT_STATE_STORE_NAME,
@@ -675,20 +820,25 @@ def _build_agent_registry_metadata(
 
 
 def _build_registry_entries() -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-    for profile in sorted(PROFILE_INSTRUCTIONS.keys()):
-        tool_group = PROFILE_TOOL_GROUPS.get(profile, AGENT_TOOL_GROUP)
-        entries.append(
-            {
-                "name": _build_agent_name(profile),
-                "metadata": _build_agent_registry_metadata(
-                    profile=profile,
-                    model=DEFAULT_MODEL,
-                    tool_group=tool_group,
-                ),
-            }
-        )
-    return entries
+    return [
+        {
+            "name": _build_agent_name(),
+            "metadata": _build_agent_registry_metadata(
+                model=DEFAULT_MODEL,
+            ),
+        }
+    ]
+
+
+def _build_profile_descriptors() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": profile,
+            "instructions": instructions,
+            "defaultToolGroup": PROFILE_TOOL_GROUPS.get(profile, AGENT_TOOL_GROUP),
+        }
+        for profile, instructions in sorted(PROFILE_INSTRUCTIONS.items())
+    ]
 
 
 def _fetch_dapr_runtime_status() -> tuple[dict[str, Any], list[str]]:
@@ -724,19 +874,19 @@ def _build_llm_client(model: str, api_key: str | None) -> Any:
     )
 
 
-def _build_durable_support_configs(profile: str) -> dict[str, Any]:
+def _build_durable_support_configs() -> dict[str, Any]:
     state = AgentStateConfig(
         store=StateStoreService(
             store_name=DAPR_AGENT_STATE_STORE_NAME,
-            key_prefix=f"{DAPR_AGENT_STATE_KEY_PREFIX}runs:{profile}:",
+            key_prefix=f"{DAPR_AGENT_STATE_KEY_PREFIX}runs:",
         ),
-        state_key_prefix=f"{profile}:",
+        state_key_prefix="run:",
     )
     memory = (
         AgentMemoryConfig(
             store=ConversationDaprStateMemory(
                 store_name=DAPR_AGENT_MEMORY_STORE_NAME,
-                agent_name=_build_agent_name(profile),
+                agent_name=_build_agent_name(),
             )
         )
         if DAPR_AGENT_ENABLE_MEMORY
@@ -765,30 +915,25 @@ def _build_durable_support_configs(profile: str) -> dict[str, Any]:
     }
 
 
-def _get_agent(request: DaprAgentRunRequest) -> DurableAgent:
-    profile = _normalize_profile(request.profile)
-    model = str(request.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    workspace_root = _resolve_cwd(request.cwd)
-    tool_group = _resolve_effective_tool_group(request)
-    cache_key = (profile, model, workspace_root, tool_group)
-
+def _get_agent() -> DurableAgent:
     with _agent_lock:
-        agent = _agent_cache.get(cache_key)
-        if agent is None:
-            support = _build_durable_support_configs(profile)
-            agent = DurableAgent(
-                name=_build_agent_name(profile),
+        global _agent
+        if _agent is None:
+            support = _build_durable_support_configs()
+            _agent = CodingDurableAgent(
+                name=_build_agent_name(),
                 role="autonomous coding agent",
                 goal="Complete coding tasks in a durable, tool-using workflow",
                 instructions=[
                     "Use the available tools to inspect, edit, and verify code.",
                     "When changing code, keep edits minimal and explain what changed.",
                     "Prefer deterministic verification commands when they are provided.",
+                    "Respect the profile, workspace, and tool policy passed in the task.",
                 ],
-                llm=_build_llm_client(model, request.openAIApiKey),
-                tools=bind_tool_group(tool_group, workspace_root),
+                llm=_build_llm_client(DEFAULT_MODEL, None),
+                tools=resolve_tool_group("all"),
                 execution=AgentExecutionConfig(
-                    max_iterations=max(int(request.maxTurns or 30), 1),
+                    max_iterations=200,
                     tool_choice="auto",
                 ),
                 state=support["state"],
@@ -797,18 +942,25 @@ def _get_agent(request: DaprAgentRunRequest) -> DurableAgent:
                 retry_policy=support["retry_policy"],
                 agent_observability=support["observability"],
                 agent_metadata=_build_agent_registry_metadata(
-                    profile=profile,
-                    model=model,
-                    tool_group=tool_group,
+                    model=DEFAULT_MODEL,
                 ),
                 runtime=runtime,
             )
             try:
-                agent.start()
+                _agent.start()
             except RuntimeError as exc:
-                logger.warning("Failed to start durable agent %s: %s", agent.name, exc)
-            _agent_cache[cache_key] = agent
-        return agent
+                logger.warning("Failed to start durable agent %s: %s", _agent.name, exc)
+        return _agent
+
+
+def _build_run_context(instance_id: str, request: DaprAgentRunRequest) -> AgentRunContext:
+    return AgentRunContext(
+        instance_id=instance_id,
+        profile=_normalize_profile(request.profile),
+        cwd=_resolve_request_cwd(request),
+        tool_group=_resolve_effective_tool_group(request),
+        workspace_ref=request.workspaceRef,
+    )
 
 
 async def _run_agent_request(
@@ -817,8 +969,12 @@ async def _run_agent_request(
     instance_id: str,
     wait: bool,
 ) -> str | None:
-    prompt = _build_task_prompt(request)
-    agent = _get_agent(request)
+    run_context = _build_run_context(instance_id, request)
+    _persist_run_context(run_context)
+    prompt = _build_task_prompt(
+        request.model_copy(update={"cwd": run_context.cwd, "profile": run_context.profile})
+    )
+    agent = _get_agent()
     return await runner.run(
         agent,
         payload=prompt,
@@ -842,15 +998,8 @@ def _extract_openai_api_key(credentials: dict[str, str] | None) -> str | None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _ensure_workspace_root()
-    runtime.start()
     try:
-        for profile in sorted(PROFILE_INSTRUCTIONS.keys()):
-            _get_agent(
-                DaprAgentRunRequest(
-                    prompt="Initialize durable coding agent runtime",
-                    profile=profile,
-                )
-            )
+        _get_agent()
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to eagerly initialize dapr-agent runtime: %s", exc)
     try:
@@ -923,6 +1072,7 @@ def runtime_introspect() -> dict[str, Any]:
             "teamName": DAPR_AGENT_REGISTRY_TEAM_NAME if DAPR_AGENT_ENABLE_REGISTRY else None,
             "registeredAgents": _build_registry_entries(),
         },
+        "publishedProfiles": _build_profile_descriptors(),
         "additional": {
             "stateStoreName": DAPR_AGENT_STATE_STORE_NAME,
             "memoryStoreName": DAPR_AGENT_MEMORY_STORE_NAME if DAPR_AGENT_ENABLE_MEMORY else None,
@@ -1088,9 +1238,12 @@ def workspace_cleanup(request: WorkspaceCleanupRequest) -> dict[str, Any]:
 def api_run(request: DaprAgentRunRequest) -> dict[str, Any]:
     instance_id = f"dapr-agent-run-{uuid.uuid4().hex[:12]}"
     if request.waitForCompletion:
+        run_context = _build_run_context(instance_id, request)
+        _persist_run_context(run_context)
+        normalized_request = request.model_copy(update={"cwd": run_context.cwd, "profile": run_context.profile})
         workflow_output = runner.run_sync(
-            _get_agent(request),
-            payload=_build_task_prompt(request),
+            _get_agent(),
+            payload=_build_task_prompt(normalized_request),
             instance_id=instance_id,
             timeout_in_seconds=request.timeoutMinutes * 60,
             fetch_payloads=True,
@@ -1098,7 +1251,7 @@ def api_run(request: DaprAgentRunRequest) -> dict[str, Any]:
         )
         result = _build_result_payload(
             instance_id=instance_id,
-            request=request,
+            request=normalized_request,
             workflow_output=workflow_output,
         )
         return {"success": True, "result": result, **result}
@@ -1130,6 +1283,7 @@ def api_run_status(instance_id: str) -> dict[str, Any]:
 @app.post("/api/run/{instance_id}/terminate")
 def api_run_terminate(instance_id: str, request: TerminateRequest) -> dict[str, Any]:
     runner.terminate_workflow(instance_id, output=request.reason or "terminated")
+    _delete_run_context(instance_id)
     return {"success": True, "instanceId": instance_id, "terminated": True}
 
 

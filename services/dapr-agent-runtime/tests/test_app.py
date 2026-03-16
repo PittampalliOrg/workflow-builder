@@ -91,7 +91,8 @@ def test_runtime_introspect_reports_profiles() -> None:
     assert "implement" in response["profiles"]
     assert response["profileToolGroups"]["repair"] == "all"
     assert response["registry"]["enabled"] is True
-    assert any(entry["name"] == "dapr-agent-review" for entry in response["registry"]["registeredAgents"])
+    assert any(entry["name"] == "dapr-coding-agent" for entry in response["registry"]["registeredAgents"])
+    assert any(profile["id"] == "review" for profile in response["publishedProfiles"])
 
 
 def test_execute_step_wraps_api_run(monkeypatch) -> None:
