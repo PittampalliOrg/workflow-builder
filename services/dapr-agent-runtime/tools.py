@@ -375,16 +375,20 @@ def bind_tool_group(
 ) -> list[Any]:
     root = str(Path(workspace_root).expanduser().resolve())
     bound_tools: list[Any] = []
-    for tool_fn in resolve_tool_group(name):
+
+    def make_bound_tool(tool_fn: Any) -> Any:
         tool_name = getattr(tool_fn, "__name__", "tool")
         tool_description = getattr(tool_fn, "__doc__", None) or f"Run {tool_name}"
 
-        def bound_tool(*args: Any, _tool_fn=tool_fn, **kwargs: Any) -> Any:
-            return _tool_fn(*args, workspace_root=root, **kwargs)
+        def bound_tool(*args: Any, **kwargs: Any) -> Any:
+            return tool_fn(*args, workspace_root=root, **kwargs)
 
         bound_tool.__name__ = tool_name
         bound_tool.__doc__ = tool_description
-        bound_tools.append(tool(bound_tool))
+        return tool(bound_tool)
+
+    for tool_fn in resolve_tool_group(name):
+        bound_tools.append(make_bound_tool(tool_fn))
     return bound_tools
 
 
