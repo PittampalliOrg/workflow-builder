@@ -11,7 +11,15 @@ from typing import Any
 
 try:
     from dapr_agents.tool import tool
+    from dapr_agents.tool.base import AgentTool
 except ImportError:  # pragma: no cover
+    class AgentTool:  # type: ignore[no-redef]
+        def __init__(self, **kwargs) -> None:
+            self.name = kwargs.get("name")
+            self.description = kwargs.get("description")
+            self.func = kwargs.get("func")
+            self.args_model = kwargs.get("args_model")
+
     def tool(*_args, **_kwargs):
         def decorator(fn):
             return fn
@@ -377,15 +385,22 @@ def bind_tool_group(
     bound_tools: list[Any] = []
 
     def make_bound_tool(tool_fn: Any) -> Any:
-        tool_name = getattr(tool_fn, "__name__", "tool")
-        tool_description = getattr(tool_fn, "__doc__", None) or f"Run {tool_name}"
+        tool_name = getattr(tool_fn, "name", None) or getattr(tool_fn, "__name__", "tool")
+        tool_description = getattr(tool_fn, "description", None) or getattr(tool_fn, "__doc__", None) or f"Run {tool_name}"
+        tool_args_model = getattr(tool_fn, "args_model", None)
+        tool_callable = getattr(tool_fn, "func", None) or tool_fn
 
         def bound_tool(*args: Any, **kwargs: Any) -> Any:
-            return tool_fn(*args, workspace_root=root, **kwargs)
+            return tool_callable(*args, workspace_root=root, **kwargs)
 
         bound_tool.__name__ = tool_name
         bound_tool.__doc__ = tool_description
-        return tool(bound_tool)
+        return AgentTool(
+            name=tool_name,
+            description=tool_description,
+            func=bound_tool,
+            args_model=tool_args_model,
+        )
 
     for tool_fn in resolve_tool_group(name):
         bound_tools.append(make_bound_tool(tool_fn))
