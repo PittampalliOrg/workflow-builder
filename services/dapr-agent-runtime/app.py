@@ -977,7 +977,7 @@ async def _run_agent_request(
     agent = _get_agent()
     return await runner.run(
         agent,
-        payload=prompt,
+        payload={"task": prompt},
         instance_id=instance_id,
         wait=wait,
         timeout_in_seconds=request.timeoutMinutes * 60,
@@ -1243,7 +1243,7 @@ def api_run(request: DaprAgentRunRequest) -> dict[str, Any]:
         normalized_request = request.model_copy(update={"cwd": run_context.cwd, "profile": run_context.profile})
         workflow_output = runner.run_sync(
             _get_agent(),
-            payload=_build_task_prompt(normalized_request),
+            payload={"task": _build_task_prompt(normalized_request)},
             instance_id=instance_id,
             timeout_in_seconds=request.timeoutMinutes * 60,
             fetch_payloads=True,
