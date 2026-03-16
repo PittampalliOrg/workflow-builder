@@ -1984,6 +1984,8 @@ def process_agent_child_workflow(
         )
         if not isinstance(start_result, dict) or not start_result.get("success", False):
             return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
+        if is_dapr_agent:
+            return start_result
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode":
