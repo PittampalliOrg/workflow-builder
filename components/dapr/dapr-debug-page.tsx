@@ -693,9 +693,10 @@ export function DaprDebugPage() {
 							<CardHeader>
 								<div className="flex items-center justify-between gap-3">
 									<div>
-										<CardTitle>Runtime Registry Agents</CardTitle>
+										<CardTitle>Runtime Published Agents</CardTitle>
 										<CardDescription>
-											Dapr runtime registry data reported by services.
+											Service-published durable-agent registrations, profiles,
+											or templates.
 										</CardDescription>
 									</div>
 									<SourceBadge
@@ -708,8 +709,7 @@ export function DaprDebugPage() {
 								{overview.agents.runtimeRegistry.length === 0 ? (
 									<div className="flex items-center gap-2 text-muted-foreground text-sm">
 										<Bot className="size-4" />
-										No runtime agent registrations are currently being
-										published.
+										No runtime agent publications are currently available.
 									</div>
 								) : (
 									<div className="space-y-3">

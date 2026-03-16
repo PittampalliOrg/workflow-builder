@@ -5,12 +5,33 @@ from app import (
     DaprAgentRunRequest,
     ExecuteRequest,
     PROFILE_TOOL_GROUPS,
+    WorkspaceCleanupRequest,
+    WorkspaceProfileRequest,
+    WorkspaceSession,
     _build_result_payload,
     _build_task_prompt,
+    _load_workspace_session,
+    _persist_workspace_session,
     _resolve_effective_tool_group,
     execute_step,
     runtime_introspect,
+    workspace_cleanup,
+    workspace_profile,
 )
+
+
+class FakeStateStore:
+    def __init__(self) -> None:
+        self.storage: dict[str, dict[str, object]] = {}
+
+    def load(self, *, key: str, default: dict[str, object] | None = None, **_kwargs) -> dict[str, object]:
+        return dict(self.storage.get(key, default or {}))
+
+    def save(self, *, key: str, value: dict[str, object], **_kwargs) -> None:
+        self.storage[key] = dict(value)
+
+    def delete(self, *, key: str, **_kwargs) -> None:
+        self.storage.pop(key, None)
 
 
 def test_profiles_default_to_expected_tool_groups() -> None:
@@ -69,6 +90,8 @@ def test_runtime_introspect_reports_profiles() -> None:
 
     assert "implement" in response["profiles"]
     assert response["profileToolGroups"]["repair"] == "all"
+    assert response["registry"]["enabled"] is True
+    assert any(entry["name"] == "dapr-agent-review" for entry in response["registry"]["registeredAgents"])
 
 
 def test_execute_step_wraps_api_run(monkeypatch) -> None:
@@ -89,3 +112,51 @@ def test_execute_step_wraps_api_run(monkeypatch) -> None:
 
     assert response["success"] is True
     assert response["data"]["text"] == "Applied fix"
+
+
+def test_workspace_session_persists_through_state_store(tmp_path: Path, monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-123",
+        execution_id="exec-123",
+        root_path=tmp_path,
+        enabled_tools=["read", "bash"],
+    )
+    _persist_workspace_session(session)
+    app.workspace_sessions.clear()
+
+    restored = _load_workspace_session("workspace-123")
+
+    assert restored is not None
+    assert restored.execution_id == "exec-123"
+    assert restored.enabled_tools == ["read", "bash"]
+
+
+def test_workspace_cleanup_uses_persisted_execution_refs(tmp_path: Path, monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
+
+    profile = workspace_profile(
+        WorkspaceProfileRequest(
+            executionId="exec-cleanup",
+            rootPath="exec-cleanup",
+            enabledTools=["read"],
+        )
+    )
+    workspace_root = Path(profile["rootPath"])
+    assert workspace_root.exists()
+
+    app.workspace_sessions.clear()
+    app.sessions_by_execution.clear()
+
+    response = workspace_cleanup(WorkspaceCleanupRequest(executionId="exec-cleanup"))
+
+    assert response["cleanedWorkspaceRefs"] == [profile["workspaceRef"]]
+    assert workspace_root.exists() is False

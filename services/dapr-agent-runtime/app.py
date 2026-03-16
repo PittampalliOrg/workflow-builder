@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import threading
+import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -62,22 +63,95 @@ except ImportError:  # pragma: no cover
     wf = _StubWorkflowModule()
 
 try:
-    from dapr_agents import DurableAgent, OpenAIChatClient
-    from dapr_agents.agents.configs import AgentExecutionConfig
+    from dapr_agents import DaprChatClient, DurableAgent, OpenAIChatClient
+    from dapr_agents.agents.configs import (
+        AgentExecutionConfig,
+        AgentMemoryConfig,
+        AgentObservabilityConfig,
+        AgentRegistryConfig,
+        AgentStateConfig,
+        WorkflowRetryPolicy,
+    )
+    from dapr_agents.memory import ConversationDaprStateMemory
+    from dapr_agents.storage.daprstores.stateservice import StateStoreError, StateStoreService
     from dapr_agents.workflow.runners.agent import AgentRunner
 except ImportError:  # pragma: no cover
     class OpenAIChatClient:  # type: ignore[no-redef]
         def __init__(self, **_kwargs) -> None:
             pass
 
+    class DaprChatClient(OpenAIChatClient):  # type: ignore[no-redef]
+        pass
+
     @dataclass
     class AgentExecutionConfig:  # type: ignore[no-redef]
         max_iterations: int = 10
         tool_choice: str | None = "auto"
 
+    @dataclass
+    class AgentMemoryConfig:  # type: ignore[no-redef]
+        store: Any | None = None
+
+    @dataclass
+    class AgentRegistryConfig:  # type: ignore[no-redef]
+        store: Any | None = None
+        team_name: str | None = None
+
+    @dataclass
+    class AgentStateConfig:  # type: ignore[no-redef]
+        store: Any | None = None
+        state_key_prefix: str | None = None
+
+    @dataclass
+    class WorkflowRetryPolicy:  # type: ignore[no-redef]
+        max_attempts: int | None = 1
+        initial_backoff_seconds: int | None = 5
+        max_backoff_seconds: int | None = 30
+        backoff_multiplier: float | None = 1.5
+        retry_timeout: int | None = None
+
+    class AgentObservabilityConfig:  # type: ignore[no-redef]
+        @classmethod
+        def from_env(cls) -> "AgentObservabilityConfig":
+            return cls()
+
+    @dataclass
+    class ConversationDaprStateMemory:  # type: ignore[no-redef]
+        store_name: str = "statestore"
+        agent_name: str = "default"
+
+    class StateStoreError(RuntimeError):  # type: ignore[no-redef]
+        pass
+
+    class StateStoreService:  # type: ignore[no-redef]
+        _storage: dict[str, dict[str, Any]] = {}
+
+        def __init__(self, *, store_name: str, key_prefix: str = "", **_kwargs: Any) -> None:
+            self.store_name = store_name
+            self.key_prefix = key_prefix
+
+        def _qualify(self, key: str) -> str:
+            return f"{self.key_prefix}{key}"
+
+        def load(self, *, key: str, default: dict[str, Any] | None = None, **_kwargs: Any) -> dict[str, Any]:
+            return dict(self._storage.get(self._qualify(key), default or {}))
+
+        def save(self, *, key: str, value: Any, **_kwargs: Any) -> None:
+            if isinstance(value, dict):
+                self._storage[self._qualify(key)] = dict(value)
+                return
+            raise StateStoreError(f"Unsupported value type: {type(value)}")
+
+        def delete(self, *, key: str, **_kwargs: Any) -> None:
+            self._storage.pop(self._qualify(key), None)
+
     class DurableAgent:  # type: ignore[no-redef]
         def __init__(self, **kwargs) -> None:
             self.execution = kwargs.get("execution", AgentExecutionConfig())
+            self.name = kwargs.get("name", "dapr-agent")
+            self.registry = kwargs.get("registry")
+            self.state = kwargs.get("state")
+            self.memory = kwargs.get("memory")
 
         def start(self) -> None:
             return None
@@ -142,6 +216,24 @@ SERVICE_VERSION = "0.1.0"
 AGENT_TOOL_GROUP = os.environ.get("DAPR_AGENT_TOOL_GROUP", "all")
 WORKSPACE_ROOT = Path(DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
 WORKFLOW_NAME = os.environ.get("DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME", "daprAgentRunWorkflowV1")
+DAPR_HTTP_HOST = os.environ.get("DAPR_HTTP_HOST", "127.0.0.1")
+DAPR_HTTP_PORT = os.environ.get("DAPR_HTTP_PORT", "3500")
+MIN_DAPR_RUNTIME_VERSION = os.environ.get("MIN_DAPR_RUNTIME_VERSION", "1.17.0")
+DAPR_AGENT_STATE_STORE_NAME = os.environ.get("DAPR_AGENT_STATE_STORE_NAME", "workflowstatestore")
+DAPR_AGENT_MEMORY_STORE_NAME = os.environ.get("DAPR_AGENT_MEMORY_STORE_NAME", DAPR_AGENT_STATE_STORE_NAME)
+DAPR_AGENT_REGISTRY_STORE_NAME = os.environ.get("DAPR_AGENT_REGISTRY_STORE_NAME", DAPR_AGENT_STATE_STORE_NAME)
+DAPR_AGENT_REGISTRY_TEAM_NAME = os.environ.get("DAPR_AGENT_REGISTRY_TEAM_NAME", "coding-agents")
+DAPR_AGENT_STATE_KEY_PREFIX = os.environ.get("DAPR_AGENT_STATE_KEY_PREFIX", "dapr-agent-runtime:")
+DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX = os.environ.get(
+    "DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX",
+    f"{DAPR_AGENT_STATE_KEY_PREFIX}workspace:",
+)
+DAPR_AGENT_ENABLE_MEMORY = os.environ.get("DAPR_AGENT_ENABLE_MEMORY", "true").strip().lower() == "true"
+DAPR_AGENT_ENABLE_REGISTRY = os.environ.get("DAPR_AGENT_ENABLE_REGISTRY", "true").strip().lower() == "true"
+DAPR_AGENT_LLM_BACKEND = os.environ.get("DAPR_AGENT_LLM_BACKEND", "openai").strip().lower()
+DAPR_AGENT_LLM_COMPONENT = os.environ.get("DAPR_AGENT_LLM_COMPONENT") or os.environ.get(
+    "DAPR_LLM_COMPONENT_DEFAULT"
+)
 
 
 PROFILE_INSTRUCTIONS: dict[str, str] = {
@@ -276,6 +368,35 @@ class WorkspaceSession:
     execution_id: str
     root_path: Path
     enabled_tools: list[str]
+    repository_url: str | None = None
+    repository_owner: str | None = None
+    repository_repo: str | None = None
+    repository_branch: str | None = None
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "workspaceRef": self.workspace_ref,
+            "executionId": self.execution_id,
+            "rootPath": str(self.root_path),
+            "enabledTools": list(self.enabled_tools),
+            "repositoryUrl": self.repository_url,
+            "repositoryOwner": self.repository_owner,
+            "repositoryRepo": self.repository_repo,
+            "repositoryBranch": self.repository_branch,
+        }
+
+    @classmethod
+    def from_record(cls, record: dict[str, Any]) -> "WorkspaceSession":
+        return cls(
+            workspace_ref=str(record.get("workspaceRef") or ""),
+            execution_id=str(record.get("executionId") or ""),
+            root_path=Path(str(record.get("rootPath") or WORKSPACE_ROOT)).expanduser().resolve(),
+            enabled_tools=[str(item) for item in record.get("enabledTools") or []],
+            repository_url=str(record.get("repositoryUrl") or "").strip() or None,
+            repository_owner=str(record.get("repositoryOwner") or "").strip() or None,
+            repository_repo=str(record.get("repositoryRepo") or "").strip() or None,
+            repository_branch=str(record.get("repositoryBranch") or "").strip() or None,
+        )
 
 
 workspace_sessions: dict[str, WorkspaceSession] = {}
@@ -285,6 +406,102 @@ workflow_client = DaprWorkflowClient()
 runner = AgentRunner(name="dapr-agent-runtime", timeout_in_seconds=3600)
 _agent_lock = threading.Lock()
 _agent_cache: dict[tuple[str, str, str], DurableAgent] = {}
+workspace_state_store = StateStoreService(
+    store_name=DAPR_AGENT_STATE_STORE_NAME,
+    key_prefix=DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX,
+)
+
+
+def _workspace_session_key(workspace_ref: str) -> str:
+    return f"session:{workspace_ref}"
+
+
+def _execution_sessions_key(execution_id: str) -> str:
+    return f"execution:{execution_id}"
+
+
+def _persist_workspace_session(session: WorkspaceSession) -> None:
+    workspace_sessions[session.workspace_ref] = session
+    sessions_by_execution.setdefault(session.execution_id, set()).add(session.workspace_ref)
+    try:
+        workspace_state_store.save(
+            key=_workspace_session_key(session.workspace_ref),
+            value=session.to_record(),
+        )
+        workspace_state_store.save(
+            key=_execution_sessions_key(session.execution_id),
+            value={
+                "executionId": session.execution_id,
+                "workspaceRefs": sorted(sessions_by_execution.get(session.execution_id, set())),
+            },
+        )
+    except StateStoreError as exc:
+        logger.warning("Failed to persist workspace session %s: %s", session.workspace_ref, exc)
+
+
+def _load_workspace_session(workspace_ref: str) -> WorkspaceSession | None:
+    cached = workspace_sessions.get(workspace_ref)
+    if cached is not None:
+        return cached
+    try:
+        record = workspace_state_store.load(
+            key=_workspace_session_key(workspace_ref),
+            default={},
+        )
+    except StateStoreError as exc:
+        logger.warning("Failed to load workspace session %s: %s", workspace_ref, exc)
+        return None
+    if not record:
+        return None
+    session = WorkspaceSession.from_record(record)
+    workspace_sessions[session.workspace_ref] = session
+    sessions_by_execution.setdefault(session.execution_id, set()).add(session.workspace_ref)
+    return session
+
+
+def _load_execution_workspace_refs(execution_id: str) -> set[str]:
+    cached = sessions_by_execution.get(execution_id)
+    if cached:
+        return set(cached)
+    try:
+        record = workspace_state_store.load(
+            key=_execution_sessions_key(execution_id),
+            default={},
+        )
+    except StateStoreError as exc:
+        logger.warning("Failed to load execution workspace refs for %s: %s", execution_id, exc)
+        return set()
+    refs = {str(item) for item in record.get("workspaceRefs") or [] if str(item).strip()}
+    if refs:
+        sessions_by_execution[execution_id] = set(refs)
+    return refs
+
+
+def _delete_workspace_session(workspace_ref: str) -> None:
+    session = workspace_sessions.pop(workspace_ref, None)
+    if session is None:
+        session = _load_workspace_session(workspace_ref)
+    if session is None:
+        return
+    workspace_sessions.pop(workspace_ref, None)
+    execution_refs = sessions_by_execution.setdefault(session.execution_id, set())
+    execution_refs.discard(workspace_ref)
+    try:
+        workspace_state_store.delete(key=_workspace_session_key(workspace_ref))
+        if execution_refs:
+            workspace_state_store.save(
+                key=_execution_sessions_key(session.execution_id),
+                value={
+                    "executionId": session.execution_id,
+                    "workspaceRefs": sorted(execution_refs),
+                },
+            )
+        else:
+            workspace_state_store.delete(key=_execution_sessions_key(session.execution_id))
+            sessions_by_execution.pop(session.execution_id, None)
+    except StateStoreError as exc:
+        logger.warning("Failed to delete workspace session %s: %s", workspace_ref, exc)
+    shutil.rmtree(session.root_path, ignore_errors=True)
 
 
 def _ensure_workspace_root() -> None:
@@ -403,7 +620,7 @@ def _resolve_cwd(raw_cwd: str | None) -> str:
 
 
 def _workspace_from_ref(workspace_ref: str) -> WorkspaceSession:
-    session = workspace_sessions.get(workspace_ref)
+    session = workspace_sessions.get(workspace_ref) or _load_workspace_session(workspace_ref)
     if session is None:
         raise HTTPException(status_code=404, detail=f"Unknown workspaceRef: {workspace_ref}")
     return session
@@ -419,17 +636,148 @@ def _default_workspace_root(execution_id: str, requested_root: str | None) -> Pa
     return candidate.expanduser().resolve()
 
 
+def _build_agent_name(profile: str) -> str:
+    return f"dapr-agent-{profile}"
+
+
+def _workflow_descriptor(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "version": "v1",
+        "aliases": [name],
+        "isLatest": True,
+        "source": "service-introspection",
+    }
+
+
+def _activity_descriptor(name: str) -> dict[str, Any]:
+    return {"name": name, "source": "service-introspection"}
+
+
+def _build_agent_registry_metadata(
+    *,
+    profile: str,
+    model: str,
+    tool_group: str,
+) -> dict[str, Any]:
+    return {
+        "profile": profile,
+        "framework": "Dapr Agents",
+        "durable": True,
+        "workflowName": WORKFLOW_NAME,
+        "toolGroup": tool_group,
+        "defaultModel": model,
+        "supportsWorkspaceTools": True,
+        "stateStore": DAPR_AGENT_STATE_STORE_NAME,
+        "memoryStore": DAPR_AGENT_MEMORY_STORE_NAME if DAPR_AGENT_ENABLE_MEMORY else None,
+        "registryStore": DAPR_AGENT_REGISTRY_STORE_NAME if DAPR_AGENT_ENABLE_REGISTRY else None,
+    }
+
+
+def _build_registry_entries() -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for profile in sorted(PROFILE_INSTRUCTIONS.keys()):
+        tool_group = PROFILE_TOOL_GROUPS.get(profile, AGENT_TOOL_GROUP)
+        entries.append(
+            {
+                "name": _build_agent_name(profile),
+                "metadata": _build_agent_registry_metadata(
+                    profile=profile,
+                    model=DEFAULT_MODEL,
+                    tool_group=tool_group,
+                ),
+            }
+        )
+    return entries
+
+
+def _fetch_dapr_runtime_status() -> tuple[dict[str, Any], list[str]]:
+    errors: list[str] = []
+    runtime_status: dict[str, Any] = {
+        "daprHost": DAPR_HTTP_HOST,
+        "daprHttpPort": DAPR_HTTP_PORT,
+        "minRuntimeVersion": MIN_DAPR_RUNTIME_VERSION,
+    }
+    try:
+        with urllib.request.urlopen(
+            f"http://{DAPR_HTTP_HOST}:{DAPR_HTTP_PORT}/v1.0/metadata",
+            timeout=3,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        runtime_status = {
+            **runtime_status,
+            "appId": payload.get("id"),
+            "runtimeVersion": payload.get("runtimeVersion"),
+            "extended": payload,
+        }
+    except Exception as exc:  # pragma: no cover - depends on sidecar availability
+        errors.append(str(exc))
+    return runtime_status, errors
+
+
+def _build_llm_client(model: str, api_key: str | None) -> Any:
+    if DAPR_AGENT_LLM_BACKEND == "dapr" and DAPR_AGENT_LLM_COMPONENT:
+        return DaprChatClient(model=model, component_name=DAPR_AGENT_LLM_COMPONENT)
+    return OpenAIChatClient(
+        model=model,
+        api_key=api_key or os.environ.get("OPENAI_API_KEY"),
+    )
+
+
+def _build_durable_support_configs(profile: str) -> dict[str, Any]:
+    state = AgentStateConfig(
+        store=StateStoreService(
+            store_name=DAPR_AGENT_STATE_STORE_NAME,
+            key_prefix=f"{DAPR_AGENT_STATE_KEY_PREFIX}runs:{profile}:",
+        ),
+        state_key_prefix=f"{profile}:",
+    )
+    memory = (
+        AgentMemoryConfig(
+            store=ConversationDaprStateMemory(
+                store_name=DAPR_AGENT_MEMORY_STORE_NAME,
+                agent_name=_build_agent_name(profile),
+            )
+        )
+        if DAPR_AGENT_ENABLE_MEMORY
+        else None
+    )
+    registry = (
+        AgentRegistryConfig(
+            store=StateStoreService(store_name=DAPR_AGENT_REGISTRY_STORE_NAME),
+            team_name=DAPR_AGENT_REGISTRY_TEAM_NAME,
+        )
+        if DAPR_AGENT_ENABLE_REGISTRY
+        else None
+    )
+    return {
+        "state": state,
+        "memory": memory,
+        "registry": registry,
+        "retry_policy": WorkflowRetryPolicy(
+            max_attempts=3,
+            initial_backoff_seconds=2,
+            max_backoff_seconds=20,
+            backoff_multiplier=2.0,
+            retry_timeout=300,
+        ),
+        "observability": AgentObservabilityConfig.from_env(),
+    }
+
+
 def _get_agent(request: DaprAgentRunRequest) -> DurableAgent:
+    profile = _normalize_profile(request.profile)
     model = str(request.model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
     workspace_root = _resolve_cwd(request.cwd)
     tool_group = _resolve_effective_tool_group(request)
-    cache_key = (model, workspace_root, tool_group)
+    cache_key = (profile, model, workspace_root, tool_group)
 
     with _agent_lock:
         agent = _agent_cache.get(cache_key)
         if agent is None:
+            support = _build_durable_support_configs(profile)
             agent = DurableAgent(
-                name=f"dapr-coding-agent-{len(_agent_cache) + 1}",
+                name=_build_agent_name(profile),
                 role="autonomous coding agent",
                 goal="Complete coding tasks in a durable, tool-using workflow",
                 instructions=[
@@ -437,21 +785,28 @@ def _get_agent(request: DaprAgentRunRequest) -> DurableAgent:
                     "When changing code, keep edits minimal and explain what changed.",
                     "Prefer deterministic verification commands when they are provided.",
                 ],
-                llm=OpenAIChatClient(
-                    model=model,
-                    api_key=request.openAIApiKey or os.environ.get("OPENAI_API_KEY"),
-                ),
+                llm=_build_llm_client(model, request.openAIApiKey),
                 tools=bind_tool_group(tool_group, workspace_root),
                 execution=AgentExecutionConfig(
                     max_iterations=max(int(request.maxTurns or 30), 1),
                     tool_choice="auto",
                 ),
+                state=support["state"],
+                memory=support["memory"],
+                registry=support["registry"],
+                retry_policy=support["retry_policy"],
+                agent_observability=support["observability"],
+                agent_metadata=_build_agent_registry_metadata(
+                    profile=profile,
+                    model=model,
+                    tool_group=tool_group,
+                ),
                 runtime=runtime,
             )
             try:
                 agent.start()
-            except RuntimeError:
-                pass
+            except RuntimeError as exc:
+                logger.warning("Failed to start durable agent %s: %s", agent.name, exc)
             _agent_cache[cache_key] = agent
         return agent
 
@@ -489,12 +844,13 @@ async def lifespan(_app: FastAPI):
     _ensure_workspace_root()
     runtime.start()
     try:
-        _get_agent(
-            DaprAgentRunRequest(
-                prompt="Initialize durable coding agent runtime",
-                profile="implement",
+        for profile in sorted(PROFILE_INSTRUCTIONS.keys()):
+            _get_agent(
+                DaprAgentRunRequest(
+                    prompt="Initialize durable coding agent runtime",
+                    profile=profile,
+                )
             )
-        )
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to eagerly initialize dapr-agent runtime: %s", exc)
     try:
@@ -511,11 +867,14 @@ app = FastAPI(title="dapr-agent-runtime", lifespan=lifespan)
 @app.get("/readyz")
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    runtime_status, errors = _fetch_dapr_runtime_status()
     return {
         "ok": True,
         "service": "dapr-agent-runtime",
         "version": SERVICE_VERSION,
         "workflowName": WORKFLOW_NAME,
+        "runtimeStatus": runtime_status,
+        "errors": errors,
     }
 
 
@@ -531,13 +890,47 @@ def list_tools() -> dict[str, Any]:
 
 @app.get("/api/runtime/introspect")
 def runtime_introspect() -> dict[str, Any]:
+    runtime_status, errors = _fetch_dapr_runtime_status()
     return {
         "service": "dapr-agent-runtime",
         "version": SERVICE_VERSION,
+        "runtime": "python-dapr-agents",
+        "ready": True,
+        "runtimeStatus": runtime_status,
+        "features": [
+            "durable-agent",
+            "workspace-tools",
+            "persistent-memory",
+            "state-store-backed-sessions",
+            "agent-registry",
+        ],
+        "registeredWorkflows": [_workflow_descriptor(WORKFLOW_NAME)],
+        "registeredActivities": [
+            _activity_descriptor("workspace_profile"),
+            _activity_descriptor("workspace_clone"),
+            _activity_descriptor("workspace_command"),
+            _activity_descriptor("workspace_file"),
+            _activity_descriptor("workspace_cleanup"),
+        ],
+        "errors": errors,
         "workflowName": WORKFLOW_NAME,
         "profiles": sorted(PROFILE_INSTRUCTIONS.keys()),
         "profileToolGroups": PROFILE_TOOL_GROUPS,
         "toolGroups": list(TOOL_GROUPS.keys()),
+        "registry": {
+            "enabled": DAPR_AGENT_ENABLE_REGISTRY,
+            "storeName": DAPR_AGENT_REGISTRY_STORE_NAME if DAPR_AGENT_ENABLE_REGISTRY else None,
+            "teamName": DAPR_AGENT_REGISTRY_TEAM_NAME if DAPR_AGENT_ENABLE_REGISTRY else None,
+            "registeredAgents": _build_registry_entries(),
+        },
+        "additional": {
+            "stateStoreName": DAPR_AGENT_STATE_STORE_NAME,
+            "memoryStoreName": DAPR_AGENT_MEMORY_STORE_NAME if DAPR_AGENT_ENABLE_MEMORY else None,
+            "workspaceStateStoreName": DAPR_AGENT_STATE_STORE_NAME,
+            "llmBackend": DAPR_AGENT_LLM_BACKEND,
+            "llmComponent": DAPR_AGENT_LLM_COMPONENT,
+            "workspaceBindings": sum(len(refs) for refs in sessions_by_execution.values()),
+        },
     }
 
 
@@ -554,8 +947,7 @@ def workspace_profile(request: WorkspaceProfileRequest) -> dict[str, Any]:
         root_path=root_path,
         enabled_tools=[str(item) for item in enabled_tools],
     )
-    workspace_sessions[workspace_ref] = session
-    sessions_by_execution.setdefault(request.executionId, set()).add(workspace_ref)
+    _persist_workspace_session(session)
     return {
         "workspaceRef": workspace_ref,
         "executionId": request.executionId,
@@ -606,6 +998,12 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
         check=False,
     ).stdout.strip()
     file_count = len([p for p in clone_path.rglob("*") if p.is_file()])
+    session.repository_url = request.repositoryUrl
+    session.repository_owner = request.repositoryOwner
+    session.repository_repo = request.repositoryRepo
+    session.repository_branch = request.repositoryBranch
+    session.root_path = clone_path.parent.resolve()
+    _persist_workspace_session(session)
     return {
         "clonePath": str(clone_path),
         "repository": f"{request.repositoryOwner or ''}/{request.repositoryRepo or ''}".strip("/"),
@@ -676,16 +1074,13 @@ def workspace_cleanup(request: WorkspaceCleanupRequest) -> dict[str, Any]:
     refs: set[str] = set()
     if request.workspaceRef:
         refs.add(request.workspaceRef)
-    if request.executionId and request.executionId in sessions_by_execution:
-        refs |= sessions_by_execution.get(request.executionId, set())
-    for ref in refs:
-        session = workspace_sessions.pop(ref, None)
-        if session is None:
-            continue
-        shutil.rmtree(session.root_path, ignore_errors=True)
-        cleaned.append(ref)
     if request.executionId:
-        sessions_by_execution.pop(request.executionId, None)
+        refs |= _load_execution_workspace_refs(request.executionId)
+    for ref in refs:
+        if _load_workspace_session(ref) is None:
+            continue
+        _delete_workspace_session(ref)
+        cleaned.append(ref)
     return {"cleanedWorkspaceRefs": cleaned}
 
 

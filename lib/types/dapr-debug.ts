@@ -127,6 +127,15 @@ export type DaprRuntimeIntrospection = {
 			metadata: Record<string, unknown>;
 		}>;
 	};
+	profiles?: string[];
+	profileToolGroups?: Record<string, string>;
+	templates?: Array<{
+		id: string;
+		label?: string;
+		description?: string;
+		defaultToolGroup?: string | null;
+		supportsTools?: boolean;
+	}>;
 	additional?: Record<string, unknown>;
 };
 

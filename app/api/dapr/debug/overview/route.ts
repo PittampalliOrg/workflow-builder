@@ -73,13 +73,56 @@ function uniqueRuntimeRegistryAgents(
 		data: DaprRuntimeIntrospection | null;
 	}>,
 ): DaprDebugOverviewResponse["agents"]["runtimeRegistry"] {
-	return introspections.flatMap(({ appId, data }) =>
-		(data?.registry?.registeredAgents ?? []).map((entry) => ({
-			name: entry.name,
-			metadata: entry.metadata,
-			sourceApp: appId,
-		})),
-	);
+	const seen = new Set<string>();
+	const entries = introspections.flatMap(({ appId, data }) => {
+		const registered = (data?.registry?.registeredAgents ?? []).map(
+			(entry) => ({
+				name: entry.name,
+				metadata: entry.metadata,
+				sourceApp: appId,
+			}),
+		);
+		if (registered.length > 0) {
+			return registered;
+		}
+		if (Array.isArray(data?.profiles)) {
+			return data.profiles.map((profile) => ({
+				name: profile,
+				metadata: {
+					profile,
+					toolGroup: data.profileToolGroups?.[profile] ?? null,
+					service: data.service,
+					runtime: data.runtime,
+					source: "profiles",
+				},
+				sourceApp: appId,
+			}));
+		}
+		if (Array.isArray(data?.templates)) {
+			return data.templates.map((template) => ({
+				name: template.label || template.id,
+				metadata: {
+					templateId: template.id,
+					description: template.description || null,
+					defaultToolGroup: template.defaultToolGroup ?? null,
+					supportsTools: template.supportsTools ?? false,
+					service: data.service,
+					runtime: data.runtime,
+					source: "templates",
+				},
+				sourceApp: appId,
+			}));
+		}
+		return [];
+	});
+	return entries.filter((entry) => {
+		const key = `${entry.sourceApp}:${entry.name}`;
+		if (seen.has(key)) {
+			return false;
+		}
+		seen.add(key);
+		return true;
+	});
 }
 
 export async function GET(request: Request) {
