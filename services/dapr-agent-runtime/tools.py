@@ -113,7 +113,7 @@ def _extract_context(kwargs: dict[str, Any]) -> ToolRuntimeContext:
     return ToolRuntimeContext.from_workspace_root(str(workspace_root))
 
 
-@tool(name="read_file", description="Read a UTF-8 text file from the workspace")
+@tool
 def read_file(path: str, **kwargs) -> str:
     """Read a UTF-8 text file from the workspace."""
     context = _extract_context(kwargs)
@@ -125,7 +125,7 @@ def read_file(path: str, **kwargs) -> str:
     return resolved.read_text(encoding="utf-8")
 
 
-@tool(name="list_files", description="List workspace files with an optional glob pattern")
+@tool
 def list_files(path: str = ".", pattern: str = "**/*", **kwargs) -> list[str]:
     """List files in a workspace directory using a glob pattern."""
     context = _extract_context(kwargs)
@@ -144,7 +144,7 @@ def list_files(path: str = ".", pattern: str = "**/*", **kwargs) -> list[str]:
     return matches
 
 
-@tool(name="grep_search", description="Search UTF-8 text files in the workspace for a substring")
+@tool
 def grep_search(pattern: str, path: str = ".", **kwargs) -> list[dict[str, Any]]:
     """Search UTF-8 text files in the workspace for a substring."""
     context = _extract_context(kwargs)
@@ -176,7 +176,7 @@ def grep_search(pattern: str, path: str = ".", **kwargs) -> list[dict[str, Any]]
     return matches
 
 
-@tool(name="write_file", description="Write a UTF-8 text file in the workspace")
+@tool
 def write_file(path: str, content: str, **kwargs) -> dict[str, Any]:
     """Write a UTF-8 text file in the workspace."""
     context = _extract_context(kwargs)
@@ -187,7 +187,7 @@ def write_file(path: str, content: str, **kwargs) -> dict[str, Any]:
     return {"path": _as_relative(resolved, context.workspace_root)}
 
 
-@tool(name="edit_file", description="Replace text in a UTF-8 text file in the workspace")
+@tool
 def edit_file(path: str, old_string: str, new_string: str, **kwargs) -> dict[str, Any]:
     """Replace text in a UTF-8 text file in the workspace."""
     context = _extract_context(kwargs)
@@ -204,7 +204,7 @@ def edit_file(path: str, old_string: str, new_string: str, **kwargs) -> dict[str
     return {"path": _as_relative(resolved, context.workspace_root), "replacements": 1}
 
 
-@tool(name="delete_path", description="Delete a file or directory in the workspace")
+@tool
 def delete_path(path: str, **kwargs) -> dict[str, Any]:
     """Delete a file or directory in the workspace."""
     context = _extract_context(kwargs)
@@ -219,7 +219,7 @@ def delete_path(path: str, **kwargs) -> dict[str, Any]:
     return {"path": path}
 
 
-@tool(name="mkdir", description="Create a directory in the workspace")
+@tool
 def mkdir(path: str, **kwargs) -> dict[str, Any]:
     """Create a directory in the workspace."""
     context = _extract_context(kwargs)
@@ -228,7 +228,7 @@ def mkdir(path: str, **kwargs) -> dict[str, Any]:
     return {"path": _as_relative(resolved, context.workspace_root)}
 
 
-@tool(name="file_stat", description="Return metadata for a workspace file or directory")
+@tool
 def file_stat(path: str, **kwargs) -> dict[str, Any]:
     """Return metadata for a workspace file or directory."""
     context = _extract_context(kwargs)
@@ -259,7 +259,7 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
     return completed.stdout.strip()
 
 
-@tool(name="git_status", description="Get git status in the workspace")
+@tool
 def git_status(path: str = ".", **kwargs) -> dict[str, Any]:
     """Get git status in the workspace."""
     context = _extract_context(kwargs)
@@ -268,7 +268,7 @@ def git_status(path: str = ".", **kwargs) -> dict[str, Any]:
     return {"path": path, "status": stdout}
 
 
-@tool(name="git_diff", description="Get git diff in the workspace")
+@tool
 def git_diff(path: str = ".", **kwargs) -> dict[str, Any]:
     """Get git diff in the workspace."""
     context = _extract_context(kwargs)
@@ -277,7 +277,7 @@ def git_diff(path: str = ".", **kwargs) -> dict[str, Any]:
     return {"path": path, "diff": stdout}
 
 
-@tool(name="git_apply", description="Apply a unified diff patch in the workspace")
+@tool
 def git_apply(patch: str, path: str = ".", **kwargs) -> dict[str, Any]:
     """Apply a unified diff patch in the workspace."""
     context = _extract_context(kwargs)
@@ -296,7 +296,7 @@ def git_apply(patch: str, path: str = ".", **kwargs) -> dict[str, Any]:
     return {"path": path, "applied": True}
 
 
-@tool(name="execute_command", description="Run a shell command inside the workspace")
+@tool
 def execute_command(command: str, cwd: str = ".", **kwargs) -> dict[str, Any]:
     """Run a shell command inside the workspace."""
     context = _extract_context(kwargs)
@@ -379,11 +379,12 @@ def bind_tool_group(
         tool_name = getattr(tool_fn, "__name__", "tool")
         tool_description = getattr(tool_fn, "__doc__", None) or f"Run {tool_name}"
 
-        @tool(name=tool_name, description=tool_description)
         def bound_tool(*args: Any, _tool_fn=tool_fn, **kwargs: Any) -> Any:
             return _tool_fn(*args, workspace_root=root, **kwargs)
 
-        bound_tools.append(bound_tool)
+        bound_tool.__name__ = tool_name
+        bound_tool.__doc__ = tool_description
+        bound_tools.append(tool(bound_tool))
     return bound_tools
 
 
