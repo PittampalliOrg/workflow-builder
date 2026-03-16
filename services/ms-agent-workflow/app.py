@@ -563,11 +563,12 @@ class MicrosoftAgentAdapter:
         self.api_key = api_key
 
     def _build_agent(self) -> Agent:
+        client = OpenAIChatClient(
+            model_id=self.model,
+            api_key=self.api_key,
+        )
         return Agent(
-            chat_client=OpenAIChatClient(
-                model_id=self.model,
-                api_key=self.api_key,
-            ),
+            client,
             name=self.name,
             description=self.description,
             instructions=self.instructions,
