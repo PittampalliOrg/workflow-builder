@@ -39,37 +39,77 @@ Ask the user for:
    - `azureappconfig` - Azure App Configuration
    - `secrets` - External Secrets from Key Vault
 
-## Step 2: Add Federated Credential
+## Step 2: Add Federated Identity Credential
 
-Add the app's ServiceAccount to the bootstrap script for Azure Workload Identity:
+Each Kubernetes ServiceAccount that uses Azure Workload Identity needs a **federated identity credential** registered on the Azure AD app. This links the cluster's OIDC-issued token (subject: `system:serviceaccount:<namespace>:<sa>`) to the Azure AD app so Dapr/ESO can authenticate to Key Vault and App Config.
 
-**File:** `stacks/main/scripts/00-bootstrap-azure-infra.sh`
+### Automated (via spoke-bootstrap)
+
+The `spoke-bootstrap.sh` script automatically creates federated credentials for all workflow-builder service accounts when onboarding a new spoke cluster:
 
 ```bash
-# Find the SA_CONFIGS array and add the new app
-setup_federated_credentials() {
-    print_header "Setting Up Federated Identity Credentials"
-
-    local -a SA_CONFIGS=(
-        "external-secrets:external-secrets"
-        "mcp-tools:acr-sa"
-        "kargo:acr-sa"
-        "ai-chatbot:ai-chatbot"
-        "planner-agent:planner-dapr-agent"
-        "{NAMESPACE}:{SERVICE_ACCOUNT_NAME}"  # ADD THIS LINE
-    )
+cd /home/vpittamp/repos/PittampalliOrg/stacks/main/deployment/scripts
+./spoke-bootstrap.sh <spoke-name> <spoke-ip>
 ```
 
-**Search command:**
+This creates credentials for: `workflow-builder`, `workflow-orchestrator`, `function-router`, `workflow-functions`, `durable-agent`, and `external-secrets`.
+
+To add a new service account, edit the `WB_SERVICE_ACCOUNTS` array in `spoke-bootstrap.sh`'s `create_federated_credentials()` function.
+
+### Manual (for a single service account)
+
 ```bash
-grep -n "SA_CONFIGS=(" /home/vpittamp/repos/PittampalliOrg/stacks/main/scripts/00-bootstrap-azure-infra.sh
+# Get the cluster's OIDC issuer URL
+ISSUER=$(kubectl get --raw /.well-known/openid-configuration | jq -r '.issuer')
+
+# Create the federated credential
+az ad app federated-credential create \
+  --id "137fbb08-70ee-4dc3-8f5f-8f61f9571568" \
+  --parameters "{
+    \"name\": \"{SERVICE_ACCOUNT_NAME}-{CLUSTER_NAME}\",
+    \"issuer\": \"${ISSUER}\",
+    \"subject\": \"system:serviceaccount:{NAMESPACE}:{SERVICE_ACCOUNT_NAME}\",
+    \"description\": \"{SERVICE_ACCOUNT_NAME} pod identity for {CLUSTER_NAME} cluster\",
+    \"audiences\": [\"api://AzureADTokenExchange\"]
+  }"
 ```
 
-After modifying, run the bootstrap script to create the federated credential:
-```bash
-cd /home/vpittamp/repos/PittampalliOrg/stacks/main/scripts
-./00-bootstrap-azure-infra.sh --update-issuer
-```
+### Required credentials per cluster
+
+Every cluster that runs workflow-builder services needs these federated credentials on the Azure AD app (`137fbb08-70ee-4dc3-8f5f-8f61f9571568`):
+
+| Service Account | Namespace | Used By |
+|----------------|-----------|---------|
+| `workflow-builder` | `workflow-builder` | Next.js app (Dapr sidecar → Key Vault) |
+| `workflow-orchestrator` | `workflow-builder` | Python Dapr workflow engine |
+| `function-router` | `workflow-builder` | Function execution router |
+| `workflow-functions` | `workflow-builder` | Shared workflow functions |
+| `durable-agent` | `workflow-builder` | Durable AI agent |
+| `external-secrets` | `external-secrets` | External Secrets Operator |
+
+### Crossplane (hub cluster only)
+
+The hub cluster uses Crossplane `AzureWorkloadIdentityClaim` resources to manage federated credentials declaratively. See `stacks/packages/components/crossplane-hetzner-talos/manifests/crossplane-hcloud-compositions/` for the composition.
+
+### Troubleshooting
+
+If you see `AADSTS700213: No matching federated identity record found`:
+1. Decode the pod's token to find the issuer and subject:
+   ```bash
+   kubectl exec deploy/<app> -c <app> -- node -e "
+     const t = require('fs').readFileSync('/var/run/secrets/azure/tokens/azure-identity-token','utf8');
+     const p = JSON.parse(Buffer.from(t.split('.')[1],'base64').toString());
+     console.log('issuer:', p.iss, 'subject:', p.sub);
+   "
+   ```
+2. Verify a federated credential exists for that exact issuer + subject pair:
+   ```bash
+   az rest --method GET \
+     --url "https://graph.microsoft.com/v1.0/applications(appId='137fbb08-70ee-4dc3-8f5f-8f61f9571568')/federatedIdentityCredentials" \
+     --query "value[?subject=='system:serviceaccount:workflow-builder:<sa>'].{name:name,issuer:issuer}" \
+     -o table
+   ```
+3. After creating a credential, Azure AD may cache JWKS for 15-30 minutes. Wait and retry.
 
 ## Step 3: Create ServiceAccount with Workload Identity
 
@@ -330,7 +370,7 @@ The `dapr-azure-integration` component provides these sub-components:
 
 | Resource | Value |
 |----------|-------|
-| Azure Workload Identity client-id | `1140d9c2-62f6-4857-94c2-7e0e6c64e562` |
+| Azure Workload Identity client-id | `137fbb08-70ee-4dc3-8f5f-8f61f9571568` |
 | Azure Workload Identity tenant-id | `0c4da9c5-40ea-4e7d-9c7a-e7308d4f8e38` |
 | Azure App Config host | `https://rg3-app-config.azconfig.io` |
 | OTEL Collector endpoint | `otel-collector.observability.svc.cluster.local:4317` |
@@ -342,10 +382,12 @@ The `dapr-azure-integration` component provides these sub-components:
 ### Federated Credential Issues
 
 ```bash
-# Check if federated credential exists
-az ad app federated-credential list --id "1140d9c2-62f6-4857-94c2-7e0e6c64e562" -o table
+# Check if federated credential exists for the workflow-builder app
+az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/applications(appId='137fbb08-70ee-4dc3-8f5f-8f61f9571568')/federatedIdentityCredentials" \
+  --query "value[].{name:name,subject:subject,issuer:issuer}" -o table
 
-# Verify the issuer URL matches
+# Verify the issuer URL matches your cluster
 kubectl get --raw /.well-known/openid-configuration | jq -r '.issuer'
 ```
 
