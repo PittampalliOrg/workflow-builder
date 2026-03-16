@@ -56,6 +56,7 @@ from activities.log_external_event import (
     log_approval_timeout,
 )
 from activities.call_agent_service import (
+    call_dapr_agent_run,
     call_durable_agent_run,
     call_durable_plan,
     call_durable_execute_plan,

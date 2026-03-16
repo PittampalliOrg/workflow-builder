@@ -88,7 +88,7 @@ logging.basicConfig(
 
 PORT = int(os.environ.get("PORT", "8081"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "travel-planner")
+DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "repo-review")
 DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.2")
 WORKFLOW_NAME = os.environ.get("MS_AGENT_CHILD_WORKFLOW_RUN_NAME", "msAgentWorkflowV1")
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
@@ -129,6 +129,274 @@ class SafeFormatMap(UserDict[str, str]):
 
 
 TEMPLATES: dict[str, WorkflowTemplate] = {
+    "repo-review": WorkflowTemplate(
+        id="repo-review",
+        label="Repository Review",
+        description="Structured repository review with architecture discovery, findings, and summary.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="RepoScout",
+                description="Repository structure and architecture discovery",
+                instructions=(
+                    "Inspect the repository structure, important entry points, test layout, "
+                    "deployment/runtime surfaces, and the files most relevant to the task."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Start by mapping the project structure, key directories, and likely critical paths."
+                ),
+                tool_group="read_only",
+                max_iterations=15,
+            ),
+            TemplateStep(
+                agent_name="Reviewer",
+                description="Repository review findings",
+                instructions=(
+                    "Review the implementation with focus on: {focus_areas}. "
+                    "Produce prioritized findings with file references and concrete engineering impact."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Repository map:\n{previous_output}\n\n"
+                    "Now perform the review and identify the highest-value findings."
+                ),
+                tool_group="read_only",
+                max_iterations=25,
+            ),
+            TemplateStep(
+                agent_name="Summarizer",
+                description="Engineer-facing summary",
+                instructions=(
+                    "Summarize the repository purpose, major subsystems, deployment shape, "
+                    "key docs, and the most important findings in a compact handoff format."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Repository review findings:\n{step_1_output}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Produce the final structured summary."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+        ],
+    ),
+    "implement-task": WorkflowTemplate(
+        id="implement-task",
+        label="Implement Task",
+        description="Plan, edit, verify, and summarize a coding task with Microsoft Agent Framework specialists.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="Planner",
+                description="Implementation planning specialist",
+                instructions=(
+                    "Inspect the codebase and produce the smallest coherent implementation plan "
+                    "for the requested task before editing files."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Plan the implementation in a concise engineering checklist."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+            TemplateStep(
+                agent_name="Editor",
+                description="Implementation editing specialist",
+                instructions=(
+                    "Implement the requested task directly. Keep edits minimal, consistent, "
+                    "and confined to the repository root."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation plan:\n{previous_output}\n\n"
+                    "Apply the code changes now."
+                ),
+                tool_group="all",
+                max_iterations=30,
+            ),
+            TemplateStep(
+                agent_name="Verifier",
+                description="Verification and summary specialist",
+                instructions=(
+                    "Review the resulting changes, run the requested verification commands when provided, "
+                    "and summarize the outcome, including any residual risks."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation summary:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Verify the work and produce the final engineering summary."
+                ),
+                tool_group="all",
+                max_iterations=18,
+            ),
+        ],
+    ),
+    "fix-tests": WorkflowTemplate(
+        id="fix-tests",
+        label="Fix Tests",
+        description="Investigate a failing test or verification command, repair it, and summarize the fix.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="FailureAnalyzer",
+                description="Failure reproduction and diagnosis",
+                instructions=(
+                    "Reproduce or inspect the failing test scenario, identify the likely root cause, "
+                    "and describe the narrowest robust fix."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "If verification commands are provided, use them to diagnose the failure."
+                ),
+                tool_group="all",
+                max_iterations=18,
+            ),
+            TemplateStep(
+                agent_name="RepairEngineer",
+                description="Apply the repair",
+                instructions=(
+                    "Implement the smallest durable repair for the diagnosed failure and keep the change set focused."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Diagnosis:\n{previous_output}\n\n"
+                    "Apply the repair now."
+                ),
+                tool_group="all",
+                max_iterations=24,
+            ),
+            TemplateStep(
+                agent_name="RegressionReviewer",
+                description="Regression and residual risk summary",
+                instructions=(
+                    "Verify the repaired state, note any remaining failure modes, and summarize what changed."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Repair summary:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Provide the final verification summary."
+                ),
+                tool_group="all",
+                max_iterations=15,
+            ),
+        ],
+    ),
+    "explain-code": WorkflowTemplate(
+        id="explain-code",
+        label="Explain Code",
+        description="Read the repository and produce a guided explanation for engineers.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="CodeExplorer",
+                description="Codebase exploration",
+                instructions=(
+                    "Inspect the relevant files and trace the control flow or system boundaries needed to answer the task."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Question:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Explore the code paths required to answer it accurately."
+                ),
+                tool_group="read_only",
+                max_iterations=16,
+            ),
+            TemplateStep(
+                agent_name="Explainer",
+                description="Engineer-facing explanation",
+                instructions=(
+                    "Explain the code clearly for another engineer. Include the purpose, main execution path, "
+                    "important data flows, and caveats."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Question:\n{task}\n\n"
+                    "Exploration notes:\n{previous_output}\n\n"
+                    "Produce the final explanation."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+        ],
+    ),
+    "custom-coding-workflow": WorkflowTemplate(
+        id="custom-coding-workflow",
+        label="Custom Coding Workflow",
+        description="General multi-phase coding workflow with planning, editing, review, and optional verification.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="Planner",
+                description="Task planning",
+                instructions="Create a concrete engineering plan for the requested coding task.",
+                prompt_mode="template",
+                prompt_template="Repository root: {cwd}\n\nTask:\n{task}\n\nPlan the work.",
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+            TemplateStep(
+                agent_name="Editor",
+                description="Code editing",
+                instructions="Apply the requested coding changes directly in the repository.",
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Plan:\n{previous_output}\n\n"
+                    "Implement the changes now."
+                ),
+                tool_group="all",
+                max_iterations=30,
+            ),
+            TemplateStep(
+                agent_name="Reviewer",
+                description="Change review and summary",
+                instructions=(
+                    "Review the final changes, verify where appropriate, and summarize the outcome with risks."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation output:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Produce the final review."
+                ),
+                tool_group="all",
+                max_iterations=16,
+            ),
+        ],
+    ),
     "travel-planner": WorkflowTemplate(
         id="travel-planner",
         label="Travel Planner",
@@ -172,7 +440,7 @@ TEMPLATES: dict[str, WorkflowTemplate] = {
     ),
     "code-review": WorkflowTemplate(
         id="code-review",
-        label="Code Review",
+        label="Legacy Code Review",
         description="Analyze a repository, produce findings, and optionally apply targeted fixes.",
         supports_tools=True,
         default_model=DEFAULT_MODEL,
@@ -369,12 +637,16 @@ def _build_step_context(
     step_outputs: list[dict[str, Any]],
     cwd: str | None,
     review_focus_areas: list[str],
+    expected_output: str | None = None,
+    verify_commands: str | None = None,
 ) -> dict[str, Any]:
     values: dict[str, Any] = {
         "task": task,
         "cwd": cwd or DEFAULT_WORKSPACE_ROOT,
         "focus_areas": ", ".join(review_focus_areas) if review_focus_areas else "general code quality",
         "review_focus_areas": ", ".join(review_focus_areas),
+        "expected_output": expected_output or "",
+        "verify_commands": verify_commands or "",
     }
     if step_outputs:
         values["previous_output"] = _coerce_text(step_outputs[-1].get("content"))
@@ -457,6 +729,9 @@ class WorkflowRunRequest(BaseModel):
     applyFixes: bool | str | None = None
     maxIterations: int | None = Field(default=None, ge=1, le=200)
     instructionsOverlay: str | None = None
+    expectedOutput: str | None = None
+    verifyCommands: str | None = None
+    toolGroup: str | None = None
     configStoreName: str | None = None
     configKeys: list[str] | str | None = None
     configMetadata: dict[str, str] | str | None = None
@@ -565,6 +840,9 @@ def _schedule_workflow(
             "applyFixes": request.applyFixes,
             "maxIterations": request.maxIterations,
             "instructionsOverlay": request.instructionsOverlay,
+            "expectedOutput": request.expectedOutput,
+            "verifyCommands": request.verifyCommands,
+            "toolGroup": request.toolGroup,
             "configStoreName": request.configStoreName,
             "configKeys": request.configKeys,
             "configMetadata": request.configMetadata,
@@ -664,6 +942,8 @@ def ms_agent_workflow(
     cwd = str(input_payload.get("cwd") or DEFAULT_WORKSPACE_ROOT).strip() or DEFAULT_WORKSPACE_ROOT
     review_focus_areas = _parse_review_focus_areas(input_payload.get("reviewFocusAreas"))
     apply_fixes = _parse_bool(input_payload.get("applyFixes"), False)
+    expected_output = str(input_payload.get("expectedOutput") or "").strip() or None
+    verify_commands = str(input_payload.get("verifyCommands") or "").strip() or None
     instructions_overlay = runtime_settings["instructions_overlay"]
     max_iterations_override = runtime_settings["max_iterations"]
     tool_group_override = runtime_settings["tool_group_override"]
@@ -679,6 +959,8 @@ def ms_agent_workflow(
             step_outputs=step_outputs,
             cwd=cwd,
             review_focus_areas=review_focus_areas,
+            expected_output=expected_output,
+            verify_commands=verify_commands,
         )
         prompt = _build_step_prompt(step=step, task=task, step_context=step_context)
         instructions = _format_template_text(step.instructions, step_context)
@@ -740,16 +1022,20 @@ def ms_agent_workflow(
         for chunk in (str(output.get("patch") or "").strip() for output in step_outputs)
         if chunk
     ).strip()
+    review_findings_agent = {
+        "code-review": "CodeReviewer",
+        "repo-review": "Reviewer",
+    }.get(template.id)
     review_findings = (
         next(
             (
                 output.get("content")
                 for output in step_outputs
-                if output.get("agent") == "CodeReviewer"
+                if output.get("agent") == review_findings_agent
             ),
             None,
         )
-        if template.id == "code-review"
+        if review_findings_agent
         else None
     )
     final_text = _coerce_text(final_step.get("content"))
@@ -1036,6 +1322,9 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
                 "applyFixes": request.input.get("applyFixes"),
                 "maxIterations": request.input.get("maxIterations"),
                 "instructionsOverlay": request.input.get("instructionsOverlay"),
+                "expectedOutput": request.input.get("expectedOutput"),
+                "verifyCommands": request.input.get("verifyCommands"),
+                "toolGroup": request.input.get("toolGroup"),
                 "configStoreName": request.input.get("configStoreName"),
                 "configKeys": request.input.get("configKeys"),
                 "configMetadata": request.input.get("configMetadata"),

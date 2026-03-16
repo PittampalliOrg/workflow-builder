@@ -776,6 +776,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 # Keep durable/materialize-plan on the regular action path because
                 # it is a synchronous tool endpoint that does not require prompt/mode.
                 if action_type in (
+                    "dapr-agent/run",
                     "durable/run",
                     "durable/plan",
                     "durable/claude-plan",
@@ -1802,6 +1803,7 @@ def process_agent_child_workflow(
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
+    is_dapr_agent = action_type == "dapr-agent/run"
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -1810,7 +1812,7 @@ def process_agent_child_workflow(
         mode = "plan_mode"
     if action_type == "durable/execute-plan-dag":
         mode = "execute_direct"
-    if is_ms_agent:
+    if is_ms_agent or is_dapr_agent:
         mode = "execute_direct"
 
     configured_artifact_ref = resolved_config.get("artifactRef")
@@ -1824,7 +1826,7 @@ def process_agent_child_workflow(
         prompt = "Execute the provided plan"
     if not prompt and action_type == "durable/execute-plan-dag":
         prompt = "Execute the plan as a DAG workflow"
-    if not prompt and is_ms_agent:
+    if not prompt and (is_ms_agent or is_dapr_agent):
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
@@ -1862,6 +1864,11 @@ def process_agent_child_workflow(
     if is_ms_agent:
         run_mode = "execute_direct"
         call_activity_fn = None
+    elif is_dapr_agent:
+        run_mode = "execute_direct"
+        from activities.call_agent_service import call_dapr_agent_run
+
+        call_activity_fn = call_dapr_agent_run
     elif action_type == "durable/execute-plan-dag":
         run_mode = "execute_plan_dag"
         from activities.call_agent_service import call_durable_execute_plan_dag
@@ -1880,7 +1887,11 @@ def process_agent_child_workflow(
         call_activity_fn = call_durable_agent_run
     native_child_workflow_enabled = _is_native_child_workflow_enabled(resolved_config)
     use_native_child_workflow = (
-        True if is_ms_agent else native_child_workflow_enabled and run_mode == "execute_direct"
+        True
+        if is_ms_agent
+        else False
+        if is_dapr_agent
+        else native_child_workflow_enabled and run_mode == "execute_direct"
     )
     native_child_task_override: str | None = None
     tracked_execution_id = str(db_execution_id or execution_id or "").strip()
@@ -1894,6 +1905,14 @@ def process_agent_child_workflow(
         "maxTurns": max_turns,
         "timeoutMinutes": timeout_minutes,
         "stopCondition": resolved_config.get("stopCondition"),
+        "profile": resolved_config.get("profile") or resolved_config.get("mode"),
+        "expectedOutput": resolved_config.get("expectedOutput"),
+        "verifyCommands": resolved_config.get("verifyCommands"),
+        "approvalMode": resolved_config.get("approvalMode"),
+        "toolPolicy": resolved_config.get("toolPolicy"),
+        "writePolicy": resolved_config.get("writePolicy"),
+        "shellPolicy": resolved_config.get("shellPolicy"),
+        "instructionsOverlay": resolved_config.get("instructionsOverlay"),
         "loopPolicy": resolved_config.get("loopPolicy"),
         "contextPolicyPreset": resolved_config.get("contextPolicyPreset"),
         "requireFileChanges": resolved_config.get("requireFileChanges"),

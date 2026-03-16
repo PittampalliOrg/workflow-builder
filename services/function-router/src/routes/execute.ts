@@ -786,9 +786,13 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const functionUrl = await resolveOpenFunctionUrl(target.appId);
 				timing.routingMs = Date.now() - routingStartTime;
 
-				if (target.appId === "durable-agent") {
+				const isAgentRuntime =
+					target.appId === "durable-agent" ||
+					target.appId === "dapr-agent-runtime";
+
+				if (isAgentRuntime) {
 					console.log(
-						`[Execute Route] Invoking durable-agent step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
+						`[Execute Route] Invoking ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
 
 					const controller = new AbortController();
@@ -842,6 +846,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 						// Route to the appropriate durable-agent endpoint
 						const isAgentRun = toolId === "run";
+						const isDaprAgentRun =
+							target.appId === "dapr-agent-runtime" &&
+							pluginId === "dapr-agent" &&
+							toolId === "run";
 						const isPlan = toolId === "plan";
 						const isClaudePlan = toolId === "claude-plan";
 						const isMaterializePlan = toolId === "materialize-plan";
@@ -877,7 +885,30 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							typeof args.workspaceRef === "string" &&
 							args.workspaceRef.trim().length > 0;
 
-						if (isAgentRun) {
+						if (isDaprAgentRun) {
+							targetUrl = `${functionUrl}/api/run`;
+							requestBody = JSON.stringify({
+								prompt: args.prompt ?? args.goal ?? "",
+								profile: args.profile ?? args.mode ?? "implement",
+								model,
+								maxTurns: args.maxTurns,
+								timeoutMinutes: args.timeoutMinutes,
+								cwd: args.cwd ?? "",
+								workspaceRef:
+									typeof args.workspaceRef === "string"
+										? args.workspaceRef
+										: undefined,
+								stopCondition: args.stopCondition,
+								instructionsOverlay: args.instructionsOverlay,
+								expectedOutput: args.expectedOutput,
+								verifyCommands: args.verifyCommands,
+								approvalMode: args.approvalMode,
+								toolPolicy: args.toolPolicy,
+								writePolicy: args.writePolicy,
+								shellPolicy: args.shellPolicy,
+								waitForCompletion: true,
+							});
+						} else if (isAgentRun) {
 							if (runMode === "plan_mode") {
 								targetUrl = `${functionUrl}/api/plan`;
 								requestBody = JSON.stringify({
@@ -1222,7 +1253,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									? parsedMastra.error
 									: responseText;
 							throw new Error(
-								`durable-agent HTTP ${httpResponse.status}: ${errorFromBody.slice(0, 300)}`,
+								`${target.appId} HTTP ${httpResponse.status}: ${errorFromBody.slice(0, 300)}`,
 							);
 						}
 
@@ -1409,7 +1440,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							};
 						} else if (!response) {
 							throw new Error(
-								`Invalid response from durable-agent: ${responseText.slice(0, 300)}`,
+								`Invalid response from ${target.appId}: ${responseText.slice(0, 300)}`,
 							);
 						}
 					} catch (httpError) {

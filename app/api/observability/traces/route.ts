@@ -136,6 +136,7 @@ function matchesSearch(
 const WORKFLOW_SERVICES = [
 	"workflow-orchestrator",
 	"durable-agent",
+	"dapr-agent-runtime",
 	"function-router",
 ];
 

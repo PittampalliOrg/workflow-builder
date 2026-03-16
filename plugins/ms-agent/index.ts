@@ -4,43 +4,41 @@ import { MsAgentIcon } from "./icon";
 
 const msAgentPlugin: IntegrationPlugin = {
 	type: "ms-agent",
-	label: "Microsoft Agent Workflow",
+	label: "Microsoft Agent Framework",
 	description:
-		"Sequential Dapr workflow backed by dapr-agents activities and Microsoft Agent Framework agents",
+		"Structured coding workflows backed by Microsoft Agent Framework specialists inside durable Dapr workflows",
 	icon: MsAgentIcon,
 	formFields: [],
 	actions: [
 		{
 			slug: "run",
-			label: "Run Microsoft Agent Workflow",
+			label: "Run Microsoft Coding Workflow",
 			description:
-				"Run the Python Microsoft Agent workflow through Dapr child workflow orchestration",
+				"Run a structured coding workflow through Microsoft Agent Framework and Dapr child orchestration",
 			category: "AI",
 			stepFunction: "runMicrosoftAgentWorkflowStep",
 			stepImportPath: "run",
 			configFields: [
 				{
 					key: "workflowTemplateId",
-					label: "Workflow Template",
+					label: "Agent Profile",
 					type: "select",
 					required: true,
-					defaultValue: "travel-planner",
+					defaultValue: "repo-review",
 					options: [
-						{
-							label: "Travel Planner",
-							value: "travel-planner",
-						},
-						{
-							label: "Code Review",
-							value: "code-review",
-						},
+						{ label: "Repository Review", value: "repo-review" },
+						{ label: "Implement Task", value: "implement-task" },
+						{ label: "Fix Tests", value: "fix-tests" },
+						{ label: "Explain Code", value: "explain-code" },
+						{ label: "Custom Coding Workflow", value: "custom-coding-workflow" },
+						{ label: "Legacy Code Review", value: "code-review" },
 					],
 				},
 				{
 					key: "prompt",
-					label: "Prompt",
+					label: "Goal",
 					type: "template-textarea",
-					placeholder: "Plan a trip to Paris with a focus on museums and food.",
+					placeholder: "Describe the coding task or repository question.",
 					required: true,
 					rows: 5,
 				},
@@ -50,7 +48,6 @@ const msAgentPlugin: IntegrationPlugin = {
 					type: "template-input",
 					required: false,
 					placeholder: "security, performance, bugs",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
 				},
 				{
 					key: "workspaceRef",
@@ -58,7 +55,6 @@ const msAgentPlugin: IntegrationPlugin = {
 					type: "template-input",
 					required: false,
 					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
 				},
 				{
 					key: "cwd",
@@ -66,7 +62,22 @@ const msAgentPlugin: IntegrationPlugin = {
 					type: "template-input",
 					required: false,
 					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "expectedOutput",
+					label: "Expected Output",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Summarize the expected deliverable or response shape.",
+				},
+				{
+					key: "verifyCommands",
+					label: "Verify Commands",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "pnpm test\npnpm type-check",
 				},
 				{
 					key: "applyFixes",
@@ -87,7 +98,18 @@ const msAgentPlugin: IntegrationPlugin = {
 					required: false,
 					defaultValue: "25",
 					min: 1,
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "toolGroup",
+					label: "Tool Capability Bundle",
+					type: "select",
+					required: false,
+					defaultValue: "all",
+					options: [
+						{ label: "Full Coding Tools", value: "all" },
+						{ label: "Read + Edit", value: "read_write" },
+						{ label: "Read Only", value: "read_only" },
+					],
 				},
 				{
 					key: "instructionsOverlay",
@@ -95,8 +117,7 @@ const msAgentPlugin: IntegrationPlugin = {
 					type: "template-textarea",
 					required: false,
 					rows: 4,
-					placeholder: "Add extra review or fix-up instructions for this run.",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+					placeholder: "Add extra specialist instructions for this run.",
 				},
 				{
 					label: "Dynamic Runtime Config (Dapr)",
@@ -148,7 +169,7 @@ const msAgentPlugin: IntegrationPlugin = {
 				{ field: "text", description: "Final workflow output text" },
 				{
 					field: "workflowTemplateId",
-					description: "Workflow template used for this run",
+					description: "Agent profile used for this run",
 				},
 				{
 					field: "steps",

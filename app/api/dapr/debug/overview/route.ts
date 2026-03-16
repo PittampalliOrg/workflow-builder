@@ -17,6 +17,9 @@ import type {
 const DURABLE_AGENT_API_BASE_URL =
 	process.env.DURABLE_AGENT_API_BASE_URL ||
 	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
+const DAPR_AGENT_RUNTIME_API_BASE_URL =
+	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
+	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
 
 function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -94,6 +97,10 @@ export async function GET(request: Request) {
 				error: "Workflow orchestrator not queried",
 			},
 			durableAgent: { ok: false, error: "Durable agent not queried" },
+			daprAgentRuntime: {
+				ok: false,
+				error: "Dapr agent runtime not queried",
+			},
 			applicationAgents: { ok: false, error: "Application agents not queried" },
 		},
 		dashboard: {
@@ -107,6 +114,7 @@ export async function GET(request: Request) {
 		workflowRuntime: {
 			orchestrator: null,
 			durableAgent: null,
+			daprAgentRuntime: null,
 			recentRuns: [],
 		},
 		agents: {
@@ -244,6 +252,23 @@ export async function GET(request: Request) {
 		};
 	}
 
+	try {
+		const introspection = await fetchServiceIntrospection(
+			`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
+		);
+		response.workflowRuntime.daprAgentRuntime = introspection;
+		response.sources.daprAgentRuntime = { ok: true };
+		runtimeRegistryInputs.push({
+			appId: "dapr-agent-runtime",
+			data: introspection,
+		});
+	} catch (error) {
+		response.sources.daprAgentRuntime = {
+			ok: false,
+			error: buildErrorMessage(error),
+		};
+	}
+
 	response.agents.runtimeRegistry = uniqueRuntimeRegistryAgents(
 		runtimeRegistryInputs,
 	);
@@ -253,6 +278,7 @@ export async function GET(request: Request) {
 			"workflow-builder",
 			"workflow-orchestrator",
 			"durable-agent",
+			"dapr-agent-runtime",
 		]);
 		response.instances = instances.filter((instance) =>
 			allowed.has(instance.appId),

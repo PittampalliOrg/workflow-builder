@@ -11,6 +11,9 @@ import type {
 const DURABLE_AGENT_API_BASE_URL =
 	process.env.DURABLE_AGENT_API_BASE_URL ||
 	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
+const DAPR_AGENT_RUNTIME_API_BASE_URL =
+	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
+	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
 
 function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -89,6 +92,11 @@ export async function GET(
 		} else if (appId === "durable-agent") {
 			response.introspection = await fetchServiceIntrospection(
 				`${DURABLE_AGENT_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
+			);
+			response.sourceStatus.introspection = { ok: true };
+		} else if (appId === "dapr-agent-runtime") {
+			response.introspection = await fetchServiceIntrospection(
+				`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
 			);
 			response.sourceStatus.introspection = { ok: true };
 		} else {

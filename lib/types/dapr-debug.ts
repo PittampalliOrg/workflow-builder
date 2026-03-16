@@ -162,6 +162,7 @@ export type DaprDebugOverviewResponse = {
 		dashboard: DaprDebugSourceStatus;
 		workflowOrchestrator: DaprDebugSourceStatus;
 		durableAgent: DaprDebugSourceStatus;
+		daprAgentRuntime: DaprDebugSourceStatus;
 		applicationAgents: DaprDebugSourceStatus;
 	};
 	dashboard: {
@@ -176,6 +177,7 @@ export type DaprDebugOverviewResponse = {
 	workflowRuntime: {
 		orchestrator: DaprRuntimeIntrospection | null;
 		durableAgent: DaprRuntimeIntrospection | null;
+		daprAgentRuntime: DaprRuntimeIntrospection | null;
 		recentRuns: DaprDebugRecentRun[];
 	};
 	agents: {

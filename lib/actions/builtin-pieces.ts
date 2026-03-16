@@ -650,42 +650,229 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const DAPR_AGENT_PIECE: IntegrationDefinition = {
+	type: "dapr-agent",
+	label: "Dapr Agent",
+	pieceName: "dapr-agent",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Run Dapr Coding Agent",
+			description:
+				"Run a durable autonomous coding agent backed by Python Dapr Agents with workspace and git tools",
+			category: "Dapr Agent",
+			configFields: [
+				{
+					key: "profile",
+					label: "Agent Profile",
+					type: "select",
+					required: true,
+					defaultValue: "implement",
+					options: [
+						{ label: "Implement Task", value: "implement" },
+						{ label: "Repository Review", value: "review" },
+						{ label: "Repair Failure", value: "repair" },
+						{ label: "Plan Only", value: "plan-only" },
+						{ label: "Custom", value: "custom" },
+					],
+				},
+				{
+					key: "prompt",
+					label: "Goal",
+					type: "template-textarea",
+					placeholder: "Describe the coding task for the agent.",
+					required: true,
+					rows: 6,
+				},
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
+					key: "cwd",
+					label: "Repository Root (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					required: false,
+				},
+				{
+					key: "expectedOutput",
+					label: "Expected Output",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Summarize the expected deliverable or summary format.",
+				},
+				{
+					key: "verifyCommands",
+					label: "Verify Commands",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "pnpm test\npnpm type-check",
+				},
+				{
+					key: "toolPolicy",
+					label: "Tool Capability Bundle",
+					type: "select",
+					required: false,
+					defaultValue: "all",
+					options: [
+						{ label: "Full Coding Tools", value: "all" },
+						{ label: "Read + Edit", value: "read_write" },
+						{ label: "Read Only", value: "read_only" },
+					],
+				},
+				{
+					key: "approvalMode",
+					label: "Approval Mode",
+					type: "select",
+					required: false,
+					defaultValue: "auto",
+					options: [
+						{ label: "Auto", value: "auto" },
+						{ label: "Before Write", value: "before_write" },
+						{ label: "Before Shell", value: "before_shell" },
+						{ label: "Manual", value: "manual" },
+					],
+				},
+				{
+					key: "writePolicy",
+					label: "Write Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-only",
+					options: [
+						{ label: "Workspace Only", value: "workspace-only" },
+						{ label: "Review First", value: "review-first" },
+						{ label: "Read Only", value: "read-only" },
+					],
+				},
+				{
+					key: "shellPolicy",
+					label: "Shell Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-safe",
+					options: [
+						{ label: "Workspace Safe", value: "workspace-safe" },
+						{ label: "Tests Only", value: "tests-only" },
+						{ label: "Disabled", value: "disabled" },
+					],
+				},
+				{
+					key: "instructionsOverlay",
+					label: "Instructions Overlay",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Add extra instructions for this run.",
+				},
+				{
+					key: "stopCondition",
+					label: "Stop Condition",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Describe what done means for this run.",
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "template-input",
+					required: false,
+					defaultValue: "gpt-5.2",
+					placeholder: "gpt-5.2",
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Final agent output text" },
+				{ field: "profile", description: "Agent profile used for the run" },
+				{
+					field: "toolCalls",
+					description: "Tool calls recorded during execution",
+				},
+				{
+					field: "fileChanges",
+					description: "Files created, modified, or deleted",
+				},
+				{ field: "patch", description: "Unified diff patch for file changes" },
+				{
+					field: "patchRef",
+					description: "Reference to the full patch artifact",
+				},
+				{
+					field: "changeSummary",
+					description: "Structured file change summary",
+				},
+				{ field: "usageTotals", description: "Aggregated usage statistics" },
+				{ field: "traceId", description: "OpenTelemetry trace identifier" },
+				{
+					field: "agentWorkflowId",
+					description: "Durable workflow instance ID",
+				},
+				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
+			],
+		},
+	],
+};
+
 const MS_AGENT_PIECE: IntegrationDefinition = {
 	type: "ms-agent",
-	label: "Microsoft Agent Workflow",
+	label: "Microsoft Agent Framework",
 	pieceName: "ms-agent",
 	logoUrl: "",
 	actions: [
 		{
 			slug: "run",
-			label: "Run Microsoft Agent Workflow",
+			label: "Run Microsoft Coding Workflow",
 			description:
-				"Run a Python Dapr child workflow backed by dapr-agents activity decorators and Microsoft Agent Framework agents",
-			category: "Microsoft Agent Workflow",
+				"Run a structured coding workflow with Microsoft Agent Framework specialists inside a durable Dapr child workflow",
+			category: "Microsoft Agent Framework",
 			configFields: [
 				{
 					key: "workflowTemplateId",
-					label: "Workflow Template",
+					label: "Agent Profile",
 					type: "select",
 					required: true,
-					defaultValue: "travel-planner",
+					defaultValue: "repo-review",
 					options: [
+						{ label: "Repository Review", value: "repo-review" },
+						{ label: "Implement Task", value: "implement-task" },
+						{ label: "Fix Tests", value: "fix-tests" },
+						{ label: "Explain Code", value: "explain-code" },
 						{
-							label: "Travel Planner",
-							value: "travel-planner",
+							label: "Custom Coding Workflow",
+							value: "custom-coding-workflow",
 						},
-						{
-							label: "Code Review",
-							value: "code-review",
-						},
+						{ label: "Legacy Code Review", value: "code-review" },
 					],
 				},
 				{
 					key: "prompt",
-					label: "Prompt / Goal",
+					label: "Goal",
 					type: "template-textarea",
-					placeholder:
-						"Plan a 3-day trip to Lisbon with museums, food, and one easy day trip.",
+					placeholder: "Describe the coding task or repository question.",
 					required: true,
 					rows: 6,
 				},
@@ -695,7 +882,6 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					type: "template-input",
 					required: false,
 					placeholder: "security, performance, bugs",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
 				},
 				{
 					key: "workspaceRef",
@@ -703,7 +889,6 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					type: "template-input",
 					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
 					required: false,
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
 				},
 				{
 					key: "cwd",
@@ -711,7 +896,22 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					type: "template-input",
 					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
 					required: false,
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "expectedOutput",
+					label: "Expected Output",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Summarize the expected deliverable or response shape.",
+				},
+				{
+					key: "verifyCommands",
+					label: "Verify Commands",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "pnpm test\npnpm type-check",
 				},
 				{
 					key: "applyFixes",
@@ -732,7 +932,18 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					required: false,
 					defaultValue: "25",
 					min: 1,
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+				},
+				{
+					key: "toolGroup",
+					label: "Tool Capability Bundle",
+					type: "select",
+					required: false,
+					defaultValue: "all",
+					options: [
+						{ label: "Full Coding Tools", value: "all" },
+						{ label: "Read + Edit", value: "read_write" },
+						{ label: "Read Only", value: "read_only" },
+					],
 				},
 				{
 					key: "instructionsOverlay",
@@ -740,8 +951,7 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					type: "template-textarea",
 					required: false,
 					rows: 4,
-					placeholder: "Add extra review or fix-up instructions for this run.",
-					showWhen: { field: "workflowTemplateId", equals: "code-review" },
+					placeholder: "Add extra specialist instructions for this run.",
 				},
 				{
 					label: "Dynamic Runtime Config (Dapr)",
@@ -792,12 +1002,12 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 				{ field: "text", description: "Final workflow result text" },
 				{
 					field: "steps",
-					description:
-						"Outputs produced by the template steps in execution order",
+					description: "Outputs produced by the specialist workflow phases",
 				},
 				{
 					field: "reviewFindings",
-					description: "Prioritized review findings for code-review runs",
+					description:
+						"Prioritized review findings for review-oriented profiles",
 				},
 				{
 					field: "filesAnalyzed",
@@ -813,7 +1023,7 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{
 					field: "workflowTemplateId",
-					description: "Workflow template used for execution",
+					description: "Agent profile used for execution",
 				},
 				{
 					field: "agentWorkflowId",
@@ -1209,5 +1419,11 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 };
 
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, WORKSPACE_PIECE, DURABLE_AGENT_PIECE, MS_AGENT_PIECE];
+	return [
+		MCP_PIECE,
+		WORKSPACE_PIECE,
+		DAPR_AGENT_PIECE,
+		DURABLE_AGENT_PIECE,
+		MS_AGENT_PIECE,
+	];
 }

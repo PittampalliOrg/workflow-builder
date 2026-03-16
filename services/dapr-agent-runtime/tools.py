@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import os
 import shutil
 import subprocess
@@ -9,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from agent_framework import tool
-except ImportError:  # pragma: no cover - fallback for test environments
+    from dapr_agents.tool import tool
+except ImportError:  # pragma: no cover
     def tool(*_args, **_kwargs):
         def decorator(fn):
             return fn
@@ -19,9 +20,9 @@ except ImportError:  # pragma: no cover - fallback for test environments
 
 
 DEFAULT_WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", "/workspace")
-MAX_FILE_SIZE_BYTES = int(os.environ.get("MS_AGENT_MAX_FILE_SIZE_BYTES", "262144"))
-MAX_GREP_RESULTS = int(os.environ.get("MS_AGENT_MAX_GREP_RESULTS", "200"))
-MAX_LIST_FILES = int(os.environ.get("MS_AGENT_MAX_LIST_FILES", "500"))
+MAX_FILE_SIZE_BYTES = int(os.environ.get("DAPR_AGENT_MAX_FILE_SIZE_BYTES", "262144"))
+MAX_GREP_RESULTS = int(os.environ.get("DAPR_AGENT_MAX_GREP_RESULTS", "200"))
+MAX_LIST_FILES = int(os.environ.get("DAPR_AGENT_MAX_LIST_FILES", "500"))
 
 
 def _as_relative(path: Path, root: Path) -> str:
@@ -45,7 +46,9 @@ class ToolRuntimeContext:
     _original_files: dict[str, str | None] = field(default_factory=dict)
 
     @classmethod
-    def from_workspace_root(cls, workspace_root: str | os.PathLike[str]) -> "ToolRuntimeContext":
+    def from_workspace_root(
+        cls, workspace_root: str | os.PathLike[str]
+    ) -> "ToolRuntimeContext":
         root = Path(workspace_root).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         return cls(workspace_root=root)
@@ -76,7 +79,7 @@ class ToolRuntimeContext:
         self.files_modified.add(relative)
 
     def build_summary(self) -> dict[str, Any]:
-        files_analyzed = sorted(self.files_read | self.files_matched)
+        files_analyzed = sorted(self.files_read | self.files_matched | self.files_listed)
         fixes_applied = sorted(self.files_modified)
         patch_chunks: list[str] = []
         for relative in fixes_applied:
@@ -97,7 +100,7 @@ class ToolRuntimeContext:
                 patch_chunks.append(diff)
         return {
             "filesAnalyzed": files_analyzed,
-            "fixesApplied": fixes_applied,
+            "fileChanges": fixes_applied,
             "patch": "\n".join(patch_chunks).strip(),
         }
 
@@ -112,6 +115,7 @@ def _extract_context(kwargs: dict[str, Any]) -> ToolRuntimeContext:
 
 @tool(name="read_file", description="Read a UTF-8 text file from the workspace")
 def read_file(path: str, **kwargs) -> str:
+    """Read a UTF-8 text file from the workspace."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.is_file():
@@ -121,8 +125,9 @@ def read_file(path: str, **kwargs) -> str:
     return resolved.read_text(encoding="utf-8")
 
 
-@tool(name="list_files", description="List files in a workspace directory using a glob pattern")
+@tool(name="list_files", description="List workspace files with an optional glob pattern")
 def list_files(path: str = ".", pattern: str = "**/*", **kwargs) -> list[str]:
+    """List files in a workspace directory using a glob pattern."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -141,6 +146,7 @@ def list_files(path: str = ".", pattern: str = "**/*", **kwargs) -> list[str]:
 
 @tool(name="grep_search", description="Search UTF-8 text files in the workspace for a substring")
 def grep_search(pattern: str, path: str = ".", **kwargs) -> list[dict[str, Any]]:
+    """Search UTF-8 text files in the workspace for a substring."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -172,16 +178,18 @@ def grep_search(pattern: str, path: str = ".", **kwargs) -> list[dict[str, Any]]
 
 @tool(name="write_file", description="Write a UTF-8 text file in the workspace")
 def write_file(path: str, content: str, **kwargs) -> dict[str, Any]:
+    """Write a UTF-8 text file in the workspace."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     context.record_modified(resolved)
     resolved.parent.mkdir(parents=True, exist_ok=True)
     resolved.write_text(content, encoding="utf-8")
-    return {"path": _as_relative(resolved, context.workspace_root), "bytesWritten": len(content.encode("utf-8"))}
+    return {"path": _as_relative(resolved, context.workspace_root)}
 
 
 @tool(name="edit_file", description="Replace text in a UTF-8 text file in the workspace")
 def edit_file(path: str, old_string: str, new_string: str, **kwargs) -> dict[str, Any]:
+    """Replace text in a UTF-8 text file in the workspace."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.is_file():
@@ -196,31 +204,9 @@ def edit_file(path: str, old_string: str, new_string: str, **kwargs) -> dict[str
     return {"path": _as_relative(resolved, context.workspace_root), "replacements": 1}
 
 
-@tool(name="execute_command", description="Run a shell command inside the workspace")
-def execute_command(command: str, cwd: str = ".", **kwargs) -> dict[str, Any]:
-    context = _extract_context(kwargs)
-    working_directory = context.resolve_path(cwd)
-    completed = subprocess.run(
-        command,
-        cwd=working_directory,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
-    return {
-        "cwd": _as_relative(working_directory, context.workspace_root)
-        if working_directory != context.workspace_root
-        else ".",
-        "exitCode": completed.returncode,
-        "stdout": completed.stdout[-12000:],
-        "stderr": completed.stderr[-12000:],
-    }
-
-
 @tool(name="delete_path", description="Delete a file or directory in the workspace")
 def delete_path(path: str, **kwargs) -> dict[str, Any]:
+    """Delete a file or directory in the workspace."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -235,6 +221,7 @@ def delete_path(path: str, **kwargs) -> dict[str, Any]:
 
 @tool(name="mkdir", description="Create a directory in the workspace")
 def mkdir(path: str, **kwargs) -> dict[str, Any]:
+    """Create a directory in the workspace."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     resolved.mkdir(parents=True, exist_ok=True)
@@ -243,6 +230,7 @@ def mkdir(path: str, **kwargs) -> dict[str, Any]:
 
 @tool(name="file_stat", description="Return metadata for a workspace file or directory")
 def file_stat(path: str, **kwargs) -> dict[str, Any]:
+    """Return metadata for a workspace file or directory."""
     context = _extract_context(kwargs)
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -273,6 +261,7 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
 
 @tool(name="git_status", description="Get git status in the workspace")
 def git_status(path: str = ".", **kwargs) -> dict[str, Any]:
+    """Get git status in the workspace."""
     context = _extract_context(kwargs)
     cwd = context.resolve_path(path)
     stdout = _run_git(["status", "--short", "--branch"], cwd=cwd)
@@ -281,6 +270,7 @@ def git_status(path: str = ".", **kwargs) -> dict[str, Any]:
 
 @tool(name="git_diff", description="Get git diff in the workspace")
 def git_diff(path: str = ".", **kwargs) -> dict[str, Any]:
+    """Get git diff in the workspace."""
     context = _extract_context(kwargs)
     cwd = context.resolve_path(path)
     stdout = _run_git(["diff", "--no-ext-diff"], cwd=cwd)
@@ -289,6 +279,7 @@ def git_diff(path: str = ".", **kwargs) -> dict[str, Any]:
 
 @tool(name="git_apply", description="Apply a unified diff patch in the workspace")
 def git_apply(patch: str, path: str = ".", **kwargs) -> dict[str, Any]:
+    """Apply a unified diff patch in the workspace."""
     context = _extract_context(kwargs)
     cwd = context.resolve_path(path)
     completed = subprocess.run(
@@ -303,6 +294,30 @@ def git_apply(patch: str, path: str = ".", **kwargs) -> dict[str, Any]:
     if completed.returncode != 0:
         raise RuntimeError((completed.stderr or completed.stdout).strip() or "git apply failed")
     return {"path": path, "applied": True}
+
+
+@tool(name="execute_command", description="Run a shell command inside the workspace")
+def execute_command(command: str, cwd: str = ".", **kwargs) -> dict[str, Any]:
+    """Run a shell command inside the workspace."""
+    context = _extract_context(kwargs)
+    working_directory = context.resolve_path(cwd)
+    completed = subprocess.run(
+        command,
+        cwd=working_directory,
+        shell=True,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    return {
+        "cwd": _as_relative(working_directory, context.workspace_root)
+        if working_directory != context.workspace_root
+        else ".",
+        "exitCode": completed.returncode,
+        "stdout": completed.stdout[-12000:],
+        "stderr": completed.stderr[-12000:],
+    }
 
 
 TOOL_GROUPS = {
@@ -337,7 +352,76 @@ TOOL_GROUPS = {
 }
 
 
+WORKSPACE_ENABLED_TOOLS = [
+    {"label": "Read", "value": "read"},
+    {"label": "Write", "value": "write"},
+    {"label": "Edit", "value": "edit"},
+    {"label": "List", "value": "list"},
+    {"label": "Delete", "value": "delete"},
+    {"label": "Git", "value": "git"},
+    {"label": "Bash", "value": "bash"},
+]
+
+
 def resolve_tool_group(name: str | None) -> list[Any]:
     if not name:
         return []
     return TOOL_GROUPS.get(str(name).strip().lower(), [])
+
+
+def bind_tool_group(
+    name: str | None,
+    workspace_root: str | os.PathLike[str],
+) -> list[Any]:
+    root = str(Path(workspace_root).expanduser().resolve())
+    bound_tools: list[Any] = []
+    for tool_fn in resolve_tool_group(name):
+        tool_name = getattr(tool_fn, "__name__", "tool")
+        tool_description = getattr(tool_fn, "__doc__", None) or f"Run {tool_name}"
+
+        @tool(name=tool_name, description=tool_description)
+        def bound_tool(*args: Any, _tool_fn=tool_fn, **kwargs: Any) -> Any:
+            return _tool_fn(*args, workspace_root=root, **kwargs)
+
+        bound_tools.append(bound_tool)
+    return bound_tools
+
+
+def summarize_command_changes(workspace_root: str | os.PathLike[str]) -> dict[str, Any]:
+    root = Path(workspace_root).expanduser().resolve()
+    if not root.exists():
+        return {"changeSummary": {"files": [], "stats": {"files": 0, "additions": 0, "deletions": 0}, "changed": False}}
+    try:
+        diff = _run_git(["diff", "--numstat"], cwd=root)
+    except Exception:
+        diff = ""
+    files: list[dict[str, Any]] = []
+    additions = 0
+    deletions = 0
+    for line in diff.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        add_raw, del_raw, path = parts
+        try:
+            add_count = int(add_raw)
+        except ValueError:
+            add_count = 0
+        try:
+            del_count = int(del_raw)
+        except ValueError:
+            del_count = 0
+        additions += add_count
+        deletions += del_count
+        files.append({"path": path, "additions": add_count, "deletions": del_count})
+    return {
+        "changeSummary": {
+            "files": files,
+            "stats": {"files": len(files), "additions": additions, "deletions": deletions},
+            "changed": bool(files),
+        }
+    }
+
+
+def dumps_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=True)

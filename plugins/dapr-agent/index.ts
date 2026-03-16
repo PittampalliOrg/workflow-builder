@@ -1,0 +1,186 @@
+import type { IntegrationPlugin } from "../registry";
+import { registerIntegration } from "../registry";
+import { MastraAgentResult } from "../mastra-agent/result-component";
+import { DaprAgentIcon } from "./icon";
+
+const daprAgentPlugin: IntegrationPlugin = {
+	type: "dapr-agent",
+	label: "Dapr Agent",
+	description:
+		"Durable autonomous coding agent built on Python Dapr Agents with workspace and git tools",
+	icon: DaprAgentIcon,
+	formFields: [],
+	actions: [
+		{
+			slug: "run",
+			label: "Run Dapr Coding Agent",
+			description:
+				"Run a durable autonomous coding agent with sandbox, git, shell, and verification tools",
+			category: "AI",
+			stepFunction: "runDaprAgentStep",
+			stepImportPath: "run",
+			configFields: [
+				{
+					key: "profile",
+					label: "Agent Profile",
+					type: "select",
+					required: true,
+					defaultValue: "implement",
+					options: [
+						{ label: "Implement Task", value: "implement" },
+						{ label: "Repository Review", value: "review" },
+						{ label: "Repair Failure", value: "repair" },
+						{ label: "Plan Only", value: "plan-only" },
+						{ label: "Custom", value: "custom" },
+					],
+				},
+				{
+					key: "prompt",
+					label: "Goal",
+					type: "template-textarea",
+					placeholder: "Describe the coding task for the agent.",
+					required: true,
+					rows: 6,
+				},
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+				},
+				{
+					key: "cwd",
+					label: "Repository Root (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+				},
+				{
+					key: "expectedOutput",
+					label: "Expected Output",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Summarize the expected outcome or deliverable.",
+				},
+				{
+					key: "verifyCommands",
+					label: "Verify Commands",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "pnpm test\npnpm type-check",
+				},
+				{
+					key: "toolPolicy",
+					label: "Tool Capability Bundle",
+					type: "select",
+					required: false,
+					defaultValue: "all",
+					options: [
+						{ label: "Full Coding Tools", value: "all" },
+						{ label: "Read + Edit", value: "read_write" },
+						{ label: "Read Only", value: "read_only" },
+					],
+				},
+				{
+					key: "approvalMode",
+					label: "Approval Mode",
+					type: "select",
+					required: false,
+					defaultValue: "auto",
+					options: [
+						{ label: "Auto", value: "auto" },
+						{ label: "Before Write", value: "before_write" },
+						{ label: "Before Shell", value: "before_shell" },
+						{ label: "Manual", value: "manual" },
+					],
+				},
+				{
+					key: "writePolicy",
+					label: "Write Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-only",
+					options: [
+						{ label: "Workspace Only", value: "workspace-only" },
+						{ label: "Review First", value: "review-first" },
+						{ label: "Read Only", value: "read-only" },
+					],
+				},
+				{
+					key: "shellPolicy",
+					label: "Shell Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-safe",
+					options: [
+						{ label: "Workspace Safe", value: "workspace-safe" },
+						{ label: "Tests Only", value: "tests-only" },
+						{ label: "Disabled", value: "disabled" },
+					],
+				},
+				{
+					key: "instructionsOverlay",
+					label: "Instructions Overlay",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Add extra instructions for this run.",
+				},
+				{
+					key: "stopCondition",
+					label: "Stop Condition",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Describe what done means for this run.",
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "template-input",
+					required: false,
+					defaultValue: "gpt-5.2",
+					placeholder: "gpt-5.2",
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Final agent output text" },
+				{ field: "profile", description: "Agent profile used for the run" },
+				{ field: "toolCalls", description: "Tool calls recorded during execution" },
+				{ field: "fileChanges", description: "Files created, modified, or deleted" },
+				{ field: "patch", description: "Unified diff patch for file changes" },
+				{ field: "patchRef", description: "Reference to full patch artifact" },
+				{ field: "changeSummary", description: "Structured file change summary" },
+				{ field: "usageTotals", description: "Aggregated usage statistics" },
+				{ field: "traceId", description: "OpenTelemetry trace identifier" },
+				{ field: "agentWorkflowId", description: "Durable workflow instance ID" },
+				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
+			],
+			outputConfig: {
+				type: "component",
+				component: MastraAgentResult,
+			},
+		},
+	],
+};
+
+registerIntegration(daprAgentPlugin);

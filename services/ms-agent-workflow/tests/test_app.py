@@ -15,7 +15,9 @@ from app import (
 from config import TemplateRuntimeConfig
 
 
-def test_templates_include_travel_planner() -> None:
+def test_templates_include_coding_profiles() -> None:
+    assert "repo-review" in TEMPLATES
+    assert "implement-task" in TEMPLATES
     assert "travel-planner" in TEMPLATES
     assert "code-review" in TEMPLATES
 
@@ -107,7 +109,7 @@ def test_runtime_introspect_reports_generic_activity() -> None:
     response = runtime_introspect()
 
     assert response["activities"] == ["run_template_step"]
-    assert "code-review" in [template["id"] for template in response["templates"]]
+    assert "repo-review" in [template["id"] for template in response["templates"]]
 
 
 def test_list_templates_includes_code_review_tooling() -> None:
@@ -118,6 +120,16 @@ def test_list_templates_includes_code_review_tooling() -> None:
 
     assert code_review["supportsTools"] is True
     assert code_review["steps"][0]["toolGroup"] == "read_only"
+
+
+def test_list_templates_includes_repo_review_profile() -> None:
+    response = list_templates()
+    repo_review = next(
+        template for template in response["templates"] if template["id"] == "repo-review"
+    )
+
+    assert repo_review["supportsTools"] is True
+    assert repo_review["steps"][1]["agentName"] == "Reviewer"
 
 
 def test_execute_step_returns_normalized_success_payload(monkeypatch) -> None:

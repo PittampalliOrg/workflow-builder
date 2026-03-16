@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
 MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
 
 
@@ -136,6 +137,58 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_dapr_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Run a Python Dapr Agents coding workflow synchronously.
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DAPR_AGENT_APP_ID}/method/api/run"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "dapr-agent/run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.call_dapr_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=120.0) as client:
+                payload = {
+                    "prompt": input_data.get("prompt", ""),
+                    "profile": input_data.get("profile")
+                    or input_data.get("mode")
+                    or "implement",
+                    "model": input_data.get("model"),
+                    "maxTurns": input_data.get("maxTurns"),
+                    "timeoutMinutes": input_data.get("timeoutMinutes", 30),
+                    "workspaceRef": input_data.get("workspaceRef"),
+                    "cwd": input_data.get("cwd"),
+                    "stopCondition": input_data.get("stopCondition"),
+                    "instructionsOverlay": input_data.get("instructionsOverlay")
+                    or input_data.get("instructions"),
+                    "expectedOutput": input_data.get("expectedOutput"),
+                    "verifyCommands": input_data.get("verifyCommands"),
+                    "approvalMode": input_data.get("approvalMode"),
+                    "toolPolicy": input_data.get("toolPolicy"),
+                    "writePolicy": input_data.get("writePolicy"),
+                    "shellPolicy": input_data.get("shellPolicy"),
+                    "waitForCompletion": True,
+                }
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Dapr agent run",
+                )
+        except Exception as e:
+            logger.error(f"[Call Dapr Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

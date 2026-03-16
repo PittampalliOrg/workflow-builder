@@ -148,6 +148,8 @@ const getProviderLogo = (
 ) => {
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
+		case "dapr-agent/run":
+			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
 		case "durable/run":
 			return <Bot className="size-12 text-emerald-300" strokeWidth={1.5} />;
 		case "ms-agent/run":
@@ -375,6 +377,11 @@ export const ActionNode = memo(
 
 		// Get model for AI nodes
 		const getAiModel = (): string | null => {
+			if (actionType === "dapr-agent/run") {
+				return typeof data.config?.model === "string"
+					? (data.config.model as string)
+					: "dapr-agents/openai";
+			}
 			if (actionType === "durable/run") {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
