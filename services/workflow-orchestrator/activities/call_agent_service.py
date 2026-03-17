@@ -177,6 +177,7 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                     "verifyCommands": input_data.get("verifyCommands"),
                     "approvalMode": input_data.get("approvalMode"),
                     "toolPolicy": input_data.get("toolPolicy"),
+                    "tools": input_data.get("tools"),
                     "writePolicy": input_data.get("writePolicy"),
                     "shellPolicy": input_data.get("shellPolicy"),
                     "waitForCompletion": True,

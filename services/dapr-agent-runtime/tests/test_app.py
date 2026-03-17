@@ -53,6 +53,7 @@ def test_build_task_prompt_includes_profile_specific_sections() -> None:
     assert "Profile: repair" in prompt
     assert "Repository root:\n/tmp/repo" in prompt
     assert "Verify commands:\npnpm test auth" in prompt
+    assert "repository-relative paths such as '.' or 'src/app.ts'" in prompt
 
 
 def test_resolve_effective_tool_group_prefers_request_policy() -> None:
@@ -60,6 +61,16 @@ def test_resolve_effective_tool_group_prefers_request_policy() -> None:
         prompt="Review the repository",
         profile="review",
         toolPolicy="all",
+    )
+
+    assert _resolve_effective_tool_group(request) == "all"
+
+
+def test_resolve_effective_tool_group_maps_legacy_tools_bundle() -> None:
+    request = DaprAgentRunRequest(
+        prompt="Review the repository",
+        profile="review",
+        tools='["read","list","bash"]',
     )
 
     assert _resolve_effective_tool_group(request) == "all"

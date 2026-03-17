@@ -904,6 +904,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								verifyCommands: args.verifyCommands,
 								approvalMode: args.approvalMode,
 								toolPolicy: args.toolPolicy,
+								tools: args.tools,
 								writePolicy: args.writePolicy,
 								shellPolicy: args.shellPolicy,
 								waitForCompletion: true,

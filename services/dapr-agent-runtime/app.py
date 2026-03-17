@@ -362,6 +362,7 @@ class DaprAgentRunRequest(BaseModel):
     verifyCommands: str | None = None
     approvalMode: str | None = None
     toolPolicy: str | None = None
+    tools: str | list[str] | None = None
     writePolicy: str | None = None
     shellPolicy: str | None = None
     openAIApiKey: str | None = None
@@ -580,6 +581,27 @@ def _resolve_effective_tool_group(request: DaprAgentRunRequest) -> str:
     configured = str(request.toolPolicy or "").strip().lower()
     if configured:
         return _resolve_tool_group(configured)
+    legacy_tools = request.tools
+    parsed_tools: list[str] = []
+    if isinstance(legacy_tools, str):
+        raw_value = legacy_tools.strip()
+        if raw_value:
+            try:
+                decoded = json.loads(raw_value)
+            except json.JSONDecodeError:
+                decoded = [item.strip() for item in raw_value.split(",") if item.strip()]
+            if isinstance(decoded, list):
+                parsed_tools = [str(item).strip().lower() for item in decoded if str(item).strip()]
+    elif isinstance(legacy_tools, list):
+        parsed_tools = [str(item).strip().lower() for item in legacy_tools if str(item).strip()]
+    if parsed_tools:
+        normalized = set(parsed_tools)
+        if "bash" in normalized:
+            return "all"
+        if normalized & {"write", "edit", "delete"}:
+            return "read_write"
+        if normalized & {"read", "list", "git"}:
+            return "read_only"
     return PROFILE_TOOL_GROUPS.get(_normalize_profile(request.profile), AGENT_TOOL_GROUP)
 
 
@@ -594,7 +616,7 @@ def _build_task_prompt(request: DaprAgentRunRequest) -> str:
         segments.append(
             "Repository root:\n"
             f"{request.cwd}\n"
-            "Operate only within this repository root and prefer absolute paths when using tools."
+            "Operate only within this repository root. When using tools, pass repository-relative paths such as '.' or 'src/app.ts'."
         )
     if request.expectedOutput:
         segments.append(f"Expected output:\n{request.expectedOutput}")
