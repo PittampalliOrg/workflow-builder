@@ -782,6 +782,20 @@ def _snapshot_runtime_config_state() -> dict[str, Any]:
         }
 
 
+def _effective_runtime_config_value(key: str, default: Any = None) -> Any:
+    with runtime_config_lock:
+        effective = dict(runtime_config_state.get("effective") or {})
+    value = effective.get(str(key))
+    if value is None or value == "":
+        return default
+    return value
+
+
+def _effective_default_model() -> str:
+    value = _effective_runtime_config_value(RuntimeConfigKey.LLM_MODEL, DEFAULT_MODEL)
+    return str(value).strip() or DEFAULT_MODEL
+
+
 def _otel_context_from_headers(request: Request) -> dict[str, str]:
     carrier: dict[str, str] = {}
     traceparent = request.headers.get("traceparent")
@@ -900,7 +914,7 @@ def _build_result_payload(
         "text": text,
         "content": text,
         "profile": _normalize_profile(request.profile),
-        "model": request.model or DEFAULT_MODEL,
+        "model": request.model or _effective_default_model(),
         "toolCalls": [],
         "usageTotals": {},
         "fileChanges": summary["changeSummary"]["files"],
@@ -1212,6 +1226,46 @@ def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
 
 
 class CodingDurableAgent(DurableAgent):
+    def _apply_config_update(self, key: str, value: Any) -> None:
+        normalized_key = key.lower().replace("-", "_")
+        if normalized_key in {RuntimeConfigKey.LLM_MODEL, RuntimeConfigKey.LLM_PROVIDER}:
+            logger.info(
+                'Agent %s applying config update: %s="%s"', self.name, key, value
+            )
+            coerced_value = str(value).strip()
+            if not coerced_value:
+                logger.warning(
+                    "Agent %s: invalid empty value for key '%s'. Skipping update.",
+                    self.name,
+                    key,
+                )
+                return
+            if normalized_key == RuntimeConfigKey.LLM_PROVIDER:
+                provider_value = coerced_value.lower()
+                object.__setattr__(self, "_runtime_llm_provider", provider_value)
+                if not isinstance(self.llm, DaprChatClient):
+                    try:
+                        setattr(self.llm, "provider", provider_value)
+                    except Exception:
+                        logger.debug(
+                            "Agent %s could not apply provider update to llm client",
+                            self.name,
+                        )
+            else:
+                object.__setattr__(self, "_runtime_llm_model", coerced_value)
+                if not isinstance(self.llm, DaprChatClient):
+                    try:
+                        setattr(self.llm, "model", coerced_value)
+                    except Exception:
+                        logger.debug(
+                            "Agent %s could not apply model update to llm client",
+                            self.name,
+                        )
+            self._fire_config_change_callbacks(normalized_key, coerced_value)
+            self._sync_metadata_after_config_update()
+            return
+        super()._apply_config_update(key, value)
+
     def _load_initial_configuration(self, keys: list[str]) -> None:
         try:
             metadata = dict(getattr(self.configuration, "metadata", {}) or {})
@@ -1366,7 +1420,7 @@ def _build_registry_entries() -> list[dict[str, Any]]:
         {
             "name": _build_agent_name(),
             "metadata": _build_agent_registry_metadata(
-                model=DEFAULT_MODEL,
+                model=_effective_default_model(),
             ),
         }
     ]
@@ -1481,7 +1535,7 @@ def _get_agent() -> DurableAgent:
                     "Prefer deterministic verification commands when they are provided.",
                     "Respect the profile, workspace, and tool policy passed in the task.",
                 ],
-                llm=_build_llm_client(DEFAULT_MODEL, None),
+                llm=_build_llm_client(_effective_default_model(), None),
                 tools=resolve_tool_group("all"),
                 execution=AgentExecutionConfig(
                     max_iterations=200,
@@ -1494,7 +1548,7 @@ def _get_agent() -> DurableAgent:
                 agent_observability=support["observability"],
                 configuration=support["configuration"],
                 agent_metadata=_build_agent_registry_metadata(
-                    model=DEFAULT_MODEL,
+                    model=_effective_default_model(),
                 ),
                 runtime=runtime,
             )
@@ -1535,10 +1589,11 @@ def _resolve_runner_workflow_client() -> Any:
 
 def _normalize_run_request(input_data: dict[str, Any] | str | None) -> DaprAgentRunRequest:
     if isinstance(input_data, str):
-        return DaprAgentRunRequest(prompt=input_data)
+        return DaprAgentRunRequest(prompt=input_data, model=_effective_default_model())
     payload = dict(input_data or {})
     prompt = str(payload.get("prompt") or payload.get("goal") or payload.get("task") or "").strip()
     payload["prompt"] = prompt
+    payload["model"] = str(payload.get("model") or "").strip() or _effective_default_model()
     return DaprAgentRunRequest.model_validate(payload)
 
 
@@ -1725,6 +1780,7 @@ def runtime_introspect() -> dict[str, Any]:
             "llmBackend": DAPR_AGENT_LLM_BACKEND,
             "effectiveLlmBackend": "dapr" if _use_dapr_llm_backend() else "openai",
             "llmComponent": DAPR_AGENT_LLM_COMPONENT,
+            "defaultModel": _effective_default_model(),
             "instrumentationEnabled": ENABLE_DAPR_AGENTS_INSTRUMENTATION,
             "workspaceBindings": sum(len(refs) for refs in sessions_by_execution.values()),
         },
