@@ -122,6 +122,14 @@ def _log_info(ctx: wf.DaprWorkflowContext, message: str, *args: Any) -> None:
         logger.info(message, *args)
 
 
+def _freeze_activity_input(value: Any) -> Any:
+    """Pass immutable JSON-shaped inputs into workflow activities."""
+    try:
+        return json.loads(json.dumps(value, default=str))
+    except Exception:
+        return value
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -888,17 +896,21 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 else:
                     # Regular action via function-router
+                    frozen_node = _freeze_activity_input(node)
+                    frozen_node_outputs = _freeze_activity_input(node_outputs)
+                    frozen_integrations = _freeze_activity_input(integrations)
+                    frozen_otel_ctx = _freeze_activity_input(otel_ctx)
                     result = yield ctx.call_activity(
                         execute_action,
                         input={
-                            "node": node,
-                            "nodeOutputs": node_outputs,
+                            "node": frozen_node,
+                            "nodeOutputs": frozen_node_outputs,
                             "executionId": execution_id,
                             "workflowId": workflow_id,
-                            "integrations": integrations,
+                            "integrations": frozen_integrations,
                             "dbExecutionId": db_execution_id,
                             "connectionExternalId": node_connection_map.get(node.get("id")),
-                            "_otel": otel_ctx,
+                            "_otel": frozen_otel_ctx,
                         }
                     )
 
