@@ -1247,6 +1247,22 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								? (parsed as MastraToolResponse)
 								: undefined;
 						let resolvedMastra = parsedMastra;
+						if (
+							!resolvedMastra?.success &&
+							parsed &&
+							typeof parsed === "object" &&
+							(isWorkspaceProfile ||
+								isWorkspaceClone ||
+								isWorkspaceCommand ||
+								isWorkspaceFile ||
+								isWorkspaceCleanup)
+						) {
+							resolvedMastra = {
+								success: true,
+								result: parsed,
+								...(parsed as Record<string, unknown>),
+							} as MastraToolResponse;
+						}
 
 						if (!httpResponse.ok) {
 							const errorFromBody =
