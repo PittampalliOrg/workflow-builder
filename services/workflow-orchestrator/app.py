@@ -108,6 +108,28 @@ def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
     return merged
 
 
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1].strip().lower()
+    if len(trace_id) != 32:
+        return None
+    try:
+        int(trace_id, 16)
+    except ValueError:
+        return None
+    return trace_id
+
+
+def _is_native_agent_child_workflow_id(workflow_id: object) -> bool:
+    if not isinstance(workflow_id, str):
+        return False
+    return "__msagent__" in workflow_id or "__dapr__" in workflow_id
+
+
 # --- Runtime capability checks ---
 
 def _parse_semver(version: str | None) -> tuple[int, int, int]:
@@ -1947,6 +1969,25 @@ def raise_event(instance_id: str, request: RaiseEventRequest):
     """
     try:
         client = get_workflow_client()
+
+        event_data = request.eventData if isinstance(request.eventData, dict) else {}
+        workflow_id = (
+            event_data.get("workflow_id")
+            or event_data.get("workflowId")
+            or event_data.get("agentWorkflowId")
+        )
+        if request.eventName.startswith("agent_completed_") and _is_native_agent_child_workflow_id(workflow_id):
+            logger.info(
+                "[Workflow Routes] Ignoring bridged completion event for native child workflow: %s",
+                workflow_id,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "eventName": request.eventName,
+                "ignored": True,
+                "reason": "native-child-workflow",
+            }
 
         logger.info(
             f"[Workflow Routes] Raising event \"{request.eventName}\" for workflow: {instance_id}"
