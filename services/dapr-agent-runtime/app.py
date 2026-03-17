@@ -387,6 +387,7 @@ class WorkspaceSession:
     workspace_ref: str
     execution_id: str
     root_path: Path
+    working_directory: Path | None
     enabled_tools: list[str]
     repository_url: str | None = None
     repository_owner: str | None = None
@@ -398,6 +399,7 @@ class WorkspaceSession:
             "workspaceRef": self.workspace_ref,
             "executionId": self.execution_id,
             "rootPath": str(self.root_path),
+            "workingDirectory": str(self.working_directory or self.root_path),
             "enabledTools": list(self.enabled_tools),
             "repositoryUrl": self.repository_url,
             "repositoryOwner": self.repository_owner,
@@ -411,6 +413,9 @@ class WorkspaceSession:
             workspace_ref=str(record.get("workspaceRef") or ""),
             execution_id=str(record.get("executionId") or ""),
             root_path=Path(str(record.get("rootPath") or WORKSPACE_ROOT)).expanduser().resolve(),
+            working_directory=Path(
+                str(record.get("workingDirectory") or record.get("rootPath") or WORKSPACE_ROOT)
+            ).expanduser().resolve(),
             enabled_tools=[str(item) for item in record.get("enabledTools") or []],
             repository_url=str(record.get("repositoryUrl") or "").strip() or None,
             repository_owner=str(record.get("repositoryOwner") or "").strip() or None,
@@ -646,7 +651,7 @@ def _build_result_payload(
     summary = summarize_command_changes(cwd)
     patch = ""
     try:
-        patch = git_diff(path=cwd).get("diff", "")
+        patch = git_diff(path=".", workspace_root=cwd).get("diff", "")
     except Exception:
         patch = ""
     return {
@@ -761,7 +766,7 @@ def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
         return _resolve_cwd(request.cwd)
     if request.workspaceRef:
         session = _workspace_from_ref(request.workspaceRef)
-        return str(session.root_path)
+        return str(session.working_directory or session.root_path)
     return _resolve_cwd(None)
 
 
@@ -1117,6 +1122,7 @@ def workspace_profile(request: WorkspaceProfileRequest) -> dict[str, Any]:
         workspace_ref=workspace_ref,
         execution_id=request.executionId,
         root_path=root_path,
+        working_directory=root_path,
         enabled_tools=[str(item) for item in enabled_tools],
     )
     _persist_workspace_session(session)
@@ -1174,7 +1180,7 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
     session.repository_owner = request.repositoryOwner
     session.repository_repo = request.repositoryRepo
     session.repository_branch = request.repositoryBranch
-    session.root_path = clone_path.parent.resolve()
+    session.working_directory = clone_path.resolve()
     _persist_workspace_session(session)
     return {
         "clonePath": str(clone_path),
@@ -1182,6 +1188,7 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
         "branch": request.repositoryBranch,
         "commitHash": commit_hash,
         "fileCount": file_count,
+        "workingDirectory": str(session.working_directory),
         **summarize_command_changes(clone_path),
     }
 
@@ -1189,9 +1196,10 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
 @app.post("/api/workspaces/command")
 def workspace_command(request: WorkspaceCommandRequest) -> dict[str, Any]:
     session = _workspace_from_ref(request.workspaceRef)
+    working_directory = session.working_directory or session.root_path
     completed = subprocess.run(
         request.command,
-        cwd=session.root_path,
+        cwd=working_directory,
         shell=True,
         text=True,
         capture_output=True,
@@ -1203,14 +1211,16 @@ def workspace_command(request: WorkspaceCommandRequest) -> dict[str, Any]:
         "stderr": completed.stderr,
         "exitCode": completed.returncode,
         "success": completed.returncode == 0,
-        **summarize_command_changes(session.root_path),
+        **summarize_command_changes(working_directory),
     }
 
 
 @app.post("/api/workspaces/file")
 def workspace_file(request: WorkspaceFileRequest) -> dict[str, Any]:
     session = _workspace_from_ref(request.workspaceRef)
-    context = ToolRuntimeContext.from_workspace_root(session.root_path)
+    context = ToolRuntimeContext.from_workspace_root(
+        session.working_directory or session.root_path
+    )
     operation = request.operation.strip().lower()
     if operation == "read":
         if not request.path:

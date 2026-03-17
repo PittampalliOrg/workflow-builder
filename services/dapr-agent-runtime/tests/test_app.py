@@ -18,6 +18,7 @@ from app import (
     workspace_cleanup,
     workspace_profile,
 )
+from tools import list_files, read_file
 
 
 class FakeStateStore:
@@ -136,6 +137,7 @@ def test_workspace_session_persists_through_state_store(tmp_path: Path, monkeypa
         workspace_ref="workspace-123",
         execution_id="exec-123",
         root_path=tmp_path,
+        working_directory=tmp_path / "repo",
         enabled_tools=["read", "bash"],
     )
     _persist_workspace_session(session)
@@ -146,6 +148,7 @@ def test_workspace_session_persists_through_state_store(tmp_path: Path, monkeypa
     assert restored is not None
     assert restored.execution_id == "exec-123"
     assert restored.enabled_tools == ["read", "bash"]
+    assert restored.working_directory == (tmp_path / "repo").resolve()
 
 
 def test_workspace_cleanup_uses_persisted_execution_refs(tmp_path: Path, monkeypatch) -> None:
@@ -172,3 +175,18 @@ def test_workspace_cleanup_uses_persisted_execution_refs(tmp_path: Path, monkeyp
 
     assert response["cleanedWorkspaceRefs"] == [profile["workspaceRef"]]
     assert workspace_root.exists() is False
+
+
+def test_workspace_tools_honor_explicit_workspace_root(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sibling_root = tmp_path / "other"
+    sibling_root.mkdir()
+
+    (repo_root / "README.md").write_text("repo readme", encoding="utf-8")
+    (sibling_root / "README.md").write_text("other readme", encoding="utf-8")
+
+    files = list_files(".", workspace_root=repo_root)
+
+    assert files == ["README.md"]
+    assert read_file("README.md", workspace_root=repo_root) == "repo readme"
