@@ -45,15 +45,15 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 	const hasEnclosedBody = Boolean(enclosedBodyNode);
 	const dropHintText =
 		dropState === "eligible"
-			? "Release to bind Durable Agent"
+			? "Release to bind Dapr Agent"
 			: dropState === "occupied"
-				? "Only one Durable Agent can be enclosed"
-				: "Only Durable Agent (durable/run) can be enclosed";
+				? "Only one Dapr Agent can be enclosed"
+				: "Only Dapr Agent (dapr-agent/run) can be enclosed";
 	const handleBodyAction = useCallback(() => {
 		if (enclosedBodyNode) {
 			setSelectedNode(enclosedBodyNode.id);
 			setActiveTab("properties");
-			toast.info("Selected enclosed Durable Agent");
+			toast.info("Selected enclosed Dapr Agent");
 			return;
 		}
 
@@ -68,7 +68,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 				description: "",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "dapr-agent/run",
 				},
 				status: "idle",
 			},
@@ -106,7 +106,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 							? dropHintText
 							: expression
 								? expression
-								: "Drop a Durable Agent node here"}
+								: "Drop a Dapr Agent node here"}
 					</p>
 				</div>
 				<Button
@@ -121,7 +121,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 					variant={hasEnclosedBody ? "secondary" : "default"}
 				>
 					<Bot className="size-3.5" strokeWidth={1.8} />
-					{hasEnclosedBody ? "Select Body" : "Add Durable Agent"}
+					{hasEnclosedBody ? "Select Body" : "Add Dapr Agent"}
 				</Button>
 			</div>
 			{showDropHint && (

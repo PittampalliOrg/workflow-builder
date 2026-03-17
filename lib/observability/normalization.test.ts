@@ -56,10 +56,13 @@ describe("normalizeJaegerSpans", () => {
 		expect(spans[1]?.serviceName).toBe("worker-service");
 		expect(spans[1]?.durationMs).toBe(10);
 		expect(spans[1]?.kind).toBe("server");
+		expect(spans[0]?.serviceRole).toBe("service");
+		expect(spans[0]?.category).toBe("unknown");
 		expect(spans[1]?.attributes).toEqual({
 			"span.kind": "server",
 			"custom.tag": "x",
 		});
+		expect(spans[1]?.category).toBe("http");
 	});
 });
 
@@ -105,6 +108,8 @@ describe("normalizeJaegerTraceSummary", () => {
 		expect(summary?.executionId).toBe(baseContext.executionId);
 		expect(summary?.daprInstanceId).toBe(baseContext.daprInstanceId);
 		expect(summary?.phase).toBe(baseContext.phase);
+		expect(summary?.runtime).toBe("unknown");
+		expect(summary?.serviceNames).toEqual(["workflow-service"]);
 	});
 
 	it("returns unknown status when no status tags exist", () => {
@@ -151,6 +156,9 @@ describe("normalizeJaegerTraceSummary", () => {
 		expect(summary?.nodeName).toBe("Execute Plan");
 		expect(summary?.activityName).toBe("durable_execute_plan");
 		expect(summary?.parentExecutionId).toBe("exec-parent-1");
+		expect(summary?.runtime).toBe("dapr-workflow");
+		expect(summary?.breakdown.activitySpans).toBe(1);
+		expect(summary?.rootSpanCategory).toBe("activity");
 	});
 
 	it("returns null when trace has no spans", () => {

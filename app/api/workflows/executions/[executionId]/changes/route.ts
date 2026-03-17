@@ -5,8 +5,7 @@ import { invokeService } from "@/lib/dapr/client";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 
-const DURABLE_AGENT_APP_ID =
-	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
+const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 function shouldMarkPending(status: string): boolean {
 	return status === "pending" || status === "running";
@@ -60,9 +59,9 @@ export async function GET(
 			pending?: boolean;
 			error?: string;
 		}>({
-			appId: DURABLE_AGENT_APP_ID,
+			appId: DAPR_AGENT_APP_ID,
 			method: "GET",
-			path: `/v1.0/invoke/${encodeURIComponent(DURABLE_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/changes`,
+			path: `/v1.0/invoke/${encodeURIComponent(DAPR_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/changes`,
 			timeout: 15_000,
 		});
 

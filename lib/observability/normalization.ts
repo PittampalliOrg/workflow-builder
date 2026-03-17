@@ -1,5 +1,9 @@
 import type {
+	ObservabilityServiceRole,
 	ObservabilitySpan,
+	ObservabilitySpanCategory,
+	ObservabilityTraceBreakdown,
+	ObservabilityTraceRuntime,
 	ObservabilityTraceDetails,
 	ObservabilityTraceStatus,
 	ObservabilityTraceSummary,
@@ -60,6 +64,190 @@ function getStatusFromTags(
 
 	if (statusCode) {
 		return "ok";
+	}
+
+	return "unknown";
+}
+
+function hasAttributePrefix(
+	attributes: Record<string, unknown>,
+	prefix: string,
+): boolean {
+	return Object.keys(attributes).some((key) => key.startsWith(prefix));
+}
+
+function hasStringAttribute(
+	attributes: Record<string, unknown>,
+	keys: string[],
+): boolean {
+	return keys.some((key) => {
+		const value = attributes[key];
+		return typeof value === "string" && value.trim().length > 0;
+	});
+}
+
+function classifyServiceRole(
+	serviceName: string | null,
+): ObservabilityServiceRole {
+	const normalized = (serviceName ?? "").trim().toLowerCase();
+	if (!normalized) {
+		return "unknown";
+	}
+	if (normalized === "workflow-orchestrator") {
+		return "orchestrator";
+	}
+	if (
+		normalized === "dapr-agent-runtime" ||
+		normalized === "ms-agent-workflow" ||
+		normalized === "durable-agent"
+	) {
+		return "agent-runtime";
+	}
+	if (normalized === "workflow-builder") {
+		return "builder-ui";
+	}
+	if (normalized === "function-router") {
+		return "function-router";
+	}
+	if (normalized === "fn-system" || normalized.startsWith("fn-")) {
+		return "system-function";
+	}
+	return "service";
+}
+
+function classifySpanCategory(args: {
+	name: string;
+	serviceRole: ObservabilityServiceRole;
+	attributes: Record<string, unknown>;
+	kind: string | null;
+}): ObservabilitySpanCategory {
+	const name = args.name.trim().toLowerCase();
+	const attrs = args.attributes;
+	const serviceRole = args.serviceRole;
+	const kind = (args.kind ?? "").trim().toLowerCase();
+
+	const hasWorkflowInstance = hasStringAttribute(attrs, [
+		"workflow.instance_id",
+		"workflow.instanceId",
+		"dapr.instance_id",
+		"daprInstanceId",
+	]);
+	const hasAgentWorkflow = hasStringAttribute(attrs, [
+		"agent.workflow_id",
+		"agent.workflowId",
+		"workflow.agent_workflow_id",
+		"workflow.agentWorkflowId",
+	]);
+	const hasToolName = hasStringAttribute(attrs, [
+		"tool.name",
+		"toolName",
+		"agent.tool_name",
+		"agent.toolName",
+	]);
+	const hasHttpMethod = hasStringAttribute(attrs, [
+		"http.method",
+		"http.request.method",
+	]);
+
+	if (
+		name.startsWith("activity.") ||
+		hasStringAttribute(attrs, [
+			"workflow.activity_name",
+			"workflow.activityName",
+			"activity.name",
+			"activity.type",
+			"action.type",
+		])
+	) {
+		return "activity";
+	}
+
+	if (
+		name.includes("child workflow") ||
+		name.includes("call_child_workflow") ||
+		name.includes("call child workflow") ||
+		hasStringAttribute(attrs, [
+			"workflow.child_workflow_name",
+			"workflow.childWorkflowName",
+			"child.workflow.name",
+		])
+	) {
+		return "child-workflow";
+	}
+
+	if (
+		name.includes("call_llm") ||
+		name.includes("model") ||
+		name.includes("chat.completions") ||
+		hasAttributePrefix(attrs, "gen_ai.") ||
+		hasAttributePrefix(attrs, "llm.")
+	) {
+		return "llm";
+	}
+
+	if (name.includes("tool") || hasToolName) {
+		return "tool";
+	}
+
+	if (
+		serviceRole === "agent-runtime" ||
+		hasAgentWorkflow ||
+		name.includes("agent_workflow") ||
+		name.includes("dapr-coding-agent") ||
+		name.includes("repo-review") ||
+		name.includes("planner") ||
+		name.includes("reviewer")
+	) {
+		return "agent";
+	}
+
+	if (
+		hasWorkflowInstance ||
+		name.includes("dynamic_workflow") ||
+		name.includes("workflow.") ||
+		name === "workflow" ||
+		name.includes("workflowrun") ||
+		name.includes("workflow run")
+	) {
+		return "workflow";
+	}
+
+	if (hasHttpMethod || kind === "server" || kind === "client") {
+		return "http";
+	}
+
+	if (serviceRole === "orchestrator" || serviceRole === "builder-ui") {
+		return "runtime";
+	}
+
+	return "unknown";
+}
+
+function runtimeFromBreakdown(
+	breakdown: ObservabilityTraceBreakdown,
+	rootSpanCategory: ObservabilitySpanCategory,
+): ObservabilityTraceRuntime {
+	if (
+		rootSpanCategory === "workflow" ||
+		rootSpanCategory === "child-workflow" ||
+		breakdown.workflowSpans > 0 ||
+		breakdown.activitySpans > 0 ||
+		breakdown.childWorkflowSpans > 0
+	) {
+		return "dapr-workflow";
+	}
+
+	if (
+		rootSpanCategory === "agent" ||
+		breakdown.agentSpans > 0 ||
+		breakdown.toolSpans > 0 ||
+		breakdown.llmSpans > 0
+	) {
+		return "dapr-agent";
+	}
+
+	if (breakdown.httpSpans > 0) {
+		return "app-trace";
 	}
 
 	return "unknown";
@@ -193,7 +381,22 @@ export function normalizeJaegerSpans(trace: JaegerTrace): ObservabilitySpan[] {
 				]),
 				kind: getStringTag(span.tags, ["span.kind"]),
 				attributes: spanAttributes(span.tags),
+				category: "unknown",
+				serviceRole: "unknown",
 			} satisfies ObservabilitySpan;
+		})
+		.map((span) => {
+			const serviceRole = classifyServiceRole(span.serviceName);
+			return {
+				...span,
+				serviceRole,
+				category: classifySpanCategory({
+					name: span.name,
+					serviceRole,
+					attributes: span.attributes,
+					kind: span.kind,
+				}),
+			};
 		})
 		.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
 }
@@ -210,6 +413,7 @@ export function normalizeJaegerTraceSummary(
 	}
 
 	const rootSpan = pickRootSpan(spans);
+	const normalizedSpans = normalizeJaegerSpans(trace);
 	const startedMicros = Math.min(
 		...spans.map((span) => span.startTime ?? Number.MAX_SAFE_INTEGER),
 	);
@@ -274,6 +478,61 @@ export function normalizeJaegerTraceSummary(
 		"parent_execution_id",
 		"parentExecutionId",
 	]);
+	const serviceNames = Array.from(
+		new Set(
+			normalizedSpans
+				.map((span) => span.serviceName)
+				.filter((serviceName): serviceName is string => Boolean(serviceName)),
+		),
+	);
+	const serviceRoles = Array.from(
+		new Set(normalizedSpans.map((span) => span.serviceRole)),
+	);
+	const breakdown = normalizedSpans.reduce<ObservabilityTraceBreakdown>(
+		(acc, span) => {
+			switch (span.category) {
+				case "workflow":
+					acc.workflowSpans += 1;
+					break;
+				case "child-workflow":
+					acc.childWorkflowSpans += 1;
+					break;
+				case "activity":
+					acc.activitySpans += 1;
+					break;
+				case "agent":
+					acc.agentSpans += 1;
+					break;
+				case "tool":
+					acc.toolSpans += 1;
+					break;
+				case "llm":
+					acc.llmSpans += 1;
+					break;
+				case "http":
+					acc.httpSpans += 1;
+					break;
+				default:
+					acc.otherSpans += 1;
+					break;
+			}
+			return acc;
+		},
+		{
+			workflowSpans: 0,
+			childWorkflowSpans: 0,
+			activitySpans: 0,
+			agentSpans: 0,
+			toolSpans: 0,
+			llmSpans: 0,
+			httpSpans: 0,
+			otherSpans: 0,
+		},
+	);
+	const rootSpanId = rootSpan ? getSpanId(rootSpan) : null;
+	const rootSpanCategory =
+		normalizedSpans.find((span) => span.spanId === rootSpanId)?.category ??
+		"unknown";
 
 	return {
 		traceId,
@@ -296,6 +555,11 @@ export function normalizeJaegerTraceSummary(
 		agentWorkflowId,
 		parentExecutionId,
 		correlationConfidence: context.correlationConfidence ?? "unknown",
+		runtime: runtimeFromBreakdown(breakdown, rootSpanCategory),
+		rootSpanCategory,
+		serviceNames,
+		serviceRoles,
+		breakdown,
 	};
 }
 
@@ -307,10 +571,11 @@ export function normalizeJaegerTraceDetails(
 	if (!summary) {
 		return null;
 	}
+	const normalizedSpans = normalizeJaegerSpans(trace);
 
 	return {
 		trace: summary,
-		spans: normalizeJaegerSpans(trace),
+		spans: normalizedSpans,
 	};
 }
 

@@ -142,8 +142,8 @@ const daprAgentPlugin: IntegrationPlugin = {
 					label: "Model",
 					type: "template-input",
 					required: false,
-					defaultValue: "gpt-5.2",
-					placeholder: "gpt-5.2",
+					defaultValue: "gpt-5.4",
+					placeholder: "gpt-5.4",
 				},
 				{
 					key: "maxTurns",

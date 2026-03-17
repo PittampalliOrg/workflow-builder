@@ -59,6 +59,34 @@ export type DurableAgentRunSummary = {
 	result: unknown;
 };
 
+export type AgentProgressFramework = "ms-agent" | "dapr-agent";
+
+export type AgentProgressTurn = {
+	label: string;
+	summary?: string | null;
+	status?: string | null;
+};
+
+export type AgentNodeProgress = {
+	nodeId: string;
+	framework: AgentProgressFramework;
+	status: string;
+	phase: string | null;
+	summary: string | null;
+	currentStepName: string | null;
+	completedSteps: number | null;
+	totalSteps: number | null;
+	currentIteration: number | null;
+	maxIterations: number | null;
+	activeToolName: string | null;
+	stopReason: string | null;
+	agentWorkflowId: string | null;
+	daprInstanceId: string | null;
+	traceId: string | null;
+	updatedAt: string | null;
+	recentTurns: AgentProgressTurn[];
+};
+
 export type DurableExternalEventSummary = {
 	id: string;
 	nodeId: string;

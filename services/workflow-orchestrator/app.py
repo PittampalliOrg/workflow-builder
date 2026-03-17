@@ -11,7 +11,7 @@ Architecture:
 - Dapr state store for workflow state persistence
 - Dapr pub/sub for event publishing
 
-KEY FEATURE: Native child workflow support for durable agent actions via durable-agent.
+KEY FEATURE: Native child workflow support for Dapr agent actions via Dapr child workflows.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ import requests
 import durabletask.internal.orchestrator_service_pb2 as pb
 import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 from dapr.ext.workflow import DaprWorkflowClient
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -56,7 +56,6 @@ from activities.log_external_event import (
     log_approval_timeout,
 )
 from activities.call_agent_service import (
-    call_dapr_agent_run,
     call_durable_agent_run,
     call_durable_plan,
     call_durable_execute_plan,
@@ -89,6 +88,24 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def _otel_context_from_headers(request: Request) -> dict[str, str]:
+    carrier: dict[str, str] = {}
+    traceparent = request.headers.get("traceparent")
+    tracestate = request.headers.get("tracestate")
+    if traceparent:
+        carrier["traceparent"] = traceparent
+    if tracestate:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
+def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
+    merged = inject_current_context()
+    if request is not None:
+        merged.update(_otel_context_from_headers(request))
+    return merged
 
 
 # --- Runtime capability checks ---
@@ -342,9 +359,8 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_node_complete)
     # Persist final results to PostgreSQL
     wfr.register_activity(persist_results_to_db)
-    # Agent service activities (durable-agent)
+    # Agent service activities
     wfr.register_activity(call_durable_agent_run)
-    wfr.register_activity(call_dapr_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
@@ -889,7 +905,7 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
         return False
     data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
-    return str(config.get("actionType") or "").strip() == "durable/run"
+    return str(config.get("actionType") or "").strip() == "dapr-agent/run"
 
 
 def _abs_position(
@@ -1247,11 +1263,41 @@ def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -
             or workflow_version
         )
 
+    input_payload = _parse_json_value(
+        _parse_wrapped_string(getattr(orchestration_state, "input", None))
+    )
+    if not trace_id and isinstance(input_payload, dict):
+        otel_ctx = input_payload.get("_otel")
+        if isinstance(otel_ctx, dict):
+            trace_id = (
+                str(otel_ctx.get("traceId") or "").strip()
+                or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+            )
+
     serialized_output = _parse_json_value(
         _parse_wrapped_string(getattr(orchestration_state, "output", None))
     )
     if isinstance(serialized_output, dict):
         outputs = serialized_output
+        if not trace_id:
+            trace_id = str(serialized_output.get("traceId") or "").strip() or None
+        nested_outputs = serialized_output.get("outputs")
+        if not trace_id and isinstance(nested_outputs, dict):
+            for value in nested_outputs.values():
+                if not isinstance(value, dict):
+                    continue
+                candidate = str(
+                    value.get("traceId")
+                    or (
+                        value.get("agentProgress", {}).get("traceId")
+                        if isinstance(value.get("agentProgress"), dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                if candidate:
+                    trace_id = candidate
+                    break
     elif serialized_output is not None:
         outputs = {"raw": serialized_output}
 
@@ -1428,17 +1474,18 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
 # --- Routes ---
 
 @app.post("/api/v2/workflows", response_model=StartWorkflowResponse)
-def start_workflow(request: StartWorkflowRequest):
+def start_workflow(request: StartWorkflowRequest, http_request: Request):
     """
     Start a new workflow instance.
 
     POST /api/v2/workflows
     """
+    db_execution_id = request.dbExecutionId
+
     try:
         definition = request.definition.model_dump()
         trigger_data = request.triggerData
         integrations = request.integrations
-        db_execution_id = request.dbExecutionId
 
         selected_workflow_version = (
             request.workflowVersion
@@ -1453,7 +1500,7 @@ def start_workflow(request: StartWorkflowRequest):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": inject_current_context(),
+            "_otel": _merge_otel_context(http_request),
         }
 
         # Generate a unique instance ID
@@ -1470,6 +1517,12 @@ def start_workflow(request: StartWorkflowRequest):
             workflow_version=selected_workflow_version,
         )
 
+        if not result_id:
+            raise RuntimeError("workflow runtime returned an empty instance ID")
+
+        if db_execution_id:
+            _mark_workflow_execution_started(db_execution_id, result_id)
+
         logger.info(f"[Workflow Routes] Workflow scheduled: {result_id}")
 
         return StartWorkflowResponse(
@@ -1480,12 +1533,22 @@ def start_workflow(request: StartWorkflowRequest):
         )
 
     except Exception as e:
+        try:
+            if db_execution_id:
+                _mark_workflow_execution_failed_to_start(
+                    db_execution_id,
+                    str(e),
+                )
+        except Exception as persist_err:
+            logger.error(
+                f"[Workflow Routes] Failed to persist workflow start failure: {persist_err}"
+            )
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
         _raise_workflow_route_error("start_workflow", e)
 
 
 @app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
-def execute_workflow_by_id(request: ExecuteByIdRequest):
+def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
     """
     Execute a workflow by its database ID.
 
@@ -1541,8 +1604,8 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "updatedAt": now,
         }
 
-        # 6.5 Create DB execution row so durable-agent plan artifacts and run
-        # tracking always have a valid workflow_executions foreign key.
+        # 6.5 Create DB execution row so child-run tracking and workspace
+        # artifacts always have a valid workflow_executions foreign key.
         db_execution_id = _create_workflow_execution(
             workflow_id=wf["id"],
             user_id=wf["userId"],
@@ -1561,7 +1624,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": inject_current_context(),
+            "_otel": _merge_otel_context(http_request),
         }
 
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
@@ -2064,9 +2127,9 @@ def agent_events_subscription(event: CloudEvent):
     """
     Handle agent completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when durable-agent
-    publishes completion events. It forwards the events as external events to
-    waiting parent workflows.
+    This endpoint handles legacy or external completion events forwarded over
+    Dapr pub/sub. Native ms-agent and dapr-agent child workflows complete
+    through child-workflow results rather than this callback path.
     """
     logger.info(f"[Subscription] Received agent event: {event.type}")
 
@@ -2088,6 +2151,15 @@ def agent_events_subscription(event: CloudEvent):
             return {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
 
         workflow_id = event_data.get("workflowId", "")
+        if "__msagent__" in workflow_id or "__dapr__" in workflow_id:
+            return {
+                "status": "SUCCESS",
+                "result": {
+                    "status": "ignored",
+                    "reason": "native-child-workflow",
+                    "workflowId": workflow_id,
+                },
+            }
         external_event_name = f"agent_completed_{workflow_id}"
 
         event_payload = {

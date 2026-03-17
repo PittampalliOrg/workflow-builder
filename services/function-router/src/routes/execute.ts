@@ -735,6 +735,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 		);
 
 		const startTime = Date.now();
+		const forwardedTraceHeaders = Object.fromEntries(
+			(["traceparent", "tracestate", "baggage"] as const)
+				.map((headerName) => {
+					const value = request.headers[headerName];
+					return [
+						headerName,
+						typeof value === "string" ? value.trim() : "",
+					] as const;
+				})
+				.filter((entry) => entry[1].length > 0),
+		);
 
 		// Initialize timing breakdown
 		const timing: TimingBreakdown = {};
@@ -786,9 +797,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const functionUrl = await resolveOpenFunctionUrl(target.appId);
 				timing.routingMs = Date.now() - routingStartTime;
 
-				const isAgentRuntime =
-					target.appId === "durable-agent" ||
-					target.appId === "dapr-agent-runtime";
+				const isAgentRuntime = target.appId === "dapr-agent-runtime";
 
 				if (isAgentRuntime) {
 					console.log(
@@ -844,7 +853,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						}
 
-						// Route to the appropriate durable-agent endpoint
+						// Route to the appropriate dapr-agent-runtime endpoint
 						const isAgentRun = toolId === "run";
 						const isDaprAgentRun =
 							target.appId === "dapr-agent-runtime" &&
@@ -1231,6 +1240,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								method: "POST",
 								headers: {
 									"Content-Type": "application/json",
+									...forwardedTraceHeaders,
 								},
 								body: requestBody,
 								signal: controller.signal,
@@ -1605,6 +1615,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							method: "POST",
 							headers: {
 								"Content-Type": "application/json",
+								...forwardedTraceHeaders,
 							},
 							body: JSON.stringify(knativeRequest),
 							signal: controller.signal,

@@ -52,6 +52,7 @@ class OrchestratorConfig:
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
     DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
+    DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
     MS_AGENT_APP_ID: str = "ms-agent-workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
@@ -97,6 +98,7 @@ class OrchestratorConfig:
                 "FUNCTION_ROUTER_APP_ID",
                 "DURABLE_AGENT_APP_ID",
                 "DAPR_AGENT_APP_ID",
+                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
@@ -154,6 +156,10 @@ class OrchestratorConfig:
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
             "DAPR_AGENT_APP_ID": ("DAPR_AGENT_APP_ID", "dapr-agent-runtime"),
+            "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "daprAgentRunWorkflowV1",
+            ),
             "MS_AGENT_APP_ID": ("MS_AGENT_APP_ID", "ms-agent-workflow"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",

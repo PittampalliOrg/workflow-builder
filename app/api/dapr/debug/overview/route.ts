@@ -14,12 +14,12 @@ import type {
 	DaprRuntimeIntrospection,
 } from "@/lib/types/dapr-debug";
 
-const DURABLE_AGENT_API_BASE_URL =
-	process.env.DURABLE_AGENT_API_BASE_URL ||
-	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const MS_AGENT_WORKFLOW_API_BASE_URL =
+	process.env.MS_AGENT_WORKFLOW_API_BASE_URL ||
+	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
 
 function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
@@ -74,47 +74,69 @@ function uniqueRuntimeRegistryAgents(
 	}>,
 ): DaprDebugOverviewResponse["agents"]["runtimeRegistry"] {
 	const seen = new Set<string>();
-	const entries = introspections.flatMap(({ appId, data }) => {
-		const registered = (data?.registry?.registeredAgents ?? []).map(
-			(entry) => ({
-				name: entry.name,
-				metadata: entry.metadata,
-				sourceApp: appId,
-			}),
-		);
-		if (registered.length > 0) {
-			return registered;
+	const entries = introspections.flatMap(({ appId, data }) =>
+		(data?.registry?.registeredAgents ?? []).map((entry) => ({
+			name: entry.name,
+			metadata: entry.metadata,
+			sourceApp: appId,
+		})),
+	);
+	return entries.filter((entry) => {
+		const key = `${entry.sourceApp}:${entry.name}`;
+		if (seen.has(key)) {
+			return false;
 		}
+		seen.add(key);
+		return true;
+	});
+}
+
+function uniquePublishedCapabilities(
+	introspections: Array<{
+		appId: string;
+		data: DaprRuntimeIntrospection | null;
+	}>,
+): NonNullable<DaprDebugOverviewResponse["agents"]["publishedCapabilities"]> {
+	const seen = new Set<string>();
+	const entries: NonNullable<
+		DaprDebugOverviewResponse["agents"]["publishedCapabilities"]
+	> = [];
+	for (const { appId, data } of introspections) {
 		if (Array.isArray(data?.profiles)) {
-			return data.profiles.map((profile) => ({
-				name: profile,
-				metadata: {
-					profile,
-					toolGroup: data.profileToolGroups?.[profile] ?? null,
-					service: data.service,
-					runtime: data.runtime,
-					source: "profiles",
-				},
-				sourceApp: appId,
-			}));
+			for (const profile of data.profiles) {
+				entries.push({
+					name: profile,
+					metadata: {
+						profile,
+						toolGroup: data.profileToolGroups?.[profile] ?? null,
+						service: data.service,
+						runtime: data.runtime,
+						source: "profiles",
+						runtimeConfigEnabled: data.runtimeConfig?.enabled ?? false,
+					},
+					sourceApp: appId,
+				});
+			}
+			continue;
 		}
 		if (Array.isArray(data?.templates)) {
-			return data.templates.map((template) => ({
-				name: template.label || template.id,
-				metadata: {
-					templateId: template.id,
-					description: template.description || null,
-					defaultToolGroup: template.defaultToolGroup ?? null,
-					supportsTools: template.supportsTools ?? false,
-					service: data.service,
-					runtime: data.runtime,
-					source: "templates",
-				},
-				sourceApp: appId,
-			}));
+			for (const template of data.templates) {
+				entries.push({
+					name: template.label || template.id,
+					metadata: {
+						templateId: template.id,
+						description: template.description || null,
+						defaultToolGroup: template.defaultToolGroup ?? null,
+						supportsTools: template.supportsTools ?? false,
+						service: data.service,
+						runtime: data.runtime,
+						source: "templates",
+					},
+					sourceApp: appId,
+				});
+			}
 		}
-		return [];
-	});
+	}
 	return entries.filter((entry) => {
 		const key = `${entry.sourceApp}:${entry.name}`;
 		if (seen.has(key)) {
@@ -139,11 +161,11 @@ export async function GET(request: Request) {
 				ok: false,
 				error: "Workflow orchestrator not queried",
 			},
-			durableAgent: { ok: false, error: "Durable agent not queried" },
 			daprAgentRuntime: {
 				ok: false,
 				error: "Dapr agent runtime not queried",
 			},
+			msAgentWorkflow: { ok: false, error: "MS agent workflow not queried" },
 			applicationAgents: { ok: false, error: "Application agents not queried" },
 		},
 		dashboard: {
@@ -156,13 +178,14 @@ export async function GET(request: Request) {
 		configurations: [],
 		workflowRuntime: {
 			orchestrator: null,
-			durableAgent: null,
 			daprAgentRuntime: null,
+			msAgentWorkflow: null,
 			recentRuns: [],
 		},
 		agents: {
 			application: [],
 			runtimeRegistry: [],
+			publishedCapabilities: [],
 		},
 	};
 
@@ -280,23 +303,6 @@ export async function GET(request: Request) {
 
 	try {
 		const introspection = await fetchServiceIntrospection(
-			`${DURABLE_AGENT_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
-		);
-		response.workflowRuntime.durableAgent = introspection;
-		response.sources.durableAgent = { ok: true };
-		runtimeRegistryInputs.push({
-			appId: "durable-agent",
-			data: introspection,
-		});
-	} catch (error) {
-		response.sources.durableAgent = {
-			ok: false,
-			error: buildErrorMessage(error),
-		};
-	}
-
-	try {
-		const introspection = await fetchServiceIntrospection(
 			`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
 		);
 		response.workflowRuntime.daprAgentRuntime = introspection;
@@ -312,7 +318,27 @@ export async function GET(request: Request) {
 		};
 	}
 
+	try {
+		const introspection = await fetchServiceIntrospection(
+			`${MS_AGENT_WORKFLOW_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
+		);
+		response.workflowRuntime.msAgentWorkflow = introspection;
+		response.sources.msAgentWorkflow = { ok: true };
+		runtimeRegistryInputs.push({
+			appId: "ms-agent-workflow",
+			data: introspection,
+		});
+	} catch (error) {
+		response.sources.msAgentWorkflow = {
+			ok: false,
+			error: buildErrorMessage(error),
+		};
+	}
+
 	response.agents.runtimeRegistry = uniqueRuntimeRegistryAgents(
+		runtimeRegistryInputs,
+	);
+	response.agents.publishedCapabilities = uniquePublishedCapabilities(
 		runtimeRegistryInputs,
 	);
 
@@ -320,8 +346,8 @@ export async function GET(request: Request) {
 		const allowed = new Set([
 			"workflow-builder",
 			"workflow-orchestrator",
-			"durable-agent",
 			"dapr-agent-runtime",
+			"ms-agent-workflow",
 		]);
 		response.instances = instances.filter((instance) =>
 			allowed.has(instance.appId),

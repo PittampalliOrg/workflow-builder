@@ -772,17 +772,9 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             if node_type in ("action", "activity"):
                 action_type = config.get("actionType", "")
 
-                # Long-running child workflows (bypass function-router).
-                # Keep durable/materialize-plan on the regular action path because
-                # it is a synchronous tool endpoint that does not require prompt/mode.
+                # Long-running native child workflows (bypass function-router).
                 if action_type in (
                     "dapr-agent/run",
-                    "durable/run",
-                    "durable/plan",
-                    "durable/claude-plan",
-                    "durable/execute-plan",
-                    "durable/execute-plan-dag",
-                    "mastra/execute",
                     "ms-agent/run",
                 ):
                     # Agent nodes publish completion via pub/sub (external events)
@@ -1866,9 +1858,7 @@ def process_agent_child_workflow(
         call_activity_fn = None
     elif is_dapr_agent:
         run_mode = "execute_direct"
-        from activities.call_agent_service import call_dapr_agent_run
-
-        call_activity_fn = call_dapr_agent_run
+        call_activity_fn = None
     elif action_type == "durable/execute-plan-dag":
         run_mode = "execute_plan_dag"
         from activities.call_agent_service import call_durable_execute_plan_dag
@@ -1889,7 +1879,7 @@ def process_agent_child_workflow(
     use_native_child_workflow = (
         True
         if is_ms_agent
-        else False
+        else True
         if is_dapr_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
     )
@@ -1978,14 +1968,17 @@ def process_agent_child_workflow(
     if use_native_child_workflow:
         start_result: dict[str, Any] = {"success": True}
     else:
+        if call_activity_fn is None:
+            return {
+                "success": False,
+                "error": f"{action_type} requires native child workflow execution",
+            }
         start_result = yield ctx.call_activity(
             call_activity_fn,
             input=activity_input,
         )
         if not isinstance(start_result, dict) or not start_result.get("success", False):
             return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
-        if is_dapr_agent:
-            return start_result
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode":
@@ -2235,15 +2228,19 @@ def process_agent_child_workflow(
                 orchestrator_config.MS_AGENT_CHILD_WORKFLOW_RUN_NAME
                 if is_ms_agent
                 else (
-                    orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
-                    if run_mode == "execute_plan"
-                    else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                    orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
+                    if is_dapr_agent
+                    else (
+                        orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
+                        if run_mode == "execute_plan"
+                        else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                    )
                 )
             )
             or "durableRunWorkflow"
         )
         mode_suffix = "execute-plan" if run_mode == "execute_plan" else "run"
-        child_prefix = "msagent" if is_ms_agent else "durable"
+        child_prefix = "msagent" if is_ms_agent else "dapr" if is_dapr_agent else "durable"
         child_instance_id = f"{ctx.instance_id}__{child_prefix}__{node_id}__{mode_suffix}"
         stop_condition_raw = resolved_config.get("stopCondition")
         stop_condition = (
@@ -2273,6 +2270,8 @@ def process_agent_child_workflow(
             "workspaceRef": resolved_config.get("workspaceRef"),
             "cwd": resolved_config.get("cwd"),
             "executionId": tracked_execution_id,
+            "_otel": otel_ctx,
+            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
         }
         if is_ms_agent:
             child_input["workflowTemplateId"] = (
@@ -2301,6 +2300,34 @@ def process_agent_child_workflow(
                 max_iterations = None
             if max_iterations is not None and max_iterations > 0:
                 child_input["maxIterations"] = max_iterations
+        elif is_dapr_agent:
+            if resolved_config.get("profile") is not None:
+                child_input["profile"] = resolved_config.get("profile")
+            elif resolved_config.get("mode") is not None:
+                child_input["profile"] = resolved_config.get("mode")
+            if resolved_config.get("model") is not None:
+                child_input["model"] = resolved_config.get("model")
+            if resolved_config.get("expectedOutput") is not None:
+                child_input["expectedOutput"] = resolved_config.get("expectedOutput")
+            if resolved_config.get("verifyCommands") is not None:
+                child_input["verifyCommands"] = resolved_config.get("verifyCommands")
+            if resolved_config.get("instructionsOverlay") is not None:
+                child_input["instructionsOverlay"] = resolved_config.get("instructionsOverlay")
+            if resolved_config.get("approvalMode") is not None:
+                child_input["approvalMode"] = resolved_config.get("approvalMode")
+            if resolved_config.get("toolPolicy") is not None:
+                child_input["toolPolicy"] = resolved_config.get("toolPolicy")
+            if resolved_config.get("writePolicy") is not None:
+                child_input["writePolicy"] = resolved_config.get("writePolicy")
+            if resolved_config.get("shellPolicy") is not None:
+                child_input["shellPolicy"] = resolved_config.get("shellPolicy")
+            max_turns_raw = resolved_config.get("maxTurns", max_turns)
+            try:
+                effective_max_turns = int(max_turns_raw) if max_turns_raw is not None else None
+            except (TypeError, ValueError):
+                effective_max_turns = None
+            if effective_max_turns is not None and effective_max_turns > 0:
+                child_input["maxTurns"] = effective_max_turns
         elif max_turns is not None and max_turns > 0:
             child_input["maxIterations"] = max_turns
         if activity_input.get("loopPolicy") is not None:
@@ -2336,7 +2363,7 @@ def process_agent_child_workflow(
                 )
 
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.DAPR_AGENT_APP_ID if is_dapr_agent else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
@@ -2345,6 +2372,8 @@ def process_agent_child_workflow(
             app_id=(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
+                else orchestrator_config.DAPR_AGENT_APP_ID
+                if is_dapr_agent
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )
@@ -2358,12 +2387,17 @@ def process_agent_child_workflow(
             terminate_result: dict[str, Any] = {"success": False}
             try:
                 from activities.call_agent_service import (
+                    terminate_dapr_agent_run,
                     terminate_durable_agent_run,
                     terminate_ms_agent_run,
                 )
 
                 terminate_result = yield ctx.call_activity(
-                    terminate_ms_agent_run if is_ms_agent else terminate_durable_agent_run,
+                    terminate_ms_agent_run
+                    if is_ms_agent
+                    else terminate_dapr_agent_run
+                    if is_dapr_agent
+                    else terminate_durable_agent_run,
                     input={
                         "agentWorkflowId": child_instance_id,
                         "daprInstanceId": child_instance_id,
@@ -2390,6 +2424,8 @@ def process_agent_child_workflow(
                 "childAppId": (
                     orchestrator_config.MS_AGENT_APP_ID
                     if is_ms_agent
+                    else orchestrator_config.DAPR_AGENT_APP_ID
+                    if is_dapr_agent
                     else orchestrator_config.DURABLE_AGENT_APP_ID
                 ),
                 "error": f"Agent timed out after {timeout_minutes} minutes",
@@ -2429,6 +2465,8 @@ def process_agent_child_workflow(
             child_app_id=(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
+                else orchestrator_config.DAPR_AGENT_APP_ID
+                if is_dapr_agent
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )

@@ -27,6 +27,50 @@ The Workflow Builder is a visual workflow automation platform that enables users
 - **PostgreSQL** for workflow definitions and function registry
 - **Redis** for Dapr workflow state and pub/sub messaging
 
+## Current Runtime Note
+
+Some older sections in this document still refer to the historical `function-runner` naming. The current `kind-ryzen` runtime you should reason about today is:
+
+- `workflow-builder`: Next.js UI + BFF
+- `workflow-orchestrator`: Dapr durable workflow interpreter
+- `ms-agent-workflow`: Microsoft Agent Framework-backed child workflow service for `travel-planner` and `code-review`
+- `durable-agent`: separate durable AI agent runtime
+- `function-router`: repo-aware action execution and routing layer
+- `postgresql`: application metadata and execution records
+- Dapr control plane + sidecars: service invocation, workflows, actors, state
+
+When this document and the live cluster disagree, prefer the runtime described above and the manifests in `stacks/main`.
+
+## Current Local Runtime
+
+The most important request paths on `kind-ryzen` are:
+
+### Visual workflow execution
+
+1. Browser calls the Next.js BFF in `workflow-builder`
+2. The BFF forwards workflow execution requests to `workflow-orchestrator`
+3. `workflow-orchestrator` interprets the workflow definition and schedules Dapr workflow/activity work
+4. Action nodes are routed through `function-router` and related runtime services
+5. Execution status and results are stored in PostgreSQL and exposed back through the BFF
+
+### Durable coding-agent execution
+
+1. A workflow step or built-in piece selects `ms-agent/run`
+2. `workflow-orchestrator` forwards the child workflow input to `ms-agent-workflow`
+3. `ms-agent-workflow` resolves the selected template:
+   - `travel-planner`
+   - `code-review`
+4. Template steps run through Microsoft Agent Framework with repo tools resolved from `cwd` and the selected tool group
+5. Results return to the orchestrator as normalized step output, then back to the UI/API caller
+
+### Repo-aware execution path
+
+`function-router` and related services are also Gitea-aware:
+
+- local repo cloning and branch resolution use the in-cluster Gitea service
+- the runtime assumes the local platform includes both the Gitea git server and the local registry
+- the app repo and the `stacks` repo participate in different parts of the overall deployment flow
+
 ### Key Features
 
 - Visual drag-and-drop workflow designer
@@ -141,6 +185,24 @@ The Dapr workflow runtime service that:
 - `services/workflow-orchestrator/src/workflows/dynamic-workflow.ts`
 - `services/workflow-orchestrator/src/activities/execute-action.ts`
 - `services/workflow-orchestrator/src/routes/workflows.ts`
+
+### 2a. MS Agent Workflow
+
+The Microsoft-agent child workflow service provides template-driven durable agent execution inside the same platform:
+
+| Feature | Description |
+|---------|-------------|
+| Template engine | Generic step loop over `WorkflowTemplate` and `TemplateStep` definitions |
+| Current templates | `travel-planner`, `code-review` |
+| Tool groups | `read_only`, `read_write`, `all` |
+| Runtime overrides | model, max iterations, instructions overlay, Dapr config-backed defaults |
+| Workspace model | repo tools operate relative to `cwd`; `workspaceRef` is trace metadata |
+
+Key runtime behavior:
+
+- `code-review` uses three steps: structure analysis, review, optional fix application
+- tool-backed steps run in `ms-agent-workflow`, not in the Next.js app
+- the service is durable because it is invoked through Dapr child workflows, not because Microsoft Agent Framework itself provides durability
 
 ### 3. Function Runner
 

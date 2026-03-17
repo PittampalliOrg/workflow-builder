@@ -5,6 +5,7 @@
 Current `kind-ryzen` runtime in the `workflow-builder` namespace:
 - `workflow-builder` (typically replaced in-place by DevSpace for frontend inner-loop work)
 - `workflow-orchestrator` Deployment (1 replica, port 8080) with Dapr sidecar
+- `ms-agent-workflow` Deployment (1 replica, port 8081) with Dapr sidecar
 - `durable-agent` Deployment (port 8001) with Dapr sidecar
 - `function-router` Deployment (1 replica, port 8080) with Dapr sidecar
 - `fn-system` service path
@@ -21,6 +22,93 @@ Additional services still exist in source, but are not part of the current core 
 - legacy Mastra services
 
 Images are pushed to the Gitea registry at `gitea.cnoe.localtest.me:8443/giteaadmin/`.
+
+## Deployment Modes
+
+There are two different deployment paths for `workflow-builder` on `ryzen`, and they solve different problems.
+
+### 1. DevSpace inner loop
+
+Use this when you are iterating on the Next.js app or the `ms-agent-workflow` service and want hot reload or live file sync.
+
+- `scripts/devspace-dev-ryzen.sh` pauses Argo reconciliation for `workflow-builder` and `ms-agent-workflow`
+- DevSpace swaps in dev containers
+- on exit, the script resumes Argo and waits for the production Deployments to become ready again
+
+This path is ideal for fast code iteration, but it is not the same as proving a production-style rollout.
+
+### 2. Live cluster rollout
+
+Use this when you need the actual production images and manifests live in the cluster.
+
+For the current coding-agent stack, that normally means updating all three services together:
+
+- `workflow-builder`
+- `workflow-orchestrator`
+- `ms-agent-workflow`
+
+On `ryzen`, the reliable rollout sequence is:
+
+1. Build the images from the app repo.
+2. Load them into KIND with `kind load docker-image`.
+3. Update image pins and manifests in `stacks/main`.
+4. Push `stacks/main` to the local Gitea `stacks.git` mirror.
+5. Let ArgoCD reconcile from local Gitea.
+
+Do not assume that pushing only the app repo will change cluster state. ArgoCD watches the `stacks` repo for manifests, not the app repo.
+
+## Ryzen Live Rollout Checklist
+
+Before rollout:
+
+- verify `kubectl config current-context` is `kind-ryzen`
+- verify the Argo apps point at local Gitea `stacks.git`
+- verify `dapr-system` is healthy before touching application Deployments
+
+Build and stage images:
+
+```bash
+docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-builder:git-<sha> .
+docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-orchestrator:git-<sha> \
+  -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
+docker build -t gitea.cnoe.localtest.me/giteaadmin/ms-agent-workflow:git-<sha> \
+  -f services/ms-agent-workflow/Dockerfile services/ms-agent-workflow/
+
+kind load docker-image --name ryzen \
+  gitea.cnoe.localtest.me/giteaadmin/workflow-builder:git-<sha> \
+  gitea.cnoe.localtest.me/giteaadmin/workflow-orchestrator:git-<sha> \
+  gitea.cnoe.localtest.me/giteaadmin/ms-agent-workflow:git-<sha>
+```
+
+Push GitOps state:
+
+- push the app repo to local Gitea if cluster-local source cloning or review tooling needs it
+- push `stacks/main` to local Gitea after updating the active-development image tags and any workload manifests
+
+Validate after rollout:
+
+```bash
+kubectl get application -n argocd workflow-builder workflow-orchestrator ms-agent-workflow dapr-runtime
+kubectl get pods -n workflow-builder -o wide
+kubectl get pods -n dapr-system
+```
+
+In-cluster HTTP checks:
+
+```bash
+kubectl exec -n workflow-builder deployment/workflow-builder -c workflow-builder -- \
+  node -e "fetch('http://workflow-orchestrator:8080/healthz').then(async r=>{console.log(r.status);console.log(await r.text())})"
+
+kubectl exec -n workflow-builder deployment/workflow-builder -c workflow-builder -- \
+  node -e "fetch('http://ms-agent-workflow/api/templates').then(async r=>{console.log(r.status);console.log(await r.text())})"
+```
+
+## Lessons Learned On Ryzen
+
+- Prefer `kind load docker-image` for fresh local images. It is more reliable than assuming every node can immediately pull the new image from the local Gitea registry.
+- If the application container is healthy but the pod is `1/2`, debug Dapr first. A broken scheduler or placement service can make an otherwise-correct rollout look bad.
+- Temporary service hacks like `publishNotReadyAddresses: true` can help confirm a diagnosis, but they are not a valid steady-state fix.
+- The current local Dapr control plane should be kept aligned with the manifest version in `stacks/main`; the scheduler recovery path we validated used Dapr `1.17.2-rc.1`.
 
 ## Build Images
 
@@ -144,6 +232,24 @@ This validates:
 - rerun from event
 - terminate workflow
 - purge workflow
+
+### Dapr Control Plane Health
+
+For `workflow-builder`, `workflow-orchestrator`, `ms-agent-workflow`, and `durable-agent`, readiness depends on the local Dapr control plane being healthy.
+
+A healthy local control plane should show:
+
+```bash
+kubectl get pods -n dapr-system
+```
+
+Expected shape:
+
+- `dapr-placement-server-0` ready
+- `dapr-scheduler-server-{0,1,2}` ready
+- `dapr-operator`, `dapr-sentry`, `dapr-sidecar-injector` ready
+
+If sidecars stay unready, check `kubectl logs -n dapr-system dapr-scheduler-server-0 -c dapr-scheduler-server` before changing app manifests.
 
 ## Database Migration Source Of Truth
 

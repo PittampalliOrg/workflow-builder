@@ -12,6 +12,7 @@ import {
 	workflowPlanArtifacts,
 } from "@/lib/db/schema";
 import {
+	buildAgentNodeProgress,
 	buildDurableTimeline,
 	buildExecutionConsistency,
 	deriveDurableAgentRuns,
@@ -21,6 +22,36 @@ import {
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
 import { redactSensitiveData } from "@/lib/utils/redact";
+
+function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
+	const result = new Map<string, string>();
+	if (!Array.isArray(nodes)) {
+		return result;
+	}
+	for (const node of nodes) {
+		if (!node || typeof node !== "object") {
+			continue;
+		}
+		const record = node as Record<string, unknown>;
+		const nodeId = typeof record.id === "string" ? record.id : null;
+		const data =
+			record.data && typeof record.data === "object"
+				? (record.data as Record<string, unknown>)
+				: null;
+		const config =
+			data?.config && typeof data.config === "object"
+				? (data.config as Record<string, unknown>)
+				: null;
+		const actionType =
+			config && typeof config.actionType === "string"
+				? config.actionType
+				: null;
+		if (nodeId && actionType) {
+			result.set(nodeId, actionType);
+		}
+	}
+	return result;
+}
 
 export async function GET(
 	request: Request,
@@ -133,6 +164,23 @@ export async function GET(
 						logs: logsAsc,
 						orchestratorHistory: runtimeHistory?.events ?? [],
 					});
+		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
+		const agentProgressByNode = effectiveAgentRuns.reduce<
+			Record<string, ReturnType<typeof buildAgentNodeProgress>>
+		>((acc, run) => {
+			const actionType = nodeActionTypeMap.get(run.nodeId);
+			const framework =
+				actionType === "ms-agent/run"
+					? "ms-agent"
+					: actionType === "dapr-agent/run"
+						? "dapr-agent"
+						: null;
+			if (!framework) {
+				return acc;
+			}
+			acc[run.nodeId] = buildAgentNodeProgress(run, framework);
+			return acc;
+		}, {});
 
 		const timeline = buildDurableTimeline({
 			execution,
@@ -152,6 +200,7 @@ export async function GET(
 			logs: redactedLogs,
 			runtime,
 			timeline,
+			agentProgressByNode,
 			agentRuns: effectiveAgentRuns.map((run) => ({
 				...run,
 				result: redactSensitiveData(run.result),

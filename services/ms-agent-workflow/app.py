@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from config import TemplateConfigResolver, parse_config_keys, parse_config_metadata
@@ -89,7 +89,9 @@ logging.basicConfig(
 PORT = int(os.environ.get("PORT", "8081"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "repo-review")
-DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.2")
+DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.4")
+DEFAULT_CONFIG_STORE = os.environ.get("DAPR_CONFIG_STORE", "azureappconfig")
+DAPR_LLM_COMPONENT = os.environ.get("DAPR_LLM_COMPONENT_DEFAULT")
 WORKFLOW_NAME = os.environ.get("MS_AGENT_CHILD_WORKFLOW_RUN_NAME", "msAgentWorkflowV1")
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()
@@ -690,6 +692,8 @@ def _run_agent_step(
     model: str | None,
     tool_group: str | None = None,
     workspace_root: str | None = None,
+    workspace_ref: str | None = None,
+    execution_id: str | None = None,
     api_key: str | None = None,
 ) -> dict[str, Any]:
     resolved_model = str(model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
@@ -706,9 +710,15 @@ def _run_agent_step(
     tool_kwargs: dict[str, Any] = {}
     tool_context: ToolRuntimeContext | None = None
     if tools:
-        tool_context = ToolRuntimeContext.from_workspace_root(
-            _resolve_workspace_root(workspace_root)
-        )
+        resolved_workspace_root = _resolve_workspace_root(workspace_root)
+        if isinstance(workspace_ref, str) and workspace_ref.strip():
+            tool_context = ToolRuntimeContext.from_remote_workspace(
+                workspace_root=resolved_workspace_root,
+                workspace_ref=workspace_ref,
+                execution_id=execution_id,
+            )
+        else:
+            tool_context = ToolRuntimeContext.from_workspace_root(resolved_workspace_root)
         tool_kwargs["tool_context"] = tool_context
         tool_kwargs["workspace_root"] = str(tool_context.workspace_root)
 
@@ -736,6 +746,7 @@ class WorkflowRunRequest(BaseModel):
     configStoreName: str | None = None
     configKeys: list[str] | str | None = None
     configMetadata: dict[str, str] | str | None = None
+    executionId: str | None = None
 
 
 class TerminateWorkflowRequest(BaseModel):
@@ -806,6 +817,29 @@ def _build_public_result(
     steps = payload.get("steps")
     if not isinstance(steps, list):
         steps = []
+    resolved_trace_id = (
+        payload.get("traceId")
+        or payload.get("trace_id")
+        or (
+            payload.get("agentProgress", {}).get("traceId")
+            if isinstance(payload.get("agentProgress"), dict)
+            else None
+        )
+    )
+    agent_progress = payload.get("agentProgress")
+    if not isinstance(agent_progress, dict):
+        agent_progress = _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=resolved_template_id,
+            status="completed",
+            step_outputs=steps,
+            total_steps=len(steps),
+            current_step_name=steps[-1].get("agent") if steps else None,
+            stop_reason="workflow completed",
+            trace_id=resolved_trace_id,
+        )
+    elif not agent_progress.get("traceId") and resolved_trace_id:
+        agent_progress = {**agent_progress, "traceId": resolved_trace_id}
     return {
         "text": text,
         "content": text,
@@ -819,11 +853,162 @@ def _build_public_result(
         "patch": payload.get("patch") or "",
         "agentWorkflowId": instance_id,
         "daprInstanceId": instance_id,
+        "traceId": resolved_trace_id,
+        "agentProgress": agent_progress,
     }
+
+
+def _utc_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _parse_json_blob(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1].strip()
+    return trace_id or None
+
+
+def _trace_id_from_otel(otel_ctx: object) -> str | None:
+    if not isinstance(otel_ctx, dict):
+        return None
+    return _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+
+
+def _current_trace_id() -> str | None:
+    try:
+        from opentelemetry import trace as ot_trace
+
+        span = ot_trace.get_current_span()
+        if span is None:
+            return None
+        span_context = span.get_span_context()
+        if span_context is None or not getattr(span_context, "is_valid", False):
+            return None
+        trace_id = getattr(span_context, "trace_id", 0)
+        if not trace_id:
+            return None
+        return f"{trace_id:032x}"
+    except Exception:
+        return None
+
+
+def _otel_context_from_headers(request: Request) -> dict[str, str]:
+    carrier: dict[str, str] = {}
+    traceparent = request.headers.get("traceparent")
+    tracestate = request.headers.get("tracestate")
+    if traceparent:
+        carrier["traceparent"] = traceparent
+    if tracestate:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
+def _build_ms_agent_progress(
+    *,
+    instance_id: str,
+    template_id: str,
+    status: str,
+    step_outputs: list[dict[str, Any]],
+    total_steps: int,
+    current_step_name: str | None = None,
+    stop_reason: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    completed_steps = len(step_outputs)
+    recent_turns = [
+        {
+            "label": str(step.get("agent") or f"Step {idx + 1}"),
+            "summary": _coerce_text(step.get("content"))[:280],
+            "status": "completed",
+        }
+        for idx, step in enumerate(step_outputs[-3:])
+    ]
+    final_summary = _coerce_text(step_outputs[-1].get("content"))[:280] if step_outputs else None
+    return {
+        "nodeId": None,
+        "framework": "ms-agent",
+        "status": status,
+        "phase": template_id,
+        "summary": final_summary,
+        "currentStepName": current_step_name,
+        "completedSteps": completed_steps,
+        "totalSteps": total_steps,
+        "currentIteration": None,
+        "maxIterations": None,
+        "activeToolName": None,
+        "stopReason": stop_reason,
+        "agentWorkflowId": instance_id,
+        "daprInstanceId": instance_id,
+        "traceId": trace_id,
+        "updatedAt": _utc_now_iso(),
+        "recentTurns": recent_turns,
+    }
+
+
+def _set_workflow_progress(
+    ctx: DaprWorkflowContext,
+    *,
+    instance_id: str,
+    template_id: str,
+    completed_steps: list[dict[str, Any]],
+    total_steps: int,
+    current_step_name: str | None,
+    message: str,
+    status: str = "running",
+    stop_reason: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    if not hasattr(ctx, "set_custom_status"):
+        return
+    progress_ratio = (len(completed_steps) / total_steps) if total_steps > 0 else 0
+    payload = {
+        "phase": template_id,
+        "progress": int(progress_ratio * 100),
+        "message": message,
+        "currentNodeId": None,
+        "currentNodeName": current_step_name,
+        "traceId": trace_id,
+        "agentProgress": _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=template_id,
+            status=status,
+            step_outputs=completed_steps,
+            total_steps=total_steps,
+            current_step_name=current_step_name,
+            stop_reason=stop_reason,
+            trace_id=trace_id,
+        ),
+    }
+    ctx.set_custom_status(json.dumps(payload))
 
 
 def _schedule_workflow(
     request: WorkflowRunRequest,
+    *,
+    otel_ctx: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if workflow_client is None:
         raise HTTPException(status_code=503, detail="Workflow client not ready")
@@ -847,6 +1032,7 @@ def _schedule_workflow(
             "configStoreName": request.configStoreName,
             "configKeys": request.configKeys,
             "configMetadata": request.configMetadata,
+            "_otel": otel_ctx or {},
         },
     )
 
@@ -857,6 +1043,7 @@ def _schedule_workflow(
         "dapr_instance_id": instance_id,
         "daprInstanceId": instance_id,
         "status": "running",
+        "traceId": _trace_id_from_otel(otel_ctx),
         "status_url": f"/api/run/{instance_id}",
     }
     return instance_id, response
@@ -909,6 +1096,8 @@ def run_template_step(_ctx, input_data: dict[str, Any] | None = None) -> dict[st
         model=payload.get("model"),
         tool_group=str(tool_group).strip() if tool_group else None,
         workspace_root=payload.get("cwd"),
+        workspace_ref=payload.get("workspaceRef"),
+        execution_id=payload.get("executionId"),
         api_key=payload.get("openAIApiKey"),
     )
     return result
@@ -927,6 +1116,7 @@ def ms_agent_workflow(
         }
     else:
         input_payload = input_data
+    trace_id = _trace_id_from_otel(input_payload.get("_otel")) or _current_trace_id()
 
     template = _resolve_template(input_payload.get("workflowTemplateId"))
     task = str(input_payload.get("task") or input_payload.get("prompt") or "").strip()
@@ -950,10 +1140,35 @@ def ms_agent_workflow(
     tool_group_override = runtime_settings["tool_group_override"]
 
     step_outputs: list[dict[str, Any]] = []
+    active_steps = [
+        (index, step)
+        for index, step in enumerate(template.steps)
+        if not (step.optional_flag == "applyFixes" and not apply_fixes)
+    ]
+    total_steps = len(active_steps)
 
-    for index, step in enumerate(template.steps):
-        if step.optional_flag == "applyFixes" and not apply_fixes:
-            continue
+    _set_workflow_progress(
+        ctx,
+        instance_id=ctx.instance_id,
+        template_id=template.id,
+        completed_steps=step_outputs,
+        total_steps=total_steps,
+        current_step_name=active_steps[0][1].agent_name if active_steps else None,
+        message=f"Starting {template.label}",
+        trace_id=trace_id,
+    )
+
+    for progress_index, (index, step) in enumerate(active_steps):
+        _set_workflow_progress(
+            ctx,
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            completed_steps=step_outputs,
+            total_steps=total_steps,
+            current_step_name=step.agent_name,
+            message=f"Running {step.agent_name} ({progress_index + 1}/{total_steps})",
+            trace_id=trace_id,
+        )
 
         step_context = _build_step_context(
             task=task,
@@ -989,6 +1204,8 @@ def ms_agent_workflow(
                 "openAIApiKey": openai_api_key,
                 "toolGroup": tool_group,
                 "cwd": cwd,
+                "workspaceRef": input_payload.get("workspaceRef"),
+                "executionId": input_payload.get("executionId"),
             },
         )
         step_outputs.append(
@@ -1001,6 +1218,16 @@ def ms_agent_workflow(
                 "fixesApplied": step_result.get("fixesApplied") or [],
                 "patch": step_result.get("patch") or "",
             }
+        )
+        _set_workflow_progress(
+            ctx,
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            completed_steps=step_outputs,
+            total_steps=total_steps,
+            current_step_name=step.agent_name,
+            message=f"Completed {step.agent_name} ({len(step_outputs)}/{total_steps})",
+            trace_id=trace_id,
         )
 
     final_step = step_outputs[-1] if step_outputs else {"content": ""}
@@ -1058,6 +1285,17 @@ def ms_agent_workflow(
         "fixesApplied": aggregated_fixes,
         "patch": patch,
         "workspaceRef": input_payload.get("workspaceRef"),
+        "agentProgress": _build_ms_agent_progress(
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            status="completed",
+            step_outputs=step_outputs,
+            total_steps=total_steps,
+            current_step_name=final_step.get("agent"),
+            stop_reason="workflow completed",
+            trace_id=trace_id,
+        ),
+        "traceId": trace_id,
     }
 
 
@@ -1176,6 +1414,14 @@ def runtime_introspect() -> dict[str, Any]:
         "success": True,
         "service": "ms-agent-workflow",
         "version": SERVICE_VERSION,
+        "runtime": "python-maf-dapr-workflow",
+        "ready": True,
+        "features": [
+            "dapr-child-workflow",
+            "template-workflows",
+            "tool-groups",
+            "config-store-defaults",
+        ],
         "workflows": [
             {
                 "name": WORKFLOW_NAME,
@@ -1203,12 +1449,36 @@ def runtime_introspect() -> dict[str, Any]:
             ],
         },
         "templates": [_serialize_template(template) for template in TEMPLATES.values()],
+        "capabilities": {
+            "templates": [_serialize_template(template) for template in TEMPLATES.values()],
+            "toolGroups": ["read_only", "read_write", "all"],
+        },
+        "runtimeConfig": {
+            "enabled": True,
+            "storeName": DEFAULT_CONFIG_STORE,
+            "label": "ms-agent-workflow",
+            "subscribedKeys": [],
+            "lastAppliedAt": None,
+            "lastUpdatedKey": None,
+            "effective": {
+                "defaultTemplateId": DEFAULT_TEMPLATE_ID,
+                "defaultModel": DEFAULT_MODEL,
+            },
+        },
+        "additional": {
+            "llmBackend": "agent-framework-openai",
+            "llmComponent": DAPR_LLM_COMPONENT,
+            "defaultConfigStore": DEFAULT_CONFIG_STORE,
+        },
     }
 
 
 @app.post("/api/run")
-def run_workflow(request: WorkflowRunRequest) -> dict[str, Any]:
-    instance_id, response = _schedule_workflow(request)
+def run_workflow(request: WorkflowRunRequest, http_request: Request) -> dict[str, Any]:
+    instance_id, response = _schedule_workflow(
+        request,
+        otel_ctx=_otel_context_from_headers(http_request),
+    )
 
     if request.waitForCompletion:
         state = workflow_client.wait_for_workflow_completion(
@@ -1244,35 +1514,91 @@ def get_run(instance_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workflow not found")
     workflow_result = _parse_workflow_output(state)
     status = _normalize_status(getattr(state.runtime_status, "name", None))
+    custom_status = _parse_json_blob(getattr(state, "customStatus", None))
+    trace_id = (
+        custom_status.get("traceId")
+        if isinstance(custom_status, dict)
+        else None
+    )
+    agent_progress = (
+        custom_status.get("agentProgress")
+        if isinstance(custom_status, dict)
+        and isinstance(custom_status.get("agentProgress"), dict)
+        else None
+    )
+    if agent_progress is None and workflow_result:
+        steps = workflow_result.get("steps")
+        if not isinstance(steps, list):
+            steps = []
+        template_id = str(
+            workflow_result.get("workflowTemplateId")
+            or workflow_result.get("workflow_template_id")
+            or DEFAULT_TEMPLATE_ID
+        )
+        agent_progress = _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=template_id,
+            status=status,
+            step_outputs=steps,
+            total_steps=len(steps),
+            current_step_name=steps[-1].get("agent") if steps else None,
+            stop_reason="workflow completed" if status == "completed" else None,
+            trace_id=trace_id,
+        )
+    elif isinstance(agent_progress, dict) and not agent_progress.get("traceId") and trace_id:
+        agent_progress = {**agent_progress, "traceId": trace_id}
+    effective_workflow_result = workflow_result
+    if isinstance(workflow_result, dict) and trace_id and not workflow_result.get("traceId"):
+        effective_workflow_result = {
+            **workflow_result,
+            "traceId": trace_id,
+            "agentProgress": agent_progress or workflow_result.get("agentProgress"),
+        }
 
     return {
         "success": True,
         "instanceId": instance_id,
         "runtimeStatus": getattr(state.runtime_status, "name", None),
         "status": status,
+        "phase": (
+            custom_status.get("phase")
+            if isinstance(custom_status, dict)
+            else (
+                workflow_result.get("workflowTemplateId")
+                if workflow_result
+                else DEFAULT_TEMPLATE_ID
+            )
+        ),
         "createdAt": state.created_at.isoformat() if state.created_at else None,
         "lastUpdatedAt": (
             state.last_updated_at.isoformat() if state.last_updated_at else None
         ),
-        "result": workflow_result,
+        "traceId": trace_id
+        or (
+            effective_workflow_result.get("traceId")
+            if isinstance(effective_workflow_result, dict)
+            else None
+        ),
+        "agentProgress": agent_progress,
+        "result": effective_workflow_result,
         "data": (
             _build_public_result(
                 instance_id=instance_id,
                 template_id=str(
-                    workflow_result.get("workflowTemplateId")
-                    or workflow_result.get("workflow_template_id")
+                    effective_workflow_result.get("workflowTemplateId")
+                    or effective_workflow_result.get("workflow_template_id")
                     or DEFAULT_TEMPLATE_ID
                 )
-                if workflow_result
+                if effective_workflow_result
                 else DEFAULT_TEMPLATE_ID,
                 model=(
-                    str(workflow_result.get("model"))
-                    if workflow_result and workflow_result.get("model")
+                    str(effective_workflow_result.get("model"))
+                    if effective_workflow_result and effective_workflow_result.get("model")
                     else None
                 ),
-                workflow_result=workflow_result,
+                workflow_result=effective_workflow_result,
             )
-            if workflow_result
+            if effective_workflow_result
             else None
         ),
         "error": (

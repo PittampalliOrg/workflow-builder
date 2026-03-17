@@ -102,7 +102,7 @@ const EMPTY_MODEL_PROFILE: ModelProfileDialogState = {
 	editId: null,
 	name: "",
 	description: "",
-	modelId: "openai/gpt-4o",
+	modelId: "openai/gpt-5.4",
 	defaultOptionsJson: "{}",
 	maxTurns: "",
 	timeoutMinutes: "",
@@ -883,7 +883,7 @@ export default function LibraryPage() {
 											modelId: e.target.value,
 										}))
 									}
-									placeholder="openai/gpt-4o"
+									placeholder="openai/gpt-5.4"
 								/>
 							</div>
 						</div>

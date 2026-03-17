@@ -248,6 +248,18 @@ function IntrospectionCard({
 								</pre>
 							</CardContent>
 						</Card>
+						{introspection.runtimeConfig ? (
+							<Card>
+								<CardHeader>
+									<CardTitle>Runtime Config</CardTitle>
+								</CardHeader>
+								<CardContent>
+									<pre className="max-h-80 overflow-auto rounded-lg bg-muted p-3 text-xs">
+										{formatJson(introspection.runtimeConfig)}
+									</pre>
+								</CardContent>
+							</Card>
+						) : null}
 					</>
 				)}
 			</CardContent>
@@ -421,8 +433,12 @@ export function DaprDebugPage() {
 					ok={overview.sources.workflowOrchestrator.ok}
 				/>
 				<SourceBadge
-					label="durable-agent"
-					ok={overview.sources.durableAgent.ok}
+					label="dapr-agent-runtime"
+					ok={overview.sources.daprAgentRuntime.ok}
+				/>
+				<SourceBadge
+					label="ms-agent-workflow"
+					ok={overview.sources.msAgentWorkflow?.ok ?? false}
 				/>
 				<SourceBadge
 					label="application agents"
@@ -593,11 +609,16 @@ export function DaprDebugPage() {
 							title="Workflow Orchestrator"
 						/>
 						<IntrospectionCard
-							introspection={overview.workflowRuntime.durableAgent}
-							sourceOk={overview.sources.durableAgent.ok}
-							title="Durable Agent"
+							introspection={overview.workflowRuntime.daprAgentRuntime}
+							sourceOk={overview.sources.daprAgentRuntime.ok}
+							title="Dapr Agent Runtime"
 						/>
 					</div>
+					<IntrospectionCard
+						introspection={overview.workflowRuntime.msAgentWorkflow ?? null}
+						sourceOk={overview.sources.msAgentWorkflow?.ok ?? false}
+						title="MS Agent Workflow"
+					/>
 
 					<Card>
 						<CardHeader>
@@ -693,10 +714,10 @@ export function DaprDebugPage() {
 							<CardHeader>
 								<div className="flex items-center justify-between gap-3">
 									<div>
-										<CardTitle>Runtime Published Agents</CardTitle>
+										<CardTitle>Runtime Registry</CardTitle>
 										<CardDescription>
-											Service-published durable-agent registrations, profiles,
-											or templates.
+											Actual runtime registry entries published by Dapr-enabled
+											agent services.
 										</CardDescription>
 									</div>
 									<SourceBadge
@@ -709,7 +730,7 @@ export function DaprDebugPage() {
 								{overview.agents.runtimeRegistry.length === 0 ? (
 									<div className="flex items-center gap-2 text-muted-foreground text-sm">
 										<Bot className="size-4" />
-										No runtime agent publications are currently available.
+										No runtime registry entries are currently available.
 									</div>
 								) : (
 									<div className="space-y-3">
@@ -734,6 +755,40 @@ export function DaprDebugPage() {
 							</CardContent>
 						</Card>
 					</div>
+					<Card>
+						<CardHeader>
+							<CardTitle>Published Capabilities</CardTitle>
+							<CardDescription>
+								Service-published profiles and templates exposed for the UI.
+							</CardDescription>
+						</CardHeader>
+						<CardContent>
+							{(overview.agents.publishedCapabilities?.length ?? 0) === 0 ? (
+								<div className="text-muted-foreground text-sm">
+									No published runtime capabilities are currently available.
+								</div>
+							) : (
+								<div className="space-y-3">
+									{overview.agents.publishedCapabilities?.map((entry) => (
+										<div
+											className="rounded-lg border p-3"
+											key={`${entry.sourceApp}:${entry.name}`}
+										>
+											<div className="mb-2 flex items-center justify-between gap-3">
+												<div className="font-medium">{entry.name}</div>
+												<Badge className="border-transparent bg-slate-500/10 text-slate-700">
+													{entry.sourceApp}
+												</Badge>
+											</div>
+											<pre className="max-h-40 overflow-auto rounded-lg bg-muted p-3 text-xs">
+												{formatJson(entry.metadata)}
+											</pre>
+										</div>
+									))}
+								</div>
+							)}
+						</CardContent>
+					</Card>
 				</TabsContent>
 
 				<TabsContent className="space-y-4" value="components">

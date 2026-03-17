@@ -3,6 +3,9 @@ import type {
 	GenericWorkflowStatus,
 } from "@/lib/dapr-client";
 import type {
+	AgentNodeProgress,
+	AgentProgressFramework,
+	AgentProgressTurn,
 	DurableAgentRunSummary,
 	DurableExecutionConsistency,
 	DurableExternalEventSummary,
@@ -253,6 +256,9 @@ function deriveModeFromHistoryTaskName(
 	if (normalized === "call_durable_agent_run") {
 		return "run";
 	}
+	if (normalized === "call_dapr_agent_run") {
+		return "run";
+	}
 	if (normalized === "call_ms_agent_run") {
 		return "run";
 	}
@@ -269,6 +275,7 @@ export function deriveDurableAgentRuns(
 		if (
 			!(
 				activityName.includes("durable/") ||
+				activityName.includes("dapr-agent/") ||
 				activityName.includes("ms-agent/") ||
 				activityName.includes("mastra/execute")
 			)
@@ -754,6 +761,161 @@ export function toDurableAgentRunSummary(
 		error: run.error,
 		result: run.result,
 	}));
+}
+
+function asTurnArray(value: unknown): AgentProgressTurn[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value.reduce<AgentProgressTurn[]>((acc, item) => {
+		const record = asRecord(item);
+		if (!record) {
+			return acc;
+		}
+		acc.push({
+			label: getStringField(record, ["label"]) ?? "turn",
+			summary: getStringField(record, ["summary"]) ?? null,
+			status: getStringField(record, ["status"]) ?? null,
+		});
+		return acc;
+	}, []);
+}
+
+function asOptionalNumber(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function buildDerivedAgentProgress(
+	run: AgentRunLike | DurableAgentRunSummary,
+	framework: AgentProgressFramework,
+): AgentNodeProgress {
+	const result = asRecord(run.result) ?? {};
+	const steps = Array.isArray(result.steps) ? result.steps : [];
+	const runSummary = asRecord(result.runSummary) ?? {};
+	const summary =
+		getStringField(result, [
+			"text",
+			"content",
+			"finalAnswer",
+			"reviewFindings",
+		]) ?? null;
+	if (framework === "ms-agent") {
+		const currentStep =
+			steps.length > 0 ? asRecord(steps[steps.length - 1]) : null;
+		return {
+			nodeId: run.nodeId,
+			framework,
+			status: run.status,
+			phase: getStringField(result, [
+				"workflowTemplateId",
+				"workflow_template_id",
+			]),
+			summary,
+			currentStepName: getStringField(currentStep ?? {}, ["agent"]),
+			completedSteps: steps.length,
+			totalSteps: steps.length,
+			currentIteration: null,
+			maxIterations: null,
+			activeToolName: null,
+			stopReason:
+				run.status === "completed"
+					? "workflow completed"
+					: run.status === "failed"
+						? run.error
+						: null,
+			agentWorkflowId: run.agentWorkflowId,
+			daprInstanceId: run.daprInstanceId,
+			traceId: getStringField(result, ["traceId"]),
+			updatedAt:
+				toIso(run.completedAt) ??
+				toIso(run.lastReconciledAt) ??
+				toIso(run.createdAt),
+			recentTurns: steps.slice(-3).map((step, index) => {
+				const stepRecord = asRecord(step) ?? {};
+				return {
+					label:
+						getStringField(stepRecord, ["agent"]) ??
+						`step-${steps.length - 2 + index}`,
+					summary: getStringField(stepRecord, ["content"]),
+					status: "completed",
+				};
+			}),
+		};
+	}
+
+	return {
+		nodeId: run.nodeId,
+		framework,
+		status: run.status,
+		phase: getStringField(runSummary, ["profile"]) ?? "review",
+		summary,
+		currentStepName: getStringField(runSummary, ["profile"]),
+		completedSteps: null,
+		totalSteps: null,
+		currentIteration: null,
+		maxIterations: null,
+		activeToolName: null,
+		stopReason:
+			run.status === "completed"
+				? "workflow completed"
+				: run.status === "failed"
+					? run.error
+					: null,
+		agentWorkflowId: run.agentWorkflowId,
+		daprInstanceId: run.daprInstanceId,
+		traceId: getStringField(result, ["traceId"]),
+		updatedAt:
+			toIso(run.completedAt) ??
+			toIso(run.lastReconciledAt) ??
+			toIso(run.createdAt),
+		recentTurns: [],
+	};
+}
+
+export function buildAgentNodeProgress(
+	run: AgentRunLike | DurableAgentRunSummary,
+	framework: AgentProgressFramework,
+	livePayload?: unknown,
+): AgentNodeProgress {
+	const live = asRecord(livePayload);
+	const result = asRecord(run.result);
+	const embedded =
+		(result && asRecord(result.agentProgress)) ||
+		(live && asRecord(live.agentProgress)) ||
+		null;
+	const fallback = buildDerivedAgentProgress(run, framework);
+	if (!embedded) {
+		return fallback;
+	}
+
+	return {
+		nodeId: run.nodeId,
+		framework,
+		status: getStringField(embedded, ["status"]) ?? fallback.status,
+		phase: getStringField(embedded, ["phase"]) ?? fallback.phase,
+		summary: getStringField(embedded, ["summary"]) ?? fallback.summary,
+		currentStepName:
+			getStringField(embedded, ["currentStepName"]) ?? fallback.currentStepName,
+		completedSteps:
+			asOptionalNumber(embedded.completedSteps) ?? fallback.completedSteps,
+		totalSteps: asOptionalNumber(embedded.totalSteps) ?? fallback.totalSteps,
+		currentIteration:
+			asOptionalNumber(embedded.currentIteration) ?? fallback.currentIteration,
+		maxIterations:
+			asOptionalNumber(embedded.maxIterations) ?? fallback.maxIterations,
+		activeToolName:
+			getStringField(embedded, ["activeToolName"]) ?? fallback.activeToolName,
+		stopReason: getStringField(embedded, ["stopReason"]) ?? fallback.stopReason,
+		agentWorkflowId:
+			getStringField(embedded, ["agentWorkflowId"]) ?? fallback.agentWorkflowId,
+		daprInstanceId:
+			getStringField(embedded, ["daprInstanceId"]) ?? fallback.daprInstanceId,
+		traceId: getStringField(embedded, ["traceId"]) ?? fallback.traceId,
+		updatedAt: getStringField(embedded, ["updatedAt"]) ?? fallback.updatedAt,
+		recentTurns: asTurnArray(embedded.recentTurns).length
+			? asTurnArray(embedded.recentTurns)
+			: fallback.recentTurns,
+	};
 }
 
 export function toDurableExternalEventSummary(

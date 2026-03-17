@@ -17,7 +17,6 @@
 import "./blob";
 import "./clerk";
 import "./dapr-agent";
-import "./durable-agent";
 import "./fal";
 import "./firecrawl";
 import "./github";

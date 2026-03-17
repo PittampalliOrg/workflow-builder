@@ -15,6 +15,17 @@ import {
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
+function extractTraceHeaders(request: Request): Record<string, string> {
+	const headers: Record<string, string> = {};
+	for (const headerName of ["traceparent", "tracestate", "baggage"] as const) {
+		const value = request.headers.get(headerName)?.trim();
+		if (value) {
+			headers[headerName] = value;
+		}
+	}
+	return headers;
+}
+
 export async function POST(
 	request: Request,
 	context: { params: Promise<{ workflowId: string }> },
@@ -169,6 +180,8 @@ export async function POST(
 					{}, // integrations — empty, credentials resolved at function-router
 					execution.id, // Database execution ID for logging
 					nodeConnectionMap, // Per-node connection external IDs
+					undefined,
+					extractTraceHeaders(request),
 				);
 
 				// Update execution with Dapr instance ID

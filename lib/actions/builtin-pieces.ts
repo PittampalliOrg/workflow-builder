@@ -785,8 +785,8 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					label: "Model",
 					type: "template-input",
 					required: false,
-					defaultValue: "gpt-5.2",
-					placeholder: "gpt-5.2",
+					defaultValue: "gpt-5.4",
+					placeholder: "gpt-5.4",
 				},
 				{
 					key: "maxTurns",
@@ -986,8 +986,8 @@ const MS_AGENT_PIECE: IntegrationDefinition = {
 					label: "Model",
 					type: "template-input",
 					required: false,
-					defaultValue: "gpt-5.2",
-					placeholder: "gpt-5.2",
+					defaultValue: "gpt-5.4",
+					placeholder: "gpt-5.4",
 				},
 				{
 					key: "timeoutMinutes",
@@ -1419,11 +1419,9 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 };
 
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [
-		MCP_PIECE,
-		WORKSPACE_PIECE,
-		DAPR_AGENT_PIECE,
-		DURABLE_AGENT_PIECE,
-		MS_AGENT_PIECE,
-	];
+	return [MCP_PIECE, WORKSPACE_PIECE, DAPR_AGENT_PIECE, MS_AGENT_PIECE];
+}
+
+export function getLegacyBuiltinPieces(): IntegrationDefinition[] {
+	return [DURABLE_AGENT_PIECE];
 }

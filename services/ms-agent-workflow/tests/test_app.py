@@ -41,6 +41,8 @@ def test_build_public_result_exposes_text_and_instance_ids() -> None:
     assert result["workflowTemplateId"] == "travel-planner"
     assert result["agentWorkflowId"] == "wf-123"
     assert result["daprInstanceId"] == "wf-123"
+    assert result["agentProgress"]["framework"] == "ms-agent"
+    assert result["agentProgress"]["status"] == "completed"
 
 
 def test_build_public_result_exposes_code_review_artifacts() -> None:
@@ -62,6 +64,22 @@ def test_build_public_result_exposes_code_review_artifacts() -> None:
     assert result["filesAnalyzed"] == ["src/auth.ts"]
     assert result["fixesApplied"] == ["src/auth.ts"]
     assert result["patch"].startswith("--- a/src/auth.ts")
+
+
+def test_build_public_result_preserves_trace_id() -> None:
+    result = _build_public_result(
+        instance_id="wf-trace",
+        template_id="repo-review",
+        model="gpt-5.2",
+        workflow_result={
+            "content": "Repository summary",
+            "traceId": "0123456789abcdef0123456789abcdef",
+            "steps": [],
+        },
+    )
+
+    assert result["traceId"] == "0123456789abcdef0123456789abcdef"
+    assert result["agentProgress"]["traceId"] == "0123456789abcdef0123456789abcdef"
 
 
 def test_build_step_prompt_supports_template_mode() -> None:

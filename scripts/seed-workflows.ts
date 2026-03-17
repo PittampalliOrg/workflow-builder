@@ -3,6 +3,8 @@
  *
  * Current scope:
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
+ * - Upsert Microsoft Agent reference workflows for travel planning and code review
+ * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for durable plan/execute nodes
  *
  * User/project targeting:
@@ -15,6 +17,7 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
 	agentProfileTemplateVersions,
+	appConnections,
 	projectMembers,
 	projects,
 	userIdentities,
@@ -36,6 +39,23 @@ const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
 const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
 const MS_AGENT_WORKFLOW_DESCRIPTION =
 	"Reference workflow that runs the Python Dapr + Microsoft Agent Framework travel planner.";
+const MS_AGENT_CODE_REVIEW_WORKFLOW_ID = "msagtwf0codereview01";
+const MS_AGENT_CODE_REVIEW_WORKFLOW_NAME = "Microsoft Agent Code Review";
+const MS_AGENT_CODE_REVIEW_WORKFLOW_DESCRIPTION =
+	"Reference workflow that provisions a workspace, clones a repo, and runs the Microsoft Agent code-review template.";
+const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_ID = "ghsbxcloneproof001";
+const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_NAME = "GitHub Sandbox Clone Proof";
+const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_DESCRIPTION =
+	"Reference workflow that clones PittampalliOrg/workflow-builder into a Kubernetes sandbox and prints a directory tree.";
+const GITHUB_SANDBOX_REVIEW_WORKFLOW_ID = "ghsbxreviewproof001";
+const GITHUB_SANDBOX_REVIEW_WORKFLOW_NAME = "GitHub Sandbox Project Review";
+const GITHUB_SANDBOX_REVIEW_WORKFLOW_DESCRIPTION =
+	"Reference workflow that clones PittampalliOrg/workflow-builder into a Kubernetes sandbox, prints a directory tree, and asks the durable coding agent to review and summarize the project.";
+const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_ID = "ghstacksdualagent001";
+const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME =
+	"GitHub Stacks Dual Agent Analysis";
+const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION =
+	"Reference workflow that clones PittampalliOrg/stacks and asks both the Microsoft Agent workflow and the Dapr coding agent to summarize the codebase independently.";
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -194,6 +214,33 @@ async function resolveAgentProfileVersion(db: ReturnType<typeof drizzle>) {
 	return latest.version;
 }
 
+async function resolveLatestGithubConnection(
+	db: ReturnType<typeof drizzle>,
+	userId: string,
+) {
+	const connections = await db
+		.select({
+			id: appConnections.id,
+			externalId: appConnections.externalId,
+			pieceName: appConnections.pieceName,
+		})
+		.from(appConnections)
+		.where(eq(appConnections.ownerId, userId))
+		.orderBy(desc(appConnections.updatedAt), desc(appConnections.createdAt))
+		.limit(25);
+
+	const connection = connections.find((row) =>
+		row.pieceName.toLowerCase().includes("github"),
+	);
+	if (!connection) {
+		return undefined;
+	}
+	return {
+		connectionId: connection.id,
+		connectionExternalId: connection.externalId,
+	};
+}
+
 function buildNodes(profileVersion: number) {
 	const workspaceRef = `{{@${IDs.profile}:Workspace Profile.workspaceRef}}`;
 	const clonePath = `{{@${IDs.clone}:Workspace Clone.clonePath}}`;
@@ -280,7 +327,7 @@ function buildNodes(profileVersion: number) {
 				config: {
 					actionType: "durable/run",
 					mode: "plan_mode",
-					model: "openai/gpt-5.2-codex",
+					model: "openai/gpt-5.4",
 					prompt:
 						"Analyze this minimal workflow-smoke repository and produce an execution-ready plan for a small but real multi-file repository improvement.\n\nCurrent repository context:\n- The repository is intentionally minimal.\n- It currently contains a README and is used for workflow smoke tests.\n\nRequired deliverables:\n1) scripts/generate-report.sh\n   - bash script that writes docs/report.md summarizing the repository purpose and current branch.\n2) scripts/verify-repo.sh\n   - bash script that checks required files exist and that docs/report.md contains the expected heading.\n3) docs/report.md\n   - generated project report with at least:\n     - title\n     - repository purpose\n     - workflow smoke note\n4) docs/usage.md\n   - short usage instructions for the two scripts.\n\nValidation expectation for execute step:\n- bash -n scripts/generate-report.sh scripts/verify-repo.sh\n- bash scripts/generate-report.sh\n- bash scripts/verify-repo.sh\n\nReturn a concise, ordered plan in <proposed_plan> format.",
 					maxTurns: String(PLANNER_MAX_TURNS),
@@ -294,7 +341,7 @@ function buildNodes(profileVersion: number) {
 					agentConfig: {
 						name: "Planning Agent",
 						tools: ["glob", "grep", "read"],
-						modelSpec: "openai/gpt-5.2-codex",
+						modelSpec: "openai/gpt-5.4",
 						maxTurns: PLANNER_MAX_TURNS,
 						instructions: PLANNER_INSTRUCTIONS,
 						timeoutMinutes: PLANNER_TIMEOUT_MINUTES,
@@ -322,7 +369,7 @@ function buildNodes(profileVersion: number) {
 				config: {
 					actionType: "durable/run",
 					mode: "execute_direct",
-					model: "openai/gpt-5.2-codex",
+					model: "openai/gpt-5.4",
 					prompt:
 						"Execute the approved plan artifact and implement the repository improvement in this minimal workflow-smoke repo.\n\nYou must create or update exactly these repository files:\n- scripts/generate-report.sh\n- scripts/verify-repo.sh\n- docs/report.md\n- docs/usage.md\n\nHard requirements:\n- Use mutating file tools to create or update those files. Reading files or creating empty directories is not sufficient.\n- scripts/generate-report.sh must write docs/report.md with a '# Repository Report' heading, repository purpose, workflow smoke note, and current branch.\n- scripts/verify-repo.sh must fail if any required file is missing or if docs/report.md does not start with '# Repository Report'.\n- docs/usage.md must explain how to run both scripts.\n- Run and report these commands before finishing:\n  - bash -n scripts/generate-report.sh scripts/verify-repo.sh\n  - bash scripts/generate-report.sh\n  - bash scripts/verify-repo.sh\n- Do not stop after planning, inspection, or directory creation. Finish only after the four required files exist and validation commands pass.",
 					maxTurns: String(EXECUTOR_MAX_TURNS),
@@ -338,7 +385,7 @@ function buildNodes(profileVersion: number) {
 					agentConfig: {
 						name: "Coding Agent",
 						tools: ["glob", "grep", "read", "edit", "write", "bash"],
-						modelSpec: "openai/gpt-5.2-codex",
+						modelSpec: "openai/gpt-5.4",
 						maxTurns: EXECUTOR_MAX_TURNS,
 						instructions: EXECUTOR_INSTRUCTIONS,
 						timeoutMinutes: EXECUTOR_TIMEOUT_MINUTES,
@@ -587,6 +634,564 @@ function buildMsAgentEdges() {
 	];
 }
 
+function buildMsAgentCodeReviewNodes() {
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_msagent_code_review",
+			type: "trigger",
+			position: { x: -520, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_msagent_code_review",
+			type: "action",
+			position: { x: -240, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description: "Create an execution-scoped workspace session.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "ms-agent-code-review",
+					enabledTools: '["read","write","edit","list","bash"]',
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_msagent_code_review",
+			type: "action",
+			position: { x: 40, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description:
+					"Clone a repository into the execution-scoped workspace before review.",
+				type: "action",
+				config: {
+					actionType: "workspace/clone",
+					workspaceRef:
+						"{{@pf_msagent_code_review:Workspace Profile.workspaceRef}}",
+					repositoryUrl:
+						"http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-smoke.git",
+					repositoryOwner: "giteaadmin",
+					repositoryRepo: "workflow-smoke",
+					repositoryBranch: "main",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cr_msagent_code_review",
+			type: "action",
+			position: { x: 360, y: 0 },
+			data: {
+				label: "Code Review",
+				description:
+					"Run the Microsoft Agent Framework code-review template against the cloned repo.",
+				type: "action",
+				config: {
+					actionType: "ms-agent/run",
+					workflowTemplateId: "code-review",
+					prompt:
+						"Review this repository for correctness, maintainability, and the highest-priority risks. Return concrete findings first.",
+					reviewFocusAreas: "bugs, maintainability, testing",
+					workspaceRef:
+						"{{@pf_msagent_code_review:Workspace Profile.workspaceRef}}",
+					cwd: "{{@cl_msagent_code_review:Workspace Clone.clonePath}}",
+					applyFixes: "false",
+					maxIterations: "25",
+					instructionsOverlay:
+						"Prioritize actionable findings with file paths and line references. Keep fixes disabled unless this workflow is customized for editing.",
+					timeoutMinutes: "20",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildMsAgentCodeReviewEdges() {
+	return [
+		{
+			id: "e_msagent_code_review_1",
+			type: "animated",
+			source: "tr_msagent_code_review",
+			target: "pf_msagent_code_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_msagent_code_review_2",
+			type: "animated",
+			source: "pf_msagent_code_review",
+			target: "cl_msagent_code_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_msagent_code_review_3",
+			type: "animated",
+			source: "cl_msagent_code_review",
+			target: "cr_msagent_code_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
+function buildGithubSandboxCloneProofNodes(input?: {
+	connectionId?: string;
+	connectionExternalId?: string;
+}) {
+	const workspaceRef =
+		"{{@pf_github_sandbox_clone:Workspace Profile.workspaceRef}}";
+	const clonePath = "{{@cl_github_sandbox_clone:Workspace Clone.clonePath}}";
+	const cloneConfig: Record<string, string> = {
+		actionType: "workspace/clone",
+		workspaceRef,
+		repositoryOwner: "PittampalliOrg",
+		repositoryRepo: "workflow-builder",
+		repositoryBranch: "main",
+	};
+
+	if (input?.connectionExternalId) {
+		cloneConfig.auth = `{{connections['${input.connectionExternalId}']}}`;
+	}
+	if (input?.connectionId) {
+		cloneConfig.integrationId = input.connectionId;
+	}
+
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_github_sandbox_clone",
+			type: "trigger",
+			position: { x: -500, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_github_sandbox_clone",
+			type: "action",
+			position: { x: -220, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description: "Create a Kubernetes-backed sandbox workspace.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "github-sandbox-clone-proof",
+					enabledTools: '["read","list","bash"]',
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_github_sandbox_clone",
+			type: "action",
+			position: { x: 60, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description:
+					"Clone the default GitHub repository into the execution-scoped sandbox.",
+				type: "action",
+				config: cloneConfig,
+				status: "idle",
+			},
+		},
+		{
+			id: "cm_github_sandbox_tree",
+			type: "action",
+			position: { x: 360, y: 0 },
+			data: {
+				label: "Show Repo Tree",
+				description:
+					"Print a tree-style listing of the cloned repository to prove the clone succeeded.",
+				type: "action",
+				config: {
+					actionType: "workspace/command",
+					workspaceRef,
+					timeoutMs: "120000",
+					command: `set -euo pipefail
+TARGET='${clonePath}'
+echo "CLONE_PATH=$TARGET"
+if command -v tree >/dev/null 2>&1; then
+	tree -a -L 3 "$TARGET"
+else
+	find "$TARGET" -maxdepth 3 -print | LC_ALL=C sort | sed "s#^$TARGET#.#"
+fi`,
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildGithubSandboxCloneProofEdges() {
+	return [
+		{
+			id: "e_github_sandbox_clone_1",
+			type: "animated",
+			source: "tr_github_sandbox_clone",
+			target: "pf_github_sandbox_clone",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_sandbox_clone_2",
+			type: "animated",
+			source: "pf_github_sandbox_clone",
+			target: "cl_github_sandbox_clone",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_sandbox_clone_3",
+			type: "animated",
+			source: "cl_github_sandbox_clone",
+			target: "cm_github_sandbox_tree",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
+function buildGithubSandboxReviewNodes(input?: {
+	connectionId?: string;
+	connectionExternalId?: string;
+}) {
+	const workspaceRef =
+		"{{@pf_github_sandbox_review:Workspace Profile.workspaceRef}}";
+	const clonePath = "{{@cl_github_sandbox_review:Workspace Clone.clonePath}}";
+	const cloneConfig: Record<string, string> = {
+		actionType: "workspace/clone",
+		workspaceRef,
+		repositoryOwner: "PittampalliOrg",
+		repositoryRepo: "workflow-builder",
+		repositoryBranch: "main",
+	};
+	const durableTools = JSON.stringify(["read", "list", "bash"]);
+
+	if (input?.connectionExternalId) {
+		cloneConfig.auth = `{{connections['${input.connectionExternalId}']}}`;
+	}
+	if (input?.connectionId) {
+		cloneConfig.integrationId = input.connectionId;
+	}
+
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_github_sandbox_review",
+			type: "trigger",
+			position: { x: -740, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_github_sandbox_review",
+			type: "action",
+			position: { x: -460, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description: "Create a Kubernetes-backed sandbox workspace.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "github-sandbox-project-review",
+					enabledTools: durableTools,
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_github_sandbox_review",
+			type: "action",
+			position: { x: -180, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description:
+					"Clone the default GitHub repository into the execution-scoped sandbox.",
+				type: "action",
+				config: cloneConfig,
+				status: "idle",
+			},
+		},
+		{
+			id: "cm_github_sandbox_review_tree",
+			type: "action",
+			position: { x: 120, y: 0 },
+			data: {
+				label: "Show Repo Tree",
+				description:
+					"Print a tree-style listing of the cloned repository to prove the clone succeeded.",
+				type: "action",
+				config: {
+					actionType: "workspace/command",
+					workspaceRef,
+					timeoutMs: "120000",
+					command: `set -euo pipefail
+TARGET='${clonePath}'
+echo "CLONE_PATH=$TARGET"
+if command -v tree >/dev/null 2>&1; then
+	tree -a -L 3 "$TARGET"
+else
+	find "$TARGET" -maxdepth 3 -print | LC_ALL=C sort | sed "s#^$TARGET#.#"
+fi`,
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "da_github_sandbox_review",
+			type: "action",
+			position: { x: 460, y: 0 },
+			data: {
+				label: "Coding Agent Review",
+				description:
+					"Use the durable coding agent to review the repository and summarize the project.",
+				type: "action",
+				config: {
+					actionType: "durable/run",
+					mode: "execute_direct",
+					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
+					model: "openai/gpt-5.4",
+					tools: durableTools,
+					workspaceRef,
+					cwd: clonePath,
+					maxTurns: "20",
+					timeoutMinutes: "20",
+					cleanupWorkspace: "false",
+					instructions:
+						"Review the repository in read-only mode. Inspect files as needed, but do not modify anything and do not ask clarifying questions. Return a concise project summary with the most important risks first.",
+					stopCondition:
+						"A concise project review and summary has been produced with no file modifications.",
+					prompt:
+						"Review this repository and summarize the project. Cover: the project purpose, the main subsystems or directories, how it is deployed or operated, the key docs a new contributor should read, and the highest-priority technical or operational risks. Keep the answer concise and structured for an engineer onboarding to the repo.",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildGithubSandboxReviewEdges() {
+	return [
+		{
+			id: "e_github_sandbox_review_1",
+			type: "animated",
+			source: "tr_github_sandbox_review",
+			target: "pf_github_sandbox_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_sandbox_review_2",
+			type: "animated",
+			source: "pf_github_sandbox_review",
+			target: "cl_github_sandbox_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_sandbox_review_3",
+			type: "animated",
+			source: "cl_github_sandbox_review",
+			target: "cm_github_sandbox_review_tree",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_sandbox_review_4",
+			type: "animated",
+			source: "cm_github_sandbox_review_tree",
+			target: "da_github_sandbox_review",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
+function buildGithubStacksDualAgentNodes(input?: {
+	connectionId?: string;
+	connectionExternalId?: string;
+}) {
+	const workspaceRef =
+		"{{@pf_github_stacks_dual:Workspace Profile.workspaceRef}}";
+	const clonePath = "{{@cl_github_stacks_dual:Workspace Clone.clonePath}}";
+	const cloneConfig: Record<string, string> = {
+		actionType: "workspace/clone",
+		workspaceRef,
+		repositoryOwner: "PittampalliOrg",
+		repositoryRepo: "stacks",
+		repositoryBranch: "main",
+	};
+	if (input?.connectionExternalId) {
+		cloneConfig.auth = `{{connections['${input.connectionExternalId}']}}`;
+	}
+	if (input?.connectionId) {
+		cloneConfig.integrationId = input.connectionId;
+	}
+
+	const sharedPrompt =
+		"Analyze this repository for an engineer onboarding to the project. Summarize the project purpose, the main subsystems and directories, the deployment or operations model, the key docs to read first, and the highest-priority technical or operational risks. Keep the response concise and reference concrete files or directories when relevant.";
+
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_github_stacks_dual",
+			type: "trigger",
+			position: { x: -760, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_github_stacks_dual",
+			type: "action",
+			position: { x: -480, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description:
+					"Create an execution-scoped sandbox for the repo analysis.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "github-stacks-dual-agent-analysis",
+					enabledTools: '["read","list","bash"]',
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_github_stacks_dual",
+			type: "action",
+			position: { x: -180, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description: "Clone PittampalliOrg/stacks into the sandbox.",
+				type: "action",
+				config: cloneConfig,
+				status: "idle",
+			},
+		},
+		{
+			id: "ms_github_stacks_dual",
+			type: "action",
+			position: { x: 140, y: -120 },
+			data: {
+				label: "MS Agent Summary",
+				description:
+					"Use the Microsoft Agent workflow to produce a structured codebase summary.",
+				type: "action",
+				config: {
+					actionType: "ms-agent/run",
+					workflowTemplateId: "repo-review",
+					prompt: sharedPrompt,
+					reviewFocusAreas: "architecture, deployment, onboarding, risks",
+					workspaceRef,
+					cwd: clonePath,
+					maxIterations: "24",
+					instructionsOverlay:
+						"Focus on high-signal engineer onboarding context. Use the repository tools directly and keep the summary concise.",
+					timeoutMinutes: "20",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "da_github_stacks_dual",
+			type: "action",
+			position: { x: 140, y: 120 },
+			data: {
+				label: "Dapr Agent Summary",
+				description:
+					"Use the durable Dapr coding agent to produce an independent codebase summary.",
+				type: "action",
+				config: {
+					actionType: "dapr-agent/run",
+					profile: "review",
+					prompt: sharedPrompt,
+					expectedOutput:
+						"A concise onboarding summary with concrete directories, docs, and risks.",
+					toolPolicy: "read_only",
+					writePolicy: "read-only",
+					shellPolicy: "tests-only",
+					workspaceRef,
+					cwd: clonePath,
+					maxTurns: "24",
+					timeoutMinutes: "20",
+					stopCondition:
+						"An onboarding-focused codebase summary has been produced with no repository modifications.",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildGithubStacksDualAgentEdges() {
+	return [
+		{
+			id: "e_github_stacks_dual_1",
+			type: "animated",
+			source: "tr_github_stacks_dual",
+			target: "pf_github_stacks_dual",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_stacks_dual_2",
+			type: "animated",
+			source: "pf_github_stacks_dual",
+			target: "cl_github_stacks_dual",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_stacks_dual_3",
+			type: "animated",
+			source: "cl_github_stacks_dual",
+			target: "ms_github_stacks_dual",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_github_stacks_dual_4",
+			type: "animated",
+			source: "cl_github_stacks_dual",
+			target: "da_github_stacks_dual",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
 async function upsertWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -644,6 +1249,7 @@ async function seedWorkflow() {
 	const db = drizzle(sql, {
 		schema: {
 			agentProfileTemplateVersions,
+			appConnections,
 			projectMembers,
 			projects,
 			userIdentities,
@@ -656,6 +1262,12 @@ async function seedWorkflow() {
 	try {
 		const userId = await resolveGithubUserId(db);
 		const projectId = await resolveProjectId(db, userId);
+		const githubConnection = await resolveLatestGithubConnection(db, userId);
+		if (!githubConnection) {
+			console.warn(
+				"[seed-workflows] No GitHub connection found for the resolved user; the clone proof workflow will require manual connection selection before it can run.",
+			);
+		}
 		const profileVersion = await resolveAgentProfileVersion(db);
 		const nodes = buildNodes(profileVersion);
 		const edges = buildEdges();
@@ -706,6 +1318,50 @@ async function seedWorkflow() {
 			projectId,
 			nodes: buildMsAgentNodes(),
 			edges: buildMsAgentEdges(),
+		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: MS_AGENT_CODE_REVIEW_WORKFLOW_ID,
+			name: MS_AGENT_CODE_REVIEW_WORKFLOW_NAME,
+			description: MS_AGENT_CODE_REVIEW_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildMsAgentCodeReviewNodes(),
+			edges: buildMsAgentCodeReviewEdges(),
+		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_ID,
+			name: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_NAME,
+			description: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildGithubSandboxCloneProofNodes(githubConnection),
+			edges: buildGithubSandboxCloneProofEdges(),
+		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: GITHUB_SANDBOX_REVIEW_WORKFLOW_ID,
+			name: GITHUB_SANDBOX_REVIEW_WORKFLOW_NAME,
+			description: GITHUB_SANDBOX_REVIEW_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildGithubSandboxReviewNodes(githubConnection),
+			edges: buildGithubSandboxReviewEdges(),
+		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_ID,
+			name: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME,
+			description: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildGithubStacksDualAgentNodes(githubConnection),
+			edges: buildGithubStacksDualAgentEdges(),
 		});
 		console.log("[seed-workflows] Completed successfully");
 	} finally {

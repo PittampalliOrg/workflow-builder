@@ -52,6 +52,16 @@ def _ensure_text_size(path: Path) -> None:
         )
 
 
+def _normalize_workspace_path(raw_path: str | None) -> str:
+    value = str(raw_path or ".").strip()
+    if not value or value == "/":
+        return "."
+    if value.startswith("/"):
+        normalized = value.lstrip("/")
+        return normalized or "."
+    return value
+
+
 @dataclass
 class ToolRuntimeContext:
     workspace_root: Path
@@ -70,7 +80,7 @@ class ToolRuntimeContext:
         return cls(workspace_root=root)
 
     def resolve_path(self, raw_path: str | None) -> Path:
-        candidate = (self.workspace_root / (raw_path or ".")).resolve()
+        candidate = (self.workspace_root / _normalize_workspace_path(raw_path)).resolve()
         if candidate != self.workspace_root and self.workspace_root not in candidate.parents:
             raise ValueError(f"Path escapes workspace root: {raw_path}")
         return candidate
@@ -154,7 +164,7 @@ def list_files(path: str = ".", pattern: str = "**/*") -> list[str]:
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
+        return []
     matches: list[str] = []
     for candidate in resolved.glob(pattern):
         if len(matches) >= MAX_LIST_FILES:
@@ -173,7 +183,7 @@ def grep_search(pattern: str, path: str = ".") -> list[dict[str, Any]]:
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
+        return []
     search_roots = [resolved] if resolved.is_file() else [p for p in resolved.rglob("*") if p.is_file()]
     matches: list[dict[str, Any]] = []
     for candidate in search_roots:
@@ -257,7 +267,13 @@ def file_stat(path: str) -> dict[str, Any]:
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
-        raise FileNotFoundError(f"Path not found: {path}")
+        return {
+            "path": path,
+            "exists": False,
+            "isFile": False,
+            "isDirectory": False,
+            "size": 0,
+        }
     context.record_read(resolved)
     return {
         "path": _as_relative(resolved, context.workspace_root),

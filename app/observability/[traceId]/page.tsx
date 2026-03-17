@@ -8,6 +8,7 @@ import { SpanDetailsPanel } from "@/components/observability/span-details-panel"
 import { TraceStatusBadge } from "@/components/observability/trace-status-badge";
 import { TraceTimeline } from "@/components/observability/trace-timeline";
 import { SidebarToggle } from "@/components/sidebar-toggle";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useObservabilityTrace } from "@/hooks/use-observability-trace";
 
@@ -129,6 +130,13 @@ export default function TraceDetailPage() {
 					<p className="text-muted-foreground text-xs">Spans</p>
 					<p className="mt-1 text-sm">{trace.trace.spanCount}</p>
 				</div>
+				<div>
+					<p className="text-muted-foreground text-xs">Runtime</p>
+					<div className="mt-1 flex flex-wrap gap-1">
+						<Badge variant="outline">{trace.trace.runtime}</Badge>
+						<Badge variant="secondary">{trace.trace.rootSpanCategory}</Badge>
+					</div>
+				</div>
 			</div>
 
 			<div className="grid gap-4 rounded-lg border bg-background p-4 md:grid-cols-2 xl:grid-cols-3">
@@ -167,6 +175,54 @@ export default function TraceDetailPage() {
 					<p className="mt-1 text-sm">
 						{trace.trace.correlationConfidence ?? "-"}
 					</p>
+				</div>
+				<div className="xl:col-span-2">
+					<p className="text-muted-foreground text-xs">Services</p>
+					<div className="mt-1 flex flex-wrap gap-1">
+						{trace.trace.serviceNames.length > 0 ? (
+							trace.trace.serviceNames.map((serviceName) => (
+								<Badge key={serviceName} variant="outline">
+									{serviceName}
+								</Badge>
+							))
+						) : (
+							<p className="text-sm">-</p>
+						)}
+					</div>
+				</div>
+				<div className="xl:col-span-3">
+					<p className="text-muted-foreground text-xs">
+						Dapr workflow and agent breakdown
+					</p>
+					<div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+						<div className="rounded-md border bg-muted/20 p-3">
+							<p className="text-muted-foreground text-xs">Workflow / child</p>
+							<p className="mt-1 text-sm">
+								{trace.trace.breakdown.workflowSpans} /{" "}
+								{trace.trace.breakdown.childWorkflowSpans}
+							</p>
+						</div>
+						<div className="rounded-md border bg-muted/20 p-3">
+							<p className="text-muted-foreground text-xs">Activities</p>
+							<p className="mt-1 text-sm">
+								{trace.trace.breakdown.activitySpans}
+							</p>
+						</div>
+						<div className="rounded-md border bg-muted/20 p-3">
+							<p className="text-muted-foreground text-xs">Agent / tool</p>
+							<p className="mt-1 text-sm">
+								{trace.trace.breakdown.agentSpans} /{" "}
+								{trace.trace.breakdown.toolSpans}
+							</p>
+						</div>
+						<div className="rounded-md border bg-muted/20 p-3">
+							<p className="text-muted-foreground text-xs">LLM / HTTP</p>
+							<p className="mt-1 text-sm">
+								{trace.trace.breakdown.llmSpans} /{" "}
+								{trace.trace.breakdown.httpSpans}
+							</p>
+						</div>
+					</div>
 				</div>
 			</div>
 

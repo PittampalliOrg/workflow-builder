@@ -20,6 +20,7 @@ import {
 	connectionsVersionAtom,
 } from "@/lib/connections-store";
 import {
+	agentProgressByNodeAtom,
 	batchSetNodeStatusesAtom,
 	currentRunningNodeIdAtom,
 	currentWorkflowIdAtom,
@@ -129,6 +130,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 	const setCurrentWorkflowName = useSetAtom(currentWorkflowNameAtom);
 	const updateNodeData = useSetAtom(updateNodeDataAtom);
 	const batchSetNodeStatuses = useSetAtom(batchSetNodeStatusesAtom);
+	const setAgentProgressByNode = useSetAtom(agentProgressByNodeAtom);
 	const setHasUnsavedChanges = useSetAtom(hasUnsavedChangesAtom);
 	const [workflowNotFound, setWorkflowNotFound] = useAtom(workflowNotFoundAtom);
 	const setTriggerExecute = useSetAtom(triggerExecuteAtom);
@@ -586,6 +588,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		// If no execution is selected, reset all node statuses
 		if (!selectedExecutionId) {
 			batchSetNodeStatuses(new Map());
+			setAgentProgressByNode({});
 			return;
 		}
 
@@ -627,6 +630,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				// Single atomic write: updates all nodes at once via Jotai atom
 				// (reads latest state internally, no stale ref issues)
 				batchSetNodeStatuses(statusMap);
+				setAgentProgressByNode(statusData.agentProgressByNode ?? {});
 
 				// Stop polling if execution is complete
 				if (
@@ -652,7 +656,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				selectedExecutionPollingIntervalRef.current = null;
 			}
 		};
-	}, [selectedExecutionId, batchSetNodeStatuses]);
+	}, [selectedExecutionId, batchSetNodeStatuses, setAgentProgressByNode]);
 
 	return (
 		<div className="flex h-dvh w-full flex-col overflow-hidden">
