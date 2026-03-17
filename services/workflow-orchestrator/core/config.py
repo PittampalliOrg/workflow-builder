@@ -42,6 +42,7 @@ class OrchestratorConfig:
     DAPR_HOST: str = "localhost"
     DAPR_HTTP_PORT: str = "3500"
     DAPR_GRPC_PORT: str = "50001"
+    TASKHUB_RPC_TIMEOUT_SECONDS: float = 15.0
 
     # Dapr component names
     PUBSUB_NAME: str = "pubsub"
@@ -108,6 +109,7 @@ class OrchestratorConfig:
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
+                "TASKHUB_RPC_TIMEOUT_SECONDS",
                 "DYNAMIC_WORKFLOW_VERSION",
                 "AP_WORKFLOW_VERSION",
                 "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
@@ -149,6 +151,7 @@ class OrchestratorConfig:
             "DAPR_HOST": ("DAPR_HOST", "localhost"),
             "DAPR_HTTP_PORT": ("DAPR_HTTP_PORT", "3500"),
             "DAPR_GRPC_PORT": ("DAPR_GRPC_PORT", "50001"),
+            "TASKHUB_RPC_TIMEOUT_SECONDS": ("TASKHUB_RPC_TIMEOUT_SECONDS", "15"),
             "PUBSUB_NAME": ("PUBSUB_NAME", "pubsub"),
             "STATE_STORE_NAME": ("STATE_STORE_NAME", "workflowstatestore"),
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
@@ -216,6 +219,8 @@ class OrchestratorConfig:
                 "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
             }:
                 setattr(self, attr, int(value))
+            elif attr == "TASKHUB_RPC_TIMEOUT_SECONDS":
+                setattr(self, attr, float(value))
             else:
                 setattr(self, attr, value)
 

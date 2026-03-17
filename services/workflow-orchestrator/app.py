@@ -322,9 +322,10 @@ def _taskhub_call(method: str, request: Any) -> Any:
     stub = _get_taskhub_stub()
     rpc = getattr(stub, method)
     metadata = _taskhub_metadata()
+    timeout_seconds = max(float(config.TASKHUB_RPC_TIMEOUT_SECONDS), 0.1)
     if metadata:
-        return rpc(request, metadata=metadata)
-    return rpc(request)
+        return rpc(request, metadata=metadata, timeout=timeout_seconds)
+    return rpc(request, timeout=timeout_seconds)
 
 
 def _schedule_new_workflow_instance(
@@ -342,7 +343,10 @@ def _schedule_new_workflow_instance(
     if workflow_version:
         request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
     response = _taskhub_call("StartInstance", request)
-    return str(response.instanceId)
+    result_id = str(getattr(response, "instanceId", "") or "").strip()
+    if not result_id:
+        raise RuntimeError("workflow runtime returned an empty instance ID")
+    return result_id
 
 
 # --- Lifecycle ---
