@@ -191,8 +191,8 @@ dev:
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
 
-        echo "Starting Next.js development server with Turbo..."
-        exec next dev --turbo
+        echo "Starting Next.js development server..."
+        exec next dev
 
     # File synchronization
     sync:
@@ -316,9 +316,18 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      # Durable agent endpoint for builtin options + agent tool discovery
+      - name: FUNCTION_RUNNER_URL
+        value: "http://function-router.workflow-builder.svc.cluster.local:8080"
+      - name: USE_DAPR_SERVICE_INVOCATION
+        value: "true"
+      - name: DAPR_WORKFLOW_ENABLED
+        value: "true"
+      - name: AUTH_TRUST_HOST
+        value: "true"
+      - name: WORKFLOW_BUILDER_DISABLE_NODE_OTEL
+        value: "true"
       - name: MASTRA_AGENT_API_BASE_URL
-        value: "http://durable-agent.workflow-builder.svc.cluster.local:8001"
+        value: ""
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: ${APP_PUBLIC_URL}
