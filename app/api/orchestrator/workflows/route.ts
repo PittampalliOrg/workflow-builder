@@ -8,6 +8,7 @@
 
 import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { context, propagation } from "@opentelemetry/api";
 import { getSession } from "@/lib/auth-helpers";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
@@ -19,6 +20,9 @@ import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 function extractTraceHeaders(request: Request): Record<string, string> {
 	const headers: Record<string, string> = {};
+	try {
+		propagation.inject(context.active(), headers);
+	} catch {}
 	for (const headerName of ["traceparent", "tracestate", "baggage"] as const) {
 		const value = request.headers.get(headerName)?.trim();
 		if (value) {
