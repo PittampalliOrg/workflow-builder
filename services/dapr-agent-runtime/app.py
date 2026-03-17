@@ -81,6 +81,7 @@ except ImportError:  # pragma: no cover
     wf = _StubWorkflowModule()
 
 try:
+    from dapr.clients import DaprClient
     from dapr_agents import DaprChatClient, DurableAgent, OpenAIChatClient
     from dapr_agents.agents.configs import (
         AgentExecutionConfig,
@@ -98,6 +99,16 @@ try:
     from dapr_agents.workflow.runners.agent import AgentRunner
     from dapr_agents.types import AgentError, ToolMessage
 except ImportError:  # pragma: no cover
+    class DaprClient:  # type: ignore[no-redef]
+        def __enter__(self) -> "DaprClient":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def get_configuration(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("Dapr client unavailable")
+
     class OpenAIChatClient:  # type: ignore[no-redef]
         def __init__(self, **_kwargs) -> None:
             pass
@@ -1201,6 +1212,39 @@ def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
 
 
 class CodingDurableAgent(DurableAgent):
+    def _load_initial_configuration(self, keys: list[str]) -> None:
+        try:
+            metadata = dict(getattr(self.configuration, "metadata", {}) or {})
+            with DaprClient() as client:
+                response = client.get_configuration(
+                    store_name=self.configuration.store_name,  # type: ignore[union-attr]
+                    keys=keys,
+                    config_metadata=metadata,
+                )
+            if response.items:
+                self._config_handler("initial-load", response)
+                logger.info(
+                    "Agent %s loaded initial configuration for keys: %s",
+                    self.name,
+                    list(response.items.keys()),
+                )
+            else:
+                logger.info(
+                    "Agent %s: no initial configuration values found in store '%s' "
+                    "for keys %s.",
+                    self.name,
+                    getattr(self.configuration, "store_name", "?"),
+                    keys,
+                )
+        except Exception as e:
+            logger.warning(
+                "Agent %s could not load initial configuration from '%s': %s. "
+                "Starting with defaults.",
+                self.name,
+                getattr(self.configuration, "store_name", "?"),
+                e,
+            )
+
     def run_tool(self, ctx: wf.WorkflowActivityContext, payload: dict[str, Any]) -> dict[str, Any]:
         tool_call = payload.get("tool_call", {})
         fn_name = tool_call["function"]["name"]
