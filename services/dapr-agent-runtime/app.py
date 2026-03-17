@@ -315,6 +315,10 @@ DAPR_AGENT_RUNTIME_CONFIG_LABEL = os.environ.get(
     "DAPR_AGENT_RUNTIME_CONFIG_LABEL",
     "dapr-agent-runtime",
 )
+DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS = max(
+    int(os.environ.get("DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS", "30") or "30"),
+    5,
+)
 SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agent")
 
 
@@ -559,6 +563,8 @@ runtime_config_state: dict[str, Any] = {
     "effective": {},
 }
 runtime_config_lock = threading.Lock()
+runtime_config_poll_stop = threading.Event()
+runtime_config_poll_thread: threading.Thread | None = None
 workspace_state_store = StateStoreService(
     store_name=DAPR_AGENT_STATE_STORE_NAME,
     key_prefix=DAPR_AGENT_WORKSPACE_STATE_KEY_PREFIX,
@@ -779,6 +785,8 @@ def _snapshot_runtime_config_state() -> dict[str, Any]:
             "lastAppliedAt": runtime_config_state.get("lastAppliedAt"),
             "lastUpdatedKey": runtime_config_state.get("lastUpdatedKey"),
             "effective": dict(runtime_config_state.get("effective") or {}),
+            "pollIntervalSeconds": DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS,
+            "pollingFallbackEnabled": True,
         }
 
 
@@ -794,6 +802,38 @@ def _effective_runtime_config_value(key: str, default: Any = None) -> Any:
 def _effective_default_model() -> str:
     value = _effective_runtime_config_value(RuntimeConfigKey.LLM_MODEL, DEFAULT_MODEL)
     return str(value).strip() or DEFAULT_MODEL
+
+
+def _fetch_runtime_config_items() -> dict[str, Any]:
+    with DaprClient() as client:
+        response = client.get_configuration(
+            store_name=DAPR_AGENT_RUNTIME_CONFIG_STORE,
+            keys=[str(key) for key in HOT_RELOAD_RUNTIME_KEYS],
+            config_metadata=_runtime_config_metadata(),
+        )
+    items = getattr(response, "items", {}) or {}
+    return {str(key): getattr(item, "value", None) for key, item in items.items()}
+
+
+def _apply_runtime_config_items(items: dict[str, Any]) -> None:
+    if not items:
+        return
+    agent = _get_agent()
+    current_effective = dict(_snapshot_runtime_config_state().get("effective") or {})
+    for key, value in items.items():
+        serialized = _serialize_runtime_config_value(value)
+        if current_effective.get(str(key)) == serialized:
+            continue
+        agent._apply_config_update(str(key), value)
+        current_effective[str(key)] = serialized
+
+
+def _runtime_config_poll_loop(stop_event: threading.Event) -> None:
+    while not stop_event.wait(DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS):
+        try:
+            _apply_runtime_config_items(_fetch_runtime_config_items())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Runtime config polling failed: %s", exc)
 
 
 def _otel_context_from_headers(request: Request) -> dict[str, str]:
@@ -1684,16 +1724,29 @@ async def lifespan(_app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to enable dapr-agents instrumentation: %s", exc)
     try:
-        global _agent_subscribed
+        global _agent_subscribed, runtime_config_poll_thread
         agent = _get_agent()
         if not _agent_subscribed:
             runner.subscribe(agent)
             _agent_subscribed = True
+        _apply_runtime_config_items(_fetch_runtime_config_items())
+        runtime_config_poll_stop.clear()
+        if runtime_config_poll_thread is None or not runtime_config_poll_thread.is_alive():
+            runtime_config_poll_thread = threading.Thread(
+                target=_runtime_config_poll_loop,
+                args=(runtime_config_poll_stop,),
+                name="runtime-config-poller",
+                daemon=True,
+            )
+            runtime_config_poll_thread.start()
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to eagerly initialize dapr-agent runtime: %s", exc)
     try:
         yield
     finally:
+        runtime_config_poll_stop.set()
+        if runtime_config_poll_thread is not None:
+            runtime_config_poll_thread.join(timeout=2)
         try:
             if _agent is not None and _agent_subscribed:
                 runner.shutdown(_agent)
