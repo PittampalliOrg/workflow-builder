@@ -172,7 +172,7 @@ const daprAgentPlugin: IntegrationPlugin = {
 				{ field: "changeSummary", description: "Structured file change summary" },
 				{ field: "usageTotals", description: "Aggregated usage statistics" },
 				{ field: "traceId", description: "OpenTelemetry trace identifier" },
-				{ field: "agentWorkflowId", description: "Durable workflow instance ID" },
+				{ field: "agentWorkflowId", description: "Agent workflow instance ID" },
 				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
 			],
 			outputConfig: {

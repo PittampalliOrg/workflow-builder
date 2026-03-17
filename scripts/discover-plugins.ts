@@ -31,7 +31,7 @@ const OUTPUT_CONFIGS_FILE = join(
 const README_FILE = join(process.cwd(), "README.md");
 const PLUGINS_MARKER_REGEX =
 	/<!-- PLUGINS:START[^>]*-->[\s\S]*?<!-- PLUGINS:END -->/;
-const LEGACY_ONLY_PLUGINS = new Set(["durable-agent"]);
+const LEGACY_ONLY_PLUGINS = new Set(["durable-agent", "mastra-agent"]);
 
 /**
  * Discover all plugin directories

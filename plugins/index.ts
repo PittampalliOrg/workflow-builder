@@ -21,7 +21,6 @@ import "./fal";
 import "./firecrawl";
 import "./github";
 import "./linear";
-import "./mastra-agent";
 import "./mcp";
 import "./ms-agent";
 import "./perplexity";

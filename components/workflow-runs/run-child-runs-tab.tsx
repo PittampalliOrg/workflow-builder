@@ -34,7 +34,7 @@ export function RunChildRunsTab({ agentRuns }: RunChildRunsTabProps) {
 	if (agentRuns.length === 0) {
 		return (
 			<div className="rounded-lg border p-6 text-muted-foreground text-sm">
-				No durable child runs were recorded for this execution.
+				No agent child runs were recorded for this execution.
 			</div>
 		);
 	}
