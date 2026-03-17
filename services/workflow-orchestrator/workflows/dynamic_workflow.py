@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from datetime import timedelta
 from typing import Any
 
@@ -84,6 +83,43 @@ def _build_status_payload(
     if workflow_version and _is_patch_enabled(ctx, WORKFLOW_STATUS_PATCH_NAME):
         payload["workflowVersion"] = workflow_version
     return payload
+
+
+def _is_replaying(ctx: wf.DaprWorkflowContext) -> bool:
+    value = getattr(ctx, "is_replaying", False)
+    if callable(value):
+        try:
+            return bool(value())
+        except Exception:
+            return False
+    return bool(value)
+
+
+def _workflow_now_ms(ctx: wf.DaprWorkflowContext) -> int | None:
+    current_time = getattr(ctx, "current_utc_datetime", None)
+    if current_time is None:
+        return None
+    try:
+        return int(current_time.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _workflow_elapsed_ms(
+    ctx: wf.DaprWorkflowContext,
+    start_ms: int | None,
+) -> int:
+    if start_ms is None:
+        return 0
+    current_ms = _workflow_now_ms(ctx)
+    if current_ms is None:
+        return 0
+    return max(0, current_ms - start_ms)
+
+
+def _log_info(ctx: wf.DaprWorkflowContext, message: str, *args: Any) -> None:
+    if not _is_replaying(ctx):
+        logger.info(message, *args)
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -652,11 +688,16 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         str(input_data.get("_workflowVersion") or "").strip() or None
     )
 
-    start_time = time.time()
+    start_time_ms = _workflow_now_ms(ctx)
     execution_id = ctx.instance_id
     workflow_id = definition.get("id", "unknown")
 
-    logger.info(f"[Dynamic Workflow] Starting workflow: {definition.get('name')} ({execution_id})")
+    _log_info(
+        ctx,
+        "[Dynamic Workflow] Starting workflow: %s (%s)",
+        definition.get("name"),
+        execution_id,
+    )
 
     # Create a map of nodes for quick lookup
     nodes = definition.get("nodes", [])
@@ -713,7 +754,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # Skip disabled nodes
             if node.get("enabled") is False:
-                logger.info(f"[Dynamic Workflow] Skipping disabled node: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Skipping disabled node: %s",
+                    node.get("label"),
+                )
                 completed_node_ids.add(node_id)
                 i += 1
                 continue
@@ -721,8 +766,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # Skip nodes excluded by control-flow (e.g., if/else branch not taken)
             if node_id in skipped_node_ids:
                 reason = skipped_reason_by_node_id.get(node_id) or {}
-                logger.info(
-                    f"[Dynamic Workflow] Skipping node due to branch: {node.get('label')} ({reason})"
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Skipping node due to branch: %s (%s)",
+                    node.get("label"),
+                    reason,
                 )
                 skipped_type = node.get("type")
                 skipped_config = node.get("config") or {}
@@ -762,7 +810,12 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 )
             )
 
-            logger.info(f"[Dynamic Workflow] Processing node: {node.get('label')} ({node.get('type')})")
+            _log_info(
+                ctx,
+                "[Dynamic Workflow] Processing node: %s (%s)",
+                node.get("label"),
+                node.get("type"),
+            )
 
             node_type = node.get("type")
             config = node.get("config") or {}
@@ -779,7 +832,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 ):
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
-                    node_start_time = time.time()
+                    node_start_time_ms = _workflow_now_ms(ctx)
                     if db_execution_id:
                         resolved_for_log = resolve_templates(config, node_outputs)
                         start_result = yield ctx.call_activity(
@@ -810,7 +863,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     )
 
                     if db_execution_id and log_id:
-                        node_duration_ms = int((time.time() - node_start_time) * 1000)
+                        node_duration_ms = _workflow_elapsed_ms(ctx, node_start_time_ms)
                         agent_success = isinstance(node_result, dict) and node_result.get("success", True)
                         yield ctx.call_activity(
                             log_node_complete,
@@ -865,7 +918,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             elif node_type == "approval-gate":
                 # Log node start for approval gates (they bypass function-router)
                 gate_log_id = None
-                gate_start_time = time.time()
+                gate_start_time_ms = _workflow_now_ms(ctx)
                 if db_execution_id:
                     start_result = yield ctx.call_activity(
                         log_node_start,
@@ -888,7 +941,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 # Log node completion for approval gates
                 if db_execution_id and gate_log_id:
-                    gate_duration_ms = int((time.time() - gate_start_time) * 1000)
+                    gate_duration_ms = _workflow_elapsed_ms(ctx, gate_start_time_ms)
                     gate_success = result.get("approved", False)
                     yield ctx.call_activity(
                         log_node_complete,
@@ -910,7 +963,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         "traceId": trace_id,
                     }))
 
-                    duration_ms = int((time.time() - start_time) * 1000)
+                    duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
                     return (yield from _return_with_workspace_cleanup(
                         ctx=ctx,
                         execution_id=execution_id,
@@ -928,7 +981,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # --- Loop Until nodes ---
             elif node_type == "loop-until":
                 loop_log_id = None
-                loop_start_time = time.time()
+                loop_start_time_ms = _workflow_now_ms(ctx)
 
                 resolved_for_log = resolve_templates(config, node_outputs)
                 if db_execution_id:
@@ -1048,7 +1101,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "error": "loopStartNodeId is required",
                         }
                         if db_execution_id and loop_log_id:
-                            loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                            loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                             yield ctx.call_activity(
                                 log_node_complete,
                                 input={
@@ -1060,7 +1113,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "_otel": otel_ctx,
                                 },
                             )
-                        duration_ms = int((time.time() - start_time) * 1000)
+                        duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
                         return (yield from _return_with_workspace_cleanup(
                             ctx=ctx,
                             execution_id=execution_id,
@@ -1077,7 +1130,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                     start_index = node_index_map.get(loop_start_node_id)
                     if start_index is None:
-                        duration_ms = int((time.time() - start_time) * 1000)
+                        duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
                         err = f"loopStartNodeId not found in executionOrder: {loop_start_node_id}"
                         node_result = {
                             "conditionMet": False,
@@ -1085,7 +1138,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "error": err,
                         }
                         if db_execution_id and loop_log_id:
-                            loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                            loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                             yield ctx.call_activity(
                                 log_node_complete,
                                 input={
@@ -1112,7 +1165,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         ))
 
                     if start_index >= i:
-                        duration_ms = int((time.time() - start_time) * 1000)
+                        duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
                         err = (
                             f"loopStartNodeId must be before the loop node in execution order "
                             f"(start_index={start_index}, loop_index={i})"
@@ -1123,7 +1176,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             "error": err,
                         }
                         if db_execution_id and loop_log_id:
-                            loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                            loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                             yield ctx.call_activity(
                                 log_node_complete,
                                 input={
@@ -1163,7 +1216,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         }
 
                         if db_execution_id and loop_log_id:
-                            loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                            loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                             yield ctx.call_activity(
                                 log_node_complete,
                                 input={
@@ -1180,7 +1233,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             # Exit loop and continue workflow.
                             node_result["exitedLoop"] = True
                         else:
-                            duration_ms = int((time.time() - start_time) * 1000)
+                            duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
                             return (yield from _return_with_workspace_cleanup(
                                 ctx=ctx,
                                 execution_id=execution_id,
@@ -1212,7 +1265,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         }
 
                         if db_execution_id and loop_log_id:
-                            loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                            loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                             yield ctx.call_activity(
                                 log_node_complete,
                                 input={
@@ -1237,7 +1290,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 # Log completion for non-jump cases
                 if db_execution_id and loop_log_id:
-                    loop_duration_ms = int((time.time() - loop_start_time) * 1000)
+                    loop_duration_ms = _workflow_elapsed_ms(ctx, loop_start_time_ms)
                     yield ctx.call_activity(
                         log_node_complete,
                         input={
@@ -1253,11 +1306,16 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # --- Timer nodes ---
             elif node_type == "timer":
                 duration_seconds = get_timeout_seconds(config)
-                logger.info(f"[Dynamic Workflow] Starting timer: {node.get('label')} ({duration_seconds}s)")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Starting timer: %s (%ss)",
+                    node.get("label"),
+                    duration_seconds,
+                )
 
                 # Log node start for timers (they bypass function-router)
                 timer_log_id = None
-                timer_start_time = time.time()
+                timer_start_time_ms = _workflow_now_ms(ctx)
                 if db_execution_id:
                     start_result = yield ctx.call_activity(
                         log_node_start,
@@ -1275,12 +1333,16 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 yield ctx.create_timer(timedelta(seconds=duration_seconds))
 
-                logger.info(f"[Dynamic Workflow] Timer completed: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Timer completed: %s",
+                    node.get("label"),
+                )
                 node_result = {"completed": True}
 
                 # Log node completion for timers
                 if db_execution_id and timer_log_id:
-                    timer_duration_ms = int((time.time() - timer_start_time) * 1000)
+                    timer_duration_ms = _workflow_elapsed_ms(ctx, timer_start_time_ms)
                     yield ctx.call_activity(
                         log_node_complete,
                         input={
@@ -1295,7 +1357,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- If/Else nodes ---
             elif node_type == "if-else":
-                logger.info(f"[Dynamic Workflow] Evaluating if/else: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Evaluating if/else: %s",
+                    node.get("label"),
+                )
 
                 operator = str(config.get("operator") or "EXISTS").strip()
                 left_raw = config.get("left", "")
@@ -1350,7 +1416,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- Set State nodes ---
             elif node_type == "set-state":
-                logger.info(f"[Dynamic Workflow] Setting state: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Setting state: %s",
+                    node.get("label"),
+                )
                 updates, set_state_error = resolve_set_state_updates(config, node_outputs)
 
                 if set_state_error:
@@ -1384,7 +1454,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- Transform nodes ---
             elif node_type == "transform":
-                logger.info(f"[Dynamic Workflow] Transforming data: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Transforming data: %s",
+                    node.get("label"),
+                )
                 template_json = config.get("templateJson", "")
                 resolved = resolve_templates({"templateJson": template_json}, node_outputs)
                 resolved_json = resolved.get("templateJson") if isinstance(resolved, dict) else template_json
@@ -1414,7 +1488,11 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
             # --- Condition nodes (legacy placeholder) ---
             elif node_type == "condition":
-                logger.info(f"[Dynamic Workflow] Evaluating condition: {node.get('label')}")
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Evaluating condition: %s",
+                    node.get("label"),
+                )
                 node_result = {"success": True, "data": {"result": True, "branch": "true"}}
 
             # --- Trigger nodes ---
@@ -1448,14 +1526,16 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         f"sub-workflow node {node_id} has no workflowId configured"
                     )
 
-                logger.info(
-                    f"[Dynamic Workflow] Executing sub-workflow: {node.get('label')} "
-                    f"(child={child_workflow_id})"
+                _log_info(
+                    ctx,
+                    "[Dynamic Workflow] Executing sub-workflow: %s (child=%s)",
+                    node.get("label"),
+                    child_workflow_id,
                 )
 
                 # Log node start
                 sub_log_id = None
-                sub_start_time = time.time()
+                sub_start_time_ms = _workflow_now_ms(ctx)
                 if db_execution_id:
                     start_result = yield ctx.call_activity(
                         log_node_start,
@@ -1537,7 +1617,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 # Log node completion
                 if db_execution_id and sub_log_id:
-                    sub_duration_ms = int((time.time() - sub_start_time) * 1000)
+                    sub_duration_ms = _workflow_elapsed_ms(ctx, sub_start_time_ms)
                     yield ctx.call_activity(
                         log_node_complete,
                         input={
@@ -1605,8 +1685,10 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     if isinstance(data, dict):
                         ctl = data.get("__workflow_builder_control")
                         if isinstance(ctl, dict) and ctl.get("stop") is True:
-                            logger.info(
-                                f"[Dynamic Workflow] Early stop requested by node: {node.get('label')}"
+                            _log_info(
+                                ctx,
+                                "[Dynamic Workflow] Early stop requested by node: %s",
+                                node.get("label"),
                             )
                             break
             except Exception:
@@ -1614,7 +1696,8 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 pass
 
             if _should_continue_as_new(ctx, completed_since_checkpoint):
-                logger.info(
+                _log_info(
+                    ctx,
                     "[Dynamic Workflow] Continuing as new to compact history: execution=%s next_index=%s compactions=%s",
                     execution_id,
                     i,
@@ -1653,7 +1736,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 return None
 
         # Workflow completed successfully
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
 
         ctx.set_custom_status(
             json.dumps(
@@ -1679,7 +1762,12 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             "_otel": otel_ctx,
         })
 
-        logger.info(f"[Dynamic Workflow] Completed workflow: {definition.get('name')} ({duration_ms}ms)")
+        _log_info(
+            ctx,
+            "[Dynamic Workflow] Completed workflow: %s (%sms)",
+            definition.get("name"),
+            duration_ms,
+        )
 
         # Convert node_outputs to simple outputs dict
         outputs = {k: v.get("data") for k, v in node_outputs.items()}
@@ -1714,7 +1802,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         ))
 
     except Exception as e:
-        duration_ms = int((time.time() - start_time) * 1000)
+        duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
         error_message = str(e)
 
         logger.error(f"[Dynamic Workflow] Workflow failed: {e}")
