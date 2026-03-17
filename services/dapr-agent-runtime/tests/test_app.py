@@ -19,6 +19,7 @@ from app import (
     workspace_profile,
 )
 from tools import list_files, read_file
+from tools import ToolRuntimeContext, pop_tool_context, push_tool_context
 
 
 class FakeStateStore:
@@ -186,7 +187,11 @@ def test_workspace_tools_honor_explicit_workspace_root(tmp_path: Path) -> None:
     (repo_root / "README.md").write_text("repo readme", encoding="utf-8")
     (sibling_root / "README.md").write_text("other readme", encoding="utf-8")
 
-    files = list_files(".", workspace_root=repo_root)
-
-    assert files == ["README.md"]
-    assert read_file("README.md", workspace_root=repo_root) == "repo readme"
+    context = ToolRuntimeContext.from_workspace_root(repo_root)
+    token = push_tool_context(context)
+    try:
+        files = list_files(".")
+        assert files == ["README.md"]
+        assert read_file("README.md") == "repo readme"
+    finally:
+        pop_tool_context(token)

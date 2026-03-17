@@ -32,6 +32,8 @@ from tools import (
     grep_search,
     list_files,
     mkdir,
+    pop_tool_context,
+    push_tool_context,
     read_file,
     resolve_tool_group,
     summarize_command_changes,
@@ -651,7 +653,12 @@ def _build_result_payload(
     summary = summarize_command_changes(cwd)
     patch = ""
     try:
-        patch = git_diff(path=".", workspace_root=cwd).get("diff", "")
+        tool_context = ToolRuntimeContext.from_workspace_root(cwd)
+        token = push_tool_context(tool_context)
+        try:
+            patch = git_diff(".").get("diff", "")
+        finally:
+            pop_tool_context(token)
     except Exception:
         patch = ""
     return {
@@ -795,11 +802,15 @@ class CodingDurableAgent(DurableAgent):
             )
 
         async def _execute_tool() -> Any:
-            return await self.tool_executor.run_tool(
-                fn_name,
-                **args,
-                workspace_root=run_context.cwd,
-            )
+            tool_context = ToolRuntimeContext.from_workspace_root(run_context.cwd)
+            token = push_tool_context(tool_context)
+            try:
+                return await self.tool_executor.run_tool(
+                    fn_name,
+                    **args,
+                )
+            finally:
+                pop_tool_context(token)
 
         result = self._run_asyncio_task(_execute_tool())
         logger.debug("Tool %s returned: %s (type: %s)", fn_name, result, type(result))
@@ -1222,32 +1233,35 @@ def workspace_file(request: WorkspaceFileRequest) -> dict[str, Any]:
         session.working_directory or session.root_path
     )
     operation = request.operation.strip().lower()
-    if operation == "read":
-        if not request.path:
-            raise HTTPException(status_code=400, detail="path is required for read")
-        return {"content": read_file(request.path, tool_context=context)}
-    if operation == "write":
-        if not request.path:
-            raise HTTPException(status_code=400, detail="path is required for write")
-        return {
-            **write_file(request.path, request.content or "", tool_context=context),
-            **context.build_summary(),
-        }
-    if operation == "edit":
-        if not request.path:
-            raise HTTPException(status_code=400, detail="path is required for edit")
-        return {
-            **edit_file(
-                request.path,
-                request.old_string or "",
-                request.new_string or "",
-                tool_context=context,
-            ),
-            **context.build_summary(),
-        }
-    if operation == "list":
-        return {"files": list_files(request.path or ".", tool_context=context)}
-    raise HTTPException(status_code=400, detail=f"Unsupported operation: {request.operation}")
+    token = push_tool_context(context)
+    try:
+        if operation == "read":
+            if not request.path:
+                raise HTTPException(status_code=400, detail="path is required for read")
+            return {"content": read_file(request.path)}
+        if operation == "write":
+            if not request.path:
+                raise HTTPException(status_code=400, detail="path is required for write")
+            return {
+                **write_file(request.path, request.content or ""),
+                **context.build_summary(),
+            }
+        if operation == "edit":
+            if not request.path:
+                raise HTTPException(status_code=400, detail="path is required for edit")
+            return {
+                **edit_file(
+                    request.path,
+                    request.old_string or "",
+                    request.new_string or "",
+                ),
+                **context.build_summary(),
+            }
+        if operation == "list":
+            return {"files": list_files(request.path or ".")}
+        raise HTTPException(status_code=400, detail=f"Unsupported operation: {request.operation}")
+    finally:
+        pop_tool_context(token)
 
 
 @app.post("/api/workspaces/cleanup")

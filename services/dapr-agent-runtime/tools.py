@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import subprocess
+from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,10 @@ DEFAULT_WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", "/workspace")
 MAX_FILE_SIZE_BYTES = int(os.environ.get("DAPR_AGENT_MAX_FILE_SIZE_BYTES", "262144"))
 MAX_GREP_RESULTS = int(os.environ.get("DAPR_AGENT_MAX_GREP_RESULTS", "200"))
 MAX_LIST_FILES = int(os.environ.get("DAPR_AGENT_MAX_LIST_FILES", "500"))
+ACTIVE_TOOL_CONTEXT: ContextVar["ToolRuntimeContext | None"] = ContextVar(
+    "active_tool_context",
+    default=None,
+)
 
 
 def _as_relative(path: Path, root: Path) -> str:
@@ -116,32 +121,25 @@ class ToolRuntimeContext:
         }
 
 
-def _extract_context(
-    *,
-    tool_context: ToolRuntimeContext | None = None,
-    workspace_root: str | os.PathLike[str] | None = None,
-    kwargs: dict[str, Any] | None = None,
-) -> ToolRuntimeContext:
-    context = tool_context or (kwargs or {}).get("tool_context")
+def push_tool_context(context: ToolRuntimeContext) -> Token[ToolRuntimeContext | None]:
+    return ACTIVE_TOOL_CONTEXT.set(context)
+
+
+def pop_tool_context(token: Token[ToolRuntimeContext | None]) -> None:
+    ACTIVE_TOOL_CONTEXT.reset(token)
+
+
+def _extract_context() -> ToolRuntimeContext:
+    context = ACTIVE_TOOL_CONTEXT.get()
     if isinstance(context, ToolRuntimeContext):
         return context
-    resolved_root = workspace_root or (kwargs or {}).get("workspace_root") or DEFAULT_WORKSPACE_ROOT
-    return ToolRuntimeContext.from_workspace_root(str(resolved_root))
+    return ToolRuntimeContext.from_workspace_root(str(DEFAULT_WORKSPACE_ROOT))
 
 
 @tool
-def read_file(
-    path: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> str:
+def read_file(path: str) -> str:
     """Read a UTF-8 text file from the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.is_file():
         raise FileNotFoundError(f"File not found: {path}")
@@ -151,19 +149,9 @@ def read_file(
 
 
 @tool
-def list_files(
-    path: str = ".",
-    pattern: str = "**/*",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> list[str]:
+def list_files(path: str = ".", pattern: str = "**/*") -> list[str]:
     """List files in a workspace directory using a glob pattern."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -180,19 +168,9 @@ def list_files(
 
 
 @tool
-def grep_search(
-    pattern: str,
-    path: str = ".",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> list[dict[str, Any]]:
+def grep_search(pattern: str, path: str = ".") -> list[dict[str, Any]]:
     """Search UTF-8 text files in the workspace for a substring."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -222,19 +200,9 @@ def grep_search(
 
 
 @tool
-def write_file(
-    path: str,
-    content: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def write_file(path: str, content: str) -> dict[str, Any]:
     """Write a UTF-8 text file in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     context.record_modified(resolved)
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -243,20 +211,9 @@ def write_file(
 
 
 @tool
-def edit_file(
-    path: str,
-    old_string: str,
-    new_string: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
     """Replace text in a UTF-8 text file in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.is_file():
         raise FileNotFoundError(f"File not found: {path}")
@@ -271,18 +228,9 @@ def edit_file(
 
 
 @tool
-def delete_path(
-    path: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def delete_path(path: str) -> dict[str, Any]:
     """Delete a file or directory in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -295,36 +243,18 @@ def delete_path(
 
 
 @tool
-def mkdir(
-    path: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def mkdir(path: str) -> dict[str, Any]:
     """Create a directory in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     resolved.mkdir(parents=True, exist_ok=True)
     return {"path": _as_relative(resolved, context.workspace_root)}
 
 
 @tool
-def file_stat(
-    path: str,
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def file_stat(path: str) -> dict[str, Any]:
     """Return metadata for a workspace file or directory."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
         raise FileNotFoundError(f"Path not found: {path}")
@@ -353,55 +283,27 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
 
 
 @tool
-def git_status(
-    path: str = ".",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def git_status(path: str = ".") -> dict[str, Any]:
     """Get git status in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     cwd = context.resolve_path(path)
     stdout = _run_git(["status", "--short", "--branch"], cwd=cwd)
     return {"path": path, "status": stdout}
 
 
 @tool
-def git_diff(
-    path: str = ".",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def git_diff(path: str = ".") -> dict[str, Any]:
     """Get git diff in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     cwd = context.resolve_path(path)
     stdout = _run_git(["diff", "--no-ext-diff"], cwd=cwd)
     return {"path": path, "diff": stdout}
 
 
 @tool
-def git_apply(
-    patch: str,
-    path: str = ".",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def git_apply(patch: str, path: str = ".") -> dict[str, Any]:
     """Apply a unified diff patch in the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     cwd = context.resolve_path(path)
     completed = subprocess.run(
         ["git", "apply", "--whitespace=nowarn", "-"],
@@ -418,19 +320,9 @@ def git_apply(
 
 
 @tool
-def execute_command(
-    command: str,
-    cwd: str = ".",
-    workspace_root: str | os.PathLike[str] | None = None,
-    tool_context: ToolRuntimeContext | None = None,
-    **kwargs,
-) -> dict[str, Any]:
+def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
     """Run a shell command inside the workspace."""
-    context = _extract_context(
-        tool_context=tool_context,
-        workspace_root=workspace_root,
-        kwargs=kwargs,
-    )
+    context = _extract_context()
     working_directory = context.resolve_path(cwd)
     completed = subprocess.run(
         command,
@@ -504,7 +396,7 @@ def bind_tool_group(
     name: str | None,
     workspace_root: str | os.PathLike[str],
 ) -> list[Any]:
-    root = str(Path(workspace_root).expanduser().resolve())
+    root = Path(workspace_root).expanduser().resolve()
     bound_tools: list[Any] = []
 
     def make_bound_tool(tool_fn: Any) -> Any:
@@ -514,7 +406,12 @@ def bind_tool_group(
         tool_callable = getattr(tool_fn, "func", None) or tool_fn
 
         def bound_tool(*args: Any, **kwargs: Any) -> Any:
-            return tool_callable(*args, workspace_root=root, **kwargs)
+            context = ToolRuntimeContext.from_workspace_root(root)
+            token = push_tool_context(context)
+            try:
+                return tool_callable(*args, **kwargs)
+            finally:
+                pop_tool_context(token)
 
         bound_tool.__name__ = tool_name
         bound_tool.__doc__ = tool_description
