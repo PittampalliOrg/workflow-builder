@@ -101,10 +101,36 @@ def _otel_context_from_headers(request: Request) -> dict[str, str]:
     return carrier
 
 
+def _current_trace_context() -> dict[str, str]:
+    try:
+        from opentelemetry import trace as ot_trace
+
+        span = ot_trace.get_current_span()
+        if span is None:
+            return {}
+        span_context = span.get_span_context()
+        if span_context is None or not getattr(span_context, "is_valid", False):
+            return {}
+        return {
+            "traceparent": (
+                f"00-{span_context.trace_id:032x}-{span_context.span_id:016x}-01"
+            ),
+            "traceId": f"{span_context.trace_id:032x}",
+        }
+    except Exception:
+        return {}
+
+
 def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
     merged = inject_current_context()
+    if not merged.get("traceparent"):
+        merged.update(_current_trace_context())
     if request is not None:
         merged.update(_otel_context_from_headers(request))
+    if not merged.get("traceId"):
+        trace_id = _trace_id_from_traceparent(merged.get("traceparent"))
+        if trace_id:
+            merged["traceId"] = trace_id
     return merged
 
 

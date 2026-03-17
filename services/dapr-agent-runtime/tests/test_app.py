@@ -17,6 +17,7 @@ from app import (
     _persist_workspace_session,
     _resolve_runner_workflow_client,
     _resolve_effective_tool_group,
+    _trace_id_from_otel,
     execute_step,
     runtime_introspect,
     workspace_change_artifact,
@@ -70,6 +71,17 @@ def test_normalize_run_request_accepts_task_aliases() -> None:
     request = _normalize_run_request({"task": "Review the repo", "mode": "review"})
 
     assert request.prompt == "Review the repo"
+
+
+def test_trace_id_from_otel_prefers_explicit_trace_id() -> None:
+    assert (
+        _trace_id_from_otel(
+            {
+                "traceId": "0123456789abcdef0123456789abcdef",
+            }
+        )
+        == "0123456789abcdef0123456789abcdef"
+    )
 
 
 def test_resolve_runner_workflow_client_supports_callable_attr(monkeypatch) -> None:

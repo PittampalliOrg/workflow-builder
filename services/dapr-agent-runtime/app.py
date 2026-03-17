@@ -94,6 +94,10 @@ try:
         WorkflowRetryPolicy,
     )
     from dapr_agents.memory import ConversationDaprStateMemory
+    from dapr_agents.observability.context_storage import (
+        cleanup_workflow_context,
+        store_workflow_context,
+    )
     from dapr_agents.storage.daprstores.stateservice import StateStoreError, StateStoreService
     from dapr_agents.tool.utils.serialization import serialize_tool_result
     from dapr_agents.workflow.runners.agent import AgentRunner
@@ -171,6 +175,12 @@ except ImportError:  # pragma: no cover
     class ConversationDaprStateMemory:  # type: ignore[no-redef]
         store_name: str = "statestore"
         agent_name: str = "default"
+
+    def store_workflow_context(instance_id: str, otel_context: dict[str, Any]) -> None:  # type: ignore[no-redef]
+        return None
+
+    def cleanup_workflow_context(instance_id: str) -> None:  # type: ignore[no-redef]
+        return None
 
     class StateStoreError(RuntimeError):  # type: ignore[no-redef]
         pass
@@ -689,7 +699,9 @@ def _trace_id_from_traceparent(traceparent: object) -> str | None:
 def _trace_id_from_otel(otel_ctx: object) -> str | None:
     if not isinstance(otel_ctx, dict):
         return None
-    return _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+    return (
+        str(otel_ctx.get("traceId") or otel_ctx.get("trace_id") or "").strip() or None
+    ) or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
 
 
 def _current_trace_id() -> str | None:
@@ -708,6 +720,23 @@ def _current_trace_id() -> str | None:
         return f"{trace_id:032x}"
     except Exception:
         return None
+
+
+def _workflow_context_carrier(
+    instance_id: str,
+    input_data: dict[str, Any] | str | None,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    carrier = (
+        dict(input_data.get("_otel") or {})
+        if isinstance(input_data, dict) and isinstance(input_data.get("_otel"), dict)
+        else {}
+    )
+    if trace_id and not carrier.get("traceId"):
+        carrier["traceId"] = trace_id
+    if not carrier.get("instance_id"):
+        carrier["instance_id"] = instance_id
+    return carrier
 
 
 def _trace_id_from_payload(payload: object) -> str | None:
@@ -1644,6 +1673,14 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
         if isinstance(input_data, dict)
         else None
     ) or _trace_id_from_payload(input_data) or _current_trace_id()
+    workflow_context_key = f"__workflow_context_{ctx.instance_id}__"
+    workflow_context_carrier = _workflow_context_carrier(
+        ctx.instance_id,
+        input_data,
+        trace_id,
+    )
+    store_workflow_context(workflow_context_key, workflow_context_carrier)
+    store_workflow_context("__current_workflow_context__", workflow_context_carrier)
     request = _normalize_run_request(input_data)
     instance_id = ctx.instance_id
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
@@ -1662,15 +1699,19 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             "workspaceRef": run_context.workspace_ref,
         }
     )
-    agent_result = yield from _get_agent().agent_workflow(
-        ctx,
-        {"task": _build_task_prompt(normalized_request)},
-    )
-    return _build_result_payload(
-        instance_id=instance_id,
-        request=normalized_request,
-        workflow_output=agent_result,
-    )
+    try:
+        agent_result = yield from _get_agent().agent_workflow(
+            ctx,
+            {"task": _build_task_prompt(normalized_request)},
+        )
+        return _build_result_payload(
+            instance_id=instance_id,
+            request=normalized_request,
+            workflow_output=agent_result,
+        )
+    finally:
+        cleanup_workflow_context(workflow_context_key)
+        cleanup_workflow_context("__current_workflow_context__")
 
 
 async def _run_agent_request(

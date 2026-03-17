@@ -291,6 +291,14 @@ def _trace_id_from_traceparent(traceparent: object) -> str | None:
     return trace_id if trace_id else None
 
 
+def _trace_id_from_otel_context(otel_ctx: object) -> str | None:
+    if not isinstance(otel_ctx, dict):
+        return None
+    return (
+        str(otel_ctx.get("traceId") or otel_ctx.get("trace_id") or "").strip() or None
+    ) or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+
+
 def get_timeout_seconds(config: dict[str, Any]) -> int:
     """Get timeout in seconds from various config formats."""
     if config.get("timeoutSeconds"):
@@ -691,7 +699,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     db_execution_id = input_data.get("dbExecutionId")
     node_connection_map = input_data.get("nodeConnectionMap") or {}
     otel_ctx = input_data.get("_otel") or {}
-    trace_id = _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+    trace_id = _trace_id_from_otel_context(otel_ctx)
     workflow_version = (
         str(input_data.get("_workflowVersion") or "").strip() or None
     )
@@ -2176,7 +2184,7 @@ def process_agent_child_workflow(
                 "currentNodeId": node.get("id"),
                 "currentNodeName": node.get("label") or node.get("id"),
                 "approvalEventName": approval_event_name,
-                "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+                "traceId": _trace_id_from_otel_context(otel_ctx),
             }))
 
             yield ctx.call_activity(publish_phase_changed, input={
@@ -2239,7 +2247,7 @@ def process_agent_child_workflow(
             ),
             "currentNodeId": node.get("id"),
             "currentNodeName": node.get("label") or node.get("id"),
-            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+            "traceId": _trace_id_from_otel_context(otel_ctx),
         }))
 
         yield ctx.call_activity(publish_phase_changed, input={
@@ -2371,7 +2379,7 @@ def process_agent_child_workflow(
             "cwd": resolved_config.get("cwd"),
             "executionId": tracked_execution_id,
             "_otel": otel_ctx,
-            "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+            "traceId": _trace_id_from_otel_context(otel_ctx),
         }
         if is_ms_agent:
             child_input["workflowTemplateId"] = (
@@ -2756,7 +2764,7 @@ def process_approval_gate(
         "currentNodeId": node.get("id"),
         "currentNodeName": node.get("label") or node.get("id"),
         "approvalEventName": event_name,
-        "traceId": _trace_id_from_traceparent(otel_ctx.get("traceparent")),
+        "traceId": _trace_id_from_otel_context(otel_ctx),
     }))
 
     # Publish that we're waiting for approval
