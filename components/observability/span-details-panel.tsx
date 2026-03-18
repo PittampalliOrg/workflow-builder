@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Check, Copy } from "lucide-react";
 import { useMemo, useState } from "react";
 import { SyntaxHighlightedJson } from "@/components/monitor/json-panel";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { ObservabilitySpan } from "@/lib/types/observability";
@@ -141,6 +142,13 @@ export function SpanDetailsPanel({
 							<div>
 								<p className="text-muted-foreground text-xs">Kind</p>
 								<p>{span.kind ?? "-"}</p>
+							</div>
+							<div>
+								<p className="text-muted-foreground text-xs">Category</p>
+								<div className="mt-1 flex flex-wrap gap-1">
+									<Badge variant="outline">{span.category}</Badge>
+									<Badge variant="secondary">{span.serviceRole}</Badge>
+								</div>
 							</div>
 							<div>
 								<p className="text-muted-foreground text-xs">Status</p>

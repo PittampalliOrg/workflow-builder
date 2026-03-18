@@ -171,6 +171,35 @@ export async function GET(
 		if (isNotFound) {
 			const { id } = await context.params;
 			try {
+				const execution = await db.query.workflowExecutions.findFirst({
+					where: eq(workflowExecutions.id, id),
+				});
+				const shouldPreserveSuccess =
+					execution?.status === "success" ||
+					execution?.phase === "completed" ||
+					(Boolean(execution?.output) &&
+						typeof execution?.output === "object" &&
+						(execution.output as Record<string, unknown>).success === true);
+
+				if (shouldPreserveSuccess) {
+					return NextResponse.json(
+						{
+							executionId: id,
+							daprInstanceId: execution?.daprInstanceId ?? null,
+							status: "success",
+							daprStatus: "UNKNOWN",
+							phase: "completed",
+							progress: execution?.progress ?? 100,
+							message:
+								"Workflow instance no longer present in orchestrator; returning persisted completed state.",
+							output: execution?.output ?? null,
+							error: execution?.error ?? null,
+							stackTrace: execution?.errorStackTrace ?? null,
+						},
+						{ status: 200 },
+					);
+				}
+
 				await db
 					.update(workflowExecutions)
 					.set({

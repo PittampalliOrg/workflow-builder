@@ -24,9 +24,9 @@ const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
  * These are regular K8s Deployments with a ClusterIP Service.
  */
 const STANDALONE_SERVICES: Record<string, string> = {
-	"durable-agent":
-		process.env.DURABLE_AGENT_URL ||
-		`http://durable-agent.${NAMESPACE}.svc.cluster.local:8001`,
+	"dapr-agent-runtime":
+		process.env.DAPR_AGENT_RUNTIME_URL ||
+		`http://dapr-agent-runtime.${NAMESPACE}.svc.cluster.local:8082`,
 };
 
 /**

@@ -135,7 +135,8 @@ function matchesSearch(
 /** Services known to emit workflow correlation tags. */
 const WORKFLOW_SERVICES = [
 	"workflow-orchestrator",
-	"durable-agent",
+	"dapr-agent-runtime",
+	"ms-agent-workflow",
 	"function-router",
 ];
 

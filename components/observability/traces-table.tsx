@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import {
 	Table,
 	TableBody,
@@ -43,10 +44,11 @@ export function TracesTable({ traces, isLoading }: TracesTableProps) {
 					<TableRow>
 						<TableHead>Trace</TableHead>
 						<TableHead>Name</TableHead>
+						<TableHead>Runtime</TableHead>
 						<TableHead>Workflow</TableHead>
 						<TableHead>Execution</TableHead>
 						<TableHead>Node</TableHead>
-						<TableHead>Activity</TableHead>
+						<TableHead>Dapr Breakdown</TableHead>
 						<TableHead>Started</TableHead>
 						<TableHead>Duration</TableHead>
 						<TableHead>Spans</TableHead>
@@ -68,6 +70,12 @@ export function TracesTable({ traces, isLoading }: TracesTableProps) {
 							<TableCell className="max-w-[280px] truncate">
 								{trace.name}
 							</TableCell>
+							<TableCell>
+								<div className="flex flex-wrap gap-1">
+									<Badge variant="outline">{trace.runtime}</Badge>
+									<Badge variant="secondary">{trace.rootSpanCategory}</Badge>
+								</div>
+							</TableCell>
 							<TableCell className="max-w-[220px] truncate">
 								{trace.workflowName ?? trace.workflowId ?? "-"}
 							</TableCell>
@@ -83,8 +91,18 @@ export function TracesTable({ traces, isLoading }: TracesTableProps) {
 							<TableCell className="max-w-[220px] truncate">
 								{trace.nodeName ?? trace.nodeId ?? "-"}
 							</TableCell>
-							<TableCell className="max-w-[220px] truncate">
-								{trace.activityName ?? "-"}
+							<TableCell className="max-w-[260px]">
+								<div className="space-y-1 text-xs">
+									<div className="text-muted-foreground">
+										wf {trace.breakdown.workflowSpans} · child{" "}
+										{trace.breakdown.childWorkflowSpans} · act{" "}
+										{trace.breakdown.activitySpans}
+									</div>
+									<div className="text-muted-foreground">
+										agent {trace.breakdown.agentSpans} · tool{" "}
+										{trace.breakdown.toolSpans} · llm {trace.breakdown.llmSpans}
+									</div>
+								</div>
 							</TableCell>
 							<TableCell>
 								<span title={new Date(trace.startedAt).toLocaleString()}>

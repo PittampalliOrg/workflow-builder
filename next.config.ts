@@ -2,6 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
 	output: "standalone",
+	allowedDevOrigins: [
+		"workflow-builder-ryzen.tail286401.ts.net",
+		"localhost",
+		"127.0.0.1",
+	],
 	serverExternalPackages: [
 		"@mcp-ui/server",
 		"@modelcontextprotocol/sdk",

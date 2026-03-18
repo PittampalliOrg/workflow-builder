@@ -5,12 +5,25 @@ import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
-import { workflowExecutionLogs, workflowExecutions } from "@/lib/db/schema";
 import {
+	workflowAgentRuns,
+	workflowExecutionLogs,
+	workflowExecutions,
+} from "@/lib/db/schema";
+import {
+	buildAgentNodeProgress,
 	buildExecutionConsistency,
 	mapRuntimeStatusToLocalStatus,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
+import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
+
+const DAPR_AGENT_RUNTIME_API_BASE_URL =
+	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
+	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const MS_AGENT_API_BASE_URL =
+	process.env.MS_AGENT_API_BASE_URL ||
+	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
 
 type NodeStatus = {
 	nodeId: string;
@@ -19,6 +32,81 @@ type NodeStatus = {
 	status: "pending" | "running" | "success" | "error";
 	timestamp: string;
 };
+
+function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
+	const result = new Map<string, string>();
+	if (!Array.isArray(nodes)) {
+		return result;
+	}
+	for (const node of nodes) {
+		if (!node || typeof node !== "object") {
+			continue;
+		}
+		const record = node as Record<string, unknown>;
+		const nodeId = typeof record.id === "string" ? record.id : null;
+		const data =
+			record.data && typeof record.data === "object"
+				? (record.data as Record<string, unknown>)
+				: null;
+		const config =
+			data?.config && typeof data.config === "object"
+				? (data.config as Record<string, unknown>)
+				: null;
+		const actionType =
+			config && typeof config.actionType === "string"
+				? config.actionType
+				: null;
+		if (nodeId && actionType) {
+			result.set(nodeId, actionType);
+		}
+	}
+	return result;
+}
+
+async function fetchAgentLivePayload(
+	actionType: string | undefined,
+	instanceId: string,
+): Promise<Record<string, unknown> | null> {
+	const baseUrl =
+		actionType === "ms-agent/run"
+			? MS_AGENT_API_BASE_URL
+			: actionType === "dapr-agent/run"
+				? DAPR_AGENT_RUNTIME_API_BASE_URL
+				: null;
+	if (!baseUrl) {
+		return null;
+	}
+	const response = await fetch(
+		`${baseUrl.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
+		{
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(4000),
+			cache: "no-store",
+		},
+	);
+	if (!response.ok) {
+		return null;
+	}
+	const payload = await response.json();
+	return payload && typeof payload === "object"
+		? (payload as Record<string, unknown>)
+		: null;
+}
+
+function shouldFetchLiveAgentPayload(
+	actionType: string | undefined,
+	status: string,
+): boolean {
+	if (!actionType || !status) {
+		return false;
+	}
+	if (actionType !== "dapr-agent/run") {
+		return false;
+	}
+	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
+		status,
+	);
+}
 
 export async function GET(
 	request: Request,
@@ -56,10 +144,17 @@ export async function GET(
 			return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 		}
 
-		const logs = await db.query.workflowExecutionLogs.findMany({
-			where: eq(workflowExecutionLogs.executionId, executionId),
-			orderBy: [desc(workflowExecutionLogs.timestamp)],
-		});
+		const [logs, agentRuns] = await Promise.all([
+			db.query.workflowExecutionLogs.findMany({
+				where: eq(workflowExecutionLogs.executionId, executionId),
+				orderBy: [desc(workflowExecutionLogs.timestamp)],
+			}),
+			db
+				.select()
+				.from(workflowAgentRuns)
+				.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
+				.orderBy(desc(workflowAgentRuns.createdAt)),
+		]);
 
 		const latestByNode = new Map<string, (typeof logs)[number]>();
 		for (const log of logs) {
@@ -142,6 +237,33 @@ export async function GET(
 			dbPhase: execution.phase,
 			runtime,
 		});
+		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
+		const agentProgressEntries = await Promise.all(
+			agentRuns.map(async (run) => {
+				const actionType = nodeActionTypeMap.get(run.nodeId);
+				const framework =
+					actionType === "ms-agent/run"
+						? "ms-agent"
+						: actionType === "dapr-agent/run"
+							? "dapr-agent"
+							: null;
+				if (!framework) {
+					return null;
+				}
+				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
+					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
+					: null;
+				const progress = buildAgentNodeProgress(run, framework, livePayload);
+				progress.nodeId = run.nodeId;
+				return [run.nodeId, progress] as const;
+			}),
+		);
+		const agentProgressByNode = Object.fromEntries(
+			agentProgressEntries.filter(
+				(entry): entry is readonly [string, AgentNodeProgress] =>
+					entry !== null,
+			),
+		);
 
 		return NextResponse.json({
 			status: mapped.status,
@@ -152,6 +274,7 @@ export async function GET(
 			currentNodeId: runtime?.currentNodeId ?? null,
 			currentNodeName: runtime?.currentNodeName ?? null,
 			approvalEventName: runtime?.approvalEventName ?? null,
+			agentProgressByNode,
 			nodeStatuses,
 			consistency,
 		});

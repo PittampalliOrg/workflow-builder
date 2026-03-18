@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
 MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
 
 
@@ -136,6 +137,69 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_dapr_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Run a Python Dapr Agents coding workflow synchronously.
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DAPR_AGENT_APP_ID}/method/api/run"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "dapr-agent/run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.call_dapr_agent_run", otel, attrs):
+        try:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 30)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+            if timeout_minutes <= 0:
+                timeout_minutes = 30
+            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
+            with httpx.Client(timeout=request_timeout_seconds) as client:
+                payload = {
+                    "prompt": input_data.get("prompt", ""),
+                    "profile": input_data.get("profile")
+                    or input_data.get("mode")
+                    or "implement",
+                    "model": input_data.get("model"),
+                    "maxTurns": input_data.get("maxTurns"),
+                    "timeoutMinutes": input_data.get("timeoutMinutes", 30),
+                    "workspaceRef": input_data.get("workspaceRef"),
+                    "cwd": input_data.get("cwd"),
+                    "stopCondition": input_data.get("stopCondition"),
+                    "instructionsOverlay": input_data.get("instructionsOverlay")
+                    or input_data.get("instructions"),
+                    "expectedOutput": input_data.get("expectedOutput"),
+                    "verifyCommands": input_data.get("verifyCommands"),
+                    "approvalMode": input_data.get("approvalMode"),
+                    "toolPolicy": input_data.get("toolPolicy"),
+                    "tools": input_data.get("tools"),
+                    "writePolicy": input_data.get("writePolicy"),
+                    "shellPolicy": input_data.get("shellPolicy"),
+                    "executionId": input_data.get("executionId"),
+                    "dbExecutionId": input_data.get("dbExecutionId"),
+                    "waitForCompletion": True,
+                }
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Dapr agent run",
+                )
+        except Exception as e:
+            logger.error(f"[Call Dapr Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 
@@ -440,6 +504,50 @@ def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
+def terminate_dapr_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Terminate a specific dapr-agent-runtime run.
+    """
+    agent_workflow_id = str(
+        input_data.get("agentWorkflowId") or input_data.get("daprInstanceId") or ""
+    ).strip()
+    if not agent_workflow_id:
+        return {"success": False, "error": "agentWorkflowId is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DAPR_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
+    )
+    payload = {
+        "daprInstanceId": input_data.get("daprInstanceId"),
+        "parentExecutionId": input_data.get("parentExecutionId"),
+        "workspaceRef": input_data.get("workspaceRef"),
+        "reason": input_data.get("reason")
+        or "terminated because parent workflow timed out",
+        "cleanupWorkspace": _as_bool(input_data.get("cleanupWorkspace"), True),
+    }
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "dapr-agent/run-terminate",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "agent.workflow_id": agent_workflow_id,
+        "agent.dapr_instance_id": input_data.get("daprInstanceId") or "",
+    }
+
+    with start_activity_span("activity.terminate_dapr_agent_run", otel, attrs):
+        try:
+            with httpx.Client(timeout=20.0) as client:
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="Dapr agent run termination",
+                )
+        except Exception as e:
+            logger.error(f"[Terminate Dapr Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
 def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
     """
     Cleanup any workspace session(s) associated with a workflow execution.
@@ -458,7 +566,7 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
 
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/workspaces/cleanup"
+        f"{DAPR_AGENT_APP_ID}/method/api/workspaces/cleanup"
     )
     otel = input_data.get("_otel") or {}
     attrs = {

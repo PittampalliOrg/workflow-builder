@@ -1,5 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { NextResponse } from "next/server";
+import { context, propagation } from "@opentelemetry/api";
 import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
@@ -14,6 +15,20 @@ import {
 } from "@/lib/db/schema";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
+
+function extractTraceHeaders(request: Request): Record<string, string> {
+	const headers: Record<string, string> = {};
+	try {
+		propagation.inject(context.active(), headers);
+	} catch {}
+	for (const headerName of ["traceparent", "tracestate", "baggage"] as const) {
+		const value = request.headers.get(headerName)?.trim();
+		if (value) {
+			headers[headerName] = value;
+		}
+	}
+	return headers;
+}
 
 export async function POST(
 	request: Request,
@@ -169,6 +184,8 @@ export async function POST(
 					{}, // integrations — empty, credentials resolved at function-router
 					execution.id, // Database execution ID for logging
 					nodeConnectionMap, // Per-node connection external IDs
+					undefined,
+					extractTraceHeaders(request),
 				);
 
 				// Update execution with Dapr instance ID

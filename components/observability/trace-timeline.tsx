@@ -8,6 +8,7 @@ import {
 	Search,
 } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { ObservabilitySpan } from "@/lib/types/observability";
@@ -153,6 +154,27 @@ function statusTone(statusCode: string | null): string {
 		return "bg-emerald-500/70";
 	}
 	return "bg-slate-500/60";
+}
+
+function categoryTone(category: ObservabilitySpan["category"]): string {
+	switch (category) {
+		case "workflow":
+			return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
+		case "child-workflow":
+			return "border-indigo-500/30 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300";
+		case "activity":
+			return "border-cyan-500/30 bg-cyan-500/10 text-cyan-700 dark:text-cyan-300";
+		case "agent":
+			return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+		case "tool":
+			return "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+		case "llm":
+			return "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-700 dark:text-fuchsia-300";
+		case "http":
+			return "border-slate-500/30 bg-slate-500/10 text-slate-700 dark:text-slate-300";
+		default:
+			return "text-muted-foreground";
+	}
 }
 
 export function TraceTimeline({
@@ -323,9 +345,18 @@ export function TraceTimeline({
 										<div className="truncate font-medium text-sm">
 											{row.span.name}
 										</div>
-										<div className="truncate text-muted-foreground text-xs">
-											{row.span.serviceName ?? "unknown service"} •{" "}
-											{row.span.durationMs} ms
+										<div className="mt-1 flex flex-wrap items-center gap-1">
+											<Badge
+												className={categoryTone(row.span.category)}
+												variant="outline"
+											>
+												{row.span.category}
+											</Badge>
+											<Badge variant="secondary">{row.span.serviceRole}</Badge>
+											<span className="truncate text-muted-foreground text-xs">
+												{row.span.serviceName ?? "unknown service"} •{" "}
+												{row.span.durationMs} ms
+											</span>
 										</div>
 									</div>
 								</div>

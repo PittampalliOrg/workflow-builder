@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
-import { listAgentProfileTemplates } from "@/lib/db/agent-profiles";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
 import {
 	AppConnectionType,
@@ -14,11 +13,11 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
-const DURABLE_AGENT_API_BASE_URL =
-	process.env.DURABLE_AGENT_API_BASE_URL ||
-	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
-const DURABLE_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
-	process.env.DURABLE_AGENT_OPTIONS_TIMEOUT_MS || "5000",
+const DAPR_AGENT_RUNTIME_API_BASE_URL =
+	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
+	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const DAPR_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
+	process.env.DAPR_AGENT_OPTIONS_TIMEOUT_MS || "5000",
 	10,
 );
 const GITEA_API_BASE_URL =
@@ -65,22 +64,6 @@ function buildDisabledResponse(placeholder: string): OptionsResponse {
 
 function normalizeActionName(actionName: string): string {
 	return actionName.trim();
-}
-
-async function buildAgentProfileTemplateListResponse(
-	searchValue?: string,
-): Promise<OptionsResponse> {
-	const rows = await listAgentProfileTemplates({ includeDisabled: false });
-	const options = rows.map((row) => ({
-		label: `${row.name} (v${row.defaultVersion})`,
-		value: row.id,
-	}));
-	if (options.length === 0) {
-		return buildDisabledResponse(
-			"No agent profiles — add templates before building a durable run",
-		);
-	}
-	return { options: filterOptions(options, searchValue) };
 }
 
 function filterOptions(
@@ -189,32 +172,55 @@ type GiteaRepo = {
 	original_url?: string;
 };
 
-type DurableToolsResponse = {
+type DaprAgentToolsResponse = {
 	success?: boolean;
 	tools?: Array<{
 		id?: unknown;
 		description?: unknown;
 	}>;
+	workspaceEnabledTools?: Array<{
+		label?: unknown;
+		value?: unknown;
+	}>;
+	toolGroups?: Record<string, unknown>;
 };
 
-const DURABLE_AGENT_FALLBACK_TOOLS = ["read", "write", "edit", "list", "bash"];
+const DAPR_AGENT_FALLBACK_TOOLS = ["read", "write", "edit", "list", "bash"];
 
-async function getDurableToolOptions(
+async function getDaprAgentToolOptions(
 	searchValue?: string,
 ): Promise<OptionsResponse> {
 	try {
-		const response = await fetch(`${DURABLE_AGENT_API_BASE_URL}/api/tools`, {
-			signal: AbortSignal.timeout(DURABLE_AGENT_OPTIONS_TIMEOUT_MS),
-		});
+		const response = await fetch(
+			`${DAPR_AGENT_RUNTIME_API_BASE_URL}/api/tools`,
+			{
+				signal: AbortSignal.timeout(DAPR_AGENT_OPTIONS_TIMEOUT_MS),
+			},
+		);
 
 		if (!response.ok) {
 			throw new Error(
-				`Durable agent tools request failed with HTTP ${response.status}`,
+				`Dapr agent tools request failed with HTTP ${response.status}`,
 			);
 		}
 
-		const payload = (await response.json()) as DurableToolsResponse;
-		const options: DropdownOption[] = Array.isArray(payload.tools)
+		const payload = (await response.json()) as DaprAgentToolsResponse;
+		const workspaceTools = Array.isArray(payload.workspaceEnabledTools)
+			? payload.workspaceEnabledTools
+					.map((tool) => {
+						const value =
+							typeof tool.value === "string" ? tool.value.trim() : undefined;
+						if (!value) return undefined;
+						const label =
+							typeof tool.label === "string" && tool.label.trim().length > 0
+								? tool.label.trim()
+								: value;
+						return { label, value } satisfies DropdownOption;
+					})
+					.filter((option): option is DropdownOption => Boolean(option))
+			: [];
+
+		const toolEntries = Array.isArray(payload.tools)
 			? payload.tools
 					.map((tool) => {
 						const id = typeof tool.id === "string" ? tool.id.trim() : undefined;
@@ -230,20 +236,23 @@ async function getDurableToolOptions(
 					})
 					.filter((option): option is DropdownOption => Boolean(option))
 			: [];
+		const options = workspaceTools.length > 0 ? workspaceTools : toolEntries;
 
 		if (options.length === 0) {
-			return buildDisabledResponse("No tools available from durable-agent");
+			return buildDisabledResponse(
+				"No tools available from dapr-agent-runtime",
+			);
 		}
 
 		return { options: filterOptions(options, searchValue) };
 	} catch (error) {
-		console.warn("[builtin/options] Durable agent tool lookup failed:", error);
+		console.warn("[builtin/options] Dapr agent tool lookup failed:", error);
 		return {
 			options: filterOptions(
-				DURABLE_AGENT_FALLBACK_TOOLS.map((t) => ({ label: t, value: t })),
+				DAPR_AGENT_FALLBACK_TOOLS.map((t) => ({ label: t, value: t })),
 				searchValue,
 			),
-			placeholder: "Durable agent unavailable; showing default tools",
+			placeholder: "Dapr agent runtime unavailable; showing default tools",
 		};
 	}
 }
@@ -583,7 +592,7 @@ async function getGiteaBranchOptions(input: {
  * POST /api/builtin/options
  *
  * Fetch dynamic dropdown options for builtin action config fields.
- * Handles durable profile selection, GitHub repos/branches, and tool lists.
+ * Handles agent profile selection, GitHub repos/branches, and tool lists.
  * Session-authenticated.
  */
 export async function POST(request: Request) {
@@ -614,22 +623,13 @@ export async function POST(request: Request) {
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
 
-		if (
-			normalizedActionName === "durable/run" &&
-			rawBody.propertyName === "agentProfileTemplateId"
-		) {
-			return NextResponse.json(
-				await buildAgentProfileTemplateListResponse(rawBody.searchValue),
-			);
-		}
-
 		// Tools multi-select for workspace/profile
 		if (
 			normalizedActionName === "workspace/profile" &&
 			rawBody.propertyName === "enabledTools"
 		) {
 			return NextResponse.json(
-				await getDurableToolOptions(rawBody.searchValue),
+				await getDaprAgentToolOptions(rawBody.searchValue),
 			);
 		}
 

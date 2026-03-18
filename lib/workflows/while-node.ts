@@ -6,7 +6,7 @@ export const WORKFLOW_NODE_SIZE = 192;
 export const WHILE_NODE_PADDING = 16;
 export const WHILE_NODE_HEADER_HEIGHT = 44;
 
-const SUPPORTED_WHILE_BODY_ACTION_TYPES = new Set<string>(["durable/run"]);
+const SUPPORTED_WHILE_BODY_ACTION_TYPES = new Set<string>(["dapr-agent/run"]);
 
 export function isWhileNode(node: Pick<WorkflowNode, "type">): boolean {
 	return node.type === "while";

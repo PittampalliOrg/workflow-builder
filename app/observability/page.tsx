@@ -138,7 +138,8 @@ function ObservabilityPageContent() {
 					</h1>
 				</div>
 				<p className="text-muted-foreground">
-					Explore OpenTelemetry traces correlated to Dapr workflow executions.
+					Explore OpenTelemetry traces correlated to Dapr workflow runs,
+					activities, child workflows, and agent runtimes.
 				</p>
 			</div>
 
