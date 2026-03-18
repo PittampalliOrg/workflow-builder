@@ -56,6 +56,10 @@ const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME =
 	"GitHub Stacks Dual Agent Analysis";
 const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION =
 	"Reference workflow that clones PittampalliOrg/stacks and asks both the Microsoft Agent workflow and the Dapr coding agent to summarize the codebase independently.";
+const AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
+const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "Dapr Feature Delivery Demo";
+const AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION =
+	"Demo workflow for the Workflow Builder UI that clones PittampalliOrg/stacks and runs a durable Dapr-native plan, approval, and implementation loop that emits code artifacts.";
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -769,6 +773,9 @@ function buildGithubSandboxCloneProofNodes(input?: {
 		cloneConfig.integrationId = input.connectionId;
 	}
 
+	const sharedPrompt =
+		"Analyze this repository for an engineer onboarding to the project. Summarize the project purpose, the main subsystems and directories, the deployment or operations model, the key docs to read first, and the highest-priority technical or operational risks. Keep the response concise and reference concrete files or directories when relevant.";
+
 	return normalizeWorkflowNodes([
 		{
 			id: "tr_github_sandbox_clone",
@@ -1192,6 +1199,180 @@ function buildGithubStacksDualAgentEdges() {
 	];
 }
 
+function buildAgentSystemDemoNodes(input?: {
+	connectionId?: string;
+	connectionExternalId?: string;
+}) {
+	const workspaceRef =
+		"{{@pf_agent_system_demo:Workspace Profile.workspaceRef}}";
+	const clonePath = "{{@cl_agent_system_demo:Workspace Clone.clonePath}}";
+	const cloneConfig: Record<string, string> = {
+		actionType: "workspace/clone",
+		workspaceRef,
+		repositoryOwner: "PittampalliOrg",
+		repositoryRepo: "stacks",
+		repositoryBranch: "main",
+	};
+
+	if (input?.connectionExternalId) {
+		cloneConfig.auth = `{{connections['${input.connectionExternalId}']}}`;
+	}
+	if (input?.connectionId) {
+		cloneConfig.integrationId = input.connectionId;
+	}
+
+	const featureDeliveryPrompt = `Repository root: ${clonePath}
+Always operate relative to this repository root for file and directory paths.
+
+Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/apps for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, or ms-agent-workflow. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
+
+## Stop Condition
+The new Python utility exists, verification commands pass, and the final response includes changed files and a concise implementation summary.
+
+Execute autonomously until the stop condition is satisfied. Do not ask for confirmation before proceeding.`;
+
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_agent_system_demo",
+			type: "trigger",
+			position: { x: -760, y: 0 },
+			data: {
+				label: "Manual Trigger",
+				description: "",
+				type: "trigger",
+				config: { triggerType: "Manual" },
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_agent_system_demo",
+			type: "action",
+			position: { x: -480, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description:
+					"Create an execution-scoped sandbox for the agent system demo.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "workflow-agent-system-demo",
+					enabledTools: '["read","list","bash"]',
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_agent_system_demo",
+			type: "action",
+			position: { x: -180, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description: "Clone PittampalliOrg/stacks into the sandbox.",
+				type: "action",
+				config: cloneConfig,
+				status: "idle",
+			},
+		},
+		{
+			id: "cm_agent_system_demo_tree",
+			type: "action",
+			position: { x: 140, y: 0 },
+			data: {
+				label: "Show Repo Tree",
+				description:
+					"Print a repo tree before the agents start so the run has a visible sandbox step.",
+				type: "action",
+				config: {
+					actionType: "workspace/command",
+					workspaceRef,
+					timeoutMs: "120000",
+					command: `set -euo pipefail
+TARGET='${clonePath}'
+echo "CLONE_PATH=$TARGET"
+if command -v tree >/dev/null 2>&1; then
+	tree -a -L 3 "$TARGET"
+else
+	find "$TARGET" -maxdepth 3 -print | LC_ALL=C sort | sed "s#^$TARGET#.#"
+fi`,
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "da_agent_system_demo",
+			type: "action",
+			position: { x: 500, y: 0 },
+			data: {
+				label: "Dapr Feature Delivery",
+				description:
+					"Run the Dapr durable coding agent through plan, approval, implementation, and verification.",
+				type: "action",
+				config: {
+					actionType: "dapr-agent/run",
+					mode: "plan_mode",
+					profile: "feature-delivery",
+					prompt: featureDeliveryPrompt,
+					expectedOutput:
+						"A verified Python utility plus plan artifact, patch artifact, snapshot refs, and changed-file summary.",
+					verifyCommands: `python -m py_compile scripts/workflow_builder_demo_report.py
+python scripts/workflow_builder_demo_report.py`,
+					toolPolicy: "all",
+					writePolicy: "workspace-only",
+					shellPolicy: "workspace-safe",
+					executeAfterApproval: "true",
+					approvalTimeoutMinutes: "60",
+					workspaceRef,
+					cwd: clonePath,
+					maxTurns: "60",
+					timeoutMinutes: "45",
+					stopCondition:
+						"The new Python utility exists, verification commands pass, and the final response includes changed files and a concise implementation summary.",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildAgentSystemDemoEdges() {
+	return [
+		{
+			id: "e_agent_system_demo_1",
+			type: "animated",
+			source: "tr_agent_system_demo",
+			target: "pf_agent_system_demo",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_agent_system_demo_2",
+			type: "animated",
+			source: "pf_agent_system_demo",
+			target: "cl_agent_system_demo",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_agent_system_demo_3",
+			type: "animated",
+			source: "cl_agent_system_demo",
+			target: "cm_agent_system_demo_tree",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_agent_system_demo_4",
+			type: "animated",
+			source: "cm_agent_system_demo_tree",
+			target: "da_agent_system_demo",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
 async function upsertWorkflow(params: {
 	db: ReturnType<typeof drizzle>;
 	workflowId: string;
@@ -1362,6 +1543,17 @@ async function seedWorkflow() {
 			projectId,
 			nodes: buildGithubStacksDualAgentNodes(githubConnection),
 			edges: buildGithubStacksDualAgentEdges(),
+		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: AGENT_SYSTEM_DEMO_WORKFLOW_ID,
+			name: AGENT_SYSTEM_DEMO_WORKFLOW_NAME,
+			description: AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildAgentSystemDemoNodes(githubConnection),
+			edges: buildAgentSystemDemoEdges(),
 		});
 		console.log("[seed-workflows] Completed successfully");
 	} finally {

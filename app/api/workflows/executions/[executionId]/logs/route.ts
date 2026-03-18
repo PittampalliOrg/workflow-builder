@@ -23,6 +23,10 @@ import {
 } from "@/lib/transforms/durable-timeline";
 import { redactSensitiveData } from "@/lib/utils/redact";
 
+const DAPR_AGENT_RUNTIME_API_BASE_URL =
+	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
+	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+
 function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
 	const result = new Map<string, string>();
 	if (!Array.isArray(nodes)) {
@@ -51,6 +55,42 @@ function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
 		}
 	}
 	return result;
+}
+
+async function fetchAgentLivePayload(
+	actionType: string | undefined,
+	instanceId: string,
+): Promise<Record<string, unknown> | null> {
+	if (actionType !== "dapr-agent/run") {
+		return null;
+	}
+	const response = await fetch(
+		`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
+		{
+			headers: { Accept: "application/json" },
+			signal: AbortSignal.timeout(4000),
+			cache: "no-store",
+		},
+	);
+	if (!response.ok) {
+		return null;
+	}
+	const payload = await response.json();
+	return payload && typeof payload === "object"
+		? (payload as Record<string, unknown>)
+		: null;
+}
+
+function shouldFetchLiveAgentPayload(
+	actionType: string | undefined,
+	status: string,
+): boolean {
+	if (actionType !== "dapr-agent/run") {
+		return false;
+	}
+	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
+		status,
+	);
 }
 
 export async function GET(
@@ -165,22 +205,37 @@ export async function GET(
 						orchestratorHistory: runtimeHistory?.events ?? [],
 					});
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
-		const agentProgressByNode = effectiveAgentRuns.reduce<
-			Record<string, ReturnType<typeof buildAgentNodeProgress>>
-		>((acc, run) => {
-			const actionType = nodeActionTypeMap.get(run.nodeId);
-			const framework =
-				actionType === "ms-agent/run"
-					? "ms-agent"
-					: actionType === "dapr-agent/run"
-						? "dapr-agent"
-						: null;
-			if (!framework) {
-				return acc;
-			}
-			acc[run.nodeId] = buildAgentNodeProgress(run, framework);
-			return acc;
-		}, {});
+		const agentProgressEntries = await Promise.all(
+			effectiveAgentRuns.map(async (run) => {
+				const actionType = nodeActionTypeMap.get(run.nodeId);
+				const framework =
+					actionType === "ms-agent/run"
+						? "ms-agent"
+						: actionType === "dapr-agent/run"
+							? "dapr-agent"
+							: null;
+				if (!framework) {
+					return null;
+				}
+				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
+					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
+					: null;
+				return [
+					run.nodeId,
+					buildAgentNodeProgress(run, framework, livePayload),
+				] as const;
+			}),
+		);
+		const agentProgressByNode = Object.fromEntries(
+			agentProgressEntries.filter(
+				(
+					entry,
+				): entry is readonly [
+					string,
+					ReturnType<typeof buildAgentNodeProgress>,
+				] => entry !== null,
+			),
+		);
 
 		const timeline = buildDurableTimeline({
 			execution,

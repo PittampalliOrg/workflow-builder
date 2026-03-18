@@ -879,10 +879,9 @@ export function buildAgentNodeProgress(
 ): AgentNodeProgress {
 	const live = asRecord(livePayload);
 	const result = asRecord(run.result);
-	const embedded =
-		(result && asRecord(result.agentProgress)) ||
-		(live && asRecord(live.agentProgress)) ||
-		null;
+	const liveEmbedded = live && asRecord(live.agentProgress);
+	const resultEmbedded = result && asRecord(result.agentProgress);
+	const embedded = liveEmbedded || resultEmbedded || null;
 	const fallback = buildDerivedAgentProgress(run, framework);
 	if (!embedded) {
 		return fallback;

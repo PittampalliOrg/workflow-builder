@@ -22,6 +22,7 @@ import os
 import random
 import string
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -67,6 +68,11 @@ from activities.call_agent_service import (
 )
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
+from activities.persist_plan_artifact import (
+    fetch_plan_artifact,
+    persist_plan_artifact,
+    update_plan_artifact_status,
+)
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from activities.fetch_child_workflow import fetch_child_workflow
 from activities.track_agent_run import (
@@ -121,12 +127,23 @@ def _current_trace_context() -> dict[str, str]:
         return {}
 
 
+def _generate_trace_context() -> dict[str, str]:
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    return {
+        "traceparent": f"00-{trace_id}-{span_id}-01",
+        "traceId": trace_id,
+    }
+
+
 def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
     merged = inject_current_context()
     if not merged.get("traceparent"):
         merged.update(_current_trace_context())
     if request is not None:
         merged.update(_otel_context_from_headers(request))
+    if not merged.get("traceparent"):
+        merged.update(_generate_trace_context())
     if not merged.get("traceId"):
         trace_id = _trace_id_from_traceparent(merged.get("traceparent"))
         if trace_id:
@@ -411,6 +428,9 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_node_complete)
     # Persist final results to PostgreSQL
     wfr.register_activity(persist_results_to_db)
+    wfr.register_activity(persist_plan_artifact)
+    wfr.register_activity(update_plan_artifact_status)
+    wfr.register_activity(fetch_plan_artifact)
     # Agent service activities
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_plan)

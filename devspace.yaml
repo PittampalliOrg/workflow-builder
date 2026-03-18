@@ -462,7 +462,7 @@ dev:
         pip install --upgrade pip
         pip install -e .
 
-        exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT}
+        exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT} --reload
     sync:
       - path: ./services/dapr-agent-runtime/:/app
         initialSync: mirrorLocal

@@ -93,6 +93,21 @@ async function fetchAgentLivePayload(
 		: null;
 }
 
+function shouldFetchLiveAgentPayload(
+	actionType: string | undefined,
+	status: string,
+): boolean {
+	if (!actionType || !status) {
+		return false;
+	}
+	if (actionType !== "dapr-agent/run") {
+		return false;
+	}
+	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
+		status,
+	);
+}
+
 export async function GET(
 	request: Request,
 	context: { params: Promise<{ executionId: string }> },
@@ -235,10 +250,9 @@ export async function GET(
 				if (!framework) {
 					return null;
 				}
-				const livePayload =
-					run.status === "scheduled"
-						? await fetchAgentLivePayload(actionType, run.daprInstanceId)
-						: null;
+				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
+					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
+					: null;
 				const progress = buildAgentNodeProgress(run, framework, livePayload);
 				progress.nodeId = run.nodeId;
 				return [run.nodeId, progress] as const;

@@ -1,17 +1,21 @@
 from pathlib import Path
 
 import app
+import pytest
 from app import (
     AgentRunContext,
     DaprAgentRunRequest,
     ExecuteRequest,
     PROFILE_TOOL_GROUPS,
+    TerminateRequest,
     WorkspaceCleanupRequest,
     WorkspaceProfileRequest,
     WorkspaceSession,
+    _build_run_context,
     _build_result_payload,
     _build_task_prompt,
     _load_workspace_session,
+    _load_run_context,
     _normalize_run_request,
     _persist_run_context,
     _persist_workspace_session,
@@ -27,7 +31,7 @@ from app import (
     workspace_execution_patch,
     workspace_profile,
 )
-from tools import list_files, read_file
+from tools import build_workspace_patch, list_files, read_file, summarize_command_changes
 from tools import ToolRuntimeContext, pop_tool_context, push_tool_context
 
 
@@ -119,6 +123,17 @@ def test_resolve_effective_tool_group_maps_legacy_tools_bundle() -> None:
     assert _resolve_effective_tool_group(request) == "all"
 
 
+def test_resolve_effective_tool_group_forces_read_only_during_planning() -> None:
+    request = DaprAgentRunRequest(
+        prompt="Plan the feature",
+        profile="feature-delivery",
+        mode="feature_delivery_plan",
+        toolPolicy="all",
+    )
+
+    assert _resolve_effective_tool_group(request) == "planning"
+
+
 def test_build_result_payload_returns_change_summary(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
     monkeypatch.setattr(app, "run_state_store", FakeStateStore())
@@ -128,7 +143,9 @@ def test_build_result_payload_returns_change_summary(tmp_path: Path, monkeypatch
     _persist_run_context(
         AgentRunContext(
             instance_id="wf-123",
+            mode="execute_direct",
             profile="review",
+            model="gpt-5.4",
             cwd=str(repo_root),
             tool_group="read_only",
             max_turns=30,
@@ -152,6 +169,76 @@ def test_build_result_payload_returns_change_summary(tmp_path: Path, monkeypatch
     assert payload["agentProgress"]["framework"] == "dapr-agent"
     assert payload["agentProgress"]["status"] == "completed"
     assert payload["traceId"] == "0123456789abcdef0123456789abcdef"
+
+
+def test_build_result_payload_returns_plan_artifact_for_planning_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(app, "run_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "run_context_cache", {})
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-plan",
+            mode="feature_delivery_plan",
+            profile="feature-delivery",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="read_only",
+            max_turns=30,
+            trace_id="trace-plan",
+        )
+    )
+
+    payload = _build_result_payload(
+        instance_id="wf-plan",
+        request=DaprAgentRunRequest(
+            prompt="Add feature flags to the API",
+            profile="feature-delivery",
+            mode="feature_delivery_plan",
+            cwd=str(repo_root),
+            verifyCommands="pnpm type-check\npnpm test",
+        ),
+        workflow_output={
+            "plan": {
+                "summary": "Introduce feature flag checks in the API layer.",
+                "tasks": [
+                    {"title": "Audit current flag usage"},
+                    {"title": "Implement API middleware"},
+                ],
+                "acceptanceCriteria": ["Feature flags gate the new endpoint"],
+                "verificationCommands": ["pnpm type-check", "pnpm test"],
+                "files": ["src/api/feature-flags.ts"],
+            },
+            "planMarkdown": "# Plan\n\n- Audit current flag usage",
+        },
+    )
+
+    assert payload["mode"] == "feature_delivery_plan"
+    assert payload["artifactRef"] == "plan_wf-plan"
+    assert payload["plan"]["goal"] == "Add feature flags to the API"
+    assert payload["plan"]["files"] == ["src/api/feature-flags.ts"]
+    assert payload["verification"]["status"] == "planned"
+    assert payload["snapshotRefs"] == []
+    assert payload["agentProgress"]["phase"] == "planned"
+
+
+def test_build_run_context_uses_request_model_over_runtime_default() -> None:
+    context = _build_run_context(
+        "wf-model",
+        DaprAgentRunRequest(
+            prompt="Review the project",
+            profile="review",
+            model="gpt-5.4",
+        ),
+        trace_id="trace-123",
+    )
+
+    assert context.model == "gpt-5.4"
+    assert context.trace_id == "trace-123"
 
 
 def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
@@ -181,7 +268,9 @@ def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
     _persist_run_context(
         AgentRunContext(
             instance_id="wf-artifacts",
+            mode="execute_direct",
             profile="implement",
+            model="gpt-5.4",
             cwd=str(repo_root),
             tool_group="all",
             max_turns=12,
@@ -214,6 +303,34 @@ def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
     assert snapshot["snapshot"]["content"] == "hello"
 
 
+def test_change_summary_and_patch_include_untracked_files(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    subprocess_run = __import__("subprocess").run
+    subprocess_run(
+        ["git", "init"],
+        cwd=repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (repo_root / "scripts").mkdir()
+    (repo_root / "scripts" / "__pycache__").mkdir()
+    created = repo_root / "scripts" / "demo.py"
+    created.write_text("print('hello')\n", encoding="utf-8")
+    generated = repo_root / "scripts" / "__pycache__" / "demo.cpython-312.pyc"
+    generated.write_bytes(b"pyc")
+
+    summary = summarize_command_changes(repo_root)
+    patch = build_workspace_patch(repo_root)
+
+    assert summary["changeSummary"]["changed"] is True
+    assert summary["changeSummary"]["files"][0]["path"] == "scripts/demo.py"
+    assert summary["changeSummary"]["files"][0]["status"] == "untracked"
+    assert "diff --git a/scripts/demo.py b/scripts/demo.py" in patch
+    assert "__pycache__" not in patch
+
+
 def test_runtime_introspect_reports_profiles() -> None:
     response = runtime_introspect()
 
@@ -222,6 +339,208 @@ def test_runtime_introspect_reports_profiles() -> None:
     assert response["registry"]["enabled"] is True
     assert any(entry["name"] == "dapr-coding-agent" for entry in response["registry"]["registeredAgents"])
     assert any(profile["id"] == "review" for profile in response["publishedProfiles"])
+
+
+def test_api_run_terminate_cleans_workspace_and_keeps_run_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    class FakeWorkflowClient:
+        def __init__(self) -> None:
+            self.terminated: list[tuple[str, object]] = []
+
+        def terminate_workflow(self, instance_id: str, *, output: object = None) -> None:
+            self.terminated.append((instance_id, output))
+
+    fake_client = FakeWorkflowClient()
+    monkeypatch.setattr(app, "_workflow_client_for_runs", lambda: fake_client)
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(parents=True)
+    repo_root = workspace_root / "repo"
+    repo_root.mkdir()
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-123",
+        execution_id="exec-123",
+        root_path=workspace_root,
+        working_directory=repo_root,
+        enabled_tools=["read", "bash"],
+    )
+    _persist_workspace_session(session)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-terminate",
+            mode="execute_direct",
+            profile="implement",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="all",
+            max_turns=12,
+            execution_id="exec-123",
+            workspace_ref="workspace-123",
+            trace_id="trace-terminate",
+        )
+    )
+
+    response = app.api_run_terminate(
+        "wf-terminate",
+        TerminateRequest(
+            reason="timeout",
+            workspaceRef="workspace-123",
+            cleanupWorkspace=True,
+        ),
+    )
+
+    assert response["success"] is True
+    assert fake_client.terminated == [("wf-terminate", "timeout")]
+    assert _load_workspace_session("workspace-123") is None
+    assert _load_run_context("wf-terminate") is not None
+
+
+def test_rejected_tool_attempt_still_advances_iteration(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-rejected-tool",
+            mode="execute_direct",
+            profile="review",
+            model="gpt-5.4",
+            cwd="/tmp",
+            tool_group="read_only",
+            max_turns=24,
+            trace_id="trace-rejected-tool",
+        )
+    )
+
+    fake_agent = object.__new__(app.CodingDurableAgent)
+
+    with pytest.raises(app.AgentError, match="not allowed for tool group"):
+        app.CodingDurableAgent.run_tool(
+            fake_agent,
+            None,
+            {
+                "instance_id": "wf-rejected-tool",
+                "tool_call": {
+                    "id": "tool-1",
+                    "function": {
+                        "name": "ExecuteCommand",
+                        "arguments": "{}",
+                    },
+                },
+            },
+        )
+
+    progress = app._load_agent_progress("wf-rejected-tool")
+
+    assert progress is not None
+    assert progress["currentIteration"] == 1
+    assert progress["activeToolName"] is None
+    assert progress["recentTurns"] == [
+        {
+            "label": "ExecuteCommand",
+            "summary": "Rejected ExecuteCommand: not allowed for read_only",
+            "status": "failed",
+        }
+    ]
+
+
+def test_call_llm_advances_iteration(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-call-llm",
+            mode="execute_direct",
+            profile="review",
+            model="gpt-5.4",
+            cwd="/tmp",
+            tool_group="read_only",
+            max_turns=24,
+            trace_id="trace-call-llm",
+        )
+    )
+
+    monkeypatch.setattr(
+        app.DurableAgent,
+        "call_llm",
+        lambda self, ctx, payload: {
+            "role": "assistant",
+            "content": "ok",
+        },
+        raising=False,
+    )
+
+    fake_agent = object.__new__(app.CodingDurableAgent)
+
+    result = app.CodingDurableAgent.call_llm(
+        fake_agent,
+        None,
+        {
+            "instance_id": "wf-call-llm",
+        },
+    )
+
+    progress = app._load_agent_progress("wf-call-llm")
+
+    assert result["content"] == "ok"
+    assert progress is not None
+    assert progress["currentIteration"] == 1
+    assert progress["summary"] == "Reasoning iteration 1"
+
+
+def test_dapr_agent_workflow_does_not_reset_progress_during_replay(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeAgent:
+        def agent_workflow(self, _ctx, _message):
+            if False:
+                yield None
+            return {"content": "done"}
+
+    class FakeCtx:
+        instance_id = "wf-replay"
+        is_replaying = True
+
+    monkeypatch.setattr(app, "_persist_run_context", lambda *_args, **_kwargs: calls.append(("persist", "context")))
+    monkeypatch.setattr(
+        app,
+        "_persist_agent_progress",
+        lambda *_args, **_kwargs: calls.append(("persist", "progress")),
+    )
+    monkeypatch.setattr(
+        app,
+        "_update_agent_progress",
+        lambda *_args, **_kwargs: calls.append(("update", "progress")),
+    )
+    monkeypatch.setattr(app, "_build_run_agent", lambda _run_context: FakeAgent())
+    monkeypatch.setattr(app, "_build_result_payload", lambda **_kwargs: {"ok": True})
+
+    workflow = app.dapr_agent_workflow(
+        FakeCtx(),
+        {
+            "prompt": "Review the project",
+            "profile": "review",
+        },
+    )
+
+    with pytest.raises(StopIteration) as stop:
+        next(workflow)
+
+    assert stop.value.value == {"ok": True}
+    assert calls == []
 
 
 def test_execute_step_wraps_api_run(monkeypatch) -> None:

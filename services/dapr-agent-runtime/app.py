@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import re
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -333,6 +334,11 @@ SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agen
 
 
 PROFILE_INSTRUCTIONS: dict[str, str] = {
+    "feature-delivery": (
+        "You are a senior feature delivery coding agent. First inspect the repository and "
+        "produce a concrete implementation plan. After approval, implement the approved plan, "
+        "review your own changes, verify the result, and return durable code artifacts."
+    ),
     "review": (
         "You are a senior code reviewer. Inspect the repository, identify the most important "
         "risks or defects, and return concise engineer-facing findings with file references."
@@ -354,6 +360,7 @@ PROFILE_INSTRUCTIONS: dict[str, str] = {
 }
 
 PROFILE_TOOL_GROUPS: dict[str, str] = {
+    "feature-delivery": "all",
     "review": "read_only",
     "implement": "all",
     "repair": "all",
@@ -372,6 +379,12 @@ HOT_RELOAD_RUNTIME_KEYS = [
     RuntimeConfigKey.LLM_PROVIDER,
     RuntimeConfigKey.LLM_MODEL,
 ]
+
+PLAN_MODE = "plan_mode"
+EXECUTE_MODE = "execute_direct"
+FEATURE_DELIVERY_PLAN_MODE = "feature_delivery_plan"
+FEATURE_DELIVERY_EXECUTE_MODE = "feature_delivery_execute"
+PLAN_ARTIFACT_TYPE = "claude_task_graph_v1"
 
 
 class WorkspaceProfileRequest(BaseModel):
@@ -440,6 +453,7 @@ class WorkspaceCleanupRequest(BaseModel):
 
 class DaprAgentRunRequest(BaseModel):
     prompt: str = Field(min_length=1)
+    mode: str | None = None
     profile: str = Field(default="implement")
     model: str | None = None
     waitForCompletion: bool = Field(default=False)
@@ -459,6 +473,8 @@ class DaprAgentRunRequest(BaseModel):
     openAIApiKey: str | None = None
     executionId: str | None = None
     dbExecutionId: str | None = None
+    artifactRef: str | None = None
+    planJson: dict[str, Any] | list[dict[str, Any]] | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -473,6 +489,9 @@ class ExecuteRequest(BaseModel):
 
 class TerminateRequest(BaseModel):
     reason: str | None = None
+    workspaceRef: str | None = None
+    parentExecutionId: str | None = None
+    cleanupWorkspace: bool = False
 
 
 @dataclass
@@ -520,37 +539,54 @@ class WorkspaceSession:
 @dataclass
 class AgentRunContext:
     instance_id: str
+    mode: str
     profile: str
+    model: str
     cwd: str
     tool_group: str
     max_turns: int
     execution_id: str | None = None
     workspace_ref: str | None = None
     trace_id: str | None = None
+    artifact_ref: str | None = None
+    verify_commands: list[str] | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
             "instanceId": self.instance_id,
+            "mode": self.mode,
             "profile": self.profile,
+            "model": self.model,
             "cwd": self.cwd,
             "toolGroup": self.tool_group,
             "maxTurns": self.max_turns,
             "executionId": self.execution_id,
             "workspaceRef": self.workspace_ref,
             "traceId": self.trace_id,
+            "artifactRef": self.artifact_ref,
+            "verifyCommands": list(self.verify_commands or []),
         }
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> "AgentRunContext":
         return cls(
             instance_id=str(record.get("instanceId") or ""),
+            mode=_normalize_run_mode(record.get("mode")),
             profile=_normalize_profile(str(record.get("profile") or "custom")),
+            model=str(record.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
             cwd=_resolve_cwd(str(record.get("cwd") or "")),
             tool_group=_resolve_tool_group(str(record.get("toolGroup") or "all")),
             max_turns=max(int(record.get("maxTurns") or 30), 1),
             execution_id=str(record.get("executionId") or "").strip() or None,
             workspace_ref=str(record.get("workspaceRef") or "").strip() or None,
             trace_id=str(record.get("traceId") or "").strip() or None,
+            artifact_ref=str(record.get("artifactRef") or "").strip() or None,
+            verify_commands=[
+                str(command).strip()
+                for command in (record.get("verifyCommands") or [])
+                if str(command).strip()
+            ]
+            or None,
         )
 
 
@@ -686,6 +722,48 @@ def _normalize_profile(raw: str | None) -> str:
     return normalized if normalized in PROFILE_INSTRUCTIONS else "custom"
 
 
+def _normalize_run_mode(raw: object) -> str:
+    normalized = str(raw or "").strip().lower()
+    if normalized in {
+        PLAN_MODE,
+        FEATURE_DELIVERY_PLAN_MODE,
+        "plan",
+        "plan_only",
+    }:
+        return FEATURE_DELIVERY_PLAN_MODE
+    if normalized in {
+        FEATURE_DELIVERY_EXECUTE_MODE,
+        "execute_plan",
+        "feature_delivery",
+        "implement_from_plan",
+    }:
+        return FEATURE_DELIVERY_EXECUTE_MODE
+    return EXECUTE_MODE
+
+
+def _is_planning_mode(mode: str) -> bool:
+    return _normalize_run_mode(mode) == FEATURE_DELIVERY_PLAN_MODE
+
+
+def _is_feature_execution_mode(mode: str) -> bool:
+    return _normalize_run_mode(mode) == FEATURE_DELIVERY_EXECUTE_MODE
+
+
+def _parse_verify_commands(value: object) -> list[str]:
+    if not isinstance(value, str):
+        return []
+    return [line.strip() for line in value.splitlines() if line.strip()]
+
+
+def _progress_phase_for_mode(mode: str, *, step: str = "active") -> str:
+    normalized_mode = _normalize_run_mode(mode)
+    if normalized_mode == FEATURE_DELIVERY_PLAN_MODE:
+        return "planning"
+    if normalized_mode == FEATURE_DELIVERY_EXECUTE_MODE:
+        return "verifying" if step == "verify" else "implementing"
+    return "reasoning" if step == "active" else "completed"
+
+
 def _trace_id_from_traceparent(traceparent: object) -> str | None:
     if not isinstance(traceparent, str):
         return None
@@ -720,6 +798,15 @@ def _current_trace_id() -> str | None:
         return f"{trace_id:032x}"
     except Exception:
         return None
+
+
+def _generate_trace_context() -> dict[str, str]:
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    return {
+        "traceparent": f"00-{trace_id}-{span_id}-01",
+        "traceId": trace_id,
+    }
 
 
 def _workflow_context_carrier(
@@ -873,6 +960,8 @@ def _otel_context_from_headers(request: Request) -> dict[str, str]:
         carrier["traceparent"] = traceparent
     if tracestate:
         carrier["tracestate"] = tracestate
+    if not carrier.get("traceparent"):
+        carrier.update(_generate_trace_context())
     return carrier
 
 
@@ -888,6 +977,8 @@ def _resolve_tool_group(policy: str | None) -> str:
 
 
 def _resolve_effective_tool_group(request: DaprAgentRunRequest) -> str:
+    if _is_planning_mode(request.mode or request.profile):
+        return "planning"
     configured = str(request.toolPolicy or "").strip().lower()
     if configured:
         return _resolve_tool_group(configured)
@@ -915,10 +1006,127 @@ def _resolve_effective_tool_group(request: DaprAgentRunRequest) -> str:
     return PROFILE_TOOL_GROUPS.get(_normalize_profile(request.profile), AGENT_TOOL_GROUP)
 
 
+def _resolve_effective_model(request: DaprAgentRunRequest) -> str:
+    configured = str(request.model or "").strip()
+    if configured:
+        return configured
+    return _effective_default_model()
+
+
+def _extract_json_block(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    candidates = [stripped]
+    fenced = re.findall(r"```json\s*(\{.*?\})\s*```", stripped, flags=re.DOTALL)
+    candidates.extend(fenced)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+    return None
+
+
+def _fallback_plan_json(request: DaprAgentRunRequest, markdown: str) -> dict[str, Any]:
+    verification_commands = _parse_verify_commands(request.verifyCommands)
+    return {
+        "artifactType": PLAN_ARTIFACT_TYPE,
+        "goal": request.prompt,
+        "summary": markdown.strip()[:500] or request.prompt,
+        "tasks": [
+            {
+                "id": "task-1",
+                "title": "Implement approved feature",
+                "description": markdown.strip() or request.prompt,
+                "tool": "coding-agent",
+            }
+        ],
+        "acceptanceCriteria": [request.expectedOutput] if request.expectedOutput else [],
+        "verificationCommands": verification_commands,
+        "files": [],
+    }
+
+
+def _render_plan_markdown(plan: dict[str, Any], request: DaprAgentRunRequest) -> str:
+    lines = [
+        f"# Feature Plan",
+        "",
+        f"## Goal",
+        request.prompt,
+    ]
+    summary = str(plan.get("summary") or "").strip()
+    if summary:
+        lines.extend(["", "## Summary", summary])
+    tasks = plan.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        lines.extend(["", "## Tasks"])
+        for index, task in enumerate(tasks, start=1):
+            if not isinstance(task, dict):
+                continue
+            title = str(task.get("title") or task.get("subject") or f"Task {index}").strip()
+            description = str(task.get("description") or task.get("instructions") or "").strip()
+            lines.append(f"{index}. {title}")
+            if description:
+                lines.append(f"   {description}")
+    verification_commands = plan.get("verificationCommands")
+    if isinstance(verification_commands, list) and verification_commands:
+        lines.extend(["", "## Verification"])
+        lines.extend([f"- `{str(command).strip()}`" for command in verification_commands if str(command).strip()])
+    acceptance = plan.get("acceptanceCriteria")
+    if isinstance(acceptance, list) and acceptance:
+        lines.extend(["", "## Acceptance Criteria"])
+        lines.extend([f"- {str(item).strip()}" for item in acceptance if str(item).strip()])
+    return "\n".join(lines).strip()
+
+
+def _extract_plan_payload(
+    workflow_output: Any,
+    request: DaprAgentRunRequest,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    if isinstance(workflow_output, dict):
+        candidate_plan = workflow_output.get("plan")
+        plan_markdown = str(
+            workflow_output.get("planMarkdown")
+            or workflow_output.get("content")
+            or workflow_output.get("text")
+            or ""
+        ).strip()
+        if isinstance(candidate_plan, dict):
+            plan = dict(candidate_plan)
+        else:
+            plan = _extract_json_block(plan_markdown) or _fallback_plan_json(
+                request, plan_markdown
+            )
+    else:
+        plan_markdown = _coerce_text(workflow_output)
+        plan = _extract_json_block(plan_markdown) or _fallback_plan_json(
+            request, plan_markdown
+        )
+    plan.setdefault("artifactType", PLAN_ARTIFACT_TYPE)
+    plan.setdefault("goal", request.prompt)
+    plan.setdefault("verificationCommands", _parse_verify_commands(request.verifyCommands))
+    rendered_markdown = _render_plan_markdown(plan, request)
+    metadata = {
+        "mode": _normalize_run_mode(request.mode or request.profile),
+        "profile": _normalize_profile(request.profile),
+        "sourceRuntime": "dapr-agent-runtime",
+        "verificationCommands": plan.get("verificationCommands") or [],
+        "planWarnings": []
+        if _extract_json_block(plan_markdown or rendered_markdown)
+        else ["Plan result was normalized from free-form agent output."],
+    }
+    return plan, rendered_markdown or plan_markdown, metadata
+
+
 def _build_task_prompt(request: DaprAgentRunRequest) -> str:
     profile = _normalize_profile(request.profile)
+    run_mode = _normalize_run_mode(request.mode or request.profile)
     segments = [
         f"Profile: {profile}",
+        f"Run mode: {run_mode}",
         f"Profile instructions: {PROFILE_INSTRUCTIONS[profile]}",
         f"Task:\n{request.prompt}",
     ]
@@ -942,6 +1150,26 @@ def _build_task_prompt(request: DaprAgentRunRequest) -> str:
         segments.append(f"Write policy:\n{request.writePolicy}")
     if request.shellPolicy:
         segments.append(f"Shell policy:\n{request.shellPolicy}")
+    if _is_planning_mode(run_mode):
+        segments.append(
+            "Planning contract:\n"
+            "Inspect the repository in a read-only loop. Do not make file changes. "
+            "Return a final JSON object with keys: summary, tasks, acceptanceCriteria, "
+            "verificationCommands, and files. Each task should describe a concrete implementation step."
+        )
+    elif _is_feature_execution_mode(run_mode):
+        if request.artifactRef:
+            segments.append(f"Approved plan artifact:\n{request.artifactRef}")
+        if request.planJson:
+            segments.append(
+                "Approved plan JSON:\n"
+                f"{json.dumps(request.planJson, indent=2, default=str)}"
+            )
+        segments.append(
+            "Execution contract:\n"
+            "Implement the approved plan directly in the repository. Review your own edits as you go, "
+            "run the provided verification commands when possible, and finish with a concise summary of the code changes."
+        )
     return "\n\n".join(segment for segment in segments if segment.strip())
 
 
@@ -953,12 +1181,73 @@ def _build_result_payload(
 ) -> dict[str, Any]:
     text = _coerce_text(workflow_output)
     cwd = _resolve_request_cwd(request)
-    summary = summarize_command_changes(cwd)
     run_context = _load_run_context(instance_id)
+    run_mode = _normalize_run_mode(
+        request.mode or (run_context.mode if run_context is not None else request.profile)
+    )
     progress = _load_agent_progress(instance_id)
     if progress is None:
         context = run_context or _build_run_context(instance_id, request)
         progress = _default_agent_progress(context, status="completed")
+    if _is_planning_mode(run_mode):
+        plan, plan_markdown, plan_metadata = _extract_plan_payload(workflow_output, request)
+        plan_artifact_ref = (
+            run_context.artifact_ref
+            if run_context and run_context.artifact_ref
+            else str(request.artifactRef or "").strip() or f"plan_{instance_id}"
+        )
+        progress = {
+            **progress,
+            "status": "completed",
+            "phase": "planned",
+            "summary": str(plan.get("summary") or text[:280] or progress.get("summary")),
+            "activeToolName": None,
+            "stopReason": "plan generated",
+            "currentStepName": "plan",
+            "updatedAt": _utc_now_iso(),
+        }
+        _persist_agent_progress(instance_id, progress)
+        result = {
+            "text": plan_markdown,
+            "content": plan_markdown,
+            "profile": _normalize_profile(request.profile),
+            "mode": run_mode,
+            "model": _resolve_effective_model(request),
+            "artifactRef": plan_artifact_ref,
+            "plan": plan,
+            "planMarkdown": plan_markdown,
+            "planMetadata": plan_metadata,
+            "toolCalls": [],
+            "usageTotals": {},
+            "fileChanges": [],
+            "changeSummary": {
+                "files": [],
+                "stats": {"files": 0, "additions": 0, "deletions": 0},
+                "changed": False,
+            },
+            "patch": "",
+            "patchRef": None,
+            "snapshotRefs": [],
+            "verification": {
+                "commands": plan.get("verificationCommands") or [],
+                "status": "planned",
+            },
+            "agentWorkflowId": instance_id,
+            "daprInstanceId": instance_id,
+            "traceId": run_context.trace_id if run_context else None,
+            "agentProgress": progress,
+            "runSummary": {
+                "profile": _normalize_profile(request.profile),
+                "mode": run_mode,
+                "model": _resolve_effective_model(request),
+                "cwd": cwd,
+                "workspaceRef": request.workspaceRef,
+                "toolGroup": _resolve_effective_tool_group(request),
+            },
+        }
+        _persist_run_artifact(instance_id, result)
+        return result
+    summary = summarize_command_changes(cwd)
     progress = {
         **progress,
         "status": "completed",
@@ -983,19 +1272,33 @@ def _build_result_payload(
         "text": text,
         "content": text,
         "profile": _normalize_profile(request.profile),
-        "model": request.model or _effective_default_model(),
+        "mode": run_mode,
+        "model": _resolve_effective_model(request),
         "toolCalls": [],
         "usageTotals": {},
         "fileChanges": summary["changeSummary"]["files"],
         "changeSummary": summary["changeSummary"],
         "patch": patch,
         "patchRef": None,
+        "artifactRef": request.artifactRef,
+        "plan": request.planJson if isinstance(request.planJson, dict) else None,
+        "snapshotRefs": [
+            file_change.get("path")
+            for file_change in summary["changeSummary"]["files"]
+            if isinstance(file_change, dict) and str(file_change.get("path") or "").strip()
+        ],
+        "verification": {
+            "commands": _parse_verify_commands(request.verifyCommands),
+            "status": "requested" if request.verifyCommands else "not_requested",
+        },
         "agentWorkflowId": instance_id,
         "daprInstanceId": instance_id,
         "traceId": run_context.trace_id if run_context else None,
         "agentProgress": progress,
         "runSummary": {
             "profile": _normalize_profile(request.profile),
+            "mode": run_mode,
+            "model": _resolve_effective_model(request),
             "cwd": cwd,
             "workspaceRef": request.workspaceRef,
             "toolGroup": _resolve_effective_tool_group(request),
@@ -1190,6 +1493,8 @@ def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:
         "patch": str(result.get("patch") or ""),
         "changeSummary": change_summary,
         "fileChanges": result.get("fileChanges") or [],
+        "artifactRef": result.get("artifactRef"),
+        "snapshotRefs": result.get("snapshotRefs") or [],
         "createdAt": _utc_now_iso(),
     }
     try:
@@ -1228,12 +1533,17 @@ def _safe_workspace_file_snapshot(root: str, relative_path: str) -> dict[str, An
 
 
 def _default_agent_progress(context: AgentRunContext, *, status: str = "scheduled") -> dict[str, Any]:
+    planning_mode = _is_planning_mode(context.mode)
     return {
         "framework": "dapr-agent",
         "status": status,
-        "phase": "queued" if status == "scheduled" else "starting",
+        "phase": (
+            "queued"
+            if status == "scheduled"
+            else _progress_phase_for_mode(context.mode)
+        ),
         "summary": None,
-        "currentStepName": context.profile,
+        "currentStepName": "plan" if planning_mode else context.profile,
         "completedSteps": None,
         "totalSteps": None,
         "currentIteration": 0,
@@ -1368,28 +1678,42 @@ class CodingDurableAgent(DurableAgent):
                 e,
             )
 
+    def call_llm(
+        self,
+        ctx: wf.WorkflowActivityContext,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        instance_id = str(payload.get("instance_id") or "")
+        run_context = _load_run_context(instance_id)
+        if run_context is not None:
+            existing_progress = _load_agent_progress(instance_id) or _default_agent_progress(
+                run_context,
+                status="running",
+            )
+            next_iteration = int(existing_progress.get("currentIteration") or 0) + 1
+            _update_agent_progress(
+                instance_id,
+                phase=_progress_phase_for_mode(run_context.mode),
+                status="running",
+                currentIteration=next_iteration,
+                activeToolName=None,
+                summary=(
+                    f"Planning iteration {next_iteration}"
+                    if _is_planning_mode(run_context.mode)
+                    else f"Reasoning iteration {next_iteration}"
+                ),
+            )
+        return super().call_llm(ctx, payload)
+
     def run_tool(self, ctx: wf.WorkflowActivityContext, payload: dict[str, Any]) -> dict[str, Any]:
         tool_call = payload.get("tool_call", {})
         fn_name = tool_call["function"]["name"]
         raw_args = tool_call["function"].get("arguments", "")
-        try:
-            args = json.loads(raw_args) if raw_args else {}
-        except json.JSONDecodeError as exc:
-            raise AgentError(f"Invalid JSON in tool args: {exc}") from exc
 
         instance_id = str(payload.get("instance_id") or "")
         run_context = _load_run_context(instance_id)
         if run_context is None:
             raise AgentError(f"Missing durable run context for {instance_id}")
-
-        allowed_names = {
-            getattr(tool, "name", None) or getattr(tool, "__name__", "")
-            for tool in resolve_tool_group(run_context.tool_group)
-        }
-        if fn_name not in allowed_names:
-            raise AgentError(
-                f"Tool '{fn_name}' is not allowed for tool group '{run_context.tool_group}'"
-            )
 
         existing_progress = _load_agent_progress(instance_id) or _default_agent_progress(
             run_context,
@@ -1404,15 +1728,61 @@ class CodingDurableAgent(DurableAgent):
                 "status": "running",
             }
         )
+        try:
+            args = json.loads(raw_args) if raw_args else {}
+        except json.JSONDecodeError as exc:
+            recent_turns[-1] = {
+                "label": fn_name,
+                "summary": f"Failed {fn_name}: invalid JSON arguments",
+                "status": "failed",
+            }
+            _update_agent_progress(
+                instance_id,
+                phase=_progress_phase_for_mode(run_context.mode),
+                status="running",
+                activeToolName=None,
+                summary=f"Failed tool {fn_name}",
+                recentTurns=recent_turns,
+            )
+            raise AgentError(f"Invalid JSON in tool args: {exc}") from exc
+
+        verify_commands = set(run_context.verify_commands or [])
+        command = str(args.get("command") or "").strip()
+        tool_phase = _progress_phase_for_mode(
+            run_context.mode,
+            step="verify" if command and command in verify_commands else "active",
+        )
         _update_agent_progress(
             instance_id,
-            phase="tool_call",
+            phase=tool_phase,
             status="running",
             currentIteration=next_iteration,
             activeToolName=fn_name,
             summary=f"Running tool {fn_name}",
             recentTurns=recent_turns,
         )
+
+        allowed_names = {
+            getattr(tool, "name", None) or getattr(tool, "__name__", "")
+            for tool in resolve_tool_group(run_context.tool_group)
+        }
+        if fn_name not in allowed_names:
+            recent_turns[-1] = {
+                "label": fn_name,
+                "summary": f"Rejected {fn_name}: not allowed for {run_context.tool_group}",
+                "status": "failed",
+            }
+            _update_agent_progress(
+                instance_id,
+                phase=_progress_phase_for_mode(run_context.mode),
+                status="running",
+                activeToolName=None,
+                summary=f"Rejected tool {fn_name}",
+                recentTurns=recent_turns,
+            )
+            raise AgentError(
+                f"Tool '{fn_name}' is not allowed for tool group '{run_context.tool_group}'"
+            )
 
         async def _execute_tool() -> Any:
             tool_context = ToolRuntimeContext.from_workspace_root(run_context.cwd)
@@ -1425,7 +1795,23 @@ class CodingDurableAgent(DurableAgent):
             finally:
                 pop_tool_context(token)
 
-        result = self._run_asyncio_task(_execute_tool())
+        try:
+            result = self._run_asyncio_task(_execute_tool())
+        except Exception:
+            recent_turns[-1] = {
+                "label": fn_name,
+                "summary": f"Failed {fn_name}",
+                "status": "failed",
+            }
+            _update_agent_progress(
+                instance_id,
+                phase=_progress_phase_for_mode(run_context.mode),
+                status="running",
+                activeToolName=None,
+                summary=f"Failed tool {fn_name}",
+                recentTurns=recent_turns,
+            )
+            raise
         logger.debug("Tool %s returned: %s (type: %s)", fn_name, result, type(result))
         serialized_result = serialize_tool_result(result)
         tool_result = ToolMessage(
@@ -1442,7 +1828,7 @@ class CodingDurableAgent(DurableAgent):
         }
         _update_agent_progress(
             instance_id,
-            phase="reasoning",
+            phase=_progress_phase_for_mode(run_context.mode),
             status="running",
             activeToolName=None,
             summary=f"Completed tool {fn_name}",
@@ -1637,15 +2023,55 @@ def _build_run_context(
     execution_id = (
         str(request.dbExecutionId or request.executionId or "").strip() or None
     )
+    normalized_mode = _normalize_run_mode(request.mode or request.profile)
+    artifact_ref = str(request.artifactRef or "").strip() or None
+    if artifact_ref is None and _is_planning_mode(normalized_mode):
+        artifact_ref = f"plan_{instance_id}"
     return AgentRunContext(
         instance_id=instance_id,
+        mode=normalized_mode,
         profile=_normalize_profile(request.profile),
+        model=_resolve_effective_model(request),
         cwd=_resolve_request_cwd(request),
         tool_group=_resolve_effective_tool_group(request),
         max_turns=request.maxTurns,
         execution_id=execution_id,
         workspace_ref=request.workspaceRef,
         trace_id=trace_id,
+        artifact_ref=artifact_ref,
+        verify_commands=_parse_verify_commands(request.verifyCommands) or None,
+    )
+
+
+def _build_run_agent(run_context: AgentRunContext) -> CodingDurableAgent:
+    support = _build_durable_support_configs()
+    tool_choice = (
+        str(_effective_runtime_config_value(RuntimeConfigKey.TOOL_CHOICE, "auto") or "auto").strip()
+        or "auto"
+    )
+    return CodingDurableAgent(
+        name=_build_agent_name(),
+        role="autonomous coding agent",
+        goal="Complete coding tasks in a durable, tool-using workflow",
+        instructions=[
+            "Use the available tools to inspect, edit, and verify code.",
+            "When changing code, keep edits minimal and explain what changed.",
+            "Prefer deterministic verification commands when they are provided.",
+            "Respect the profile, workspace, and tool policy passed in the task.",
+        ],
+        llm=_build_llm_client(run_context.model, None),
+        tools=resolve_tool_group(run_context.tool_group),
+        execution=AgentExecutionConfig(
+            max_iterations=max(run_context.max_turns, 1),
+            tool_choice=tool_choice,
+        ),
+        state=support["state"],
+        memory=support["memory"],
+        registry=support["registry"],
+        retry_policy=support["retry_policy"],
+        agent_observability=support["observability"],
+        agent_metadata=_build_agent_registry_metadata(model=run_context.model),
+        runtime=runtime,
     )
 
 
@@ -1656,13 +2082,99 @@ def _resolve_runner_workflow_client() -> Any:
     return candidate
 
 
+def _workflow_client_for_runs() -> Any:
+    return _resolve_runner_workflow_client() or workflow_client
+
+
+def _workflow_input_for_request(
+    request: DaprAgentRunRequest,
+    *,
+    trace_id: str | None,
+) -> dict[str, Any]:
+    payload = request.model_dump(exclude_none=True)
+    carrier = (
+        dict(payload.get("_otel") or {})
+        if isinstance(payload.get("_otel"), dict)
+        else {}
+    )
+    if not carrier.get("traceparent"):
+        generated = _generate_trace_context()
+        if trace_id:
+            generated["traceId"] = trace_id
+            generated["traceparent"] = (
+                f"00-{trace_id}-{generated['traceparent'].split('-')[2]}-01"
+            )
+        carrier.update(generated)
+    if trace_id:
+        payload["traceId"] = trace_id
+        carrier["traceId"] = trace_id
+    payload["_otel"] = carrier
+    return payload
+
+
+def _schedule_workflow_run(
+    request: DaprAgentRunRequest,
+    *,
+    instance_id: str,
+    trace_id: str | None,
+) -> None:
+    client = _workflow_client_for_runs()
+    client.schedule_new_workflow(
+        WORKFLOW_NAME,
+        input=_workflow_input_for_request(request, trace_id=trace_id),
+        instance_id=instance_id,
+    )
+
+
+def _wait_for_terminal_workflow_result(
+    instance_id: str,
+    *,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    client = _workflow_client_for_runs()
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        state = client.get_workflow_state(instance_id, fetch_payloads=True)
+        runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
+        normalized = str(runtime_status).lower()
+        if normalized in {"completed", "failed", "terminated"}:
+            parsed_output = _parse_serialized_output(getattr(state, "serialized_output", None))
+            if isinstance(parsed_output, dict):
+                return {
+                    "status": normalized,
+                    "payload": parsed_output,
+                }
+            artifact = _load_run_artifact(instance_id) or {}
+            progress = _load_agent_progress(instance_id) or {}
+            return {
+                "status": normalized,
+                "payload": {
+                    "success": normalized == "completed",
+                    "agentWorkflowId": instance_id,
+                    "daprInstanceId": instance_id,
+                    "traceId": progress.get("traceId"),
+                    "agentProgress": progress,
+                    "result": artifact,
+                },
+            }
+        time.sleep(1)
+    raise HTTPException(status_code=504, detail=f"Timed out waiting for workflow {instance_id}")
+
+
 def _normalize_run_request(input_data: dict[str, Any] | str | None) -> DaprAgentRunRequest:
     if isinstance(input_data, str):
-        return DaprAgentRunRequest(prompt=input_data, model=_effective_default_model())
+        return DaprAgentRunRequest(
+            prompt=input_data,
+            model=_effective_default_model(),
+            mode=EXECUTE_MODE,
+        )
     payload = dict(input_data or {})
     prompt = str(payload.get("prompt") or payload.get("goal") or payload.get("task") or "").strip()
     payload["prompt"] = prompt
     payload["model"] = str(payload.get("model") or "").strip() or _effective_default_model()
+    payload["mode"] = _normalize_run_mode(
+        payload.get("mode") or payload.get("profile")
+    )
     return DaprAgentRunRequest.model_validate(payload)
 
 
@@ -1684,23 +2196,28 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     request = _normalize_run_request(input_data)
     instance_id = ctx.instance_id
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
-    _persist_run_context(run_context)
-    _persist_agent_progress(instance_id, _default_agent_progress(run_context, status="running"))
-    _update_agent_progress(
-        instance_id,
-        phase="reasoning",
-        summary=f"Starting {run_context.profile} run",
-        currentStepName=run_context.profile,
-    )
+    if not ctx.is_replaying:
+        _persist_run_context(run_context)
+        _persist_agent_progress(
+            instance_id,
+            _default_agent_progress(run_context, status="running"),
+        )
+        _update_agent_progress(
+            instance_id,
+            phase="reasoning",
+            summary=f"Starting {run_context.profile} run",
+            currentStepName=run_context.profile,
+        )
     normalized_request = request.model_copy(
         update={
             "cwd": run_context.cwd,
             "profile": run_context.profile,
+            "model": run_context.model,
             "workspaceRef": run_context.workspace_ref,
         }
     )
     try:
-        agent_result = yield from _get_agent().agent_workflow(
+        agent_result = yield from _build_run_agent(run_context).agent_workflow(
             ctx,
             {"task": _build_task_prompt(normalized_request)},
         )
@@ -1720,7 +2237,7 @@ async def _run_agent_request(
     instance_id: str,
     wait: bool,
     trace_id: str | None = None,
-) -> str | None:
+) -> dict[str, Any] | str | None:
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
     _persist_run_context(run_context)
     _persist_agent_progress(instance_id, _default_agent_progress(run_context, status="running"))
@@ -1730,19 +2247,26 @@ async def _run_agent_request(
         summary=f"Starting {run_context.profile} run",
         currentStepName=run_context.profile,
     )
-    prompt = _build_task_prompt(
-        request.model_copy(update={"cwd": run_context.cwd, "profile": run_context.profile})
+    normalized_request = request.model_copy(
+        update={
+            "cwd": run_context.cwd,
+            "profile": run_context.profile,
+            "model": run_context.model,
+            "workspaceRef": run_context.workspace_ref,
+        }
     )
-    agent = _get_agent()
-    return await runner.run(
-        agent,
-        payload={"task": prompt},
+    _schedule_workflow_run(
+        normalized_request,
         instance_id=instance_id,
-        wait=wait,
-        timeout_in_seconds=request.timeoutMinutes * 60,
-        fetch_payloads=True,
-        log=True,
+        trace_id=trace_id,
     )
+    if not wait:
+        return instance_id
+    terminal = _wait_for_terminal_workflow_result(
+        instance_id,
+        timeout_seconds=normalized_request.timeoutMinutes * 60,
+    )
+    return terminal["payload"]
 
 
 def _extract_openai_api_key(credentials: dict[str, str] | None) -> str | None:
@@ -1856,6 +2380,11 @@ def runtime_introspect() -> dict[str, Any]:
         "toolGroups": list(TOOL_GROUPS.keys()),
         "capabilities": {
             "profiles": _build_profile_descriptors(),
+            "modes": [
+                FEATURE_DELIVERY_PLAN_MODE,
+                FEATURE_DELIVERY_EXECUTE_MODE,
+                EXECUTE_MODE,
+            ],
             "workspaceTools": WORKSPACE_ENABLED_TOOLS,
             "toolGroups": list(TOOL_GROUPS.keys()),
         },
@@ -2195,23 +2724,26 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
     otel_ctx = _otel_context_from_headers(http_request)
     trace_id = _trace_id_from_otel(otel_ctx) or _current_trace_id()
     if request.waitForCompletion:
-        run_context = _build_run_context(instance_id, request, trace_id=trace_id)
-        _persist_run_context(run_context)
-        _persist_agent_progress(instance_id, _default_agent_progress(run_context, status="running"))
-        _update_agent_progress(
-            instance_id,
-            phase="reasoning",
-            summary=f"Starting {run_context.profile} run",
-            currentStepName=run_context.profile,
+        workflow_output = asyncio.run(
+            _run_agent_request(
+                request,
+                instance_id=instance_id,
+                wait=True,
+                trace_id=trace_id,
+            )
         )
-        normalized_request = request.model_copy(update={"cwd": run_context.cwd, "profile": run_context.profile})
-        workflow_output = runner.run_sync(
-            _get_agent(),
-            payload={"task": _build_task_prompt(normalized_request)},
-            instance_id=instance_id,
-            timeout_in_seconds=request.timeoutMinutes * 60,
-            fetch_payloads=True,
-            log=True,
+        if isinstance(workflow_output, dict):
+            return {
+                "success": bool(workflow_output.get("success", False)),
+                "result": workflow_output,
+                **workflow_output,
+            }
+        normalized_request = request.model_copy(
+            update={
+                "cwd": _resolve_request_cwd(request),
+                "profile": _normalize_profile(request.profile),
+                "model": _resolve_effective_model(request),
+            }
         )
         result = _build_result_payload(
             instance_id=instance_id,
@@ -2287,7 +2819,8 @@ def api_run_status(instance_id: str) -> dict[str, Any]:
 
 @app.post("/api/run/{instance_id}/terminate")
 def api_run_terminate(instance_id: str, request: TerminateRequest) -> dict[str, Any]:
-    runner.terminate_workflow(instance_id, output=request.reason or "terminated")
+    client = _workflow_client_for_runs()
+    client.terminate_workflow(instance_id, output=request.reason or "terminated")
     _update_agent_progress(
         instance_id,
         status="terminated",
@@ -2296,7 +2829,15 @@ def api_run_terminate(instance_id: str, request: TerminateRequest) -> dict[str, 
         stopReason=request.reason or "terminated",
         summary=request.reason or "terminated",
     )
-    _delete_run_context(instance_id)
+    if request.cleanupWorkspace:
+        if request.workspaceRef:
+            workspace_cleanup(
+                WorkspaceCleanupRequest(workspaceRef=request.workspaceRef)
+            )
+        elif request.parentExecutionId:
+            workspace_cleanup(
+                WorkspaceCleanupRequest(executionId=request.parentExecutionId)
+            )
     return {"success": True, "instanceId": instance_id, "terminated": True}
 
 
@@ -2307,6 +2848,7 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         return {"success": False, "error": f"Unsupported step: {request.step}"}
     run_request = DaprAgentRunRequest(
         prompt=str(request.input.get("prompt") or request.input.get("goal") or "").strip(),
+        mode=str(request.input.get("mode") or "").strip() or None,
         profile=str(request.input.get("profile") or request.input.get("mode") or "implement"),
         model=str(request.input.get("model") or "").strip() or None,
         waitForCompletion=True,
@@ -2322,6 +2864,10 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         toolPolicy=str(request.input.get("toolPolicy") or "").strip() or None,
         writePolicy=str(request.input.get("writePolicy") or "").strip() or None,
         shellPolicy=str(request.input.get("shellPolicy") or "").strip() or None,
+        artifactRef=str(request.input.get("artifactRef") or "").strip() or None,
+        planJson=request.input.get("planJson")
+        if isinstance(request.input.get("planJson"), dict)
+        else None,
         openAIApiKey=_extract_openai_api_key(request.credentials),
     )
     payload = api_run(run_request)

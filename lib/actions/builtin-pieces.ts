@@ -658,18 +658,30 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 	actions: [
 		{
 			slug: "run",
-			label: "Run Dapr Coding Agent",
+			label: "Run Dapr Feature Delivery Agent",
 			description:
-				"Run a durable autonomous coding agent backed by Python Dapr Agents with workspace and git tools",
+				"Run a durable Dapr-native coding workflow that plans a feature, waits for approval, then implements and verifies it",
 			category: "Dapr Agent",
 			configFields: [
+				{
+					key: "mode",
+					label: "Execution Mode",
+					type: "select",
+					required: true,
+					defaultValue: "plan_mode",
+					options: [
+						{ label: "Plan Feature", value: "plan_mode" },
+						{ label: "Implement Existing Plan", value: "execute_direct" },
+					],
+				},
 				{
 					key: "profile",
 					label: "Agent Profile",
 					type: "select",
 					required: true,
-					defaultValue: "implement",
+					defaultValue: "feature-delivery",
 					options: [
+						{ label: "Feature Delivery", value: "feature-delivery" },
 						{ label: "Implement Task", value: "implement" },
 						{ label: "Repository Review", value: "review" },
 						{ label: "Repair Failure", value: "repair" },
@@ -684,6 +696,13 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Describe the coding task for the agent.",
 					required: true,
 					rows: 6,
+				},
+				{
+					key: "artifactRef",
+					label: "Existing Plan Artifact (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:Dapr Plan.artifactRef}}",
 				},
 				{
 					key: "workspaceRef",
@@ -781,6 +800,26 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Describe what done means for this run.",
 				},
 				{
+					key: "executeAfterApproval",
+					label: "Plan Outcome",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					showWhen: { field: "mode", equals: "plan_mode" },
+					options: [
+						{ label: "Approve Then Implement", value: "true" },
+						{ label: "Stop After Plan", value: "false" },
+					],
+				},
+				{
+					key: "approvalTimeoutMinutes",
+					label: "Approval Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "60",
+					min: 1,
+				},
+				{
 					key: "model",
 					label: "Model",
 					type: "template-input",
@@ -807,6 +846,12 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 			],
 			outputFields: [
 				{ field: "text", description: "Final agent output text" },
+				{
+					field: "artifactRef",
+					description: "Reference ID for the persisted plan artifact",
+				},
+				{ field: "plan", description: "Structured plan JSON" },
+				{ field: "planMarkdown", description: "Markdown plan preview" },
 				{ field: "profile", description: "Agent profile used for the run" },
 				{
 					field: "toolCalls",
@@ -820,6 +865,14 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 				{
 					field: "patchRef",
 					description: "Reference to the full patch artifact",
+				},
+				{
+					field: "snapshotRefs",
+					description: "Changed file paths available for snapshot viewing",
+				},
+				{
+					field: "verification",
+					description: "Verification commands and status",
 				},
 				{
 					field: "changeSummary",

@@ -898,6 +898,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/run`;
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? args.goal ?? "",
+								mode: args.mode,
 								profile: args.profile ?? args.mode ?? "implement",
 								model,
 								maxTurns: args.maxTurns,
@@ -916,6 +917,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								tools: args.tools,
 								writePolicy: args.writePolicy,
 								shellPolicy: args.shellPolicy,
+								artifactRef: args.artifactRef,
+								planJson: args.planJson,
 								waitForCompletion: true,
 							});
 						} else if (isAgentRun) {

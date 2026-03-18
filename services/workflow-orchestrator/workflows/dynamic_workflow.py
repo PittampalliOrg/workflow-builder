@@ -145,6 +145,7 @@ def _restore_runtime_state(
     NodeOutputs,
     set[str],
     dict[str, int],
+    dict[str, int],
     set[str],
     dict[str, dict[str, Any]],
     int,
@@ -187,6 +188,13 @@ def _restore_runtime_state(
         if str(node_id).strip()
     } if isinstance(restored_loop_iterations, dict) else {}
 
+    restored_node_execution_counts = runtime_state.get("nodeExecutionCounts")
+    node_execution_counts = {
+        str(node_id).strip(): _safe_int(count, 0)
+        for node_id, count in restored_node_execution_counts.items()
+        if str(node_id).strip()
+    } if isinstance(restored_node_execution_counts, dict) else {}
+
     restored_skipped = runtime_state.get("skippedNodeIds")
     skipped_node_ids = {
         str(node_id).strip()
@@ -210,6 +218,7 @@ def _restore_runtime_state(
         node_outputs,
         completed_node_ids,
         loop_iterations,
+        node_execution_counts,
         skipped_node_ids,
         skipped_reason_by_node_id,
         next_node_index,
@@ -246,6 +255,7 @@ def _continue_dynamic_workflow_as_new(
     node_outputs: NodeOutputs,
     completed_node_ids: set[str],
     loop_iterations: dict[str, int],
+    node_execution_counts: dict[str, int],
     skipped_node_ids: set[str],
     skipped_reason_by_node_id: dict[str, dict[str, Any]],
     continue_as_new_count: int,
@@ -257,6 +267,7 @@ def _continue_dynamic_workflow_as_new(
         "nodeOutputs": node_outputs,
         "completedNodeIds": sorted(completed_node_ids),
         "loopIterations": loop_iterations,
+        "nodeExecutionCounts": node_execution_counts,
         "skippedNodeIds": sorted(skipped_node_ids),
         "skippedReasonByNodeId": skipped_reason_by_node_id,
         "completedNodeExecutionsSinceCheckpoint": 0,
@@ -536,6 +547,50 @@ def _child_result_explicitly_reports_no_changes(result: dict[str, Any]) -> bool:
     return False
 
 
+def _child_result_reports_changed_files(result: dict[str, Any]) -> bool:
+    payload = _unwrap_child_result_payload(result)
+
+    change_summary = payload.get("changeSummary")
+    if isinstance(change_summary, dict):
+        parsed = _parse_optional_bool(change_summary.get("changed"))
+        if parsed is not None:
+            return parsed
+        files = change_summary.get("files")
+        if isinstance(files, list):
+            return len(files) > 0
+
+    run_summary = payload.get("runSummary")
+    if isinstance(run_summary, dict):
+        nested_change_summary = run_summary.get("changeSummary")
+        if isinstance(nested_change_summary, dict):
+            parsed = _parse_optional_bool(nested_change_summary.get("changed"))
+            if parsed is not None:
+                return parsed
+            files = nested_change_summary.get("files")
+            if isinstance(files, list):
+                return len(files) > 0
+
+    for key in ("files", "changedFiles", "changed_files", "fileChanges"):
+        files = payload.get(key)
+        if isinstance(files, list):
+            return len(files) > 0
+
+    patch = payload.get("patch")
+    if isinstance(patch, str) and patch.strip():
+        return True
+
+    return False
+
+
+def _next_node_execution_count(
+    node_execution_counts: dict[str, int],
+    node_id: str,
+) -> int:
+    next_count = _safe_int(node_execution_counts.get(node_id), 0) + 1
+    node_execution_counts[node_id] = next_count
+    return next_count
+
+
 def _to_compact_agent_result(
     *,
     raw_result: dict[str, Any],
@@ -570,6 +625,17 @@ def _to_compact_agent_result(
             payload.get("context_overflow_recovered", False)
         ),
         "lastCompactionReason": payload.get("last_compaction_reason"),
+        "changeSummary": payload.get("changeSummary"),
+        "fileChanges": payload.get("fileChanges"),
+        "patch": payload.get("patch"),
+        "patchRef": payload.get("patchRef"),
+        "artifactRef": payload.get("artifactRef"),
+        "plan": payload.get("plan"),
+        "planMarkdown": payload.get("planMarkdown"),
+        "snapshotRefs": payload.get("snapshotRefs"),
+        "verification": payload.get("verification"),
+        "traceId": payload.get("traceId"),
+        "agentProgress": payload.get("agentProgress"),
     }
 
 
@@ -728,6 +794,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         node_outputs,
         completed_node_ids,
         loop_iterations,
+        node_execution_counts,
         skipped_node_ids,
         skipped_reason_by_node_id,
         i,
@@ -869,6 +936,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                         ctx=ctx,
                         node=node,
                         node_outputs=node_outputs,
+                        node_execution_counts=node_execution_counts,
                         action_type=action_type,
                         integrations=integrations,
                         db_execution_id=db_execution_id,
@@ -1614,10 +1682,14 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "_otel": otel_ctx,
                 }
 
+                child_execution_index = _next_node_execution_count(
+                    node_execution_counts,
+                    node_id,
+                )
                 child_result = yield ctx.call_child_workflow(
                     dynamic_workflow,
                     input=child_input,
-                    instance_id=f"{ctx.instance_id}__sub__{node_id}",
+                    instance_id=f"{ctx.instance_id}__sub__{node_id}__{child_execution_index}",
                 )
 
                 # Step 4: Collect outputs
@@ -1749,6 +1821,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     node_outputs=node_outputs,
                     completed_node_ids=completed_node_ids,
                     loop_iterations=loop_iterations,
+                    node_execution_counts=node_execution_counts,
                     skipped_node_ids=skipped_node_ids,
                     skipped_reason_by_node_id=skipped_reason_by_node_id,
                     continue_as_new_count=continue_as_new_count,
@@ -1883,6 +1956,7 @@ def process_agent_child_workflow(
     ctx: wf.DaprWorkflowContext,
     node: dict,
     node_outputs: NodeOutputs,
+    node_execution_counts: dict[str, int],
     action_type: str,
     integrations: dict | None,
     db_execution_id: str | None,
@@ -1912,7 +1986,7 @@ def process_agent_child_workflow(
         mode = "plan_mode"
     if action_type == "durable/execute-plan-dag":
         mode = "execute_direct"
-    if is_ms_agent or is_dapr_agent:
+    if is_ms_agent:
         mode = "execute_direct"
 
     configured_artifact_ref = resolved_config.get("artifactRef")
@@ -1922,11 +1996,13 @@ def process_agent_child_workflow(
         else ""
     )
     prompt = str(resolved_config.get("prompt", "") or "").strip()
+    if not prompt and is_dapr_agent and artifact_ref and mode == "execute_direct":
+        prompt = "Implement the approved feature plan"
     if not prompt and action_type == "mastra/execute":
         prompt = "Execute the provided plan"
     if not prompt and action_type == "durable/execute-plan-dag":
         prompt = "Execute the plan as a DAG workflow"
-    if not prompt and (is_ms_agent or is_dapr_agent):
+    if not prompt and (is_ms_agent or (is_dapr_agent and mode == "plan_mode")):
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
@@ -1965,7 +2041,7 @@ def process_agent_child_workflow(
         run_mode = "execute_direct"
         call_activity_fn = None
     elif is_dapr_agent:
-        run_mode = "execute_direct"
+        run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         call_activity_fn = None
     elif action_type == "durable/execute-plan-dag":
         run_mode = "execute_plan_dag"
@@ -2032,6 +2108,28 @@ def process_agent_child_workflow(
         "_otel": otel_ctx,
     }
 
+    fetched_plan_artifact: dict[str, Any] | None = None
+    if is_dapr_agent and artifact_ref and run_mode == "execute_direct":
+        from activities.persist_plan_artifact import fetch_plan_artifact
+
+        fetched = yield ctx.call_activity(
+            fetch_plan_artifact,
+            input={
+                "artifactRef": artifact_ref,
+                "_otel": otel_ctx,
+            },
+        )
+        if not isinstance(fetched, dict) or not fetched.get("success"):
+            return {
+                "success": False,
+                "error": (
+                    fetched.get("error")
+                    if isinstance(fetched, dict)
+                    else f"Plan artifact not found: {artifact_ref}"
+                ),
+            }
+        fetched_plan_artifact = fetched
+
     if run_mode == "execute_plan_dag":
         activity_input["artifactRef"] = artifact_ref
         activity_input["cwd"] = resolved_config.get("cwd", "")
@@ -2089,7 +2187,7 @@ def process_agent_child_workflow(
             return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
 
     planned_payload: dict[str, Any] | None = None
-    if run_mode == "plan_mode":
+    if run_mode == "plan_mode" and not use_native_child_workflow:
         if action_type == "durable/claude-plan":
             schema_version = str(start_result.get("schemaVersion") or "").strip()
             storage_backend = str(start_result.get("storageBackend") or "").strip()
@@ -2347,9 +2445,21 @@ def process_agent_child_workflow(
             )
             or "durableRunWorkflow"
         )
-        mode_suffix = "execute-plan" if run_mode == "execute_plan" else "run"
+        mode_suffix = (
+            "plan"
+            if is_dapr_agent and run_mode == "plan_mode"
+            else "execute-plan"
+            if run_mode == "execute_plan"
+            else "run"
+        )
         child_prefix = "msagent" if is_ms_agent else "dapr" if is_dapr_agent else "durable"
-        child_instance_id = f"{ctx.instance_id}__{child_prefix}__{node_id}__{mode_suffix}"
+        child_execution_index = _next_node_execution_count(
+            node_execution_counts,
+            node_id,
+        )
+        child_instance_id = (
+            f"{ctx.instance_id}__{child_prefix}__{node_id}__{mode_suffix}__{child_execution_index}"
+        )
         stop_condition_raw = resolved_config.get("stopCondition")
         stop_condition = (
             str(stop_condition_raw).strip() if isinstance(stop_condition_raw, str) else ""
@@ -2409,8 +2519,17 @@ def process_agent_child_workflow(
             if max_iterations is not None and max_iterations > 0:
                 child_input["maxIterations"] = max_iterations
         elif is_dapr_agent:
+            child_input["mode"] = (
+                "feature_delivery_plan"
+                if run_mode == "plan_mode"
+                else "feature_delivery_execute"
+                if artifact_ref or fetched_plan_artifact is not None
+                else "execute_direct"
+            )
             if resolved_config.get("profile") is not None:
                 child_input["profile"] = resolved_config.get("profile")
+            elif run_mode == "plan_mode":
+                child_input["profile"] = "feature-delivery"
             elif resolved_config.get("mode") is not None:
                 child_input["profile"] = resolved_config.get("mode")
             if resolved_config.get("model") is not None:
@@ -2429,6 +2548,10 @@ def process_agent_child_workflow(
                 child_input["writePolicy"] = resolved_config.get("writePolicy")
             if resolved_config.get("shellPolicy") is not None:
                 child_input["shellPolicy"] = resolved_config.get("shellPolicy")
+            if artifact_ref:
+                child_input["artifactRef"] = artifact_ref
+            if fetched_plan_artifact and isinstance(fetched_plan_artifact.get("planJson"), dict):
+                child_input["planJson"] = fetched_plan_artifact.get("planJson")
             max_turns_raw = resolved_config.get("maxTurns", max_turns)
             try:
                 effective_max_turns = int(max_turns_raw) if max_turns_raw is not None else None
@@ -2565,6 +2688,378 @@ def process_agent_child_workflow(
         raw_result = child_task.get_result()
         if not isinstance(raw_result, dict):
             raw_result = {"content": str(raw_result)}
+        if is_dapr_agent and run_mode == "plan_mode":
+            from activities.persist_plan_artifact import (
+                persist_plan_artifact,
+                update_plan_artifact_status,
+            )
+
+            plan_payload = _unwrap_child_result_payload(raw_result)
+            plan_json = (
+                plan_payload.get("plan")
+                if isinstance(plan_payload.get("plan"), dict)
+                else None
+            )
+            plan_markdown = str(
+                plan_payload.get("planMarkdown")
+                or plan_payload.get("text")
+                or plan_payload.get("content")
+                or ""
+            ).strip()
+            if not isinstance(plan_json, dict):
+                return {
+                    "success": False,
+                    "error": "Dapr agent planning result did not return plan JSON",
+                }
+            persisted_plan = yield ctx.call_activity(
+                persist_plan_artifact,
+                input={
+                    "dbExecutionId": db_execution_id,
+                    "workflowId": workflow_id,
+                    "nodeId": node_id,
+                    "goal": prompt,
+                    "sourcePrompt": prompt,
+                    "planJson": plan_json,
+                    "planMarkdown": plan_markdown,
+                    "workspaceRef": resolved_config.get("workspaceRef"),
+                    "clonePath": resolved_config.get("cwd"),
+                    "artifactType": plan_payload.get("artifactType") or "claude_task_graph_v1",
+                    "status": "draft",
+                    "metadata": plan_payload.get("planMetadata")
+                    if isinstance(plan_payload.get("planMetadata"), dict)
+                    else {
+                        "promptProfile": plan_payload.get("profile") or resolved_config.get("profile") or "feature-delivery",
+                        "sourceRuntime": "dapr-agent-runtime",
+                    },
+                    "_otel": otel_ctx,
+                },
+            )
+            if not isinstance(persisted_plan, dict) or not persisted_plan.get("success"):
+                return {
+                    "success": False,
+                    "error": (
+                        persisted_plan.get("error")
+                        if isinstance(persisted_plan, dict)
+                        else "Failed to persist Dapr agent plan artifact"
+                    ),
+                }
+            planned_payload = {
+                "artifactRef": persisted_plan.get("artifactRef"),
+                "plan": plan_json,
+                "tasks": plan_json.get("tasks"),
+                "planMarkdown": plan_markdown,
+                "schemaVersion": plan_payload.get("artifactType") or "claude_task_graph_v1",
+                "storageBackend": "workflow_plan_artifacts",
+                "planning": {
+                    "daprPlanningInstanceId": child_instance_id,
+                },
+            }
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_completed
+
+                    yield ctx.call_activity(
+                        track_agent_run_completed,
+                        input={
+                            "id": child_instance_id,
+                            "success": True,
+                            "result": {**planned_payload, **_to_compact_agent_result(
+                                raw_result=raw_result,
+                                workflow_id=child_instance_id,
+                                dapr_instance_id=child_instance_id,
+                                child_workflow_name=child_workflow_name,
+                                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+                            )},
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to persist planning child completion row for {child_instance_id}: {track_err}"
+                    )
+
+            approval_event_name = (
+                f"durable_plan_approval_{node_id}_{ctx.instance_id}".lower()
+            )
+            auto_approve_plan = (
+                _parse_optional_bool(resolved_config.get("autoApprovePlan")) is True
+            )
+            auto_approval_reason = (
+                str(resolved_config.get("autoApproveReason") or "").strip()
+                or "Auto-approved by workflow configuration"
+            )
+            auto_approval_actor = (
+                str(resolved_config.get("autoApproveActor") or "").strip()
+                or "system:auto-approve"
+            )
+            if db_execution_id:
+                yield ctx.call_activity(log_approval_request, input={
+                    "executionId": db_execution_id,
+                    "nodeId": node.get("id"),
+                    "eventName": approval_event_name,
+                    "timeoutSeconds": approval_timeout_minutes * 60,
+                    "_otel": otel_ctx,
+                })
+
+            if auto_approve_plan:
+                approval_result = {
+                    "approved": True,
+                    "reason": auto_approval_reason,
+                    "approvedBy": auto_approval_actor,
+                    "respondedBy": auto_approval_actor,
+                    "autoApproved": True,
+                }
+                if db_execution_id:
+                    yield ctx.call_activity(log_approval_response, input={
+                        "executionId": db_execution_id,
+                        "nodeId": node.get("id"),
+                        "eventName": approval_event_name,
+                        "approved": True,
+                        "reason": auto_approval_reason,
+                        "respondedBy": auto_approval_actor,
+                        "payload": approval_result,
+                        "_otel": otel_ctx,
+                    })
+                approved = True
+            else:
+                ctx.set_custom_status(json.dumps({
+                    "phase": "awaiting_approval",
+                    "progress": 50,
+                    "message": f"Plan ready for approval: {node.get('label')}",
+                    "currentNodeId": node.get("id"),
+                    "currentNodeName": node.get("label") or node.get("id"),
+                    "approvalEventName": approval_event_name,
+                    "traceId": _trace_id_from_otel_context(otel_ctx),
+                }))
+                yield ctx.call_activity(publish_phase_changed, input={
+                    "workflowId": workflow_id,
+                    "executionId": execution_id,
+                    "phase": "awaiting_approval",
+                    "progress": 50,
+                    "message": f"Plan ready for approval: {node.get('label')}",
+                    "_otel": otel_ctx,
+                })
+                approval_event = ctx.wait_for_external_event(approval_event_name)
+                timeout_wait = ctx.create_timer(timedelta(minutes=approval_timeout_minutes))
+                approval_task = yield wf.when_any([approval_event, timeout_wait])
+                if approval_task == timeout_wait:
+                    if db_execution_id:
+                        yield ctx.call_activity(log_approval_timeout, input={
+                            "executionId": db_execution_id,
+                            "nodeId": node.get("id"),
+                            "eventName": approval_event_name,
+                            "timeoutSeconds": approval_timeout_minutes * 60,
+                            "_otel": otel_ctx,
+                        })
+                    yield ctx.call_activity(
+                        update_plan_artifact_status,
+                        input={
+                            "artifactRef": planned_payload.get("artifactRef"),
+                            "status": "failed",
+                            "_otel": otel_ctx,
+                        },
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
+                        **planned_payload,
+                    }
+                approval_result = approval_event.get_result() or {}
+                if db_execution_id:
+                    yield ctx.call_activity(log_approval_response, input={
+                        "executionId": db_execution_id,
+                        "nodeId": node.get("id"),
+                        "eventName": approval_event_name,
+                        "approved": approval_result.get("approved", False),
+                        "reason": approval_result.get("reason"),
+                        "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                        "payload": approval_result,
+                        "_otel": otel_ctx,
+                    })
+                approved = bool(approval_result.get("approved"))
+            if not approved:
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "failed",
+                        "_otel": otel_ctx,
+                    },
+                )
+                reason = approval_result.get("reason") or "Plan was rejected"
+                return {
+                    "success": False,
+                    "error": str(reason),
+                    "approval": approval_result,
+                    **planned_payload,
+                }
+
+            execute_after_approval = (
+                _parse_optional_bool(resolved_config.get("executeAfterApproval")) is True
+            )
+            approved_status = "approved" if not execute_after_approval else "approved"
+            yield ctx.call_activity(
+                update_plan_artifact_status,
+                input={
+                    "artifactRef": planned_payload.get("artifactRef"),
+                    "status": approved_status,
+                    "_otel": otel_ctx,
+                },
+            )
+            if not execute_after_approval:
+                return {
+                    "success": True,
+                    "approved": True,
+                    "approval": approval_result,
+                    **planned_payload,
+                }
+
+            ctx.set_custom_status(json.dumps({
+                "phase": "executing",
+                "progress": 55,
+                "message": f"Plan approved, executing: {node.get('label')}",
+                "currentNodeId": node.get("id"),
+                "currentNodeName": node.get("label") or node.get("id"),
+                "traceId": _trace_id_from_otel_context(otel_ctx),
+            }))
+            yield ctx.call_activity(publish_phase_changed, input={
+                "workflowId": workflow_id,
+                "executionId": execution_id,
+                "phase": "executing",
+                "progress": 55,
+                "message": f"Plan approved, executing: {node.get('label')}",
+                "_otel": otel_ctx,
+            })
+            execute_child_index = _next_node_execution_count(node_execution_counts, node_id)
+            execute_child_instance_id = (
+                f"{ctx.instance_id}__dapr__{node_id}__run__{execute_child_index}"
+            )
+            execute_child_input = {
+                **child_input,
+                "mode": "feature_delivery_execute",
+                "artifactRef": planned_payload.get("artifactRef"),
+                "planJson": plan_json,
+                "task": _build_execute_plan_prompt(
+                    plan=plan_json,
+                    task_prompt=prompt,
+                    cwd=resolved_config.get("cwd"),
+                    require_file_changes=require_file_changes,
+                ),
+            }
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_scheduled
+
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input={
+                            "id": execute_child_instance_id,
+                            "workflowExecutionId": db_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "mode": "run",
+                            "agentWorkflowId": execute_child_instance_id,
+                            "daprInstanceId": execute_child_instance_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "workspaceRef": resolved_config.get("workspaceRef"),
+                            "artifactRef": planned_payload.get("artifactRef"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to persist execute child scheduled row for {execute_child_instance_id}: {track_err}"
+                    )
+            execute_child_task = ctx.call_child_workflow(
+                child_workflow_name,
+                input=execute_child_input,
+                instance_id=execute_child_instance_id,
+                app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+            )
+            execute_timeout = ctx.create_timer(timedelta(minutes=timeout_minutes))
+            execute_completed_task = yield wf.when_any([execute_child_task, execute_timeout])
+            if execute_completed_task == execute_timeout:
+                terminate_result: dict[str, Any] = {"success": False}
+                try:
+                    from activities.call_agent_service import terminate_dapr_agent_run
+
+                    terminate_result = yield ctx.call_activity(
+                        terminate_dapr_agent_run,
+                        input={
+                            "agentWorkflowId": execute_child_instance_id,
+                            "daprInstanceId": execute_child_instance_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "workspaceRef": resolved_config.get("workspaceRef"),
+                            "cleanupWorkspace": True,
+                            "reason": (
+                                "terminated because parent workflow timed out waiting for "
+                                f"approved Dapr execute child ({timeout_minutes} minutes)"
+                            ),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as terminate_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to terminate timed out execute child {execute_child_instance_id}: {terminate_err}"
+                    )
+                    terminate_result = {"success": False, "error": str(terminate_err)}
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "failed",
+                        "_otel": otel_ctx,
+                    },
+                )
+                return {
+                    "success": False,
+                    "error": f"Agent timed out after {timeout_minutes} minutes",
+                    "termination": terminate_result,
+                    **planned_payload,
+                }
+            execute_raw_result = execute_child_task.get_result()
+            if not isinstance(execute_raw_result, dict):
+                execute_raw_result = {"content": str(execute_raw_result)}
+            execute_result_payload = _to_compact_agent_result(
+                raw_result=execute_raw_result,
+                workflow_id=execute_child_instance_id,
+                dapr_instance_id=execute_child_instance_id,
+                child_workflow_name=child_workflow_name,
+                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+            )
+            execute_success = bool(execute_result_payload.get("success", True))
+            yield ctx.call_activity(
+                update_plan_artifact_status,
+                input={
+                    "artifactRef": planned_payload.get("artifactRef"),
+                    "status": "executed" if execute_success else "failed",
+                    "_otel": otel_ctx,
+                },
+            )
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_completed
+
+                    yield ctx.call_activity(
+                        track_agent_run_completed,
+                        input={
+                            "id": execute_child_instance_id,
+                            "success": execute_success,
+                            "result": {**planned_payload, **execute_result_payload},
+                            "error": execute_result_payload.get("error"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to persist execute child completion row for {execute_child_instance_id}: {track_err}"
+                    )
+            return {
+                **planned_payload,
+                "approved": True,
+                "approval": approval_result,
+                **execute_result_payload,
+            }
         result_payload = _to_compact_agent_result(
             raw_result=raw_result,
             workflow_id=child_instance_id,
@@ -2581,12 +3076,17 @@ def process_agent_child_workflow(
         if require_file_changes and not _has_mutating_tool_calls(
             result_payload.get("toolCalls", [])
         ):
-            # Some child runtimes do not return complete tool-call telemetry.
-            # Only hard-fail when the child result explicitly reports no changes.
-            if _child_result_explicitly_reports_no_changes(raw_result):
+            if _child_result_reports_changed_files(raw_result):
+                result_payload["fileChangeVerification"] = "change-summary"
+            elif _child_result_explicitly_reports_no_changes(raw_result):
                 result_payload["success"] = False
                 result_payload["error"] = (
                     "Stop condition requires file changes, but child result explicitly reports no file changes."
+                )
+            elif is_dapr_agent:
+                result_payload["success"] = False
+                result_payload["error"] = (
+                    "Stop condition requires file changes, but the Dapr agent result did not provide verifiable file-change evidence."
                 )
             else:
                 result_payload["fileChangeVerification"] = "unknown"

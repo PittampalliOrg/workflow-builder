@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:
@@ -298,6 +298,88 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
     return completed.stdout.strip()
 
 
+def _run_git_completed(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+
+
+def _should_include_untracked_path(relative_path: str) -> bool:
+    path = PurePosixPath(relative_path)
+    excluded_suffixes = {".pyc", ".pyo"}
+    excluded_parts = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+    if any(part in excluded_parts for part in path.parts):
+        return False
+    if path.suffix.lower() in excluded_suffixes:
+        return False
+    return True
+
+
+def _untracked_files(cwd: Path) -> list[str]:
+    completed = _run_git_completed(
+        ["status", "--porcelain", "--untracked-files=all"],
+        cwd=cwd,
+    )
+    if completed.returncode != 0:
+        return []
+    files: list[str] = []
+    for line in completed.stdout.splitlines():
+        if line.startswith("?? "):
+            path = line[3:].strip()
+            if path and _should_include_untracked_path(path):
+                files.append(path)
+    return files
+
+
+def _untracked_file_numstat(cwd: Path, relative_path: str) -> dict[str, int] | None:
+    path = (cwd / relative_path).resolve()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        content = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return None
+    additions = len(content.splitlines())
+    return {"additions": additions, "deletions": 0}
+
+
+def _untracked_file_patch(cwd: Path, relative_path: str) -> str:
+    completed = subprocess.run(
+        ["git", "diff", "--no-index", "--", "/dev/null", relative_path],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode not in (0, 1):
+        return ""
+    return completed.stdout.strip()
+
+
+def build_workspace_patch(workspace_root: str | os.PathLike[str]) -> str:
+    root = Path(workspace_root).expanduser().resolve()
+    if not root.exists():
+        return ""
+    patch_chunks: list[str] = []
+    try:
+        tracked_patch = _run_git(["diff", "--no-ext-diff"], cwd=root)
+    except Exception:
+        tracked_patch = ""
+    if tracked_patch:
+        patch_chunks.append(tracked_patch)
+    for relative_path in _untracked_files(root):
+        patch = _untracked_file_patch(root, relative_path)
+        if patch:
+            patch_chunks.append(patch)
+    return "\n".join(chunk for chunk in patch_chunks if chunk).strip()
+
+
 @tool
 def git_status(path: str = ".") -> dict[str, Any]:
     """Get git status in the workspace."""
@@ -312,7 +394,7 @@ def git_diff(path: str = ".") -> dict[str, Any]:
     """Get git diff in the workspace."""
     context = _extract_context()
     cwd = context.resolve_path(path)
-    stdout = _run_git(["diff", "--no-ext-diff"], cwd=cwd)
+    stdout = build_workspace_patch(cwd)
     return {"path": path, "diff": stdout}
 
 
@@ -361,6 +443,15 @@ def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
 
 TOOL_GROUPS = {
     "read_only": [read_file, list_files, grep_search, file_stat, git_status, git_diff],
+    "planning": [
+        read_file,
+        list_files,
+        grep_search,
+        file_stat,
+        git_status,
+        git_diff,
+        execute_command,
+    ],
     "read_write": [
         read_file,
         list_files,
@@ -470,6 +561,23 @@ def summarize_command_changes(workspace_root: str | os.PathLike[str]) -> dict[st
         additions += add_count
         deletions += del_count
         files.append({"path": path, "additions": add_count, "deletions": del_count})
+    seen_paths = {str(file_entry.get("path") or "").strip() for file_entry in files}
+    for relative_path in _untracked_files(root):
+        if relative_path in seen_paths:
+            continue
+        stats = _untracked_file_numstat(root, relative_path)
+        if stats is None:
+            continue
+        additions += stats["additions"]
+        deletions += stats["deletions"]
+        files.append(
+            {
+                "path": relative_path,
+                "additions": stats["additions"],
+                "deletions": stats["deletions"],
+                "status": "untracked",
+            }
+        )
     return {
         "changeSummary": {
             "files": files,
