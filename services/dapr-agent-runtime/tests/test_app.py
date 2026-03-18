@@ -630,3 +630,106 @@ def test_workspace_tools_honor_explicit_workspace_root(tmp_path: Path) -> None:
         assert read_file("README.md") == "repo readme"
     finally:
         pop_tool_context(token)
+
+
+def test_api_run_status_falls_back_to_persisted_state_when_workflow_client_is_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+    monkeypatch.setattr(app, "runner", None)
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-persisted",
+            mode="feature_delivery_execute",
+            profile="feature-delivery",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="all",
+            max_turns=40,
+            execution_id="exec-persisted",
+            artifact_ref="plan_persisted",
+            trace_id="trace-persisted",
+        )
+    )
+    app._persist_agent_progress(
+        "wf-persisted",
+        {
+            "framework": "dapr-agent",
+            "status": "completed",
+            "phase": "completed",
+            "summary": "Applied approved plan",
+            "currentIteration": 7,
+            "maxIterations": 40,
+            "traceId": "trace-persisted",
+        },
+    )
+    app._persist_run_artifact(
+        "wf-persisted",
+        {
+            "patch": "diff --git a/demo.py b/demo.py",
+            "artifactRef": "plan_persisted",
+            "changeSummary": {
+                "files": [{"path": "demo.py", "additions": 3, "deletions": 0}],
+                "stats": {"files": 1, "additions": 3, "deletions": 0},
+                "changed": True,
+            },
+            "fileChanges": [{"path": "demo.py", "additions": 3, "deletions": 0}],
+            "snapshotRefs": ["demo.py"],
+        },
+    )
+
+    status = app.api_run_status("wf-persisted")
+
+    assert status["status"] == "completed"
+    assert status["runtimeStatus"] == "PERSISTED_STATE"
+    assert status["traceId"] == "trace-persisted"
+    assert status["agentProgress"]["currentIteration"] == 7
+    assert "diff --git" in status["serializedOutput"]
+
+
+def test_api_run_status_reconstructs_running_progress_from_context_when_state_lookup_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-running",
+            mode="feature_delivery_plan",
+            profile="feature-delivery",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="planning",
+            max_turns=25,
+            execution_id="exec-running",
+            trace_id="trace-running",
+        )
+    )
+
+    class RaisingClient:
+        def get_workflow_state(self, *_args, **_kwargs):
+            raise RuntimeError("workflow state temporarily unavailable")
+
+    class FakeRunner:
+        workflow_client = RaisingClient()
+
+    monkeypatch.setattr(app, "runner", FakeRunner())
+
+    status = app.api_run_status("wf-running")
+
+    assert status["status"] == "running"
+    assert status["runtimeStatus"] == "PERSISTED_STATE"
+    assert status["phase"] == "planning"
+    assert status["agentProgress"]["currentIteration"] == 0
+    assert status["traceId"] == "trace-running"

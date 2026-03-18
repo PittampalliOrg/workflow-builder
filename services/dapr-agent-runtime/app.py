@@ -1512,6 +1512,63 @@ def _load_run_artifact(instance_id: str) -> dict[str, Any] | None:
     return artifact if artifact else None
 
 
+def _status_from_persisted_state(
+    instance_id: str,
+    *,
+    run_context: AgentRunContext | None,
+    progress: dict[str, Any] | None,
+    artifact: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized_status = str(
+        (progress or {}).get("status")
+        or ("completed" if artifact else "running" if run_context else "unknown")
+    ).strip().lower()
+    if normalized_status not in {
+        "scheduled",
+        "running",
+        "completed",
+        "failed",
+        "terminated",
+        "unknown",
+    }:
+        normalized_status = "running" if run_context else "unknown"
+
+    if progress is None and run_context is not None:
+        progress = _default_agent_progress(run_context, status=normalized_status)
+
+    if progress is not None and normalized_status in {"completed", "failed", "terminated"}:
+        progress = {
+            **progress,
+            "status": normalized_status,
+            "phase": "completed" if normalized_status == "completed" else "failed",
+            "activeToolName": None,
+            "stopReason": progress.get("stopReason")
+            or ("workflow completed" if normalized_status == "completed" else normalized_status),
+            "updatedAt": _utc_now_iso(),
+        }
+        _persist_agent_progress(instance_id, progress)
+
+    serialized_output = json.dumps(artifact) if artifact else None
+    resolved_trace_id = (
+        progress.get("traceId")
+        if isinstance(progress, dict)
+        else None
+    ) or (run_context.trace_id if run_context else None) or _trace_id_from_payload(artifact)
+    if isinstance(progress, dict) and resolved_trace_id and not progress.get("traceId"):
+        progress = {**progress, "traceId": resolved_trace_id}
+        _persist_agent_progress(instance_id, progress)
+
+    return {
+        "instanceId": instance_id,
+        "status": normalized_status,
+        "runtimeStatus": "PERSISTED_STATE",
+        "traceId": resolved_trace_id,
+        "phase": progress.get("phase") if isinstance(progress, dict) else None,
+        "agentProgress": progress,
+        "serializedOutput": serialized_output,
+    }
+
+
 def _safe_workspace_file_snapshot(root: str, relative_path: str) -> dict[str, Any] | None:
     workspace_root = Path(root).expanduser().resolve()
     requested = (workspace_root / relative_path).expanduser().resolve()
@@ -2776,13 +2833,37 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
 @app.get("/api/run/{instance_id}")
 def api_run_status(instance_id: str) -> dict[str, Any]:
     workflow_client_instance = _resolve_runner_workflow_client()
-    if workflow_client_instance is None:
-        raise HTTPException(status_code=503, detail="Workflow client unavailable")
-    state = workflow_client_instance.get_workflow_state(instance_id, fetch_payloads=True)
-    runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
     run_context = _load_run_context(instance_id)
     progress = _load_agent_progress(instance_id)
-    serialized_output = getattr(state, "serialized_output", None)
+    artifact = _load_run_artifact(instance_id)
+
+    state = None
+    runtime_status = "UNKNOWN"
+    serialized_output = None
+    if workflow_client_instance is not None:
+        try:
+            state = workflow_client_instance.get_workflow_state(instance_id, fetch_payloads=True)
+            runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
+            serialized_output = getattr(state, "serialized_output", None)
+        except Exception as exc:
+            logger.warning(
+                "Failed to fetch workflow state for %s, falling back to persisted state: %s",
+                instance_id,
+                exc,
+            )
+
+    if state is None:
+        if run_context is None and progress is None and artifact is None:
+            if workflow_client_instance is None:
+                raise HTTPException(status_code=503, detail="Workflow client unavailable")
+            raise HTTPException(status_code=404, detail="Run not found")
+        return _status_from_persisted_state(
+            instance_id,
+            run_context=run_context,
+            progress=progress,
+            artifact=artifact,
+        )
+
     parsed_output = _parse_serialized_output(serialized_output)
     normalized_status = str(runtime_status).lower()
     if progress is None and run_context is not None:

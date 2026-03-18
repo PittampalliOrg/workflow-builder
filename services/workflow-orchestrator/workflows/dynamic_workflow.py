@@ -694,6 +694,60 @@ def _build_execute_plan_prompt(
     )
 
 
+def _build_planning_prompt(
+    *,
+    task_prompt: str,
+    cwd: str | None,
+    expected_output: Any,
+    verify_commands: Any,
+    stop_condition: str | None,
+) -> str:
+    cwd_context = (
+        f"Working directory: {cwd.strip()}\n\n"
+        if isinstance(cwd, str) and cwd.strip()
+        else ""
+    )
+    expected_output_text = (
+        str(expected_output).strip() if isinstance(expected_output, str) else ""
+    )
+    verify_commands_text = (
+        str(verify_commands).strip() if isinstance(verify_commands, str) else ""
+    )
+    stop_condition_text = (
+        str(stop_condition).strip() if isinstance(stop_condition, str) else ""
+    )
+    segments = [
+        f"{cwd_context}You are now in PLANNING MODE.",
+        (
+            "Inspect the repository and produce an execution-ready implementation plan only. "
+            "Do not create directories, do not write or edit files, do not apply patches, "
+            "and do not run mutating shell commands."
+        ),
+        f"## Requested Outcome\n{task_prompt.strip()}",
+    ]
+    if expected_output_text:
+        segments.append(f"## Expected Output\n{expected_output_text}")
+    if verify_commands_text:
+        segments.append(
+            "## Verification Targets\n"
+            "The eventual implementation should satisfy these commands, but you are only planning now:\n"
+            f"{verify_commands_text}"
+        )
+    if stop_condition_text:
+        segments.append(
+            "## Completion Target\n"
+            "Plan toward this stop condition without attempting to satisfy it during planning:\n"
+            f"{stop_condition_text}"
+        )
+    segments.append(
+        "## Planning Contract\n"
+        "Return a concrete, execution-ready plan that identifies the files to inspect or modify, "
+        "ordered tasks, acceptance criteria, and verification commands. "
+        "If repository paths are missing or inaccurate, note that uncertainty in the plan instead of mutating the workspace."
+    )
+    return "\n\n".join(segment for segment in segments if segment.strip())
+
+
 def _cleanup_execution_workspaces_for_workflow(
     ctx: wf.DaprWorkflowContext,
     execution_id: str,
@@ -2476,6 +2530,14 @@ def process_agent_child_workflow(
             native_child_task_override
             if isinstance(native_child_task_override, str)
             and native_child_task_override.strip()
+            else _build_planning_prompt(
+                task_prompt=prompt,
+                cwd=resolved_config.get("cwd"),
+                expected_output=resolved_config.get("expectedOutput"),
+                verify_commands=resolved_config.get("verifyCommands"),
+                stop_condition=stop_condition,
+            )
+            if is_dapr_agent and run_mode == "plan_mode"
             else _build_run_prompt(
                 prompt,
                 stop_condition,
