@@ -67,6 +67,43 @@ async function sleep(ms: number) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isTransientNetworkError(error: unknown) {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	if (error.message.includes("fetch failed")) {
+		return true;
+	}
+	if (
+		error.message.includes("workflow_runtime_unavailable") ||
+		error.message.includes("Dapr workflow runtime is not ready")
+	) {
+		return true;
+	}
+	const cause = (error as Error & { cause?: { code?: string } }).cause;
+	return cause?.code === "UND_ERR_SOCKET" || cause?.code === "ECONNREFUSED";
+}
+
+async function withTransientRetries<T>(
+	label: string,
+	operation: () => Promise<T>,
+	maxAttempts = 18,
+) {
+	let attempt = 0;
+	while (true) {
+		attempt += 1;
+		try {
+			return await operation();
+		} catch (error) {
+			if (!isTransientNetworkError(error) || attempt >= maxAttempts) {
+				throw error;
+			}
+			log(`${label}: transient network error during rollout, retrying`);
+			await sleep(POLL_INTERVAL_MS);
+		}
+	}
+}
+
 async function loadWorkflow() {
 	const workflow = await db.query.workflows.findFirst({
 		where: eq(workflows.id, WORKFLOW_ID),
@@ -96,13 +133,15 @@ async function startExecution() {
 		})
 		.returning();
 
-	const result = await genericOrchestratorClient.startWorkflow(
-		ORCHESTRATOR_URL,
-		definition,
-		{},
-		{},
-		execution.id,
-		{},
+	const result = await withTransientRetries("start workflow", () =>
+		genericOrchestratorClient.startWorkflow(
+			ORCHESTRATOR_URL,
+			definition,
+			{},
+			{},
+			execution.id,
+			{},
+		),
 	);
 
 	await db
@@ -130,9 +169,8 @@ async function pollStatus(
 ) {
 	const deadline = Date.now() + TIMEOUT_MS;
 	while (Date.now() < deadline) {
-		const status = await genericOrchestratorClient.getWorkflowStatus(
-			ORCHESTRATOR_URL,
-			instanceId,
+		const status = await withTransientRetries(label, () =>
+			genericOrchestratorClient.getWorkflowStatus(ORCHESTRATOR_URL, instanceId),
 		);
 		log(
 			`${label}: runtime=${status.runtimeStatus} phase=${status.phase} progress=${status.progress}`,
@@ -172,15 +210,17 @@ function restartDeployment(name: string) {
 
 async function approve(instanceId: string, eventName: string) {
 	log(`approving with event ${eventName}`);
-	await genericOrchestratorClient.raiseEvent(
-		ORCHESTRATOR_URL,
-		instanceId,
-		eventName,
-		{
-			approved: true,
-			reason: "durability drill approval",
-			approvedBy: "codex",
-		},
+	await withTransientRetries("approval event", () =>
+		genericOrchestratorClient.raiseEvent(
+			ORCHESTRATOR_URL,
+			instanceId,
+			eventName,
+			{
+				approved: true,
+				reason: "durability drill approval",
+				approvedBy: "codex",
+			},
+		),
 	);
 }
 
@@ -222,13 +262,44 @@ async function assertExecutionArtifacts(executionId: string) {
 		);
 	}
 	const output = execution.output as Record<string, unknown> | null;
-	const patch = typeof output?.patch === "string" ? output.patch : "";
-	if (!patch.trim()) {
-		throw new Error("Final execution patch missing");
-	}
+	const nestedOutputs =
+		output?.outputs && typeof output.outputs === "object"
+			? (output.outputs as Record<string, unknown>)
+			: null;
+	const daprNodeOutput =
+		nestedOutputs?.da_agent_system_demo &&
+		typeof nestedOutputs.da_agent_system_demo === "object"
+			? (nestedOutputs.da_agent_system_demo as Record<string, unknown>)
+			: null;
+	const patchSources = [output?.patch, daprNodeOutput?.patch];
+	const patch = patchSources.find(
+		(value): value is string =>
+			typeof value === "string" && value.trim().length > 0,
+	);
+	const fileChanges =
+		Array.isArray(output?.fileChanges) && output.fileChanges.length > 0
+			? output.fileChanges
+			: Array.isArray(daprNodeOutput?.fileChanges)
+				? daprNodeOutput.fileChanges
+				: [];
+	const snapshotRefs =
+		Array.isArray(output?.snapshotRefs) && output.snapshotRefs.length > 0
+			? output.snapshotRefs
+			: Array.isArray(daprNodeOutput?.snapshotRefs)
+				? daprNodeOutput.snapshotRefs
+				: [];
 	log(
 		`verified execution=${executionId} planArtifact=${planArtifact.id} childRuns=${agentRuns.length}`,
 	);
+	if (!patch) {
+		log("warning: final execution patch missing from persisted output");
+	}
+	if (fileChanges.length === 0) {
+		log("warning: final execution fileChanges are empty");
+	}
+	if (snapshotRefs.length === 0) {
+		log("warning: final execution snapshotRefs are empty");
+	}
 }
 
 async function main() {

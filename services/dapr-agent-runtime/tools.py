@@ -108,12 +108,16 @@ class ToolRuntimeContext:
         files_analyzed = sorted(self.files_read | self.files_matched | self.files_listed)
         fixes_applied = sorted(self.files_modified)
         patch_chunks: list[str] = []
+        summary_files: list[dict[str, Any]] = []
+        additions = 0
+        deletions = 0
         for relative in fixes_applied:
             current_path = self.resolve_path(relative)
             before = self._original_files.get(relative)
             after = current_path.read_text(encoding="utf-8") if current_path.exists() else ""
             before_lines = [] if before is None else before.splitlines(keepends=True)
             after_lines = after.splitlines(keepends=True)
+            status = "deleted" if not current_path.exists() else "untracked" if before is None else "modified"
             diff = "".join(
                 difflib.unified_diff(
                     before_lines,
@@ -124,9 +128,37 @@ class ToolRuntimeContext:
             ).strip()
             if diff:
                 patch_chunks.append(diff)
+            add_count = 0
+            del_count = 0
+            for line in diff.splitlines():
+                if line.startswith("+++") or line.startswith("---"):
+                    continue
+                if line.startswith("+"):
+                    add_count += 1
+                elif line.startswith("-"):
+                    del_count += 1
+            additions += add_count
+            deletions += del_count
+            summary_files.append(
+                {
+                    "path": relative,
+                    "additions": add_count,
+                    "deletions": del_count,
+                    "status": status,
+                }
+            )
         return {
             "filesAnalyzed": files_analyzed,
             "fileChanges": fixes_applied,
+            "changeSummary": {
+                "files": summary_files,
+                "stats": {
+                    "files": len(summary_files),
+                    "additions": additions,
+                    "deletions": deletions,
+                },
+                "changed": bool(summary_files),
+            },
             "patch": "\n".join(patch_chunks).strip(),
         }
 

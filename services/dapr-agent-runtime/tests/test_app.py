@@ -303,6 +303,81 @@ def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
     assert snapshot["snapshot"]["content"] == "hello"
 
 
+def test_build_result_payload_falls_back_to_persisted_workspace_mutation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+    monkeypatch.setattr(
+        app,
+        "summarize_command_changes",
+        lambda _root: {
+            "changeSummary": {
+                "files": [],
+                "stats": {"files": 0, "additions": 0, "deletions": 0},
+                "changed": False,
+            }
+        },
+    )
+    monkeypatch.setattr(app, "git_diff", lambda _path=".": {"diff": ""})
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    (repo_root / "scripts").mkdir()
+    created = repo_root / "scripts" / "demo.py"
+    created.write_text("print('hello')\n", encoding="utf-8")
+
+    app._persist_run_context(
+        app.AgentRunContext(
+            instance_id="wf-fallback",
+            mode="execute_direct",
+            profile="implement",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="all",
+            max_turns=12,
+            execution_id="exec-fallback",
+            trace_id="trace-fallback",
+        )
+    )
+    app._persist_workspace_mutation(
+        "wf-fallback",
+        {
+            "changeSummary": {
+                "files": [
+                    {
+                        "path": "scripts/demo.py",
+                        "additions": 1,
+                        "deletions": 0,
+                        "status": "untracked",
+                    }
+                ],
+                "stats": {"files": 1, "additions": 1, "deletions": 0},
+                "changed": True,
+            },
+            "patch": "diff --git a/scripts/demo.py b/scripts/demo.py\n",
+        },
+    )
+
+    payload = app._build_result_payload(
+        instance_id="wf-fallback",
+        request=app.DaprAgentRunRequest(
+            prompt="Update the repo",
+            profile="implement",
+            cwd=str(repo_root),
+            executionId="exec-fallback",
+        ),
+        workflow_output='{"content":"Applied changes"}',
+    )
+
+    assert payload["patch"].startswith("diff --git a/scripts/demo.py")
+    assert payload["changeSummary"]["changed"] is True
+    assert payload["fileChanges"][0]["path"] == "scripts/demo.py"
+    assert payload["snapshotRefs"] == ["scripts/demo.py"]
+
+
 def test_change_summary_and_patch_include_untracked_files(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True)

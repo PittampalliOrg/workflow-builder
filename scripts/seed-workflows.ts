@@ -1253,7 +1253,7 @@ function buildAgentSystemDemoNodes(input?: {
 	const featureDeliveryPrompt = `Repository root: ${clonePath}
 Always operate relative to this repository root for file and directory paths.
 
-Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/apps for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, or ms-agent-workflow. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
+Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/manifests for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, or ms-agent-workflow. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
 
 ## Stop Condition
 The new Python utility exists, verification commands pass, and the final response includes changed files and a concise implementation summary.

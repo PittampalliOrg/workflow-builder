@@ -1248,6 +1248,16 @@ def _build_result_payload(
         _persist_run_artifact(instance_id, result)
         return result
     summary = summarize_command_changes(cwd)
+    mutation_summary = _load_workspace_mutation(instance_id) or {}
+    if not summary["changeSummary"]["changed"] and isinstance(
+        mutation_summary.get("changeSummary"), dict
+    ):
+        summary = {
+            "changeSummary": _merge_change_summaries(
+                None,
+                mutation_summary.get("changeSummary"),
+            )
+        }
     progress = {
         **progress,
         "status": "completed",
@@ -1268,6 +1278,8 @@ def _build_result_payload(
             pop_tool_context(token)
     except Exception:
         patch = ""
+    if not patch:
+        patch = str(mutation_summary.get("patch") or "")
     result = {
         "text": text,
         "content": text,
@@ -1475,13 +1487,105 @@ def _change_set_id_for_instance(instance_id: str) -> str:
     return f"{instance_id}-patch"
 
 
+def _empty_change_summary() -> dict[str, Any]:
+    return {
+        "files": [],
+        "stats": {"files": 0, "additions": 0, "deletions": 0},
+        "changed": False,
+    }
+
+
+def _mutation_summary_key(instance_id: str) -> str:
+    return f"mutation:{instance_id}"
+
+
+def _merge_change_summaries(
+    current: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged_by_path: dict[str, dict[str, Any]] = {}
+    for candidate in (current, incoming):
+        if not isinstance(candidate, dict):
+            continue
+        for file_entry in candidate.get("files") or []:
+            if not isinstance(file_entry, dict):
+                continue
+            path = str(file_entry.get("path") or "").strip()
+            if not path:
+                continue
+            merged_by_path[path] = {
+                "path": path,
+                "additions": int(file_entry.get("additions") or 0),
+                "deletions": int(file_entry.get("deletions") or 0),
+                **(
+                    {"status": str(file_entry.get("status"))}
+                    if str(file_entry.get("status") or "").strip()
+                    else {}
+                ),
+            }
+    files = sorted(merged_by_path.values(), key=lambda item: str(item.get("path") or ""))
+    additions = sum(int(item.get("additions") or 0) for item in files)
+    deletions = sum(int(item.get("deletions") or 0) for item in files)
+    return {
+        "files": files,
+        "stats": {"files": len(files), "additions": additions, "deletions": deletions},
+        "changed": bool(files),
+    }
+
+
+def _persist_workspace_mutation(instance_id: str, summary: dict[str, Any]) -> None:
+    incoming_change_summary = summary.get("changeSummary")
+    incoming_patch = str(summary.get("patch") or "").strip()
+    if not isinstance(incoming_change_summary, dict) and not incoming_patch:
+        return
+    existing = _load_workspace_mutation(instance_id) or {}
+    merged_change_summary = _merge_change_summaries(
+        existing.get("changeSummary") if isinstance(existing, dict) else None,
+        incoming_change_summary if isinstance(incoming_change_summary, dict) else None,
+    )
+    patch_chunks = [
+        str(chunk).strip()
+        for chunk in [
+            existing.get("patch") if isinstance(existing, dict) else "",
+            incoming_patch,
+        ]
+        if chunk is not None and str(chunk).strip()
+    ]
+    deduped_patch_chunks: list[str] = []
+    for chunk in patch_chunks:
+        if chunk not in deduped_patch_chunks:
+            deduped_patch_chunks.append(chunk)
+    payload = {
+        "changeSummary": merged_change_summary,
+        "fileChanges": [
+            str(file_entry.get("path") or "").strip()
+            for file_entry in merged_change_summary.get("files") or []
+            if str(file_entry.get("path") or "").strip()
+        ],
+        "patch": "\n".join(deduped_patch_chunks).strip(),
+    }
+    try:
+        run_state_store.save(key=_mutation_summary_key(instance_id), value=payload)
+    except StateStoreError as exc:
+        logger.warning("Failed to persist workspace mutation summary %s: %s", instance_id, exc)
+
+
+def _load_workspace_mutation(instance_id: str) -> dict[str, Any] | None:
+    try:
+        payload = run_state_store.load(key=_mutation_summary_key(instance_id), default={})
+    except StateStoreError as exc:
+        logger.warning("Failed to load workspace mutation summary %s: %s", instance_id, exc)
+        return None
+    return payload if payload else None
+
+
 def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:
     context = _load_run_context(instance_id)
     if context is None or not context.execution_id:
         return
     change_summary = result.get("changeSummary")
     if not isinstance(change_summary, dict):
-        change_summary = {"files": [], "stats": {"files": 0, "additions": 0, "deletions": 0}, "changed": False}
+        change_summary = _empty_change_summary()
     artifact = {
         "changeSetId": _change_set_id_for_instance(instance_id),
         "executionId": context.execution_id,
@@ -1841,14 +1945,18 @@ class CodingDurableAgent(DurableAgent):
                 f"Tool '{fn_name}' is not allowed for tool group '{run_context.tool_group}'"
             )
 
+        tool_summary: dict[str, Any] = {}
+
         async def _execute_tool() -> Any:
             tool_context = ToolRuntimeContext.from_workspace_root(run_context.cwd)
             token = push_tool_context(tool_context)
             try:
-                return await self.tool_executor.run_tool(
+                result = await self.tool_executor.run_tool(
                     fn_name,
                     **args,
                 )
+                tool_summary.update(tool_context.build_summary())
+                return result
             finally:
                 pop_tool_context(token)
 
@@ -1869,6 +1977,15 @@ class CodingDurableAgent(DurableAgent):
                 recentTurns=recent_turns,
             )
             raise
+        if isinstance(result, dict) and isinstance(tool_summary, dict):
+            if (
+                str(tool_summary.get("patch") or "").strip()
+                or (
+                    isinstance(tool_summary.get("changeSummary"), dict)
+                    and bool(tool_summary["changeSummary"].get("changed"))
+                )
+            ):
+                _persist_workspace_mutation(instance_id, tool_summary)
         logger.debug("Tool %s returned: %s (type: %s)", fn_name, result, type(result))
         serialized_result = serialize_tool_result(result)
         tool_result = ToolMessage(
