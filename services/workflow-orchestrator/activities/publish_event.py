@@ -12,6 +12,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+import psycopg2
+import requests
 from dapr.clients import DaprClient
 
 from core.config import config
@@ -21,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 PUBSUB_NAME = config.PUBSUB_NAME
 WORKFLOW_EVENTS_TOPIC = "workflow.events"
+SECRET_STORE_NAME = "kubernetes-secrets"
+SECRET_NAME = "workflow-builder-secrets"
+
+_database_url: str | None = None
 
 
 class WorkflowEventTypes:
@@ -34,6 +40,62 @@ class WorkflowEventTypes:
     NODE_FAILED = "workflow.node.failed"
     APPROVAL_REQUESTED = "workflow.approval.requested"
     APPROVAL_RECEIVED = "workflow.approval.received"
+
+
+def _get_database_url() -> str:
+    """Fetch DATABASE_URL from Dapr secrets store (cached)."""
+    global _database_url
+    if _database_url is not None:
+        return _database_url
+
+    url = (
+        f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}"
+        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
+    )
+    response = requests.get(url, timeout=10)
+    response.raise_for_status()
+    secrets = response.json()
+
+    db_url = secrets.get("DATABASE_URL")
+    if not db_url:
+        raise RuntimeError(
+            f"DATABASE_URL not found in secret '{SECRET_NAME}' from store '{SECRET_STORE_NAME}'"
+        )
+
+    _database_url = db_url
+    return db_url
+
+
+def _persist_execution_phase(
+    execution_id: str | None,
+    phase: Any,
+    progress: Any,
+) -> None:
+    if not execution_id:
+        return
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE workflow_executions
+                SET
+                    phase = %s,
+                    progress = %s,
+                    updated_at = now()
+                WHERE id = %s
+                """,
+                (
+                    str(phase) if phase is not None else None,
+                    int(progress) if progress is not None else None,
+                    execution_id,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
@@ -146,14 +208,31 @@ def publish_workflow_failed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
 def publish_phase_changed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish a phase change event."""
+    execution_id = input_data.get("executionId")
+    phase = input_data.get("phase")
+    progress = input_data.get("progress", 0)
+
+    try:
+        _persist_execution_phase(
+            str(execution_id).strip() if execution_id is not None else None,
+            phase,
+            progress,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[Publish Event] Failed to persist execution phase for %s: %s",
+            execution_id,
+            exc,
+        )
+
     return publish_event(ctx, {
         "topic": WORKFLOW_EVENTS_TOPIC,
         "eventType": WorkflowEventTypes.WORKFLOW_PHASE_CHANGED,
         "data": {
             "workflowId": input_data.get("workflowId"),
-            "executionId": input_data.get("executionId"),
-            "phase": input_data.get("phase"),
-            "progress": input_data.get("progress", 0),
+            "executionId": execution_id,
+            "phase": phase,
+            "progress": progress,
             "message": input_data.get("message"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         },

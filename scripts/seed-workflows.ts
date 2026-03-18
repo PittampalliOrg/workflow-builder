@@ -8,8 +8,9 @@
  * - Reconcile workflow_resource_refs for durable plan/execute nodes
  *
  * User/project targeting:
- * - Prefer SEED_GITHUB_USER_ID
- * - Fallback to SEED_GITHUB_USER_EMAIL
+ * - Prefer SEED_WORKFLOW_USER_ID
+ * - Fallback to SEED_WORKFLOW_USER_EMAIL
+ * - Fallback to SEED_GITHUB_USER_ID / SEED_GITHUB_USER_EMAIL
  * - Fallback to single GitHub identity in DB
  */
 import { and, desc, eq } from "drizzle-orm";
@@ -96,8 +97,12 @@ const EXECUTOR_INSTRUCTIONS =
 	"You are an autonomous coding agent operating on a real git workspace. Inspect relevant files before changing code, then make concrete file edits instead of returning only a plan. When code changes are requested, run targeted validation commands and iterate until failures are addressed. Prefer direct replacement of stale legacy code when a better implementation is required. Before finishing, confirm git diff is non-empty and report changed files, validation commands, and any remaining risks.";
 
 async function resolveGithubUserId(db: ReturnType<typeof drizzle>) {
-	const configuredUserId = process.env.SEED_GITHUB_USER_ID?.trim();
-	const configuredEmail = process.env.SEED_GITHUB_USER_EMAIL?.trim();
+	const configuredUserId =
+		process.env.SEED_WORKFLOW_USER_ID?.trim() ||
+		process.env.SEED_GITHUB_USER_ID?.trim();
+	const configuredEmail =
+		process.env.SEED_WORKFLOW_USER_EMAIL?.trim() ||
+		process.env.SEED_GITHUB_USER_EMAIL?.trim();
 
 	if (configuredUserId) {
 		const identity = await db.query.userIdentities.findFirst({
@@ -170,6 +175,30 @@ async function resolveProjectId(
 	db: ReturnType<typeof drizzle>,
 	userId: string,
 ) {
+	const configuredProjectId = process.env.SEED_WORKFLOW_PROJECT_ID?.trim();
+	if (configuredProjectId) {
+		const explicitProject = await db.query.projects.findFirst({
+			where: eq(projects.id, configuredProjectId),
+		});
+		if (!explicitProject) {
+			throw new Error(
+				`SEED_WORKFLOW_PROJECT_ID (${configuredProjectId}) does not match a project.`,
+			);
+		}
+		const membership = await db.query.projectMembers.findFirst({
+			where: and(
+				eq(projectMembers.projectId, configuredProjectId),
+				eq(projectMembers.userId, userId),
+			),
+		});
+		if (explicitProject.ownerId !== userId && !membership) {
+			throw new Error(
+				`SEED_WORKFLOW_PROJECT_ID (${configuredProjectId}) is not owned by or shared with user ${userId}.`,
+			);
+		}
+		return explicitProject.id;
+	}
+
 	const canonicalExternalId = `project-${userId}`;
 	const canonicalProject = await db.query.projects.findFirst({
 		where: eq(projects.externalId, canonicalExternalId),
@@ -1405,6 +1434,15 @@ async function upsertWorkflow(params: {
 		return;
 	}
 
+	if (
+		existing.userId !== params.userId ||
+		(existing.projectId ?? null) !== params.projectId
+	) {
+		throw new Error(
+			`Workflow ${params.workflowId} already exists for user ${existing.userId} project ${existing.projectId ?? "null"}; set a targeted seed owner or move the existing workflow first.`,
+		);
+	}
+
 	await params.db
 		.update(workflows)
 		.set({
@@ -1444,6 +1482,14 @@ async function seedWorkflow() {
 		const userId = await resolveGithubUserId(db);
 		const projectId = await resolveProjectId(db, userId);
 		const githubConnection = await resolveLatestGithubConnection(db, userId);
+		console.log(
+			`[seed-workflows] Target owner userId=${userId} projectId=${projectId}`,
+		);
+		if (githubConnection) {
+			console.log(
+				`[seed-workflows] Using GitHub connection ${githubConnection.connectionId} (${githubConnection.connectionExternalId})`,
+			);
+		}
 		if (!githubConnection) {
 			console.warn(
 				"[seed-workflows] No GitHub connection found for the resolved user; the clone proof workflow will require manual connection selection before it can run.",

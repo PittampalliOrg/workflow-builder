@@ -188,7 +188,6 @@ class WorkflowRunTracker {
 		await sql`
 			update workflow_agent_runs
 			set
-				status = 'event_published',
 				event_published_at = now(),
 				updated_at = now()
 			where id = ${id}
