@@ -10,14 +10,17 @@ REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
 ARGO_APPS=(
   "workflow-builder"
   "ms-agent-workflow"
+  "ai-chatbot"
 )
 DEVSPACE_REPLACEMENT_DEPLOYMENTS=(
   "workflow-builder-devspace"
   "ms-agent-workflow-devspace"
+  "ai-chatbot-devspace"
 )
 PRODUCTION_DEPLOYMENTS=(
   "workflow-builder"
   "ms-agent-workflow"
+  "ai-chatbot"
 )
 
 cleanup() {
