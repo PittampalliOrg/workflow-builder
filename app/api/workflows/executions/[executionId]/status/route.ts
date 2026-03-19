@@ -21,6 +21,9 @@ import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
 const MS_AGENT_API_BASE_URL =
 	process.env.MS_AGENT_API_BASE_URL ||
 	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
@@ -72,6 +75,8 @@ async function fetchAgentLivePayload(
 			? MS_AGENT_API_BASE_URL
 			: actionType === "dapr-agent/run"
 				? DAPR_AGENT_RUNTIME_API_BASE_URL
+				: actionType === "openshell/run"
+					? OPENSHELL_AGENT_RUNTIME_API_BASE_URL
 				: null;
 	if (!baseUrl) {
 		return null;
@@ -100,7 +105,7 @@ function shouldFetchLiveAgentPayload(
 	if (!actionType || !status) {
 		return false;
 	}
-	if (actionType !== "dapr-agent/run") {
+	if (actionType !== "dapr-agent/run" && actionType !== "openshell/run") {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -246,6 +251,8 @@ export async function GET(
 						? "ms-agent"
 						: actionType === "dapr-agent/run"
 							? "dapr-agent"
+							: actionType === "openshell/run"
+								? "openshell"
 							: null;
 				if (!framework) {
 					return null;

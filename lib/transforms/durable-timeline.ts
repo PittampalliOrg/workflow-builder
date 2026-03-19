@@ -259,6 +259,9 @@ function deriveModeFromHistoryTaskName(
 	if (normalized === "call_dapr_agent_run") {
 		return "run";
 	}
+	if (normalized === "call_openshell_agent_run") {
+		return "run";
+	}
 	if (normalized === "call_ms_agent_run") {
 		return "run";
 	}
@@ -276,6 +279,7 @@ export function deriveDurableAgentRuns(
 			!(
 				activityName.includes("durable/") ||
 				activityName.includes("dapr-agent/") ||
+				activityName.includes("openshell/") ||
 				activityName.includes("ms-agent/") ||
 				activityName.includes("mastra/execute")
 			)
@@ -301,6 +305,7 @@ export function deriveDurableAgentRuns(
 					"agent_workflow_id",
 					"workflow_id",
 					"workflowId",
+					"runId",
 				]);
 			daprInstanceId =
 				daprInstanceId ??
@@ -308,7 +313,9 @@ export function deriveDurableAgentRuns(
 					"daprInstanceId",
 					"dapr_instance_id",
 					"instanceId",
+					"workflowInstanceId",
 					"workflow_instance_id",
+					"runId",
 				]);
 		}
 

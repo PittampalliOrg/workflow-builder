@@ -17,6 +17,7 @@ const REGISTRY_FILE_PATH =
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
 	"dapr-agent/*": { appId: "dapr-agent-runtime", type: "knative" },
+	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "dapr-agent-runtime", type: "knative" },
 	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
@@ -29,6 +30,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
 	"dapr-agent/*": { appId: "dapr-agent-runtime", type: "knative" },
+	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "dapr-agent-runtime", type: "knative" },
 	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
 };

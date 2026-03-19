@@ -58,6 +58,7 @@ from activities.log_external_event import (
 )
 from activities.call_agent_service import (
     call_durable_agent_run,
+    call_openshell_agent_run,
     call_durable_plan,
     call_durable_execute_plan,
     call_durable_execute_plan_dag,
@@ -433,6 +434,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(fetch_plan_artifact)
     # Agent service activities
     wfr.register_activity(call_durable_agent_run)
+    wfr.register_activity(call_openshell_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
@@ -720,6 +722,7 @@ def _registered_activity_names() -> list[str]:
         log_node_complete.__name__,
         persist_results_to_db.__name__,
         call_durable_agent_run.__name__,
+        call_openshell_agent_run.__name__,
         call_durable_plan.__name__,
         call_durable_execute_plan.__name__,
         call_durable_execute_plan_dag.__name__,
@@ -977,7 +980,10 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
         return False
     data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
-    return str(config.get("actionType") or "").strip() == "dapr-agent/run"
+    return str(config.get("actionType") or "").strip() in {
+        "dapr-agent/run",
+        "openshell/run",
+    }
 
 
 def _abs_position(

@@ -26,6 +26,9 @@ import { redactSensitiveData } from "@/lib/utils/redact";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
 
 function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
 	const result = new Map<string, string>();
@@ -61,11 +64,17 @@ async function fetchAgentLivePayload(
 	actionType: string | undefined,
 	instanceId: string,
 ): Promise<Record<string, unknown> | null> {
-	if (actionType !== "dapr-agent/run") {
+	const baseUrl =
+		actionType === "dapr-agent/run"
+			? DAPR_AGENT_RUNTIME_API_BASE_URL
+			: actionType === "openshell/run"
+				? OPENSHELL_AGENT_RUNTIME_API_BASE_URL
+			: null;
+	if (!baseUrl) {
 		return null;
 	}
 	const response = await fetch(
-		`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
+		`${baseUrl.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
 		{
 			headers: { Accept: "application/json" },
 			signal: AbortSignal.timeout(4000),
@@ -85,7 +94,7 @@ function shouldFetchLiveAgentPayload(
 	actionType: string | undefined,
 	status: string,
 ): boolean {
-	if (actionType !== "dapr-agent/run") {
+	if (actionType !== "dapr-agent/run" && actionType !== "openshell/run") {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -213,6 +222,8 @@ export async function GET(
 						? "ms-agent"
 						: actionType === "dapr-agent/run"
 							? "dapr-agent"
+							: actionType === "openshell/run"
+								? "openshell"
 							: null;
 				if (!framework) {
 					return null;

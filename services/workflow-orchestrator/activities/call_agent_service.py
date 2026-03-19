@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
 MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
 
@@ -200,6 +201,61 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Dapr Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_openshell_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Run an OpenShell-backed task synchronously through the OpenShell adapter.
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{OPENSHELL_AGENT_APP_ID}/method/api/v1/agent-runs"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "openshell/run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.call_openshell_agent_run", otel, attrs):
+        try:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 30)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+            if timeout_minutes <= 0:
+                timeout_minutes = 30
+            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
+            command = input_data.get("command")
+            payload = {
+                "runId": input_data.get("executionId")
+                or input_data.get("dbExecutionId")
+                or input_data.get("parentExecutionId"),
+                "workflowInstanceId": input_data.get("parentExecutionId"),
+                "sandboxName": input_data.get("sandboxName"),
+                "provider": input_data.get("provider") or "nvidia",
+                "model": input_data.get("model"),
+                "prompt": input_data.get("prompt"),
+                "command": command,
+                "keep": _as_bool(input_data.get("keep"), True),
+                "workspaceRef": input_data.get("workspaceRef"),
+                "cwd": input_data.get("cwd"),
+                "timeoutMinutes": timeout_minutes,
+            }
+            with httpx.Client(timeout=request_timeout_seconds) as client:
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="OpenShell agent run",
+                )
+        except Exception as e:
+            logger.error(f"[Call OpenShell Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

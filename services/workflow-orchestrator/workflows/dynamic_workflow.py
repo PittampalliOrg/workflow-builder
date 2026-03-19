@@ -966,6 +966,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 if action_type in (
                     "dapr-agent/run",
                     "ms-agent/run",
+                    "openshell/run",
                 ):
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
@@ -2032,6 +2033,7 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
     is_dapr_agent = action_type == "dapr-agent/run"
+    is_openshell_agent = action_type == "openshell/run"
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2056,8 +2058,19 @@ def process_agent_child_workflow(
         prompt = "Execute the provided plan"
     if not prompt and action_type == "durable/execute-plan-dag":
         prompt = "Execute the plan as a DAG workflow"
+    openshell_command_raw = resolved_config.get("command")
+    openshell_command = (
+        str(openshell_command_raw).strip()
+        if isinstance(openshell_command_raw, str)
+        else ""
+    )
     if not prompt and (is_ms_agent or (is_dapr_agent and mode == "plan_mode")):
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
+    if is_openshell_agent and not prompt and not openshell_command:
+        return {
+            "success": False,
+            "error": "OpenShell action requires config.prompt or config.command",
+        }
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "execute_direct" and not artifact_ref:
@@ -2094,6 +2107,10 @@ def process_agent_child_workflow(
     if is_ms_agent:
         run_mode = "execute_direct"
         call_activity_fn = None
+    elif is_openshell_agent:
+        run_mode = "execute_direct"
+        from activities.call_agent_service import call_openshell_agent_run
+        call_activity_fn = call_openshell_agent_run
     elif is_dapr_agent:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         call_activity_fn = None
@@ -2117,6 +2134,8 @@ def process_agent_child_workflow(
     use_native_child_workflow = (
         True
         if is_ms_agent
+        else False
+        if is_openshell_agent
         else True
         if is_dapr_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
@@ -2133,6 +2152,10 @@ def process_agent_child_workflow(
         "maxTurns": max_turns,
         "timeoutMinutes": timeout_minutes,
         "stopCondition": resolved_config.get("stopCondition"),
+        "command": resolved_config.get("command"),
+        "provider": resolved_config.get("provider"),
+        "keep": resolved_config.get("keep"),
+        "sandboxName": resolved_config.get("sandboxName"),
         "profile": resolved_config.get("profile") or resolved_config.get("mode"),
         "expectedOutput": resolved_config.get("expectedOutput"),
         "verifyCommands": resolved_config.get("verifyCommands"),

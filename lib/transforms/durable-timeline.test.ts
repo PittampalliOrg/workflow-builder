@@ -114,4 +114,41 @@ describe("deriveDurableAgentRuns", () => {
 			error: null,
 		});
 	});
+
+	it("derives run identifiers from openshell action logs", () => {
+		const runs = deriveDurableAgentRuns({
+			executionId: "exec-db-4",
+			parentExecutionId: "inst-4",
+			logs: [
+				{
+					id: "log-3",
+					nodeId: "openshell-node",
+					nodeName: "OpenShell Node",
+					activityName: "openshell/run",
+					status: "success",
+					input: null,
+					output: {
+						runId: "openshell-run-log-1",
+						workflowInstanceId: "openshell-inst-log-1",
+					},
+					error: null,
+					startedAt: "2026-02-22T12:00:00.000Z",
+					completedAt: "2026-02-22T12:00:05.000Z",
+					timestamp: "2026-02-22T12:00:05.000Z",
+					duration: "5000",
+				},
+			],
+			orchestratorHistory: [],
+		});
+
+		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			id: "openshell-run-log-1",
+			agentWorkflowId: "openshell-run-log-1",
+			daprInstanceId: "openshell-inst-log-1",
+			mode: "run",
+			status: "completed",
+			error: null,
+		});
+	});
 });

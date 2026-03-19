@@ -59,7 +59,7 @@ export type DurableAgentRunSummary = {
 	result: unknown;
 };
 
-export type AgentProgressFramework = "ms-agent" | "dapr-agent";
+export type AgentProgressFramework = "ms-agent" | "dapr-agent" | "openshell";
 
 export type AgentProgressTurn = {
 	label: string;

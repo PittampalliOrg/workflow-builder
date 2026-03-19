@@ -890,6 +890,103 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
+	type: "openshell",
+	label: "OpenShell",
+	pieceName: "openshell",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Run OpenShell Task",
+			description:
+				"Run an OpenShell-backed task in a durable workflow step with NVIDIA-ready sandbox provisioning",
+			category: "OpenShell",
+			configFields: [
+				{
+					key: "prompt",
+					label: "Goal (optional)",
+					type: "template-textarea",
+					placeholder: "Describe the task for the sandboxed runtime.",
+					required: false,
+					rows: 5,
+				},
+				{
+					key: "command",
+					label: "Command",
+					type: "template-textarea",
+					placeholder: "python3 -V",
+					required: true,
+					rows: 4,
+				},
+				{
+					key: "provider",
+					label: "Inference Provider",
+					type: "select",
+					required: false,
+					defaultValue: "nvidia",
+					options: [{ label: "NVIDIA", value: "nvidia" }],
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "template-input",
+					required: false,
+					defaultValue: "meta/llama-3.1-8b-instruct",
+					placeholder: "meta/llama-3.1-8b-instruct",
+				},
+				{
+					key: "sandboxName",
+					label: "Sandbox Name (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Execution.id}}-openshell",
+				},
+				{
+					key: "keep",
+					label: "Keep Sandbox After Run",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					options: [
+						{ label: "Enabled", value: "true" },
+						{ label: "Disabled", value: "false" },
+					],
+				},
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
+					key: "cwd",
+					label: "Repository Root (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					required: false,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "runId", description: "OpenShell adapter run identifier" },
+				{ field: "sandboxName", description: "Provisioned OpenShell sandbox" },
+				{ field: "provider", description: "Inference provider used" },
+				{ field: "model", description: "Model configured for the sandbox" },
+				{ field: "result", description: "OpenShell CLI execution payload" },
+			],
+		},
+	],
+};
+
 const MS_AGENT_PIECE: IntegrationDefinition = {
 	type: "ms-agent",
 	label: "Microsoft Agent Framework",
@@ -1472,7 +1569,13 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 };
 
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, WORKSPACE_PIECE, DAPR_AGENT_PIECE, MS_AGENT_PIECE];
+	return [
+		MCP_PIECE,
+		WORKSPACE_PIECE,
+		DAPR_AGENT_PIECE,
+		OPENSHELL_AGENT_PIECE,
+		MS_AGENT_PIECE,
+	];
 }
 
 export function getLegacyBuiltinPieces(): IntegrationDefinition[] {

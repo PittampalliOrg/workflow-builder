@@ -51,7 +51,9 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
+    PRIMARY_AGENT_RUNTIME: str = "dapr"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime"
     DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
     DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
     MS_AGENT_APP_ID: str = "ms-agent-workflow"
@@ -97,7 +99,9 @@ class OrchestratorConfig:
 
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
+                "PRIMARY_AGENT_RUNTIME",
                 "DURABLE_AGENT_APP_ID",
+                "OPENSHELL_AGENT_APP_ID",
                 "DAPR_AGENT_APP_ID",
                 "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -157,7 +161,12 @@ class OrchestratorConfig:
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
+            "PRIMARY_AGENT_RUNTIME": ("PRIMARY_AGENT_RUNTIME", "dapr"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "OPENSHELL_AGENT_APP_ID": (
+                "OPENSHELL_AGENT_APP_ID",
+                "openshell-agent-runtime",
+            ),
             "DAPR_AGENT_APP_ID": ("DAPR_AGENT_APP_ID", "dapr-agent-runtime"),
             "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",

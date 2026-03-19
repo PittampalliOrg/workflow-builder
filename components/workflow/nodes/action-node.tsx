@@ -158,6 +158,8 @@ const getProviderLogo = (
 	switch (actionType) {
 		case "dapr-agent/run":
 			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
+		case "openshell/run":
+			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
 		case "ms-agent/run":
 			return <Bot className="size-12 text-cyan-300" strokeWidth={1.5} />;
 		case "system/http-request":
@@ -257,8 +259,8 @@ function AgentProgressOverlay({
 	}
 	const isRunning =
 		progress.status === "running" || progress.status === "scheduled";
-	const primaryLabel =
-		actionType === "dapr-agent/run"
+		const primaryLabel =
+		actionType === "dapr-agent/run" || actionType === "openshell/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
 				: progress.phase || "Running"
@@ -440,11 +442,16 @@ export const ActionNode = memo(
 			!isPendingIntegrationCheck;
 
 		// Get model for AI nodes
-		const getAiModel = (): string | null => {
+			const getAiModel = (): string | null => {
 			if (actionType === "dapr-agent/run") {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
 					: "dapr-agents/openai";
+			}
+			if (actionType === "openshell/run") {
+				return typeof data.config?.model === "string"
+					? (data.config.model as string)
+					: "nvidia/meta/llama-3.1-8b-instruct";
 			}
 			if (actionType === "ms-agent/run") {
 				return "agent-framework/openai";
@@ -492,7 +499,9 @@ export const ActionNode = memo(
 
 				{/* Status indicator badge in top right */}
 				<StatusBadge status={status} />
-				{(actionType === "ms-agent/run" || actionType === "dapr-agent/run") && (
+				{(actionType === "ms-agent/run" ||
+					actionType === "dapr-agent/run" ||
+					actionType === "openshell/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}
 						progress={agentProgress}
