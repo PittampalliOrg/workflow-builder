@@ -198,6 +198,8 @@ dev:
     sync:
       - path: ./:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -380,6 +382,8 @@ dev:
     sync:
       - path: ./services/ms-agent-workflow/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -466,6 +470,8 @@ dev:
     sync:
       - path: ./services/dapr-agent-runtime/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -550,6 +556,8 @@ dev:
     sync:
       - path: ./services/workflow-orchestrator/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -633,6 +641,8 @@ dev:
     sync:
       - path: ./services/function-router/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
