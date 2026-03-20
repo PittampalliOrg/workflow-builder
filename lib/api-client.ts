@@ -1031,6 +1031,20 @@ export const daprApi = {
 			},
 		),
 
+	approveExecution: (
+		executionId: string,
+		eventName: string,
+		approved: boolean,
+		reason?: string,
+	) =>
+		apiCall<{ success: boolean; executionId: string; instanceId: string }>(
+			`/api/orchestrator/workflows/${executionId}/events`,
+			{
+				method: "PATCH",
+				body: JSON.stringify({ eventName, approved, reason }),
+			},
+		),
+
 	pause: (executionId: string) =>
 		apiCall<{ success: boolean; executionId: string; instanceId: string }>(
 			`/api/orchestrator/workflows/${executionId}/pause`,
