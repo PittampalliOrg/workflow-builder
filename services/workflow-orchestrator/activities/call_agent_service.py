@@ -437,6 +437,19 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "agentProgress": agent_progress,
                 "result": result,
             }
+            for field_name in (
+                "fileChanges",
+                "snapshotRefs",
+                "changeSummary",
+                "patch",
+                "patchRef",
+                "changedFiles",
+            ):
+                field_value = data.get(field_name)
+                if field_value is None:
+                    field_value = result.get(field_name)
+                if field_value is not None:
+                    compact_result[field_name] = field_value
             if plan_markdown:
                 compact_result["planMarkdown"] = plan_markdown
                 compact_result["plan"] = _build_minimal_plan(
