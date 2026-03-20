@@ -389,7 +389,8 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "repoUrl": input_data.get("repoUrl"),
                 "repoBranch": input_data.get("repoBranch"),
                 "repoToken": input_data.get("repoToken"),
-                "sandboxRepoPath": input_data.get("sandboxRepoPath"),
+                "sandboxRepoPath": input_data.get("sandboxRepoPath")
+                or input_data.get("cwd"),
                 "command": command,
                 "traceId": trace_id,
                 "_otel": otel if isinstance(otel, dict) else {},
