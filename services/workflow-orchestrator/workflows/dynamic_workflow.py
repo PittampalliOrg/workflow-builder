@@ -310,6 +310,43 @@ def _trace_id_from_otel_context(otel_ctx: object) -> str | None:
     ) or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
 
 
+def _approval_actor(approval_result: object) -> str | None:
+    if not isinstance(approval_result, dict):
+        return None
+    actor = approval_result.get("respondedBy") or approval_result.get("approvedBy")
+    if not isinstance(actor, str):
+        return None
+    actor = actor.strip()
+    return actor or None
+
+
+def _normalize_approval_result(
+    approval_result: object,
+    *,
+    missing_actor_reason: str = "Approval response missing actor metadata",
+) -> dict[str, Any]:
+    if not isinstance(approval_result, dict):
+        return {}
+
+    normalized = dict(approval_result)
+    actor = _approval_actor(normalized)
+    auto_approved = bool(normalized.get("autoApproved"))
+    approved = bool(normalized.get("approved"))
+
+    if approved and not auto_approved and not actor:
+        logger.warning(
+            "[Dynamic Workflow] Rejecting anonymous approval event payload: %s",
+            normalized,
+        )
+        normalized["approved"] = False
+        normalized["reason"] = missing_actor_reason
+
+    if actor:
+        normalized["respondedBy"] = actor
+
+    return normalized
+
+
 def get_timeout_seconds(config: dict[str, Any]) -> int:
     """Get timeout in seconds from various config formats."""
     if config.get("timeoutSeconds"):
@@ -2561,7 +2598,7 @@ def process_agent_child_workflow(
                     **planned_payload,
                 }
 
-            approval_result = approval_event.get_result() or {}
+            approval_result = _normalize_approval_result(approval_event.get_result())
             if db_execution_id:
                 yield ctx.call_activity(log_approval_response, input={
                     "executionId": db_execution_id,
@@ -2569,7 +2606,7 @@ def process_agent_child_workflow(
                     "eventName": approval_event_name,
                     "approved": approval_result.get("approved", False),
                     "reason": approval_result.get("reason"),
-                    "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                    "respondedBy": _approval_actor(approval_result),
                     "payload": approval_result,
                     "_otel": otel_ctx,
                 })
@@ -3309,7 +3346,7 @@ def process_agent_child_workflow(
                         "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
                         **planned_payload,
                     }
-                approval_result = approval_event.get_result() or {}
+                approval_result = _normalize_approval_result(approval_event.get_result())
                 if db_execution_id:
                     yield ctx.call_activity(log_approval_response, input={
                         "executionId": db_execution_id,
@@ -3317,7 +3354,7 @@ def process_agent_child_workflow(
                         "eventName": approval_event_name,
                         "approved": approval_result.get("approved", False),
                         "reason": approval_result.get("reason"),
-                        "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                        "respondedBy": _approval_actor(approval_result),
                         "payload": approval_result,
                         "_otel": otel_ctx,
                     })
@@ -3747,7 +3784,7 @@ def process_approval_gate(
         }
 
     # Get the approval result
-    approval_result = approval_event.get_result()
+    approval_result = _normalize_approval_result(approval_event.get_result())
 
     logger.info(f"[Dynamic Workflow] Approval received: {event_name} - {approval_result}")
 
@@ -3759,7 +3796,7 @@ def process_approval_gate(
             "eventName": event_name,
             "approved": approval_result.get("approved", False) if approval_result else False,
             "reason": approval_result.get("reason") if approval_result else None,
-            "respondedBy": approval_result.get("respondedBy") if approval_result else None,
+            "respondedBy": _approval_actor(approval_result),
             "payload": approval_result,
             "_otel": otel_ctx,
         })
@@ -3767,5 +3804,5 @@ def process_approval_gate(
     return {
         "approved": approval_result.get("approved", False) if approval_result else False,
         "reason": approval_result.get("reason") if approval_result else None,
-        "respondedBy": approval_result.get("respondedBy") if approval_result else None,
+        "respondedBy": _approval_actor(approval_result),
     }

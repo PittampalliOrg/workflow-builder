@@ -27,7 +27,7 @@ export async function POST(
 			approved,
 			reason: body.reason,
 			eventName: body.eventName,
-			approvedBy: body.approvedBy,
+			approvedBy: body.approvedBy?.trim() || "system:internal-api",
 		});
 
 		if (!result) {

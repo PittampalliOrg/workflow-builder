@@ -82,6 +82,13 @@ if "psycopg2" not in sys.modules:
     psycopg2_module.connect = lambda *_args, **_kwargs: None
     sys.modules["psycopg2"] = psycopg2_module
 
+if "requests" not in sys.modules:
+    requests_module = types.ModuleType("requests")
+    requests_module.post = lambda *_args, **_kwargs: None
+    requests_module.get = lambda *_args, **_kwargs: None
+    requests_module.request = lambda *_args, **_kwargs: None
+    sys.modules["requests"] = requests_module
+
 
 def _load_module(name: str, relative_path: str):
     module_path = ROOT / relative_path
@@ -194,6 +201,42 @@ def test_process_approval_gate_persists_phase_and_resumes_on_event(monkeypatch):
     assert result["respondedBy"] == "vinod"
     assert "awaiting_approval" in ctx.custom_statuses[0]
     assert "plan_approval" in ctx.custom_statuses[0]
+
+
+def test_process_approval_gate_rejects_anonymous_approval(monkeypatch):
+    ctx = FakeCtx()
+    ctx._event = FakeEvent({"approved": True, "reason": "Approved"})
+    monkeypatch.setattr(DYNAMIC, "logger", type("Logger", (), {"info": lambda *args, **kwargs: None, "warning": lambda *args, **kwargs: None})())
+    monkeypatch.setattr(DYNAMIC.wf, "when_any", lambda tasks: {"kind": "when_any", "tasks": tasks})
+
+    node = {
+        "id": "approve-node",
+        "label": "Approve Plan",
+        "config": {"eventName": "plan_approval", "timeoutMinutes": 5},
+    }
+
+    workflow = DYNAMIC.process_approval_gate(
+        ctx,
+        node,
+        execution_id="exec-1",
+        workflow_id="wf-1",
+        db_execution_id="db-exec-1",
+        otel_ctx={"traceId": "trace-123"},
+    )
+
+    next(workflow)
+    workflow.send(None)
+    workflow.send(None)
+    response_log = workflow.send(ctx._event)
+    assert response_log["name"] == "log_approval_response"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow.send(None)
+    result = stop.value.value
+
+    assert result["approved"] is False
+    assert result["reason"] == "Approval response missing actor metadata"
+    assert result["respondedBy"] is None
 
 
 def test_continue_as_new_captures_runtime_checkpoint():

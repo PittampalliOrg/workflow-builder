@@ -730,7 +730,8 @@ export async function approveInternalWorkflowExecution(input: {
 		{
 			approved: input.approved,
 			reason: input.reason,
-			approvedBy: input.approvedBy,
+			approvedBy: input.approvedBy?.trim() || "system:internal-workflow",
+			respondedBy: input.approvedBy?.trim() || "system:internal-workflow",
 		},
 	);
 
