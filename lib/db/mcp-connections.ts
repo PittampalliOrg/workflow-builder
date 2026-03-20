@@ -77,6 +77,7 @@ export async function upsertPieceMcpConnection(params: {
 			.set({
 				displayName: params.displayName,
 				status: params.status,
+				serverKey: null,
 				serverUrl: params.serverUrl,
 				registryRef: params.registryRef ?? null,
 				metadata: params.metadata ?? null,
@@ -97,6 +98,75 @@ export async function upsertPieceMcpConnection(params: {
 			projectId: params.projectId,
 			sourceType: "nimble_piece",
 			pieceName,
+			serverKey: null,
+			displayName: params.displayName,
+			registryRef: params.registryRef ?? null,
+			serverUrl: params.serverUrl,
+			status: params.status,
+			lastSyncAt: now,
+			lastError: params.lastError ?? null,
+			metadata: params.metadata ?? null,
+			createdBy: params.actorUserId ?? null,
+			updatedBy: params.actorUserId ?? null,
+			createdAt: now,
+			updatedAt: now,
+		})
+		.returning();
+
+	return created;
+}
+
+export async function upsertSharedMcpConnection(params: {
+	projectId: string;
+	serverKey: string;
+	displayName: string;
+	status: McpConnectionStatus;
+	serverUrl: string | null;
+	registryRef?: string | null;
+	metadata?: Record<string, unknown> | null;
+	lastError?: string | null;
+	actorUserId?: string | null;
+}): Promise<McpConnection> {
+	const now = new Date();
+	const serverKey = normalizePieceName(params.serverKey);
+
+	const existing = await db.query.mcpConnections.findFirst({
+		where: and(
+			eq(mcpConnections.projectId, params.projectId),
+			eq(mcpConnections.sourceType, "nimble_shared"),
+			eq(mcpConnections.serverKey, serverKey),
+		),
+	});
+
+	if (existing) {
+		const [updated] = await db
+			.update(mcpConnections)
+			.set({
+				displayName: params.displayName,
+				status: params.status,
+				serverUrl: params.serverUrl,
+				registryRef: params.registryRef ?? null,
+				pieceName: null,
+				serverKey,
+				metadata: params.metadata ?? null,
+				lastError: params.lastError ?? null,
+				lastSyncAt: now,
+				updatedBy: params.actorUserId ?? null,
+				updatedAt: now,
+			})
+			.where(eq(mcpConnections.id, existing.id))
+			.returning();
+		return updated;
+	}
+
+	const [created] = await db
+		.insert(mcpConnections)
+		.values({
+			id: generateId(),
+			projectId: params.projectId,
+			sourceType: "nimble_shared",
+			pieceName: null,
+			serverKey,
 			displayName: params.displayName,
 			registryRef: params.registryRef ?? null,
 			serverUrl: params.serverUrl,
@@ -130,6 +200,7 @@ export async function createCustomMcpConnection(params: {
 			projectId: params.projectId,
 			sourceType: "custom_url",
 			pieceName: null,
+			serverKey: null,
 			displayName: params.displayName,
 			serverUrl: params.serverUrl,
 			registryRef: null,
@@ -198,6 +269,7 @@ export async function upsertHostedWorkflowMcpConnection(params: {
 			projectId: params.projectId,
 			sourceType: "hosted_workflow",
 			pieceName: null,
+			serverKey: null,
 			displayName,
 			registryRef: params.registryRef ?? "mcp-gateway",
 			serverUrl: params.serverUrl ?? null,

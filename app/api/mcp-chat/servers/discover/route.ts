@@ -6,7 +6,10 @@ import { getUserProjectRole } from "@/lib/project-service";
 type DiscoveredServer = {
 	id: string;
 	name: string;
+	sourceType: string;
+	catalogKey: string;
 	pieceName: string;
+	serverKey: string | null;
 	url: string;
 	healthy: boolean;
 	enabled: boolean;
@@ -43,17 +46,30 @@ export async function GET(request: Request) {
 		const servers: DiscoveredServer[] = rows.map((row) => {
 			const metadata = (row.metadata ?? {}) as {
 				toolCount?: number;
+				tools?: Array<{ name?: string }>;
 				toolNames?: string[];
 			};
+			const toolNames = Array.isArray(metadata.tools)
+				? metadata.tools
+						.map((tool) => tool?.name)
+						.filter((name): name is string => typeof name === "string")
+				: (metadata.toolNames ?? []);
+			const catalogKey =
+				row.sourceType === "nimble_shared"
+					? (row.serverKey ?? row.displayName)
+					: (row.pieceName ?? row.displayName);
 			return {
 				id: row.id,
 				name: row.displayName,
+				sourceType: row.sourceType,
+				catalogKey,
 				pieceName: row.pieceName ?? row.displayName,
+				serverKey: row.serverKey,
 				url: row.serverUrl ?? "",
 				healthy: row.status !== "ERROR",
 				enabled: row.status === "ENABLED",
 				toolCount: metadata.toolCount ?? 0,
-				toolNames: metadata.toolNames ?? [],
+				toolNames,
 				status: row.status,
 			};
 		});

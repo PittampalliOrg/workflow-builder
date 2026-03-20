@@ -48,6 +48,9 @@ function sourceBadge(sourceType: McpConnection["sourceType"]) {
 	if (sourceType === McpConnectionSourceType.NIMBLE_PIECE) {
 		return <Badge variant="outline">Piece</Badge>;
 	}
+	if (sourceType === McpConnectionSourceType.NIMBLE_SHARED) {
+		return <Badge variant="outline">Shared</Badge>;
+	}
 	return <Badge variant="outline">Custom</Badge>;
 }
 
@@ -96,7 +99,12 @@ export function ServerManager({
 	const enableableCatalog = useMemo(
 		() =>
 			catalog
-				.filter((item) => !item.enabled && item.hasActiveConnections)
+				.filter(
+					(item) =>
+						!item.enabled &&
+						(item.hasActiveConnections ||
+							item.sourceType === McpConnectionSourceType.NIMBLE_SHARED),
+				)
 				.sort((left, right) => {
 					if (right.activeConnectionCount !== left.activeConnectionCount) {
 						return right.activeConnectionCount - left.activeConnectionCount;
@@ -116,20 +124,29 @@ export function ServerManager({
 		await onRefresh();
 	}, [onRefresh]);
 
-	const handleEnablePiece = useCallback(
-		async (pieceName: string) => {
+	const handleEnableCatalogItem = useCallback(
+		async (item: McpConnectionCatalogItem) => {
 			try {
-				setBusyId(`enable:${pieceName}`);
+				setBusyId(`enable:${item.sourceType}:${item.catalogKey}`);
 				setActionError(null);
-				const created = await api.mcpConnection.create({
-					sourceType: McpConnectionSourceType.NIMBLE_PIECE,
-					pieceName,
-				});
+				const created =
+					item.sourceType === McpConnectionSourceType.NIMBLE_SHARED
+						? await api.mcpConnection.create({
+								sourceType: McpConnectionSourceType.NIMBLE_SHARED,
+								serverKey: item.catalogKey,
+								displayName: item.displayName,
+							})
+						: await api.mcpConnection.create({
+								sourceType: McpConnectionSourceType.NIMBLE_PIECE,
+								pieceName: item.catalogKey,
+							});
 				await api.mcpConnection.sync(created.id);
 				await onRefresh();
 			} catch (error) {
 				setActionError(
-					error instanceof Error ? error.message : "Failed to enable piece MCP",
+					error instanceof Error
+						? error.message
+						: "Failed to enable MCP server",
 				);
 			} finally {
 				setBusyId(null);
@@ -317,7 +334,9 @@ export function ServerManager({
 															</div>
 														</TooltipTrigger>
 														<TooltipContent side="top">
-															{row.status === "ENABLED" ? "Disable server" : "Enable server"}
+															{row.status === "ENABLED"
+																? "Disable server"
+																: "Enable server"}
 														</TooltipContent>
 													</Tooltip>
 													<Tooltip>
@@ -336,7 +355,9 @@ export function ServerManager({
 																)}
 															</Button>
 														</TooltipTrigger>
-														<TooltipContent side="top">Sync tools</TooltipContent>
+														<TooltipContent side="top">
+															Sync tools
+														</TooltipContent>
 													</Tooltip>
 												</div>
 											</div>
@@ -363,13 +384,13 @@ export function ServerManager({
 							</p>
 						) : enableableCatalog.length === 0 ? (
 							<p className="text-xs text-muted-foreground">
-								No additional pieces with active app connections are available.
+								No additional Nimble servers are available to enable.
 							</p>
 						) : (
 							<div className="space-y-2">
 								{enableableCatalog.map((item) => (
 									<div
-										key={item.pieceName}
+										key={`${item.sourceType}:${item.catalogKey}`}
 										className="flex items-center justify-between rounded-lg border border-dashed bg-muted/40 p-2.5"
 									>
 										<div className="min-w-0 flex-1">
@@ -378,18 +399,24 @@ export function ServerManager({
 											</div>
 											<div className="flex items-center gap-2 text-xs text-muted-foreground">
 												<Wrench className="h-3 w-3" />
-												{item.activeConnectionCount} active connection
-												{item.activeConnectionCount === 1 ? "" : "s"}
+												{item.sourceType ===
+												McpConnectionSourceType.NIMBLE_SHARED
+													? "Shared Nimble server"
+													: `${item.activeConnectionCount} active connection${item.activeConnectionCount === 1 ? "" : "s"}`}
 											</div>
 										</div>
 										<Button
 											size="sm"
 											variant="outline"
-											onClick={() => void handleEnablePiece(item.pieceName)}
-											disabled={busyId === `enable:${item.pieceName}`}
+											onClick={() => void handleEnableCatalogItem(item)}
+											disabled={
+												busyId ===
+												`enable:${item.sourceType}:${item.catalogKey}`
+											}
 											className="ml-2 gap-1 text-xs"
 										>
-											{busyId === `enable:${item.pieceName}` ? (
+											{busyId ===
+											`enable:${item.sourceType}:${item.catalogKey}` ? (
 												<Loader2 className="h-3 w-3 animate-spin" />
 											) : null}
 											Enable

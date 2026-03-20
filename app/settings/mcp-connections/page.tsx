@@ -76,18 +76,28 @@ export default function McpConnectionsSettingsPage() {
 		return catalog.filter(
 			(item) =>
 				item.displayName.toLowerCase().includes(q) ||
-				item.pieceName.toLowerCase().includes(q),
+				item.catalogKey.toLowerCase().includes(q),
 		);
 	}, [catalog, search]);
 
-	const handleEnablePiece = async (pieceName: string) => {
+	const handleEnableCatalogItem = async (item: McpConnectionCatalogItem) => {
 		try {
-			setBusyId(`enable:${pieceName}`);
-			await api.mcpConnection.create({
-				sourceType: McpConnectionSourceType.NIMBLE_PIECE,
-				pieceName,
-			});
-			toast.success(`Enabled MCP for ${pieceName}`);
+			setBusyId(`enable:${item.sourceType}:${item.catalogKey}`);
+			if (item.sourceType === McpConnectionSourceType.NIMBLE_SHARED) {
+				const created = await api.mcpConnection.create({
+					sourceType: McpConnectionSourceType.NIMBLE_SHARED,
+					serverKey: item.catalogKey,
+					displayName: item.displayName,
+				});
+				await api.mcpConnection.sync(created.id);
+			} else {
+				const created = await api.mcpConnection.create({
+					sourceType: McpConnectionSourceType.NIMBLE_PIECE,
+					pieceName: item.catalogKey,
+				});
+				await api.mcpConnection.sync(created.id);
+			}
+			toast.success(`Enabled MCP for ${item.displayName}`);
 			await load();
 		} catch (error) {
 			toast.error(
@@ -223,11 +233,11 @@ export default function McpConnectionsSettingsPage() {
 
 				<div className="space-y-3">
 					<div className="flex items-center justify-between">
-						<h2 className="font-medium">Piece MCP Catalog</h2>
+						<h2 className="font-medium">Nimble MCP Catalog</h2>
 						<Input
 							className="w-72"
 							onChange={(event) => setSearch(event.target.value)}
-							placeholder="Search pieces..."
+							placeholder="Search servers..."
 							value={search}
 						/>
 					</div>
@@ -235,7 +245,8 @@ export default function McpConnectionsSettingsPage() {
 						<Table>
 							<TableHeader>
 								<TableRow>
-									<TableHead>Piece</TableHead>
+									<TableHead>Server</TableHead>
+									<TableHead>Type</TableHead>
 									<TableHead>Active App Connections</TableHead>
 									<TableHead>OAuth App</TableHead>
 									<TableHead>Runtime</TableHead>
@@ -246,19 +257,19 @@ export default function McpConnectionsSettingsPage() {
 							<TableBody>
 								{loading ? (
 									<TableRow>
-										<TableCell className="text-muted-foreground" colSpan={6}>
+										<TableCell className="text-muted-foreground" colSpan={7}>
 											Loading catalog...
 										</TableCell>
 									</TableRow>
 								) : filteredCatalog.length === 0 ? (
 									<TableRow>
-										<TableCell className="text-muted-foreground" colSpan={6}>
-											No pieces found
+										<TableCell className="text-muted-foreground" colSpan={7}>
+											No servers found
 										</TableCell>
 									</TableRow>
 								) : (
 									filteredCatalog.map((item) => (
-										<TableRow key={item.pieceName}>
+										<TableRow key={`${item.sourceType}:${item.catalogKey}`}>
 											<TableCell>
 												<div className="flex items-center gap-2">
 													{item.logoUrl ? (
@@ -273,10 +284,18 @@ export default function McpConnectionsSettingsPage() {
 															{item.displayName}
 														</div>
 														<div className="text-muted-foreground text-xs">
-															{item.pieceName}
+															{item.catalogKey}
 														</div>
 													</div>
 												</div>
+											</TableCell>
+											<TableCell>
+												<Badge variant="outline">
+													{item.sourceType ===
+													McpConnectionSourceType.NIMBLE_SHARED
+														? "Shared"
+														: "Piece"}
+												</Badge>
 											</TableCell>
 											<TableCell>{item.activeConnectionCount}</TableCell>
 											<TableCell>
@@ -325,8 +344,11 @@ export default function McpConnectionsSettingsPage() {
 													</Button>
 												) : (
 													<Button
-														disabled={busyId === `enable:${item.pieceName}`}
-														onClick={() => handleEnablePiece(item.pieceName)}
+														disabled={
+															busyId ===
+															`enable:${item.sourceType}:${item.catalogKey}`
+														}
+														onClick={() => handleEnableCatalogItem(item)}
 														size="sm"
 														type="button"
 													>

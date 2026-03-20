@@ -11,7 +11,10 @@ import {
 	updateMcpConnectionSync,
 } from "@/lib/db/mcp-connections";
 import { toMcpConnectionDto } from "@/lib/mcp-connections/serialize";
-import { ensurePieceServer } from "@/lib/mcp-runtime/service";
+import {
+	ensurePieceServer,
+	ensureSharedServer,
+} from "@/lib/mcp-runtime/service";
 import { getUserProjectRole } from "@/lib/project-service";
 import type { McpConnectionStatus } from "@/lib/types/mcp-connection";
 
@@ -75,18 +78,30 @@ export async function POST(
 		return NextResponse.json(row ? toMcpConnectionDto(row) : null);
 	}
 
-	if (current.sourceType === "nimble_piece") {
-		const pieceName = normalizePieceName(current.pieceName ?? "");
-		if (!pieceName) {
+	if (
+		current.sourceType === "nimble_piece" ||
+		current.sourceType === "nimble_shared"
+	) {
+		const serverKey = normalizePieceName(
+			current.sourceType === "nimble_piece"
+				? (current.pieceName ?? "")
+				: (current.serverKey ?? ""),
+		);
+		if (!serverKey) {
 			return NextResponse.json(
-				{ error: "Piece name is required for nimble_piece rows" },
+				{ error: "Server key is required for Nimble rows" },
 				{ status: 400 },
 			);
 		}
 
-		const ensured = await ensurePieceServer({
-			pieceName,
-		});
+		const ensured =
+			current.sourceType === "nimble_piece"
+				? await ensurePieceServer({
+						pieceName: serverKey,
+					})
+				: await ensureSharedServer({
+						serverKey,
+					});
 		const synced = await updateMcpConnectionSync({
 			id,
 			projectId: session.user.projectId,
@@ -100,6 +115,7 @@ export async function POST(
 				? {
 						provider: ensured.server.provider,
 						serviceName: ensured.server.serviceName,
+						sourceType: ensured.server.sourceType,
 					}
 				: (current.metadata as Record<string, unknown> | null),
 			actorUserId: session.user.id,

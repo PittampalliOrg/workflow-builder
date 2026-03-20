@@ -1,0 +1,2 @@
+ALTER TABLE "mcp_connection" ADD COLUMN "server_key" text;--> statement-breakpoint
+ALTER TABLE "mcp_connection" ADD CONSTRAINT "uq_mcp_connection_project_source_server_key" UNIQUE("project_id","source_type","server_key");

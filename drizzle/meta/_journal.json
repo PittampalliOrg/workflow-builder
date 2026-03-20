@@ -134,6 +134,13 @@
 			"when": 1772829096530,
 			"tag": "0018_naive_sauron",
 			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "7",
+			"when": 1774033137857,
+			"tag": "0019_elite_george_stacy",
+			"breakpoints": true
 		}
 	]
 }

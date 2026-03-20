@@ -7,6 +7,7 @@ export function toMcpConnectionDto(row: DbMcpConnection): McpConnection {
 		projectId: row.projectId,
 		sourceType: row.sourceType,
 		pieceName: row.pieceName,
+		serverKey: row.serverKey,
 		displayName: row.displayName,
 		registryRef: row.registryRef,
 		serverUrl: row.serverUrl,

@@ -9,10 +9,15 @@ import {
 	createCustomMcpConnection,
 	listMcpConnections,
 	upsertPieceMcpConnection,
+	upsertSharedMcpConnection,
 } from "@/lib/db/mcp-connections";
 import { getLatestPieceMetadataByName } from "@/lib/db/piece-metadata";
 import { toMcpConnectionDto } from "@/lib/mcp-connections/serialize";
-import { ensurePieceServer } from "@/lib/mcp-runtime/service";
+import {
+	ensurePieceServer,
+	ensureSharedServer,
+} from "@/lib/mcp-runtime/service";
+import { getSharedNimbleCatalogServer } from "@/lib/mcp-runtime/shared-catalog";
 import { getUserProjectRole } from "@/lib/project-service";
 import {
 	type CreateMcpConnectionBody,
@@ -104,6 +109,48 @@ export async function POST(request: Request) {
 					? {
 							provider: ensured.server.provider,
 							serviceName: ensured.server.serviceName,
+						}
+					: null,
+				actorUserId: session.user.id,
+			});
+
+			return NextResponse.json(toMcpConnectionDto(row), { status: 201 });
+		}
+
+		if (body.sourceType === McpConnectionSourceType.NIMBLE_SHARED) {
+			const shared = await getSharedNimbleCatalogServer(body.serverKey);
+			const serverKey = normalizePieceName(body.serverKey);
+			if (!(shared && serverKey)) {
+				return NextResponse.json(
+					{ error: "Unknown shared Nimble MCP server" },
+					{ status: 404 },
+				);
+			}
+			const displayName = body.displayName ?? shared?.displayName ?? serverKey;
+
+			const ensured = await ensureSharedServer({
+				serverKey,
+			});
+			const status: McpConnectionStatus = ensured.server?.healthy
+				? "ENABLED"
+				: "ERROR";
+
+			const row = await upsertSharedMcpConnection({
+				projectId,
+				serverKey,
+				displayName,
+				status,
+				serverUrl: ensured.server?.url ?? null,
+				registryRef: ensured.server?.registryRef ?? null,
+				lastError: ensured.server?.healthy
+					? null
+					: (ensured.error ?? "Server unavailable"),
+				metadata: ensured.server
+					? {
+							provider: ensured.server.provider,
+							serviceName: ensured.server.serviceName,
+							sourceType: ensured.server.sourceType,
+							serverKey,
 						}
 					: null,
 				actorUserId: session.user.id,

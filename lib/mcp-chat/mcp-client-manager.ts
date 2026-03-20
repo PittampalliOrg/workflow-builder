@@ -89,7 +89,8 @@ export async function discoverTools(
 	_serverName: string,
 	userId?: string,
 ): Promise<ToolDef[]> {
-	const cached = toolCache.get(serverUrl);
+	const cacheKey = userId ? `${serverUrl}::${userId}` : serverUrl;
+	const cached = toolCache.get(cacheKey);
 	if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
 		return cached.tools;
 	}
@@ -111,7 +112,7 @@ export async function discoverTools(
 		inputSchema: t.inputSchema as Record<string, unknown>,
 	}));
 
-	toolCache.set(serverUrl, { tools, ts: Date.now() });
+	toolCache.set(cacheKey, { tools, ts: Date.now() });
 	return tools;
 }
 

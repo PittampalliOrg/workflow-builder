@@ -31,6 +31,7 @@ export async function GET(request: Request) {
 				id: row.id,
 				name: row.displayName,
 				pieceName: row.pieceName,
+				serverKey: row.serverKey,
 				url: row.serverUrl,
 				status: row.status,
 				sourceType: row.sourceType,

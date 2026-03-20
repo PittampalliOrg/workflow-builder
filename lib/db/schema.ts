@@ -234,6 +234,7 @@ export const mcpRuns = pgTable(
 
 export type McpConnectionSourceType =
 	| "nimble_piece"
+	| "nimble_shared"
 	| "custom_url"
 	| "hosted_workflow";
 export type McpConnectionStatus = "ENABLED" | "DISABLED" | "ERROR";
@@ -249,6 +250,7 @@ export const mcpConnections = pgTable(
 			.references(() => projects.id, { onDelete: "cascade" }),
 		sourceType: text("source_type").notNull().$type<McpConnectionSourceType>(),
 		pieceName: text("piece_name"),
+		serverKey: text("server_key"),
 		displayName: text("display_name").notNull(),
 		registryRef: text("registry_ref"),
 		serverUrl: text("server_url"),
@@ -277,6 +279,9 @@ export const mcpConnections = pgTable(
 		projectSourcePieceUnique: unique(
 			"uq_mcp_connection_project_source_piece",
 		).on(table.projectId, table.sourceType, table.pieceName),
+		projectSourceServerKeyUnique: unique(
+			"uq_mcp_connection_project_source_server_key",
+		).on(table.projectId, table.sourceType, table.serverKey),
 	}),
 );
 

@@ -10,7 +10,10 @@ import {
 	updateMcpConnectionSync,
 } from "@/lib/db/mcp-connections";
 import { toMcpConnectionDto } from "@/lib/mcp-connections/serialize";
-import { ensurePieceServer } from "@/lib/mcp-runtime/service";
+import {
+	ensurePieceServer,
+	ensureSharedServer,
+} from "@/lib/mcp-runtime/service";
 import { getUserProjectRole } from "@/lib/project-service";
 import { discoverTools } from "@/lib/mcp-chat/mcp-client-manager";
 
@@ -84,27 +87,42 @@ export async function POST(
 		return NextResponse.json(toMcpConnectionDto(synced));
 	}
 
-	if (row.sourceType === "nimble_piece") {
-		const pieceName = normalizePieceName(row.pieceName ?? "");
-		if (!pieceName) {
+	if (row.sourceType === "nimble_piece" || row.sourceType === "nimble_shared") {
+		const serverKey = normalizePieceName(
+			row.sourceType === "nimble_piece"
+				? (row.pieceName ?? "")
+				: (row.serverKey ?? ""),
+		);
+		if (!serverKey) {
 			return NextResponse.json(
-				{ error: "Piece name is required for nimble_piece rows" },
+				{ error: "Server key is required for Nimble rows" },
 				{ status: 400 },
 			);
 		}
-		const runtime = await ensurePieceServer({
-			pieceName,
-		});
+		const runtime =
+			row.sourceType === "nimble_piece"
+				? await ensurePieceServer({ pieceName: serverKey })
+				: await ensureSharedServer({ serverKey });
 		const serverUrl = runtime.server?.url ?? row.serverUrl;
 
 		// Discover tools from the running server
-		let toolsMeta: { toolCount: number; tools: { name: string; description?: string }[] } = { toolCount: 0, tools: [] };
+		let toolsMeta: {
+			toolCount: number;
+			tools: { name: string; description?: string }[];
+		} = { toolCount: 0, tools: [] };
 		if (serverUrl && runtime.server?.healthy) {
 			try {
-				const discovered = await discoverTools(serverUrl, row.displayName, session.user.id);
+				const discovered = await discoverTools(
+					serverUrl,
+					row.displayName,
+					session.user.id,
+				);
 				toolsMeta = {
 					toolCount: discovered.length,
-					tools: discovered.map((t) => ({ name: t.name, description: t.description })),
+					tools: discovered.map((t) => ({
+						name: t.name,
+						description: t.description,
+					})),
 				};
 			} catch {
 				// Tool discovery failed — still update runtime info
@@ -128,6 +146,7 @@ export async function POST(
 				? {
 						provider: runtime.server.provider,
 						serviceName: runtime.server.serviceName,
+						sourceType: runtime.server.sourceType,
 						...toolsMeta,
 					}
 				: (row.metadata as Record<string, unknown> | null),
@@ -151,7 +170,10 @@ export async function POST(
 				metadata: {
 					...(row.metadata as Record<string, unknown> | null),
 					toolCount: tools.length,
-					tools: tools.map((t) => ({ name: t.name, description: t.description })),
+					tools: tools.map((t) => ({
+						name: t.name,
+						description: t.description,
+					})),
 				},
 				actorUserId: session.user.id,
 			});
