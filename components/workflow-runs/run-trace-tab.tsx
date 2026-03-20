@@ -7,6 +7,7 @@ import { SpanDetailsPanel } from "@/components/observability/span-details-panel"
 import { TraceStatusBadge } from "@/components/observability/trace-status-badge";
 import { TraceTimeline } from "@/components/observability/trace-timeline";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { useObservabilityTrace } from "@/hooks/use-observability-trace";
 import { useObservabilityTraces } from "@/hooks/use-observability-traces";
 import type {
@@ -243,6 +244,19 @@ export function RunTraceTab({
 							<div className="font-mono text-muted-foreground text-xs">
 								{activeSummary?.traceId ?? "-"}
 							</div>
+							{activeSummary ? (
+								<div className="mt-2 flex flex-wrap gap-1">
+									<Badge variant="outline">{activeSummary.runtime}</Badge>
+									<Badge variant="secondary">
+										{activeSummary.rootSpanCategory}
+									</Badge>
+									{activeSummary.serviceNames.map((serviceName) => (
+										<Badge key={serviceName} variant="outline">
+											{serviceName}
+										</Badge>
+									))}
+								</div>
+							) : null}
 						</div>
 						<div className="flex items-center gap-2">
 							{activeSummary ? (
@@ -276,11 +290,48 @@ export function RunTraceTab({
 							Loading trace detail...
 						</div>
 					) : activeTrace ? (
-						<TraceTimeline
-							onSelectSpan={onSelectedSpanIdChange}
-							selectedSpanId={selectedSpanId ?? undefined}
-							spans={activeTrace.spans}
-						/>
+						<div className="space-y-3">
+							{activeSummary ? (
+								<div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+									<div className="rounded-md border bg-muted/20 px-3 py-2">
+										<p className="text-muted-foreground text-xs">
+											Workflow / child
+										</p>
+										<p className="text-sm">
+											{activeSummary.breakdown.workflowSpans} /{" "}
+											{activeSummary.breakdown.childWorkflowSpans}
+										</p>
+									</div>
+									<div className="rounded-md border bg-muted/20 px-3 py-2">
+										<p className="text-muted-foreground text-xs">Activities</p>
+										<p className="text-sm">
+											{activeSummary.breakdown.activitySpans}
+										</p>
+									</div>
+									<div className="rounded-md border bg-muted/20 px-3 py-2">
+										<p className="text-muted-foreground text-xs">
+											Agent / tool
+										</p>
+										<p className="text-sm">
+											{activeSummary.breakdown.agentSpans} /{" "}
+											{activeSummary.breakdown.toolSpans}
+										</p>
+									</div>
+									<div className="rounded-md border bg-muted/20 px-3 py-2">
+										<p className="text-muted-foreground text-xs">LLM / HTTP</p>
+										<p className="text-sm">
+											{activeSummary.breakdown.llmSpans} /{" "}
+											{activeSummary.breakdown.httpSpans}
+										</p>
+									</div>
+								</div>
+							) : null}
+							<TraceTimeline
+								onSelectSpan={onSelectedSpanIdChange}
+								selectedSpanId={selectedSpanId ?? undefined}
+								spans={activeTrace.spans}
+							/>
+						</div>
 					) : (
 						<div className="rounded-md border p-6 text-muted-foreground text-sm">
 							Select a trace to inspect its span timeline.

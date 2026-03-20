@@ -206,7 +206,21 @@ def inject_current_context() -> dict[str, str]:
         carrier: dict[str, str] = {}
         inject(carrier)
         # We only care about w3c headers today.
-        return {k: v for k, v in carrier.items() if k in ("traceparent", "tracestate")}
+        filtered = {
+            k: v for k, v in carrier.items() if k in ("traceparent", "tracestate")
+        }
+        if filtered.get("traceparent"):
+            return filtered
+
+        from opentelemetry import trace as ot_trace
+
+        span = ot_trace.get_current_span()
+        ctx = span.get_span_context() if span else None
+        if ctx and ctx.is_valid:
+            filtered["traceparent"] = (
+                f"00-{ctx.trace_id:032x}-{ctx.span_id:016x}-01"
+            )
+        return filtered
     except Exception:
         return {}
 

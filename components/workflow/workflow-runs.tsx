@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
+	agentProgressByNodeAtom,
 	approvalEventNameAtom,
 	approvalExecutionIdAtom,
 	approvalRespondedAtom,
@@ -81,6 +82,12 @@ type WorkflowRunsProps = {
 // Helper to get the output display config for a node type
 function getOutputConfig(nodeType: string): OutputDisplayConfig | undefined {
 	return OUTPUT_DISPLAY_CONFIGS[nodeType];
+}
+
+function isBuiltInOutputConfig(
+	config: OutputDisplayConfig | undefined,
+): config is Extract<OutputDisplayConfig, { field: string }> {
+	return Boolean(config);
 }
 
 // Helper to extract the displayable value from output based on config
@@ -362,7 +369,7 @@ function OutputDisplay({
 		pluginConfig?.type !== "component" ? pluginConfig : builtInConfig;
 
 	// Get display value for built-in types (image/video/url)
-	const displayValue = effectiveBuiltInConfig
+	const displayValue = isBuiltInOutputConfig(effectiveBuiltInConfig)
 		? getOutputDisplayValue(output, effectiveBuiltInConfig)
 		: undefined;
 
@@ -803,6 +810,7 @@ export function WorkflowRuns({
 		selectedExecutionIdAtom,
 	);
 	const [, setExecutionLogs] = useAtom(executionLogsAtom);
+	const setAgentProgressByNode = useSetAtom(agentProgressByNodeAtom);
 	const [, setCurrentRunningNodeId] = useAtom(currentRunningNodeIdAtom);
 	const setApprovalEventName = useSetAtom(approvalEventNameAtom);
 	const setApprovalExecutionId = useSetAtom(approvalExecutionIdAtom);
@@ -921,13 +929,19 @@ export function WorkflowRuns({
 				// Update global execution logs atom if this is the selected execution
 				if (executionId === selectedExecutionId) {
 					setExecutionLogs(createExecutionLogsMap(mappedLogs));
+					setAgentProgressByNode(data.agentProgressByNode ?? {});
 				}
 			} catch (error) {
 				console.error("Failed to load execution logs:", error);
 				setLogs((prev) => ({ ...prev, [executionId]: [] }));
 			}
 		},
-		[mapNodeLabels, selectedExecutionId, setExecutionLogs],
+		[
+			mapNodeLabels,
+			selectedExecutionId,
+			setAgentProgressByNode,
+			setExecutionLogs,
+		],
 	);
 
 	// Notify parent when a new execution starts and auto-expand it
@@ -983,12 +997,18 @@ export function WorkflowRuns({
 				// Update global execution logs atom if this is the selected execution
 				if (executionId === selectedExecutionId) {
 					setExecutionLogs(createExecutionLogsMap(mappedLogs));
+					setAgentProgressByNode(logsData.agentProgressByNode ?? {});
 				}
 			} catch (error) {
 				console.error(`Failed to refresh logs for ${executionId}:`, error);
 			}
 		},
-		[mapNodeLabels, selectedExecutionId, setExecutionLogs],
+		[
+			mapNodeLabels,
+			selectedExecutionId,
+			setAgentProgressByNode,
+			setExecutionLogs,
+		],
 	);
 
 	// Poll for new executions when tab is active
@@ -1192,6 +1212,7 @@ export function WorkflowRuns({
 		if (selectedExecutionId === executionId) {
 			setSelectedExecutionId(null);
 			setExecutionLogs({});
+			setAgentProgressByNode({});
 			setCurrentRunningNodeId(null);
 			return;
 		}
@@ -1205,6 +1226,10 @@ export function WorkflowRuns({
 		// Update global execution logs atom with logs for this execution
 		const executionLogEntries = logs[executionId] || [];
 		setExecutionLogs(createExecutionLogsMap(executionLogEntries));
+		void api.workflow
+			.getExecutionLogs(executionId)
+			.then((data) => setAgentProgressByNode(data.agentProgressByNode ?? {}))
+			.catch(() => setAgentProgressByNode({}));
 	};
 
 	const toggleLog = (logId: string) => {

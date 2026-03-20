@@ -72,6 +72,14 @@ export function initNodeOtel(serviceName: string): void {
 	const g = getOtelGlobal();
 	if (g.started) return;
 
+	if (
+		process.env.WORKFLOW_BUILDER_DISABLE_NODE_OTEL === "true" ||
+		process.env.OTEL_SDK_DISABLED === "true"
+	) {
+		g.started = true;
+		return;
+	}
+
 	const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
 	if (!endpoint) {
 		g.started = true;
@@ -79,11 +87,8 @@ export function initNodeOtel(serviceName: string): void {
 	}
 
 	/* eslint-disable @typescript-eslint/no-require-imports */
-	const {
-		diag,
-		DiagConsoleLogger,
-		DiagLogLevel,
-	} = require("@opentelemetry/api") as typeof import("@opentelemetry/api");
+	const { diag, DiagConsoleLogger, DiagLogLevel } =
+		require("@opentelemetry/api") as typeof import("@opentelemetry/api");
 
 	const { getNodeAutoInstrumentations } =
 		require("@opentelemetry/auto-instrumentations-node") as typeof import("@opentelemetry/auto-instrumentations-node");
@@ -109,7 +114,10 @@ export function initNodeOtel(serviceName: string): void {
 
 	const diagLevel = process.env.OTEL_DIAGNOSTIC_LOG_LEVEL?.toLowerCase();
 	if (diagLevel) {
-		const map: Record<string, typeof DiagLogLevel[keyof typeof DiagLogLevel]> = {
+		const map: Record<
+			string,
+			(typeof DiagLogLevel)[keyof typeof DiagLogLevel]
+		> = {
 			none: DiagLogLevel.NONE,
 			error: DiagLogLevel.ERROR,
 			warn: DiagLogLevel.WARN,

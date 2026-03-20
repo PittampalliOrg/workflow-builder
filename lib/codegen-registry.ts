@@ -15,7 +15,7 @@
  * Maps action IDs to their generated export code templates
  */
 export const AUTO_GENERATED_TEMPLATES: Record<string, string> = {
-  "blob/put": `import { fetchCredentials } from "./lib/credential-helper";
+	"blob/put": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -119,7 +119,7 @@ export async function putBlobStep(
 }
 `,
 
-  "blob/list": `import { fetchCredentials } from "./lib/credential-helper";
+	"blob/list": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -211,7 +211,7 @@ export async function listBlobsStep(
 }
 `,
 
-  "clerk/get-user": `import { fetchCredentials } from "./lib/credential-helper";
+	"clerk/get-user": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -281,7 +281,7 @@ export async function clerkGetUserStep(
 }
 `,
 
-  "clerk/create-user": `import { fetchCredentials } from "./lib/credential-helper";
+	"clerk/create-user": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -390,7 +390,7 @@ export async function clerkCreateUserStep(
 }
 `,
 
-  "clerk/update-user": `import { fetchCredentials } from "./lib/credential-helper";
+	"clerk/update-user": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -496,7 +496,7 @@ export async function clerkUpdateUserStep(
 }
 `,
 
-  "clerk/delete-user": `import { fetchCredentials } from "./lib/credential-helper";
+	"clerk/delete-user": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -570,7 +570,7 @@ export async function clerkDeleteUserStep(
 }
 `,
 
-  "fal/generate-image": `import { fetchCredentials } from "./lib/credential-helper";
+	"fal/generate-image": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -674,7 +674,7 @@ export async function falGenerateImageStep(
 }
 `,
 
-  "fal/generate-video": `import { fetchCredentials } from "./lib/credential-helper";
+	"fal/generate-video": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -773,7 +773,7 @@ export async function falGenerateVideoStep(
 }
 `,
 
-  "fal/upscale-image": `import { fetchCredentials } from "./lib/credential-helper";
+	"fal/upscale-image": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -878,7 +878,7 @@ export async function falUpscaleImageStep(
 }
 `,
 
-  "fal/remove-background": `import { fetchCredentials } from "./lib/credential-helper";
+	"fal/remove-background": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -969,7 +969,7 @@ export async function falRemoveBackgroundStep(
 }
 `,
 
-  "fal/image-to-image": `import { fetchCredentials } from "./lib/credential-helper";
+	"fal/image-to-image": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1076,7 +1076,7 @@ export async function falImageToImageStep(
 }
 `,
 
-  "firecrawl/scrape": `import { fetchCredentials } from "./lib/credential-helper";
+	"firecrawl/scrape": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1138,7 +1138,7 @@ export async function firecrawlScrapeStep(
 }
 `,
 
-  "firecrawl/search": `import { fetchCredentials } from "./lib/credential-helper";
+	"firecrawl/search": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1202,7 +1202,7 @@ export async function firecrawlSearchStep(
 }
 `,
 
-  "github/create-issue": `import { fetchCredentials } from "./lib/credential-helper";
+	"github/create-issue": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1304,7 +1304,7 @@ export async function createIssueStep(
 }
 `,
 
-  "github/list-issues": `import { fetchCredentials } from "./lib/credential-helper";
+	"github/list-issues": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1423,7 +1423,7 @@ export async function listIssuesStep(
 }
 `,
 
-  "github/get-issue": `import { fetchCredentials } from "./lib/credential-helper";
+	"github/get-issue": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1526,7 +1526,7 @@ export async function getIssueStep(
 }
 `,
 
-  "github/update-issue": `import { fetchCredentials } from "./lib/credential-helper";
+	"github/update-issue": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1651,7 +1651,7 @@ export async function updateIssueStep(
 }
 `,
 
-  "linear/create-ticket": `import { fetchCredentials } from "./lib/credential-helper";
+	"linear/create-ticket": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1762,7 +1762,7 @@ export async function createTicketStep(
 }
 `,
 
-  "linear/find-issues": `import { fetchCredentials } from "./lib/credential-helper";
+	"linear/find-issues": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -1872,7 +1872,7 @@ export async function findIssuesStep(
 }
 `,
 
-  "openai/generate-text": `import { createOpenAI } from "@ai-sdk/openai";
+	"openai/generate-text": `import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject, generateText } from "ai";
 import { z } from "zod";
 import { fetchCredentials } from "./lib/credential-helper";
@@ -1909,7 +1909,7 @@ export async function generateTextStep(
     };
   }
 
-  const modelId = input.aiModel || "gpt-4o";
+  const modelId = input.aiModel || "gpt-5.4";
   const promptText = input.aiPrompt || "";
 
   if (!promptText || promptText.trim() === "") {
@@ -1951,7 +1951,7 @@ export async function generateTextStep(
 }
 `,
 
-  "openai/generate-image": `import OpenAI from "openai";
+	"openai/generate-image": `import OpenAI from "openai";
 import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
@@ -2029,7 +2029,7 @@ export async function generateImageStep(
 }
 `,
 
-  "perplexity/search": `import { fetchCredentials } from "./lib/credential-helper";
+	"perplexity/search": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2115,7 +2115,7 @@ export async function perplexitySearchStep(
 }
 `,
 
-  "perplexity/ask": `import { fetchCredentials } from "./lib/credential-helper";
+	"perplexity/ask": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2211,7 +2211,7 @@ export async function perplexityAskStep(
 }
 `,
 
-  "perplexity/research": `import { fetchCredentials } from "./lib/credential-helper";
+	"perplexity/research": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2297,7 +2297,7 @@ export async function perplexityResearchStep(
 }
 `,
 
-  "resend/send-email": `import { fetchCredentials } from "./lib/credential-helper";
+	"resend/send-email": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2400,7 +2400,7 @@ export async function sendEmailStep(
 }
 `,
 
-  "slack/send-message": `import { fetchCredentials } from "./lib/credential-helper";
+	"slack/send-message": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2474,7 +2474,7 @@ export async function sendSlackMessageStep(
 }
 `,
 
-  "stripe/create-customer": `import { fetchCredentials } from "./lib/credential-helper";
+	"stripe/create-customer": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2569,7 +2569,7 @@ export async function createCustomerStep(
 }
 `,
 
-  "stripe/get-customer": `import { fetchCredentials } from "./lib/credential-helper";
+	"stripe/get-customer": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2699,7 +2699,7 @@ export async function getCustomerStep(
 }
 `,
 
-  "stripe/create-invoice": `import { fetchCredentials } from "./lib/credential-helper";
+	"stripe/create-invoice": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2887,7 +2887,7 @@ export async function createInvoiceStep(
 }
 `,
 
-  "superagent/guard": `import { fetchCredentials } from "./lib/credential-helper";
+	"superagent/guard": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -2965,7 +2965,7 @@ export async function superagentGuardStep(
 }
 `,
 
-  "superagent/redact": `import { fetchCredentials } from "./lib/credential-helper";
+	"superagent/redact": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -3043,7 +3043,7 @@ export async function superagentRedactStep(
 }
 `,
 
-  "v0/create-chat": `import { createClient, type ChatsCreateResponse } from "v0-sdk";
+	"v0/create-chat": `import { createClient, type ChatsCreateResponse } from "v0-sdk";
 import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
@@ -3098,7 +3098,7 @@ export async function createChatStep(
 }
 `,
 
-  "v0/send-message": `import { createClient, type ChatsSendMessageResponse } from "v0-sdk";
+	"v0/send-message": `import { createClient, type ChatsSendMessageResponse } from "v0-sdk";
 import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
@@ -3152,7 +3152,7 @@ export async function sendMessageStep(
 }
 `,
 
-  "webflow/list-sites": `import { fetchCredentials } from "./lib/credential-helper";
+	"webflow/list-sites": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -3224,7 +3224,7 @@ export async function listSitesStep(
 }
 `,
 
-  "webflow/get-site": `import { fetchCredentials } from "./lib/credential-helper";
+	"webflow/get-site": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -3307,7 +3307,7 @@ export async function getSiteStep(
 }
 `,
 
-  "webflow/publish-site": `import { fetchCredentials } from "./lib/credential-helper";
+	"webflow/publish-site": `import { fetchCredentials } from "./lib/credential-helper";
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -3424,5 +3424,5 @@ export async function publishSiteStep(
  * Get the auto-generated codegen template for an action
  */
 export function getAutoGeneratedTemplate(actionId: string): string | undefined {
-  return AUTO_GENERATED_TEMPLATES[actionId];
+	return AUTO_GENERATED_TEMPLATES[actionId];
 }

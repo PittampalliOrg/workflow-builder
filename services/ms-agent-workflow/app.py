@@ -6,18 +6,79 @@ import logging
 import os
 import threading
 import time
+from collections import UserDict
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Literal
 
-import dapr.ext.workflow as wf
-from dapr.ext.workflow import DaprWorkflowContext, DaprWorkflowClient
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
+from config import TemplateConfigResolver, parse_config_keys, parse_config_metadata
+from tools import DEFAULT_WORKSPACE_ROOT, ToolRuntimeContext, resolve_tool_group
+
+try:
+    import dapr.ext.workflow as wf
+    from dapr.ext.workflow import DaprWorkflowContext, DaprWorkflowClient
+except ImportError:  # pragma: no cover - fallback for lightweight test environments
+    class _StubWorkflowRuntime:
+        def activity(self, name: str | None = None):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def workflow(self, name: str | None = None):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+        def start(self) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            return None
+
+    class _StubWorkflowModule:
+        WorkflowRuntime = _StubWorkflowRuntime
+
+    class DaprWorkflowContext:  # type: ignore[no-redef]
+        pass
+
+    class DaprWorkflowClient:  # type: ignore[no-redef]
+        def schedule_new_workflow(self, workflow: Any, input: dict[str, Any]) -> str:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def wait_for_workflow_completion(
+            self, instance_id: str, timeout_in_seconds: int
+        ) -> Any:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def get_workflow_state(self, instance_id: str, fetch_payloads: bool = True) -> Any:
+            raise RuntimeError("Dapr workflow client unavailable in test fallback")
+
+        def terminate_workflow(self, instance_id: str, output: str | None = None) -> None:
+            return None
+
+    wf = _StubWorkflowModule()
+
+try:
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+except ImportError:  # pragma: no cover - fallback for lightweight test environments
+    class OpenAIChatClient:  # type: ignore[no-redef]
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+    class Agent:  # type: ignore[no-redef]
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        async def run(self, prompt: str, **_kwargs) -> str:
+            return prompt
+
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(
@@ -27,15 +88,30 @@ logging.basicConfig(
 
 PORT = int(os.environ.get("PORT", "8081"))
 HOST = os.environ.get("HOST", "0.0.0.0")
-DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "travel-planner")
-DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.2")
+DEFAULT_TEMPLATE_ID = os.environ.get("MS_AGENT_DEFAULT_TEMPLATE_ID", "repo-review")
+DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.4")
+DEFAULT_CONFIG_STORE = os.environ.get("DAPR_CONFIG_STORE", "azureappconfig")
+DAPR_LLM_COMPONENT = os.environ.get("DAPR_LLM_COMPONENT_DEFAULT")
 WORKFLOW_NAME = os.environ.get("MS_AGENT_CHILD_WORKFLOW_RUN_NAME", "msAgentWorkflowV1")
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()
     == "true"
 )
-SERVICE_VERSION = "1.0.0"
+SERVICE_VERSION = "1.1.0"
 _EVENT_LOOP_THREAD_JOIN_TIMEOUT_SECONDS = 5
+PromptMode = Literal["pass_through", "chain_previous", "template"]
+
+
+@dataclass(frozen=True)
+class TemplateStep:
+    agent_name: str
+    instructions: str
+    description: str
+    prompt_mode: PromptMode = "pass_through"
+    prompt_template: str | None = None
+    tool_group: str | None = None
+    max_iterations: int = 40
+    optional_flag: str | None = None
 
 
 @dataclass(frozen=True)
@@ -43,28 +119,385 @@ class WorkflowTemplate:
     id: str
     label: str
     description: str
-    extractor_instructions: str
-    planner_instructions: str
-    expander_instructions: str
+    steps: list[TemplateStep]
+    default_model: str | None = None
+    supports_tools: bool = False
+    default_tool_group: str | None = None
+
+
+class SafeFormatMap(UserDict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 
 TEMPLATES: dict[str, WorkflowTemplate] = {
+    "repo-review": WorkflowTemplate(
+        id="repo-review",
+        label="Repository Review",
+        description="Structured repository review with architecture discovery, findings, and summary.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="RepoScout",
+                description="Repository structure and architecture discovery",
+                instructions=(
+                    "Inspect the repository structure, important entry points, test layout, "
+                    "deployment/runtime surfaces, and the files most relevant to the task."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Start by mapping the project structure, key directories, and likely critical paths."
+                ),
+                tool_group="read_only",
+                max_iterations=15,
+            ),
+            TemplateStep(
+                agent_name="Reviewer",
+                description="Repository review findings",
+                instructions=(
+                    "Review the implementation with focus on: {focus_areas}. "
+                    "Produce prioritized findings with file references and concrete engineering impact."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Repository map:\n{previous_output}\n\n"
+                    "Now perform the review and identify the highest-value findings."
+                ),
+                tool_group="read_only",
+                max_iterations=25,
+            ),
+            TemplateStep(
+                agent_name="Summarizer",
+                description="Engineer-facing summary",
+                instructions=(
+                    "Summarize the repository purpose, major subsystems, deployment shape, "
+                    "key docs, and the most important findings in a compact handoff format."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Repository review findings:\n{step_1_output}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Produce the final structured summary."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+        ],
+    ),
+    "implement-task": WorkflowTemplate(
+        id="implement-task",
+        label="Implement Task",
+        description="Plan, edit, verify, and summarize a coding task with Microsoft Agent Framework specialists.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="Planner",
+                description="Implementation planning specialist",
+                instructions=(
+                    "Inspect the codebase and produce the smallest coherent implementation plan "
+                    "for the requested task before editing files."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Plan the implementation in a concise engineering checklist."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+            TemplateStep(
+                agent_name="Editor",
+                description="Implementation editing specialist",
+                instructions=(
+                    "Implement the requested task directly. Keep edits minimal, consistent, "
+                    "and confined to the repository root."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation plan:\n{previous_output}\n\n"
+                    "Apply the code changes now."
+                ),
+                tool_group="all",
+                max_iterations=30,
+            ),
+            TemplateStep(
+                agent_name="Verifier",
+                description="Verification and summary specialist",
+                instructions=(
+                    "Review the resulting changes, run the requested verification commands when provided, "
+                    "and summarize the outcome, including any residual risks."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation summary:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Verify the work and produce the final engineering summary."
+                ),
+                tool_group="all",
+                max_iterations=18,
+            ),
+        ],
+    ),
+    "fix-tests": WorkflowTemplate(
+        id="fix-tests",
+        label="Fix Tests",
+        description="Investigate a failing test or verification command, repair it, and summarize the fix.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="FailureAnalyzer",
+                description="Failure reproduction and diagnosis",
+                instructions=(
+                    "Reproduce or inspect the failing test scenario, identify the likely root cause, "
+                    "and describe the narrowest robust fix."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Task:\n{task}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "If verification commands are provided, use them to diagnose the failure."
+                ),
+                tool_group="all",
+                max_iterations=18,
+            ),
+            TemplateStep(
+                agent_name="RepairEngineer",
+                description="Apply the repair",
+                instructions=(
+                    "Implement the smallest durable repair for the diagnosed failure and keep the change set focused."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Diagnosis:\n{previous_output}\n\n"
+                    "Apply the repair now."
+                ),
+                tool_group="all",
+                max_iterations=24,
+            ),
+            TemplateStep(
+                agent_name="RegressionReviewer",
+                description="Regression and residual risk summary",
+                instructions=(
+                    "Verify the repaired state, note any remaining failure modes, and summarize what changed."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Repair summary:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Provide the final verification summary."
+                ),
+                tool_group="all",
+                max_iterations=15,
+            ),
+        ],
+    ),
+    "explain-code": WorkflowTemplate(
+        id="explain-code",
+        label="Explain Code",
+        description="Read the repository and produce a guided explanation for engineers.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="CodeExplorer",
+                description="Codebase exploration",
+                instructions=(
+                    "Inspect the relevant files and trace the control flow or system boundaries needed to answer the task."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Repository root: {cwd}\n\n"
+                    "Question:\n{task}\n\n"
+                    "Expected output:\n{expected_output}\n\n"
+                    "Explore the code paths required to answer it accurately."
+                ),
+                tool_group="read_only",
+                max_iterations=16,
+            ),
+            TemplateStep(
+                agent_name="Explainer",
+                description="Engineer-facing explanation",
+                instructions=(
+                    "Explain the code clearly for another engineer. Include the purpose, main execution path, "
+                    "important data flows, and caveats."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Question:\n{task}\n\n"
+                    "Exploration notes:\n{previous_output}\n\n"
+                    "Produce the final explanation."
+                ),
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+        ],
+    ),
+    "custom-coding-workflow": WorkflowTemplate(
+        id="custom-coding-workflow",
+        label="Custom Coding Workflow",
+        description="General multi-phase coding workflow with planning, editing, review, and optional verification.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="all",
+        steps=[
+            TemplateStep(
+                agent_name="Planner",
+                description="Task planning",
+                instructions="Create a concrete engineering plan for the requested coding task.",
+                prompt_mode="template",
+                prompt_template="Repository root: {cwd}\n\nTask:\n{task}\n\nPlan the work.",
+                tool_group="read_only",
+                max_iterations=12,
+            ),
+            TemplateStep(
+                agent_name="Editor",
+                description="Code editing",
+                instructions="Apply the requested coding changes directly in the repository.",
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Plan:\n{previous_output}\n\n"
+                    "Implement the changes now."
+                ),
+                tool_group="all",
+                max_iterations=30,
+            ),
+            TemplateStep(
+                agent_name="Reviewer",
+                description="Change review and summary",
+                instructions=(
+                    "Review the final changes, verify where appropriate, and summarize the outcome with risks."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Task:\n{task}\n\n"
+                    "Implementation output:\n{step_1_output}\n\n"
+                    "Verification commands:\n{verify_commands}\n\n"
+                    "Produce the final review."
+                ),
+                tool_group="all",
+                max_iterations=16,
+            ),
+        ],
+    ),
     "travel-planner": WorkflowTemplate(
         id="travel-planner",
         label="Travel Planner",
         description="Sequential trip-planning workflow: extract destination, draft outline, expand itinerary.",
-        extractor_instructions=(
-            "Extract the main destination city from the user's request. "
-            "Return only the city or destination name with no extra text."
-        ),
-        planner_instructions=(
-            "Create a concise 3-day outline for the destination. "
-            "Balance culture, food, and leisure in bullet form."
-        ),
-        expander_instructions=(
-            "Expand the outline into a detailed 3-day itinerary. "
-            "Each day must have Morning, Afternoon, and Evening sections."
-        ),
+        steps=[
+            TemplateStep(
+                agent_name="DestinationExtractor",
+                description="Travel Planner destination extraction agent",
+                instructions=(
+                    "Extract the main destination city from the user's request. "
+                    "Return only the city or destination name with no extra text."
+                ),
+                prompt_mode="pass_through",
+            ),
+            TemplateStep(
+                agent_name="PlannerAgent",
+                description="Travel Planner outline planning agent",
+                instructions=(
+                    "Create a concise 3-day outline for the destination. "
+                    "Balance culture, food, and leisure in bullet form."
+                ),
+                prompt_mode="template",
+                prompt_template="Destination: {previous_output}\nCreate a concise 3-day outline.",
+            ),
+            TemplateStep(
+                agent_name="ItineraryAgent",
+                description="Travel Planner itinerary expansion agent",
+                instructions=(
+                    "Expand the outline into a detailed 3-day itinerary. "
+                    "Each day must have Morning, Afternoon, and Evening sections."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Destination: {step_0_output}\n\n"
+                    "Outline:\n{previous_output}\n\n"
+                    "Expand this into a detailed itinerary."
+                ),
+            ),
+        ],
+        default_model=DEFAULT_MODEL,
+    ),
+    "code-review": WorkflowTemplate(
+        id="code-review",
+        label="Legacy Code Review",
+        description="Analyze a repository, produce findings, and optionally apply targeted fixes.",
+        supports_tools=True,
+        default_model=DEFAULT_MODEL,
+        default_tool_group="read_only",
+        steps=[
+            TemplateStep(
+                agent_name="StructureAnalyzer",
+                description="Repository structure analysis agent",
+                instructions=(
+                    "Explore the repository structure before reviewing implementation details. "
+                    "Summarize the languages, key entry points, major directories, and risky areas."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Review this repository rooted at {cwd}.\n"
+                    "Task:\n{task}\n\n"
+                    "Start by understanding the codebase structure and the most relevant files."
+                ),
+                tool_group="read_only",
+                max_iterations=15,
+            ),
+            TemplateStep(
+                agent_name="CodeReviewer",
+                description="Code review agent",
+                instructions=(
+                    "Review the implementation with focus on: {focus_areas}. "
+                    "Produce concrete findings with file paths and line references when possible."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Repository summary:\n{previous_output}\n\n"
+                    "Now perform the code review and produce prioritized findings."
+                ),
+                tool_group="read_only",
+                max_iterations=25,
+            ),
+            TemplateStep(
+                agent_name="FixApplicator",
+                description="Fix application agent",
+                instructions=(
+                    "Apply targeted fixes for the confirmed findings. "
+                    "Keep changes minimal, safe, and consistent with the existing codebase."
+                ),
+                prompt_mode="template",
+                prompt_template=(
+                    "Original task:\n{task}\n\n"
+                    "Review findings:\n{step_1_output}\n\n"
+                    "Apply the fixes now, then summarize exactly what changed."
+                ),
+                tool_group="read_write",
+                max_iterations=20,
+                optional_flag="applyFixes",
+            ),
+        ],
     ),
 }
 
@@ -91,6 +524,28 @@ def _coerce_text(value: Any) -> str:
     return str(value).strip()
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return default
+
+
+def _parse_review_focus_areas(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value if str(item).strip()]
+        return values
+    if not isinstance(value, str):
+        return []
+    values = [part.strip() for part in value.replace("\n", ",").split(",")]
+    return [value for value in values if value]
+
+
 class MicrosoftAgentAdapter:
     def __init__(
         self,
@@ -99,27 +554,31 @@ class MicrosoftAgentAdapter:
         instructions: str,
         description: str,
         model: str,
+        tools: list[Any] | None = None,
         api_key: str | None = None,
     ) -> None:
         self.name = name
         self.instructions = instructions
         self.description = description
         self.model = model
+        self.tools = tools or []
         self.api_key = api_key
 
     def _build_agent(self) -> Agent:
+        client = OpenAIChatClient(
+            model_id=self.model,
+            api_key=self.api_key,
+        )
         return Agent(
-            client=OpenAIChatClient(
-                model_id=self.model,
-                api_key=self.api_key,
-            ),
+            client,
             name=self.name,
             description=self.description,
             instructions=self.instructions,
+            tools=self.tools,
         )
 
-    async def run(self, prompt: str) -> str:
-        result = await self._build_agent().run(prompt)
+    async def run(self, prompt: str, **tool_kwargs: Any) -> str:
+        result = await self._build_agent().run(prompt, **tool_kwargs)
         return _coerce_text(result)
 
 
@@ -150,6 +609,9 @@ class AsyncRunner:
 
 
 async_runner: AsyncRunner | None = None
+workflow_client: DaprWorkflowClient | None = None
+config_resolver: TemplateConfigResolver | None = None
+runtime = wf.WorkflowRuntime()
 
 
 def _run_async(awaitable: Any) -> Any:
@@ -166,22 +628,59 @@ def _resolve_template(template_id: str | None) -> WorkflowTemplate:
     return template
 
 
-@lru_cache(maxsize=32)
-def _get_agent_adapter(
-    *,
-    name: str,
-    instructions: str,
-    description: str,
-    model: str,
-    api_key: str | None,
-) -> MicrosoftAgentAdapter:
-    return MicrosoftAgentAdapter(
-        name=name,
-        instructions=instructions,
-        description=description,
-        model=model,
-        api_key=api_key,
+def _format_template_text(template_text: str, values: dict[str, Any]) -> str:
+    return template_text.format_map(
+        SafeFormatMap({key: _coerce_text(value) for key, value in values.items()})
     )
+
+
+def _build_step_context(
+    *,
+    task: str,
+    step_outputs: list[dict[str, Any]],
+    cwd: str | None,
+    review_focus_areas: list[str],
+    expected_output: str | None = None,
+    verify_commands: str | None = None,
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "task": task,
+        "cwd": cwd or DEFAULT_WORKSPACE_ROOT,
+        "focus_areas": ", ".join(review_focus_areas) if review_focus_areas else "general code quality",
+        "review_focus_areas": ", ".join(review_focus_areas),
+        "expected_output": expected_output or "",
+        "verify_commands": verify_commands or "",
+    }
+    if step_outputs:
+        values["previous_output"] = _coerce_text(step_outputs[-1].get("content"))
+        values["previous_agent"] = step_outputs[-1].get("agent")
+    for index, output in enumerate(step_outputs):
+        values[f"step_{index}_output"] = _coerce_text(output.get("content"))
+        values[f"step_{index}_agent"] = output.get("agent")
+    return values
+
+
+def _build_step_prompt(
+    *,
+    step: TemplateStep,
+    task: str,
+    step_context: dict[str, Any],
+) -> str:
+    if step.prompt_mode == "pass_through":
+        return task
+    if step.prompt_mode == "chain_previous":
+        previous_output = str(step_context.get("previous_output") or "").strip()
+        if not previous_output:
+            return task
+        return f"Original task:\n{task}\n\nPrevious step output:\n{previous_output}"
+    if step.prompt_mode == "template" and step.prompt_template:
+        return _format_template_text(step.prompt_template, step_context)
+    return task
+
+
+def _resolve_workspace_root(cwd: str | None) -> str:
+    value = str(cwd or DEFAULT_WORKSPACE_ROOT).strip()
+    return value or DEFAULT_WORKSPACE_ROOT
 
 
 def _run_agent_step(
@@ -191,19 +690,41 @@ def _run_agent_step(
     description: str,
     prompt: str,
     model: str | None,
+    tool_group: str | None = None,
+    workspace_root: str | None = None,
+    workspace_ref: str | None = None,
+    execution_id: str | None = None,
     api_key: str | None = None,
-) -> str:
+) -> dict[str, Any]:
     resolved_model = str(model or DEFAULT_MODEL).strip() or DEFAULT_MODEL
-    adapter = _get_agent_adapter(
+    tools = resolve_tool_group(tool_group)
+    adapter = MicrosoftAgentAdapter(
         name=agent_name,
         instructions=instructions,
         description=description,
         model=resolved_model,
+        tools=tools,
         api_key=api_key.strip() if isinstance(api_key, str) and api_key.strip() else None,
     )
-    return _run_async(adapter.run(prompt))
 
-runtime = wf.WorkflowRuntime()
+    tool_kwargs: dict[str, Any] = {}
+    tool_context: ToolRuntimeContext | None = None
+    if tools:
+        resolved_workspace_root = _resolve_workspace_root(workspace_root)
+        if isinstance(workspace_ref, str) and workspace_ref.strip():
+            tool_context = ToolRuntimeContext.from_remote_workspace(
+                workspace_root=resolved_workspace_root,
+                workspace_ref=workspace_ref,
+                execution_id=execution_id,
+            )
+        else:
+            tool_context = ToolRuntimeContext.from_workspace_root(resolved_workspace_root)
+        tool_kwargs["tool_context"] = tool_context
+        tool_kwargs["workspace_root"] = str(tool_context.workspace_root)
+
+    content = _run_async(adapter.run(prompt, **tool_kwargs))
+    summary = tool_context.build_summary() if tool_context is not None else {}
+    return {"content": content, **summary}
 
 
 class WorkflowRunRequest(BaseModel):
@@ -213,6 +734,19 @@ class WorkflowRunRequest(BaseModel):
     openAIApiKey: str | None = None
     waitForCompletion: bool = Field(default=False)
     timeoutMinutes: int = Field(default=10, ge=1, le=60)
+    reviewFocusAreas: list[str] | str | None = None
+    workspaceRef: str | None = None
+    cwd: str | None = None
+    applyFixes: bool | str | None = None
+    maxIterations: int | None = Field(default=None, ge=1, le=200)
+    instructionsOverlay: str | None = None
+    expectedOutput: str | None = None
+    verifyCommands: str | None = None
+    toolGroup: str | None = None
+    configStoreName: str | None = None
+    configKeys: list[str] | str | None = None
+    configMetadata: dict[str, str] | str | None = None
+    executionId: str | None = None
 
 
 class TerminateWorkflowRequest(BaseModel):
@@ -283,6 +817,29 @@ def _build_public_result(
     steps = payload.get("steps")
     if not isinstance(steps, list):
         steps = []
+    resolved_trace_id = (
+        payload.get("traceId")
+        or payload.get("trace_id")
+        or (
+            payload.get("agentProgress", {}).get("traceId")
+            if isinstance(payload.get("agentProgress"), dict)
+            else None
+        )
+    )
+    agent_progress = payload.get("agentProgress")
+    if not isinstance(agent_progress, dict):
+        agent_progress = _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=resolved_template_id,
+            status="completed",
+            step_outputs=steps,
+            total_steps=len(steps),
+            current_step_name=steps[-1].get("agent") if steps else None,
+            stop_reason="workflow completed",
+            trace_id=resolved_trace_id,
+        )
+    elif not agent_progress.get("traceId") and resolved_trace_id:
+        agent_progress = {**agent_progress, "traceId": resolved_trace_id}
     return {
         "text": text,
         "content": text,
@@ -290,13 +847,168 @@ def _build_public_result(
         "workflowTemplateId": resolved_template_id,
         "model": resolved_model,
         "steps": steps,
+        "reviewFindings": payload.get("reviewFindings"),
+        "filesAnalyzed": payload.get("filesAnalyzed") or [],
+        "fixesApplied": payload.get("fixesApplied") or [],
+        "patch": payload.get("patch") or "",
         "agentWorkflowId": instance_id,
         "daprInstanceId": instance_id,
+        "traceId": resolved_trace_id,
+        "agentProgress": agent_progress,
     }
+
+
+def _utc_now_iso() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _parse_json_blob(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="ignore")
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1].strip()
+    return trace_id or None
+
+
+def _trace_id_from_otel(otel_ctx: object) -> str | None:
+    if not isinstance(otel_ctx, dict):
+        return None
+    return _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+
+
+def _current_trace_id() -> str | None:
+    try:
+        from opentelemetry import trace as ot_trace
+
+        span = ot_trace.get_current_span()
+        if span is None:
+            return None
+        span_context = span.get_span_context()
+        if span_context is None or not getattr(span_context, "is_valid", False):
+            return None
+        trace_id = getattr(span_context, "trace_id", 0)
+        if not trace_id:
+            return None
+        return f"{trace_id:032x}"
+    except Exception:
+        return None
+
+
+def _otel_context_from_headers(request: Request) -> dict[str, str]:
+    carrier: dict[str, str] = {}
+    traceparent = request.headers.get("traceparent")
+    tracestate = request.headers.get("tracestate")
+    if traceparent:
+        carrier["traceparent"] = traceparent
+    if tracestate:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
+def _build_ms_agent_progress(
+    *,
+    instance_id: str,
+    template_id: str,
+    status: str,
+    step_outputs: list[dict[str, Any]],
+    total_steps: int,
+    current_step_name: str | None = None,
+    stop_reason: str | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    completed_steps = len(step_outputs)
+    recent_turns = [
+        {
+            "label": str(step.get("agent") or f"Step {idx + 1}"),
+            "summary": _coerce_text(step.get("content"))[:280],
+            "status": "completed",
+        }
+        for idx, step in enumerate(step_outputs[-3:])
+    ]
+    final_summary = _coerce_text(step_outputs[-1].get("content"))[:280] if step_outputs else None
+    return {
+        "nodeId": None,
+        "framework": "ms-agent",
+        "status": status,
+        "phase": template_id,
+        "summary": final_summary,
+        "currentStepName": current_step_name,
+        "completedSteps": completed_steps,
+        "totalSteps": total_steps,
+        "currentIteration": None,
+        "maxIterations": None,
+        "activeToolName": None,
+        "stopReason": stop_reason,
+        "agentWorkflowId": instance_id,
+        "daprInstanceId": instance_id,
+        "traceId": trace_id,
+        "updatedAt": _utc_now_iso(),
+        "recentTurns": recent_turns,
+    }
+
+
+def _set_workflow_progress(
+    ctx: DaprWorkflowContext,
+    *,
+    instance_id: str,
+    template_id: str,
+    completed_steps: list[dict[str, Any]],
+    total_steps: int,
+    current_step_name: str | None,
+    message: str,
+    status: str = "running",
+    stop_reason: str | None = None,
+    trace_id: str | None = None,
+) -> None:
+    if not hasattr(ctx, "set_custom_status"):
+        return
+    progress_ratio = (len(completed_steps) / total_steps) if total_steps > 0 else 0
+    payload = {
+        "phase": template_id,
+        "progress": int(progress_ratio * 100),
+        "message": message,
+        "currentNodeId": None,
+        "currentNodeName": current_step_name,
+        "traceId": trace_id,
+        "agentProgress": _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=template_id,
+            status=status,
+            step_outputs=completed_steps,
+            total_steps=total_steps,
+            current_step_name=current_step_name,
+            stop_reason=stop_reason,
+            trace_id=trace_id,
+        ),
+    }
+    ctx.set_custom_status(json.dumps(payload))
 
 
 def _schedule_workflow(
     request: WorkflowRunRequest,
+    *,
+    otel_ctx: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if workflow_client is None:
         raise HTTPException(status_code=503, detail="Workflow client not ready")
@@ -308,6 +1020,19 @@ def _schedule_workflow(
             "workflowTemplateId": request.workflowTemplateId,
             "model": request.model,
             "openAIApiKey": request.openAIApiKey,
+            "reviewFocusAreas": request.reviewFocusAreas,
+            "workspaceRef": request.workspaceRef,
+            "cwd": request.cwd,
+            "applyFixes": request.applyFixes,
+            "maxIterations": request.maxIterations,
+            "instructionsOverlay": request.instructionsOverlay,
+            "expectedOutput": request.expectedOutput,
+            "verifyCommands": request.verifyCommands,
+            "toolGroup": request.toolGroup,
+            "configStoreName": request.configStoreName,
+            "configKeys": request.configKeys,
+            "configMetadata": request.configMetadata,
+            "_otel": otel_ctx or {},
         },
     )
 
@@ -318,54 +1043,64 @@ def _schedule_workflow(
         "dapr_instance_id": instance_id,
         "daprInstanceId": instance_id,
         "status": "running",
+        "traceId": _trace_id_from_otel(otel_ctx),
         "status_url": f"/api/run/{instance_id}",
     }
     return instance_id, response
 
 
-@runtime.activity(name="extract_destination")
-def extract_destination(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
+def _resolve_runtime_settings(
+    template: WorkflowTemplate,
+    input_payload: dict[str, Any],
+) -> dict[str, Any]:
+    template_config = (config_resolver or TemplateConfigResolver()).resolve(
+        template_id=template.id,
+        store_name=str(input_payload.get("configStoreName") or "").strip() or None,
+        requested_keys=parse_config_keys(input_payload.get("configKeys")),
+        metadata=parse_config_metadata(input_payload.get("configMetadata")),
+    )
+
+    requested_model = str(input_payload.get("model") or "").strip() or None
+    requested_overlay = str(input_payload.get("instructionsOverlay") or "").strip() or None
+    requested_max_iterations = input_payload.get("maxIterations")
+    requested_tool_group = str(input_payload.get("toolGroup") or "").strip() or None
+
+    max_iterations: int | None = None
+    if requested_max_iterations is not None:
+        try:
+            parsed = int(requested_max_iterations)
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed and parsed > 0:
+            max_iterations = parsed
+    elif template_config.max_iterations is not None:
+        max_iterations = template_config.max_iterations
+
+    return {
+        "model": requested_model or template_config.model or template.default_model or DEFAULT_MODEL,
+        "instructions_overlay": requested_overlay or template_config.instructions_overlay,
+        "max_iterations": max_iterations,
+        "tool_group_override": requested_tool_group or template_config.tool_group,
+    }
+
+
+@runtime.activity(name="run_template_step")
+def run_template_step(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, Any]:
     payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="DestinationExtractor",
-        instructions=template.extractor_instructions,
-        description=f"{template.label} destination extraction agent",
-        prompt=str(payload.get("task") or "").strip(),
+    tool_group = payload.get("toolGroup")
+    result = _run_agent_step(
+        agent_name=str(payload.get("agentName") or "Agent"),
+        instructions=str(payload.get("instructions") or "").strip(),
+        description=str(payload.get("description") or "").strip(),
+        prompt=str(payload.get("prompt") or "").strip(),
         model=payload.get("model"),
+        tool_group=str(tool_group).strip() if tool_group else None,
+        workspace_root=payload.get("cwd"),
+        workspace_ref=payload.get("workspaceRef"),
+        execution_id=payload.get("executionId"),
         api_key=payload.get("openAIApiKey"),
     )
-    return {"content": content}
-
-
-@runtime.activity(name="plan_outline")
-def plan_outline(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
-    payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="PlannerAgent",
-        instructions=template.planner_instructions,
-        description=f"{template.label} outline planning agent",
-        prompt=str(payload.get("task") or "").strip(),
-        model=payload.get("model"),
-        api_key=payload.get("openAIApiKey"),
-    )
-    return {"content": content}
-
-
-@runtime.activity(name="expand_itinerary")
-def expand_itinerary(_ctx, input_data: dict[str, Any] | None = None) -> dict[str, str]:
-    payload = input_data or {}
-    template = _resolve_template(payload.get("workflowTemplateId"))
-    content = _run_agent_step(
-        agent_name="ItineraryAgent",
-        instructions=template.expander_instructions,
-        description=f"{template.label} itinerary expansion agent",
-        prompt=str(payload.get("task") or "").strip(),
-        model=payload.get("model"),
-        api_key=payload.get("openAIApiKey"),
-    )
-    return {"content": content}
+    return result
 
 
 @runtime.workflow(name=WORKFLOW_NAME)
@@ -381,57 +1116,157 @@ def ms_agent_workflow(
         }
     else:
         input_payload = input_data
+    trace_id = _trace_id_from_otel(input_payload.get("_otel")) or _current_trace_id()
 
     template = _resolve_template(input_payload.get("workflowTemplateId"))
     task = str(input_payload.get("task") or input_payload.get("prompt") or "").strip()
     if not task:
         raise ValueError("task is required")
-    model = str(input_payload.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL
+
+    runtime_settings = _resolve_runtime_settings(template, input_payload)
+    model = runtime_settings["model"]
     openai_api_key = (
         str(input_payload.get("openAIApiKey")).strip()
         if input_payload.get("openAIApiKey")
         else None
     )
+    cwd = str(input_payload.get("cwd") or DEFAULT_WORKSPACE_ROOT).strip() or DEFAULT_WORKSPACE_ROOT
+    review_focus_areas = _parse_review_focus_areas(input_payload.get("reviewFocusAreas"))
+    apply_fixes = _parse_bool(input_payload.get("applyFixes"), False)
+    expected_output = str(input_payload.get("expectedOutput") or "").strip() or None
+    verify_commands = str(input_payload.get("verifyCommands") or "").strip() or None
+    instructions_overlay = runtime_settings["instructions_overlay"]
+    max_iterations_override = runtime_settings["max_iterations"]
+    tool_group_override = runtime_settings["tool_group_override"]
 
-    destination = yield ctx.call_activity(
-        extract_destination,
-        input={
-            "task": task,
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
+    step_outputs: list[dict[str, Any]] = []
+    active_steps = [
+        (index, step)
+        for index, step in enumerate(template.steps)
+        if not (step.optional_flag == "applyFixes" and not apply_fixes)
+    ]
+    total_steps = len(active_steps)
+
+    _set_workflow_progress(
+        ctx,
+        instance_id=ctx.instance_id,
+        template_id=template.id,
+        completed_steps=step_outputs,
+        total_steps=total_steps,
+        current_step_name=active_steps[0][1].agent_name if active_steps else None,
+        message=f"Starting {template.label}",
+        trace_id=trace_id,
     )
-    destination_text = _coerce_text(destination.get("content"))
 
-    outline = yield ctx.call_activity(
-        plan_outline,
-        input={
-            "task": (
-                f"Destination: {destination_text}\n"
-                "Create a concise 3-day outline."
+    for progress_index, (index, step) in enumerate(active_steps):
+        _set_workflow_progress(
+            ctx,
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            completed_steps=step_outputs,
+            total_steps=total_steps,
+            current_step_name=step.agent_name,
+            message=f"Running {step.agent_name} ({progress_index + 1}/{total_steps})",
+            trace_id=trace_id,
+        )
+
+        step_context = _build_step_context(
+            task=task,
+            step_outputs=step_outputs,
+            cwd=cwd,
+            review_focus_areas=review_focus_areas,
+            expected_output=expected_output,
+            verify_commands=verify_commands,
+        )
+        prompt = _build_step_prompt(step=step, task=task, step_context=step_context)
+        instructions = _format_template_text(step.instructions, step_context)
+        if instructions_overlay:
+            instructions = (
+                f"{instructions}\n\n"
+                f"Additional runtime instructions:\n{instructions_overlay}"
+            )
+        effective_max_iterations = max_iterations_override or step.max_iterations
+        if effective_max_iterations > 0:
+            instructions = (
+                f"{instructions}\n\n"
+                f"Do not exceed {effective_max_iterations} reasoning or tool iterations."
+            )
+        tool_group = tool_group_override or step.tool_group or template.default_tool_group
+
+        step_result = yield ctx.call_activity(
+            run_template_step,
+            input={
+                "agentName": step.agent_name,
+                "description": step.description,
+                "instructions": instructions,
+                "prompt": prompt,
+                "model": model,
+                "openAIApiKey": openai_api_key,
+                "toolGroup": tool_group,
+                "cwd": cwd,
+                "workspaceRef": input_payload.get("workspaceRef"),
+                "executionId": input_payload.get("executionId"),
+            },
+        )
+        step_outputs.append(
+            {
+                "index": index,
+                "agent": step.agent_name,
+                "content": _coerce_text(step_result.get("content")),
+                "toolGroup": tool_group,
+                "filesAnalyzed": step_result.get("filesAnalyzed") or [],
+                "fixesApplied": step_result.get("fixesApplied") or [],
+                "patch": step_result.get("patch") or "",
+            }
+        )
+        _set_workflow_progress(
+            ctx,
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            completed_steps=step_outputs,
+            total_steps=total_steps,
+            current_step_name=step.agent_name,
+            message=f"Completed {step.agent_name} ({len(step_outputs)}/{total_steps})",
+            trace_id=trace_id,
+        )
+
+    final_step = step_outputs[-1] if step_outputs else {"content": ""}
+    aggregated_files = sorted(
+        {
+            path
+            for output in step_outputs
+            for path in (output.get("filesAnalyzed") or [])
+        }
+    )
+    aggregated_fixes = sorted(
+        {
+            path
+            for output in step_outputs
+            for path in (output.get("fixesApplied") or [])
+        }
+    )
+    patch = "\n".join(
+        chunk
+        for chunk in (str(output.get("patch") or "").strip() for output in step_outputs)
+        if chunk
+    ).strip()
+    review_findings_agent = {
+        "code-review": "CodeReviewer",
+        "repo-review": "Reviewer",
+    }.get(template.id)
+    review_findings = (
+        next(
+            (
+                output.get("content")
+                for output in step_outputs
+                if output.get("agent") == review_findings_agent
             ),
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
+            None,
+        )
+        if review_findings_agent
+        else None
     )
-    outline_text = _coerce_text(outline.get("content"))
-
-    itinerary = yield ctx.call_activity(
-        expand_itinerary,
-        input={
-            "task": (
-                f"Destination: {destination_text}\n\n"
-                f"Outline:\n{outline_text}\n\n"
-                "Expand this into a detailed itinerary."
-            ),
-            "workflowTemplateId": template.id,
-            "model": model,
-            "openAIApiKey": openai_api_key,
-        },
-    )
-    itinerary_text = _coerce_text(itinerary.get("content"))
+    final_text = _coerce_text(final_step.get("content"))
 
     return {
         "success": True,
@@ -440,24 +1275,33 @@ def ms_agent_workflow(
         "workflow_template_label": template.label,
         "workflowTemplateLabel": template.label,
         "model": model,
-        "text": itinerary_text,
-        "content": itinerary_text,
-        "final_answer": itinerary_text,
-        "finalAnswer": itinerary_text,
-        "steps": [
-            {"agent": "DestinationExtractor", "content": destination_text},
-            {"agent": "PlannerAgent", "content": outline_text},
-            {"agent": "ItineraryAgent", "content": itinerary_text},
-        ],
+        "text": final_text,
+        "content": final_text,
+        "final_answer": final_text,
+        "finalAnswer": final_text,
+        "steps": step_outputs,
+        "reviewFindings": review_findings,
+        "filesAnalyzed": aggregated_files,
+        "fixesApplied": aggregated_fixes,
+        "patch": patch,
+        "workspaceRef": input_payload.get("workspaceRef"),
+        "agentProgress": _build_ms_agent_progress(
+            instance_id=ctx.instance_id,
+            template_id=template.id,
+            status="completed",
+            step_outputs=step_outputs,
+            total_steps=total_steps,
+            current_step_name=final_step.get("agent"),
+            stop_reason="workflow completed",
+            trace_id=trace_id,
+        ),
+        "traceId": trace_id,
     }
-
-
-workflow_client: DaprWorkflowClient | None = None
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    global async_runner, workflow_client
+    global async_runner, workflow_client, config_resolver
     if ENABLE_DAPR_AGENTS_INSTRUMENTATION:
         try:
             from dapr_agents.observability import DaprAgentsInstrumentor
@@ -468,6 +1312,7 @@ async def lifespan(_app: FastAPI):
     async_runner = AsyncRunner()
     runtime.start()
     workflow_client = DaprWorkflowClient()
+    config_resolver = TemplateConfigResolver()
     logger.info(
         "Microsoft Agent Workflow service started on http://%s:%s",
         HOST,
@@ -484,7 +1329,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Microsoft Agent Workflow Service",
-    description="Dapr workflow service that runs a Dapr-agents activity chain backed by Microsoft Agent Framework agents.",
+    description="Dapr workflow service that runs Microsoft Agent Framework agents through template-driven durable workflows.",
     version=SERVICE_VERSION,
     lifespan=lifespan,
 )
@@ -516,6 +1361,28 @@ def health() -> dict[str, Any]:
     }
 
 
+def _serialize_template(template: WorkflowTemplate) -> dict[str, Any]:
+    return {
+        "id": template.id,
+        "label": template.label,
+        "description": template.description,
+        "defaultModel": template.default_model or DEFAULT_MODEL,
+        "supportsTools": template.supports_tools,
+        "defaultToolGroup": template.default_tool_group,
+        "steps": [
+            {
+                "agentName": step.agent_name,
+                "description": step.description,
+                "promptMode": step.prompt_mode,
+                "toolGroup": step.tool_group,
+                "maxIterations": step.max_iterations,
+                "optionalFlag": step.optional_flag,
+            }
+            for step in template.steps
+        ],
+    }
+
+
 @app.get("/api/tools")
 def list_tools() -> dict[str, Any]:
     return {
@@ -525,9 +1392,19 @@ def list_tools() -> dict[str, Any]:
                 "id": template.id,
                 "description": template.description,
                 "label": template.label,
+                "supportsTools": template.supports_tools,
+                "defaultToolGroup": template.default_tool_group,
             }
             for template in TEMPLATES.values()
         ],
+    }
+
+
+@app.get("/api/templates")
+def list_templates() -> dict[str, Any]:
+    return {
+        "success": True,
+        "templates": [_serialize_template(template) for template in TEMPLATES.values()],
     }
 
 
@@ -537,6 +1414,14 @@ def runtime_introspect() -> dict[str, Any]:
         "success": True,
         "service": "ms-agent-workflow",
         "version": SERVICE_VERSION,
+        "runtime": "python-maf-dapr-workflow",
+        "ready": True,
+        "features": [
+            "dapr-child-workflow",
+            "template-workflows",
+            "tool-groups",
+            "config-store-defaults",
+        ],
         "workflows": [
             {
                 "name": WORKFLOW_NAME,
@@ -544,25 +1429,56 @@ def runtime_introspect() -> dict[str, Any]:
                 "aliases": [WORKFLOW_NAME],
             }
         ],
-        "activities": [
-            "extract_destination",
-            "plan_outline",
-            "expand_itinerary",
-        ],
-        "templates": [
-            {
-                "id": template.id,
-                "label": template.label,
-                "description": template.description,
-            }
-            for template in TEMPLATES.values()
-        ],
+        "activities": ["run_template_step"],
+        "toolGroups": {
+            "read_only": ["read_file", "list_files", "grep_search"],
+            "read_write": [
+                "read_file",
+                "list_files",
+                "grep_search",
+                "write_file",
+                "edit_file",
+            ],
+            "all": [
+                "read_file",
+                "list_files",
+                "grep_search",
+                "write_file",
+                "edit_file",
+                "execute_command",
+            ],
+        },
+        "templates": [_serialize_template(template) for template in TEMPLATES.values()],
+        "capabilities": {
+            "templates": [_serialize_template(template) for template in TEMPLATES.values()],
+            "toolGroups": ["read_only", "read_write", "all"],
+        },
+        "runtimeConfig": {
+            "enabled": True,
+            "storeName": DEFAULT_CONFIG_STORE,
+            "label": "ms-agent-workflow",
+            "subscribedKeys": [],
+            "lastAppliedAt": None,
+            "lastUpdatedKey": None,
+            "effective": {
+                "defaultTemplateId": DEFAULT_TEMPLATE_ID,
+                "defaultModel": DEFAULT_MODEL,
+            },
+        },
+        "additional": {
+            "llmBackend": "agent-framework-openai",
+            "llmComponent": DAPR_LLM_COMPONENT,
+            "defaultConfigStore": DEFAULT_CONFIG_STORE,
+        },
     }
 
 
 @app.post("/api/run")
-def run_workflow(request: WorkflowRunRequest) -> dict[str, Any]:
-    instance_id, response = _schedule_workflow(request)
+def run_workflow(request: WorkflowRunRequest, http_request: Request) -> dict[str, Any]:
+    instance_id, response = _schedule_workflow(
+        request,
+        otel_ctx=_otel_context_from_headers(http_request),
+    )
 
     if request.waitForCompletion:
         state = workflow_client.wait_for_workflow_completion(
@@ -598,35 +1514,91 @@ def get_run(instance_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Workflow not found")
     workflow_result = _parse_workflow_output(state)
     status = _normalize_status(getattr(state.runtime_status, "name", None))
+    custom_status = _parse_json_blob(getattr(state, "customStatus", None))
+    trace_id = (
+        custom_status.get("traceId")
+        if isinstance(custom_status, dict)
+        else None
+    )
+    agent_progress = (
+        custom_status.get("agentProgress")
+        if isinstance(custom_status, dict)
+        and isinstance(custom_status.get("agentProgress"), dict)
+        else None
+    )
+    if agent_progress is None and workflow_result:
+        steps = workflow_result.get("steps")
+        if not isinstance(steps, list):
+            steps = []
+        template_id = str(
+            workflow_result.get("workflowTemplateId")
+            or workflow_result.get("workflow_template_id")
+            or DEFAULT_TEMPLATE_ID
+        )
+        agent_progress = _build_ms_agent_progress(
+            instance_id=instance_id,
+            template_id=template_id,
+            status=status,
+            step_outputs=steps,
+            total_steps=len(steps),
+            current_step_name=steps[-1].get("agent") if steps else None,
+            stop_reason="workflow completed" if status == "completed" else None,
+            trace_id=trace_id,
+        )
+    elif isinstance(agent_progress, dict) and not agent_progress.get("traceId") and trace_id:
+        agent_progress = {**agent_progress, "traceId": trace_id}
+    effective_workflow_result = workflow_result
+    if isinstance(workflow_result, dict) and trace_id and not workflow_result.get("traceId"):
+        effective_workflow_result = {
+            **workflow_result,
+            "traceId": trace_id,
+            "agentProgress": agent_progress or workflow_result.get("agentProgress"),
+        }
 
     return {
         "success": True,
         "instanceId": instance_id,
         "runtimeStatus": getattr(state.runtime_status, "name", None),
         "status": status,
+        "phase": (
+            custom_status.get("phase")
+            if isinstance(custom_status, dict)
+            else (
+                workflow_result.get("workflowTemplateId")
+                if workflow_result
+                else DEFAULT_TEMPLATE_ID
+            )
+        ),
         "createdAt": state.created_at.isoformat() if state.created_at else None,
         "lastUpdatedAt": (
             state.last_updated_at.isoformat() if state.last_updated_at else None
         ),
-        "result": workflow_result,
+        "traceId": trace_id
+        or (
+            effective_workflow_result.get("traceId")
+            if isinstance(effective_workflow_result, dict)
+            else None
+        ),
+        "agentProgress": agent_progress,
+        "result": effective_workflow_result,
         "data": (
             _build_public_result(
                 instance_id=instance_id,
                 template_id=str(
-                    workflow_result.get("workflowTemplateId")
-                    or workflow_result.get("workflow_template_id")
+                    effective_workflow_result.get("workflowTemplateId")
+                    or effective_workflow_result.get("workflow_template_id")
                     or DEFAULT_TEMPLATE_ID
                 )
-                if workflow_result
+                if effective_workflow_result
                 else DEFAULT_TEMPLATE_ID,
                 model=(
-                    str(workflow_result.get("model"))
-                    if workflow_result and workflow_result.get("model")
+                    str(effective_workflow_result.get("model"))
+                    if effective_workflow_result and effective_workflow_result.get("model")
                     else None
                 ),
-                workflow_result=workflow_result,
+                workflow_result=effective_workflow_result,
             )
-            if workflow_result
+            if effective_workflow_result
             else None
         ),
         "error": (
@@ -671,6 +1643,18 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
                 "openAIApiKey": _extract_openai_api_key(request.credentials),
                 "waitForCompletion": True,
                 "timeoutMinutes": request.input.get("timeoutMinutes", 10),
+                "reviewFocusAreas": request.input.get("reviewFocusAreas"),
+                "workspaceRef": request.input.get("workspaceRef"),
+                "cwd": request.input.get("cwd"),
+                "applyFixes": request.input.get("applyFixes"),
+                "maxIterations": request.input.get("maxIterations"),
+                "instructionsOverlay": request.input.get("instructionsOverlay"),
+                "expectedOutput": request.input.get("expectedOutput"),
+                "verifyCommands": request.input.get("verifyCommands"),
+                "toolGroup": request.input.get("toolGroup"),
+                "configStoreName": request.input.get("configStoreName"),
+                "configKeys": request.input.get("configKeys"),
+                "configMetadata": request.input.get("configMetadata"),
             }
         )
     except ValidationError as exc:

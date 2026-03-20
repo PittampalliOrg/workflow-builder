@@ -9,18 +9,24 @@ SKIP_RECONCILE_ANNOTATION="argocd.argoproj.io/skip-reconcile"
 REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
 ARGO_APPS=(
   "workflow-builder"
+  "function-router"
   "ms-agent-workflow"
-  "ai-chatbot"
+  "dapr-agent-runtime"
+  "workflow-orchestrator"
 )
 DEVSPACE_REPLACEMENT_DEPLOYMENTS=(
   "workflow-builder-devspace"
+  "function-router-devspace"
   "ms-agent-workflow-devspace"
-  "ai-chatbot-devspace"
+  "dapr-agent-runtime-devspace"
+  "workflow-orchestrator-devspace"
 )
 PRODUCTION_DEPLOYMENTS=(
   "workflow-builder"
+  "function-router"
   "ms-agent-workflow"
-  "ai-chatbot"
+  "dapr-agent-runtime"
+  "workflow-orchestrator"
 )
 
 cleanup() {

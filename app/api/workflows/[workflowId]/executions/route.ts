@@ -74,12 +74,8 @@ export async function GET(
 								and(
 									inArray(workflowExecutionLogs.executionId, executionIds),
 									inArray(workflowExecutionLogs.activityName, [
-										"durable/run",
+										"dapr-agent/run",
 										"ms-agent/run",
-										"durable/claude-plan",
-										"durable/plan",
-										"durable/execute-plan",
-										"mastra/execute",
 									]),
 								),
 							),

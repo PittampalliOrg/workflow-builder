@@ -31,6 +31,7 @@ import type {
 	DaprDebugOverviewResponse,
 } from "./types/dapr-debug";
 import type {
+	AgentNodeProgress,
 	DurableAgentRunSummary,
 	DurableExecutionConsistency,
 	DurableExternalEventSummary,
@@ -740,6 +741,7 @@ export const workflowApi = {
 			runtime?: DurableRuntimeSnapshot | null;
 			timeline: DurableTimelineEvent[];
 			agentRuns: DurableAgentRunSummary[];
+			agentProgressByNode?: Record<string, AgentNodeProgress>;
 			externalEvents: DurableExternalEventSummary[];
 			planArtifacts: DurablePlanArtifactSummary[];
 			consistency: DurableExecutionConsistency;
@@ -756,6 +758,7 @@ export const workflowApi = {
 			currentNodeId: string | null;
 			currentNodeName: string | null;
 			approvalEventName: string | null;
+			agentProgressByNode?: Record<string, AgentNodeProgress>;
 			nodeStatuses: Array<{
 				nodeId: string;
 				nodeName?: string;

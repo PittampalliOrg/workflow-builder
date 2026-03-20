@@ -138,9 +138,11 @@ export const genericOrchestratorClient = {
 		dbExecutionId?: string,
 		nodeConnectionMap?: Record<string, string>,
 		workflowVersion?: string,
+		headers?: Record<string, string>,
 	): Promise<GenericStartWorkflowResult> =>
 		daprFetch(`${orchestratorUrl}/api/v2/workflows`, {
 			method: "POST",
+			headers,
 			body: JSON.stringify({
 				definition,
 				triggerData,

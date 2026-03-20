@@ -325,7 +325,7 @@ function buildSnapshot(params: {
 				? instructionCfg.systemPrompt
 				: template.description || "You are a helpful assistant.";
 
-	let model: AgentModelSpec = { provider: "openai", name: "gpt-4o" };
+	let model: AgentModelSpec = { provider: "openai", name: "gpt-5.4" };
 	if (typeof modelCfg.modelSpec === "string") {
 		model = parseModelFromId(modelCfg.modelSpec);
 	} else if (typeof modelCfg.modelId === "string") {

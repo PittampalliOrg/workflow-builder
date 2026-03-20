@@ -8,7 +8,7 @@
 #   - Integrates with existing OTEL observability stack
 #
 # Usage:
-#   bash scripts/devspace-dev-ryzen.sh  # Start development mode on the ryzen inner loop for workflow-builder + ms-agent-workflow + ai-chatbot
+#   bash scripts/devspace-dev-ryzen.sh  # Start development mode on the ryzen inner loop for workflow-builder + function-router + ms-agent-workflow + dapr-agent-runtime + workflow-orchestrator
 #   devspace dev       # Raw DevSpace entrypoint (does not pause ArgoCD)
 #   devspace enter     # Shell into container
 #   devspace purge     # Clean up devspace resources
@@ -28,11 +28,15 @@ vars:
   MS_AGENT_APP_NAME: ms-agent-workflow
   MS_AGENT_LOCAL_PORT: "3011"
   MS_AGENT_CONTAINER_PORT: "8081"
-  AI_CHATBOT_APP_NAME: ai-chatbot
-  AI_CHATBOT_SOURCE_PATH: "../../ai/main"
-  AI_CHATBOT_LOCAL_PORT: "3000"
-  AI_CHATBOT_CONTAINER_PORT: "3000"
-  AI_CHATBOT_SSH_PORT: 2222
+  DAPR_AGENT_APP_NAME: dapr-agent-runtime
+  DAPR_AGENT_LOCAL_PORT: "3012"
+  DAPR_AGENT_CONTAINER_PORT: "8082"
+  ORCHESTRATOR_APP_NAME: workflow-orchestrator
+  ORCHESTRATOR_LOCAL_PORT: "3013"
+  ORCHESTRATOR_CONTAINER_PORT: "8080"
+  FUNCTION_ROUTER_APP_NAME: function-router
+  FUNCTION_ROUTER_LOCAL_PORT: "3014"
+  FUNCTION_ROUTER_CONTAINER_PORT: "8080"
 
   # Registry configuration
   GITEA_HOST:
@@ -43,8 +47,6 @@ vars:
   # kind-ryzen ingress / auth callback URL
   APP_PUBLIC_URL:
     default: "https://workflow-builder-ryzen.tail286401.ts.net"
-  AI_CHATBOT_PUBLIC_URL:
-    default: "https://ai-chatbot-ryzen.tail286401.ts.net"
 
   # Resource configuration
   CPU_REQUEST:
@@ -104,12 +106,29 @@ vars:
     default: "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}"
   MS_AGENT_DEV_IMAGE_REPOSITORY:
     default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
-  CURRENT_AI_CHATBOT_IMAGE_REPOSITORY:
+  CURRENT_DAPR_AGENT_IMAGE_REPOSITORY:
     command: |
-      image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
+      image="$(kubectl get deployment ${DAPR_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}"
-  AI_CHATBOT_DEV_IMAGE_REPOSITORY:
+    default: "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_APP_NAME}"
+  DAPR_AGENT_DEV_IMAGE_REPOSITORY:
+    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
+  CURRENT_ORCHESTRATOR_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${ORCHESTRATOR_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${ORCHESTRATOR_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${ORCHESTRATOR_APP_NAME}"
+  ORCHESTRATOR_DEV_IMAGE_REPOSITORY:
+    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
+  CURRENT_FUNCTION_ROUTER_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${FUNCTION_ROUTER_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}"
+  FUNCTION_ROUTER_DEV_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${FUNCTION_ROUTER_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
 
 # ============================================================================
@@ -117,9 +136,11 @@ vars:
 # ============================================================================
 dev:
   app:
-    # Target the deployment by image selector
+    # Target the deployment by stable workload labels
     namespace: ${APP_NAME}
-    imageSelector: ${CURRENT_IMAGE_REPOSITORY}
+    labelSelector:
+      app: workflow-builder
+      app.kubernetes.io/name: workflow-builder
     container: ${APP_NAME}
 
     # Use shared devcontainer (instead of per-app image)
@@ -170,13 +191,15 @@ dev:
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
 
-        echo "Starting Next.js development server with Turbo..."
-        exec next dev --turbo
+        echo "Starting Next.js development server..."
+        exec next dev
 
     # File synchronization
     sync:
       - path: ./:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -295,9 +318,18 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: WORKFLOW_ORCHESTRATOR_URL
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      # Durable agent endpoint for builtin options + agent tool discovery
+      - name: FUNCTION_RUNNER_URL
+        value: "http://function-router.workflow-builder.svc.cluster.local:8080"
+      - name: USE_DAPR_SERVICE_INVOCATION
+        value: "true"
+      - name: DAPR_WORKFLOW_ENABLED
+        value: "true"
+      - name: AUTH_TRUST_HOST
+        value: "true"
+      - name: WORKFLOW_BUILDER_DISABLE_NODE_OTEL
+        value: "true"
       - name: MASTRA_AGENT_API_BASE_URL
-        value: "http://durable-agent.workflow-builder.svc.cluster.local:8001"
+        value: ""
       # Auth configuration for ingress access
       - name: NEXT_PUBLIC_APP_URL
         value: ${APP_PUBLIC_URL}
@@ -321,7 +353,8 @@ dev:
     # ryzen wrapper script to pause ArgoCD reconcile for the session.
   ms-agent-workflow:
     namespace: ${APP_NAME}
-    imageSelector: ${CURRENT_MS_AGENT_IMAGE_REPOSITORY}
+    labelSelector:
+      app: ms-agent-workflow
     container: ${MS_AGENT_APP_NAME}
     devImage: ${MS_AGENT_DEV_IMAGE_REPOSITORY}:latest
     workingDir: /app
@@ -349,6 +382,8 @@ dev:
     sync:
       - path: ./services/ms-agent-workflow/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
@@ -391,6 +426,12 @@ dev:
         value: "1"
       - name: PYTHONDONTWRITEBYTECODE
         value: "1"
+      - name: OTEL_SERVICE_NAME
+        value: "${MS_AGENT_APP_NAME}"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
       - name: DAPR_HTTP_PORT
         value: "3500"
       - name: DAPR_GRPC_PORT
@@ -398,101 +439,64 @@ dev:
 
     # Use the shared ryzen wrapper so ArgoCD reconciliation is paused for both
     # the workflow-builder UI app and this DevSpace-managed replacement.
-  ai-chatbot:
+  dapr-agent-runtime:
     namespace: ${APP_NAME}
-    imageSelector: ${CURRENT_AI_CHATBOT_IMAGE_REPOSITORY}
-    container: ${AI_CHATBOT_APP_NAME}
-    devImage: ${AI_CHATBOT_DEV_IMAGE_REPOSITORY}:latest
+    labelSelector:
+      app: dapr-agent-runtime
+    container: ${DAPR_AGENT_APP_NAME}
+    devImage: ${DAPR_AGENT_DEV_IMAGE_REPOSITORY}:latest
     workingDir: /app
     resources:
       requests:
-        cpu: 500m
-        memory: 1Gi
+        cpu: 250m
+        memory: 512Mi
       limits:
-        cpu: "4"
-        memory: 6Gi
+        cpu: "2"
+        memory: 2Gi
     command:
       - /bin/sh
       - -c
       - |
         set -e
-        echo "=== DevSpace Development Container (AI Chatbot) ==="
-        echo "Using shared devcontainer: nodejs-22-devspace"
-        echo ""
+        echo "=== DevSpace Development Container (Dapr Agent Runtime) ==="
+        cd /app
 
-        corepack enable
-        corepack prepare pnpm@${PNPM_VERSION} --activate
+        python -m venv .venv
+        . .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .
 
-        if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
-           [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
-          echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
-          md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
-        else
-          echo "Dependencies up to date (cached)"
-        fi
-
-        echo "Running database migrations..."
-        pnpm tsx lib/db/migrate || echo "Migrations skipped (database may not be ready)"
-
-        exec pnpm dev
+        exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT} --reload
     sync:
-      - path: ${AI_CHATBOT_SOURCE_PATH}/:/app
+      - path: ./services/dapr-agent-runtime/:/app
         initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
         startContainer: true
         waitInitialSync: true
         onUpload:
           restartContainer: false
           exec:
-            - name: install-ai-chatbot-deps
+            - name: install-dapr-agent-deps
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
-              failOnError: true
+                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+              failOnError: false
               onChange:
-                - package.json
-                - pnpm-lock.yaml
+                - pyproject.toml
         excludePaths:
-          - node_modules/
-          - .pnpm-store/
-          - .next/
-          - dist/
-          - out/
-          - coverage/
-          - .devenv/
-          - .devspace/
-          - .direnv/
-          - .git
-          - .git/
-          - .github/
-          - .idea/
-          - .vscode/
-          - .cursor/
-          - tests/
-          - playwright-report/
-          - test-results/
-          - docs/
-          - scripts/
-          - "*.md"
-          - "*.log"
-          - Dockerfile
-          - Dockerfile.devspace
-          - .dockerignore
-          - .gitignore
-          - .env.local
-          - .env.example
-    persistPaths:
-      - path: /tmp
-        skipPopulate: true
-      - path: /app/node_modules
+          - .venv/
+          - __pycache__/
+          - .pytest_cache/
+          - "*.pyc"
     patches:
       - op: remove
-        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.livenessProbe
+        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.livenessProbe
       - op: remove
-        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.readinessProbe
+        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.readinessProbe
       - op: replace
-        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.securityContext
+        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.securityContext
         value:
           runAsUser: 0
           runAsGroup: 0
@@ -504,41 +508,189 @@ dev:
           fsGroup: 1001
           runAsNonRoot: false
     ports:
-      - port: "${AI_CHATBOT_LOCAL_PORT}:${AI_CHATBOT_CONTAINER_PORT}"
-    ssh:
-      enabled: true
-      localPort: 2222
+      - port: "${DAPR_AGENT_LOCAL_PORT}:${DAPR_AGENT_CONTAINER_PORT}"
     env:
-      - name: NODE_ENV
-        value: development
-      - name: NEXT_TELEMETRY_DISABLED
+      - name: PYTHONUNBUFFERED
         value: "1"
-      - name: NEXT_PUBLIC_APP_URL
-        value: ${AI_CHATBOT_PUBLIC_URL}
-      - name: AUTH_URL
-        value: ${AI_CHATBOT_PUBLIC_URL}
-      - name: NEXTAUTH_URL
-        value: ${AI_CHATBOT_PUBLIC_URL}
-      - name: VERCEL_URL
-        value: "ai-chatbot-ryzen.tail286401.ts.net"
+      - name: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - name: OTEL_SERVICE_NAME
+        value: "${DAPR_AGENT_APP_NAME}"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
       - name: DAPR_HTTP_PORT
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
-      - name: DAPR_CONFIG_STORE
-        value: "azureappconfig-ai-chatbot"
-      - name: CONFIG_LABEL
-        value: "ai-chatbot"
-      - name: DAPR_SECRET_STORE
-        value: "kubernetes-secrets"
-      - name: DAPR_STATE_STORE
-        value: "workflowstatestore"
-      - name: PUBSUB_NAME
-        value: "pubsub"
-      - name: WORKFLOW_SERVICE_URL
-        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
-      - name: AUTH_TRUST_HOST
-        value: "true"
 
-    # Use the shared ryzen wrapper so ArgoCD reconciliation is paused for the
-    # ai-chatbot replacement alongside the workflow-builder session.
+  workflow-orchestrator:
+    namespace: ${APP_NAME}
+    labelSelector:
+      app: workflow-orchestrator
+    container: ${ORCHESTRATOR_APP_NAME}
+    devImage: ${ORCHESTRATOR_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (Workflow Orchestrator) ==="
+        cd /app
+
+        python -m venv .venv
+        . .venv/bin/activate
+        pip install --upgrade pip
+        pip install -e .
+
+        exec uvicorn app:app --host 0.0.0.0 --port ${ORCHESTRATOR_CONTAINER_PORT}
+    sync:
+      - path: ./services/workflow-orchestrator/:/app
+        initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-workflow-orchestrator-deps
+              command: sh
+              args:
+                - -lc
+                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+              failOnError: false
+              onChange:
+                - pyproject.toml
+        excludePaths:
+          - .venv/
+          - __pycache__/
+          - .pytest_cache/
+          - "*.pyc"
+    patches:
+      - op: remove
+        path: spec.containers.name=${ORCHESTRATOR_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${ORCHESTRATOR_APP_NAME}.readinessProbe
+      - op: replace
+        path: spec.containers.name=${ORCHESTRATOR_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${ORCHESTRATOR_LOCAL_PORT}:${ORCHESTRATOR_CONTAINER_PORT}"
+    env:
+      - name: PYTHONUNBUFFERED
+        value: "1"
+      - name: PYTHONDONTWRITEBYTECODE
+        value: "1"
+      - name: OTEL_SERVICE_NAME
+        value: "${ORCHESTRATOR_APP_NAME}"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+
+  function-router:
+    namespace: ${APP_NAME}
+    labelSelector:
+      app: function-router
+    container: ${FUNCTION_ROUTER_APP_NAME}
+    devImage: ${FUNCTION_ROUTER_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: 250m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (Function Router) ==="
+        cd /app
+
+        corepack enable
+        corepack prepare pnpm@${PNPM_VERSION} --activate
+        pnpm install --no-frozen-lockfile
+
+        exec pnpm dev
+    sync:
+      - path: ./services/function-router/:/app
+        initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-function-router-deps
+              command: sh
+              args:
+                - -lc
+                - cd /app && pnpm install --no-frozen-lockfile
+              failOnError: true
+              onChange:
+                - package.json
+                - pnpm-lock.yaml
+        excludePaths:
+          - node_modules/
+          - dist/
+          - coverage/
+          - .turbo/
+    patches:
+      - op: remove
+        path: spec.containers.name=${FUNCTION_ROUTER_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${FUNCTION_ROUTER_APP_NAME}.readinessProbe
+      - op: replace
+        path: spec.containers.name=${FUNCTION_ROUTER_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${FUNCTION_ROUTER_LOCAL_PORT}:${FUNCTION_ROUTER_CONTAINER_PORT}"
+    env:
+      - name: NODE_ENV
+        value: development
+      - name: OTEL_SERVICE_NAME
+        value: "function-router-dev"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"

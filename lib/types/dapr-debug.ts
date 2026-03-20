@@ -127,6 +127,29 @@ export type DaprRuntimeIntrospection = {
 			metadata: Record<string, unknown>;
 		}>;
 	};
+	capabilities?: {
+		profiles?: Array<Record<string, unknown>>;
+		workspaceTools?: string[];
+		toolGroups?: string[];
+	};
+	runtimeConfig?: {
+		enabled?: boolean;
+		storeName?: string | null;
+		label?: string | null;
+		subscribedKeys?: string[];
+		lastAppliedAt?: string | null;
+		lastUpdatedKey?: string | null;
+		effective?: Record<string, unknown>;
+	};
+	profiles?: string[];
+	profileToolGroups?: Record<string, string>;
+	templates?: Array<{
+		id: string;
+		label?: string;
+		description?: string;
+		defaultToolGroup?: string | null;
+		supportsTools?: boolean;
+	}>;
 	additional?: Record<string, unknown>;
 };
 
@@ -161,7 +184,8 @@ export type DaprDebugOverviewResponse = {
 	sources: {
 		dashboard: DaprDebugSourceStatus;
 		workflowOrchestrator: DaprDebugSourceStatus;
-		durableAgent: DaprDebugSourceStatus;
+		daprAgentRuntime: DaprDebugSourceStatus;
+		msAgentWorkflow?: DaprDebugSourceStatus;
 		applicationAgents: DaprDebugSourceStatus;
 	};
 	dashboard: {
@@ -175,12 +199,18 @@ export type DaprDebugOverviewResponse = {
 	configurations: DaprDashboardConfiguration[];
 	workflowRuntime: {
 		orchestrator: DaprRuntimeIntrospection | null;
-		durableAgent: DaprRuntimeIntrospection | null;
+		daprAgentRuntime: DaprRuntimeIntrospection | null;
+		msAgentWorkflow?: DaprRuntimeIntrospection | null;
 		recentRuns: DaprDebugRecentRun[];
 	};
 	agents: {
 		application: DaprDebugAgentSummary[];
 		runtimeRegistry: Array<{
+			name: string;
+			metadata: Record<string, unknown>;
+			sourceApp: string;
+		}>;
+		publishedCapabilities?: Array<{
 			name: string;
 			metadata: Record<string, unknown>;
 			sourceApp: string;

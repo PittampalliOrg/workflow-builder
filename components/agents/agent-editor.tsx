@@ -46,14 +46,7 @@ const AGENT_TYPES = [
 	{ value: "custom", label: "Custom" },
 ] as const;
 
-const AGENT_TOOLS = [
-	"read",
-	"write",
-	"edit",
-	"glob",
-	"grep",
-	"bash",
-] as const;
+const AGENT_TOOLS = ["read", "write", "edit", "glob", "grep", "bash"] as const;
 
 function parseModelSpec(spec: string): { provider: string; name: string } {
 	const idx = spec.indexOf("/");
@@ -85,7 +78,7 @@ export function AgentEditor({
 	const [agentType, setAgentType] = useState(agent?.agentType ?? "general");
 	const [instructions, setInstructions] = useState(agent?.instructions ?? "");
 	const [modelSpec, setModelSpec] = useState(
-		agent ? formatModelSpec(agent.model) : "openai/gpt-4o",
+		agent ? formatModelSpec(agent.model) : "openai/gpt-5.4",
 	);
 	const [selectedTools, setSelectedTools] = useState<Set<string>>(
 		new Set(agent?.tools?.map((t) => t.ref) ?? AGENT_TOOLS),
@@ -452,7 +445,7 @@ export function AgentEditor({
 								id="agent-model-custom"
 								value={modelSpec}
 								onChange={(e) => setModelSpec(e.target.value)}
-								placeholder="openai/gpt-4o"
+								placeholder="openai/gpt-5.4"
 							/>
 							<p className="text-xs text-muted-foreground">
 								Pick from the dropdown or type a custom spec in

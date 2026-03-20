@@ -42,6 +42,7 @@ class OrchestratorConfig:
     DAPR_HOST: str = "localhost"
     DAPR_HTTP_PORT: str = "3500"
     DAPR_GRPC_PORT: str = "50001"
+    TASKHUB_RPC_TIMEOUT_SECONDS: float = 15.0
 
     # Dapr component names
     PUBSUB_NAME: str = "pubsub"
@@ -51,6 +52,8 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
+    DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
     MS_AGENT_APP_ID: str = "ms-agent-workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
@@ -95,6 +98,8 @@ class OrchestratorConfig:
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
                 "DURABLE_AGENT_APP_ID",
+                "DAPR_AGENT_APP_ID",
+                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
@@ -104,6 +109,7 @@ class OrchestratorConfig:
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
+                "TASKHUB_RPC_TIMEOUT_SECONDS",
                 "DYNAMIC_WORKFLOW_VERSION",
                 "AP_WORKFLOW_VERSION",
                 "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
@@ -145,12 +151,18 @@ class OrchestratorConfig:
             "DAPR_HOST": ("DAPR_HOST", "localhost"),
             "DAPR_HTTP_PORT": ("DAPR_HTTP_PORT", "3500"),
             "DAPR_GRPC_PORT": ("DAPR_GRPC_PORT", "50001"),
+            "TASKHUB_RPC_TIMEOUT_SECONDS": ("TASKHUB_RPC_TIMEOUT_SECONDS", "15"),
             "PUBSUB_NAME": ("PUBSUB_NAME", "pubsub"),
             "STATE_STORE_NAME": ("STATE_STORE_NAME", "workflowstatestore"),
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "DAPR_AGENT_APP_ID": ("DAPR_AGENT_APP_ID", "dapr-agent-runtime"),
+            "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "daprAgentRunWorkflowV1",
+            ),
             "MS_AGENT_APP_ID": ("MS_AGENT_APP_ID", "ms-agent-workflow"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -207,6 +219,8 @@ class OrchestratorConfig:
                 "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
             }:
                 setattr(self, attr, int(value))
+            elif attr == "TASKHUB_RPC_TIMEOUT_SECONDS":
+                setattr(self, attr, float(value))
             else:
                 setattr(self, attr, value)
 

@@ -8,6 +8,43 @@ export type ObservabilityEntityOption = {
 
 export type ObservabilityTraceStatus = "ok" | "error" | "unknown";
 
+export type ObservabilityServiceRole =
+	| "orchestrator"
+	| "agent-runtime"
+	| "builder-ui"
+	| "function-router"
+	| "system-function"
+	| "service"
+	| "unknown";
+
+export type ObservabilitySpanCategory =
+	| "workflow"
+	| "child-workflow"
+	| "activity"
+	| "agent"
+	| "tool"
+	| "llm"
+	| "http"
+	| "runtime"
+	| "unknown";
+
+export type ObservabilityTraceRuntime =
+	| "dapr-workflow"
+	| "dapr-agent"
+	| "app-trace"
+	| "unknown";
+
+export type ObservabilityTraceBreakdown = {
+	workflowSpans: number;
+	childWorkflowSpans: number;
+	activitySpans: number;
+	agentSpans: number;
+	toolSpans: number;
+	llmSpans: number;
+	httpSpans: number;
+	otherSpans: number;
+};
+
 export type ObservabilityTraceSummary = {
 	traceId: string;
 	name: string;
@@ -29,6 +66,11 @@ export type ObservabilityTraceSummary = {
 	agentWorkflowId?: string | null;
 	parentExecutionId?: string | null;
 	correlationConfidence?: "execution" | "instance" | "workflow" | "unknown";
+	runtime: ObservabilityTraceRuntime;
+	rootSpanCategory: ObservabilitySpanCategory;
+	serviceNames: string[];
+	serviceRoles: ObservabilityServiceRole[];
+	breakdown: ObservabilityTraceBreakdown;
 };
 
 export type ObservabilitySpan = {
@@ -43,6 +85,8 @@ export type ObservabilitySpan = {
 	statusCode: string | null;
 	kind: string | null;
 	attributes: Record<string, unknown>;
+	category: ObservabilitySpanCategory;
+	serviceRole: ObservabilityServiceRole;
 };
 
 export type ObservabilityTraceDetails = {

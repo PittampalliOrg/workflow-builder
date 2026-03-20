@@ -3,6 +3,29 @@
 import type { DurableAgentRunSummary } from "@/lib/types/durable-timeline";
 import { getRelativeTime } from "@/lib/utils/time";
 
+function extractChildRunSummary(run: DurableAgentRunSummary): string {
+	if (!run.result || typeof run.result !== "object") {
+		return "-";
+	}
+	const record = run.result as Record<string, unknown>;
+	const progress =
+		record.agentProgress && typeof record.agentProgress === "object"
+			? (record.agentProgress as Record<string, unknown>)
+			: null;
+	const text = typeof record.text === "string" ? record.text : null;
+	const summary =
+		progress && typeof progress.summary === "string" ? progress.summary : text;
+	return summary ? summary.slice(0, 120) : "-";
+}
+
+function extractTraceId(run: DurableAgentRunSummary): string | null {
+	if (!run.result || typeof run.result !== "object") {
+		return null;
+	}
+	const record = run.result as Record<string, unknown>;
+	return typeof record.traceId === "string" ? record.traceId : null;
+}
+
 type RunChildRunsTabProps = {
 	agentRuns: DurableAgentRunSummary[];
 };
@@ -11,7 +34,7 @@ export function RunChildRunsTab({ agentRuns }: RunChildRunsTabProps) {
 	if (agentRuns.length === 0) {
 		return (
 			<div className="rounded-lg border p-6 text-muted-foreground text-sm">
-				No durable child runs were recorded for this execution.
+				No agent child runs were recorded for this execution.
 			</div>
 		);
 	}
@@ -29,6 +52,8 @@ export function RunChildRunsTab({ agentRuns }: RunChildRunsTabProps) {
 							<th className="px-3 py-2 font-medium">Started</th>
 							<th className="px-3 py-2 font-medium">Completed</th>
 							<th className="px-3 py-2 font-medium">Agent Instance</th>
+							<th className="px-3 py-2 font-medium">Trace</th>
+							<th className="px-3 py-2 font-medium">Summary</th>
 						</tr>
 					</thead>
 					<tbody>
@@ -56,6 +81,12 @@ export function RunChildRunsTab({ agentRuns }: RunChildRunsTabProps) {
 								</td>
 								<td className="px-3 py-2 font-mono text-xs">
 									{run.daprInstanceId.slice(0, 14)}...
+								</td>
+								<td className="px-3 py-2 font-mono text-xs">
+									{extractTraceId(run)?.slice(0, 14) ?? "-"}
+								</td>
+								<td className="max-w-xs px-3 py-2 text-xs">
+									{extractChildRunSummary(run)}
 								</td>
 							</tr>
 						))}

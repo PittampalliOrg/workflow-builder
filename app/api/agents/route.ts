@@ -149,7 +149,7 @@ export async function POST(request: Request) {
 			instructionsPresetVersion = preset.version;
 		}
 
-		let resolvedModel = data.model ?? { provider: "openai", name: "gpt-4o" };
+		let resolvedModel = data.model ?? { provider: "openai", name: "gpt-5.4" };
 		let resolvedDefaultOptions = data.defaultOptions;
 		let resolvedMemoryConfig = data.memoryConfig;
 		let resolvedMaxTurns = data.maxTurns ?? 50;

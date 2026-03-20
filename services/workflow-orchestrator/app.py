@@ -11,7 +11,7 @@ Architecture:
 - Dapr state store for workflow state persistence
 - Dapr pub/sub for event publishing
 
-KEY FEATURE: Native child workflow support for durable agent actions via durable-agent.
+KEY FEATURE: Native child workflow support for Dapr agent actions via Dapr child workflows.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import os
 import random
 import string
 import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -31,7 +32,7 @@ import requests
 import durabletask.internal.orchestrator_service_pb2 as pb
 import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 from dapr.ext.workflow import DaprWorkflowClient
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -67,6 +68,11 @@ from activities.call_agent_service import (
 )
 from activities.log_node_execution import log_node_start, log_node_complete
 from activities.persist_results_to_db import persist_results_to_db
+from activities.persist_plan_artifact import (
+    fetch_plan_artifact,
+    persist_plan_artifact,
+    update_plan_artifact_status,
+)
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from activities.fetch_child_workflow import fetch_child_workflow
 from activities.track_agent_run import (
@@ -88,6 +94,83 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+def _otel_context_from_headers(request: Request) -> dict[str, str]:
+    carrier: dict[str, str] = {}
+    traceparent = request.headers.get("traceparent")
+    tracestate = request.headers.get("tracestate")
+    if traceparent:
+        carrier["traceparent"] = traceparent
+    if tracestate:
+        carrier["tracestate"] = tracestate
+    return carrier
+
+
+def _current_trace_context() -> dict[str, str]:
+    try:
+        from opentelemetry import trace as ot_trace
+
+        span = ot_trace.get_current_span()
+        if span is None:
+            return {}
+        span_context = span.get_span_context()
+        if span_context is None or not getattr(span_context, "is_valid", False):
+            return {}
+        return {
+            "traceparent": (
+                f"00-{span_context.trace_id:032x}-{span_context.span_id:016x}-01"
+            ),
+            "traceId": f"{span_context.trace_id:032x}",
+        }
+    except Exception:
+        return {}
+
+
+def _generate_trace_context() -> dict[str, str]:
+    trace_id = uuid.uuid4().hex
+    span_id = uuid.uuid4().hex[:16]
+    return {
+        "traceparent": f"00-{trace_id}-{span_id}-01",
+        "traceId": trace_id,
+    }
+
+
+def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
+    merged = inject_current_context()
+    if not merged.get("traceparent"):
+        merged.update(_current_trace_context())
+    if request is not None:
+        merged.update(_otel_context_from_headers(request))
+    if not merged.get("traceparent"):
+        merged.update(_generate_trace_context())
+    if not merged.get("traceId"):
+        trace_id = _trace_id_from_traceparent(merged.get("traceparent"))
+        if trace_id:
+            merged["traceId"] = trace_id
+    return merged
+
+
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1].strip().lower()
+    if len(trace_id) != 32:
+        return None
+    try:
+        int(trace_id, 16)
+    except ValueError:
+        return None
+    return trace_id
+
+
+def _is_native_agent_child_workflow_id(workflow_id: object) -> bool:
+    if not isinstance(workflow_id, str):
+        return False
+    return "__msagent__" in workflow_id or "__dapr__" in workflow_id
 
 
 # --- Runtime capability checks ---
@@ -282,9 +365,10 @@ def _taskhub_call(method: str, request: Any) -> Any:
     stub = _get_taskhub_stub()
     rpc = getattr(stub, method)
     metadata = _taskhub_metadata()
+    timeout_seconds = max(float(config.TASKHUB_RPC_TIMEOUT_SECONDS), 0.1)
     if metadata:
-        return rpc(request, metadata=metadata)
-    return rpc(request)
+        return rpc(request, metadata=metadata, timeout=timeout_seconds)
+    return rpc(request, timeout=timeout_seconds)
 
 
 def _schedule_new_workflow_instance(
@@ -302,7 +386,10 @@ def _schedule_new_workflow_instance(
     if workflow_version:
         request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
     response = _taskhub_call("StartInstance", request)
-    return str(response.instanceId)
+    result_id = str(getattr(response, "instanceId", "") or "").strip()
+    if not result_id:
+        raise RuntimeError("workflow runtime returned an empty instance ID")
+    return result_id
 
 
 # --- Lifecycle ---
@@ -341,7 +428,10 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(log_node_complete)
     # Persist final results to PostgreSQL
     wfr.register_activity(persist_results_to_db)
-    # Agent service activities (durable-agent)
+    wfr.register_activity(persist_plan_artifact)
+    wfr.register_activity(update_plan_artifact_status)
+    wfr.register_activity(fetch_plan_artifact)
+    # Agent service activities
     wfr.register_activity(call_durable_agent_run)
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
@@ -887,7 +977,7 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
         return False
     data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
-    return str(config.get("actionType") or "").strip() == "durable/run"
+    return str(config.get("actionType") or "").strip() == "dapr-agent/run"
 
 
 def _abs_position(
@@ -1245,11 +1335,41 @@ def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -
             or workflow_version
         )
 
+    input_payload = _parse_json_value(
+        _parse_wrapped_string(getattr(orchestration_state, "input", None))
+    )
+    if not trace_id and isinstance(input_payload, dict):
+        otel_ctx = input_payload.get("_otel")
+        if isinstance(otel_ctx, dict):
+            trace_id = (
+                str(otel_ctx.get("traceId") or "").strip()
+                or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+            )
+
     serialized_output = _parse_json_value(
         _parse_wrapped_string(getattr(orchestration_state, "output", None))
     )
     if isinstance(serialized_output, dict):
         outputs = serialized_output
+        if not trace_id:
+            trace_id = str(serialized_output.get("traceId") or "").strip() or None
+        nested_outputs = serialized_output.get("outputs")
+        if not trace_id and isinstance(nested_outputs, dict):
+            for value in nested_outputs.values():
+                if not isinstance(value, dict):
+                    continue
+                candidate = str(
+                    value.get("traceId")
+                    or (
+                        value.get("agentProgress", {}).get("traceId")
+                        if isinstance(value.get("agentProgress"), dict)
+                        else ""
+                    )
+                    or ""
+                ).strip()
+                if candidate:
+                    trace_id = candidate
+                    break
     elif serialized_output is not None:
         outputs = {"raw": serialized_output}
 
@@ -1426,17 +1546,18 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
 # --- Routes ---
 
 @app.post("/api/v2/workflows", response_model=StartWorkflowResponse)
-def start_workflow(request: StartWorkflowRequest):
+def start_workflow(request: StartWorkflowRequest, http_request: Request):
     """
     Start a new workflow instance.
 
     POST /api/v2/workflows
     """
+    db_execution_id = request.dbExecutionId
+
     try:
         definition = request.definition.model_dump()
         trigger_data = request.triggerData
         integrations = request.integrations
-        db_execution_id = request.dbExecutionId
 
         selected_workflow_version = (
             request.workflowVersion
@@ -1451,7 +1572,7 @@ def start_workflow(request: StartWorkflowRequest):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": inject_current_context(),
+            "_otel": _merge_otel_context(http_request),
         }
 
         # Generate a unique instance ID
@@ -1468,6 +1589,12 @@ def start_workflow(request: StartWorkflowRequest):
             workflow_version=selected_workflow_version,
         )
 
+        if not result_id:
+            raise RuntimeError("workflow runtime returned an empty instance ID")
+
+        if db_execution_id:
+            _mark_workflow_execution_started(db_execution_id, result_id)
+
         logger.info(f"[Workflow Routes] Workflow scheduled: {result_id}")
 
         return StartWorkflowResponse(
@@ -1478,12 +1605,22 @@ def start_workflow(request: StartWorkflowRequest):
         )
 
     except Exception as e:
+        try:
+            if db_execution_id:
+                _mark_workflow_execution_failed_to_start(
+                    db_execution_id,
+                    str(e),
+                )
+        except Exception as persist_err:
+            logger.error(
+                f"[Workflow Routes] Failed to persist workflow start failure: {persist_err}"
+            )
         logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
         _raise_workflow_route_error("start_workflow", e)
 
 
 @app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
-def execute_workflow_by_id(request: ExecuteByIdRequest):
+def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
     """
     Execute a workflow by its database ID.
 
@@ -1539,8 +1676,8 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "updatedAt": now,
         }
 
-        # 6.5 Create DB execution row so durable-agent plan artifacts and run
-        # tracking always have a valid workflow_executions foreign key.
+        # 6.5 Create DB execution row so child-run tracking and workspace
+        # artifacts always have a valid workflow_executions foreign key.
         db_execution_id = _create_workflow_execution(
             workflow_id=wf["id"],
             user_id=wf["userId"],
@@ -1559,7 +1696,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": inject_current_context(),
+            "_otel": _merge_otel_context(http_request),
         }
 
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
@@ -1883,6 +2020,25 @@ def raise_event(instance_id: str, request: RaiseEventRequest):
     try:
         client = get_workflow_client()
 
+        event_data = request.eventData if isinstance(request.eventData, dict) else {}
+        workflow_id = (
+            event_data.get("workflow_id")
+            or event_data.get("workflowId")
+            or event_data.get("agentWorkflowId")
+        )
+        if request.eventName.startswith("agent_completed_") and _is_native_agent_child_workflow_id(workflow_id):
+            logger.info(
+                "[Workflow Routes] Ignoring bridged completion event for native child workflow: %s",
+                workflow_id,
+            )
+            return {
+                "success": True,
+                "instanceId": instance_id,
+                "eventName": request.eventName,
+                "ignored": True,
+                "reason": "native-child-workflow",
+            }
+
         logger.info(
             f"[Workflow Routes] Raising event \"{request.eventName}\" for workflow: {instance_id}"
         )
@@ -2062,9 +2218,9 @@ def agent_events_subscription(event: CloudEvent):
     """
     Handle agent completion events from pub/sub.
 
-    This endpoint receives CloudEvents from Dapr pub/sub when durable-agent
-    publishes completion events. It forwards the events as external events to
-    waiting parent workflows.
+    This endpoint handles legacy or external completion events forwarded over
+    Dapr pub/sub. Native ms-agent and dapr-agent child workflows complete
+    through child-workflow results rather than this callback path.
     """
     logger.info(f"[Subscription] Received agent event: {event.type}")
 
@@ -2086,6 +2242,15 @@ def agent_events_subscription(event: CloudEvent):
             return {"status": "SUCCESS", "result": {"status": "ignored", "reason": "no_parent_execution_id"}}
 
         workflow_id = event_data.get("workflowId", "")
+        if "__msagent__" in workflow_id or "__dapr__" in workflow_id:
+            return {
+                "status": "SUCCESS",
+                "result": {
+                    "status": "ignored",
+                    "reason": "native-child-workflow",
+                    "workflowId": workflow_id,
+                },
+            }
         external_event_name = f"agent_completed_{workflow_id}"
 
         event_payload = {

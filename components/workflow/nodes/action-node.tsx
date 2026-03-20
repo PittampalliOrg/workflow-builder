@@ -10,6 +10,7 @@ import {
 	Database,
 	EyeOff,
 	GitBranch,
+	Loader2,
 	XCircle,
 	Zap,
 } from "lucide-react";
@@ -28,6 +29,7 @@ import {
 } from "@/lib/connections-store";
 import { cn } from "@/lib/utils";
 import {
+	agentProgressByNodeAtom,
 	executionLogsAtom,
 	nodesAtom,
 	pendingIntegrationNodesAtom,
@@ -44,6 +46,12 @@ import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 const getModelDisplayName = (modelId: string): string => {
 	const modelNames: Record<string, string> = {
 		"gpt-5": "GPT-5",
+		"gpt-5.4": "GPT-5.4",
+		"openai/gpt-5.4": "GPT-5.4",
+		"gpt-5-mini": "GPT-5 Mini",
+		"openai/gpt-5-mini": "GPT-5 Mini",
+		"gpt-5.3-codex": "GPT-5.3 Codex",
+		"openai/gpt-5.3-codex": "GPT-5.3 Codex",
 		"gpt-5.2-codex": "GPT-5.2 Codex",
 		"openai/gpt-5.1-instant": "GPT-5.1 Instant",
 		"openai/gpt-5.1-codex": "GPT-5.1 Codex",
@@ -148,8 +156,8 @@ const getProviderLogo = (
 ) => {
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
-		case "durable/run":
-			return <Bot className="size-12 text-emerald-300" strokeWidth={1.5} />;
+		case "dapr-agent/run":
+			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
 		case "ms-agent/run":
 			return <Bot className="size-12 text-cyan-300" strokeWidth={1.5} />;
 		case "system/http-request":
@@ -226,6 +234,62 @@ const ModelBadge = ({ model }: { model: string }) => {
 	);
 };
 
+function AgentProgressOverlay({
+	actionType,
+	progress,
+}: {
+	actionType: string;
+	progress?: {
+		status: string;
+		phase: string | null;
+		currentStepName: string | null;
+		completedSteps: number | null;
+		totalSteps: number | null;
+		currentIteration: number | null;
+		maxIterations: number | null;
+		activeToolName: string | null;
+		stopReason: string | null;
+		summary: string | null;
+	};
+}) {
+	if (!progress) {
+		return null;
+	}
+	const isRunning =
+		progress.status === "running" || progress.status === "scheduled";
+	const primaryLabel =
+		actionType === "dapr-agent/run"
+			? progress.currentIteration != null && progress.maxIterations != null
+				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
+				: progress.phase || "Running"
+			: progress.completedSteps != null && progress.totalSteps != null
+				? `Step ${progress.completedSteps}/${progress.totalSteps}`
+				: progress.phase || "Running";
+	const detail =
+		progress.activeToolName ||
+		progress.currentStepName ||
+		progress.stopReason ||
+		progress.summary;
+
+	return (
+		<div className="absolute right-2 bottom-2 left-2 rounded-lg border border-white/10 bg-black/55 px-2 py-1.5 text-white shadow-sm backdrop-blur-sm">
+			<div className="flex items-center gap-1.5">
+				{isRunning ? (
+					<Loader2 className="size-3 animate-spin text-cyan-300" />
+				) : (
+					<div className="size-2 rounded-full bg-emerald-300" />
+				)}
+				<div className="min-w-0 font-medium text-[10px] uppercase tracking-[0.08em]">
+					{primaryLabel}
+				</div>
+			</div>
+			{detail && (
+				<div className="mt-1 truncate text-[10px] text-white/75">{detail}</div>
+			)}
+		</div>
+	);
+}
+
 // Generated image thumbnail with zoom dialog
 function GeneratedImageThumbnail({ base64 }: { base64: string }) {
 	const [dialogOpen, setDialogOpen] = useState(false);
@@ -280,6 +344,7 @@ export const ActionNode = memo(
 		const { findActionById, getIntegration } = usePiecesCatalog();
 		const selectedExecutionId = useAtomValue(selectedExecutionIdAtom);
 		const executionLogs = useAtomValue(executionLogsAtom);
+		const agentProgressByNode = useAtomValue(agentProgressByNodeAtom);
 		const pendingIntegrationNodes = useAtomValue(pendingIntegrationNodesAtom);
 		const availableIntegrationIds = useAtomValue(connectionIdsAtom);
 		const allConnections = useAtomValue(connectionsAtom);
@@ -299,6 +364,7 @@ export const ActionNode = memo(
 
 		// Check if this node has a generated image from the selected execution
 		const nodeLog = executionLogs[id];
+		const agentProgress = agentProgressByNode[id];
 		const hasGeneratedImage =
 			selectedExecutionId &&
 			actionType === "Generate Image" &&
@@ -375,10 +441,10 @@ export const ActionNode = memo(
 
 		// Get model for AI nodes
 		const getAiModel = (): string | null => {
-			if (actionType === "durable/run") {
+			if (actionType === "dapr-agent/run") {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
-					: null;
+					: "dapr-agents/openai";
 			}
 			if (actionType === "ms-agent/run") {
 				return "agent-framework/openai";
@@ -426,6 +492,12 @@ export const ActionNode = memo(
 
 				{/* Status indicator badge in top right */}
 				<StatusBadge status={status} />
+				{(actionType === "ms-agent/run" || actionType === "dapr-agent/run") && (
+					<AgentProgressOverlay
+						actionType={actionType}
+						progress={agentProgress}
+					/>
+				)}
 
 				<div className="flex flex-col items-center justify-center gap-3 p-6">
 					{hasGeneratedImage ? (

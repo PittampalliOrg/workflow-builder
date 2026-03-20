@@ -199,7 +199,8 @@ def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
 def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
-    Mark a workflow_agent_runs row as completed/failed/event_published.
+    Mark a workflow_agent_runs row as completed/failed and optionally
+    note that its completion event was published.
 
     Expected fields:
       - id
@@ -218,7 +219,7 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     error = str(input_data.get("error") or "").strip() or None
     otel = input_data.get("_otel") or {}
 
-    status = "event_published" if mark_event_published else ("completed" if run_success else "failed")
+    status = "completed" if run_success else "failed"
 
     attrs = {
         "action.type": "track_agent_run_completed",
@@ -239,7 +240,7 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                             status = %s,
                             result = %s::jsonb,
                             error = %s,
-                            completed_at = now(),
+                            completed_at = COALESCE(completed_at, now()),
                             event_published_at = CASE
                                 WHEN %s THEN now()
                                 ELSE event_published_at

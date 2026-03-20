@@ -422,7 +422,7 @@ export async function getAiModel(options?: { anthropicFallback?: string }) {
 	const modelKey = await resolveCatalogModelKey({
 		providerId: "openai",
 		configuredModelId: configuredModelId || undefined,
-		fallbackModelKey: "gpt-4o",
+		fallbackModelKey: "gpt-5.4",
 	});
 	const modelId = gatewayBaseURL ? `openai/${modelKey}` : modelKey;
 

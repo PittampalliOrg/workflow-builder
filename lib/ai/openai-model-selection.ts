@@ -8,7 +8,7 @@ type ResolveCatalogModelKeyInput = {
 };
 
 const PROVIDER_PREFERRED_MODEL_ORDER: Record<string, string[]> = {
-	openai: ["gpt-4o", "gpt-4o-mini"],
+	openai: ["gpt-5.4", "gpt-5-mini", "gpt-5.3-codex", "gpt-4o", "gpt-4o-mini"],
 	anthropic: [
 		"claude-opus-4-6",
 		"claude-opus-4.6",
@@ -64,20 +64,24 @@ function chooseProviderDefaultModelKey(
 	providerId: string,
 	modelKeys: string[],
 ): string | null {
-	if (modelKeys.length === 0) {
+	const eligibleModelKeys = shouldAllowCodexModels()
+		? modelKeys
+		: modelKeys.filter((modelKey) => !isCodexModelKey(modelKey));
+
+	if (eligibleModelKeys.length === 0) {
 		return null;
 	}
 
 	const preferredModelOrder = PROVIDER_PREFERRED_MODEL_ORDER[providerId];
 	if (preferredModelOrder) {
 		for (const preferred of preferredModelOrder) {
-			if (modelKeys.includes(preferred)) {
+			if (eligibleModelKeys.includes(preferred)) {
 				return preferred;
 			}
 		}
 	}
 
-	return modelKeys[0];
+	return eligibleModelKeys[0];
 }
 
 export async function resolveCatalogModelKey({

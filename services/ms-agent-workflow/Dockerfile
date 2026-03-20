@@ -10,15 +10,22 @@ WORKDIR /app
 
 COPY services/ms-agent-workflow/pyproject.toml ./pyproject.toml
 COPY services/ms-agent-workflow/app.py ./app.py
+COPY services/ms-agent-workflow/config.py ./config.py
+COPY services/ms-agent-workflow/tools.py ./tools.py
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
+
+RUN mkdir -p /workspace
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=8081 \
     HOST=0.0.0.0 \
-    MS_AGENT_CHILD_WORKFLOW_RUN_NAME=msAgentWorkflowV1
+    MS_AGENT_CHILD_WORKFLOW_RUN_NAME=msAgentWorkflowV1 \
+    WORKSPACE_ROOT=/workspace
+
+VOLUME ["/workspace"]
 
 EXPOSE 8081
 

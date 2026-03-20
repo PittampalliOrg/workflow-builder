@@ -208,7 +208,7 @@ async function assertGitHubRepositoryAccessible(
 	owner: string,
 	repo: string,
 	token: string,
-): Promise<void> {
+): Promise<{ effectiveToken: string }> {
 	const headers: Record<string, string> = {
 		Accept: GITHUB_ACCEPT_HEADER,
 		"User-Agent": GITHUB_USER_AGENT,
@@ -226,7 +226,16 @@ async function assertGitHubRepositoryAccessible(
 		},
 	);
 	if (response.status === 200) {
-		return;
+		return { effectiveToken: token };
+	}
+
+	const responseBody = await response.text();
+	if (token && response.status === 401) {
+		const fallback = await assertGitHubRepositoryAccessible(owner, repo, "");
+		console.warn(
+			`[Gitea Repository] Ignoring invalid GitHub token for public repository ${owner}/${repo}; continuing without token`,
+		);
+		return fallback;
 	}
 
 	if (response.status === 404) {
@@ -237,9 +246,8 @@ async function assertGitHubRepositoryAccessible(
 		);
 	}
 
-	const body = await response.text();
 	throw new Error(
-		`GitHub repository lookup failed for ${owner}/${repo} (${response.status}): ${body.slice(0, 300)}`,
+		`GitHub repository lookup failed for ${owner}/${repo} (${response.status}): ${responseBody.slice(0, 300)}`,
 	);
 }
 
@@ -290,17 +298,26 @@ async function ensureRepoInGitea(input: {
 	upstreamRepo: string;
 	upstreamToken: string;
 	auth?: { username: string; password: string };
-}): Promise<boolean> {
-	await assertGitHubRepositoryAccessible(
+}): Promise<{ ensured: boolean; effectiveUpstreamToken: string }> {
+	const existing = await getGiteaRepo(input.owner, input.repo);
+	if (existing.status === 200 && existing.repo && !existing.repo.empty) {
+		return {
+			ensured: false,
+			effectiveUpstreamToken: input.upstreamToken,
+		};
+	}
+
+	const githubAccess = await assertGitHubRepositoryAccessible(
 		input.upstreamOwner,
 		input.upstreamRepo,
 		input.upstreamToken,
 	);
+	const upstream = buildGitHubUpstream(
+		input.upstreamOwner,
+		input.upstreamRepo,
+		githubAccess.effectiveToken,
+	);
 
-	const existing = await getGiteaRepo(input.owner, input.repo);
-	if (existing.status === 200 && existing.repo && !existing.repo.empty) {
-		return false;
-	}
 	if (existing.status === 200 && existing.repo?.empty) {
 		if (!input.auth) {
 			throw new Error(
@@ -323,7 +340,7 @@ async function ensureRepoInGitea(input: {
 		method: "POST",
 		auth: input.auth,
 		body: {
-			clone_addr: input.upstream,
+			clone_addr: upstream,
 			repo_name: input.repo,
 			repo_owner: input.owner,
 			service: "git",
@@ -333,7 +350,10 @@ async function ensureRepoInGitea(input: {
 		},
 	});
 	if (createResponse.status === 201 || createResponse.status === 409) {
-		return true;
+		return {
+			ensured: true,
+			effectiveUpstreamToken: githubAccess.effectiveToken,
+		};
 	}
 	const body = await createResponse.text();
 	throw new Error(
@@ -382,15 +402,14 @@ export async function resolveCloneRepository(
 		if (parsed.host === "github.com") {
 			const giteaOwner = GITEA_REPO_OWNER;
 			const giteaRepo = parsed.repo;
-			const upstream = buildGitHubUpstream(
-				parsed.owner,
-				parsed.repo,
-				input.githubToken,
-			);
-			const ensured = await ensureRepoInGitea({
+			const ensuredResult = await ensureRepoInGitea({
 				owner: giteaOwner,
 				repo: giteaRepo,
-				upstream,
+				upstream: buildGitHubUpstream(
+					parsed.owner,
+					parsed.repo,
+					input.githubToken,
+				),
 				upstreamOwner: parsed.owner,
 				upstreamRepo: parsed.repo,
 				upstreamToken: input.githubToken,
@@ -403,7 +422,7 @@ export async function resolveCloneRepository(
 				repositoryRepo: giteaRepo,
 				repositoryUsername: auth?.username || "",
 				repositoryToken: auth?.password || "",
-				ensuredInGitea: ensured,
+				ensuredInGitea: ensuredResult.ensured,
 			};
 		}
 
@@ -425,15 +444,14 @@ export async function resolveCloneRepository(
 
 	const giteaOwner = GITEA_REPO_OWNER;
 	const giteaRepo = repositoryRepo;
-	const upstream = buildGitHubUpstream(
-		repositoryOwner,
-		repositoryRepo,
-		input.githubToken,
-	);
-	const ensured = await ensureRepoInGitea({
+	const ensuredResult = await ensureRepoInGitea({
 		owner: giteaOwner,
 		repo: giteaRepo,
-		upstream,
+		upstream: buildGitHubUpstream(
+			repositoryOwner,
+			repositoryRepo,
+			input.githubToken,
+		),
 		upstreamOwner: repositoryOwner,
 		upstreamRepo: repositoryRepo,
 		upstreamToken: input.githubToken,
@@ -446,7 +464,7 @@ export async function resolveCloneRepository(
 		repositoryRepo: giteaRepo,
 		repositoryUsername: auth?.username || "",
 		repositoryToken: auth?.password || "",
-		ensuredInGitea: ensured,
+		ensuredInGitea: ensuredResult.ensured,
 	};
 }
 

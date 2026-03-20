@@ -9,6 +9,7 @@ import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { nanoid } from "nanoid";
 import { api } from "./api-client";
+import type { AgentNodeProgress } from "./types/durable-timeline";
 
 export type WorkflowNodeType =
 	| "trigger"
@@ -136,6 +137,9 @@ export type NodeSimulationResult = {
 
 // Map of nodeId -> execution log entry for the currently selected execution
 export const executionLogsAtom = atom<Record<string, ExecutionLogEntry>>({});
+export const agentProgressByNodeAtom = atom<Record<string, AgentNodeProgress>>(
+	{},
+);
 export const simulationModeAtom = atom<boolean>(false);
 export const workflowSimulationRunningAtom = atom<boolean>(false);
 export const simulatingNodeIdsAtom = atom<Set<string>>(new Set<string>());

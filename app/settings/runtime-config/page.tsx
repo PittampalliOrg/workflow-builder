@@ -213,7 +213,7 @@ export default function RuntimeConfigSettingsPage() {
 							className="font-mono text-xs"
 							id="runtime-value"
 							onChange={(event) => setValue(event.target.value)}
-							placeholder='{"modelSpec":"openai/gpt-4o-mini","maxTurns":80}'
+							placeholder='{"modelSpec":"openai/gpt-5.4","maxTurns":80}'
 							rows={8}
 							value={value}
 						/>
