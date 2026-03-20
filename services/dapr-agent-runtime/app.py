@@ -12,6 +12,7 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 import re
@@ -42,6 +43,12 @@ from tools import (
     summarize_command_changes,
     write_file,
 )
+from langgraph_engine import (
+    LANGGRAPH_ENGINE_NAME,
+    build_langgraph_capabilities,
+    is_langgraph_available,
+    run_langgraph_task,
+)
 
 try:
     import dapr.ext.workflow as wf
@@ -69,6 +76,10 @@ except ImportError:  # pragma: no cover
     class _StubWorkflowModule:
         WorkflowRuntime = _StubWorkflowRuntime
 
+        @staticmethod
+        def when_any(tasks: list[Any]) -> Any:
+            return tasks[0]
+
     class DaprWorkflowClient:  # type: ignore[no-redef]
         def schedule_new_workflow(self, workflow: Any, input: dict[str, Any] | None = None, instance_id: str | None = None):
             raise RuntimeError("Dapr workflow client unavailable")
@@ -77,6 +88,9 @@ except ImportError:  # pragma: no cover
             raise RuntimeError("Dapr workflow client unavailable")
 
         def terminate_workflow(self, *args, **kwargs):
+            return None
+
+        def raise_workflow_event(self, *args, **kwargs):
             return None
 
     wf = _StubWorkflowModule()
@@ -292,6 +306,11 @@ SERVICE_VERSION = "0.1.0"
 AGENT_TOOL_GROUP = os.environ.get("DAPR_AGENT_TOOL_GROUP", "all")
 WORKSPACE_ROOT = Path(DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
 WORKFLOW_NAME = os.environ.get("DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME", "daprAgentRunWorkflowV1")
+PLAN_ACTIVITY_NAME = os.environ.get("DAPR_AGENT_LANGGRAPH_PLAN_ACTIVITY", "langgraphPlanActivity")
+EXECUTE_ACTIVITY_NAME = os.environ.get(
+    "DAPR_AGENT_LANGGRAPH_EXECUTE_ACTIVITY",
+    "langgraphExecuteActivity",
+)
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()
     == "true"
@@ -331,6 +350,18 @@ DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS = max(
     5,
 )
 SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agent")
+LANGGRAPH_PROFILE_SET = {
+    value.strip().lower()
+    for value in os.environ.get(
+        "DAPR_AGENT_LANGGRAPH_PROFILES",
+        "feature-delivery,implement,repair,plan-only",
+    ).split(",")
+    if value.strip()
+}
+DEFAULT_APPROVAL_TIMEOUT_MINUTES = max(
+    int(os.environ.get("DAPR_AGENT_DEFAULT_APPROVAL_TIMEOUT_MINUTES", "60") or "60"),
+    1,
+)
 
 
 PROFILE_INSTRUCTIONS: dict[str, str] = {
@@ -466,6 +497,12 @@ class DaprAgentRunRequest(BaseModel):
     expectedOutput: str | None = None
     verifyCommands: str | None = None
     approvalMode: str | None = None
+    approvalTimeoutMinutes: int = Field(
+        default=DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        ge=1,
+        le=24 * 60,
+    )
+    executeAfterApproval: bool = Field(default=True)
     toolPolicy: str | None = None
     tools: str | list[str] | None = None
     writePolicy: str | None = None
@@ -475,6 +512,12 @@ class DaprAgentRunRequest(BaseModel):
     dbExecutionId: str | None = None
     artifactRef: str | None = None
     planJson: dict[str, Any] | list[dict[str, Any]] | None = None
+
+
+class ApproveRequest(BaseModel):
+    approved: bool = True
+    reason: str | None = None
+    approvedBy: str | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -545,6 +588,9 @@ class AgentRunContext:
     cwd: str
     tool_group: str
     max_turns: int
+    engine: str = "dapr-agent"
+    execute_after_approval: bool = True
+    approval_event_name: str | None = None
     execution_id: str | None = None
     workspace_ref: str | None = None
     trace_id: str | None = None
@@ -557,9 +603,12 @@ class AgentRunContext:
             "mode": self.mode,
             "profile": self.profile,
             "model": self.model,
+            "engine": self.engine,
             "cwd": self.cwd,
             "toolGroup": self.tool_group,
             "maxTurns": self.max_turns,
+            "executeAfterApproval": self.execute_after_approval,
+            "approvalEventName": self.approval_event_name,
             "executionId": self.execution_id,
             "workspaceRef": self.workspace_ref,
             "traceId": self.trace_id,
@@ -574,9 +623,12 @@ class AgentRunContext:
             mode=_normalize_run_mode(record.get("mode")),
             profile=_normalize_profile(str(record.get("profile") or "custom")),
             model=str(record.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
+            engine=str(record.get("engine") or "dapr-agent").strip() or "dapr-agent",
             cwd=_resolve_cwd(str(record.get("cwd") or "")),
             tool_group=_resolve_tool_group(str(record.get("toolGroup") or "all")),
             max_turns=max(int(record.get("maxTurns") or 30), 1),
+            execute_after_approval=bool(record.get("executeAfterApproval", True)),
+            approval_event_name=str(record.get("approvalEventName") or "").strip() or None,
             execution_id=str(record.get("executionId") or "").strip() or None,
             workspace_ref=str(record.get("workspaceRef") or "").strip() or None,
             trace_id=str(record.get("traceId") or "").strip() or None,
@@ -1013,6 +1065,19 @@ def _resolve_effective_model(request: DaprAgentRunRequest) -> str:
     return _effective_default_model()
 
 
+def _approval_event_name(instance_id: str) -> str:
+    return f"dapr_agent_plan_approval_{instance_id}".lower()
+
+
+def _supports_langgraph(request: DaprAgentRunRequest) -> bool:
+    profile = _normalize_profile(request.profile)
+    return profile in LANGGRAPH_PROFILE_SET and is_langgraph_available()
+
+
+def _resolve_run_engine(request: DaprAgentRunRequest) -> str:
+    return LANGGRAPH_ENGINE_NAME if _supports_langgraph(request) else "dapr-agent"
+
+
 def _extract_json_block(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     candidates = [stripped]
@@ -1178,6 +1243,7 @@ def _build_result_payload(
     instance_id: str,
     request: DaprAgentRunRequest,
     workflow_output: Any,
+    pending_approval: bool = False,
 ) -> dict[str, Any]:
     text = _coerce_text(workflow_output)
     cwd = _resolve_request_cwd(request)
@@ -1196,14 +1262,17 @@ def _build_result_payload(
             if run_context and run_context.artifact_ref
             else str(request.artifactRef or "").strip() or f"plan_{instance_id}"
         )
+        approval_event_name = run_context.approval_event_name if run_context else _approval_event_name(instance_id)
+        phase = "awaiting_approval" if pending_approval else "planned"
         progress = {
             **progress,
-            "status": "completed",
-            "phase": "planned",
+            "status": "running" if pending_approval else "completed",
+            "phase": phase,
             "summary": str(plan.get("summary") or text[:280] or progress.get("summary")),
             "activeToolName": None,
-            "stopReason": "plan generated",
-            "currentStepName": "plan",
+            "stopReason": "awaiting approval" if pending_approval else "plan generated",
+            "currentStepName": "approval" if pending_approval else "plan",
+            "approvalEventName": approval_event_name,
             "updatedAt": _utc_now_iso(),
         }
         _persist_agent_progress(instance_id, progress)
@@ -1230,12 +1299,14 @@ def _build_result_payload(
             "snapshotRefs": [],
             "verification": {
                 "commands": plan.get("verificationCommands") or [],
-                "status": "planned",
+                "status": "awaiting_approval" if pending_approval else "planned",
             },
             "agentWorkflowId": instance_id,
             "daprInstanceId": instance_id,
             "traceId": run_context.trace_id if run_context else None,
             "agentProgress": progress,
+            "status": phase,
+            "approvalEventName": approval_event_name if pending_approval else None,
             "runSummary": {
                 "profile": _normalize_profile(request.profile),
                 "mode": run_mode,
@@ -1243,6 +1314,7 @@ def _build_result_payload(
                 "cwd": cwd,
                 "workspaceRef": request.workspaceRef,
                 "toolGroup": _resolve_effective_tool_group(request),
+                "engine": run_context.engine if run_context else _resolve_run_engine(request),
             },
         }
         _persist_run_artifact(instance_id, result)
@@ -1307,6 +1379,7 @@ def _build_result_payload(
         "daprInstanceId": instance_id,
         "traceId": run_context.trace_id if run_context else None,
         "agentProgress": progress,
+        "status": "completed",
         "runSummary": {
             "profile": _normalize_profile(request.profile),
             "mode": run_mode,
@@ -1314,6 +1387,7 @@ def _build_result_payload(
             "cwd": cwd,
             "workspaceRef": request.workspaceRef,
             "toolGroup": _resolve_effective_tool_group(request),
+            "engine": run_context.engine if run_context else _resolve_run_engine(request),
         },
     }
     _persist_run_artifact(instance_id, result)
@@ -1668,6 +1742,7 @@ def _status_from_persisted_state(
         "runtimeStatus": "PERSISTED_STATE",
         "traceId": resolved_trace_id,
         "phase": progress.get("phase") if isinstance(progress, dict) else None,
+        "approvalEventName": progress.get("approvalEventName") if isinstance(progress, dict) else None,
         "agentProgress": progress,
         "serializedOutput": serialized_output,
     }
@@ -1696,7 +1771,7 @@ def _safe_workspace_file_snapshot(root: str, relative_path: str) -> dict[str, An
 def _default_agent_progress(context: AgentRunContext, *, status: str = "scheduled") -> dict[str, Any]:
     planning_mode = _is_planning_mode(context.mode)
     return {
-        "framework": "dapr-agent",
+        "framework": context.engine,
         "status": status,
         "phase": (
             "queued"
@@ -1714,6 +1789,7 @@ def _default_agent_progress(context: AgentRunContext, *, status: str = "schedule
         "agentWorkflowId": context.instance_id,
         "daprInstanceId": context.instance_id,
         "traceId": context.trace_id,
+        "approvalEventName": context.approval_event_name,
         "updatedAt": _utc_now_iso(),
         "recentTurns": [],
     }
@@ -2033,6 +2109,7 @@ def _build_agent_registry_metadata(
         "profiles": sorted(PROFILE_INSTRUCTIONS.keys()),
         "framework": "Dapr Agents",
         "durable": True,
+        "langgraph": build_langgraph_capabilities(),
         "workflowName": WORKFLOW_NAME,
         "toolGroup": "dynamic",
         "defaultModel": model,
@@ -2206,9 +2283,14 @@ def _build_run_context(
         mode=normalized_mode,
         profile=_normalize_profile(request.profile),
         model=_resolve_effective_model(request),
+        engine=_resolve_run_engine(request),
         cwd=_resolve_request_cwd(request),
         tool_group=_resolve_effective_tool_group(request),
         max_turns=request.maxTurns,
+        execute_after_approval=bool(request.executeAfterApproval),
+        approval_event_name=(
+            _approval_event_name(instance_id) if _is_planning_mode(normalized_mode) else None
+        ),
         execution_id=execution_id,
         workspace_ref=request.workspaceRef,
         trace_id=trace_id,
@@ -2304,6 +2386,7 @@ def _wait_for_terminal_workflow_result(
     instance_id: str,
     *,
     timeout_seconds: int,
+    return_on_approval: bool = False,
 ) -> dict[str, Any]:
     client = _workflow_client_for_runs()
     deadline = time.monotonic() + timeout_seconds
@@ -2311,6 +2394,22 @@ def _wait_for_terminal_workflow_result(
         state = client.get_workflow_state(instance_id, fetch_payloads=True)
         runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
         normalized = str(runtime_status).lower()
+        progress = _load_agent_progress(instance_id) or {}
+        artifact = _load_run_artifact(instance_id) or {}
+        if return_on_approval and str(progress.get("phase") or "").strip().lower() == "awaiting_approval":
+            return {
+                "status": "awaiting_approval",
+                "payload": artifact
+                or {
+                    "success": True,
+                    "agentWorkflowId": instance_id,
+                    "daprInstanceId": instance_id,
+                    "traceId": progress.get("traceId"),
+                    "agentProgress": progress,
+                    "status": "awaiting_approval",
+                    "approvalEventName": progress.get("approvalEventName"),
+                },
+            }
         if normalized in {"completed", "failed", "terminated"}:
             parsed_output = _parse_serialized_output(getattr(state, "serialized_output", None))
             if isinstance(parsed_output, dict):
@@ -2318,8 +2417,6 @@ def _wait_for_terminal_workflow_result(
                     "status": normalized,
                     "payload": parsed_output,
                 }
-            artifact = _load_run_artifact(instance_id) or {}
-            progress = _load_agent_progress(instance_id) or {}
             return {
                 "status": normalized,
                 "payload": {
@@ -2350,6 +2447,101 @@ def _normalize_run_request(input_data: dict[str, Any] | str | None) -> DaprAgent
         payload.get("mode") or payload.get("profile")
     )
     return DaprAgentRunRequest.model_validate(payload)
+
+
+def _langgraph_phase_prompt(
+    request: DaprAgentRunRequest,
+    *,
+    phase: str,
+) -> str:
+    if phase == "plan":
+        return _build_task_prompt(
+            request.model_copy(
+                update={
+                    "mode": FEATURE_DELIVERY_PLAN_MODE,
+                }
+            )
+        )
+    if phase == "verify":
+        commands = _parse_verify_commands(request.verifyCommands)
+        return "\n\n".join(
+            segment
+            for segment in [
+                f"Task:\n{request.prompt}",
+                (
+                    "Approved plan JSON:\n"
+                    f"{json.dumps(request.planJson, indent=2, default=str)}"
+                    if request.planJson
+                    else ""
+                ),
+                (
+                    "Verification commands:\n" + "\n".join(commands)
+                    if commands
+                    else ""
+                ),
+                "Summarize the completed work and verification outcome.",
+            ]
+            if segment
+        )
+    return _build_task_prompt(
+        request.model_copy(
+            update={
+                "mode": FEATURE_DELIVERY_EXECUTE_MODE,
+            }
+        )
+    )
+
+
+def _run_langgraph_phase(
+    *,
+    request: DaprAgentRunRequest,
+    instance_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    run_context = _load_run_context(instance_id) or _build_run_context(instance_id, request)
+    result = run_langgraph_task(
+        prompt=_langgraph_phase_prompt(request, phase=phase),
+        workspace_root=run_context.cwd,
+        tool_group=("planning" if phase == "plan" else run_context.tool_group),
+        model=run_context.model,
+        profile=run_context.profile,
+        phase=phase,
+        api_key=request.openAIApiKey,
+    )
+    if result.tool_summary.get("changeSummary") or result.tool_summary.get("patch"):
+        _persist_workspace_mutation(instance_id, result.tool_summary)
+    payload: dict[str, Any] = {
+        "content": result.text,
+        "text": result.text,
+        "engine": LANGGRAPH_ENGINE_NAME,
+        "engineMetadata": result.metadata,
+    }
+    if result.structured_output:
+        payload["structured"] = result.structured_output
+    if phase == "plan":
+        payload["plan"] = result.structured_output or _extract_json_block(result.text) or {}
+        payload["planMarkdown"] = result.text
+    return payload
+
+
+@runtime.activity(name=PLAN_ACTIVITY_NAME)
+def langgraph_plan_activity(_ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    request = _normalize_run_request(payload)
+    return _run_langgraph_phase(
+        request=request,
+        instance_id=str(payload.get("instanceId") or ""),
+        phase="plan",
+    )
+
+
+@runtime.activity(name=EXECUTE_ACTIVITY_NAME)
+def langgraph_execute_activity(_ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    request = _normalize_run_request(payload)
+    return _run_langgraph_phase(
+        request=request,
+        instance_id=str(payload.get("instanceId") or ""),
+        phase="execute",
+    )
 
 
 @runtime.workflow(name=WORKFLOW_NAME)
@@ -2391,6 +2583,120 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
         }
     )
     try:
+        if run_context.engine == LANGGRAPH_ENGINE_NAME:
+            if not ctx.is_replaying:
+                _update_agent_progress(
+                    instance_id,
+                    phase="planning" if _is_planning_mode(run_context.mode) else "implementing",
+                    summary=(
+                        "Generating implementation plan with LangGraph"
+                        if _is_planning_mode(run_context.mode)
+                        else f"Starting {run_context.profile} run with LangGraph"
+                    ),
+                    currentStepName="plan" if _is_planning_mode(run_context.mode) else run_context.profile,
+                )
+            workflow_payload = {
+                **normalized_request.model_dump(exclude_none=True),
+                "instanceId": instance_id,
+            }
+            if _is_planning_mode(run_context.mode):
+                planning_result = yield ctx.call_activity(
+                    langgraph_plan_activity,
+                    input=workflow_payload,
+                )
+                pending_approval = bool(run_context.execute_after_approval)
+                plan_payload = _build_result_payload(
+                    instance_id=instance_id,
+                    request=normalized_request,
+                    workflow_output=planning_result,
+                    pending_approval=pending_approval,
+                )
+                if not pending_approval:
+                    return plan_payload
+                if not ctx.is_replaying:
+                    _update_agent_progress(
+                        instance_id,
+                        phase="awaiting_approval",
+                        status="running",
+                        summary="Plan ready for approval",
+                        currentStepName="approval",
+                        stopReason="awaiting approval",
+                    )
+                approval_event = ctx.wait_for_external_event(run_context.approval_event_name)
+                timeout_wait = ctx.create_timer(
+                    timedelta(minutes=max(request.approvalTimeoutMinutes, 1))
+                )
+                completed_task = yield wf.when_any([approval_event, timeout_wait])
+                if completed_task == timeout_wait:
+                    _update_agent_progress(
+                        instance_id,
+                        phase="failed",
+                        status="failed",
+                        summary="Plan approval timed out",
+                        currentStepName="approval",
+                        stopReason="approval timeout",
+                    )
+                    return {
+                        **plan_payload,
+                        "success": False,
+                        "status": "failed",
+                        "error": f"Plan approval timed out after {request.approvalTimeoutMinutes} minutes",
+                    }
+                approval_result = approval_event.get_result() or {}
+                approved = bool(
+                    approval_result.get("approved", False)
+                    if isinstance(approval_result, dict)
+                    else False
+                )
+                if not approved:
+                    reason = (
+                        approval_result.get("reason")
+                        if isinstance(approval_result, dict)
+                        else None
+                    ) or "Plan was rejected"
+                    _update_agent_progress(
+                        instance_id,
+                        phase="failed",
+                        status="failed",
+                        summary=reason,
+                        currentStepName="approval",
+                        stopReason="plan rejected",
+                    )
+                    return {
+                        **plan_payload,
+                        "success": False,
+                        "status": "rejected",
+                        "approval": approval_result,
+                        "error": reason,
+                    }
+                normalized_request = normalized_request.model_copy(
+                    update={
+                        "mode": FEATURE_DELIVERY_EXECUTE_MODE,
+                        "artifactRef": plan_payload.get("artifactRef"),
+                        "planJson": plan_payload.get("plan"),
+                    }
+                )
+                if not ctx.is_replaying:
+                    _update_agent_progress(
+                        instance_id,
+                        phase="implementing",
+                        status="running",
+                        summary="Plan approved. Executing with LangGraph",
+                        currentStepName="execute",
+                        stopReason=None,
+                    )
+            execute_result = yield ctx.call_activity(
+                langgraph_execute_activity,
+                input={
+                    **normalized_request.model_dump(exclude_none=True),
+                    "instanceId": instance_id,
+                },
+            )
+            return _build_result_payload(
+                instance_id=instance_id,
+                request=normalized_request,
+                workflow_output=execute_result,
+            )
         agent_result = yield from _build_run_agent(run_context).agent_workflow(
             ctx,
             {"task": _build_task_prompt(normalized_request)},
@@ -2439,6 +2745,7 @@ async def _run_agent_request(
     terminal = _wait_for_terminal_workflow_result(
         instance_id,
         timeout_seconds=normalized_request.timeoutMinutes * 60,
+        return_on_approval=_is_planning_mode(normalized_request.mode),
     )
     return terminal["payload"]
 
@@ -2534,6 +2841,8 @@ def runtime_introspect() -> dict[str, Any]:
         "runtimeStatus": runtime_status,
         "features": [
             "durable-agent",
+            "langgraph",
+            "deep-agents",
             "workspace-tools",
             "persistent-memory",
             "state-store-backed-sessions",
@@ -2541,6 +2850,8 @@ def runtime_introspect() -> dict[str, Any]:
         ],
         "registeredWorkflows": [_workflow_descriptor(WORKFLOW_NAME)],
         "registeredActivities": [
+            _activity_descriptor(PLAN_ACTIVITY_NAME),
+            _activity_descriptor(EXECUTE_ACTIVITY_NAME),
             _activity_descriptor("workspace_profile"),
             _activity_descriptor("workspace_clone"),
             _activity_descriptor("workspace_command"),
@@ -2561,6 +2872,7 @@ def runtime_introspect() -> dict[str, Any]:
             ],
             "workspaceTools": WORKSPACE_ENABLED_TOOLS,
             "toolGroups": list(TOOL_GROUPS.keys()),
+            "langgraph": build_langgraph_capabilities(),
         },
         "registry": {
             "enabled": DAPR_AGENT_ENABLE_REGISTRY,
@@ -2580,6 +2892,7 @@ def runtime_introspect() -> dict[str, Any]:
             "defaultModel": _effective_default_model(),
             "instrumentationEnabled": ENABLE_DAPR_AGENTS_INSTRUMENTATION,
             "workspaceBindings": sum(len(refs) for refs in sessions_by_execution.values()),
+            "langgraph": build_langgraph_capabilities(),
         },
     }
 
@@ -2907,8 +3220,9 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
             )
         )
         if isinstance(workflow_output, dict):
+            output_status = str(workflow_output.get("status") or "").strip().lower()
             return {
-                "success": bool(workflow_output.get("success", False)),
+                "success": bool(workflow_output.get("success", output_status in {"completed", "planned", "awaiting_approval"})),
                 "result": workflow_output,
                 **workflow_output,
             }
@@ -3010,8 +3324,42 @@ def api_run_status(instance_id: str) -> dict[str, Any]:
         "runtimeStatus": runtime_status,
         "traceId": resolved_trace_id,
         "phase": progress.get("phase") if isinstance(progress, dict) else None,
+        "approvalEventName": progress.get("approvalEventName") if isinstance(progress, dict) else None,
         "agentProgress": progress,
         "serializedOutput": serialized_output,
+    }
+
+
+@app.post("/api/run/{instance_id}/approve")
+def api_run_approve(instance_id: str, request: ApproveRequest) -> dict[str, Any]:
+    run_context = _load_run_context(instance_id)
+    if run_context is None or not run_context.approval_event_name:
+        raise HTTPException(status_code=404, detail="Approval-capable run not found")
+    client = _workflow_client_for_runs()
+    approval_payload = {
+        "approved": request.approved,
+        "reason": request.reason,
+        "approvedBy": request.approvedBy or "api",
+        "respondedBy": request.approvedBy or "api",
+    }
+    client.raise_workflow_event(
+        instance_id=instance_id,
+        event_name=run_context.approval_event_name,
+        data=approval_payload,
+    )
+    _update_agent_progress(
+        instance_id,
+        phase="implementing" if request.approved and run_context.execute_after_approval else "completed",
+        status="running" if request.approved and run_context.execute_after_approval else "failed",
+        summary="Approval received" if request.approved else (request.reason or "Plan rejected"),
+        currentStepName="approval",
+        stopReason=None if request.approved else "plan rejected",
+    )
+    return {
+        "success": True,
+        "instanceId": instance_id,
+        "approvalEventName": run_context.approval_event_name,
+        "approval": approval_payload,
     }
 
 
@@ -3059,6 +3407,10 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         expectedOutput=str(request.input.get("expectedOutput") or "").strip() or None,
         verifyCommands=str(request.input.get("verifyCommands") or "").strip() or None,
         approvalMode=str(request.input.get("approvalMode") or "").strip() or None,
+        approvalTimeoutMinutes=int(
+            request.input.get("approvalTimeoutMinutes") or DEFAULT_APPROVAL_TIMEOUT_MINUTES
+        ),
+        executeAfterApproval=bool(request.input.get("executeAfterApproval", True)),
         toolPolicy=str(request.input.get("toolPolicy") or "").strip() or None,
         writePolicy=str(request.input.get("writePolicy") or "").strip() or None,
         shellPolicy=str(request.input.get("shellPolicy") or "").strip() or None,

@@ -913,6 +913,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								expectedOutput: args.expectedOutput,
 								verifyCommands: args.verifyCommands,
 								approvalMode: args.approvalMode,
+								approvalTimeoutMinutes: args.approvalTimeoutMinutes,
+								executeAfterApproval:
+									args.executeAfterApproval === undefined
+										? true
+										: args.executeAfterApproval === true ||
+											args.executeAfterApproval === "true",
 								toolPolicy: args.toolPolicy,
 								tools: args.tools,
 								writePolicy: args.writePolicy,

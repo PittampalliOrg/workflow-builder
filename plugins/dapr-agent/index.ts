@@ -7,7 +7,7 @@ const daprAgentPlugin: IntegrationPlugin = {
 	type: "dapr-agent",
 	label: "Dapr Agent",
 	description:
-		"Durable autonomous coding agent built on Python Dapr Agents with workspace and git tools",
+		"Durable autonomous coding agent built on Python Dapr Agents, LangGraph Deep Agents, and workspace/git tools",
 	icon: DaprAgentIcon,
 	formFields: [],
 	actions: [
@@ -216,6 +216,7 @@ const daprAgentPlugin: IntegrationPlugin = {
 				{ field: "changeSummary", description: "Structured file change summary" },
 				{ field: "usageTotals", description: "Aggregated usage statistics" },
 				{ field: "traceId", description: "OpenTelemetry trace identifier" },
+				{ field: "approvalEventName", description: "External approval event name when waiting for plan approval" },
 				{ field: "agentWorkflowId", description: "Agent workflow instance ID" },
 				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
 			],
