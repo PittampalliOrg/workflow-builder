@@ -360,3 +360,37 @@ export async function findTraceContextForProject(
 				: "unknown";
 	return executionToContext(best, confidence);
 }
+
+export async function findExecutionContextByIdForProject(
+	scope: ProjectScopeParams,
+	executionId: string,
+): Promise<JaegerTraceContext> {
+	const normalizedExecutionId = executionId.trim();
+	if (!normalizedExecutionId) {
+		return executionToContext(null, "unknown");
+	}
+
+	const row = await db
+		.select({
+			executionId: workflowExecutions.id,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			status: workflowExecutions.status,
+			phase: workflowExecutions.phase,
+			progress: workflowExecutions.progress,
+			startedAt: workflowExecutions.startedAt,
+		})
+		.from(workflowExecutions)
+		.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+		.where(
+			and(
+				projectWorkflowScope(scope),
+				eq(workflowExecutions.id, normalizedExecutionId),
+			),
+		)
+		.limit(1);
+
+	const execution = row[0] ? toExecution(row[0]) : null;
+	return executionToContext(execution, execution ? "execution" : "unknown");
+}

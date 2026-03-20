@@ -240,6 +240,10 @@ type PendingRunCandidate = {
 	mode: "run" | "plan" | "execute_plan";
 };
 
+function isNativeAgentChildWorkflowId(value: string): boolean {
+	return value.includes("__dapr__") || value.includes("__msagent__");
+}
+
 function deriveModeFromHistoryTaskName(
 	name: string | null | undefined,
 ): PendingRunCandidate["mode"] | null {
@@ -259,6 +263,9 @@ function deriveModeFromHistoryTaskName(
 	if (normalized === "call_dapr_agent_run") {
 		return "run";
 	}
+	if (normalized === "call_openshell_agent_run") {
+		return "run";
+	}
 	if (normalized === "call_ms_agent_run") {
 		return "run";
 	}
@@ -276,6 +283,7 @@ export function deriveDurableAgentRuns(
 			!(
 				activityName.includes("durable/") ||
 				activityName.includes("dapr-agent/") ||
+				activityName.includes("openshell/") ||
 				activityName.includes("ms-agent/") ||
 				activityName.includes("mastra/execute")
 			)
@@ -381,6 +389,9 @@ export function deriveDurableAgentRuns(
 
 		const runId = eventName.slice("agent_completed_".length);
 		if (!runId) {
+			continue;
+		}
+		if (isNativeAgentChildWorkflowId(runId)) {
 			continue;
 		}
 
@@ -840,6 +851,42 @@ function buildDerivedAgentProgress(
 					status: "completed",
 				};
 			}),
+		};
+	}
+
+	if (framework === "openshell") {
+		return {
+			nodeId: run.nodeId,
+			framework,
+			status: run.status,
+			phase: getStringField(result, ["phase", "profile"]) ?? "sandbox",
+			summary:
+				getStringField(result, ["text", "content", "summary"]) ??
+				getStringField(runSummary, ["summary"]) ??
+				null,
+			currentStepName:
+				getStringField(result, ["sandboxName", "currentStepName"]) ??
+				getStringField(runSummary, ["sandboxName"]),
+			completedSteps: null,
+			totalSteps: null,
+			currentIteration: null,
+			maxIterations: null,
+			activeToolName:
+				getStringField(result, ["provider", "activeToolName"]) ?? null,
+			stopReason:
+				run.status === "completed"
+					? "sandbox completed"
+					: run.status === "failed"
+						? run.error
+						: null,
+			agentWorkflowId: run.agentWorkflowId,
+			daprInstanceId: run.daprInstanceId,
+			traceId: getStringField(result, ["traceId"]),
+			updatedAt:
+				toIso(run.completedAt) ??
+				toIso(run.lastReconciledAt) ??
+				toIso(run.createdAt),
+			recentTurns: [],
 		};
 	}
 

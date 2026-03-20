@@ -1641,6 +1641,26 @@ function didRunMutateFiles(
 	return Boolean(changeSummary?.changed || changeSummary?.files.length);
 }
 
+function buildSnapshotRefs(
+	fileChanges: FileChange[],
+	changeSummary?: ChangeSummaryOutput,
+): string[] {
+	const refs = new Set<string>();
+	for (const file of changeSummary?.files ?? []) {
+		const path = file.path?.trim();
+		if (path) {
+			refs.add(path);
+		}
+	}
+	for (const file of fileChanges) {
+		const path = file.path?.trim();
+		if (path) {
+			refs.add(path);
+		}
+	}
+	return Array.from(refs).sort((a, b) => a.localeCompare(b));
+}
+
 function buildNoFileChangeRepairPrompt(
 	basePrompt: string,
 	previousText: string,
@@ -2877,6 +2897,7 @@ app.post("/api/run", async (req, res) => {
 					workspaceRef && executionId
 						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
+				const snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
 				const hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
 				const fileChangeGuardViolation =
 					requireFileChanges && completion.success && !hasFileMutations
@@ -2928,6 +2949,7 @@ app.post("/api/run", async (req, res) => {
 							? completion.result.last_compaction_reason
 							: undefined,
 					fileChanges,
+					snapshotRefs,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,
 					changeSummary,
@@ -4048,6 +4070,7 @@ app.post("/api/execute-plan", async (req, res) => {
 					workspaceRef && executionId
 						? await buildAgentChangeSummary(executionId, finalInstanceId)
 						: undefined;
+				let snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
 				let hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
 				let text =
 					(completion.result?.final_answer as string) ??
@@ -4103,6 +4126,7 @@ app.post("/api/execute-plan", async (req, res) => {
 						workspaceRef && executionId
 							? await buildAgentChangeSummary(executionId, finalInstanceId)
 							: undefined;
+					snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
 					hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
 					text =
 						(completion.result?.final_answer as string) ??
@@ -4176,6 +4200,7 @@ app.post("/api/execute-plan", async (req, res) => {
 							? completion.result.last_compaction_reason
 							: undefined,
 					fileChanges,
+					snapshotRefs,
 					patch: changeSummary?.inlinePatchPreview,
 					patchRef: changeSummary?.patchRef,
 					changeSummary,
@@ -4446,6 +4471,7 @@ app.post("/api/execute-plan-dag", async (req, res) => {
 					workspaceRef && executionId
 						? await buildAgentChangeSummary(executionId, instanceId)
 						: undefined;
+				const snapshotRefs = buildSnapshotRefs([], changeSummary);
 
 				let cleanup: {
 					requested: boolean;
@@ -4491,6 +4517,7 @@ app.post("/api/execute-plan-dag", async (req, res) => {
 					taskResults: dagResult.taskResults ?? {},
 					terminationReason: dagResult.terminationReason ?? "unknown",
 					changeSummary,
+					snapshotRefs,
 					artifactRef: artifactRef || undefined,
 					daprInstanceId: instanceId,
 					cleanup,

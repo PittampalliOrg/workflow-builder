@@ -2,7 +2,7 @@
 
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { SpanDetailsPanel } from "@/components/observability/span-details-panel";
 import { TraceStatusBadge } from "@/components/observability/trace-status-badge";
@@ -14,10 +14,13 @@ import { useObservabilityTrace } from "@/hooks/use-observability-trace";
 
 export default function TraceDetailPage() {
 	const params = useParams<{ traceId: string }>();
+	const searchParams = useSearchParams();
 	const traceId = params.traceId;
+	const executionId = searchParams.get("executionId");
 
 	const { trace, isLoading, isError, error, mutate } = useObservabilityTrace(
 		traceId ?? null,
+		{ executionId },
 	);
 	const [selectedSpanId, setSelectedSpanId] = useState<string | undefined>();
 

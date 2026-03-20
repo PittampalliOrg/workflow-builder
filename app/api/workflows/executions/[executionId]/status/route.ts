@@ -21,9 +21,30 @@ import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
 const MS_AGENT_API_BASE_URL =
 	process.env.MS_AGENT_API_BASE_URL ||
 	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
+
+function getAgentRuntimeTarget(
+	actionType: string | undefined,
+): { baseUrl: string; path: string } | null {
+	if (actionType === "ms-agent/run") {
+		return { baseUrl: MS_AGENT_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell/run") {
+		return {
+			baseUrl: OPENSHELL_AGENT_RUNTIME_API_BASE_URL,
+			path: "/api/v1/agent-runs",
+		};
+	}
+	return null;
+}
 
 type NodeStatus = {
 	nodeId: string;
@@ -67,17 +88,12 @@ async function fetchAgentLivePayload(
 	actionType: string | undefined,
 	instanceId: string,
 ): Promise<Record<string, unknown> | null> {
-	const baseUrl =
-		actionType === "ms-agent/run"
-			? MS_AGENT_API_BASE_URL
-			: actionType === "dapr-agent/run"
-				? DAPR_AGENT_RUNTIME_API_BASE_URL
-				: null;
-	if (!baseUrl) {
+	const target = getAgentRuntimeTarget(actionType);
+	if (!target) {
 		return null;
 	}
 	const response = await fetch(
-		`${baseUrl.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
+		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
 		{
 			headers: { Accept: "application/json" },
 			signal: AbortSignal.timeout(4000),
@@ -100,7 +116,7 @@ function shouldFetchLiveAgentPayload(
 	if (!actionType || !status) {
 		return false;
 	}
-	if (actionType !== "dapr-agent/run") {
+	if (!["dapr-agent/run", "openshell/run"].includes(actionType)) {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -244,9 +260,11 @@ export async function GET(
 				const framework =
 					actionType === "ms-agent/run"
 						? "ms-agent"
-						: actionType === "dapr-agent/run"
-							? "dapr-agent"
-							: null;
+						: actionType === "openshell/run"
+							? "openshell"
+							: actionType === "dapr-agent/run"
+								? "dapr-agent"
+								: null;
 				if (!framework) {
 					return null;
 				}
@@ -268,6 +286,11 @@ export async function GET(
 		return NextResponse.json({
 			status: mapped.status,
 			runtimeStatus: runtime?.runtimeStatus ?? null,
+			traceId:
+				runtime?.traceId ??
+				Object.values(agentProgressByNode).find((value) => value.traceId)
+					?.traceId ??
+				null,
 			phase: runtime?.phase ?? execution.phase,
 			progress: runtime?.progress ?? execution.progress,
 			message: runtime?.message ?? null,

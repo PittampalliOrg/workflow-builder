@@ -752,6 +752,7 @@ export const workflowApi = {
 		apiCall<{
 			status: string;
 			runtimeStatus: string | null;
+			traceId?: string | null;
 			phase: string | null;
 			progress: number | null;
 			message: string | null;
@@ -793,6 +794,10 @@ export const workflowApi = {
 		apiCall<{
 			podIp?: string;
 			templateName?: string;
+			sandboxName?: string;
+			repoPath?: string;
+			agentRunId?: string;
+			status?: string;
 			error?: string;
 		}>(`/api/workflows/${workflowId}/executions/${executionId}/sandbox`),
 
@@ -1279,10 +1284,21 @@ export const observabilityApi = {
 			`/api/observability/traces${buildObservabilityQuery(filters)}`,
 		),
 
-	getTrace: (traceId: string) =>
-		apiCall<ObservabilityTraceDetailsResponse>(
-			`/api/observability/traces/${encodeURIComponent(traceId)}`,
-		),
+	getTrace: (
+		traceId: string,
+		options?: {
+			executionId?: string | null;
+		},
+	) => {
+		const params = new URLSearchParams();
+		if (options?.executionId) {
+			params.set("executionId", options.executionId);
+		}
+		const query = params.toString();
+		return apiCall<ObservabilityTraceDetailsResponse>(
+			`/api/observability/traces/${encodeURIComponent(traceId)}${query ? `?${query}` : ""}`,
+		);
+	},
 };
 
 export type AppConnection = AppConnectionWithoutSensitiveData & {

@@ -45,15 +45,15 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 	const hasEnclosedBody = Boolean(enclosedBodyNode);
 	const dropHintText =
 		dropState === "eligible"
-			? "Release to bind Dapr Agent"
+			? "Release to bind coding agent"
 			: dropState === "occupied"
-				? "Only one Dapr Agent can be enclosed"
-				: "Only Dapr Agent (dapr-agent/run) can be enclosed";
+				? "Only one coding agent can be enclosed"
+				: "Only OpenShell or legacy Dapr agents can be enclosed";
 	const handleBodyAction = useCallback(() => {
 		if (enclosedBodyNode) {
 			setSelectedNode(enclosedBodyNode.id);
 			setActiveTab("properties");
-			toast.info("Selected enclosed Dapr Agent");
+			toast.info("Selected enclosed coding agent");
 			return;
 		}
 
@@ -68,7 +68,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 				description: "",
 				type: "action",
 				config: {
-					actionType: "dapr-agent/run",
+					actionType: "openshell/run",
 				},
 				status: "idle",
 			},
@@ -106,7 +106,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 							? dropHintText
 							: expression
 								? expression
-								: "Drop a Dapr Agent node here"}
+								: "Drop an OpenShell Agent node here"}
 					</p>
 				</div>
 				<Button

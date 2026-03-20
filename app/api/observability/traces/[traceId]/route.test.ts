@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockGetSession = vi.hoisted(() => vi.fn());
 const mockExtractTraceCorrelation = vi.hoisted(() => vi.fn());
+const mockFindExecutionContextByIdForProject = vi.hoisted(() => vi.fn());
 const mockFindTraceContextForProject = vi.hoisted(() => vi.fn());
 const mockGetJaegerTraceById = vi.hoisted(() => vi.fn());
 const mockNormalizeJaegerTraceDetails = vi.hoisted(() => vi.fn());
@@ -12,6 +13,7 @@ vi.mock("@/lib/auth-helpers", () => ({
 
 vi.mock("@/lib/observability/correlation", () => ({
 	extractTraceCorrelation: mockExtractTraceCorrelation,
+	findExecutionContextByIdForProject: mockFindExecutionContextByIdForProject,
 	findTraceContextForProject: mockFindTraceContextForProject,
 }));
 
@@ -64,6 +66,7 @@ describe("GET /api/observability/traces/[traceId]", () => {
 	beforeEach(() => {
 		mockGetSession.mockReset();
 		mockExtractTraceCorrelation.mockReset();
+		mockFindExecutionContextByIdForProject.mockReset();
 		mockFindTraceContextForProject.mockReset();
 		mockGetJaegerTraceById.mockReset();
 		mockNormalizeJaegerTraceDetails.mockReset();
@@ -161,6 +164,45 @@ describe("GET /api/observability/traces/[traceId]", () => {
 		const json = await response.json();
 
 		expect(response.status).toBe(200);
+		expect(json).toEqual({ trace: traceContext("trace-1") });
+	});
+
+	it("uses the supplied executionId when the trace lacks project correlation tags", async () => {
+		mockGetJaegerTraceById.mockResolvedValueOnce({
+			traceID: "trace-1",
+			spans: [],
+		});
+		mockFindTraceContextForProject.mockResolvedValueOnce({
+			workflowId: null,
+			workflowName: null,
+			executionId: null,
+			daprInstanceId: null,
+			phase: null,
+		});
+		mockFindExecutionContextByIdForProject.mockResolvedValueOnce({
+			workflowId: "wf-1",
+			workflowName: "Workflow One",
+			executionId: "exec-1",
+			daprInstanceId: "inst-1",
+			phase: "running",
+		});
+		mockNormalizeJaegerTraceDetails.mockReturnValueOnce(
+			traceContext("trace-1"),
+		);
+
+		const response = await GET(
+			new Request(
+				"http://localhost/api/observability/traces/trace-1?executionId=exec-1",
+			),
+			{ params: Promise.resolve({ traceId: "trace-1" }) },
+		);
+		const json = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(mockFindExecutionContextByIdForProject).toHaveBeenCalledWith(
+			{ projectId: "project-1", userId: "user-1" },
+			"exec-1",
+		);
 		expect(json).toEqual({ trace: traceContext("trace-1") });
 	});
 

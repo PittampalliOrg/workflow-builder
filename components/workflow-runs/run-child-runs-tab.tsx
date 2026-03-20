@@ -23,7 +23,14 @@ function extractTraceId(run: DurableAgentRunSummary): string | null {
 		return null;
 	}
 	const record = run.result as Record<string, unknown>;
-	return typeof record.traceId === "string" ? record.traceId : null;
+	if (typeof record.traceId === "string") {
+		return record.traceId;
+	}
+	const progress =
+		record.agentProgress && typeof record.agentProgress === "object"
+			? (record.agentProgress as Record<string, unknown>)
+			: null;
+	return typeof progress?.traceId === "string" ? progress.traceId : null;
 }
 
 type RunChildRunsTabProps = {

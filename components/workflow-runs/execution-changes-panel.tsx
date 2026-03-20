@@ -2,7 +2,7 @@
 
 import { Copy, Download, Loader2, RefreshCw, Search } from "lucide-react";
 import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Commit,
 	CommitActions,
@@ -34,6 +34,7 @@ import {
 	type ExecutionChangeArtifactMetadata,
 	type ExecutionFileSnapshot,
 } from "@/lib/api-client";
+import type { ExecutionOutputFileChangeData } from "@/lib/transforms/workflow-ui";
 import { cn } from "@/lib/utils";
 
 const VISUAL_DIFF_LIMIT_BYTES = 2 * 1024 * 1024;
@@ -62,6 +63,29 @@ type FileStats = {
 	sections: number;
 	status: "A" | "M" | "D" | "R";
 };
+
+function resolveDurableInstanceId(
+	fallbackData?: ExecutionOutputFileChangeData | null,
+): string | undefined {
+	const explicit = fallbackData?.durableInstanceId?.trim();
+	if (explicit) {
+		return explicit;
+	}
+	const patchRef = fallbackData?.patchRef?.trim();
+	if (!patchRef) {
+		return undefined;
+	}
+	try {
+		const url =
+			patchRef.startsWith("http://") || patchRef.startsWith("https://")
+				? new URL(patchRef)
+				: new URL(patchRef, "http://localhost");
+		const candidate = url.searchParams.get("durableInstanceId")?.trim();
+		return candidate ? candidate : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 type DiffTextPair = {
 	original: string;
@@ -556,12 +580,14 @@ function renderFileTreeNodes(nodes: FileTreeNode[]): ReactNode {
 
 type ExecutionChangesPanelProps = {
 	executionId: string;
+	fallbackData?: ExecutionOutputFileChangeData | null;
 	initialSelectedFilePath?: string | null;
 	onSelectedFilePathChange?: (path: string | null) => void;
 };
 
 export function ExecutionChangesPanel({
 	executionId,
+	fallbackData,
 	initialSelectedFilePath,
 	onSelectedFilePathChange,
 }: ExecutionChangesPanelProps) {
@@ -588,6 +614,11 @@ export function ExecutionChangesPanel({
 		null,
 	);
 	const [isDownloadingCombined, setIsDownloadingCombined] = useState(false);
+	const lastNotifiedFilePathRef = useRef<string | null | undefined>(undefined);
+	const durableInstanceId = useMemo(
+		() => resolveDurableInstanceId(fallbackData),
+		[fallbackData],
+	);
 
 	const loadData = useCallback(async () => {
 		setIsLoading(true);
@@ -598,7 +629,9 @@ export function ExecutionChangesPanel({
 
 			let patchPending = false;
 			try {
-				const patchResult = await api.workflow.getExecutionPatch(executionId);
+				const patchResult = await api.workflow.getExecutionPatch(executionId, {
+					durableInstanceId,
+				});
 				setCombinedPatch(patchResult.patch ?? "");
 				setPatchError(null);
 				patchPending = Boolean(patchResult.pending);
@@ -624,7 +657,7 @@ export function ExecutionChangesPanel({
 		} finally {
 			setIsLoading(false);
 		}
-	}, [executionId]);
+	}, [durableInstanceId, executionId]);
 
 	useEffect(() => {
 		setSearch("");
@@ -666,8 +699,21 @@ export function ExecutionChangesPanel({
 		[changes],
 	);
 
+	const hasFallbackChangeData = Boolean(
+		fallbackData &&
+			(fallbackData.files.length > 0 ||
+				fallbackData.snapshotRefs.length > 0 ||
+				Boolean(fallbackData.patch?.trim()) ||
+				Boolean(fallbackData.patchRef?.trim())),
+	);
+
+	const effectiveCombinedPatch = useMemo(
+		() => combinedPatch || fallbackData?.patch || "",
+		[combinedPatch, fallbackData?.patch],
+	);
+
 	const summary = useMemo(() => {
-		return includedChanges.reduce(
+		const persistedSummary = includedChanges.reduce(
 			(acc, current) => ({
 				additions: acc.additions + current.additions,
 				artifacts: acc.artifacts + 1,
@@ -676,19 +722,33 @@ export function ExecutionChangesPanel({
 			}),
 			{ additions: 0, artifacts: 0, deletions: 0, files: 0 },
 		);
-	}, [includedChanges]);
+		if (
+			persistedSummary.artifacts > 0 ||
+			persistedSummary.files > 0 ||
+			persistedSummary.additions > 0 ||
+			persistedSummary.deletions > 0
+		) {
+			return persistedSummary;
+		}
+		return {
+			additions: fallbackData?.stats?.additions ?? 0,
+			artifacts: 0,
+			deletions: fallbackData?.stats?.deletions ?? 0,
+			files: fallbackData?.stats?.files ?? fallbackData?.files.length ?? 0,
+		};
+	}, [fallbackData?.files.length, fallbackData?.stats, includedChanges]);
 
 	const patchBytes = useMemo(
-		() => new Blob([combinedPatch]).size,
-		[combinedPatch],
+		() => new Blob([effectiveCombinedPatch]).size,
+		[effectiveCombinedPatch],
 	);
 
 	const patchSections = useMemo(() => {
-		if (!combinedPatch) {
+		if (!effectiveCombinedPatch) {
 			return [];
 		}
-		return splitUnifiedPatchFiles(combinedPatch);
-	}, [combinedPatch]);
+		return splitUnifiedPatchFiles(effectiveCombinedPatch);
+	}, [effectiveCombinedPatch]);
 
 	const fileEntries = useMemo(() => {
 		const byPath = new Map<
@@ -712,10 +772,19 @@ export function ExecutionChangesPanel({
 				});
 			}
 		}
+		for (const file of fallbackData?.files ?? []) {
+			if (!byPath.has(file.path)) {
+				byPath.set(file.path, {
+					path: file.path,
+					status: file.status,
+					oldPath: file.oldPath,
+				});
+			}
+		}
 		return Array.from(byPath.values()).sort((a, b) =>
 			a.path.localeCompare(b.path),
 		);
-	}, [includedChanges, patchSections]);
+	}, [fallbackData?.files, includedChanges, patchSections]);
 
 	const filteredFileEntries = useMemo(() => {
 		const query = search.trim().toLowerCase();
@@ -740,13 +809,17 @@ export function ExecutionChangesPanel({
 			) {
 				return current;
 			}
-			const next = filteredFileEntries[0]?.path ?? null;
-			if (next !== current) {
-				onSelectedFilePathChange?.(next);
-			}
-			return next;
+			return filteredFileEntries[0]?.path ?? null;
 		});
-	}, [filteredFileEntries, onSelectedFilePathChange]);
+	}, [filteredFileEntries]);
+
+	useEffect(() => {
+		if (lastNotifiedFilePathRef.current === selectedFilePath) {
+			return;
+		}
+		lastNotifiedFilePathRef.current = selectedFilePath;
+		onSelectedFilePathChange?.(selectedFilePath);
+	}, [onSelectedFilePathChange, selectedFilePath]);
 
 	const selectedSections = useMemo(() => {
 		if (!selectedFilePath) {
@@ -877,7 +950,9 @@ export function ExecutionChangesPanel({
 		let active = true;
 		setSnapshotLoadingPath(selectedFilePath);
 		void api.workflow
-			.getExecutionFileSnapshot(executionId, selectedFilePath)
+			.getExecutionFileSnapshot(executionId, selectedFilePath, {
+				durableInstanceId,
+			})
 			.then((result) => {
 				if (!active) {
 					return;
@@ -918,7 +993,7 @@ export function ExecutionChangesPanel({
 		return () => {
 			active = false;
 		};
-	}, [executionId, selectedFilePath, snapshotByPath]);
+	}, [durableInstanceId, executionId, selectedFilePath, snapshotByPath]);
 
 	const commitRange = useMemo(() => {
 		const sorted = [...includedChanges].sort((a, b) => a.sequence - b.sequence);
@@ -962,7 +1037,14 @@ export function ExecutionChangesPanel({
 	const downloadCombinedPatch = useCallback(async () => {
 		setIsDownloadingCombined(true);
 		try {
-			const result = await api.workflow.getExecutionPatch(executionId);
+			if (!combinedPatch && fallbackData?.patch) {
+				downloadTextFile(fallbackData.patch, `execution-${executionId}.patch`);
+				toast.success("Combined patch downloaded");
+				return;
+			}
+			const result = await api.workflow.getExecutionPatch(executionId, {
+				durableInstanceId,
+			});
 			downloadTextFile(result.patch ?? "", `execution-${executionId}.patch`);
 			toast.success("Combined patch downloaded");
 		} catch (downloadError) {
@@ -974,19 +1056,19 @@ export function ExecutionChangesPanel({
 		} finally {
 			setIsDownloadingCombined(false);
 		}
-	}, [executionId]);
+	}, [combinedPatch, durableInstanceId, executionId, fallbackData?.patch]);
 
 	const copyCombinedPatch = useCallback(async () => {
-		if (!combinedPatch) {
+		if (!effectiveCombinedPatch) {
 			return;
 		}
 		try {
-			await navigator.clipboard.writeText(combinedPatch);
+			await navigator.clipboard.writeText(effectiveCombinedPatch);
 			toast.success("Combined patch copied");
 		} catch {
 			toast.error("Failed to copy combined patch");
 		}
-	}, [combinedPatch]);
+	}, [effectiveCombinedPatch]);
 
 	if (isLoading) {
 		return (
@@ -1013,7 +1095,7 @@ export function ExecutionChangesPanel({
 		);
 	}
 
-	if (changes.length === 0) {
+	if (changes.length === 0 && !hasFallbackChangeData) {
 		return (
 			<div className="rounded-lg border bg-background p-4">
 				<div className="font-medium text-sm">File Changes</div>
@@ -1033,14 +1115,14 @@ export function ExecutionChangesPanel({
 		);
 	}
 
-	if (includedChanges.length === 0 || fileEntries.length === 0) {
+	if (fileEntries.length === 0) {
 		return (
 			<div className="space-y-3 rounded-lg border bg-background p-4">
 				<div className="font-medium text-sm">File Changes</div>
 				<div className="text-muted-foreground text-sm">
 					No editable file-change diffs are available for this run.
 				</div>
-				{patchError && (
+				{patchError && !effectiveCombinedPatch && (
 					<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm">
 						{patchError}
 					</div>
@@ -1063,7 +1145,7 @@ export function ExecutionChangesPanel({
 				</div>
 				<div className="flex items-center gap-2">
 					<Button
-						disabled={!combinedPatch}
+						disabled={!effectiveCombinedPatch}
 						onClick={() => void copyCombinedPatch()}
 						size="sm"
 						variant="outline"
@@ -1115,7 +1197,14 @@ export function ExecutionChangesPanel({
 				</div>
 			)}
 
-			{patchError && (
+			{includedChanges.length === 0 && hasFallbackChangeData && (
+				<div className="rounded-md border border-sky-500/30 bg-sky-500/10 px-2.5 py-1.5 text-sky-700 text-xs dark:text-sky-300">
+					Showing edited files from execution output while persisted change
+					artifacts are unavailable.
+				</div>
+			)}
+
+			{patchError && !effectiveCombinedPatch && (
 				<div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-destructive text-sm">
 					{patchError}
 				</div>
@@ -1192,7 +1281,6 @@ export function ExecutionChangesPanel({
 								key={search || "all-files"}
 								onSelect={(path) => {
 									setSelectedFilePath(path);
-									onSelectedFilePathChange?.(path);
 								}}
 								selectedPath={selectedFilePath ?? undefined}
 							>

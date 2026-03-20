@@ -26,6 +26,24 @@ import { redactSensitiveData } from "@/lib/utils/redact";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
+
+function getAgentRuntimeTarget(
+	actionType: string | undefined,
+): { baseUrl: string; path: string } | null {
+	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell/run") {
+		return {
+			baseUrl: OPENSHELL_AGENT_RUNTIME_API_BASE_URL,
+			path: "/api/v1/agent-runs",
+		};
+	}
+	return null;
+}
 
 function getNodeActionTypeMap(nodes: unknown): Map<string, string> {
 	const result = new Map<string, string>();
@@ -61,11 +79,12 @@ async function fetchAgentLivePayload(
 	actionType: string | undefined,
 	instanceId: string,
 ): Promise<Record<string, unknown> | null> {
-	if (actionType !== "dapr-agent/run") {
+	const target = getAgentRuntimeTarget(actionType);
+	if (!target) {
 		return null;
 	}
 	const response = await fetch(
-		`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/run/${encodeURIComponent(instanceId)}`,
+		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
 		{
 			headers: { Accept: "application/json" },
 			signal: AbortSignal.timeout(4000),
@@ -85,7 +104,7 @@ function shouldFetchLiveAgentPayload(
 	actionType: string | undefined,
 	status: string,
 ): boolean {
-	if (actionType !== "dapr-agent/run") {
+	if (!["dapr-agent/run", "openshell/run"].includes(actionType || "")) {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -211,9 +230,11 @@ export async function GET(
 				const framework =
 					actionType === "ms-agent/run"
 						? "ms-agent"
-						: actionType === "dapr-agent/run"
-							? "dapr-agent"
-							: null;
+						: actionType === "openshell/run"
+							? "openshell"
+							: actionType === "dapr-agent/run"
+								? "dapr-agent"
+								: null;
 				if (!framework) {
 					return null;
 				}

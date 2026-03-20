@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
 	output: "standalone",
 	allowedDevOrigins: [
+		"ai-chatbot-ryzen.tail286401.ts.net",
 		"workflow-builder-ryzen.tail286401.ts.net",
 		"localhost",
 		"127.0.0.1",

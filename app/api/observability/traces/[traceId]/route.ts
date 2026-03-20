@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import {
 	extractTraceCorrelation,
+	findExecutionContextByIdForProject,
 	findTraceContextForProject,
 } from "@/lib/observability/correlation";
 import { getJaegerTraceById } from "@/lib/observability/jaeger-client";
@@ -21,6 +22,9 @@ export async function GET(
 		}
 
 		const { traceId } = await context.params;
+		const searchParams = new URL(request.url).searchParams;
+		const fallbackExecutionId =
+			searchParams.get("executionId")?.trim() || undefined;
 		if (!traceId) {
 			return NextResponse.json(
 				{ error: "Trace ID is required" },
@@ -42,18 +46,33 @@ export async function GET(
 			correlation,
 		);
 
-		const hasContext = Boolean(
+		let resolvedContext = contextData;
+		let hasContext = Boolean(
 			contextData.workflowId ||
 				contextData.executionId ||
 				contextData.daprInstanceId,
 		);
+		if (!hasContext && fallbackExecutionId) {
+			resolvedContext = await findExecutionContextByIdForProject(
+				{
+					projectId: session.user.projectId,
+					userId: session.user.id,
+				},
+				fallbackExecutionId,
+			);
+			hasContext = Boolean(
+				resolvedContext.workflowId ||
+					resolvedContext.executionId ||
+					resolvedContext.daprInstanceId,
+			);
+		}
 
 		// Hide unmatched traces from project-scoped views.
 		if (!hasContext) {
 			return NextResponse.json({ error: "Trace not found" }, { status: 404 });
 		}
 
-		const normalized = normalizeJaegerTraceDetails(trace, contextData);
+		const normalized = normalizeJaegerTraceDetails(trace, resolvedContext);
 		if (!normalized) {
 			return NextResponse.json({ error: "Trace not found" }, { status: 404 });
 		}

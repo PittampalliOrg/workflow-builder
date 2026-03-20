@@ -51,8 +51,10 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
+    PRIMARY_AGENT_RUNTIME: str = "openshell"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
     DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
+    OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
     MS_AGENT_APP_ID: str = "ms-agent-workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
@@ -86,6 +88,7 @@ class OrchestratorConfig:
         logger.info(
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
+            f"PRIMARY_AGENT_RUNTIME={self.PRIMARY_AGENT_RUNTIME}, "
             f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
@@ -97,8 +100,10 @@ class OrchestratorConfig:
 
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
+                "PRIMARY_AGENT_RUNTIME",
                 "DURABLE_AGENT_APP_ID",
                 "DAPR_AGENT_APP_ID",
+                "OPENSHELL_AGENT_APP_ID",
                 "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
@@ -157,8 +162,13 @@ class OrchestratorConfig:
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
+            "PRIMARY_AGENT_RUNTIME": ("PRIMARY_AGENT_RUNTIME", "openshell"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
             "DAPR_AGENT_APP_ID": ("DAPR_AGENT_APP_ID", "dapr-agent-runtime"),
+            "OPENSHELL_AGENT_APP_ID": (
+                "OPENSHELL_AGENT_APP_ID",
+                "openshell-agent-runtime.openshell",
+            ),
             "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "daprAgentRunWorkflowV1",

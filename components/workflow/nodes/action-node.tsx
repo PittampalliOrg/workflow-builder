@@ -156,6 +156,8 @@ const getProviderLogo = (
 ) => {
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
+		case "openshell/run":
+			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
 		case "dapr-agent/run":
 			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
 		case "ms-agent/run":
@@ -258,7 +260,7 @@ function AgentProgressOverlay({
 	const isRunning =
 		progress.status === "running" || progress.status === "scheduled";
 	const primaryLabel =
-		actionType === "dapr-agent/run"
+		actionType === "dapr-agent/run" || actionType === "openshell/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
 				: progress.phase || "Running"
@@ -441,6 +443,11 @@ export const ActionNode = memo(
 
 		// Get model for AI nodes
 		const getAiModel = (): string | null => {
+			if (actionType === "openshell/run") {
+				return typeof data.config?.model === "string"
+					? (data.config.model as string)
+					: "anthropic/claude-sonnet-4-6";
+			}
 			if (actionType === "dapr-agent/run") {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
@@ -492,7 +499,9 @@ export const ActionNode = memo(
 
 				{/* Status indicator badge in top right */}
 				<StatusBadge status={status} />
-				{(actionType === "ms-agent/run" || actionType === "dapr-agent/run") && (
+				{(actionType === "ms-agent/run" ||
+					actionType === "dapr-agent/run" ||
+					actionType === "openshell/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}
 						progress={agentProgress}

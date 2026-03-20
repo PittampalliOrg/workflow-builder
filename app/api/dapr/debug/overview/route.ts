@@ -25,6 +25,15 @@ function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function isWorkflowListUnsupportedError(error: unknown): boolean {
+	const message = buildErrorMessage(error).toLowerCase();
+	return (
+		message.includes("workflow_query_unsupported") ||
+		message.includes("queryinstances") ||
+		message.includes("unsupported")
+	);
+}
+
 async function fetchServiceIntrospection(
 	url: string,
 ): Promise<DaprRuntimeIntrospection> {
@@ -278,17 +287,25 @@ export async function GET(request: Request) {
 
 	try {
 		const orchestratorUrl = await getWorkflowOrchestratorUrl();
-		const [introspection, runs] = await Promise.all([
-			fetchServiceIntrospection(
-				`${orchestratorUrl.replace(/\/+$/, "")}/api/v2/runtime/introspect`,
-			),
-			genericOrchestratorClient.listWorkflows(orchestratorUrl, {
+		const introspection = await fetchServiceIntrospection(
+			`${orchestratorUrl.replace(/\/+$/, "")}/api/v2/runtime/introspect`,
+		);
+		let runs: Awaited<
+			ReturnType<typeof genericOrchestratorClient.listWorkflows>
+		> | null = null;
+		try {
+			runs = await genericOrchestratorClient.listWorkflows(orchestratorUrl, {
 				limit: 25,
 				offset: 0,
-			}),
-		]);
+			});
+		} catch (error) {
+			if (!isWorkflowListUnsupportedError(error)) {
+				throw error;
+			}
+		}
 		response.workflowRuntime.orchestrator = introspection;
-		response.workflowRuntime.recentRuns = runs.workflows.map(toRecentRun);
+		response.workflowRuntime.recentRuns =
+			runs?.workflows.map(toRecentRun) ?? [];
 		response.sources.workflowOrchestrator = { ok: true };
 		runtimeRegistryInputs.push({
 			appId: "workflow-orchestrator",

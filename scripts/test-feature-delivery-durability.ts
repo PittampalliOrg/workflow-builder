@@ -292,13 +292,13 @@ async function assertExecutionArtifacts(executionId: string) {
 		`verified execution=${executionId} planArtifact=${planArtifact.id} childRuns=${agentRuns.length}`,
 	);
 	if (!patch) {
-		log("warning: final execution patch missing from persisted output");
+		throw new Error("Final execution patch missing from persisted output");
 	}
 	if (fileChanges.length === 0) {
-		log("warning: final execution fileChanges are empty");
+		throw new Error("Final execution fileChanges are empty");
 	}
 	if (snapshotRefs.length === 0) {
-		log("warning: final execution snapshotRefs are empty");
+		throw new Error("Final execution snapshotRefs are empty");
 	}
 }
 

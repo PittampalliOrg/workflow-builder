@@ -150,9 +150,9 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{
 					key: "cwd",
-					label: "Repository Root (optional)",
+					label: "Sandbox Working Directory (optional)",
 					type: "template-input",
-					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					placeholder: "/sandbox/repo",
 					required: false,
 				},
 				{
@@ -343,9 +343,9 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{
 					key: "cwd",
-					label: "Repository Root (optional)",
+					label: "Sandbox Working Directory (optional)",
 					type: "template-input",
-					placeholder: "{{@nodeId:Workspace Clone.clonePath}}",
+					placeholder: "/sandbox/repo",
 					required: false,
 				},
 				{
@@ -650,18 +650,312 @@ const DURABLE_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
+const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
+	type: "openshell",
+	label: "OpenShell Agent",
+	pieceName: "openshell",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "run",
+			label: "Run OpenShell Coding Agent",
+			description:
+				"Run a coding workflow through OpenShell sandboxes with Claude-style non-interactive execution and workflow-managed approval",
+			category: "OpenShell Agent",
+			configFields: [
+				{
+					key: "mode",
+					label: "Execution Mode",
+					type: "select",
+					required: true,
+					defaultValue: "plan_mode",
+					options: [
+						{ label: "Plan Feature", value: "plan_mode" },
+						{ label: "Implement Existing Plan", value: "execute_direct" },
+					],
+				},
+				{
+					key: "profile",
+					label: "Run Profile",
+					type: "select",
+					required: true,
+					defaultValue: "feature-delivery",
+					options: [
+						{ label: "Feature Delivery", value: "feature-delivery" },
+						{ label: "Implement Task", value: "implement" },
+						{ label: "Repository Review", value: "review" },
+						{ label: "Repair Failure", value: "repair" },
+						{ label: "Plan Only", value: "plan-only" },
+						{ label: "Custom", value: "custom" },
+					],
+				},
+				{
+					key: "prompt",
+					label: "Goal",
+					type: "template-textarea",
+					placeholder: "Describe the coding task for the agent.",
+					required: true,
+					rows: 6,
+				},
+				{
+					key: "artifactRef",
+					label: "Existing Plan Artifact (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:OpenShell Plan.artifactRef}}",
+				},
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
+					key: "cwd",
+					label: "Sandbox Working Directory (optional)",
+					type: "template-input",
+					placeholder: "/sandbox/repo",
+					required: false,
+				},
+				{
+					key: "repoUrl",
+					label: "Bootstrap Repo URL (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "https://github.com/owner/repo.git",
+				},
+				{
+					key: "repoBranch",
+					label: "Bootstrap Repo Branch (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "main",
+				},
+				{
+					key: "repoToken",
+					label: "Bootstrap Repo Token (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{trigger.token}}",
+				},
+				{
+					key: "sandboxRepoPath",
+					label: "Sandbox Repo Path (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "/sandbox/repo",
+				},
+				{
+					key: "expectedOutput",
+					label: "Expected Output",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Summarize the expected deliverable or summary format.",
+				},
+				{
+					key: "verifyCommands",
+					label: "Verify Commands",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "pnpm test\npnpm type-check",
+				},
+				{
+					key: "toolPolicy",
+					label: "Tool Capability Bundle",
+					type: "select",
+					required: false,
+					defaultValue: "all",
+					options: [
+						{ label: "Full Coding Tools", value: "all" },
+						{ label: "Read + Edit", value: "read_write" },
+						{ label: "Read Only", value: "read_only" },
+					],
+				},
+				{
+					key: "provider",
+					label: "OpenShell Provider (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "Leave blank for Claude sandbox defaults",
+				},
+				{
+					key: "keepSandbox",
+					label: "Keep Sandbox",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					options: [
+						{ label: "Enabled", value: "true" },
+						{ label: "Disabled", value: "false" },
+					],
+				},
+				{
+					key: "approvalMode",
+					label: "Approval Mode",
+					type: "select",
+					required: false,
+					defaultValue: "auto",
+					options: [
+						{ label: "Auto", value: "auto" },
+						{ label: "Before Write", value: "before_write" },
+						{ label: "Before Shell", value: "before_shell" },
+						{ label: "Manual", value: "manual" },
+					],
+				},
+				{
+					key: "writePolicy",
+					label: "Write Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-only",
+					options: [
+						{ label: "Workspace Only", value: "workspace-only" },
+						{ label: "Review First", value: "review-first" },
+						{ label: "Read Only", value: "read-only" },
+					],
+				},
+				{
+					key: "shellPolicy",
+					label: "Shell Policy",
+					type: "select",
+					required: false,
+					defaultValue: "workspace-safe",
+					options: [
+						{ label: "Workspace Safe", value: "workspace-safe" },
+						{ label: "Tests Only", value: "tests-only" },
+						{ label: "Disabled", value: "disabled" },
+					],
+				},
+				{
+					key: "instructionsOverlay",
+					label: "Instructions Overlay",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Add extra instructions for this run.",
+				},
+				{
+					key: "stopCondition",
+					label: "Stop Condition",
+					type: "template-textarea",
+					required: false,
+					rows: 4,
+					placeholder: "Describe what done means for this run.",
+				},
+				{
+					key: "executeAfterApproval",
+					label: "Plan Outcome",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					showWhen: { field: "mode", equals: "plan_mode" },
+					options: [
+						{ label: "Approve Then Implement", value: "true" },
+						{ label: "Stop After Plan", value: "false" },
+					],
+				},
+				{
+					key: "approvalTimeoutMinutes",
+					label: "Approval Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "60",
+					min: 1,
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "template-input",
+					required: false,
+					defaultValue: "anthropic/claude-sonnet-4-6",
+					placeholder: "anthropic/claude-sonnet-4-6",
+				},
+				{
+					key: "maxTurns",
+					label: "Max Turns",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Final agent output text" },
+				{
+					field: "artifactRef",
+					description: "Reference ID for the persisted plan artifact",
+				},
+				{ field: "plan", description: "Structured plan JSON" },
+				{ field: "planMarkdown", description: "Markdown plan preview" },
+				{ field: "profile", description: "Agent profile used for the run" },
+				{
+					field: "toolCalls",
+					description: "Tool calls recorded during execution",
+				},
+				{
+					field: "fileChanges",
+					description: "Files created, modified, or deleted",
+				},
+				{ field: "patch", description: "Unified diff patch for file changes" },
+				{
+					field: "patchRef",
+					description: "Reference to the full patch artifact",
+				},
+				{
+					field: "snapshotRefs",
+					description: "Changed file paths available for snapshot viewing",
+				},
+				{
+					field: "verification",
+					description: "Verification commands and status",
+				},
+				{
+					field: "changeSummary",
+					description: "Structured file change summary",
+				},
+				{ field: "usageTotals", description: "Aggregated usage statistics" },
+				{ field: "traceId", description: "OpenTelemetry trace identifier" },
+				{
+					field: "agentWorkflowId",
+					description: "OpenShell run identifier",
+				},
+				{
+					field: "daprInstanceId",
+					description: "OpenShell runtime instance ID",
+				},
+				{
+					field: "provider",
+					description: "OpenShell provider used for the run",
+				},
+				{ field: "sandboxName", description: "OpenShell sandbox name" },
+			],
+		},
+	],
+};
+
 const DAPR_AGENT_PIECE: IntegrationDefinition = {
 	type: "dapr-agent",
-	label: "Dapr Agent",
+	label: "Legacy Dapr Agent",
 	pieceName: "dapr-agent",
 	logoUrl: "",
 	actions: [
 		{
 			slug: "run",
-			label: "Run Dapr Feature Delivery Agent",
+			label: "Run Legacy Dapr Agent",
 			description:
-				"Run a durable Dapr-native coding workflow that plans a feature, waits for approval, then implements and verifies it",
-			category: "Dapr Agent",
+				"Legacy compatibility path for older workflows that still target the Dapr agent runtime",
+			category: "Legacy Dapr Agent",
 			configFields: [
 				{
 					key: "mode",
@@ -702,7 +996,7 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					label: "Existing Plan Artifact (optional)",
 					type: "template-input",
 					required: false,
-					placeholder: "{{@nodeId:Dapr Plan.artifactRef}}",
+					placeholder: "{{@nodeId:Legacy Dapr Plan.artifactRef}}",
 				},
 				{
 					key: "workspaceRef",
@@ -882,7 +1176,7 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 				{ field: "traceId", description: "OpenTelemetry trace identifier" },
 				{
 					field: "agentWorkflowId",
-					description: "Durable workflow instance ID",
+					description: "Legacy durable workflow instance ID",
 				},
 				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
 			],
@@ -1472,7 +1766,13 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 };
 
 export function getBuiltinPieces(): IntegrationDefinition[] {
-	return [MCP_PIECE, WORKSPACE_PIECE, DAPR_AGENT_PIECE, MS_AGENT_PIECE];
+	return [
+		MCP_PIECE,
+		WORKSPACE_PIECE,
+		OPENSHELL_AGENT_PIECE,
+		MS_AGENT_PIECE,
+		DAPR_AGENT_PIECE,
+	];
 }
 
 export function getLegacyBuiltinPieces(): IntegrationDefinition[] {
