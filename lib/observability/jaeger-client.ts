@@ -355,6 +355,7 @@ function convertTempoTraceToJaeger(
 
 	for (const resourceSpan of resourceSpans) {
 		const resourceAttributes = resourceSpan.resource?.attributes;
+		const resourceTags = otlpAttributesToTags(resourceAttributes);
 		const serviceName =
 			getResourceStringAttribute(resourceAttributes, "service.name") ??
 			"unknown-service";
@@ -371,7 +372,13 @@ function convertTempoTraceToJaeger(
 
 		for (const scope of resourceSpan.scopeSpans ?? []) {
 			for (const span of scope.spans ?? []) {
-				const converted = convertTempoSpan(span, normalizedHint, processId);
+				const converted = convertTempoSpan(
+					span,
+					normalizedHint,
+					processId,
+					resourceTags,
+					serviceName,
+				);
 				if (converted) {
 					spans.push(converted);
 				}
@@ -400,6 +407,8 @@ function convertTempoSpan(
 	span: OtlpSpan,
 	traceIdHint: string | null,
 	processId: string,
+	resourceTags: JaegerTag[],
+	serviceName: string,
 ): JaegerSpan | null {
 	const traceId = normalizeTraceId(span.traceId) ?? traceIdHint;
 	const spanId = normalizeSpanId(span.spanId);
@@ -415,6 +424,17 @@ function convertTempoSpan(
 			: 0;
 
 	const tags = otlpAttributesToTags(span.attributes);
+	const tagKeys = new Set(tags.map((tag) => tag.key));
+	for (const tag of resourceTags) {
+		if (!tag.key || tagKeys.has(tag.key)) {
+			continue;
+		}
+		tags.push(tag);
+		tagKeys.add(tag.key);
+	}
+	if (!tagKeys.has("service.name")) {
+		tags.push({ key: "service.name", value: serviceName });
+	}
 
 	const kind = spanKindToTag(span.kind);
 	if (kind) {
