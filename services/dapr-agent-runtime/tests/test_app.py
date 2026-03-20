@@ -4,6 +4,7 @@ import app
 import pytest
 from app import (
     AgentRunContext,
+    ApproveRequest,
     DaprAgentRunRequest,
     ExecuteRequest,
     PROFILE_TOOL_GROUPS,
@@ -21,8 +22,10 @@ from app import (
     _persist_workspace_session,
     _resolve_runner_workflow_client,
     _resolve_effective_tool_group,
+    _resolve_run_engine,
     _trace_id_from_otel,
     execute_step,
+    api_run_approve,
     runtime_introspect,
     workspace_change_artifact,
     workspace_cleanup,
@@ -239,6 +242,69 @@ def test_build_run_context_uses_request_model_over_runtime_default() -> None:
 
     assert context.model == "gpt-5.4"
     assert context.trace_id == "trace-123"
+
+
+def test_resolve_run_engine_prefers_langgraph_for_coding_profiles(monkeypatch) -> None:
+    monkeypatch.setattr(app, "is_langgraph_available", lambda: True)
+
+    engine = _resolve_run_engine(
+        DaprAgentRunRequest(
+            prompt="Implement the task",
+            profile="implement",
+        )
+    )
+
+    assert engine == app.LANGGRAPH_ENGINE_NAME
+
+
+def test_build_result_payload_marks_pending_plan_as_awaiting_approval(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(app, "run_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "run_context_cache", {})
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-awaiting",
+            mode="feature_delivery_plan",
+            profile="feature-delivery",
+            model="gpt-5.4",
+            engine=app.LANGGRAPH_ENGINE_NAME,
+            cwd=str(repo_root),
+            tool_group="planning",
+            max_turns=30,
+            execute_after_approval=True,
+            approval_event_name="approval-wf-awaiting",
+            trace_id="trace-awaiting",
+        )
+    )
+
+    payload = _build_result_payload(
+        instance_id="wf-awaiting",
+        request=DaprAgentRunRequest(
+            prompt="Add feature flags",
+            profile="feature-delivery",
+            mode="feature_delivery_plan",
+            cwd=str(repo_root),
+        ),
+        workflow_output={
+            "plan": {
+                "summary": "Implement feature flags safely.",
+                "tasks": [{"title": "Update middleware"}],
+                "verificationCommands": ["pnpm type-check"],
+            },
+            "planMarkdown": "# Plan",
+        },
+        pending_approval=True,
+    )
+
+    assert payload["status"] == "awaiting_approval"
+    assert payload["approvalEventName"] == "approval-wf-awaiting"
+    assert payload["agentProgress"]["phase"] == "awaiting_approval"
+    assert payload["runSummary"]["engine"] == app.LANGGRAPH_ENGINE_NAME
 
 
 def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
@@ -478,6 +544,58 @@ def test_api_run_terminate_cleans_workspace_and_keeps_run_context(
     assert fake_client.terminated == [("wf-terminate", "timeout")]
     assert _load_workspace_session("workspace-123") is None
     assert _load_run_context("wf-terminate") is not None
+
+
+def test_api_run_approve_raises_workflow_event(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+
+    class FakeWorkflowClient:
+        def __init__(self) -> None:
+            self.raised: list[tuple[str, str, dict[str, object]]] = []
+
+        def raise_workflow_event(self, *, instance_id: str, event_name: str, data: dict[str, object]) -> None:
+            self.raised.append((instance_id, event_name, data))
+
+    fake_client = FakeWorkflowClient()
+    monkeypatch.setattr(app, "_workflow_client_for_runs", lambda: fake_client)
+
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-approve",
+            mode="feature_delivery_plan",
+            profile="feature-delivery",
+            model="gpt-5.4",
+            cwd="/tmp",
+            tool_group="planning",
+            max_turns=30,
+            engine=app.LANGGRAPH_ENGINE_NAME,
+            execute_after_approval=True,
+            approval_event_name="approval-wf-approve",
+            trace_id="trace-approve",
+        )
+    )
+
+    response = api_run_approve(
+        "wf-approve",
+        ApproveRequest(approved=True, reason="Looks good", approvedBy="reviewer@example.com"),
+    )
+
+    assert response["success"] is True
+    assert response["approvalEventName"] == "approval-wf-approve"
+    assert fake_client.raised == [
+        (
+            "wf-approve",
+            "approval-wf-approve",
+            {
+                "approved": True,
+                "reason": "Looks good",
+                "approvedBy": "reviewer@example.com",
+                "respondedBy": "reviewer@example.com",
+            },
+        )
+    ]
 
 
 def test_rejected_tool_attempt_still_advances_iteration(monkeypatch) -> None:
