@@ -83,6 +83,45 @@ function extractWorkspaceRef(output: unknown): string {
 	return "workspace";
 }
 
+function hasStructuredExecutionArtifacts(output: unknown): boolean {
+	if (!output || typeof output !== "object") {
+		return false;
+	}
+
+	const records: Record<string, unknown>[] = [
+		output as Record<string, unknown>,
+	];
+	const outputs = (output as Record<string, unknown>).outputs;
+	if (outputs && typeof outputs === "object") {
+		for (const value of Object.values(outputs as Record<string, unknown>)) {
+			if (!value || typeof value !== "object") {
+				continue;
+			}
+			records.push(value as Record<string, unknown>);
+			const nestedResult = (value as Record<string, unknown>).result;
+			if (nestedResult && typeof nestedResult === "object") {
+				records.push(nestedResult as Record<string, unknown>);
+			}
+		}
+	}
+
+	return records.some((record) => {
+		for (const key of [
+			"fileChanges",
+			"changeSummary",
+			"patch",
+			"patchRef",
+			"patch_ref",
+			"snapshotRefs",
+		]) {
+			if (record[key] != null) {
+				return true;
+			}
+		}
+		return false;
+	});
+}
+
 function buildFallbackChangesResponse(args: {
 	executionId: string;
 	status: string;
@@ -99,13 +138,16 @@ function buildFallbackChangesResponse(args: {
 		: 0;
 	const changeSetId = `derived:${args.executionId}:${changeData.sourceNodeKey ?? "execution"}`;
 	const derivedStorageRef = changeData.patchRef ?? changeSetId;
+	const operation = hasStructuredExecutionArtifacts(args.output)
+		? "execution-output"
+		: "derived-output";
 	const changes: ChangeArtifactMetadata[] = [
 		{
 			changeSetId,
 			executionId: args.executionId,
 			workspaceRef: extractWorkspaceRef(args.output),
 			durableInstanceId: changeData.durableInstanceId,
-			operation: "derived-output",
+			operation,
 			sequence: 1,
 			format: "git-unified-v1",
 			filesChanged: changeData.stats?.files ?? changeData.files.length,

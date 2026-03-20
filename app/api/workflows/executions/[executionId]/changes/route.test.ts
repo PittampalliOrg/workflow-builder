@@ -107,4 +107,75 @@ describe("GET /api/workflows/executions/[executionId]/changes", () => {
 			pending: false,
 		});
 	});
+
+	it("marks persisted execution patch data as execution-output when structured artifacts are present", async () => {
+		mockFindFirst.mockResolvedValueOnce({
+			id: "exec-2",
+			status: "success",
+			startedAt: new Date("2026-03-20T03:27:07.459Z"),
+			output: {
+				outputs: {
+					pf_agent_system_demo: {
+						data: {
+							workspaceRef: "workspace-456",
+						},
+					},
+					da_agent_system_demo: {
+						fileChanges: [
+							{
+								path: "scripts/workflow_builder_demo_report.py",
+								status: "A",
+							},
+						],
+						changeSummary: {
+							files: [
+								{
+									path: "scripts/workflow_builder_demo_report.py",
+									status: "A",
+								},
+							],
+							stats: {
+								files: 1,
+								additions: 0,
+								deletions: 0,
+							},
+							changed: true,
+						},
+						patch:
+							"diff --git a/scripts/workflow_builder_demo_report.py b/scripts/workflow_builder_demo_report.py\nnew file mode 100644\n",
+						traceId: "trace-2",
+					},
+				},
+			},
+			workflow: {
+				userId: "user-1",
+			},
+		});
+		mockInvokeService.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			data: null,
+		});
+
+		const response = await GET(
+			new Request("http://localhost/api/workflows/executions/exec-2/changes"),
+			{ params: Promise.resolve({ executionId: "exec-2" }) },
+		);
+		const json = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(json.changes[0]).toMatchObject({
+			changeSetId: "derived:exec-2:da_agent_system_demo",
+			operation: "execution-output",
+			filesChanged: 1,
+			includeInExecutionPatch: true,
+			files: [
+				{
+					path: "scripts/workflow_builder_demo_report.py",
+					status: "A",
+				},
+			],
+		});
+		expect(json.changes[0].bytes).toBeGreaterThan(0);
+	});
 });
