@@ -2226,9 +2226,21 @@ app.get("/api/runtime/introspect", async (_req, res) => {
 		errors,
 		registry: {
 			enabled: Boolean(agent?.registry),
-			storeName: null,
+			storeName: agent?.registry
+				? process.env.STATE_STORE_NAME || "statestore"
+				: null,
 			teamName: agent?.registry ? "default" : null,
-			registeredAgents: [],
+			registeredAgents: agent?.registry
+				? await agent.registry
+						.getAgentsMetadata()
+						.then((entries) =>
+							Object.entries(entries).map(([name, meta]) => ({
+								name,
+								metadata: meta as Record<string, unknown>,
+							})),
+						)
+						.catch(() => [])
+				: [],
 		},
 		additional: {
 			toolNames: TOOL_NAMES,

@@ -2116,6 +2116,75 @@ const daprDebugApi = {
 		),
 };
 
+const workflowDashboardApi = {
+	listNames: (params?: { search?: string }) => {
+		const query = new URLSearchParams();
+		if (params?.search) query.set("search", params.search);
+		const qs = query.toString();
+		return apiCall<
+			import("./types/workflow-dashboard").WorkflowNamesResponse
+		>(`/api/workflows/names${qs ? `?${qs}` : ""}`);
+	},
+	getNameDetail: (appId: string, workflowName: string) =>
+		apiCall<import("./types/workflow-dashboard").WorkflowNameDetail>(
+			`/api/workflows/names/${encodeURIComponent(appId)}/${encodeURIComponent(workflowName)}`,
+		),
+	getExecution: (instanceId: string) =>
+		apiCall<import("./types/workflow-dashboard").WorkflowExecutionDetail>(
+			`/api/workflows/executions/${encodeURIComponent(instanceId)}/detail`,
+		),
+	listAllExecutions: (params?: { search?: string; limit?: number; offset?: number; latestOnly?: boolean }) => {
+		const query = new URLSearchParams();
+		if (params?.search) query.set("search", params.search);
+		if (params?.limit) query.set("limit", String(params.limit));
+		if (params?.offset) query.set("offset", String(params.offset));
+		if (params?.latestOnly) query.set("latestOnly", "true");
+		const qs = query.toString();
+		return apiCall<import("./types/workflow-dashboard").AllExecutionsResponse>(
+			`/api/workflows/executions/all${qs ? `?${qs}` : ""}`,
+		);
+	},
+	getWorkflowGraph: (appId: string, workflowName: string) =>
+		apiCall<import("./types/workflow-graph").WorkflowRuntimeGraph>(
+			`/api/workflows/names/${encodeURIComponent(appId)}/${encodeURIComponent(workflowName)}/graph`,
+		),
+	getExecutionGraph: (instanceId: string) =>
+		apiCall<import("./types/workflow-graph").WorkflowRuntimeGraph>(
+			`/api/workflows/executions/${encodeURIComponent(instanceId)}/graph`,
+		),
+	getExecutionRelationships: (instanceId: string) =>
+		apiCall<{ relationships: Array<{ instanceId: string; status: import("./types/workflow-ui").WorkflowUIStatus; relationship: "rerun-source" | "rerun-child"; appId: string; startTime: string; endTime: string | null }> }>(
+			`/api/workflows/executions/${encodeURIComponent(instanceId)}/relationships`,
+		),
+	terminateExecution: (instanceId: string) =>
+		apiCall<{ success: boolean }>(
+			`/api/workflows/executions/${encodeURIComponent(instanceId)}/terminate`,
+			{ method: "POST" },
+		),
+	rerunExecution: (instanceId: string) =>
+		apiCall<{ success: boolean; newInstanceId: string; newExecutionId: string }>(
+			`/api/workflows/executions/${encodeURIComponent(instanceId)}/rerun`,
+			{ method: "POST" },
+		),
+};
+
+const discoveredAgentApi = {
+	list: (params?: { search?: string; appId?: string; type?: string }) => {
+		const query = new URLSearchParams();
+		if (params?.search) query.set("search", params.search);
+		if (params?.appId) query.set("appId", params.appId);
+		if (params?.type) query.set("type", params.type);
+		const qs = query.toString();
+		return apiCall<import("./types/discovered-agent").DiscoveredAgentsResponse>(
+			`/api/agents/discovered${qs ? `?${qs}` : ""}`,
+		);
+	},
+	get: (appId: string, agentName: string) =>
+		apiCall<import("./types/discovered-agent").DiscoveredAgent>(
+			`/api/agents/discovered/${encodeURIComponent(appId)}/${encodeURIComponent(agentName)}`,
+		),
+};
+
 // Export all APIs as a single object
 export const api = {
 	agent: agentApi,
@@ -2124,6 +2193,7 @@ export const api = {
 	appConnection: appConnectionApi,
 	dapr: daprApi,
 	daprDebug: daprDebugApi,
+	discoveredAgent: discoveredAgentApi,
 	functions: functionsApi,
 	mcpConnection: mcpConnectionApi,
 	mcpServer: mcpServerApi,
@@ -2135,4 +2205,5 @@ export const api = {
 	secrets: secretsApi,
 	user: userApi,
 	workflow: workflowApi,
+	workflowDashboard: workflowDashboardApi,
 };

@@ -9,13 +9,13 @@ Current `kind-ryzen` runtime in the `workflow-builder` namespace:
 - `durable-agent` Deployment (port 8001) with Dapr sidecar
 - `function-router` Deployment (1 replica, port 8080) with Dapr sidecar
 - `fn-system` service path
+- `fn-activepieces` Deployment (1 replica, port 8080) with ClusterIP Service
 - `mcp-gateway` Deployment (port 8080)
 - `postgresql` StatefulSet (1 replica, port 5432)
 - Dapr state/pubsub components and NATS/Redis backing services
 - Ingress via Tailscale at `https://workflow-builder-ryzen.tail286401.ts.net`
 
 Additional services still exist in source, but are not part of the current core local runtime:
-- `fn-activepieces`
 - `workflow-mcp-server`
 - `piece-mcp-server`
 - `node-sandbox`
@@ -125,10 +125,10 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/durable-agent:latest -f 
 # Core runtime services
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/function-router:latest -f services/function-router/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-system:latest -f services/fn-system/Dockerfile .
+docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-activepieces:latest -f services/fn-activepieces/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/mcp-gateway:latest -f services/mcp-gateway/Dockerfile .
 
 # Optional / retained services (not part of the current core local runtime)
-docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/fn-activepieces:latest -f services/fn-activepieces/Dockerfile .
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/workflow-mcp-server:latest -f services/workflow-mcp-server/Dockerfile services/workflow-mcp-server/
 
 docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/piece-mcp-server:latest -f services/piece-mcp-server/Dockerfile .
@@ -136,6 +136,18 @@ docker build -t gitea.cnoe.localtest.me:8443/giteaadmin/node-sandbox:latest -f s
 ```
 
 ## Dapr Integration
+
+## fn-activepieces Runtime
+
+`function-router` routes all non-builtin, non-agent action slugs to `_default -> fn-activepieces`.
+If `fn-activepieces.workflow-builder.svc.cluster.local` is absent, AP-backed workflow steps fail
+at the router with DNS resolution errors.
+
+Apply the repo-managed runtime manifest when restoring or rolling out AP action execution:
+
+```bash
+kubectl apply -f services/fn-activepieces/k8s/runtime.yaml
+```
 
 ### Service App IDs
 

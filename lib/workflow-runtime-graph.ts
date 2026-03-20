@@ -11,6 +11,14 @@ import type {
 	WorkflowRuntimeGraph,
 } from "@/lib/types/workflow-graph";
 
+function formatEdgeDuration(ms: number): string {
+	if (ms < 1000) return `${ms}ms`;
+	if (ms < 60_000) return `${(ms / 1000).toFixed(2)}s`;
+	const minutes = Math.floor(ms / 60_000);
+	const seconds = Math.round((ms % 60_000) / 1000);
+	return `${minutes}m ${seconds}s`;
+}
+
 function normalizeNodeType(node: WorkflowNode): string {
 	return String(node.data?.type || node.type || "action");
 }
@@ -210,6 +218,40 @@ export function buildWorkflowRuntimeGraph(input: {
 		}
 	}
 
+	// Build activity timing map: nodeId → duration in ms
+	const activityTimings = new Map<string, number>();
+	const scheduledTimes = new Map<string, string>(); // nodeId → timestamp
+
+	for (const event of sortedEvents) {
+		const eventType = String(event.eventType || "").toLowerCase();
+		const matchedId =
+			getEventNodeId(nodeLookup, labelLookup, event) ??
+			normalized.nodes.find((node) => nodeMatchesEvent(node, event))?.id ??
+			null;
+		if (!matchedId) continue;
+
+		if (eventType.includes("scheduled") || eventType.includes("started")) {
+			// Record first scheduled time (don't overwrite if already set)
+			if (!scheduledTimes.has(matchedId)) {
+				scheduledTimes.set(matchedId, event.timestamp);
+			}
+		}
+		if (
+			eventType.includes("completed") ||
+			eventType.includes("failed") ||
+			eventType.includes("error")
+		) {
+			const startTs = scheduledTimes.get(matchedId);
+			if (startTs) {
+				const duration =
+					new Date(event.timestamp).getTime() - new Date(startTs).getTime();
+				if (duration >= 0) {
+					activityTimings.set(matchedId, duration);
+				}
+			}
+		}
+	}
+
 	const currentNodeId =
 		(typeof input.daprStatus?.currentNodeId === "string" &&
 		input.daprStatus.currentNodeId.length > 0 &&
@@ -277,7 +319,9 @@ export function buildWorkflowRuntimeGraph(input: {
 					? "True"
 					: edge.sourceHandle === "false"
 						? "False"
-						: undefined,
+						: activityTimings.has(edge.target)
+							? formatEdgeDuration(activityTimings.get(edge.target)!)
+							: undefined,
 			status: toEdgeStatus({ edge, nodeStatuses, currentNodeId }),
 		}));
 

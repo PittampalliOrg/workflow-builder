@@ -1,21 +1,27 @@
 "use client";
 
-import { formatDistanceToNow } from "date-fns";
-import { Bot, Copy, Pencil, Plus, Star, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { format } from "date-fns";
 import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+	ArrowDown,
+	ArrowUp,
+	Bot,
+	ChevronDown,
+	Filter,
+	Workflow,
+	X,
+} from "lucide-react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Table,
 	TableBody,
@@ -24,239 +30,352 @@ import {
 	TableHeader,
 	TableRow,
 } from "@/components/ui/table";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { AgentEditor } from "@/components/agents/agent-editor";
-import {
-	type AgentData,
-	type CreateAgentBody,
-	type UpdateAgentBody,
-	api,
-} from "@/lib/api-client";
+import { api } from "@/lib/api-client";
+import type {
+	AgentType,
+	DiscoveredAgent,
+	DiscoveredAgentsResponse,
+} from "@/lib/types/discovered-agent";
 
-function getTypeBadge(agentType: string) {
-	const colors: Record<string, string> = {
-		general: "bg-blue-500/10 text-blue-600",
-		"code-assistant": "bg-violet-500/10 text-violet-600",
-		research: "bg-amber-500/10 text-amber-600",
-		planning: "bg-emerald-500/10 text-emerald-600",
-		custom: "bg-gray-500/10 text-gray-600",
-	};
+type SortKey = "name" | "role" | "type" | "appId" | "registered";
+type SortDir = "asc" | "desc";
 
-	const labels: Record<string, string> = {
-		general: "General",
-		"code-assistant": "Code",
-		research: "Research",
-		planning: "Planning",
-		custom: "Custom",
-	};
+function formatTimestamp(iso: string | null): string {
+	if (!iso) return "-";
+	try {
+		return format(new Date(iso), "dd MMM yyyy h:mm:ss a");
+	} catch {
+		return iso;
+	}
+}
 
-	return (
-		<Badge className={`border-transparent ${colors[agentType] ?? colors.custom}`}>
-			{labels[agentType] ?? agentType}
-		</Badge>
-	);
+function TypeIcon({ type }: { type: AgentType }) {
+	if (type === "Durable agent") {
+		return <Workflow className="size-4 text-muted-foreground" />;
+	}
+	return <Bot className="size-4 text-muted-foreground" />;
 }
 
 export default function AgentsPage() {
-	const [agents, setAgents] = useState<AgentData[]>([]);
+	const [data, setData] = useState<DiscoveredAgentsResponse | null>(null);
 	const [loading, setLoading] = useState(true);
-	const [editorOpen, setEditorOpen] = useState(false);
-	const [editTarget, setEditTarget] = useState<AgentData | null>(null);
-	const [deleteTarget, setDeleteTarget] = useState<AgentData | null>(null);
-	const [deleting, setDeleting] = useState(false);
+	const [search, setSearch] = useState("");
+	const [filterAppId, setFilterAppId] = useState("");
+	const [filterType, setFilterType] = useState("");
+	const [pendingAppId, setPendingAppId] = useState("");
+	const [pendingType, setPendingType] = useState("");
+	const [filtersOpen, setFiltersOpen] = useState(false);
+	const [sortKey, setSortKey] = useState<SortKey>("name");
+	const [sortDir, setSortDir] = useState<SortDir>("asc");
+	const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
 	const fetchAgents = useCallback(async () => {
 		try {
-			const result = await api.agent.list();
-			setAgents(result);
+			const result = await api.discoveredAgent.list({
+				search: search || undefined,
+				appId: filterAppId || undefined,
+				type: filterType || undefined,
+			});
+			setData(result);
 		} catch (error) {
-			console.error("Failed to fetch agents:", error);
+			console.error("Failed to fetch discovered agents:", error);
 			toast.error("Failed to load agents");
 		} finally {
 			setLoading(false);
 		}
-	}, []);
+	}, [search, filterAppId, filterType]);
 
 	useEffect(() => {
+		setLoading(true);
 		fetchAgents();
 	}, [fetchAgents]);
 
-	const handleCreate = () => {
-		setEditTarget(null);
-		setEditorOpen(true);
-	};
+	// Auto-refresh every 30s
+	useEffect(() => {
+		intervalRef.current = setInterval(fetchAgents, 30_000);
+		return () => {
+			if (intervalRef.current) clearInterval(intervalRef.current);
+		};
+	}, [fetchAgents]);
 
-	const handleEdit = (agent: AgentData) => {
-		setEditTarget(agent);
-		setEditorOpen(true);
-	};
-
-	const handleSave = async (data: CreateAgentBody | UpdateAgentBody) => {
-		if (editTarget) {
-			await api.agent.update(editTarget.id, data);
-			toast.success("Agent updated");
+	const handleSort = (key: SortKey) => {
+		if (sortKey === key) {
+			setSortDir((d) => (d === "asc" ? "desc" : "asc"));
 		} else {
-			await api.agent.create(data as CreateAgentBody);
-			toast.success("Agent created");
-		}
-		fetchAgents();
-	};
-
-	const handleDuplicate = async (agent: AgentData) => {
-		try {
-			await api.agent.duplicate(agent.id);
-			toast.success("Agent duplicated");
-			fetchAgents();
-		} catch (error) {
-			toast.error("Failed to duplicate agent");
+			setSortKey(key);
+			setSortDir("asc");
 		}
 	};
 
-	const handleDelete = async () => {
-		if (!deleteTarget) return;
-		try {
-			setDeleting(true);
-			await api.agent.delete(deleteTarget.id);
-			toast.success("Agent deleted");
-			setDeleteTarget(null);
-			fetchAgents();
-		} catch (error) {
-			toast.error("Failed to delete agent");
-		} finally {
-			setDeleting(false);
-		}
+	const sortedAgents = useMemo(() => {
+		if (!data?.agents) return [];
+		const agents = [...data.agents];
+		agents.sort((a, b) => {
+			let aVal: string | null = null;
+			let bVal: string | null = null;
+			switch (sortKey) {
+				case "name":
+					aVal = a.name;
+					bVal = b.name;
+					break;
+				case "role":
+					aVal = a.role;
+					bVal = b.role;
+					break;
+				case "type":
+					aVal = a.type;
+					bVal = b.type;
+					break;
+				case "appId":
+					aVal = a.appId;
+					bVal = b.appId;
+					break;
+				case "registered":
+					aVal = a.registered;
+					bVal = b.registered;
+					break;
+			}
+			const cmp = (aVal ?? "").localeCompare(bVal ?? "");
+			return sortDir === "asc" ? cmp : -cmp;
+		});
+		return agents;
+	}, [data?.agents, sortKey, sortDir]);
+
+	const activeFilterCount = (filterAppId ? 1 : 0) + (filterType ? 1 : 0);
+
+	const applyFilters = () => {
+		setFilterAppId(pendingAppId);
+		setFilterType(pendingType);
+		setFiltersOpen(false);
 	};
+
+	const clearFilters = () => {
+		setPendingAppId("");
+		setPendingType("");
+		setFilterAppId("");
+		setFilterType("");
+		setFiltersOpen(false);
+	};
+
+	const SortIndicator = ({ col }: { col: SortKey }) =>
+		sortKey === col ? (
+			sortDir === "asc" ? (
+				<ArrowUp className="size-3 text-muted-foreground" />
+			) : (
+				<ArrowDown className="size-3 text-muted-foreground" />
+			)
+		) : null;
 
 	return (
-		<div className="pointer-events-auto mx-auto max-w-5xl p-6">
-			<div className="mb-6 flex items-center justify-between">
-				<div>
-					<h1 className="font-semibold text-2xl">Agents</h1>
-					<p className="text-muted-foreground text-sm">
-						Create and manage reusable agent configurations
-					</p>
-				</div>
-				<Button onClick={handleCreate}>
-					<Plus className="mr-2 size-4" />
-					New Agent
-				</Button>
+		<div className="pointer-events-auto mx-auto max-w-6xl p-6">
+			{/* Header */}
+			<div className="mb-6 flex items-center gap-3">
+				<div className="h-8 w-1 rounded-full bg-emerald-500" />
+				<h1 className="font-semibold text-2xl">Agents</h1>
 			</div>
 
-			{loading ? (
-				<div className="py-12 text-center text-muted-foreground text-sm">
-					Loading agents...
+			{/* Search + Filters */}
+			<div className="mb-4 flex items-center gap-3">
+				<div className="relative flex-1">
+					<Input
+						placeholder="Search"
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+					/>
 				</div>
-			) : agents.length === 0 ? (
-				<div className="py-12 text-center">
+
+				<Popover
+					open={filtersOpen}
+					onOpenChange={(open) => {
+						setFiltersOpen(open);
+						if (open) {
+							setPendingAppId(filterAppId);
+							setPendingType(filterType);
+						}
+					}}
+				>
+					<PopoverTrigger asChild>
+						<Button variant="outline" className="gap-2">
+							<Filter className="size-4" />
+							Filters
+							{activeFilterCount > 0 && (
+								<Badge
+									variant="secondary"
+									className="ml-1 h-5 min-w-5 px-1 text-xs"
+								>
+									{activeFilterCount}
+								</Badge>
+							)}
+						</Button>
+					</PopoverTrigger>
+					<PopoverContent className="w-80" align="end">
+						<div className="space-y-4">
+							<div>
+								<label className="mb-1.5 block text-sm font-medium">
+									App IDs
+								</label>
+								<select
+									className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+									value={pendingAppId}
+									onChange={(e) => setPendingAppId(e.target.value)}
+								>
+									<option value="">All</option>
+									{data?.appIds.map((id) => (
+										<option key={id} value={id}>
+											{id}
+										</option>
+									))}
+								</select>
+							</div>
+							<div>
+								<label className="mb-1.5 block text-sm font-medium">Type</label>
+								<select
+									className="w-full rounded-md border bg-background px-3 py-2 text-sm"
+									value={pendingType}
+									onChange={(e) => setPendingType(e.target.value)}
+								>
+									<option value="">All</option>
+									<option value="Agent">Agent</option>
+									<option value="Durable agent">Durable agent</option>
+								</select>
+							</div>
+							<div className="flex items-center justify-between pt-2">
+								<Button variant="ghost" size="sm" onClick={clearFilters}>
+									Clear all
+								</Button>
+								<div className="flex gap-2">
+									<Button
+										variant="outline"
+										size="sm"
+										onClick={() => setFiltersOpen(false)}
+									>
+										Cancel
+									</Button>
+									<Button size="sm" onClick={applyFilters}>
+										Apply
+									</Button>
+								</div>
+							</div>
+						</div>
+					</PopoverContent>
+				</Popover>
+
+				{activeFilterCount > 0 && (
+					<Button
+						variant="ghost"
+						size="sm"
+						onClick={clearFilters}
+						className="gap-1 text-muted-foreground"
+					>
+						<X className="size-3" />
+						Clear filters
+					</Button>
+				)}
+			</div>
+
+			{/* Data Grid */}
+			{loading ? (
+				<div className="rounded-md border">
+					<Table>
+						<TableHeader>
+							<TableRow>
+								<TableHead>Name</TableHead>
+								<TableHead>Role</TableHead>
+								<TableHead>Type</TableHead>
+								<TableHead>App ID</TableHead>
+								<TableHead>Registered</TableHead>
+							</TableRow>
+						</TableHeader>
+						<TableBody>
+							{Array.from({ length: 5 }).map((_, i) => (
+								<TableRow key={i}>
+									<TableCell>
+										<Skeleton className="h-4 w-32" />
+									</TableCell>
+									<TableCell>
+										<Skeleton className="h-4 w-40" />
+									</TableCell>
+									<TableCell>
+										<Skeleton className="h-4 w-24" />
+									</TableCell>
+									<TableCell>
+										<Skeleton className="h-4 w-28" />
+									</TableCell>
+									<TableCell>
+										<Skeleton className="h-4 w-36" />
+									</TableCell>
+								</TableRow>
+							))}
+						</TableBody>
+					</Table>
+				</div>
+			) : sortedAgents.length === 0 ? (
+				<div className="py-16 text-center">
 					<Bot className="mx-auto mb-4 size-12 text-muted-foreground/50" />
 					<p className="text-muted-foreground text-sm">
-						No agents yet. Create one to get started.
+						No agents discovered from the Dapr runtime.
 					</p>
-					<Button className="mt-4" onClick={handleCreate} variant="outline">
-						<Plus className="mr-2 size-4" />
-						Create your first agent
-					</Button>
+					<p className="mt-1 text-muted-foreground/70 text-xs">
+						Agents register themselves via the AgentRegistry when their services
+						start.
+					</p>
 				</div>
 			) : (
 				<div className="rounded-md border">
 					<Table>
 						<TableHeader>
 							<TableRow>
-								<TableHead>Name</TableHead>
-								<TableHead>Type</TableHead>
-								<TableHead>Model</TableHead>
-								<TableHead>Tools</TableHead>
-								<TableHead>Updated</TableHead>
-								<TableHead className="w-[140px]" />
+								{(
+									[
+										["name", "Name"],
+										["role", "Role"],
+										["type", "Type"],
+										["appId", "App ID"],
+										["registered", "Registered"],
+									] as const
+								).map(([col, label]) => (
+									<TableHead
+										key={col}
+										className="cursor-pointer select-none"
+										onClick={() => handleSort(col)}
+									>
+										<div className="flex items-center gap-1">
+											{label}
+											<SortIndicator col={col} />
+										</div>
+									</TableHead>
+								))}
 							</TableRow>
 						</TableHeader>
 						<TableBody>
-							{agents.map((agent) => (
+							{sortedAgents.map((agent) => (
 								<TableRow key={agent.id}>
 									<TableCell>
-										<div className="flex items-center gap-2">
-											<span className="font-medium">{agent.name}</span>
-											{agent.isDefault && (
-												<Star className="size-3 text-amber-500 fill-amber-500" />
-											)}
-											{!agent.isEnabled && (
-												<Badge variant="secondary" className="text-xs">
-													Disabled
-												</Badge>
-											)}
-										</div>
-										{agent.description && (
-											<p className="text-xs text-muted-foreground truncate max-w-[300px]">
-												{agent.description}
-											</p>
-										)}
-									</TableCell>
-									<TableCell>{getTypeBadge(agent.agentType)}</TableCell>
-									<TableCell>
-										<code className="text-xs">
-											{agent.model.provider}/{agent.model.name}
-										</code>
-									</TableCell>
-									<TableCell>
-										<span className="text-sm text-muted-foreground">
-											{agent.tools.length} tool
-											{agent.tools.length !== 1 ? "s" : ""}
-										</span>
+										<Link
+											href={`/agents/${encodeURIComponent(agent.appId)}/${encodeURIComponent(agent.name)}`}
+											className="font-medium text-emerald-600 hover:underline dark:text-emerald-400"
+										>
+											{agent.name}
+										</Link>
 									</TableCell>
 									<TableCell className="text-muted-foreground text-sm">
-										{formatDistanceToNow(new Date(agent.updatedAt), {
-											addSuffix: true,
-										})}
+										{agent.role ?? "-"}
 									</TableCell>
 									<TableCell>
-										<TooltipProvider delayDuration={300}>
-											<div className="flex items-center gap-1">
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															onClick={() => handleEdit(agent)}
-															size="icon"
-															variant="ghost"
-														>
-															<Pencil className="size-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Edit</TooltipContent>
-												</Tooltip>
-
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															onClick={() => handleDuplicate(agent)}
-															size="icon"
-															variant="ghost"
-														>
-															<Copy className="size-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Duplicate</TooltipContent>
-												</Tooltip>
-
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<Button
-															className="text-destructive hover:text-destructive"
-															onClick={() => setDeleteTarget(agent)}
-															size="icon"
-															variant="ghost"
-														>
-															<Trash2 className="size-4" />
-														</Button>
-													</TooltipTrigger>
-													<TooltipContent>Delete</TooltipContent>
-												</Tooltip>
-											</div>
-										</TooltipProvider>
+										<div className="flex items-center gap-2 text-sm">
+											<TypeIcon type={agent.type} />({agent.type})
+										</div>
+									</TableCell>
+									<TableCell>
+										<Link
+											href="/dapr"
+											className="text-sm text-emerald-600 hover:underline dark:text-emerald-400"
+										>
+											{agent.appId}
+										</Link>
+									</TableCell>
+									<TableCell className="text-muted-foreground text-sm">
+										{formatTimestamp(agent.registered)}
 									</TableCell>
 								</TableRow>
 							))}
@@ -265,39 +384,14 @@ export default function AgentsPage() {
 				</div>
 			)}
 
-			<AgentEditor
-				key={editTarget?.id ?? "new"}
-				open={editorOpen}
-				onOpenChange={setEditorOpen}
-				agent={editTarget}
-				onSave={handleSave}
-			/>
-
-			<AlertDialog
-				onOpenChange={(open) => !open && setDeleteTarget(null)}
-				open={!!deleteTarget}
-			>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Delete Agent</AlertDialogTitle>
-						<AlertDialogDescription>
-							Are you sure you want to delete{" "}
-							<strong>{deleteTarget?.name}</strong>? Workflows using this
-							agent will fall back to inline configuration.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction
-							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-							disabled={deleting}
-							onClick={handleDelete}
-						>
-							{deleting ? "Deleting..." : "Delete"}
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+			{/* Footer */}
+			{!loading && (
+				<div className="mt-3 flex justify-end">
+					<span className="text-muted-foreground text-xs">
+						Total Rows: {data?.totalRows ?? 0}
+					</span>
+				</div>
+			)}
 		</div>
 	);
 }

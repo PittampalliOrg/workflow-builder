@@ -87,7 +87,7 @@ pnpm test:e2e         # Run Playwright E2E tests
 | **function-router** | 8080 | Routes actions to fn-system/fn-activepieces/durable-agent |
 | **fn-system** | 8080 | System actions: http-request, database-query, condition |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
-| **fn-activepieces** | 8080 | Retained AP executor, not part of the current core local runtime |
+| **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
 | **workflow-mcp-server** | 3200 | Retained MCP server, not part of the current core local runtime |
 | **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
 | **node-sandbox** | 8888 | Sandbox image / helper runtime |

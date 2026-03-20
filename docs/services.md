@@ -9,10 +9,10 @@ Current `kind-ryzen` core runtime:
 - `durable-agent`
 - `function-router`
 - `fn-system`
+- `fn-activepieces`
 - `mcp-gateway`
 
 Retained in source, but not part of the current core local runtime:
-- `fn-activepieces`
 - `workflow-mcp-server`
 - `piece-mcp-server`
 - `node-sandbox`
@@ -93,12 +93,13 @@ Built-in system actions executed as a Knative service.
 
 Executes Activepieces piece actions. Ships with AP piece npm packages pre-installed.
 
-This remains a logical routing target for AP piece actions, but it is not part of the
-current core `kind-ryzen` runtime set.
+This is part of the current `kind-ryzen` runtime because `_default` action routing in
+function-router depends on it for AP-backed steps such as Microsoft OneDrive.
 
 - **Port**: 8080
 - **Key endpoints**: `POST /execute`, `POST /options`, `GET /health`
 - **Context**: Stubbed AP execution context (no-op store/files, real auth)
+- **Runtime manifest**: `services/fn-activepieces/k8s/runtime.yaml`
 
 ## workflow-mcp-server (TypeScript)
 

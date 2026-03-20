@@ -46,6 +46,7 @@ const navigationLinks = [
 	{ href: "/dapr", label: "Dapr Debug", icon: Bug },
 	{ href: "/observability", label: "Observability", icon: Eye },
 	{ href: "/agents", label: "Agents", icon: Bot },
+	{ href: "/dapr-workflows", label: "Workflows", icon: Workflow },
 	{ href: "/library", label: "Library", icon: Library },
 	{ href: "/connections", label: "Connections", icon: Plug },
 	{ href: "/mcp-apps", label: "MCP Apps", icon: AppWindow },

@@ -38,7 +38,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 │ - function-router service (smart dispatcher)            │
 │ - Routes system actions to fn-system                    │
 │ - Routes agent actions to durable-agent                 │
-│ - Uses fn-activepieces only as retained AP fallback     │
+│ - Uses fn-activepieces for AP-backed default actions    │
 └────────────────┬────────────────────────────────────────┘
                  │
                  ▼ Direct HTTP
@@ -47,7 +47,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 │  • durable-agent - primary AI agent runtime            │
 │  • fn-system - built-in system actions                 │
 │  • mcp-gateway - hosted MCP entrypoint                 │
-│  • fn-activepieces - retained AP fallback              │
+│  • fn-activepieces - AP action executor                │
 │  • legacy/optional MCP services remain in source       │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -113,7 +113,7 @@ Return workflow result → Save to database → Update UI
 | function-router | Function dispatcher | TypeScript | K8s + Dapr |
 | fn-system | System action executor | TypeScript | Service path |
 | mcp-gateway | Hosted MCP entrypoint | TypeScript | K8s Deployment |
-| fn-activepieces | Retained AP fallback | TypeScript | Not part of current core local runtime |
+| fn-activepieces | AP action executor | TypeScript | K8s Deployment + Service |
 | postgresql | Workflows & functions | PostgreSQL 15 | StatefulSet |
 | redis | Dapr state | Redis 7 | StatefulSet |
 
