@@ -3,6 +3,7 @@
  *
  * Current scope:
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
+ * - Upsert workflow aicodingagent001 (AI Coding Agent)
  * - Upsert Microsoft Agent reference workflows for travel planning and code review
  * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for durable plan/execute nodes
@@ -36,6 +37,10 @@ const WORKFLOW_ID = "lazxidq045szbb9ke4dny";
 const WORKFLOW_NAME = "Opencode Agent Plan Then Execute PR";
 const WORKFLOW_DESCRIPTION =
 	"Multi-step opencode flow: planning, execution, change verification, then commit/push/PR";
+const AI_CODING_AGENT_WORKFLOW_ID = "aicodingagent001";
+const AI_CODING_AGENT_WORKFLOW_NAME = "AI Coding Agent";
+const AI_CODING_AGENT_WORKFLOW_DESCRIPTION =
+	"System workflow for ai/main coding sessions. Clones the selected repository into a sandbox, creates an OpenShell coding plan, waits for approval, and then executes the approved plan in the same run.";
 const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
 const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
 const MS_AGENT_WORKFLOW_DESCRIPTION =
@@ -58,9 +63,9 @@ const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME =
 const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION =
 	"Reference workflow that clones PittampalliOrg/stacks and asks both the Microsoft Agent workflow and the Dapr coding agent to summarize the codebase independently.";
 const AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
-const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "Dapr Feature Delivery Demo";
+const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "OpenShell Feature Delivery Demo";
 const AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION =
-	"Demo workflow for the Workflow Builder UI that clones PittampalliOrg/stacks and runs a durable Dapr-native plan, approval, and implementation loop that emits code artifacts.";
+	"Demo workflow for the Workflow Builder UI that clones PittampalliOrg/stacks and runs an OpenShell-backed plan, approval, and implementation loop that emits code artifacts.";
 const AGENT_PROFILE_TEMPLATE_ID = "tpl_coding_agent";
 const PLANNER_MAX_TURNS = 120;
 const PLANNER_TIMEOUT_MINUTES = 45;
@@ -1228,6 +1233,170 @@ function buildGithubStacksDualAgentEdges() {
 	];
 }
 
+function buildAiCodingAgentNodes() {
+	const workspaceRef = "{{@pf_ai_coding_agent:Workspace Profile.workspaceRef}}";
+	const clonePath = "{{@cl_ai_coding_agent:Workspace Clone.clonePath}}";
+	const sandboxRepoPath = "/sandbox/repo";
+
+	return normalizeWorkflowNodes([
+		{
+			id: "tr_ai_coding_agent",
+			type: "trigger",
+			position: { x: -760, y: 0 },
+			data: {
+				label: "API Trigger",
+				description:
+					"Receives repo selection and task input from the ai/main coding-agent flow.",
+				type: "trigger",
+				config: {
+					triggerType: "Manual",
+					inputSchema: JSON.stringify([
+						{
+							name: "owner",
+							type: "TEXT",
+							required: true,
+							description: "Repository owner or organization name.",
+						},
+						{
+							name: "repo",
+							type: "TEXT",
+							required: true,
+							description: "Repository name to clone into the sandbox.",
+						},
+						{
+							name: "branch",
+							type: "TEXT",
+							required: false,
+							description:
+								"Repository branch to clone. Defaults to 'main' when omitted.",
+						},
+						{
+							name: "task",
+							type: "TEXT",
+							required: true,
+							description: "Implementation task for the coding agent.",
+						},
+						{
+							name: "token",
+							type: "TEXT",
+							required: false,
+							description:
+								"Optional token used when the target repository requires authentication.",
+						},
+					]),
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "pf_ai_coding_agent",
+			type: "action",
+			position: { x: -480, y: 0 },
+			data: {
+				label: "Workspace Profile",
+				description:
+					"Create an execution-scoped sandbox workspace for the coding session.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "ai-coding-agent",
+					enabledTools: '["read","write","edit","list","bash"]',
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "120000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "cl_ai_coding_agent",
+			type: "action",
+			position: { x: -180, y: 0 },
+			data: {
+				label: "Workspace Clone",
+				description:
+					"Clone the selected repository into the execution workspace.",
+				type: "action",
+				config: {
+					actionType: "workspace/clone",
+					workspaceRef,
+					repositoryOwner: "{{trigger.owner}}",
+					repositoryRepo: "{{trigger.repo}}",
+					repositoryBranch: "{{trigger.branch}}",
+					repositoryToken: "{{trigger.token}}",
+					githubToken: "{{trigger.token}}",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: "da_ai_coding_agent",
+			type: "action",
+			position: { x: 160, y: 0 },
+			data: {
+				label: "OpenShell Coding Agent",
+				description:
+					"Create the implementation plan, wait for approval, then execute the approved plan in the same OpenShell sandbox flow.",
+				type: "action",
+				config: {
+					actionType: "openshell/run",
+					mode: "plan_mode",
+					profile: "feature-delivery",
+					provider: "",
+					keepSandbox: "true",
+					prompt: "{{trigger.task}}",
+					expectedOutput:
+						"A concise implementation summary, changed-file list, and verification results.",
+					toolPolicy: "all",
+					writePolicy: "workspace-only",
+					shellPolicy: "workspace-safe",
+					executeAfterApproval: "true",
+					approvalTimeoutMinutes: "60",
+					workspaceRef,
+					repoUrl: "https://github.com/{{trigger.owner}}/{{trigger.repo}}.git",
+					repoBranch: "{{trigger.branch}}",
+					repoToken: "{{trigger.token}}",
+					sandboxRepoPath,
+					cwd: sandboxRepoPath,
+					maxTurns: "80",
+					timeoutMinutes: "60",
+					stopCondition:
+						"The requested change is implemented in the selected repository, verification is complete, and the final response includes changed files and a concise summary.",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildAiCodingAgentEdges() {
+	return [
+		{
+			id: "e_ai_coding_agent_1",
+			type: "animated",
+			source: "tr_ai_coding_agent",
+			target: "pf_ai_coding_agent",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_ai_coding_agent_2",
+			type: "animated",
+			source: "pf_ai_coding_agent",
+			target: "cl_ai_coding_agent",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: "e_ai_coding_agent_3",
+			type: "animated",
+			source: "cl_ai_coding_agent",
+			target: "da_ai_coding_agent",
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
+}
+
 function buildAgentSystemDemoNodes(input?: {
 	connectionId?: string;
 	connectionExternalId?: string;
@@ -1235,6 +1404,7 @@ function buildAgentSystemDemoNodes(input?: {
 	const workspaceRef =
 		"{{@pf_agent_system_demo:Workspace Profile.workspaceRef}}";
 	const clonePath = "{{@cl_agent_system_demo:Workspace Clone.clonePath}}";
+	const sandboxRepoPath = "/sandbox/stacks";
 	const cloneConfig: Record<string, string> = {
 		actionType: "workspace/clone",
 		workspaceRef,
@@ -1250,7 +1420,7 @@ function buildAgentSystemDemoNodes(input?: {
 		cloneConfig.integrationId = input.connectionId;
 	}
 
-	const featureDeliveryPrompt = `Repository root: ${clonePath}
+	const featureDeliveryPrompt = `Repository root: ${sandboxRepoPath}
 Always operate relative to this repository root for file and directory paths.
 
 Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/manifests for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, or ms-agent-workflow. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
@@ -1334,14 +1504,16 @@ fi`,
 			type: "action",
 			position: { x: 500, y: 0 },
 			data: {
-				label: "Dapr Feature Delivery",
+				label: "OpenShell Feature Delivery",
 				description:
-					"Run the Dapr durable coding agent through plan, approval, implementation, and verification.",
+					"Run the OpenShell coding agent through plan, approval, implementation, and verification.",
 				type: "action",
 				config: {
-					actionType: "dapr-agent/run",
+					actionType: "openshell/run",
 					mode: "plan_mode",
 					profile: "feature-delivery",
+					provider: "",
+					keepSandbox: "true",
 					prompt: featureDeliveryPrompt,
 					expectedOutput:
 						"A verified Python utility plus plan artifact, patch artifact, snapshot refs, and changed-file summary.",
@@ -1353,7 +1525,10 @@ python scripts/workflow_builder_demo_report.py`,
 					executeAfterApproval: "true",
 					approvalTimeoutMinutes: "60",
 					workspaceRef,
-					cwd: clonePath,
+					repoUrl: "https://github.com/PittampalliOrg/stacks.git",
+					repoBranch: "main",
+					sandboxRepoPath,
+					cwd: sandboxRepoPath,
 					maxTurns: "60",
 					timeoutMinutes: "45",
 					stopCondition:
@@ -1535,6 +1710,17 @@ async function seedWorkflow() {
 		console.log(
 			`[seed-workflows] Reconciled workflow_resource_refs for ${WORKFLOW_ID} (profile version ${profileVersion})`,
 		);
+
+		await upsertWorkflow({
+			db,
+			workflowId: AI_CODING_AGENT_WORKFLOW_ID,
+			name: AI_CODING_AGENT_WORKFLOW_NAME,
+			description: AI_CODING_AGENT_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildAiCodingAgentNodes(),
+			edges: buildAiCodingAgentEdges(),
+		});
 
 		await upsertWorkflow({
 			db,

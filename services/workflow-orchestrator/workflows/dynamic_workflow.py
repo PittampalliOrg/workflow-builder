@@ -310,6 +310,43 @@ def _trace_id_from_otel_context(otel_ctx: object) -> str | None:
     ) or _trace_id_from_traceparent(otel_ctx.get("traceparent"))
 
 
+def _approval_actor(approval_result: object) -> str | None:
+    if not isinstance(approval_result, dict):
+        return None
+    actor = approval_result.get("respondedBy") or approval_result.get("approvedBy")
+    if not isinstance(actor, str):
+        return None
+    actor = actor.strip()
+    return actor or None
+
+
+def _normalize_approval_result(
+    approval_result: object,
+    *,
+    missing_actor_reason: str = "Approval response missing actor metadata",
+) -> dict[str, Any]:
+    if not isinstance(approval_result, dict):
+        return {}
+
+    normalized = dict(approval_result)
+    actor = _approval_actor(normalized)
+    auto_approved = bool(normalized.get("autoApproved"))
+    approved = bool(normalized.get("approved"))
+
+    if approved and not auto_approved and not actor:
+        logger.warning(
+            "[Dynamic Workflow] Rejecting anonymous approval event payload: %s",
+            normalized,
+        )
+        normalized["approved"] = False
+        normalized["reason"] = missing_actor_reason
+
+    if actor:
+        normalized["respondedBy"] = actor
+
+    return normalized
+
+
 def get_timeout_seconds(config: dict[str, Any]) -> int:
     """Get timeout in seconds from various config formats."""
     if config.get("timeoutSeconds"):
@@ -792,6 +829,22 @@ def _return_with_workspace_cleanup(
     return result
 
 
+def _raise_with_workspace_cleanup(
+    ctx: wf.DaprWorkflowContext,
+    execution_id: str,
+    db_execution_id: str | None,
+    otel_ctx: dict | None,
+    error_message: str,
+):
+    yield from _cleanup_execution_workspaces_for_workflow(
+        ctx=ctx,
+        execution_id=execution_id,
+        db_execution_id=db_execution_id,
+        otel_ctx=otel_ctx,
+    )
+    raise RuntimeError(error_message)
+
+
 def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     """
     Dynamic Workflow - The main interpreter function
@@ -964,6 +1017,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
                 # Long-running native child workflows (bypass function-router).
                 if action_type in (
+                    "openshell/run",
                     "dapr-agent/run",
                     "ms-agent/run",
                 ):
@@ -1256,18 +1310,15 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                 },
                             )
                         duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
-                        return (yield from _return_with_workspace_cleanup(
+                        return (yield from _raise_with_workspace_cleanup(
                             ctx=ctx,
                             execution_id=execution_id,
                             db_execution_id=db_execution_id,
                             otel_ctx=otel_ctx,
-                            result={
-                            "success": False,
-                            "outputs": node_outputs,
-                            "error": f"Loop misconfigured at {node.get('label')}: loopStartNodeId is required",
-                            "durationMs": duration_ms,
-                            "phase": "failed",
-                            },
+                            error_message=(
+                                f"Loop misconfigured at {node.get('label')}: "
+                                "loopStartNodeId is required"
+                            ),
                         ))
 
                     start_index = node_index_map.get(loop_start_node_id)
@@ -1292,18 +1343,12 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "_otel": otel_ctx,
                                 },
                             )
-                        return (yield from _return_with_workspace_cleanup(
+                        return (yield from _raise_with_workspace_cleanup(
                             ctx=ctx,
                             execution_id=execution_id,
                             db_execution_id=db_execution_id,
                             otel_ctx=otel_ctx,
-                            result={
-                            "success": False,
-                            "outputs": node_outputs,
-                            "error": err,
-                            "durationMs": duration_ms,
-                            "phase": "failed",
-                            },
+                            error_message=err,
                         ))
 
                     if start_index >= i:
@@ -1330,18 +1375,12 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                                     "_otel": otel_ctx,
                                 },
                             )
-                        return (yield from _return_with_workspace_cleanup(
+                        return (yield from _raise_with_workspace_cleanup(
                             ctx=ctx,
                             execution_id=execution_id,
                             db_execution_id=db_execution_id,
                             otel_ctx=otel_ctx,
-                            result={
-                            "success": False,
-                            "outputs": node_outputs,
-                            "error": err,
-                            "durationMs": duration_ms,
-                            "phase": "failed",
-                            },
+                            error_message=err,
                         ))
 
                     if max_iterations < 1:
@@ -1376,18 +1415,15 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                             node_result["exitedLoop"] = True
                         else:
                             duration_ms = _workflow_elapsed_ms(ctx, start_time_ms)
-                            return (yield from _return_with_workspace_cleanup(
+                            return (yield from _raise_with_workspace_cleanup(
                                 ctx=ctx,
                                 execution_id=execution_id,
                                 db_execution_id=db_execution_id,
                                 otel_ctx=otel_ctx,
-                                result={
-                                "success": False,
-                                "outputs": node_outputs,
-                                "error": f"Loop exceeded maxIterations ({max_iterations}) at {node.get('label')}",
-                                "durationMs": duration_ms,
-                                "phase": "failed",
-                                },
+                                error_message=(
+                                    f"Loop exceeded maxIterations ({max_iterations}) "
+                                    f"at {node.get('label')}"
+                                ),
                             ))
                     else:
                         # Jump back.
@@ -1997,13 +2033,13 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             except Exception as persist_err:
                 logger.error(f"[Dynamic Workflow] Failed to persist error results: {persist_err}")
 
-        return (yield from _return_with_workspace_cleanup(
+        yield from _cleanup_execution_workspaces_for_workflow(
             ctx=ctx,
             execution_id=execution_id,
             db_execution_id=db_execution_id,
             otel_ctx=otel_ctx,
-            result=final_output,
-        ))
+        )
+        raise
 
 
 def process_agent_child_workflow(
@@ -2032,6 +2068,7 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
     is_dapr_agent = action_type == "dapr-agent/run"
+    is_openshell_agent = action_type == "openshell/run"
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2050,7 +2087,12 @@ def process_agent_child_workflow(
         else ""
     )
     prompt = str(resolved_config.get("prompt", "") or "").strip()
-    if not prompt and is_dapr_agent and artifact_ref and mode == "execute_direct":
+    if (
+        not prompt
+        and (is_dapr_agent or is_openshell_agent)
+        and artifact_ref
+        and mode == "execute_direct"
+    ):
         prompt = "Implement the approved feature plan"
     if not prompt and action_type == "mastra/execute":
         prompt = "Execute the provided plan"
@@ -2094,6 +2136,11 @@ def process_agent_child_workflow(
     if is_ms_agent:
         run_mode = "execute_direct"
         call_activity_fn = None
+    elif is_openshell_agent:
+        run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
+        from activities.call_agent_service import call_openshell_agent_run
+
+        call_activity_fn = call_openshell_agent_run
     elif is_dapr_agent:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         call_activity_fn = None
@@ -2119,12 +2166,15 @@ def process_agent_child_workflow(
         if is_ms_agent
         else True
         if is_dapr_agent
+        else False
+        if is_openshell_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
     )
     native_child_task_override: str | None = None
     tracked_execution_id = str(db_execution_id or execution_id or "").strip()
     if not tracked_execution_id:
         tracked_execution_id = str(execution_id or "").strip()
+    node_id = str(node.get("id") or "unknown")
 
     activity_input = {
         "prompt": prompt,
@@ -2149,6 +2199,12 @@ def process_agent_child_workflow(
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
         "workspaceRef": resolved_config.get("workspaceRef"),
+        "repoUrl": resolved_config.get("repoUrl"),
+        "repoBranch": resolved_config.get("repoBranch"),
+        "repoToken": resolved_config.get("repoToken"),
+        "sandboxRepoPath": resolved_config.get("sandboxRepoPath"),
+        "provider": resolved_config.get("provider"),
+        "keepSandbox": resolved_config.get("keepSandbox"),
         "planningBackend": "claude_code_v1" if action_type == "durable/claude-plan" else resolved_config.get("planningBackend"),
         "integrations": integrations,
         "dbExecutionId": db_execution_id,
@@ -2158,12 +2214,13 @@ def process_agent_child_workflow(
         "workflowId": workflow_id,
         "nodeId": node.get("id"),
         "nodeName": node.get("label") or node.get("id"),
+        "mode": run_mode,
         "approvalTimeoutMinutes": approval_timeout_minutes,
         "_otel": otel_ctx,
     }
 
     fetched_plan_artifact: dict[str, Any] | None = None
-    if is_dapr_agent and artifact_ref and run_mode == "execute_direct":
+    if (is_dapr_agent or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
         from activities.persist_plan_artifact import fetch_plan_artifact
 
         fetched = yield ctx.call_activity(
@@ -2183,6 +2240,33 @@ def process_agent_child_workflow(
                 ),
             }
         fetched_plan_artifact = fetched
+        fetched_plan_json = (
+            fetched_plan_artifact.get("planJson")
+            if isinstance(fetched_plan_artifact.get("planJson"), dict)
+            else None
+        )
+        if is_openshell_agent and isinstance(fetched_plan_json, dict):
+            stop_condition_raw = resolved_config.get("stopCondition")
+            stop_condition = (
+                str(stop_condition_raw).strip()
+                if isinstance(stop_condition_raw, str)
+                else ""
+            )
+            explicit_require_file_changes = _parse_optional_bool(
+                resolved_config.get("requireFileChanges")
+            )
+            require_file_changes = (
+                explicit_require_file_changes
+                if explicit_require_file_changes is not None
+                else bool(stop_condition)
+                and _stop_condition_implies_file_changes(stop_condition)
+            )
+            activity_input["prompt"] = _build_execute_plan_prompt(
+                plan=fetched_plan_json,
+                task_prompt=prompt,
+                cwd=resolved_config.get("cwd"),
+                require_file_changes=require_file_changes,
+            )
 
     if run_mode == "execute_plan_dag":
         activity_input["artifactRef"] = artifact_ref
@@ -2225,6 +2309,7 @@ def process_agent_child_workflow(
             )
             use_native_child_workflow = native_child_workflow_enabled
 
+    openshell_run_id: str | None = None
     if use_native_child_workflow:
         start_result: dict[str, Any] = {"success": True}
     else:
@@ -2233,12 +2318,74 @@ def process_agent_child_workflow(
                 "success": False,
                 "error": f"{action_type} requires native child workflow execution",
             }
+        if is_openshell_agent:
+            mode_suffix = "plan" if run_mode == "plan_mode" else "run"
+            openshell_execution_index = _next_node_execution_count(
+                node_execution_counts,
+                node_id,
+            )
+            openshell_run_id = (
+                f"{ctx.instance_id}__openshell__{node_id}__{mode_suffix}__"
+                f"{openshell_execution_index}"
+            )
+            activity_input["runId"] = openshell_run_id
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_scheduled
+
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input={
+                            "id": openshell_run_id,
+                            "workflowExecutionId": db_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "mode": "plan" if run_mode == "plan_mode" else "run",
+                            "agentWorkflowId": openshell_run_id,
+                            "daprInstanceId": openshell_run_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "workspaceRef": resolved_config.get("workspaceRef"),
+                            "artifactRef": artifact_ref or None,
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist OpenShell scheduled row for %s: %s",
+                        openshell_run_id,
+                        track_err,
+                    )
         start_result = yield ctx.call_activity(
             call_activity_fn,
             input=activity_input,
         )
         if not isinstance(start_result, dict) or not start_result.get("success", False):
-            return start_result if isinstance(start_result, dict) else {"success": False, "error": "Failed to start agent"}
+            failure_payload = (
+                start_result
+                if isinstance(start_result, dict)
+                else {"success": False, "error": "Failed to start agent"}
+            )
+            if db_execution_id and is_openshell_agent and openshell_run_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_completed
+
+                    yield ctx.call_activity(
+                        track_agent_run_completed,
+                        input={
+                            "id": openshell_run_id,
+                            "success": False,
+                            "result": failure_payload,
+                            "error": failure_payload.get("error"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist OpenShell failed row for %s: %s",
+                        openshell_run_id,
+                        track_err,
+                    )
+            return failure_payload
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode" and not use_native_child_workflow:
@@ -2263,6 +2410,59 @@ def process_agent_child_workflow(
                 }
 
         plan_artifact_ref = start_result.get("artifactRef")
+        if (
+            is_openshell_agent
+            and (not isinstance(plan_artifact_ref, str) or not plan_artifact_ref.strip())
+        ):
+            from activities.persist_plan_artifact import persist_plan_artifact
+
+            plan_json = start_result.get("plan")
+            plan_markdown = str(start_result.get("planMarkdown") or "").strip()
+            if not isinstance(plan_json, dict):
+                return {
+                    "success": False,
+                    "error": "OpenShell plan mode did not return structured plan JSON",
+                    "result": start_result,
+                }
+            persisted_plan = yield ctx.call_activity(
+                persist_plan_artifact,
+                input={
+                    "dbExecutionId": db_execution_id,
+                    "workflowId": workflow_id,
+                    "nodeId": node_id,
+                    "goal": prompt,
+                    "sourcePrompt": prompt,
+                    "planJson": plan_json,
+                    "planMarkdown": plan_markdown,
+                    "workspaceRef": resolved_config.get("workspaceRef"),
+                    "clonePath": resolved_config.get("cwd"),
+                    "artifactType": start_result.get("artifactType")
+                    or "claude_task_graph_v1",
+                    "status": "draft",
+                    "metadata": {
+                        "promptProfile": resolved_config.get("profile")
+                        or "feature-delivery",
+                        "sourceRuntime": "openshell-agent-runtime",
+                        "provider": start_result.get("provider")
+                        or resolved_config.get("provider"),
+                        "sandboxName": start_result.get("sandboxName"),
+                    },
+                    "_otel": otel_ctx,
+                },
+            )
+            if not isinstance(persisted_plan, dict) or not persisted_plan.get("success"):
+                return {
+                    "success": False,
+                    "error": (
+                        persisted_plan.get("error")
+                        if isinstance(persisted_plan, dict)
+                        else "Failed to persist OpenShell plan artifact"
+                    ),
+                }
+            plan_artifact_ref = persisted_plan.get("artifactRef")
+            start_result["artifactRef"] = plan_artifact_ref
+            start_result["storageBackend"] = persisted_plan.get("storageBackend")
+            start_result["schemaVersion"] = persisted_plan.get("artifactType")
         if not isinstance(plan_artifact_ref, str) or not plan_artifact_ref.strip():
             return {
                 "success": False,
@@ -2280,10 +2480,30 @@ def process_agent_child_workflow(
             "storageBackend": start_result.get("storageBackend"),
             "planning": {
                 "daprPlanningInstanceId": start_result.get("daprPlanningInstanceId"),
+                "openshellRunId": openshell_run_id if is_openshell_agent else None,
             },
         }
 
-        node_id = str(node.get("id") or "unknown")
+        if db_execution_id and is_openshell_agent and openshell_run_id:
+            try:
+                from activities.track_agent_run import track_agent_run_completed
+
+                yield ctx.call_activity(
+                    track_agent_run_completed,
+                    input={
+                        "id": openshell_run_id,
+                        "success": True,
+                        "result": {**planned_payload, **start_result},
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    "[Agent Workflow] Failed to persist OpenShell planning completion row for %s: %s",
+                    openshell_run_id,
+                    track_err,
+                )
+
         approval_event_name = (
             f"durable_plan_approval_{node_id}_{ctx.instance_id}".lower()
         )
@@ -2361,13 +2581,24 @@ def process_agent_child_workflow(
                         "timeoutSeconds": approval_timeout_minutes * 60,
                         "_otel": otel_ctx,
                     })
+                if is_openshell_agent and planned_payload and planned_payload.get("artifactRef"):
+                    from activities.persist_plan_artifact import update_plan_artifact_status
+
+                    yield ctx.call_activity(
+                        update_plan_artifact_status,
+                        input={
+                            "artifactRef": planned_payload.get("artifactRef"),
+                            "status": "failed",
+                            "_otel": otel_ctx,
+                        },
+                    )
                 return {
                     "success": False,
                     "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
                     **planned_payload,
                 }
 
-            approval_result = approval_event.get_result() or {}
+            approval_result = _normalize_approval_result(approval_event.get_result())
             if db_execution_id:
                 yield ctx.call_activity(log_approval_response, input={
                     "executionId": db_execution_id,
@@ -2375,12 +2606,23 @@ def process_agent_child_workflow(
                     "eventName": approval_event_name,
                     "approved": approval_result.get("approved", False),
                     "reason": approval_result.get("reason"),
-                    "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                    "respondedBy": _approval_actor(approval_result),
                     "payload": approval_result,
                     "_otel": otel_ctx,
                 })
             approved = bool(approval_result.get("approved"))
         if not approved:
+            if is_openshell_agent and planned_payload and planned_payload.get("artifactRef"):
+                from activities.persist_plan_artifact import update_plan_artifact_status
+
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "failed",
+                        "_otel": otel_ctx,
+                    },
+                )
             reason = approval_result.get("reason") or "Plan was rejected"
             return {
                 "success": False,
@@ -2429,6 +2671,17 @@ def process_agent_child_workflow(
             _parse_optional_bool(resolved_config.get("executeAfterApproval")) is True
         )
         if not execute_after_approval:
+            if is_openshell_agent and planned_payload and planned_payload.get("artifactRef"):
+                from activities.persist_plan_artifact import update_plan_artifact_status
+
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "approved",
+                        "_otel": otel_ctx,
+                    },
+                )
             return {
                 "success": True,
                 "approved": True,
@@ -2454,6 +2707,126 @@ def process_agent_child_workflow(
             cwd=resolved_config.get("cwd"),
             require_file_changes=require_file_changes,
         )
+        if is_openshell_agent:
+            from activities.persist_plan_artifact import update_plan_artifact_status
+            from activities.call_agent_service import call_openshell_agent_run
+
+            execute_run_id = (
+                f"{ctx.instance_id}__openshell__{node_id}__run__"
+                f"{_next_node_execution_count(node_execution_counts, node_id)}"
+            )
+            if planned_payload and planned_payload.get("artifactRef"):
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "approved",
+                        "_otel": otel_ctx,
+                    },
+                )
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_scheduled
+
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input={
+                            "id": execute_run_id,
+                            "workflowExecutionId": db_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "mode": "run",
+                            "agentWorkflowId": execute_run_id,
+                            "daprInstanceId": execute_run_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "workspaceRef": resolved_config.get("workspaceRef"),
+                            "artifactRef": planned_payload.get("artifactRef"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist OpenShell execute scheduled row for %s: %s",
+                        execute_run_id,
+                        track_err,
+                    )
+            execute_start_result = yield ctx.call_activity(
+                call_openshell_agent_run,
+                input={
+                    **activity_input,
+                    "runId": execute_run_id,
+                    "prompt": native_child_task_override,
+                    "artifactRef": planned_payload.get("artifactRef") if planned_payload else "",
+                    "approval": approval_result,
+                },
+            )
+            execute_success = bool(
+                isinstance(execute_start_result, dict)
+                and execute_start_result.get("success", False)
+            )
+            if require_file_changes and execute_success:
+                execute_start_result["fileChangeVerification"] = "unknown"
+                execute_start_result["fileChangeVerificationWarning"] = (
+                    "Could not verify file changes from OpenShell telemetry; proceeding."
+                )
+            if planned_payload and planned_payload.get("artifactRef"):
+                yield ctx.call_activity(
+                    update_plan_artifact_status,
+                    input={
+                        "artifactRef": planned_payload.get("artifactRef"),
+                        "status": "executed" if execute_success else "failed",
+                        "metadata": {
+                            "sourceRuntime": "openshell-agent-runtime",
+                            "provider": execute_start_result.get("provider")
+                            if isinstance(execute_start_result, dict)
+                            else None,
+                            "sandboxName": execute_start_result.get("sandboxName")
+                            if isinstance(execute_start_result, dict)
+                            else None,
+                        },
+                        "_otel": otel_ctx,
+                    },
+                )
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_completed
+
+                    yield ctx.call_activity(
+                        track_agent_run_completed,
+                        input={
+                            "id": execute_run_id,
+                            "success": execute_success,
+                            "result": (
+                                {**planned_payload, **execute_start_result}
+                                if isinstance(execute_start_result, dict)
+                                else {**planned_payload, "result": execute_start_result}
+                            ),
+                            "error": (
+                                execute_start_result.get("error")
+                                if isinstance(execute_start_result, dict)
+                                else None
+                            ),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist OpenShell execute completion row for %s: %s",
+                        execute_run_id,
+                        track_err,
+                    )
+            if not isinstance(execute_start_result, dict):
+                return {
+                    "success": False,
+                    "error": "OpenShell execution did not return a structured result",
+                    **planned_payload,
+                }
+            return {
+                **planned_payload,
+                "approved": True,
+                "approval": approval_result,
+                **execute_start_result,
+            }
         use_native_child_workflow = native_child_workflow_enabled
         run_mode = "execute_plan"
 
@@ -2480,6 +2853,53 @@ def process_agent_child_workflow(
                     if isinstance(start_result, dict)
                     else {"success": False, "error": "Failed to start execute-plan run"}
                 )
+
+    if is_openshell_agent:
+        result_payload = start_result if isinstance(start_result, dict) else {
+            "success": False,
+            "error": "OpenShell run did not return a structured result",
+        }
+        if artifact_ref and not result_payload.get("artifactRef"):
+            result_payload["artifactRef"] = artifact_ref
+        stop_condition_raw = resolved_config.get("stopCondition")
+        stop_condition = (
+            str(stop_condition_raw).strip() if isinstance(stop_condition_raw, str) else ""
+        )
+        explicit_require_file_changes = _parse_optional_bool(
+            resolved_config.get("requireFileChanges")
+        )
+        require_file_changes = (
+            explicit_require_file_changes
+            if explicit_require_file_changes is not None
+            else bool(stop_condition) and _stop_condition_implies_file_changes(stop_condition)
+        )
+        if require_file_changes and bool(result_payload.get("success", False)):
+            result_payload["fileChangeVerification"] = "unknown"
+            result_payload["fileChangeVerificationWarning"] = (
+                "Could not verify file changes from OpenShell telemetry; proceeding."
+            )
+        if db_execution_id and openshell_run_id and run_mode != "plan_mode":
+            try:
+                from activities.track_agent_run import track_agent_run_completed
+
+                yield ctx.call_activity(
+                    track_agent_run_completed,
+                    input={
+                        "id": openshell_run_id,
+                        "success": bool(result_payload.get("success", False)),
+                        "result": result_payload,
+                        "error": result_payload.get("error"),
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    "[Agent Workflow] Failed to persist OpenShell completion row for %s: %s",
+                    openshell_run_id,
+                    track_err,
+                )
+        if run_mode != "plan_mode":
+            return result_payload
 
     if use_native_child_workflow:
         node_id = str(node.get("id") or "unknown")
@@ -2926,7 +3346,7 @@ def process_agent_child_workflow(
                         "error": f"Plan approval timed out after {approval_timeout_minutes} minutes",
                         **planned_payload,
                     }
-                approval_result = approval_event.get_result() or {}
+                approval_result = _normalize_approval_result(approval_event.get_result())
                 if db_execution_id:
                     yield ctx.call_activity(log_approval_response, input={
                         "executionId": db_execution_id,
@@ -2934,7 +3354,7 @@ def process_agent_child_workflow(
                         "eventName": approval_event_name,
                         "approved": approval_result.get("approved", False),
                         "reason": approval_result.get("reason"),
-                        "respondedBy": approval_result.get("respondedBy") or approval_result.get("approvedBy"),
+                        "respondedBy": _approval_actor(approval_result),
                         "payload": approval_result,
                         "_otel": otel_ctx,
                     })
@@ -3364,7 +3784,7 @@ def process_approval_gate(
         }
 
     # Get the approval result
-    approval_result = approval_event.get_result()
+    approval_result = _normalize_approval_result(approval_event.get_result())
 
     logger.info(f"[Dynamic Workflow] Approval received: {event_name} - {approval_result}")
 
@@ -3376,7 +3796,7 @@ def process_approval_gate(
             "eventName": event_name,
             "approved": approval_result.get("approved", False) if approval_result else False,
             "reason": approval_result.get("reason") if approval_result else None,
-            "respondedBy": approval_result.get("respondedBy") if approval_result else None,
+            "respondedBy": _approval_actor(approval_result),
             "payload": approval_result,
             "_otel": otel_ctx,
         })
@@ -3384,5 +3804,5 @@ def process_approval_gate(
     return {
         "approved": approval_result.get("approved", False) if approval_result else False,
         "reason": approval_result.get("reason") if approval_result else None,
-        "respondedBy": approval_result.get("respondedBy") if approval_result else None,
+        "respondedBy": _approval_actor(approval_result),
     }

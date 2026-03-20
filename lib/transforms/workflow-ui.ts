@@ -236,6 +236,30 @@ export type ExecutionOutcomeSummary = {
 	changedFileCount?: number;
 };
 
+export type ExecutionOutputFileChangeStatus = "A" | "M" | "D" | "R";
+
+export type ExecutionOutputFileChangeEntry = {
+	path: string;
+	status: ExecutionOutputFileChangeStatus;
+	oldPath?: string;
+};
+
+export type ExecutionOutputFileChangeSummary = {
+	files?: number;
+	additions?: number;
+	deletions?: number;
+};
+
+export type ExecutionOutputFileChangeData = {
+	files: ExecutionOutputFileChangeEntry[];
+	patch?: string;
+	patchRef?: string;
+	snapshotRefs: string[];
+	stats?: ExecutionOutputFileChangeSummary;
+	sourceNodeKey?: string;
+	durableInstanceId?: string;
+};
+
 /**
  * Check if output is a Dapr agent output structure
  */
@@ -298,6 +322,373 @@ function toOptionalInt(value: unknown): number | undefined {
 		}
 	}
 	return undefined;
+}
+
+function toOptionalQueryStringParam(
+	value: string | undefined,
+	key: string,
+): string | undefined {
+	if (!value) {
+		return undefined;
+	}
+	try {
+		const url =
+			value.startsWith("http://") || value.startsWith("https://")
+				? new URL(value)
+				: new URL(value, "http://localhost");
+		const param = url.searchParams.get(key);
+		return toOptionalString(param);
+	} catch {
+		return undefined;
+	}
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+	return value && typeof value === "object"
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function normalizeExecutionChangeStatus(
+	value: unknown,
+): ExecutionOutputFileChangeStatus {
+	if (typeof value === "string") {
+		const normalized = value.trim().toUpperCase();
+		if (
+			normalized === "A" ||
+			normalized === "M" ||
+			normalized === "D" ||
+			normalized === "R"
+		) {
+			return normalized;
+		}
+		const operation = value.trim().toLowerCase();
+		if (
+			operation === "add" ||
+			operation === "added" ||
+			operation === "create" ||
+			operation === "created" ||
+			operation === "new"
+		) {
+			return "A";
+		}
+		if (
+			operation === "delete" ||
+			operation === "deleted" ||
+			operation === "remove" ||
+			operation === "removed"
+		) {
+			return "D";
+		}
+		if (operation === "rename" || operation === "renamed") {
+			return "R";
+		}
+	}
+	return "M";
+}
+
+function mergeFileChangeEntries(
+	target: Map<string, ExecutionOutputFileChangeEntry>,
+	entries: ExecutionOutputFileChangeEntry[],
+) {
+	for (const entry of entries) {
+		const path = entry.path.trim();
+		if (!path) {
+			continue;
+		}
+		const existing = target.get(path);
+		if (!existing) {
+			target.set(path, { ...entry, path });
+			continue;
+		}
+		target.set(path, {
+			path,
+			status:
+				existing.status === "M" && entry.status !== "M"
+					? entry.status
+					: existing.status,
+			oldPath: existing.oldPath ?? entry.oldPath,
+		});
+	}
+}
+
+function extractEntriesFromList(
+	value: unknown,
+): ExecutionOutputFileChangeEntry[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((item) => {
+			if (typeof item === "string") {
+				const path = item.trim();
+				return path ? { path, status: "M" as const } : null;
+			}
+			const record = asRecord(item);
+			if (!record) {
+				return null;
+			}
+			const path = toOptionalString(record.path);
+			if (!path) {
+				return null;
+			}
+			return {
+				path,
+				status: normalizeExecutionChangeStatus(
+					record.status ?? record.operation ?? record.op,
+				),
+				oldPath: toOptionalString(record.oldPath ?? record.old_path),
+			};
+		})
+		.filter((entry): entry is ExecutionOutputFileChangeEntry => entry !== null);
+}
+
+function inferChangeStatusFromText(
+	value: string,
+): ExecutionOutputFileChangeStatus {
+	const normalized = value.trim().toLowerCase();
+	if (
+		normalized.includes("new file") ||
+		normalized.includes("created") ||
+		normalized.includes("added")
+	) {
+		return "A";
+	}
+	if (normalized.includes("deleted") || normalized.includes("removed")) {
+		return "D";
+	}
+	if (normalized.includes("renamed")) {
+		return "R";
+	}
+	return "M";
+}
+
+function parseChangedFilesFromText(
+	value: string,
+): ExecutionOutputFileChangeEntry[] {
+	const lines = value
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	if (lines.length === 0) {
+		return [];
+	}
+
+	const results: ExecutionOutputFileChangeEntry[] = [];
+	let collectingList = false;
+
+	const collectInlineEntries = (text: string) => {
+		const matches = Array.from(text.matchAll(/`([^`]+)`([^`]*)/g));
+		for (const match of matches) {
+			const path = match[1]?.trim();
+			if (!path) {
+				continue;
+			}
+			results.push({
+				path,
+				status: inferChangeStatusFromText(match[2] ?? ""),
+			});
+		}
+	};
+
+	for (const line of lines) {
+		const changedFilesMatch = line.match(
+			/^\*{0,2}changed files:\*{0,2}\s*(.+)?$/i,
+		);
+		if (changedFilesMatch) {
+			collectingList = true;
+			const remainder = changedFilesMatch[1]?.trim();
+			if (remainder) {
+				collectInlineEntries(remainder);
+			}
+			continue;
+		}
+
+		if (collectingList) {
+			if (/^[-*]\s+/.test(line) || /^`[^`]+`/.test(line)) {
+				collectInlineEntries(line);
+				continue;
+			}
+			collectingList = false;
+		}
+	}
+
+	return results;
+}
+
+function buildCandidateRecords(
+	output: unknown,
+): Array<{ nodeKey?: string; record: Record<string, unknown> }> {
+	const root = asRecord(output);
+	if (!root) {
+		return [];
+	}
+
+	const candidates: Array<{
+		nodeKey?: string;
+		record: Record<string, unknown>;
+	}> = [{ record: root }];
+	const nestedResult = asRecord(root.result);
+	if (nestedResult) {
+		candidates.push({ record: nestedResult });
+	}
+
+	const outputs = asRecord(root.outputs);
+	if (outputs) {
+		const preferred = asRecord(outputs.da_agent_system_demo);
+		if (preferred) {
+			candidates.push({
+				nodeKey: "da_agent_system_demo",
+				record: preferred,
+			});
+			const preferredResult = asRecord(preferred.result);
+			if (preferredResult) {
+				candidates.push({
+					nodeKey: "da_agent_system_demo",
+					record: preferredResult,
+				});
+			}
+		}
+		for (const [key, value] of Object.entries(outputs)) {
+			if (key === "da_agent_system_demo") {
+				continue;
+			}
+			const record = asRecord(value);
+			if (record) {
+				candidates.push({ nodeKey: key, record });
+				const nestedOutputResult = asRecord(record.result);
+				if (nestedOutputResult) {
+					candidates.push({ nodeKey: key, record: nestedOutputResult });
+				}
+			}
+		}
+	}
+
+	return candidates;
+}
+
+export function parseExecutionFileChangeData(
+	output: unknown,
+): ExecutionOutputFileChangeData | null {
+	const candidates = buildCandidateRecords(output);
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const files = new Map<string, ExecutionOutputFileChangeEntry>();
+	const snapshotRefs = new Set<string>();
+	let patch: string | undefined;
+	let patchRef: string | undefined;
+	let stats: ExecutionOutputFileChangeSummary | undefined;
+	let sourceNodeKey: string | undefined;
+	let durableInstanceId: string | undefined;
+
+	for (const candidate of candidates) {
+		const { record } = candidate;
+
+		const summary = asRecord(record.changeSummary);
+		if (summary) {
+			const summaryEntries = extractEntriesFromList(summary.files);
+			if (summaryEntries.length > 0) {
+				mergeFileChangeEntries(files, summaryEntries);
+				sourceNodeKey ??= candidate.nodeKey;
+			}
+			const summaryStats = asRecord(summary.stats);
+			if (summaryStats && !stats) {
+				stats = {
+					files: toOptionalInt(summaryStats.files),
+					additions: toOptionalInt(summaryStats.additions),
+					deletions: toOptionalInt(summaryStats.deletions),
+				};
+			}
+		}
+
+		const fileChanges = extractEntriesFromList(record.fileChanges);
+		if (fileChanges.length > 0) {
+			mergeFileChangeEntries(files, fileChanges);
+			sourceNodeKey ??= candidate.nodeKey;
+		}
+
+		for (const entry of extractEntriesFromList(record.snapshotRefs)) {
+			snapshotRefs.add(entry.path);
+			mergeFileChangeEntries(files, [entry]);
+			sourceNodeKey ??= candidate.nodeKey;
+		}
+
+		const nextPatch = toOptionalString(record.patch);
+		if (!patch && nextPatch) {
+			patch = nextPatch;
+			sourceNodeKey ??= candidate.nodeKey;
+		}
+
+		const nextPatchRef = toOptionalString(record.patchRef ?? record.patch_ref);
+		if (!patchRef && nextPatchRef) {
+			patchRef = nextPatchRef;
+			sourceNodeKey ??= candidate.nodeKey;
+		}
+
+		const nextDurableInstanceId =
+			toOptionalString(
+				record.durableInstanceId ??
+					record.durable_instance_id ??
+					record.daprInstanceId ??
+					record.dapr_instance_id,
+			) ?? toOptionalQueryStringParam(nextPatchRef, "durableInstanceId");
+		if (!durableInstanceId && nextDurableInstanceId) {
+			durableInstanceId = nextDurableInstanceId;
+			sourceNodeKey ??= candidate.nodeKey;
+		}
+
+		for (const textValue of [
+			toOptionalString(record.text),
+			toOptionalString(record.content),
+			toOptionalString(record.stdout),
+			toOptionalString(record.summary),
+		]) {
+			if (!textValue) {
+				continue;
+			}
+			const parsedTextEntries = parseChangedFilesFromText(textValue);
+			if (parsedTextEntries.length === 0) {
+				continue;
+			}
+			mergeFileChangeEntries(files, parsedTextEntries);
+			if (!stats) {
+				stats = {
+					files: parsedTextEntries.length,
+				};
+			}
+			sourceNodeKey ??= candidate.nodeKey;
+			break;
+		}
+	}
+
+	const parsedFiles = Array.from(files.values()).sort((a, b) =>
+		a.path.localeCompare(b.path),
+	);
+	const parsedSnapshotRefs = Array.from(snapshotRefs).sort((a, b) =>
+		a.localeCompare(b),
+	);
+
+	if (
+		parsedFiles.length === 0 &&
+		parsedSnapshotRefs.length === 0 &&
+		!patch &&
+		!patchRef &&
+		!stats
+	) {
+		return null;
+	}
+
+	return {
+		files: parsedFiles,
+		patch,
+		patchRef,
+		snapshotRefs: parsedSnapshotRefs,
+		stats,
+		sourceNodeKey,
+		durableInstanceId,
+	};
 }
 
 export function parseExecutionOutcomeSummary(

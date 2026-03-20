@@ -553,11 +553,12 @@ function DaprExecutionDetails({
 		setIsApproving(true);
 		try {
 			if (execution.approvalEventName) {
-				// Workflow approval gate — raise the named external event
-				await api.dapr.raiseEvent(execution.id, execution.approvalEventName, {
+				await api.dapr.approveExecution(
+					execution.id,
+					execution.approvalEventName,
 					approved,
-					reason: approved ? "Approved" : "Rejected",
-				});
+					approved ? "Approved" : "Rejected",
+				);
 			} else {
 				throw new Error("No approval event name configured for this execution");
 			}

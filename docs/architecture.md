@@ -1,6 +1,6 @@
 # Workflow Builder Architecture
 
-A visual workflow builder with Dapr-based serverless execution on Kubernetes.
+A visual workflow builder with Dapr durable workflows and OpenShell-backed agent execution on Kubernetes.
 
 ## Table of Contents
 
@@ -19,25 +19,26 @@ A visual workflow builder with Dapr-based serverless execution on Kubernetes.
 
 ## Overview
 
-The Workflow Builder is a visual workflow automation platform that enables users to design, execute, and monitor workflows through a drag-and-drop interface. The system uses:
+The Workflow Builder is a visual workflow automation platform that enables users to design, execute, and monitor workflows through a drag-and-drop interface. The current Ryzen deployment uses:
 
 - **Next.js** for the visual builder UI and BFF (Backend for Frontend)
 - **Dapr Workflows** for durable, stateful workflow orchestration
-- **Knative/KEDA** for serverless function execution with scale-to-zero
-- **PostgreSQL** for workflow definitions and function registry
+- **PostgreSQL** for workflow definitions, execution records, approvals, and child-run metadata
 - **Redis** for Dapr workflow state and pub/sub messaging
+- **OpenTelemetry + Tempo/Grafana** for traces and run review
 
 ## Current Runtime Note
 
-Some older sections in this document still refer to the historical `function-runner` naming. The current `kind-ryzen` runtime you should reason about today is:
+Some older sections in this document still refer to historical `function-runner` and `durable-agent` naming. The current `kind-ryzen` runtime you should reason about today is:
 
 - `workflow-builder`: Next.js UI + BFF
-- `workflow-orchestrator`: Dapr durable workflow interpreter
-- `ms-agent-workflow`: Microsoft Agent Framework-backed child workflow service for `travel-planner` and `code-review`
-- `durable-agent`: separate durable AI agent runtime
-- `function-router`: repo-aware action execution and routing layer
-- `postgresql`: application metadata and execution records
-- Dapr control plane + sidecars: service invocation, workflows, actors, state
+- `workflow-orchestrator`: Python Dapr durable workflow interpreter and approval owner
+- `function-router`: action routing layer for `system/*`, `workspace/*`, Activepieces, and compatibility runtimes
+- `openshell-agent-runtime`: OpenShell adapter invoked as the `openshell/run` child runtime
+- `openshell`: sandbox substrate that actually provisions and runs coding sandboxes
+- `dapr-agent-runtime` and `ms-agent-workflow`: compatibility backends that still run under the same durable parent model
+- `postgresql`: workflow definitions, execution records, approvals, plan artifacts, and child-run metadata
+- Dapr control plane + sidecars: service invocation, workflows, actors, state, pub/sub
 
 When this document and the live cluster disagree, prefer the runtime described above and the manifests in `stacks/main`.
 
@@ -53,15 +54,24 @@ The most important request paths on `kind-ryzen` are:
 4. Action nodes are routed through `function-router` and related runtime services
 5. Execution status and results are stored in PostgreSQL and exposed back through the BFF
 
-### Durable coding-agent execution
+### Durable OpenShell coding execution
 
-1. A workflow step or built-in piece selects `ms-agent/run`
-2. `workflow-orchestrator` forwards the child workflow input to `ms-agent-workflow`
-3. `ms-agent-workflow` resolves the selected template:
-   - `travel-planner`
-   - `code-review`
-4. Template steps run through Microsoft Agent Framework with repo tools resolved from `cwd` and the selected tool group
-5. Results return to the orchestrator as normalized step output, then back to the UI/API caller
+1. A workflow step or built-in piece selects `openshell/run`
+2. `workflow-orchestrator` starts a durable child-run sequence for that node
+3. The orchestrator calls `openshell-agent-runtime` for plan mode
+4. The durable workflow persists the plan artifact and waits on an external approval event
+5. Once approved, the orchestrator calls `openshell-agent-runtime` again for execution mode
+6. `openshell-agent-runtime` drives the actual sandbox work in `openshell`
+7. Results return to the orchestrator as normalized step output, then back to the UI/API caller
+8. File changes, patch artifacts, child-run state, and trace IDs are persisted for run review in the app
+
+### Compatibility backends
+
+Compatibility runtimes still exist, but they are execution backends only:
+
+1. `dapr-agent/run` calls `dapr-agent-runtime`
+2. `ms-agent/run` calls `ms-agent-workflow`
+3. Both run under the same `workflow-orchestrator` durable parent execution, approval model, and persistence contract
 
 ### Repo-aware execution path
 
@@ -70,6 +80,7 @@ The most important request paths on `kind-ryzen` are:
 - local repo cloning and branch resolution use the in-cluster Gitea service
 - the runtime assumes the local platform includes both the Gitea git server and the local registry
 - the app repo and the `stacks` repo participate in different parts of the overall deployment flow
+- workspace-oriented steps like `workspace/profile`, `workspace/clone`, and `workspace/command` stay on this path
 
 ### Key Features
 
@@ -98,38 +109,35 @@ The most important request paths on `kind-ryzen` are:
 │  ┌────────────────────┐     HTTP        ┌────────────────────────────────┐  │
 │  │    Next.js App     │────────────────▶│    workflow-orchestrator       │  │
 │  │                    │                 │                                │  │
-│  │  • Visual Builder  │                 │  • Dapr Workflow Runtime       │  │
+│  │  • Visual Builder  │                 │  • Python Dapr Workflow Runtime│  │
 │  │  • BFF API Routes  │                 │  • Dynamic Workflow Interpreter│  │
-│  │  • Auth (Better)   │                 │  • Activity Scheduling         │  │
+│  │  • Run Review UI   │                 │  • Approval Ownership          │  │
+│  │  • Auth (Better)   │                 │  • Child-run Scheduling        │  │
 │  │                    │                 │                                │  │
 │  │  Port: 3000        │                 │  Port: 8080 + Dapr Sidecar     │  │
-│  └────────────────────┘                 └──────────────┬─────────────────┘  │
-│            │                                           │                     │
-│            │                                           │ Dapr Service        │
-│            ▼                                           │ Invocation          │
-│  ┌────────────────────┐                               ▼                     │
-│  │    PostgreSQL      │     ┌────────────────────────────────────────────┐  │
-│  │                    │     │           function-runner                   │  │
-│  │  • workflows       │     │                                            │  │
-│  │  • functions       │◀───▶│  • Builtin Handlers (44 functions)         │  │
-│  │  • executions      │     │  • OCI Container Execution (K8s Jobs)      │  │
-│  │  • integrations    │     │  • HTTP Webhook Calls                      │  │
-│  │                    │     │                                            │  │
-│  │  Port: 5432        │     │  Port: 8080 + Dapr Sidecar                 │  │
-│  └────────────────────┘     └──────────────┬─────────────────────────────┘  │
-│                                            │                                 │
-│                          ┌─────────────────┼─────────────────┐              │
-│                          │                 │                 │              │
-│                          ▼                 ▼                 ▼              │
-│              ┌───────────────┐  ┌───────────────┐  ┌───────────────┐       │
-│              │    Builtin    │  │  OCI Function │  │ HTTP Function │       │
-│              │   Handlers    │  │   (K8s Job)   │  │   (Webhook)   │       │
-│              │               │  │               │  │               │       │
-│              │ • OpenAI      │  │ • Custom      │  │ • External    │       │
-│              │ • Slack       │  │   containers  │  │   APIs        │       │
-│              │ • GitHub      │  │ • Any language│  │ • Webhooks    │       │
-│              │ • 14 plugins  │  │               │  │               │       │
-│              └───────────────┘  └───────────────┘  └───────────────┘       │
+│  └────────────────────┘                 └───────┬──────────────┬─────────┘  │
+│            │                                    │              │            │
+│            ▼                                    │              │            │
+│  ┌────────────────────┐                        ▼              ▼            │
+│  │    PostgreSQL      │         ┌────────────────────┐  ┌────────────────┐ │
+│  │                    │◀───────▶│  function-router   │  │openshell-agent │ │
+│  │  • workflows       │         │                    │  │-runtime        │ │
+│  │  • executions      │         │ • system/*         │  │                │ │
+│  │  • agent runs      │         │ • workspace/*      │  │ • plan/run API │ │
+│  │  • approvals       │         │ • Activepieces     │  │ • trace/patch  │ │
+│  │  • plan artifacts  │         │ • compatibility rt │  │ • child-run md │ │
+│  │                    │         │                    │  │                │ │
+│  │  Port: 5432        │         │  Port: 8080        │  │  Port: 8080    │ │
+│  └────────────────────┘         └─────────┬──────────┘  └──────┬─────────┘ │
+│                                           │                    │           │
+│                                           ▼                    ▼           │
+│                                 ┌────────────────┐   ┌──────────────────┐  │
+│                                 │ compatibility  │   │    openshell     │  │
+│                                 │ runtimes       │   │                  │  │
+│                                 │                │   │ • sandbox create │  │
+│                                 │ • dapr-agent   │   │ • sandbox run    │  │
+│                                 │ • ms-agent     │   │ • policy/logs    │  │
+│                                 └────────────────┘   └──────────────────┘  │
 │                                                                              │
 │  ┌────────────────────────────────────────────────────────────────────────┐ │
 │  │                        Dapr Infrastructure                              │ │
@@ -171,20 +179,21 @@ The Dapr workflow runtime service that:
 | Feature | Description |
 |---------|-------------|
 | Dynamic Interpreter | Executes any workflow definition without code generation |
-| Activity Scheduling | Calls function-runner for each action node |
+| Activity Scheduling | Calls `function-router`, `openshell-agent-runtime`, and compatibility runtimes for action nodes |
 | State Management | Persists workflow state in Redis via Dapr |
 | Event Handling | Supports approval gates with external events |
 | Timer Support | Creates durable timers for delays and timeouts |
+| Review Persistence | Records child runs, plan artifacts, trace IDs, and OpenShell patch metadata in Postgres |
 
 **Technology Stack:**
-- TypeScript + Fastify
+- Python + FastAPI
 - Dapr Workflow SDK
 - Dapr Sidecar for service invocation
 
 **Key Files:**
-- `services/workflow-orchestrator/src/workflows/dynamic-workflow.ts`
-- `services/workflow-orchestrator/src/activities/execute-action.ts`
-- `services/workflow-orchestrator/src/routes/workflows.ts`
+- `services/workflow-orchestrator/workflows/dynamic_workflow.py`
+- `services/workflow-orchestrator/activities/call_agent_service.py`
+- `services/workflow-orchestrator/app.py`
 
 ### 2a. MS Agent Workflow
 
@@ -204,21 +213,33 @@ Key runtime behavior:
 - tool-backed steps run in `ms-agent-workflow`, not in the Next.js app
 - the service is durable because it is invoked through Dapr child workflows, not because Microsoft Agent Framework itself provides durability
 
-### 3. Function Runner
+### 3. Function Router
 
-The serverless function execution service supporting three execution types:
+The repo-aware execution router supporting built-in system/workspace actions, Activepieces, and compatibility runtimes:
 
 | Type | Description | Use Case |
 |------|-------------|----------|
-| **builtin** | Statically compiled TypeScript handlers | Standard integrations (OpenAI, Slack, etc.) |
-| **oci** | Container images run as K8s Jobs | Custom functions in any language |
-| **http** | External HTTP webhook calls | Third-party integrations |
+| **system/workspace** | Internal handlers for repo/session tasks | Sandbox prep, clone, shell commands |
+| **openshell/\*** | Routed to `openshell-agent-runtime` | Durable coding agent plan/run |
+| **activepieces** | Third-party action catalog | SaaS integrations |
+| **compatibility runtimes** | Routed child backends | `dapr-agent/run`, `ms-agent/run` |
 
 **Key Files:**
-- `services/function-runner/src/handlers/builtin.ts`
-- `services/function-runner/src/handlers/oci.ts`
-- `services/function-runner/src/handlers/http.ts`
-- `services/function-runner/src/core/function-loader.ts`
+- `services/function-router/src/core/registry.ts`
+- `services/function-router/src/core/openfunction-resolver.ts`
+
+### 4. OpenShell Agent Runtime
+
+The OpenShell adapter converts durable workflow child-run requests into sandbox operations:
+
+| Feature | Description |
+|---------|-------------|
+| Plan/Run Split | Supports durable plan mode followed by approved execution mode |
+| Trace Propagation | Preserves trace context across Dapr and OpenShell |
+| Change Artifacts | Persists `fileChanges`, `changeSummary`, and unified diffs for app review |
+| Sandbox Metadata | Returns sandbox identity, repo path, and child-run status |
+
+The adapter is an execution backend. It does not own workflow durability; `workflow-orchestrator` remains the sole orchestration owner.
 
 ### 4. Dapr Components
 

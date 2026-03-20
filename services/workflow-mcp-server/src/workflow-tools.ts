@@ -684,6 +684,8 @@ export function registerWorkflowTools(
 							eventData: {
 								approved: args.approved,
 								reason: args.reason,
+								approvedBy: "system:workflow-mcp-server",
+								respondedBy: "system:workflow-mcp-server",
 							},
 						}),
 					},

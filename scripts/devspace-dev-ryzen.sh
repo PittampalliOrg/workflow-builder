@@ -7,25 +7,20 @@ WORKLOAD_NAMESPACE="workflow-builder"
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SKIP_RECONCILE_ANNOTATION="argocd.argoproj.io/skip-reconcile"
 REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
+DEFAULT_DEVSPACE_PROFILE="openshell-inner-loop"
 ARGO_APPS=(
   "workflow-builder"
   "function-router"
-  "ms-agent-workflow"
-  "dapr-agent-runtime"
   "workflow-orchestrator"
 )
 DEVSPACE_REPLACEMENT_DEPLOYMENTS=(
   "workflow-builder-devspace"
   "function-router-devspace"
-  "ms-agent-workflow-devspace"
-  "dapr-agent-runtime-devspace"
   "workflow-orchestrator-devspace"
 )
 PRODUCTION_DEPLOYMENTS=(
   "workflow-builder"
   "function-router"
-  "ms-agent-workflow"
-  "dapr-agent-runtime"
   "workflow-orchestrator"
 )
 
@@ -71,6 +66,8 @@ cleanup() {
 }
 
 main() {
+  local devspace_args=("$@")
+
   trap 'cleanup "$?"' EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -89,7 +86,11 @@ main() {
 
   printf '==> Starting DevSpace session\n'
   cd "$PROJECT_ROOT"
-  devspace dev "$@"
+  if [[ " ${devspace_args[*]} " != *" --profile "* ]] && [[ " ${devspace_args[*]} " != *" -p "* ]]; then
+    devspace_args=(--profile "$DEFAULT_DEVSPACE_PROFILE" "${devspace_args[@]}")
+  fi
+
+  devspace dev "${devspace_args[@]}"
 }
 
 main "$@"

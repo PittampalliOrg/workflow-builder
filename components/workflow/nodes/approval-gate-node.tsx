@@ -79,10 +79,12 @@ export const ApprovalGateNode = memo(
 			if (!approvalExecutionId || !approvalEventName) return;
 			setIsApproving(true);
 			try {
-				await api.dapr.raiseEvent(approvalExecutionId, approvalEventName, {
+				await api.dapr.approveExecution(
+					approvalExecutionId,
+					approvalEventName,
 					approved,
-					reason: approved ? "Approved" : "Rejected",
-				});
+					approved ? "Approved" : "Rejected",
+				);
 				toast.success(approved ? "Approved" : "Rejected");
 				// Mark as responded so polling doesn't re-show, then clear approval UI
 				setApprovalResponded(true);

@@ -454,8 +454,17 @@ def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
     """Run a shell command inside the workspace."""
     context = _extract_context()
     working_directory = context.resolve_path(cwd)
+    shell_command = command
+    if "pnpm" in command and shutil.which("pnpm") is None:
+        pnpm_fallback = None
+        if shutil.which("corepack"):
+            pnpm_fallback = 'pnpm() { corepack pnpm "$@"; }'
+        elif shutil.which("npx"):
+            pnpm_fallback = 'pnpm() { npx pnpm "$@"; }'
+        if pnpm_fallback:
+            shell_command = "\n".join([pnpm_fallback, command])
     completed = subprocess.run(
-        command,
+        shell_command,
         cwd=working_directory,
         shell=True,
         text=True,

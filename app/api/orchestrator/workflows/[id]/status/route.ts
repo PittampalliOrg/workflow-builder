@@ -5,14 +5,37 @@
  * updates the local execution record.
  */
 
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { getOrchestratorUrlAsync } from "@/lib/dapr/config-provider";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
-import { workflowExecutions, workflows } from "@/lib/db/schema";
+import {
+	workflowAgentRuns,
+	workflowExecutions,
+	workflows,
+} from "@/lib/db/schema";
+
+function findTraceId(value: unknown): string | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+	if (
+		"traceId" in value &&
+		typeof (value as Record<string, unknown>).traceId === "string"
+	) {
+		return (value as Record<string, string>).traceId;
+	}
+	for (const nested of Object.values(value as Record<string, unknown>)) {
+		const traceId = findTraceId(nested);
+		if (traceId) {
+			return traceId;
+		}
+	}
+	return null;
+}
 
 export async function GET(
 	request: Request,
@@ -83,6 +106,20 @@ export async function GET(
 					orchestratorUrl,
 					execution.daprInstanceId,
 				);
+				const agentRuns = await db
+					.select({
+						result: workflowAgentRuns.result,
+					})
+					.from(workflowAgentRuns)
+					.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
+					.orderBy(desc(workflowAgentRuns.createdAt));
+				const traceId =
+					findTraceId(status.outputs) ??
+					agentRuns
+						.map((row) => findTraceId(row.result))
+						.find((value): value is string => Boolean(value)) ??
+					findTraceId(execution.output) ??
+					null;
 
 				// Map runtime status to local status
 				const localStatus = mapRuntimeStatusToLocalStatus(status.runtimeStatus);
@@ -129,6 +166,7 @@ export async function GET(
 					currentNodeId: status.currentNodeId,
 					currentNodeName: status.currentNodeName,
 					approvalEventName: status.approvalEventName,
+					traceId,
 					outputs: status.outputs,
 					error: status.error,
 					stackTrace: status.stackTrace ?? null,

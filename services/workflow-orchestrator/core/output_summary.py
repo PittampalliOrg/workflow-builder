@@ -9,6 +9,7 @@ SUMMARY_OUTPUT_KEYS = (
     "fileChanges",
     "patch",
     "patchRef",
+    "snapshotRefs",
     "changeSummary",
     "artifactRef",
     "plan",

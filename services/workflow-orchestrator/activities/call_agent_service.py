@@ -8,6 +8,8 @@ as durable Dapr workflows and report completion via pub/sub external events.
 from __future__ import annotations
 
 import logging
+import re
+import shlex
 from urllib.parse import quote
 
 import httpx
@@ -21,7 +23,12 @@ DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
 DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
+OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
+
+_OPEN_TAG = "<proposed_plan>"
+_CLOSE_TAG = "</proposed_plan>"
+_PLAN_LINE_PATTERN = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*\S)\s*$")
 
 
 def _post_json_with_details(
@@ -30,8 +37,9 @@ def _post_json_with_details(
     url: str,
     payload: dict,
     service_label: str,
+    headers: dict[str, str] | None = None,
 ) -> dict:
-    response = client.post(url, json=payload)
+    response = client.post(url, json=payload, headers=headers)
     if response.status_code >= 400:
         body = (response.text or "").strip()
         body_preview = body[:1200] if body else "<empty>"
@@ -65,6 +73,123 @@ def _as_bool(value: object, default: bool) -> bool:
         if normalized == "false":
             return False
     return default
+
+
+def _trace_id_from_traceparent(traceparent: object) -> str | None:
+    if not isinstance(traceparent, str):
+        return None
+    parts = traceparent.strip().split("-")
+    if len(parts) != 4:
+        return None
+    trace_id = parts[1].strip().lower()
+    if len(trace_id) != 32:
+        return None
+    return trace_id
+
+
+def _trace_id_from_otel(otel_ctx: object) -> str | None:
+    if not isinstance(otel_ctx, dict):
+        return None
+    direct = str(otel_ctx.get("traceId") or otel_ctx.get("trace_id") or "").strip()
+    if direct:
+        return direct
+    return _trace_id_from_traceparent(otel_ctx.get("traceparent"))
+
+
+def _otel_headers(otel_ctx: object) -> dict[str, str]:
+    if not isinstance(otel_ctx, dict):
+        return {}
+    headers: dict[str, str] = {}
+    for key in ("traceparent", "tracestate", "baggage"):
+        value = str(otel_ctx.get(key) or "").strip()
+        if value:
+            headers[key] = value
+    return headers
+
+
+def _extract_proposed_plan_text(text: str) -> str | None:
+    if not text:
+        return None
+    start = text.rfind(_OPEN_TAG)
+    if start < 0:
+        return None
+    content_start = start + len(_OPEN_TAG)
+    end = text.find(_CLOSE_TAG, content_start)
+    if end < 0:
+        candidate = text[content_start:].strip()
+        return candidate or None
+    candidate = text[content_start:end].strip()
+    return candidate or None
+
+
+def _build_minimal_plan(goal: str, plan_markdown: str) -> dict:
+    tasks: list[dict[str, object]] = []
+    for index, raw_line in enumerate(plan_markdown.splitlines(), start=1):
+        match = _PLAN_LINE_PATTERN.match(raw_line)
+        if not match:
+            continue
+        summary = match.group(1).strip()
+        tasks.append(
+            {
+                "id": str(index),
+                "subject": summary[:120],
+                "description": summary,
+                "status": "pending",
+                "blocked": False,
+                "blockedBy": [],
+                "targetPaths": [],
+                "acceptanceCriteria": [],
+            }
+        )
+    if not tasks:
+        tasks.append(
+            {
+                "id": "1",
+                "subject": "Execute requested changes",
+                "description": goal.strip() or "Execute the approved plan",
+                "status": "pending",
+                "blocked": False,
+                "blockedBy": [],
+                "targetPaths": [],
+                "acceptanceCriteria": [],
+            }
+        )
+    return {
+        "artifactType": "claude_task_graph_v1",
+        "goal": goal.strip() or "Execute the requested plan",
+        "tasks": tasks,
+        "estimated_tool_calls": max(1, len(tasks)),
+    }
+
+
+def _build_openshell_command(input_data: dict) -> str:
+    prompt = str(input_data.get("prompt") or "").strip()
+    mode = str(input_data.get("mode") or "").strip().lower()
+    model = str(input_data.get("model") or "").strip()
+    if "/" in model:
+        model = model.split("/", 1)[1].strip()
+    cwd = str(input_data.get("cwd") or "").strip()
+    if mode == "plan_mode":
+        prompt = (
+            f"{prompt}\n\n"
+            "Return only a <proposed_plan>...</proposed_plan> block.\n"
+            "Inside the block, produce a short numbered implementation plan.\n"
+            "Do not modify files, run write operations, or include any text outside the tags."
+        ).strip()
+    args = [
+        "claude",
+        "-p",
+        prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--no-session-persistence",
+    ]
+    if model:
+        args.extend(["--model", model])
+    command = " ".join(shlex.quote(part) for part in args)
+    if cwd:
+        return f"cd {shlex.quote(cwd)} && {command}"
+    return command
 
 
 def terminate_durable_runs_by_parent_execution(
@@ -200,6 +325,144 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                 )
         except Exception as e:
             logger.error(f"[Call Dapr Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_openshell_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Run an OpenShell sandboxed Claude-style coding task synchronously.
+    """
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{OPENSHELL_AGENT_APP_ID}/method/api/v1/agent-runs"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "openshell/run",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.db_execution_id": input_data.get("executionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.call_openshell_agent_run", otel, attrs):
+        try:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 30)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+            if timeout_minutes <= 0:
+                timeout_minutes = 30
+            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
+            run_id = str(
+                input_data.get("runId")
+                or input_data.get("agentWorkflowId")
+                or input_data.get("executionId")
+                or ""
+            ).strip()
+            if run_id:
+                attrs["agent.workflow_id"] = run_id
+            sandbox_name = str(
+                input_data.get("sandboxName")
+                or input_data.get("workspaceRef")
+                or run_id
+                or "openshell-run"
+            ).strip()
+            provider = str(input_data.get("provider") or "").strip() or None
+            command = _build_openshell_command(input_data)
+            otel_headers = _otel_headers(otel)
+            trace_id = _trace_id_from_otel(otel)
+            payload = {
+                "runId": run_id,
+                "workflowInstanceId": input_data.get("parentExecutionId"),
+                "executionId": input_data.get("executionId"),
+                "workflowId": input_data.get("workflowId"),
+                "nodeId": input_data.get("nodeId"),
+                "nodeName": input_data.get("nodeName"),
+                "sandboxName": sandbox_name,
+                "provider": provider,
+                "model": input_data.get("model"),
+                "keep": _as_bool(input_data.get("keepSandbox"), True),
+                "timeoutSeconds": timeout_minutes * 60,
+                "repoUrl": input_data.get("repoUrl"),
+                "repoBranch": input_data.get("repoBranch"),
+                "repoToken": input_data.get("repoToken"),
+                "sandboxRepoPath": input_data.get("sandboxRepoPath")
+                or input_data.get("cwd"),
+                "command": command,
+                "traceId": trace_id,
+                "_otel": otel if isinstance(otel, dict) else {},
+            }
+            with httpx.Client(timeout=request_timeout_seconds) as client:
+                data = _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload=payload,
+                    service_label="OpenShell agent run",
+                    headers=otel_headers or None,
+                )
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            stdout = str(result.get("stdout") or "").strip()
+            stderr = str(result.get("stderr") or "").strip()
+            text = stdout or stderr
+            plan_markdown = _extract_proposed_plan_text(text)
+            agent_progress = (
+                data.get("agentProgress") if isinstance(data.get("agentProgress"), dict) else None
+            )
+            resolved_trace_id = (
+                str(data.get("traceId") or "").strip()
+                or str(result.get("traceId") or "").strip()
+                or (
+                    str(agent_progress.get("traceId") or "").strip()
+                    if isinstance(agent_progress, dict)
+                    else ""
+                )
+                or trace_id
+                or None
+            )
+            if isinstance(agent_progress, dict) and resolved_trace_id and not agent_progress.get("traceId"):
+                agent_progress = {**agent_progress, "traceId": resolved_trace_id}
+            compact_result = {
+                "success": bool(data.get("status") == "completed" and result.get("ok", True)),
+                "agentWorkflowId": data.get("agentWorkflowId") or run_id,
+                "daprInstanceId": data.get("daprInstanceId") or run_id,
+                "childWorkflowName": "openshell-run",
+                "childAppId": OPENSHELL_AGENT_APP_ID,
+                "sandboxName": data.get("sandboxName") or sandbox_name,
+                "provider": data.get("provider") or provider,
+                "traceId": resolved_trace_id,
+                "text": text,
+                "content": text,
+                "agentProgress": agent_progress,
+                "result": result,
+            }
+            for field_name in (
+                "fileChanges",
+                "snapshotRefs",
+                "changeSummary",
+                "patch",
+                "patchRef",
+                "changedFiles",
+            ):
+                field_value = data.get(field_name)
+                if field_value is None:
+                    field_value = result.get(field_name)
+                if field_value is not None:
+                    compact_result[field_name] = field_value
+            if plan_markdown:
+                compact_result["planMarkdown"] = plan_markdown
+                compact_result["plan"] = _build_minimal_plan(
+                    str(input_data.get("prompt") or "").strip(),
+                    plan_markdown,
+                )
+                compact_result["artifactType"] = "claude_task_graph_v1"
+            if not compact_result["success"]:
+                compact_result["error"] = stderr or text or "OpenShell run failed"
+            return compact_result
+        except Exception as e:
+            logger.error(f"[Call OpenShell Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

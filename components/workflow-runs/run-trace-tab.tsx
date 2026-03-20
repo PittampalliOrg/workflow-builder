@@ -22,6 +22,7 @@ type RunTraceTabProps = {
 	workflowId: string;
 	executionId: string;
 	daprInstanceId?: string | null;
+	traceIds?: string[];
 	selectedTraceId: string | null;
 	selectedSpanId: string | null;
 	onSelectedTraceIdChange: (id: string | null) => void;
@@ -42,6 +43,7 @@ export function RunTraceTab({
 	workflowId,
 	executionId,
 	daprInstanceId,
+	traceIds = [],
 	selectedTraceId,
 	selectedSpanId,
 	onSelectedTraceIdChange,
@@ -80,26 +82,48 @@ export function RunTraceTab({
 			);
 	}, [daprInstanceId, executionId, traces]);
 
-	useEffect(() => {
-		if (executionTraces.length === 0) {
-			if (selectedTraceId) {
-				onSelectedTraceIdChange(null);
-			}
-			return;
-		}
-		const valid = selectedTraceId
-			? executionTraces.some((trace) => trace.traceId === selectedTraceId)
-			: false;
-		if (!valid) {
-			onSelectedTraceIdChange(executionTraces[0]?.traceId ?? null);
-		}
-	}, [executionTraces, onSelectedTraceIdChange, selectedTraceId]);
+	const traceIdHints = useMemo(() => {
+		return Array.from(
+			new Set(
+				traceIds
+					.map((value) => value.trim())
+					.filter((value) => value.length > 0),
+			),
+		);
+	}, [traceIds]);
 
-	const activeTraceId =
-		selectedTraceId &&
-		executionTraces.some((trace) => trace.traceId === selectedTraceId)
-			? selectedTraceId
-			: null;
+	const fallbackTraceId = useMemo(() => {
+		const knownTraceIds = new Set([
+			...executionTraces.map((trace) => trace.traceId),
+			...traceIdHints,
+		]);
+		if (selectedTraceId?.trim() && knownTraceIds.has(selectedTraceId)) {
+			return selectedTraceId;
+		}
+		if (executionTraces.length > 0) {
+			return executionTraces[0]?.traceId ?? null;
+		}
+		return traceIdHints[0] ?? null;
+	}, [executionTraces, selectedTraceId, traceIdHints]);
+
+	useEffect(() => {
+		const knownTraceIds = new Set([
+			...executionTraces.map((trace) => trace.traceId),
+			...traceIdHints,
+		]);
+		const valid = selectedTraceId ? knownTraceIds.has(selectedTraceId) : false;
+		if (!valid) {
+			onSelectedTraceIdChange(fallbackTraceId);
+		}
+	}, [
+		executionTraces,
+		fallbackTraceId,
+		onSelectedTraceIdChange,
+		selectedTraceId,
+		traceIdHints,
+	]);
+
+	const activeTraceId = fallbackTraceId;
 
 	const {
 		trace: activeTrace,
@@ -107,7 +131,7 @@ export function RunTraceTab({
 		isError: isTraceError,
 		error: traceError,
 		mutate: refreshTrace,
-	} = useObservabilityTrace(activeTraceId);
+	} = useObservabilityTrace(activeTraceId, { executionId });
 
 	useEffect(() => {
 		if (!activeTrace || activeTrace.spans.length === 0) {
@@ -133,13 +157,31 @@ export function RunTraceTab({
 	);
 
 	const activeSummary: ObservabilityTraceSummary | null = useMemo(() => {
+		if (activeTrace) {
+			return activeTrace.trace;
+		}
 		if (!activeTraceId) {
 			return null;
 		}
 		return (
 			executionTraces.find((trace) => trace.traceId === activeTraceId) ?? null
 		);
-	}, [activeTraceId, executionTraces]);
+	}, [activeTrace, activeTraceId, executionTraces]);
+
+	const displayedTraces = useMemo(() => {
+		if (executionTraces.length > 0) {
+			return executionTraces;
+		}
+		if (activeTrace) {
+			return [activeTrace.trace];
+		}
+		return [];
+	}, [activeTrace, executionTraces]);
+
+	const usingExplicitTraceReference =
+		executionTraces.length === 0 &&
+		Boolean(activeTraceId) &&
+		traceIdHints.includes(activeTraceId ?? "");
 
 	if (isError) {
 		return (
@@ -150,7 +192,7 @@ export function RunTraceTab({
 		);
 	}
 
-	if (isLoading && executionTraces.length === 0) {
+	if (isLoading && displayedTraces.length === 0 && !activeTraceId) {
 		return (
 			<div className="rounded-lg border p-6 text-muted-foreground text-sm">
 				Loading traces for this run...
@@ -158,7 +200,7 @@ export function RunTraceTab({
 		);
 	}
 
-	if (executionTraces.length === 0) {
+	if (displayedTraces.length === 0 && !activeTraceId && !isLoadingTrace) {
 		return (
 			<div className="rounded-lg border p-6 text-muted-foreground text-sm">
 				No traces correlated to this run yet.
@@ -174,7 +216,7 @@ export function RunTraceTab({
 						<div>
 							<div className="font-medium text-sm">Execution Traces</div>
 							<div className="text-muted-foreground text-xs">
-								{executionTraces.length} trace(s)
+								{displayedTraces.length} trace(s)
 							</div>
 						</div>
 						<Button onClick={() => refresh()} size="sm" variant="outline">
@@ -182,7 +224,7 @@ export function RunTraceTab({
 						</Button>
 					</div>
 					<div className="max-h-[320px] overflow-auto sm:max-h-[calc(100vh-17rem)]">
-						{executionTraces.map((trace) => {
+						{displayedTraces.map((trace) => {
 							const selected = trace.traceId === activeTraceId;
 							return (
 								<button
@@ -257,11 +299,19 @@ export function RunTraceTab({
 									))}
 								</div>
 							) : null}
+							{usingExplicitTraceReference ? (
+								<p className="mt-2 text-muted-foreground text-xs">
+									Using the trace ID recorded with this run because Tempo did
+									not return a workflow-correlated search result yet.
+								</p>
+							) : null}
 						</div>
 						<div className="flex items-center gap-2">
 							{activeSummary ? (
 								<Button asChild size="sm" variant="outline">
-									<Link href={`/observability/${activeSummary.traceId}`}>
+									<Link
+										href={`/observability/${activeSummary.traceId}?executionId=${encodeURIComponent(executionId)}`}
+									>
 										<ExternalLink className="mr-2 h-3.5 w-3.5" />
 										Open Full Trace
 									</Link>

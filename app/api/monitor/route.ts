@@ -10,6 +10,16 @@ import type {
 
 export const dynamic = "force-dynamic";
 
+function isWorkflowListUnsupportedError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	const normalized = message.toLowerCase();
+	return (
+		normalized.includes("workflow_query_unsupported") ||
+		normalized.includes("queryinstances") ||
+		normalized.includes("unsupported")
+	);
+}
+
 function toWorkflowPhase(phase: string | undefined): WorkflowPhase | undefined {
 	if (!phase) return undefined;
 	if (phase === "clone") return phase;
@@ -111,6 +121,20 @@ export async function GET(request: NextRequest) {
 			offset: response.offset,
 		});
 	} catch (error) {
+		if (isWorkflowListUnsupportedError(error)) {
+			return NextResponse.json({
+				workflows: [],
+				total: 0,
+				limit: Number.parseInt(
+					request.nextUrl.searchParams.get("limit") || "50",
+					10,
+				),
+				offset: Number.parseInt(
+					request.nextUrl.searchParams.get("offset") || "0",
+					10,
+				),
+			});
+		}
 		console.error("Error fetching workflow executions:", error);
 		return NextResponse.json(
 			{ error: "Failed to fetch workflow executions" },

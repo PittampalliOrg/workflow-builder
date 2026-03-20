@@ -13,6 +13,7 @@ import {
 	workflowExecutions,
 	workflows,
 } from "@/lib/db/schema";
+import type { McpInputProperty } from "@/lib/mcp/types";
 import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
@@ -28,6 +29,106 @@ function extractTraceHeaders(request: Request): Record<string, string> {
 		}
 	}
 	return headers;
+}
+
+function parseManualTriggerInputSchema(
+	nodes: WorkflowNode[],
+): McpInputProperty[] {
+	const triggerNode = nodes.find((node) => node.type === "trigger");
+	const config =
+		((triggerNode?.data as Record<string, unknown> | undefined)?.config as
+			| Record<string, unknown>
+			| undefined) ?? {};
+	if (config.triggerType !== "Manual") {
+		return [];
+	}
+	if (typeof config.inputSchema !== "string" || !config.inputSchema.trim()) {
+		return [];
+	}
+	try {
+		const parsed = JSON.parse(config.inputSchema) as unknown;
+		return Array.isArray(parsed)
+			? parsed.filter((field): field is McpInputProperty =>
+					Boolean(
+						field &&
+							typeof field === "object" &&
+							typeof (field as McpInputProperty).name === "string" &&
+							typeof (field as McpInputProperty).type === "string" &&
+							typeof (field as McpInputProperty).required === "boolean",
+					),
+				)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateManualTriggerInput(
+	schema: McpInputProperty[],
+	input: unknown,
+): string[] {
+	if (schema.length === 0) {
+		return [];
+	}
+	if (!isPlainObject(input)) {
+		return ["Execution input must be a JSON object."];
+	}
+
+	const errors: string[] = [];
+	for (const field of schema) {
+		const value = input[field.name];
+		const isMissing = value === undefined || value === null || value === "";
+		if (field.required && isMissing) {
+			errors.push(`Missing required input: ${field.name}`);
+			continue;
+		}
+		if (isMissing) {
+			continue;
+		}
+
+		const typeValid =
+			field.type === "TEXT"
+				? typeof value === "string"
+				: field.type === "NUMBER"
+					? typeof value === "number" && Number.isFinite(value)
+					: field.type === "BOOLEAN"
+						? typeof value === "boolean"
+						: field.type === "DATE"
+							? (typeof value === "string" &&
+									!Number.isNaN(Date.parse(value))) ||
+								value instanceof Date
+							: field.type === "ARRAY"
+								? Array.isArray(value)
+								: isPlainObject(value);
+
+		if (!typeValid) {
+			errors.push(
+				`Input ${field.name} must be of type ${field.type.toLowerCase()}.`,
+			);
+		}
+	}
+
+	return errors;
+}
+
+function normalizeExecutionInput(
+	workflowId: string,
+	input: unknown,
+): Record<string, unknown> {
+	if (!isPlainObject(input)) {
+		return {};
+	}
+	if (workflowId === "aicodingagent001" && typeof input.branch !== "string") {
+		return {
+			...input,
+			branch: "main",
+		};
+	}
+	return input;
 }
 
 export async function POST(
@@ -68,7 +169,7 @@ export async function POST(
 
 		// Parse request body
 		const body = await request.json().catch(() => ({}));
-		const input = body.input || {};
+		const input = normalizeExecutionInput(workflowId, body.input);
 
 		// Route based on engine type
 		const engineType = (workflow as Record<string, unknown>).engineType as
@@ -80,6 +181,22 @@ export async function POST(
 			const orchestratorUrl =
 				((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
 				(await getGenericOrchestratorUrl());
+			const nodes = workflow.nodes as WorkflowNode[];
+			const edges = workflow.edges as WorkflowEdge[];
+			const manualTriggerInputSchema = parseManualTriggerInputSchema(nodes);
+			const inputValidationErrors = validateManualTriggerInput(
+				manualTriggerInputSchema,
+				input,
+			);
+			if (inputValidationErrors.length > 0) {
+				return NextResponse.json(
+					{
+						error: "Invalid workflow input",
+						details: inputValidationErrors,
+					},
+					{ status: 400 },
+				);
+			}
 
 			// Create execution record
 			const [execution] = await db
@@ -93,9 +210,6 @@ export async function POST(
 				.returning();
 
 			try {
-				const nodes = workflow.nodes as WorkflowNode[];
-				const edges = workflow.edges as WorkflowEdge[];
-
 				// Generate workflow definition from the visual graph
 				const definition = generateWorkflowDefinition(
 					nodes,

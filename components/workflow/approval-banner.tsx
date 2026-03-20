@@ -111,10 +111,12 @@ export function ApprovalBanner() {
 	const handleAction = async (approved: boolean) => {
 		setIsSubmitting(true);
 		try {
-			await api.dapr.raiseEvent(approvalExecutionId, approvalEventName, {
+			await api.dapr.approveExecution(
+				approvalExecutionId,
+				approvalEventName,
 				approved,
-				reason: approved ? "Approved" : "Rejected",
-			});
+				approved ? "Approved" : "Rejected",
+			);
 			toast.success(approved ? "Workflow approved" : "Workflow rejected");
 			// Mark as responded so polling doesn't re-show
 			setApprovalResponded(true);

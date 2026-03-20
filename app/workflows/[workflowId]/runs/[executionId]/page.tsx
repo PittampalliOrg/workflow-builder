@@ -23,7 +23,10 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 import { api } from "@/lib/api-client";
-import { parseDaprAgentOutput } from "@/lib/transforms/workflow-ui";
+import {
+	parseDaprAgentOutput,
+	parseExecutionFileChangeData,
+} from "@/lib/transforms/workflow-ui";
 
 type ExecutionLogsResponse = Awaited<
 	ReturnType<typeof api.workflow.getExecutionLogs>
@@ -52,6 +55,28 @@ const VALID_TABS: WorkspaceTab[] = [
 	"trace",
 	"sandbox",
 ];
+
+function readTraceIdFromUnknown(value: unknown): string | null {
+	if (!value || typeof value !== "object") {
+		return null;
+	}
+	const record = value as Record<string, unknown>;
+	if (typeof record.traceId === "string" && record.traceId.trim()) {
+		return record.traceId;
+	}
+	const agentProgress =
+		record.agentProgress && typeof record.agentProgress === "object"
+			? (record.agentProgress as Record<string, unknown>)
+			: null;
+	if (
+		agentProgress &&
+		typeof agentProgress.traceId === "string" &&
+		agentProgress.traceId.trim()
+	) {
+		return agentProgress.traceId;
+	}
+	return null;
+}
 
 function normalizeTab(value: string | null): WorkspaceTab {
 	if (!value) {
@@ -179,6 +204,44 @@ export default function WorkflowRunDetailPage() {
 			taskCount: parsedOutput?.tasks?.length ?? 0,
 		};
 	}, [monitorExecution]);
+
+	const executionFileChangeData = useMemo(
+		() => parseExecutionFileChangeData(details?.execution.output),
+		[details?.execution.output],
+	);
+
+	const executionTraceIds = useMemo(() => {
+		const ids = new Set<string>();
+		const push = (value: string | null | undefined) => {
+			if (!value) {
+				return;
+			}
+			const normalized = value.trim();
+			if (normalized) {
+				ids.add(normalized);
+			}
+		};
+
+		for (const run of details?.agentRuns ?? []) {
+			push(readTraceIdFromUnknown(run.result));
+		}
+
+		for (const progress of Object.values(
+			runtimeStatus?.agentProgressByNode ?? {},
+		)) {
+			push(progress.traceId);
+		}
+
+		push(details?.runtime?.traceId ?? null);
+		push(runtimeStatus?.traceId);
+
+		return Array.from(ids);
+	}, [
+		details?.agentRuns,
+		details?.runtime?.traceId,
+		runtimeStatus?.agentProgressByNode,
+		runtimeStatus?.traceId,
+	]);
 
 	if (isLoading && !details) {
 		return (
@@ -355,6 +418,7 @@ export default function WorkflowRunDetailPage() {
 				<TabsContent className="mt-0 space-y-3" value="changes">
 					<ExecutionChangesPanel
 						executionId={executionId}
+						fallbackData={executionFileChangeData}
 						initialSelectedFilePath={selectedFilePath}
 						onSelectedFilePathChange={(path) =>
 							updateQuery({ file: path, tab: "changes" })
@@ -374,15 +438,13 @@ export default function WorkflowRunDetailPage() {
 						}
 						selectedSpanId={selectedSpanId}
 						selectedTraceId={selectedTraceId}
+						traceIds={executionTraceIds}
 						workflowId={workflowId}
 					/>
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="sandbox">
-					<RunSandboxTab
-						executionId={executionId}
-						workflowId={workflowId}
-					/>
+					<RunSandboxTab executionId={executionId} workflowId={workflowId} />
 				</TabsContent>
 			</Tabs>
 		</div>

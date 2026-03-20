@@ -8,10 +8,19 @@
 #   - Integrates with existing OTEL observability stack
 #
 # Usage:
-#   bash scripts/devspace-dev-ryzen.sh  # Start development mode on the ryzen inner loop for workflow-builder + function-router + ms-agent-workflow + dapr-agent-runtime + workflow-orchestrator
+#   bash scripts/devspace-dev-ryzen.sh  # Start the default durable OpenShell authoring loop
+#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add dapr-agent-runtime + ms-agent-workflow
+#   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
+#   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every in-repo workflow service
 #   devspace dev       # Raw DevSpace entrypoint (does not pause ArgoCD)
 #   devspace enter     # Shell into container
 #   devspace purge     # Clean up devspace resources
+#
+# Notes:
+#   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
+#     dapr-agent-runtime, and ms-agent-workflow.
+#   - openshell-agent-runtime is consumed as a deployed cluster service and is not
+#     replaced by this DevSpace config because its source does not live in this repo.
 
 version: v2beta1
 name: workflow-builder
@@ -25,6 +34,12 @@ vars:
   LOCAL_PORT: "3002"
   CONTAINER_PORT: "3000"
   SSH_PORT: 2223
+  AI_CHATBOT_APP_NAME: ai-chatbot
+  AI_CHATBOT_LOCAL_PORT: "3003"
+  AI_CHATBOT_CONTAINER_PORT: "3000"
+  AI_CHATBOT_SOURCE_PATH: "../../ai/main"
+  AI_CHATBOT_PUBLIC_URL:
+    default: "https://ai-chatbot-ryzen.tail286401.ts.net"
   MS_AGENT_APP_NAME: ms-agent-workflow
   MS_AGENT_LOCAL_PORT: "3011"
   MS_AGENT_CONTAINER_PORT: "8081"
@@ -37,6 +52,7 @@ vars:
   FUNCTION_ROUTER_APP_NAME: function-router
   FUNCTION_ROUTER_LOCAL_PORT: "3014"
   FUNCTION_ROUTER_CONTAINER_PORT: "8080"
+  OPENSHELL_AGENT_RUNTIME_API_BASE_URL: "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"
 
   # Registry configuration
   GITEA_HOST:
@@ -104,6 +120,16 @@ vars:
       image="$(kubectl get deployment ${MS_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}"
+  CURRENT_AI_CHATBOT_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
+    default: "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}"
+  AI_CHATBOT_DEV_IMAGE_REPOSITORY:
+    command: |
+      image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
+    default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   MS_AGENT_DEV_IMAGE_REPOSITORY:
     default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
   CURRENT_DAPR_AGENT_IMAGE_REPOSITORY:
@@ -320,6 +346,8 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: FUNCTION_RUNNER_URL
         value: "http://function-router.workflow-builder.svc.cluster.local:8080"
+      - name: OPENSHELL_AGENT_RUNTIME_API_BASE_URL
+        value: ${OPENSHELL_AGENT_RUNTIME_API_BASE_URL}
       - name: USE_DAPR_SERVICE_INVOCATION
         value: "true"
       - name: DAPR_WORKFLOW_ENABLED
@@ -351,6 +379,178 @@ dev:
     # DevSpace attaches to the existing Argo-managed deployment, so the pod
     # keeps its base Dapr annotations and sidecar configuration. Use the
     # ryzen wrapper script to pause ArgoCD reconcile for the session.
+  ai-chatbot:
+    namespace: ${APP_NAME}
+    labelSelector:
+      app: ai-chatbot
+      app.kubernetes.io/name: ai-chatbot
+    container: ${AI_CHATBOT_APP_NAME}
+    devImage: ${AI_CHATBOT_DEV_IMAGE_REPOSITORY}:latest
+    workingDir: /app
+    resources:
+      requests:
+        cpu: ${CPU_REQUEST}
+        memory: ${MEMORY_REQUEST}
+      limits:
+        cpu: ${CPU_LIMIT}
+        memory: ${MEMORY_LIMIT}
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        echo "=== DevSpace Development Container (AI Chatbot) ==="
+        echo "Using source tree: ${AI_CHATBOT_SOURCE_PATH}"
+
+        corepack enable
+        corepack prepare pnpm@${PNPM_VERSION} --activate
+
+        echo "Checking dependencies..."
+        if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
+           [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
+          echo "Installing dependencies..."
+          pnpm install --frozen-lockfile
+          md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
+        else
+          echo "Dependencies up to date (cached)"
+        fi
+
+        echo "Running database migrations..."
+        pnpm tsx lib/db/migrate || echo "Migrations skipped (database may not be ready)"
+
+        exec pnpm dev --hostname 0.0.0.0 --port ${AI_CHATBOT_CONTAINER_PORT}
+    sync:
+      - path: ${AI_CHATBOT_SOURCE_PATH}/:/app
+        initialSync: mirrorLocal
+        disableDownload: true
+        polling: true
+        startContainer: true
+        waitInitialSync: true
+        onUpload:
+          restartContainer: false
+          exec:
+            - name: install-ai-chatbot-deps
+              command: sh
+              args:
+                - -lc
+                - cd /app && pnpm install --frozen-lockfile
+              failOnError: true
+              onChange:
+                - package.json
+                - pnpm-lock.yaml
+        excludePaths:
+          - node_modules/
+          - .pnpm-store/
+          - .next/
+          - dist/
+          - out/
+          - coverage/
+          - next-env.d.ts
+          - .devenv/
+          - .devspace/
+          - .direnv/
+          - .git
+          - .git/
+          - .github/
+          - .idea/
+          - .vscode/
+          - .cursor/
+          - tests/
+          - playwright-report/
+          - test-results/
+          - playwright.config.ts
+          - vitest.config.ts
+          - docs/
+          - "*.md"
+          - "*.log"
+          - LICENSE
+          - Dockerfile
+          - Dockerfile.devspace
+          - devenv.*
+          - devenv.lock
+          - .devenv*
+          - .devenv.flake.nix
+          - biome.jsonc
+          - .dockerignore
+          - .gitignore
+          - .env.local
+          - .env.example
+          - cookies.txt
+    persistPaths:
+      - path: /tmp
+        skipPopulate: true
+      - path: /app/node_modules
+    patches:
+      - op: remove
+        path: spec.initContainers.name=db-migrate
+      - op: remove
+        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.livenessProbe
+      - op: remove
+        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.readinessProbe
+      - op: remove
+        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.startupProbe
+      - op: replace
+        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.envFrom
+        value: []
+      - op: replace
+        path: spec.containers.name=${AI_CHATBOT_APP_NAME}.securityContext
+        value:
+          runAsUser: 0
+          runAsGroup: 0
+          runAsNonRoot: false
+          allowPrivilegeEscalation: false
+      - op: replace
+        path: spec.securityContext
+        value:
+          fsGroup: 1001
+          runAsNonRoot: false
+    ports:
+      - port: "${AI_CHATBOT_LOCAL_PORT}:${AI_CHATBOT_CONTAINER_PORT}"
+    env:
+      - name: NODE_ENV
+        value: development
+      - name: NEXT_TELEMETRY_DISABLED
+        value: "1"
+      - name: NEXT_PUBLIC_APP_URL
+        value: ${AI_CHATBOT_PUBLIC_URL}
+      - name: APP_URL
+        value: ${AI_CHATBOT_PUBLIC_URL}
+      - name: AUTH_URL
+        value: ${AI_CHATBOT_PUBLIC_URL}
+      - name: NEXTAUTH_URL
+        value: ${AI_CHATBOT_PUBLIC_URL}
+      - name: AUTH_TRUST_HOST
+        value: "true"
+      - name: AUTH_SECRET
+        value: "devspace-ai-chatbot-auth-secret"
+      - name: OTEL_SERVICE_NAME
+        value: "${AI_CHATBOT_APP_NAME}-dev"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://otel-collector.observability.svc.cluster.local:4318"
+      - name: OTEL_RESOURCE_ATTRIBUTES
+        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
+      - name: DAPR_HTTP_PORT
+        value: "3500"
+      - name: DAPR_GRPC_PORT
+        value: "50001"
+      - name: DAPR_CONFIG_STORE
+        value: "azureappconfig-ai-chatbot"
+      - name: CONFIG_LABEL
+        value: "ai-chatbot"
+      - name: DAPR_SECRET_STORE
+        value: "azure-keyvault"
+      - name: DAPR_STATE_STORE
+        value: "workflowstatestore"
+      - name: DAPR_WORKFLOW_STATE_STORE
+        value: "workflowstatestore"
+      - name: PUBSUB_NAME
+        value: "pubsub"
+      - name: WORKFLOW_SERVICE_URL
+        value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
+      - name: WORKFLOW_PATTERNS_ENABLED
+        value: "true"
+      - name: DAPR_WORKFLOW_ENABLED
+        value: "true"
   ms-agent-workflow:
     namespace: ${APP_NAME}
     labelSelector:
@@ -610,6 +810,8 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
+      - name: OPENSHELL_AGENT_APP_ID
+        value: "openshell-agent-runtime.openshell"
 
   function-router:
     namespace: ${APP_NAME}
@@ -694,3 +896,40 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
+      - name: OPENSHELL_AGENT_RUNTIME_URL
+        value: ${OPENSHELL_AGENT_RUNTIME_API_BASE_URL}
+
+profiles:
+  - name: openshell-inner-loop
+    description: Default short inner loop for durable workflow authoring and review.
+    patches:
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.ms-agent-workflow
+      - op: remove
+        path: dev.dapr-agent-runtime
+
+  - name: workflow-ui-only
+    description: Fastest loop when only the Next.js UI and BFF are changing.
+    patches:
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.ms-agent-workflow
+      - op: remove
+        path: dev.dapr-agent-runtime
+      - op: remove
+        path: dev.workflow-orchestrator
+      - op: remove
+        path: dev.function-router
+
+  - name: compatibility-runtimes
+    description: Core OpenShell durable path plus the legacy compatibility backends.
+    patches:
+      - op: remove
+        path: dev.ai-chatbot
+
+  - name: full-agent-stack
+    description: Every workflow-related service defined in this repo, including ai-chatbot.
+    patches: []
