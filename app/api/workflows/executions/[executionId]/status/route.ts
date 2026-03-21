@@ -18,7 +18,12 @@ import {
 	toDurableAgentRunSummary,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
+import {
+	deriveAgentRunsFromExecutionOutput,
+	extractExecutionTraceIds,
+} from "@/lib/transforms/workflow-ui";
 import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
+import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias";
 
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
@@ -147,7 +152,9 @@ export async function GET(
 	context: { params: Promise<{ executionId: string }> },
 ) {
 	try {
-		const { executionId } = await context.params;
+		const { executionId: requestedExecutionId } = await context.params;
+		const executionId =
+			await resolveWorkflowExecutionIdAlias(requestedExecutionId);
 		const session = await getSession(request);
 
 		if (!session?.user) {
@@ -272,7 +279,17 @@ export async function GET(
 			runtime,
 		});
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
-		const normalizedAgentRuns = toDurableAgentRunSummary(agentRuns);
+		const persistedAgentRuns = toDurableAgentRunSummary(agentRuns);
+		const normalizedAgentRuns =
+			persistedAgentRuns.length > 0
+				? persistedAgentRuns
+				: deriveAgentRunsFromExecutionOutput(execution.output, {
+						executionId,
+						parentExecutionId: execution.daprInstanceId ?? execution.id,
+						startedAt: execution.startedAt,
+						completedAt: execution.completedAt,
+						executionStatus: execution.status,
+					});
 		const agentProgressEntries = await Promise.all(
 			normalizedAgentRuns.map(async (run) => {
 				const actionType = nodeActionTypeMap.get(run.nodeId);
@@ -315,6 +332,7 @@ export async function GET(
 				runtime?.traceId ??
 				Object.values(agentProgressByNode).find((value) => value.traceId)
 					?.traceId ??
+				extractExecutionTraceIds(execution.output)[0] ??
 				null,
 			phase: runtime?.phase ?? execution.phase,
 			progress: runtime?.progress ?? execution.progress,

@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 import { api } from "@/lib/api-client";
 import {
+	extractExecutionTraceIds,
 	parseDaprAgentOutput,
 	parseExecutionFileChangeData,
 } from "@/lib/transforms/workflow-ui";
@@ -146,6 +147,7 @@ export default function WorkflowRunDetailPage() {
 	const effectiveStatus = useMemo(() => {
 		return runtimeStatus?.status ?? details?.execution.status ?? "unknown";
 	}, [details?.execution.status, runtimeStatus?.status]);
+	const canonicalExecutionId = details?.execution.id ?? executionId;
 
 	useEffect(() => {
 		const normalized = effectiveStatus.toLowerCase();
@@ -159,6 +161,20 @@ export default function WorkflowRunDetailPage() {
 
 		return () => clearInterval(interval);
 	}, [effectiveStatus, load]);
+
+	useEffect(() => {
+		if (!workflowId || !executionId || !details?.execution.id) {
+			return;
+		}
+		if (details.execution.id === executionId) {
+			return;
+		}
+		const query = searchParams.toString();
+		router.replace(
+			`/workflows/${workflowId}/runs/${details.execution.id}${query ? `?${query}` : ""}`,
+			{ scroll: false },
+		);
+	}, [details?.execution.id, executionId, router, searchParams, workflowId]);
 
 	const activeTab = normalizeTab(searchParams.get("tab"));
 	const selectedFilePath = searchParams.get("file");
@@ -234,10 +250,14 @@ export default function WorkflowRunDetailPage() {
 
 		push(details?.runtime?.traceId ?? null);
 		push(runtimeStatus?.traceId);
+		for (const traceId of extractExecutionTraceIds(details?.execution.output)) {
+			push(traceId);
+		}
 
 		return Array.from(ids);
 	}, [
 		details?.agentRuns,
+		details?.execution.output,
 		details?.runtime?.traceId,
 		runtimeStatus?.agentProgressByNode,
 		runtimeStatus?.traceId,
@@ -409,7 +429,7 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="artifacts">
 					<RunArtifactsTab
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						externalEvents={details.externalEvents ?? []}
 						planArtifacts={details.planArtifacts ?? []}
 					/>
@@ -417,7 +437,7 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="changes">
 					<ExecutionChangesPanel
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						fallbackData={executionFileChangeData}
 						initialSelectedFilePath={selectedFilePath}
 						onSelectedFilePathChange={(path) =>
@@ -429,7 +449,7 @@ export default function WorkflowRunDetailPage() {
 				<TabsContent className="mt-0 space-y-3" value="trace">
 					<RunTraceTab
 						daprInstanceId={details.execution.daprInstanceId}
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						onSelectedSpanIdChange={(spanId) =>
 							updateQuery({ spanId, tab: "trace" })
 						}
@@ -444,7 +464,10 @@ export default function WorkflowRunDetailPage() {
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="sandbox">
-					<RunSandboxTab executionId={executionId} workflowId={workflowId} />
+					<RunSandboxTab
+						executionId={canonicalExecutionId}
+						workflowId={workflowId}
+					/>
 				</TabsContent>
 			</Tabs>
 		</div>

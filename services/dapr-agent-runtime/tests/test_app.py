@@ -463,6 +463,107 @@ def test_build_task_prompt_includes_profile_specific_sections() -> None:
     assert "repository-relative paths such as '.' or 'src/app.ts'" in prompt
 
 
+def test_build_task_prompt_uses_sandbox_repo_path_for_openshell_backend() -> None:
+    prompt = _build_task_prompt(
+        DaprAgentRunRequest(
+            prompt="Implement slash commands",
+            profile="implement",
+            cwd="/tmp/local-clone",
+            toolBackend="openshell",
+            sandboxRepoPath="/sandbox/repo",
+        )
+    )
+
+    assert "Repository root inside sandbox:\n/sandbox/repo" in prompt
+    assert "/tmp/local-clone" not in prompt
+
+
+def test_openshell_cleanup_preserves_sandbox_when_keep_enabled(monkeypatch) -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+        keep=True,
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(*, method: str, path: str, **_kwargs):
+        calls.append((method, path))
+        return {}
+
+    monkeypatch.setattr(context, "_request", fake_request)
+
+    context.cleanup()
+
+    assert calls == []
+
+
+def test_openshell_cleanup_deletes_sandbox_when_keep_disabled(monkeypatch) -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+        keep=False,
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(*, method: str, path: str, **_kwargs):
+        calls.append((method, path))
+        return {}
+
+    monkeypatch.setattr(context, "_request", fake_request)
+
+    context.cleanup()
+
+    assert calls == [("DELETE", "/api/v1/sandboxes/openshell-test")]
+
+
+def test_openshell_compose_command_bootstraps_pnpm_when_missing() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+
+    command = context._compose_command("pnpm vitest run app/api/mcp-chat/route.test.ts")
+
+    assert "cd /sandbox/repo;" in command
+    assert "if ! command -v pnpm >/dev/null 2>&1; then" in command
+    assert 'corepack pnpm "$@"' in command
+    assert "npx -y pnpm" in command
+    assert "if [ -f package.json ] && [ ! -d node_modules ]; then" in command
+    assert "pnpm install --frozen-lockfile || pnpm install;" in command
+    assert command.endswith("pnpm vitest run app/api/mcp-chat/route.test.ts")
+
+
+def test_openshell_run_command_returns_structured_nonzero_results(monkeypatch) -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+
+    def fake_request(**_kwargs):
+        raise RuntimeError(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "sandboxName": "openshell-test",
+                    "result": {
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": "",
+                        "sandboxName": "openshell-test",
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(context, "_request", fake_request)
+
+    result = context.run_command("find . -type f | grep plan")
+
+    assert result["exitCode"] == 1
+    assert result["stderr"] == ""
+    assert result["sandboxName"] == "openshell-test"
+
+
 def test_normalize_run_request_accepts_task_aliases() -> None:
     request = _normalize_run_request({"task": "Review the repo", "mode": "review"})
 
@@ -607,6 +708,48 @@ def test_build_run_context_generates_langgraph_thread_id() -> None:
     assert context.planning_thread_id == "lg:plan:exec-123"
     assert context.execution_thread_id == "lg:exec:exec-123"
     assert context.thread_id == "lg:exec:exec-123"
+
+
+def test_build_run_context_derives_gitea_repository_url_for_openshell(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "workspace_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(
+        app,
+        "GITEA_INTERNAL_CLONE_BASE_URL",
+        "http://gitea-http.gitea.svc.cluster.local:3000",
+    )
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-123",
+        execution_id="exec-123",
+        root_path=tmp_path,
+        working_directory=tmp_path,
+        enabled_tools=[],
+        repository_owner="giteaadmin",
+        repository_repo="workflow-builder",
+        repository_branch="main",
+    )
+    _persist_workspace_session(session)
+
+    context = _build_run_context(
+        "wf-openshell",
+        DaprAgentRunRequest(
+            prompt="Implement the task",
+            engine="langgraph",
+            toolBackend="openshell",
+            workspaceRef="workspace-123",
+            sandboxRepoPath="/sandbox/repo",
+        ),
+    )
+
+    assert (
+        context.repository_url
+        == "http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-builder.git"
+    )
 
 
 def test_build_result_payload_returns_plan_artifact_for_planning_mode(

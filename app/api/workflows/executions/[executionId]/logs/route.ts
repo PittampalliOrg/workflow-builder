@@ -22,7 +22,9 @@ import {
 	toDurablePlanArtifactSummary,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
+import { deriveAgentRunsFromExecutionOutput } from "@/lib/transforms/workflow-ui";
 import { redactSensitiveData } from "@/lib/utils/redact";
+import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias";
 
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
@@ -134,7 +136,9 @@ export async function GET(
 	context: { params: Promise<{ executionId: string }> },
 ) {
 	try {
-		const { executionId } = await context.params;
+		const { executionId: requestedExecutionId } = await context.params;
+		const executionId =
+			await resolveWorkflowExecutionIdAlias(requestedExecutionId);
 		const session = await getSession(request);
 
 		if (!session?.user) {
@@ -234,12 +238,24 @@ export async function GET(
 		const effectiveAgentRuns =
 			persistedAgentRuns.length > 0
 				? persistedAgentRuns
-				: deriveDurableAgentRuns({
-						executionId,
-						parentExecutionId: execution.daprInstanceId ?? execution.id,
-						logs: logsAsc,
-						orchestratorHistory: runtimeHistory?.events ?? [],
-					});
+				: (() => {
+						const derivedFromTimeline = deriveDurableAgentRuns({
+							executionId,
+							parentExecutionId: execution.daprInstanceId ?? execution.id,
+							logs: logsAsc,
+							orchestratorHistory: runtimeHistory?.events ?? [],
+						});
+						if (derivedFromTimeline.length > 0) {
+							return derivedFromTimeline;
+						}
+						return deriveAgentRunsFromExecutionOutput(execution.output, {
+							executionId,
+							parentExecutionId: execution.daprInstanceId ?? execution.id,
+							startedAt: execution.startedAt,
+							completedAt: execution.completedAt,
+							executionStatus: execution.status,
+						});
+					})();
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
 		const effectiveAgentRunsWithLive = await Promise.all(
 			effectiveAgentRuns.map(async (run) => {

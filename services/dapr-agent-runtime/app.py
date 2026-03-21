@@ -305,6 +305,10 @@ DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.4")
 SERVICE_VERSION = "0.1.0"
 AGENT_TOOL_GROUP = os.environ.get("DAPR_AGENT_TOOL_GROUP", "all")
 WORKSPACE_ROOT = Path(DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
+GITEA_INTERNAL_CLONE_BASE_URL = (
+    os.environ.get("GITEA_INTERNAL_CLONE_BASE_URL")
+    or "http://gitea-http.gitea.svc.cluster.local:3000"
+).strip().rstrip("/")
 WORKFLOW_NAME = os.environ.get("DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME", "daprAgentRunWorkflowV1")
 PLAN_ACTIVITY_NAME = os.environ.get("DAPR_AGENT_LANGGRAPH_PLAN_ACTIVITY", "langgraphPlanActivity")
 EXECUTE_ACTIVITY_NAME = os.environ.get(
@@ -1260,13 +1264,20 @@ def _extract_plan_payload(
 def _build_task_prompt(request: DaprAgentRunRequest) -> str:
     profile = _normalize_profile(request.profile)
     run_mode = _normalize_run_mode(request.mode or request.profile)
+    tool_backend = str(request.toolBackend or "").strip().lower()
     segments = [
         f"Profile: {profile}",
         f"Run mode: {run_mode}",
         f"Profile instructions: {PROFILE_INSTRUCTIONS[profile]}",
         f"Task:\n{request.prompt}",
     ]
-    if request.cwd:
+    if tool_backend == "openshell" and request.sandboxRepoPath:
+        segments.append(
+            "Repository root inside sandbox:\n"
+            f"{request.sandboxRepoPath}\n"
+            "Operate only within this sandbox repository root. When using tools, pass repository-relative paths such as '.' or 'src/app.ts'."
+        )
+    elif request.cwd:
         segments.append(
             "Repository root:\n"
             f"{request.cwd}\n"
@@ -2256,6 +2267,21 @@ def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
     return _resolve_cwd(None)
 
 
+def _derive_repository_url(
+    repository_url: str | None,
+    repository_owner: str | None,
+    repository_repo: str | None,
+) -> str | None:
+    explicit = str(repository_url or "").strip()
+    if explicit:
+        return explicit
+    owner = str(repository_owner or "").strip()
+    repo = str(repository_repo or "").strip()
+    if not owner or not repo:
+        return None
+    return f"{GITEA_INTERNAL_CLONE_BASE_URL}/{owner}/{repo}.git"
+
+
 def _resolve_tool_backend(request: DaprAgentRunRequest) -> str | None:
     value = str(request.toolBackend or "").strip().lower()
     if value in {"openshell", "local"}:
@@ -2720,10 +2746,6 @@ def _build_run_context(
     workspace_session = (
         _workspace_from_ref(request.workspaceRef) if request.workspaceRef else None
     )
-    repository_url = (
-        str(request.repositoryUrl or "").strip()
-        or (workspace_session.repository_url if workspace_session else None)
-    )
     repository_owner = (
         str(request.repositoryOwner or "").strip()
         or (workspace_session.repository_owner if workspace_session else None)
@@ -2731,6 +2753,12 @@ def _build_run_context(
     repository_repo = (
         str(request.repositoryRepo or "").strip()
         or (workspace_session.repository_repo if workspace_session else None)
+    )
+    repository_url = _derive_repository_url(
+        str(request.repositoryUrl or "").strip()
+        or (workspace_session.repository_url if workspace_session else None),
+        repository_owner,
+        repository_repo,
     )
     repository_branch = (
         str(request.repositoryBranch or "").strip()
@@ -3977,6 +4005,7 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         prompt=str(request.input.get("prompt") or request.input.get("goal") or "").strip(),
         mode=str(request.input.get("mode") or "").strip() or None,
         engine=str(request.input.get("engine") or "").strip() or None,
+        toolBackend=str(request.input.get("toolBackend") or "").strip() or None,
         threadId=str(request.input.get("threadId") or "").strip() or None,
         planningThreadId=str(request.input.get("planningThreadId") or "").strip() or None,
         executionThreadId=str(request.input.get("executionThreadId") or "").strip() or None,
@@ -3990,6 +4019,14 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         maxTurns=int(request.input.get("maxTurns") or 30),
         workspaceRef=str(request.input.get("workspaceRef") or "").strip() or None,
         cwd=str(request.input.get("cwd") or "").strip() or None,
+        sandboxName=str(request.input.get("sandboxName") or "").strip() or None,
+        provider=str(request.input.get("provider") or "").strip() or None,
+        sandboxRepoPath=str(request.input.get("sandboxRepoPath") or "").strip() or None,
+        repositoryUrl=str(request.input.get("repositoryUrl") or "").strip() or None,
+        repositoryOwner=str(request.input.get("repositoryOwner") or "").strip() or None,
+        repositoryRepo=str(request.input.get("repositoryRepo") or "").strip() or None,
+        repositoryBranch=str(request.input.get("repositoryBranch") or "").strip() or None,
+        repositoryToken=str(request.input.get("repositoryToken") or "").strip() or None,
         stopCondition=str(request.input.get("stopCondition") or "").strip() or None,
         instructionsOverlay=str(request.input.get("instructionsOverlay") or "").strip() or None,
         expectedOutput=str(request.input.get("expectedOutput") or "").strip() or None,

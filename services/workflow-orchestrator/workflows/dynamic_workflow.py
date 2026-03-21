@@ -2245,9 +2245,18 @@ def process_agent_child_workflow(
         activity_input["sandboxRepoPath"] = (
             resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
         )
+        sandbox_suffix = (
+            str(tracked_execution_id or ctx.instance_id or "").strip()
+            or f"{node_id}-{run_mode}"
+        )
+        normalized_suffix = (
+            sandbox_suffix.lower()
+            .replace("_", "-")
+            .replace("/", "-")
+        )
         activity_input["sandboxName"] = (
             str(resolved_config.get("sandboxName") or "").strip()
-            or f"openshell-lg-{node_id}-{mode_suffix}".lower().replace("_", "-")
+            or f"openshell-lg-{normalized_suffix}"
         )[:63]
 
     fetched_plan_artifact: dict[str, Any] | None = None

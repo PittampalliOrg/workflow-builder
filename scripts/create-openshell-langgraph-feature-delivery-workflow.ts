@@ -1,7 +1,7 @@
 /**
  * Create or update a reusable OpenShell LangGraph feature-delivery workflow:
  * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph/run (plan)
- * -> openshell-langgraph/run (execute) -> workspace/command (review)
+ * -> openshell-langgraph/run (execute) -> workspace/command (review persisted execute output)
  *
  * The manual trigger input is treated as the user feature request.
  *
@@ -304,17 +304,30 @@ async function resolveAgentProfileTemplateId(
 	return templates[0]?.id;
 }
 
-function buildReviewCommand(clonePathTemplate: string) {
-	return `if [ -d .git ]; then
-echo "--- git status --short ---"
-git status --short || true
-echo
-echo "--- git diff --stat ---"
-git diff --stat || true
-else
-echo "No .git metadata found. Listing likely changed project files instead."
-find ${clonePathTemplate} -type f | sort | head -200 || true
-fi`;
+function buildReviewCommand(executeId: string) {
+	const field = (name: string) =>
+		`{{@${executeId}:OpenShell LangGraph Execute.${name}}}`;
+	return `cat <<'__WF_OPEN_SHELL_REVIEW__'
+OpenShell LangGraph execution review
+===================================
+Sandbox name:
+${field("sandboxName")}
+
+Provider:
+${field("provider")}
+
+File changes:
+${field("fileChanges")}
+
+Change summary:
+${field("changeSummary")}
+
+Snapshot refs:
+${field("snapshotRefs")}
+
+Patch:
+${field("patch")}
+__WF_OPEN_SHELL_REVIEW__`;
 }
 
 function buildWorkflowGraph(input: {
@@ -370,6 +383,10 @@ function buildWorkflowGraph(input: {
 		workspaceRef: workspaceRefTemplate,
 		cwd: clonePathTemplate,
 		sandboxRepoPath: "/sandbox/repo",
+		repositoryUrl: `https://github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`,
+		repositoryOwner: input.repositoryOwner,
+		repositoryRepo: input.repositoryRepo,
+		repositoryBranch: input.repositoryBranch,
 		expectedOutput:
 			"A concise engineering summary, changed-file list, verification results, and residual risks.",
 		verifyCommands: input.verifyCommands,
@@ -493,12 +510,12 @@ function buildWorkflowGraph(input: {
 			data: {
 				label: "Review Workspace Changes",
 				description:
-					"Show git-based file change context after the OpenShell LangGraph execution step.",
+					"Show persisted OpenShell file change context from the execute step output.",
 				type: "action",
 				config: {
 					actionType: "workspace/command",
 					workspaceRef: workspaceRefTemplate,
-					command: buildReviewCommand(clonePathTemplate),
+					command: buildReviewCommand(executeId),
 					timeoutMs: "120000",
 					continueOnError: true,
 				},

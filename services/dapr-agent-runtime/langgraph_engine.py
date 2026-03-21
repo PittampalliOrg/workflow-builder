@@ -214,6 +214,24 @@ class OpenShellToolContext:
             .replace("cd /repo\n", f"cd {self.repo_path}\n")
         )
 
+    def _ensure_pnpm_available(self, command: str) -> str:
+        normalized_command = str(command or "")
+        if "pnpm" not in normalized_command:
+            return normalized_command
+        bootstrap = (
+            "if ! command -v pnpm >/dev/null 2>&1; then "
+            "pnpm() { "
+            "if command -v corepack >/dev/null 2>&1; then corepack pnpm \"$@\"; "
+            "elif command -v npx >/dev/null 2>&1; then npx -y pnpm \"$@\"; "
+            "else echo 'pnpm not available' >&2; return 127; fi; "
+            "}; "
+            "fi; "
+            "if [ -f package.json ] && [ ! -d node_modules ]; then "
+            "pnpm install --frozen-lockfile || pnpm install; "
+            "fi; "
+        )
+        return f"{bootstrap}{normalized_command}"
+
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "OpenShellToolContext":
         sandbox_name = str(config.get("sandboxName") or "").strip() or f"openshell-lg-{uuid.uuid4().hex[:12]}"
@@ -235,7 +253,9 @@ class OpenShellToolContext:
             target_dir = normalized_cwd
         else:
             target_dir = f"{self.repo_path.rstrip('/')}/{normalized_cwd.lstrip('./')}"
-        normalized_command = self._rewrite_legacy_workspace_aliases(command)
+        normalized_command = self._ensure_pnpm_available(
+            self._rewrite_legacy_workspace_aliases(command)
+        )
         return f"set -eu; cd {shlex.quote(target_dir)}; {normalized_command}"
 
     def _request(
@@ -268,6 +288,14 @@ class OpenShellToolContext:
             raise RuntimeError("OpenShell runtime returned an invalid response payload")
         return parsed
 
+    @staticmethod
+    def _parse_error_payload(error: Exception) -> dict[str, Any] | None:
+        try:
+            parsed = json.loads(str(error))
+        except (TypeError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
     def run_command(
         self,
         command: str,
@@ -290,12 +318,18 @@ class OpenShellToolContext:
             payload["repoBranch"] = self.repo_branch
         if self.repo_token:
             payload["repoToken"] = self.repo_token
-        response = self._request(
-            method="POST",
-            path="/api/v1/agent-runs",
-            payload=payload,
-            timeout_seconds=timeout_seconds + 30,
-        )
+        try:
+            response = self._request(
+                method="POST",
+                path="/api/v1/agent-runs",
+                payload=payload,
+                timeout_seconds=timeout_seconds + 30,
+            )
+        except RuntimeError as exc:
+            parsed_error = self._parse_error_payload(exc)
+            if not isinstance(parsed_error.get("result"), dict):
+                raise
+            response = parsed_error
         result = response.get("result") if isinstance(response.get("result"), dict) else {}
         change_summary = response.get("changeSummary")
         if not isinstance(change_summary, dict):
@@ -339,7 +373,7 @@ class OpenShellToolContext:
         ).strip()
 
     def cleanup(self) -> None:
-        if not self.keep or not self.sandbox_name:
+        if self.keep or not self.sandbox_name:
             return
         try:
             self._request(
