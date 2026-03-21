@@ -9,6 +9,7 @@ import {
 	useSearchParams,
 } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AgentLlmStream } from "@/components/workflow-runs/agent-llm-stream";
 import { ExecutionChangesPanel } from "@/components/workflow-runs/execution-changes-panel";
 import { RunArtifactsTab } from "@/components/workflow-runs/run-artifacts-tab";
 import { RunChildRunsTab } from "@/components/workflow-runs/run-child-runs-tab";
@@ -17,10 +18,12 @@ import { RunOverviewTab } from "@/components/workflow-runs/run-overview-tab";
 import { RunTimelineTab } from "@/components/workflow-runs/run-timeline-tab";
 import { RunTraceTab } from "@/components/workflow-runs/run-trace-tab";
 import { RunSandboxTab } from "@/components/workflow-runs/run-sandbox-tab";
+import { SandboxOutput } from "@/components/workflow-runs/sandbox-output";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAgentStream } from "@/hooks/use-agent-stream";
 import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 import { api } from "@/lib/api-client";
 import {
@@ -148,6 +151,15 @@ export default function WorkflowRunDetailPage() {
 		return runtimeStatus?.status ?? details?.execution.status ?? "unknown";
 	}, [details?.execution.status, runtimeStatus?.status]);
 	const canonicalExecutionId = details?.execution.id ?? executionId;
+
+	const isRunActive = ["running", "pending"].includes(
+		effectiveStatus.toLowerCase(),
+	);
+
+	const agentStream = useAgentStream({
+		executionId: executionId ?? null,
+		enabled: isRunActive,
+	});
 
 	useEffect(() => {
 		const normalized = effectiveStatus.toLowerCase();
@@ -324,6 +336,17 @@ export default function WorkflowRunDetailPage() {
 									{workflowName}
 								</h1>
 								<ExecutionStatusBadge status={effectiveStatus} />
+								{agentStream.isConnected && (
+									<span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+										<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+										Live
+									</span>
+								)}
+								{agentStream.activeToolName && (
+									<span className="text-xs text-muted-foreground">
+										{agentStream.activeToolName}
+									</span>
+								)}
 							</div>
 							<p className="font-mono text-muted-foreground text-xs">
 								Run ID: {details.execution.id}
@@ -407,7 +430,17 @@ export default function WorkflowRunDetailPage() {
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="timeline">
+					{isRunActive && (agentStream.isLlmStreaming || agentStream.llmTokenBuffer) && (
+						<AgentLlmStream
+							tokenBuffer={agentStream.llmTokenBuffer}
+							isStreaming={agentStream.isLlmStreaming}
+						/>
+					)}
+					{isRunActive && agentStream.sandboxOutputs.length > 0 && (
+						<SandboxOutput outputs={agentStream.sandboxOutputs} />
+					)}
 					<RunTimelineTab
+						agentStreamEvents={agentStream.events}
 						nodeIdFilter={selectedNodeId}
 						timeline={details.timeline ?? []}
 					/>

@@ -506,7 +506,7 @@ function OutputDisplay({
 						)}
 						{runDetailHref && (
 							<Button asChild size="sm" variant="outline">
-								<Link href={`${runDetailHref}#file-changes`}>
+								<Link href={`${runDetailHref}?tab=changes`}>
 									<ExternalLink className="mr-2 h-3 w-3" />
 									Inspect Full Diff
 								</Link>

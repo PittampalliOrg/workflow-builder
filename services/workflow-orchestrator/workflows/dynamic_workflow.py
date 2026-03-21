@@ -3010,6 +3010,7 @@ def process_agent_child_workflow(
             "workspaceRef": resolved_config.get("workspaceRef"),
             "cwd": resolved_config.get("cwd"),
             "executionId": tracked_execution_id,
+            "parentExecutionId": ctx.instance_id,
             "_otel": otel_ctx,
             "traceId": _trace_id_from_otel_context(otel_ctx),
         }

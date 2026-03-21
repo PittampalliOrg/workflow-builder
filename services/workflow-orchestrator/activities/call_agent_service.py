@@ -333,6 +333,7 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                     "planJson": input_data.get("planJson"),
                     "executionId": input_data.get("executionId"),
                     "dbExecutionId": input_data.get("dbExecutionId"),
+                    "parentExecutionId": input_data.get("parentExecutionId"),
                     "waitForCompletion": True,
                 }
                 return _post_json_with_details(

@@ -688,6 +688,15 @@ def _bind_openshell_tools(
                     "status": "completed" if int(result.get("exitCode") or 0) == 0 else "nonzero_exit",
                 }
             )
+            # Emit sandbox output event for UI terminal display
+            progress_callback(
+                {
+                    "event": "sandbox_output",
+                    "command": command_text,
+                    "output": str(result.get("stdout") or result.get("output") or "")[:4000],
+                    "exitCode": int(result.get("exitCode") or 0),
+                }
+            )
         return result
 
     execute_openshell_command.__name__ = "execute_openshell_command"

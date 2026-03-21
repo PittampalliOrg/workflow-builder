@@ -2,7 +2,7 @@
 
 import { DiffEditor, type DiffOnMount } from "@monaco-editor/react";
 import { useTheme } from "next-themes";
-import { useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { vercelDarkTheme } from "@/lib/monaco-theme";
 
 type MonacoDiffViewProps = {
@@ -13,7 +13,7 @@ type MonacoDiffViewProps = {
 	height?: number | string;
 };
 
-export function MonacoDiffView({
+function MonacoDiffViewInner({
 	original,
 	modified,
 	language = "plaintext",
@@ -23,10 +23,13 @@ export function MonacoDiffView({
 	const { resolvedTheme } = useTheme();
 	const isDark = resolvedTheme === "dark";
 
-	const handleEditorMount: DiffOnMount = (_, monaco) => {
-		monaco.editor.defineTheme("vercel-dark", vercelDarkTheme);
-		monaco.editor.setTheme(isDark ? "vercel-dark" : "light");
-	};
+	const handleEditorMount: DiffOnMount = useCallback(
+		(_, monaco) => {
+			monaco.editor.defineTheme("vercel-dark", vercelDarkTheme);
+			monaco.editor.setTheme(isDark ? "vercel-dark" : "light");
+		},
+		[isDark],
+	);
 
 	const options = useMemo(
 		() => ({
@@ -61,3 +64,5 @@ export function MonacoDiffView({
 		/>
 	);
 }
+
+export const MonacoDiffView = memo(MonacoDiffViewInner);

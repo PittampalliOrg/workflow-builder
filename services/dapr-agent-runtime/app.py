@@ -18,6 +18,7 @@ from typing import Any
 import re
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from tools import (
@@ -528,6 +529,7 @@ class DaprAgentRunRequest(BaseModel):
     repositoryToken: str | None = None
     executionId: str | None = None
     dbExecutionId: str | None = None
+    parentExecutionId: str | None = None
     artifactRef: str | None = None
     planJson: dict[str, Any] | list[dict[str, Any]] | None = None
 
@@ -2082,6 +2084,72 @@ def _default_agent_progress(context: AgentRunContext, *, status: str = "schedule
     }
 
 
+# ---------------------------------------------------------------------------
+# SSE stream infrastructure — per-instance event queues
+# ---------------------------------------------------------------------------
+_stream_queues: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = {}
+_stream_event_counter: dict[str, int] = {}
+_stream_lock = threading.Lock()
+_MAX_STREAM_QUEUE_SIZE = 500
+
+
+def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
+    """Push an event to all SSE subscribers for this instance."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id)
+        if not queues:
+            return
+        counter = _stream_event_counter.get(instance_id, 0) + 1
+        _stream_event_counter[instance_id] = counter
+        event = {**event, "_seq": counter}
+        for q in queues:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                # Drop oldest if queue is full
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+
+
+def _register_stream_queue(instance_id: str) -> asyncio.Queue[dict[str, Any] | None]:
+    """Register a new SSE subscriber queue for an instance."""
+    q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=_MAX_STREAM_QUEUE_SIZE)
+    with _stream_lock:
+        _stream_queues.setdefault(instance_id, []).append(q)
+    return q
+
+
+def _unregister_stream_queue(instance_id: str, q: asyncio.Queue[dict[str, Any] | None]) -> None:
+    """Remove an SSE subscriber queue."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id)
+        if queues:
+            try:
+                queues.remove(q)
+            except ValueError:
+                pass
+            if not queues:
+                _stream_queues.pop(instance_id, None)
+                _stream_event_counter.pop(instance_id, None)
+
+
+def _close_all_stream_queues(instance_id: str) -> None:
+    """Signal completion to all SSE subscribers for an instance."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id, [])
+        for q in queues:
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+
+
 def _persist_agent_progress(instance_id: str, progress: dict[str, Any]) -> None:
     try:
         run_state_store.save(key=_run_progress_key(instance_id), value=progress)
@@ -2129,6 +2197,15 @@ def _record_langgraph_progress_event(
     event_type = str(event.get("event") or "").strip().lower()
     if not event_type:
         return
+
+    # Push to SSE stream subscribers
+    stream_event = {
+        "type": event_type,
+        "ts": _utc_now_iso(),
+        "phase": phase,
+        **{k: v for k, v in event.items() if k != "event"},
+    }
+    _push_stream_event(instance_id, stream_event)
     progress_phase = (
         "planning" if phase == "plan" else _progress_phase_for_mode(run_context.mode)
     )
@@ -3109,9 +3186,21 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     store_workflow_context("__current_workflow_context__", workflow_context_carrier)
     request = _normalize_run_request(input_data)
     instance_id = ctx.instance_id
+    # Extract parent instance ID for parent→child mapping (enables BFF SSE resolution)
+    parent_instance_id = (
+        (input_data.get("parentExecutionId") if isinstance(input_data, dict) else None)
+        or request.parentExecutionId
+        or ""
+    )
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
     if not ctx.is_replaying:
         _persist_run_context(run_context)
+        if parent_instance_id:
+            run_state_store.save(
+                key=f"parent-child-map:{parent_instance_id}",
+                value={"childInstanceId": instance_id, "ts": _utc_now_iso()},
+            )
+            logger.info("[parent-child-map] Saved mapping: %s -> %s", parent_instance_id, instance_id)
         _persist_agent_progress(
             instance_id,
             _default_agent_progress(run_context, status="running"),
@@ -3122,6 +3211,12 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             summary=f"Starting {run_context.profile} run",
             currentStepName=run_context.profile,
         )
+        _push_stream_event(instance_id, {
+            "type": "run_started",
+            "ts": _utc_now_iso(),
+            "phase": "reasoning",
+            "meta": {"profile": run_context.profile, "engine": run_context.engine},
+        })
     normalized_request = request.model_copy(
         update={
             "cwd": run_context.cwd,
@@ -3284,6 +3379,15 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     finally:
         cleanup_workflow_context(workflow_context_key)
         cleanup_workflow_context("__current_workflow_context__")
+        # Signal SSE subscribers that the run is done
+        _push_stream_event(instance_id, {"type": "run_complete", "ts": _utc_now_iso()})
+        _close_all_stream_queues(instance_id)
+        # Clean up parent→child mapping
+        if parent_instance_id:
+            try:
+                run_state_store.delete(key=f"parent-child-map:{parent_instance_id}")
+            except Exception:
+                pass
 
 
 async def _run_agent_request(
@@ -3840,6 +3944,18 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
     }
 
 
+@app.get("/api/run/resolve-child")
+def api_resolve_child(parentId: str) -> dict[str, Any]:
+    """Resolve a child workflow instance ID from the parent orchestrator instance ID."""
+    mapping = run_state_store.load(key=f"parent-child-map:{parentId}", default={})
+    if not mapping:
+        raise HTTPException(status_code=404, detail="No child mapping found")
+    child_id = mapping.get("childInstanceId")
+    if not child_id:
+        raise HTTPException(status_code=404, detail="No child mapping found")
+    return {"childInstanceId": child_id, "parentId": parentId}
+
+
 @app.get("/api/run/{instance_id}")
 def api_run_status(instance_id: str) -> dict[str, Any]:
     workflow_client_instance = _resolve_runner_workflow_client()
@@ -3913,6 +4029,108 @@ def api_run_status(instance_id: str) -> dict[str, Any]:
         "agentProgress": progress,
         "serializedOutput": serialized_output,
     }
+
+
+@app.get("/api/run/{instance_id}/stream")
+async def api_run_stream(instance_id: str, request: Request) -> StreamingResponse:
+    """SSE endpoint streaming real-time agent events for a run."""
+    run_context = _load_run_context(instance_id)
+    progress = _load_agent_progress(instance_id)
+    # Also check Dapr workflow state if no local context yet (race condition)
+    if run_context is None and progress is None:
+        workflow_client_instance = _resolve_runner_workflow_client()
+        if workflow_client_instance is not None:
+            try:
+                state = workflow_client_instance.get_workflow_state(instance_id, fetch_payloads=False)
+                runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
+                if runtime_status.upper() in ("RUNNING", "PENDING", "SUSPENDED"):
+                    progress = {"status": "running", "phase": "starting"}
+            except Exception:
+                pass
+        if progress is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    # Check for Last-Event-ID reconnection
+    last_event_id = request.headers.get("Last-Event-ID")
+    last_seq = 0
+    if last_event_id:
+        try:
+            last_seq = int(last_event_id)
+        except (ValueError, TypeError):
+            last_seq = 0
+
+    queue = _register_stream_queue(instance_id)
+
+    async def event_generator():
+        try:
+            # Send initial state snapshot
+            yield _sse_format(
+                "agent_event",
+                {
+                    "type": "state_snapshot",
+                    "ts": _utc_now_iso(),
+                    "phase": progress.get("phase") if isinstance(progress, dict) else None,
+                    "meta": {
+                        "agentProgress": progress,
+                        "lastSeq": last_seq,
+                    },
+                },
+                event_id="0",
+            )
+
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Send keepalive comment
+                    yield ": keepalive\n\n"
+                    continue
+
+                if event is None:
+                    # None signals run completion
+                    yield _sse_format(
+                        "agent_event",
+                        {"type": "run_complete", "ts": _utc_now_iso()},
+                        event_id="done",
+                    )
+                    break
+
+                seq = event.pop("_seq", 0)
+                if seq <= last_seq:
+                    continue
+
+                yield _sse_format("agent_event", event, event_id=str(seq))
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _unregister_stream_queue(instance_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse_format(event: str, data: dict[str, Any], *, event_id: str | None = None) -> str:
+    """Format a Server-Sent Event."""
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {json.dumps(data, default=str)}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
 
 
 @app.post("/api/run/{instance_id}/approve")

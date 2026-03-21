@@ -615,10 +615,14 @@ export function ExecutionChangesPanel({
 	);
 	const [isDownloadingCombined, setIsDownloadingCombined] = useState(false);
 	const lastNotifiedFilePathRef = useRef<string | null | undefined>(undefined);
+	const lastLoadedExecutionIdRef = useRef<string | null>(null);
 	const durableInstanceId = useMemo(
 		() => resolveDurableInstanceId(fallbackData),
 		[fallbackData],
 	);
+
+	const durableInstanceIdRef = useRef(durableInstanceId);
+	durableInstanceIdRef.current = durableInstanceId;
 
 	const loadData = useCallback(async () => {
 		setIsLoading(true);
@@ -630,7 +634,7 @@ export function ExecutionChangesPanel({
 			let patchPending = false;
 			try {
 				const patchResult = await api.workflow.getExecutionPatch(executionId, {
-					durableInstanceId,
+					durableInstanceId: durableInstanceIdRef.current,
 				});
 				setCombinedPatch(patchResult.patch ?? "");
 				setPatchError(null);
@@ -657,9 +661,13 @@ export function ExecutionChangesPanel({
 		} finally {
 			setIsLoading(false);
 		}
-	}, [durableInstanceId, executionId]);
+	}, [executionId]);
 
 	useEffect(() => {
+		if (lastLoadedExecutionIdRef.current === executionId) {
+			return;
+		}
+		lastLoadedExecutionIdRef.current = executionId;
 		setSearch("");
 		setSelectedFilePath(initialSelectedFilePath ?? null);
 		setSnapshotByPath({});
@@ -668,7 +676,7 @@ export function ExecutionChangesPanel({
 		setPendingSync(false);
 		setPendingRetries(0);
 		void loadData();
-	}, [initialSelectedFilePath, loadData]);
+	}, [executionId, initialSelectedFilePath, loadData]);
 
 	useEffect(() => {
 		if (initialSelectedFilePath === undefined) {
@@ -908,7 +916,11 @@ export function ExecutionChangesPanel({
 	}, [selectedSections, selectedSnapshot]);
 
 	const selectedDiffResult = useMemo<DiffResult | null>(() => {
-		if (selectedSnapshot && selectedSnapshot !== null) {
+		if (
+			selectedSnapshot &&
+			selectedSnapshot !== null &&
+			("oldContent" in selectedSnapshot || "newContent" in selectedSnapshot)
+		) {
 			if (selectedSnapshot.isBinary) {
 				return null;
 			}
@@ -1367,7 +1379,7 @@ export function ExecutionChangesPanel({
 
 							<div className="max-h-[320px] overflow-auto rounded-md border bg-[#0d1117] sm:max-h-[420px] lg:max-h-[calc(100vh-20rem)]">
 								{selectedSnapshotLoading ? (
-									<div className="flex items-center gap-2 p-3 text-sm text-zinc-400">
+									<div className="flex items-center justify-center gap-2 p-3 text-sm text-zinc-400" style={{ minHeight: "min(52vh, 520px)" }}>
 										<Loader2 className="h-4 w-4 animate-spin" />
 										Loading file snapshot...
 									</div>

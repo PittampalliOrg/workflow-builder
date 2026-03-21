@@ -1,9 +1,12 @@
 /**
- * AI SDK adapter — wraps generateText() for the durable agent workflow.
+ * AI SDK adapter — wraps streamText() for the durable agent workflow.
  * Mirrors Python call_llm activity at durable.py:1224-1325.
+ *
+ * Uses streamText() to emit real-time token events via the event bus,
+ * then collects the full result for deterministic Dapr activity return.
  */
 
-import { generateText, type LanguageModel } from "ai";
+import { streamText, type LanguageModel } from "ai";
 import type { AgentWorkflowMessage } from "../types/state.js";
 import type { ToolCall } from "../types/tool.js";
 import type { DurableAgentTool } from "../types/tool.js";
@@ -14,6 +17,7 @@ import type {
 } from "../types/loop-policy.js";
 import { toAiSdkMessages } from "./message-converter.js";
 import { buildToolDeclarations } from "./tool-declarations.js";
+import { eventBus } from "../service/event-bus.js";
 
 export interface LlmCallResult {
 	role: "assistant";
@@ -41,7 +45,11 @@ export interface CallLlmOptions {
 }
 
 /**
- * Call the LLM and return the assistant message.
+ * Call the LLM with streaming and return the complete assistant message.
+ *
+ * Token deltas are emitted as fire-and-forget events via the event bus
+ * for real-time UI streaming. The full result is collected before returning
+ * to maintain Dapr activity determinism on replay.
  *
  * @param model - AI SDK model instance
  * @param systemPrompt - System instructions
@@ -69,7 +77,13 @@ export async function callLlmAdapter(
 				? { type: "tool" as const, toolName: toolChoice.toolName }
 				: undefined;
 
-	const result = await generateText({
+	// Emit llm_start event
+	eventBus.emitEvent("llm_start", {
+		turn: options?.turn,
+		instanceId: options?.instanceId,
+	});
+
+	const streamResult = streamText({
 		model,
 		system: systemPrompt,
 		messages: coreMessages,
@@ -88,10 +102,38 @@ export async function callLlmAdapter(
 		},
 	});
 
+	// Stream tokens via event bus (fire-and-forget side effects)
+	for await (const chunk of streamResult.textStream) {
+		if (chunk) {
+			eventBus.emitEvent("llm_token", {
+				token: chunk,
+				turn: options?.turn,
+				instanceId: options?.instanceId,
+			});
+		}
+	}
+
+	// Collect the full result (deterministic for Dapr replay)
+	// After consuming textStream, await the collected properties
+	const [text, finishReason, usage, toolCalls_raw] = await Promise.all([
+		streamResult.text,
+		streamResult.finishReason,
+		streamResult.usage,
+		streamResult.toolCalls,
+	]);
+
+	// Emit llm_end event
+	eventBus.emitEvent("llm_end", {
+		turn: options?.turn,
+		instanceId: options?.instanceId,
+		finishReason,
+		usage,
+	});
+
 	// Build tool_calls array in OpenAI format
 	let toolCalls: ToolCall[] | undefined;
-	if (result.toolCalls && result.toolCalls.length > 0) {
-		toolCalls = result.toolCalls.map((tc: any) => ({
+	if (toolCalls_raw && toolCalls_raw.length > 0) {
+		toolCalls = toolCalls_raw.map((tc: any) => ({
 			id: tc.toolCallId,
 			type: "function" as const,
 			function: {
@@ -122,13 +164,13 @@ export async function callLlmAdapter(
 
 	return {
 		role: "assistant",
-		content: result.text || null,
+		content: text || null,
 		tool_calls: toolCalls,
-		finish_reason: result.finishReason,
+		finish_reason: finishReason,
 		usage: {
-			inputTokens: result.usage?.inputTokens,
-			outputTokens: result.usage?.outputTokens,
-			totalTokens: result.usage?.totalTokens,
+			inputTokens: usage?.inputTokens,
+			outputTokens: usage?.outputTokens,
+			totalTokens: usage?.totalTokens,
 		},
 		declared_tools: declaredTools,
 	};

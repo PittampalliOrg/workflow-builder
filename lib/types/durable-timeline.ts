@@ -12,7 +12,12 @@ export type DurableTimelineEventKind =
 	| "child_run_completed"
 	| "child_run_failed"
 	| "workflow_completed"
-	| "workflow_failed";
+	| "workflow_failed"
+	| "agent_tool_start"
+	| "agent_tool_complete"
+	| "agent_tool_error"
+	| "agent_llm_start"
+	| "agent_llm_complete";
 
 export type DurableTimelineEventSource =
 	| "orchestrator_history"

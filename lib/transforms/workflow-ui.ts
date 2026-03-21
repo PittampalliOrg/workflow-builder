@@ -683,6 +683,20 @@ export function parseExecutionFileChangeData(
 					deletions: toOptionalInt(summaryStats.deletions),
 				};
 			}
+			const summaryPatch = toOptionalString(
+				summary.inlinePatchPreview ?? summary.patch,
+			);
+			if (!patch && summaryPatch) {
+				patch = summaryPatch;
+				sourceNodeKey ??= candidate.nodeKey;
+			}
+			const summaryPatchRef = toOptionalString(
+				summary.patchRef ?? summary.patch_ref,
+			);
+			if (!patchRef && summaryPatchRef) {
+				patchRef = summaryPatchRef;
+				sourceNodeKey ??= candidate.nodeKey;
+			}
 		}
 
 		const fileChanges = extractEntriesFromList(record.fileChanges);

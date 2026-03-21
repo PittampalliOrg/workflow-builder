@@ -10,6 +10,7 @@ export type AgentEventType =
 	| "tool_call"
 	| "tool_result"
 	| "llm_start"
+	| "llm_token"
 	| "llm_end"
 	| "dapr_event";
 
