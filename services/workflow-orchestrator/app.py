@@ -77,6 +77,7 @@ from activities.persist_plan_artifact import (
 from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from activities.fetch_child_workflow import fetch_child_workflow
 from activities.track_agent_run import (
+    track_agent_run_running,
     track_agent_run_scheduled,
     track_agent_run_completed,
 )
@@ -441,6 +442,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(terminate_ms_agent_run)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
+    wfr.register_activity(track_agent_run_running)
     wfr.register_activity(track_agent_run_scheduled)
     wfr.register_activity(track_agent_run_completed)
     # AP workflow callback activities
@@ -732,6 +734,7 @@ def _registered_activity_names() -> list[str]:
         terminate_ms_agent_run.__name__,
         terminate_durable_agent_run.__name__,
         cleanup_execution_workspaces.__name__,
+        track_agent_run_running.__name__,
         track_agent_run_scheduled.__name__,
         track_agent_run_completed.__name__,
         send_ap_callback.__name__,
@@ -986,6 +989,7 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
     return str(config.get("actionType") or "").strip() in {
         "dapr-agent/run",
         "openshell/run",
+        "openshell-langgraph/run",
     }
 
 

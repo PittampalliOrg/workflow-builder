@@ -48,7 +48,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 			? "Release to bind coding agent"
 			: dropState === "occupied"
 				? "Only one coding agent can be enclosed"
-				: "Only OpenShell or legacy Dapr agents can be enclosed";
+				: "Only OpenShell, OpenShell LangGraph, or Dapr agents can be enclosed";
 	const handleBodyAction = useCallback(() => {
 		if (enclosedBodyNode) {
 			setSelectedNode(enclosedBodyNode.id);
@@ -68,7 +68,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 				description: "",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "openshell-langgraph/run",
 				},
 				status: "idle",
 			},
@@ -106,7 +106,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 							? dropHintText
 							: expression
 								? expression
-								: "Drop an OpenShell Agent node here"}
+								: "Drop an OpenShell LangGraph or OpenShell Agent node here"}
 					</p>
 				</div>
 				<Button
@@ -121,7 +121,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 					variant={hasEnclosedBody ? "secondary" : "default"}
 				>
 					<Bot className="size-3.5" strokeWidth={1.8} />
-					{hasEnclosedBody ? "Select Body" : "Add Dapr Agent"}
+					{hasEnclosedBody ? "Select Body" : "Add OpenShell LangGraph"}
 				</Button>
 			</div>
 			{showDropHint && (

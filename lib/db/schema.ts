@@ -540,6 +540,7 @@ export const workflowWorkspaceSessions = pgTable(
 export type WorkflowAgentRunMode = "run" | "plan" | "execute_plan";
 export type WorkflowAgentRunStatus =
 	| "scheduled"
+	| "running"
 	| "completed"
 	| "failed"
 	| "event_published";

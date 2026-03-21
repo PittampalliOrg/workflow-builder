@@ -35,6 +35,7 @@ import {
 import { api } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { connectionsAtom } from "@/lib/connections-store";
+import type { McpInputProperty } from "@/lib/mcp/types";
 import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
@@ -87,8 +88,8 @@ import { GitHubStarsButton } from "../github-stars-button";
 import { ConfigurationOverlay } from "../overlays/configuration-overlay";
 import { ConfirmOverlay } from "../overlays/confirm-overlay";
 import {
-	DaprInputOverlay,
-	type DaprWorkflowInput,
+	type ManualTriggerWorkflowInput,
+	ManualTriggerInputOverlay,
 } from "../overlays/dapr-input-overlay";
 import { ExportWorkflowOverlay } from "../overlays/export-workflow-overlay";
 import { MakePublicOverlay } from "../overlays/make-public-overlay";
@@ -131,6 +132,45 @@ type MissingNodeConnectionInfo = {
 	integrationType: IntegrationType;
 	integrationLabel: string;
 };
+
+function getManualTriggerInputSchema(
+	nodes: WorkflowNode[],
+): McpInputProperty[] {
+	const triggerNode = nodes.find((node) => node.data.type === "trigger");
+	const config = (triggerNode?.data.config ?? {}) as Record<string, unknown>;
+	if (config.triggerType !== "Manual") {
+		return [];
+	}
+	if (typeof config.inputSchema !== "string" || !config.inputSchema.trim()) {
+		return [];
+	}
+	try {
+		const parsed = JSON.parse(config.inputSchema) as unknown;
+		return Array.isArray(parsed)
+			? parsed.filter((field): field is McpInputProperty =>
+					Boolean(
+						field &&
+							typeof field === "object" &&
+							typeof (field as McpInputProperty).name === "string" &&
+							typeof (field as McpInputProperty).type === "string" &&
+							typeof (field as McpInputProperty).required === "boolean",
+					),
+				)
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+function getManualTriggerNode(nodes: WorkflowNode[]): WorkflowNode | undefined {
+	return nodes.find((node) => {
+		if (node.data.type !== "trigger") {
+			return false;
+		}
+		const config = (node.data.config ?? {}) as Record<string, unknown>;
+		return config.triggerType === "Manual";
+	});
+}
 
 // Built-in actions that require integrations but aren't in the plugin registry
 const BUILTIN_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
@@ -641,6 +681,7 @@ async function executeTestWorkflow({
 // Hook for workflow handlers
 type WorkflowHandlerParams = {
 	currentWorkflowId: string | null;
+	workflowName: string;
 	nodes: WorkflowNode[];
 	edges: WorkflowEdge[];
 	updateNodeData: (update: {
@@ -657,13 +698,13 @@ type WorkflowHandlerParams = {
 	setSelectedNodeId: (id: string | null) => void;
 	setSelectedExecutionId: (id: string | null) => void;
 	userIntegrations: Array<{ id: string; pieceName: IntegrationType }>;
-	engineType: "vercel" | "dapr";
 	session: { user: { id: string } } | null;
 	simulationMode: boolean;
 };
 
 function useWorkflowHandlers({
 	currentWorkflowId,
+	workflowName,
 	nodes,
 	edges,
 	updateNodeData,
@@ -677,7 +718,6 @@ function useWorkflowHandlers({
 	setSelectedNodeId,
 	setSelectedExecutionId,
 	userIntegrations,
-	engineType,
 	session,
 	simulationMode,
 }: WorkflowHandlerParams) {
@@ -789,25 +829,17 @@ function useWorkflowHandlers({
 
 	// Helper to show Dapr input overlay or execute directly
 	const promptAndExecute = () => {
-		// Check if this workflow has any planning/agent nodes that require feature_request
-		const hasPlanningNodes = nodes.some((node) => {
-			const actionType = node.data.config?.actionType as string | undefined;
-			return (
-				actionType === "Run Planning Agent" ||
-				actionType === "Run Execution Agent"
-			);
-		});
-
-		// For Dapr workflows with planning nodes, show the input overlay
-		// For all other workflows (including Dapr with regular action nodes), execute directly
-		if (engineType === "dapr" && hasPlanningNodes) {
-			openOverlay(DaprInputOverlay, {
-				onRun: (input: DaprWorkflowInput) => {
+		const manualTriggerNode = getManualTriggerNode(nodes);
+		if (manualTriggerNode) {
+			openOverlay(ManualTriggerInputOverlay, {
+				fields: getManualTriggerInputSchema(nodes),
+				triggerLabel: manualTriggerNode.data.label,
+				workflowName,
+				onRun: (input: ManualTriggerWorkflowInput) => {
 					executeWorkflow(input);
 				},
 			});
 		} else {
-			// Direct execution - no feature_request needed
 			executeWorkflow();
 		}
 	};
@@ -1011,6 +1043,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 
 	const { handleSave, handleExecute } = useWorkflowHandlers({
 		currentWorkflowId,
+		workflowName,
 		nodes,
 		edges,
 		updateNodeData,
@@ -1024,7 +1057,6 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setSelectedNodeId,
 		setSelectedExecutionId,
 		userIntegrations,
-		engineType,
 		session,
 		simulationMode,
 	});

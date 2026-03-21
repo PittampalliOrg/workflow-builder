@@ -15,7 +15,11 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import { TimezoneSelect } from "@/components/ui/timezone-select";
-import { type McpInputProperty, McpInputsBuilder } from "./mcp-inputs-builder";
+import {
+	DEFAULT_FEATURE_REQUEST_HELP_TEXT,
+	type McpInputProperty,
+	McpInputsBuilder,
+} from "./mcp-inputs-builder";
 import { SchemaBuilder, type SchemaField } from "./schema-builder";
 
 type TriggerConfigProps = {
@@ -49,6 +53,53 @@ export function TriggerConfig({
 			navigator.clipboard.writeText(webhookUrl);
 			toast.success("Webhook URL copied to clipboard");
 		}
+	};
+
+	const hasFeatureRequestField = parsedInputSchema.some(
+		(field) => field.name.trim() === "feature_request",
+	);
+
+	const addFeatureRequestField = () => {
+		if (hasFeatureRequestField) {
+			return;
+		}
+		const nextSchema: McpInputProperty[] = [
+			...parsedInputSchema,
+			{
+				name: "feature_request",
+				type: "TEXT",
+				required: true,
+				description: DEFAULT_FEATURE_REQUEST_HELP_TEXT,
+			},
+		];
+		onUpdateConfig("inputSchema", JSON.stringify(nextSchema));
+	};
+
+	const formatFieldLabel = (name: string) =>
+		name
+			.split(/[_-]+/)
+			.filter(Boolean)
+			.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+			.join(" ");
+
+	const renderPreviewValue = (field: McpInputProperty) => {
+		if (field.type === "BOOLEAN") {
+			return (
+				<div className="flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm text-muted-foreground">
+					<Checkbox checked={false} disabled />
+					<span>
+						{field.description || `Set ${formatFieldLabel(field.name)}`}
+					</span>
+				</div>
+			);
+		}
+
+		const placeholder =
+			field.name.trim() === "feature_request"
+				? "Paste the feature description for this run here."
+				: `Run-time value for ${formatFieldLabel(field.name).toLowerCase()}`;
+
+		return <Input disabled placeholder={placeholder} value="" />;
 	};
 
 	return (
@@ -193,18 +244,80 @@ export function TriggerConfig({
 			)}
 
 			{config?.triggerType === "Manual" && (
-				<div className="space-y-2">
-					<Label>Execution Inputs</Label>
-					<McpInputsBuilder
-						disabled={disabled}
-						onChange={(schema) =>
-							onUpdateConfig("inputSchema", JSON.stringify(schema))
-						}
-						value={parsedInputSchema}
-					/>
-					<p className="text-muted-foreground text-xs">
-						Define the inputs required before this durable workflow can start.
-					</p>
+				<div className="space-y-3">
+					<div className="rounded-md border border-blue-200 bg-blue-50/70 p-3 text-sm dark:border-blue-900 dark:bg-blue-950/20">
+						<p className="font-medium text-foreground">
+							These fields create the Run Workflow form.
+						</p>
+						<p className="mt-1 text-muted-foreground text-xs">
+							When someone clicks Run Workflow, they enter the feature request
+							and any other per-run values there. Do not put per-run input in
+							the node Description field.
+						</p>
+					</div>
+					<div className="space-y-2">
+						<div className="flex items-center justify-between gap-3">
+							<Label>Run Form Inputs</Label>
+							<Button
+								disabled={disabled || hasFeatureRequestField}
+								onClick={addFeatureRequestField}
+								size="sm"
+								type="button"
+								variant="outline"
+							>
+								Add Feature Request Field
+							</Button>
+						</div>
+						<McpInputsBuilder
+							disabled={disabled}
+							onChange={(schema) =>
+								onUpdateConfig("inputSchema", JSON.stringify(schema))
+							}
+							value={parsedInputSchema}
+						/>
+						<p className="text-muted-foreground text-xs">
+							Define the values collected before the workflow starts. For a
+							coding workflow, add a required `feature_request` text field so
+							the run dialog clearly asks for the task description.
+						</p>
+					</div>
+					<div className="space-y-2 rounded-md border border-dashed p-3">
+						<Label>Run Workflow Preview</Label>
+						<p className="text-muted-foreground text-xs">
+							This is what appears after someone clicks Run Workflow. The
+							feature description belongs in that dialog, not in the editor.
+						</p>
+						{parsedInputSchema.length === 0 ? (
+							<div className="rounded-md border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
+								Add run form inputs above to define what the user fills in at
+								execution time.
+							</div>
+						) : (
+							<div className="space-y-3">
+								{parsedInputSchema.map((field) => (
+									<div className="space-y-1" key={field.id || field.name}>
+										<Label>
+											{formatFieldLabel(field.name)}
+											{field.required ? (
+												<span className="ml-1 text-red-500">*</span>
+											) : null}
+										</Label>
+										{field.description ? (
+											<p className="text-muted-foreground text-xs">
+												{field.description}
+											</p>
+										) : null}
+										{renderPreviewValue(field)}
+										{field.name.trim() === "feature_request" ? (
+											<p className="text-xs font-medium text-foreground">
+												This is where the per-run feature request is entered.
+											</p>
+										) : null}
+									</div>
+								))}
+							</div>
+						)}
+					</div>
 				</div>
 			)}
 

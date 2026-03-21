@@ -9,7 +9,8 @@
 #
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default durable OpenShell authoring loop
-#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add dapr-agent-runtime + ms-agent-workflow
+#   bash scripts/devspace-dev-ryzen.sh --profile langgraph-agent-stack  # Start the LangGraph Dapr agent loop with hot reload
+#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add langgraph dapr-agent-runtime + ms-agent-workflow
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on durable-agent + Next.js UI
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every in-repo workflow service
@@ -20,7 +21,7 @@
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
 #     durable-agent, fn-activepieces, fn-system, mcp-gateway,
-#     dapr-agent-runtime, and ms-agent-workflow.
+#     dapr-agent-runtime (LangGraph-backed Dapr agent), and ms-agent-workflow.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 
@@ -712,7 +713,7 @@ dev:
       - -c
       - |
         set -e
-        echo "=== DevSpace Development Container (Dapr Agent Runtime) ==="
+        echo "=== DevSpace Development Container (LangGraph Dapr Agent Runtime) ==="
         cd /app
 
         python -m venv .venv
@@ -1378,7 +1379,8 @@ profiles:
 
   - name: compatibility-runtimes
     description: >
-      Core OpenShell durable path plus the legacy compatibility backends.
+      Core OpenShell durable path plus the LangGraph-backed Dapr agent and
+      the remaining compatibility backends.
       Starts: all deployed services except ai-chatbot and durable-agent
       (durable-agent has no Deployment in cluster yet).
     patches:
@@ -1386,6 +1388,26 @@ profiles:
         path: dev.ai-chatbot
       - op: remove
         path: dev.durable-agent
+
+  - name: langgraph-agent-stack
+    description: >
+      Focused inner loop for the LangGraph-backed Dapr agent.
+      Starts: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime.
+      Excludes ai-chatbot, ms-agent-workflow, durable-agent, fn-activepieces,
+      fn-system, and mcp-gateway.
+    patches:
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.ms-agent-workflow
+      - op: remove
+        path: dev.durable-agent
+      - op: remove
+        path: dev.fn-activepieces
+      - op: remove
+        path: dev.fn-system
+      - op: remove
+        path: dev.mcp-gateway
 
   - name: function-stack
     description: >

@@ -10,23 +10,83 @@
 
 import type { WorkflowDefinition } from "./workflow-definition";
 
-async function daprFetch<T>(url: string, options?: RequestInit): Promise<T> {
-	const response = await fetch(url, {
-		...options,
-		headers: {
-			"Content-Type": "application/json",
-			...options?.headers,
-		},
-	});
+const RETRYABLE_ORCHESTRATOR_STATUS_CODES = new Set([408, 429, 502, 503, 504]);
+const SAFE_RETRY_METHODS = new Set(["GET", "HEAD"]);
+const DEFAULT_ORCHESTRATOR_RETRY_ATTEMPTS = 3;
 
-	if (!response.ok) {
-		const errorBody = await response.text().catch(() => "Unknown error");
-		throw new Error(
-			`Dapr orchestrator error (${response.status}): ${errorBody}`,
-		);
+function sleep(ms: number) {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveRetryMethod(options?: RequestInit) {
+	return (
+		String(options?.method || "GET")
+			.trim()
+			.toUpperCase() || "GET"
+	);
+}
+
+function isRetryableStatus(method: string, status: number) {
+	return (
+		SAFE_RETRY_METHODS.has(method) &&
+		RETRYABLE_ORCHESTRATOR_STATUS_CODES.has(status)
+	);
+}
+
+function isRetryableNetworkError(method: string, error: unknown) {
+	if (!SAFE_RETRY_METHODS.has(method) || !(error instanceof Error)) {
+		return false;
+	}
+	const code = (() => {
+		const cause = (error as Error & { cause?: { code?: string } }).cause;
+		return typeof cause?.code === "string" ? cause.code : "";
+	})();
+	return (
+		code === "ECONNRESET" || code === "ETIMEDOUT" || code === "ECONNREFUSED"
+	);
+}
+
+async function daprFetch<T>(url: string, options?: RequestInit): Promise<T> {
+	const method = resolveRetryMethod(options);
+	const maxAttempts = SAFE_RETRY_METHODS.has(method)
+		? DEFAULT_ORCHESTRATOR_RETRY_ATTEMPTS
+		: 1;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+		try {
+			const response = await fetch(url, {
+				...options,
+				headers: {
+					"Content-Type": "application/json",
+					...options?.headers,
+				},
+			});
+
+			if (!response.ok) {
+				if (
+					attempt < maxAttempts &&
+					isRetryableStatus(method, response.status)
+				) {
+					await sleep(attempt * 250);
+					continue;
+				}
+				const errorBody = await response.text().catch(() => "Unknown error");
+				throw new Error(
+					`Dapr orchestrator error (${response.status}): ${errorBody}`,
+				);
+			}
+
+			return response.json();
+		} catch (error) {
+			if (attempt < maxAttempts && isRetryableNetworkError(method, error)) {
+				await sleep(attempt * 250);
+				continue;
+			}
+			throw error;
+		}
 	}
 
-	return response.json();
+	throw new Error(`Dapr orchestrator request failed for ${method} ${url}`);
 }
 
 // ─── Generic Orchestrator Client ────────────────────────────────────────────

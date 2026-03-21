@@ -1,6 +1,13 @@
 "use client";
 
-import { Bot, Database, HelpCircle } from "lucide-react";
+import {
+	Blocks,
+	Bot,
+	Database,
+	FolderOpen,
+	HelpCircle,
+	SquareTerminal,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 
@@ -33,6 +40,11 @@ const SPECIAL_ICONS: Record<
 > = {
   database: Database,
   durable: Bot,
+  "dapr-agent": Bot,
+  "ms-agent": Bot,
+  openshell: SquareTerminal,
+  workspace: FolderOpen,
+  mcp: Blocks,
   vercel: VercelIcon,
 };
 

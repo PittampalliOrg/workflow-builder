@@ -16,6 +16,7 @@ import {
 	buildDurableTimeline,
 	buildExecutionConsistency,
 	deriveDurableAgentRuns,
+	reconcileAgentRunWithLivePayload,
 	toDurableAgentRunSummary,
 	toDurableExternalEventSummary,
 	toDurablePlanArtifactSummary,
@@ -34,6 +35,9 @@ function getAgentRuntimeTarget(
 	actionType: string | undefined,
 ): { baseUrl: string; path: string } | null {
 	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "openshell/run") {
@@ -83,28 +87,41 @@ async function fetchAgentLivePayload(
 	if (!target) {
 		return null;
 	}
-	const response = await fetch(
-		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
-		{
-			headers: { Accept: "application/json" },
-			signal: AbortSignal.timeout(4000),
-			cache: "no-store",
-		},
-	);
-	if (!response.ok) {
+	try {
+		const response = await fetch(
+			`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
+			{
+				headers: { Accept: "application/json" },
+				signal: AbortSignal.timeout(4000),
+				cache: "no-store",
+			},
+		);
+		if (!response.ok) {
+			return null;
+		}
+		const payload = await response.json();
+		return payload && typeof payload === "object"
+			? (payload as Record<string, unknown>)
+			: null;
+	} catch (error) {
+		console.warn("Failed to fetch live agent payload for logs", {
+			actionType,
+			instanceId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
-	const payload = await response.json();
-	return payload && typeof payload === "object"
-		? (payload as Record<string, unknown>)
-		: null;
 }
 
 function shouldFetchLiveAgentPayload(
 	actionType: string | undefined,
 	status: string,
 ): boolean {
-	if (!["dapr-agent/run", "openshell/run"].includes(actionType || "")) {
+	if (
+		!["dapr-agent/run", "openshell/run", "openshell-langgraph/run"].includes(
+			actionType || "",
+		)
+	) {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -224,29 +241,34 @@ export async function GET(
 						orchestratorHistory: runtimeHistory?.events ?? [],
 					});
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
-		const agentProgressEntries = await Promise.all(
+		const effectiveAgentRunsWithLive = await Promise.all(
 			effectiveAgentRuns.map(async (run) => {
 				const actionType = nodeActionTypeMap.get(run.nodeId);
-				const framework =
-					actionType === "ms-agent/run"
-						? "ms-agent"
-						: actionType === "openshell/run"
-							? "openshell"
-							: actionType === "dapr-agent/run"
-								? "dapr-agent"
-								: null;
-				if (!framework) {
-					return null;
-				}
 				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
 					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
 					: null;
-				return [
-					run.nodeId,
-					buildAgentNodeProgress(run, framework, livePayload),
-				] as const;
+				return reconcileAgentRunWithLivePayload(run, livePayload);
 			}),
 		);
+		const agentProgressEntries = effectiveAgentRunsWithLive.map((run) => {
+			const actionType = nodeActionTypeMap.get(run.nodeId);
+			const framework =
+				actionType === "ms-agent/run"
+					? "ms-agent"
+					: actionType === "openshell/run" ||
+							actionType === "openshell-langgraph/run"
+						? "openshell"
+						: actionType === "dapr-agent/run"
+							? "dapr-agent"
+							: null;
+			if (!framework) {
+				return null;
+			}
+			return [
+				run.nodeId,
+				buildAgentNodeProgress(run, framework, run.result),
+			] as const;
+		});
 		const agentProgressByNode = Object.fromEntries(
 			agentProgressEntries.filter(
 				(
@@ -277,7 +299,7 @@ export async function GET(
 			runtime,
 			timeline,
 			agentProgressByNode,
-			agentRuns: effectiveAgentRuns.map((run) => ({
+			agentRuns: effectiveAgentRunsWithLive.map((run) => ({
 				...run,
 				result: redactSensitiveData(run.result),
 			})),

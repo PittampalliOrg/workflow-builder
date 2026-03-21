@@ -197,6 +197,61 @@ def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]
             return {"success": False, "id": run_id, "error": str(exc)}
 
 
+def track_agent_run_running(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Mark a workflow_agent_runs row as running.
+
+    Expected fields:
+      - id
+      - result (optional)
+    """
+    run_id = str(input_data.get("id") or "").strip()
+    if not run_id:
+        return {"success": False, "error": "id is required"}
+
+    result_json = _json_dumps_safe(input_data.get("result"))
+    otel = input_data.get("_otel") or {}
+
+    attrs = {
+        "action.type": "track_agent_run_running",
+        "agent.run_id": run_id,
+    }
+
+    with start_activity_span("activity.track_agent_run_running", otel, attrs):
+        try:
+            db_url = _get_database_url()
+            conn = psycopg2.connect(db_url)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE workflow_agent_runs
+                        SET
+                            status = 'running',
+                            result = COALESCE(%s::jsonb, result),
+                            updated_at = now()
+                        WHERE id = %s
+                          AND status = 'scheduled'
+                        """,
+                        (
+                            result_json,
+                            run_id,
+                        ),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+            return {"success": True, "id": run_id, "status": "running"}
+        except Exception as exc:
+            logger.warning(
+                "[Track Agent Run] Failed to persist running row %s: %s",
+                run_id,
+                exc,
+            )
+            return {"success": False, "id": run_id, "error": str(exc)}
+
+
 def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Mark a workflow_agent_runs row as completed/failed and optionally

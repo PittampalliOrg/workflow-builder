@@ -1,7 +1,13 @@
+import inspect
+import json
+import subprocess
 from pathlib import Path
 
 import app
+import langgraph_engine
+import msgpack
 import pytest
+import tools
 from app import (
     AgentRunContext,
     ApproveRequest,
@@ -23,6 +29,7 @@ from app import (
     _resolve_runner_workflow_client,
     _resolve_effective_tool_group,
     _resolve_run_engine,
+    _schedule_workflow_run,
     _trace_id_from_otel,
     execute_step,
     api_run_approve,
@@ -34,7 +41,13 @@ from app import (
     workspace_execution_patch,
     workspace_profile,
 )
-from tools import build_workspace_patch, list_files, read_file, summarize_command_changes
+from tools import (
+    build_workspace_patch,
+    execute_command,
+    list_files,
+    read_file,
+    summarize_command_changes,
+)
 from tools import ToolRuntimeContext, pop_tool_context, push_tool_context
 
 
@@ -50,6 +63,382 @@ class FakeStateStore:
 
     def delete(self, *, key: str, **_kwargs) -> None:
         self.storage.pop(key, None)
+
+
+def test_langgraph_model_builder_normalizes_openai_prefix(monkeypatch) -> None:
+    recorded: dict[str, str | None] = {"model": None}
+
+    def fake_init_chat_model(model: str, api_key: str | None = None):
+        recorded["model"] = model
+        return {"model": model, "api_key": api_key}
+
+    monkeypatch.setattr(langgraph_engine, "init_chat_model", fake_init_chat_model)
+
+    result = langgraph_engine._build_model("openai/gpt-5.4", "test-key")
+
+    assert result == {"model": "openai:gpt-5.4", "api_key": "test-key"}
+    assert recorded["model"] == "openai:gpt-5.4"
+
+
+def test_langgraph_tool_invoker_unwraps_nested_args() -> None:
+    def fake_git_status(path: str = ".") -> dict[str, str]:
+        return {"path": path}
+
+    result = langgraph_engine._invoke_tool(fake_git_status, args={"path": "repo"})
+
+    assert result == {"path": "repo"}
+
+
+def test_langgraph_bound_tools_preserve_function_signatures() -> None:
+    bound_tools = langgraph_engine._bind_workspace_tools("planning", "/tmp/workspace")
+    read_tool = next(tool for tool in bound_tools if tool.__name__ == "read_file")
+
+    signature = inspect.signature(read_tool)
+
+    assert "path" in signature.parameters
+
+
+def test_langgraph_bound_tools_return_recoverable_missing_file_errors(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    context = ToolRuntimeContext.from_workspace_root(repo_root)
+    token = push_tool_context(context)
+    try:
+        bound_tools = langgraph_engine._bind_workspace_tools("all", str(repo_root))
+        read_tool = next(tool for tool in bound_tools if tool.__name__ == "read_file")
+
+        result = read_tool("scripts/langgraph_smoke_report.py")
+    finally:
+        pop_tool_context(token)
+
+    assert result["tool"] == "read_file"
+    assert result["recoverable"] is True
+    assert result["error"] == "File not found: scripts/langgraph_smoke_report.py"
+    assert "write_file" in result["hint"]
+
+
+def test_execute_command_returns_structured_timeout(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    context = ToolRuntimeContext.from_workspace_root(repo_root)
+    token = push_tool_context(context)
+
+    def fake_run(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd="pnpm type-check",
+            timeout=tools.COMMAND_TIMEOUT_SECONDS,
+            output="partial stdout",
+            stderr="partial stderr",
+        )
+
+    monkeypatch.setattr("tools.subprocess.run", fake_run)
+
+    try:
+        result = execute_command("pnpm type-check")
+    finally:
+        pop_tool_context(token)
+
+    assert result["exitCode"] == 124
+    assert result["timedOut"] is True
+    assert "timed out after" in result["stderr"]
+    assert result["stdout"] == "partial stdout"
+
+
+def test_langgraph_plan_phase_uses_read_only_tools_and_no_subagents() -> None:
+    assert langgraph_engine._effective_tool_group("plan", "planning") == "read_only"
+    assert langgraph_engine._effective_subagents("plan", "/tmp/workspace") == []
+
+
+def test_langgraph_plan_phase_interrupts_and_resumes_with_checkpoint(monkeypatch) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    calls: list[list[dict[str, str]]] = []
+    saver = InMemorySaver()
+
+    class FakeModel:
+        def invoke(self, messages):
+            calls.append(messages)
+            return {
+                "text": json.dumps(
+                    {
+                        "artifactType": "claude_task_graph_v1",
+                        "summary": "Plan response",
+                        "tasks": [{"title": "Inspect repo"}],
+                        "files": ["services/app.py"],
+                        "verificationCommands": ["pnpm type-check"],
+                    }
+                )
+            }
+
+    monkeypatch.setattr(langgraph_engine, "is_langgraph_available", lambda: True)
+    monkeypatch.setattr(langgraph_engine, "_build_model", lambda model, api_key: FakeModel())
+    monkeypatch.setattr(langgraph_engine, "_build_checkpointer", lambda: saver)
+
+    result = langgraph_engine.run_langgraph_task(
+        prompt="Plan the work",
+        workspace_root="/tmp/workspace",
+        tool_group="planning",
+        model="gpt-5.4",
+        profile="feature-delivery",
+        phase="plan",
+        thread_id="plan-thread-123",
+        require_review=True,
+    )
+
+    assert result.metadata["planner"] == "checkpointed-graph"
+    assert result.metadata["threadId"] == "plan-thread-123"
+    assert result.metadata["plannerStatus"] == "awaiting_review"
+    assert result.metadata["sessionPersistence"] == "dapr-checkpointer"
+    assert isinstance(result.metadata["approvalPayload"], dict)
+    assert result.structured_output["summary"] == "Plan response"
+    assert len(calls) == 1
+
+    resumed = langgraph_engine.run_langgraph_task(
+        prompt="Plan the work",
+        workspace_root="/tmp/workspace",
+        tool_group="planning",
+        model="gpt-5.4",
+        profile="feature-delivery",
+        phase="plan",
+        thread_id="plan-thread-123",
+        require_review=True,
+        planner_resume={"action": "approve", "approved": True},
+    )
+
+    assert resumed.metadata["plannerStatus"] == "approved"
+    assert resumed.metadata["plannerCheckpointId"]
+    assert resumed.structured_output["summary"] == "Plan response"
+    assert len(calls) == 1
+
+
+def test_langgraph_plan_phase_edit_feedback_reinterrupts(monkeypatch) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    calls: list[list[dict[str, str]]] = []
+    saver = InMemorySaver()
+
+    class FakeModel:
+        def invoke(self, messages):
+            calls.append(messages)
+            return {
+                "text": json.dumps(
+                    {
+                        "artifactType": "claude_task_graph_v1",
+                        "summary": f"Plan revision {len(calls)}",
+                        "tasks": [{"title": "Inspect repo"}],
+                        "files": ["services/app.py"],
+                        "verificationCommands": ["pnpm type-check"],
+                    }
+                )
+            }
+
+    monkeypatch.setattr(langgraph_engine, "is_langgraph_available", lambda: True)
+    monkeypatch.setattr(langgraph_engine, "_build_model", lambda model, api_key: FakeModel())
+    monkeypatch.setattr(langgraph_engine, "_build_checkpointer", lambda: saver)
+
+    first = langgraph_engine.run_langgraph_task(
+        prompt="Plan the work",
+        workspace_root="/tmp/workspace",
+        tool_group="planning",
+        model="gpt-5.4",
+        profile="feature-delivery",
+        phase="plan",
+        thread_id="plan-thread-edit",
+        require_review=True,
+    )
+
+    edited = langgraph_engine.run_langgraph_task(
+        prompt="Plan the work",
+        workspace_root="/tmp/workspace",
+        tool_group="planning",
+        model="gpt-5.4",
+        profile="feature-delivery",
+        phase="plan",
+        thread_id="plan-thread-edit",
+        require_review=True,
+        planner_resume={"action": "edit", "feedback": "Add more detail on testing"},
+    )
+
+    assert first.metadata["plannerStatus"] == "awaiting_review"
+    assert edited.metadata["plannerStatus"] == "awaiting_review"
+    assert edited.structured_output["summary"] == "Plan revision 2"
+    assert len(calls) == 2
+
+
+def test_langgraph_execute_phase_uses_dapr_checkpointer_and_thread_id(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeCheckpointer:
+        def __init__(self, *, store_name: str, key_prefix: str) -> None:
+            captured["store_name"] = store_name
+            captured["key_prefix"] = key_prefix
+
+    class FakeGraph:
+        def invoke(self, payload, config=None):
+            captured["payload"] = payload
+            captured["config"] = config
+            return {"text": "Executed"}
+
+    def fake_create_deep_agent(**kwargs):
+        captured["create_kwargs"] = kwargs
+        return FakeGraph()
+
+    monkeypatch.setattr(langgraph_engine, "is_langgraph_available", lambda: True)
+    monkeypatch.setattr(langgraph_engine, "_build_model", lambda model, api_key: object())
+    monkeypatch.setattr(langgraph_engine, "DaprCheckpointer", FakeCheckpointer)
+    monkeypatch.setattr(langgraph_engine, "SafeDaprCheckpointer", FakeCheckpointer)
+    monkeypatch.setattr(langgraph_engine, "create_deep_agent", fake_create_deep_agent)
+
+    result = langgraph_engine.run_langgraph_task(
+        prompt="Implement the task",
+        workspace_root=str(tmp_path),
+        tool_group="all",
+        model="gpt-5.4",
+        profile="implement",
+        phase="execute",
+        thread_id="thread-123",
+    )
+
+    assert captured["store_name"] == langgraph_engine.LANGGRAPH_CHECKPOINT_STORE_NAME
+    assert captured["key_prefix"] == langgraph_engine.LANGGRAPH_CHECKPOINT_KEY_PREFIX
+    assert captured["config"] == {"configurable": {"thread_id": "thread-123"}}
+    assert result.metadata["threadId"] == "thread-123"
+    assert result.metadata["sessionPersistence"] == "dapr-checkpointer"
+    assert (
+        result.metadata["checkpointStoreName"]
+        == langgraph_engine.LANGGRAPH_CHECKPOINT_STORE_NAME
+    )
+
+
+def test_openshell_tool_context_maps_legacy_workspace_cwd() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+
+    command = context._compose_command("git status --short", "/workspace")
+
+    assert command == "set -eu; cd /sandbox/repo; git status --short"
+
+
+def test_openshell_tool_context_rewrites_legacy_workspace_cd_commands() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+
+    command = context._compose_command("cd /workspace; git status --short", ".")
+
+    assert command == "set -eu; cd /sandbox/repo; cd /sandbox/repo; git status --short"
+
+
+def test_safe_dapr_checkpointer_disables_corrupting_put_writes(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeCheckpointer:
+        def __init__(self, *, store_name: str, key_prefix: str) -> None:
+            calls["store_name"] = store_name
+            calls["key_prefix"] = key_prefix
+
+        def put_writes(self, config, writes, task_id, task_path="") -> None:
+            calls["base_put_writes_called"] = True
+
+    monkeypatch.setattr(langgraph_engine, "DaprCheckpointer", FakeCheckpointer)
+
+    class FakeSafeCheckpointer(FakeCheckpointer):
+        def put_writes(self, config, writes, task_id, task_path="") -> None:
+            calls["safe_put_writes_called"] = True
+            return None
+
+    monkeypatch.setattr(langgraph_engine, "SafeDaprCheckpointer", FakeSafeCheckpointer)
+
+    checkpointer = langgraph_engine._build_checkpointer()
+
+    assert isinstance(checkpointer, FakeSafeCheckpointer)
+    checkpointer.put_writes({}, [("messages", {"ok": True})], "task-1")
+    assert calls["store_name"] == langgraph_engine.LANGGRAPH_CHECKPOINT_STORE_NAME
+    assert calls["key_prefix"] == langgraph_engine.LANGGRAPH_CHECKPOINT_KEY_PREFIX
+    assert "base_put_writes_called" not in calls
+    assert calls["safe_put_writes_called"] is True
+
+
+def test_safe_dapr_checkpointer_decodes_checkpoint_without_messages(monkeypatch) -> None:
+    if langgraph_engine.SafeDaprCheckpointer is None or langgraph_engine.DaprCheckpointer is None:
+        pytest.skip("Dapr LangGraph checkpointer unavailable")
+
+    class FakeState:
+        def __init__(self, data) -> None:
+            self.data = data
+
+    checkpoint_payload = msgpack.packb(
+        {
+            b"checkpoint": {
+                b"id": b"checkpoint-1",
+                b"ts": b"2026-03-21T00:00:00Z",
+                b"v": 1,
+                b"channel_values": {
+                    b"planJson": {
+                        b"summary": b"Durable plan",
+                    }
+                },
+                b"channel_versions": {},
+                b"versions_seen": {},
+                b"pending_sends": [],
+            },
+            b"metadata": msgpack.packb({"source": "loop", "step": 1}),
+        }
+    )
+
+    class FakeClient:
+        def get_state(self, *, store_name: str, key: str):
+            if key == "checkpoint_latest:thread-1:__empty__":
+                return FakeState("checkpoint:thread-1::checkpoint-1")
+            if key == "checkpoint:thread-1::checkpoint-1":
+                return FakeState(checkpoint_payload)
+            return FakeState(None)
+
+    def raise_missing_messages(self, config):
+        raise KeyError(b"messages")
+
+    monkeypatch.setattr(langgraph_engine.DaprCheckpointer, "get_tuple", raise_missing_messages)
+
+    checkpointer = object.__new__(langgraph_engine.SafeDaprCheckpointer)
+    checkpointer.store_name = "workflowstatestore"
+    checkpointer.client = FakeClient()
+
+    result = langgraph_engine.SafeDaprCheckpointer.get_tuple(
+        checkpointer,
+        {"configurable": {"thread_id": "thread-1"}},
+    )
+
+    assert result is not None
+    assert result.checkpoint["channel_values"]["planJson"]["summary"] == "Durable plan"
+    assert result.metadata["source"] == "loop"
+
+
+def test_schedule_workflow_run_passes_registered_workflow_object(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def schedule_new_workflow(self, workflow, *, input=None, instance_id=None):
+            captured["workflow"] = workflow
+            captured["input"] = input
+            captured["instance_id"] = instance_id
+
+    monkeypatch.setattr(app, "_workflow_client_for_runs", lambda: FakeClient())
+
+    request = DaprAgentRunRequest(prompt="Plan the work")
+
+    _schedule_workflow_run(request, instance_id="run-123", trace_id="trace-123")
+
+    assert captured["workflow"] is app.dapr_agent_workflow
+    assert captured["instance_id"] == "run-123"
+    assert isinstance(captured["input"], dict)
+    assert captured["input"]["prompt"] == "Plan the work"
+    assert captured["input"]["traceId"] == "trace-123"
 
 
 def test_profiles_default_to_expected_tool_groups() -> None:
@@ -174,6 +563,52 @@ def test_build_result_payload_returns_change_summary(tmp_path: Path, monkeypatch
     assert payload["traceId"] == "0123456789abcdef0123456789abcdef"
 
 
+def test_run_context_from_record_parses_string_false_for_execute_after_approval() -> None:
+    context = app.AgentRunContext.from_record(
+        {
+            "instanceId": "wf-123",
+            "mode": "plan_mode",
+            "profile": "feature-delivery",
+            "model": "gpt-5.4",
+            "engine": "langgraph-deepagents",
+            "cwd": "/tmp/repo",
+            "toolGroup": "planning",
+            "maxTurns": 30,
+            "executeAfterApproval": "false",
+        }
+    )
+
+    assert context.execute_after_approval is False
+
+
+def test_build_run_context_parses_string_false_for_execute_after_approval() -> None:
+    context = _build_run_context(
+        "wf-123",
+        DaprAgentRunRequest(
+            prompt="Plan the task",
+            mode="plan_mode",
+            executeAfterApproval="false",
+        ),
+    )
+
+    assert context.execute_after_approval is False
+
+
+def test_build_run_context_generates_langgraph_thread_id() -> None:
+    context = _build_run_context(
+        "wf-123",
+        DaprAgentRunRequest(
+            prompt="Implement the task",
+            engine="langgraph",
+            executionId="exec-123",
+        ),
+    )
+
+    assert context.planning_thread_id == "lg:plan:exec-123"
+    assert context.execution_thread_id == "lg:exec:exec-123"
+    assert context.thread_id == "lg:exec:exec-123"
+
+
 def test_build_result_payload_returns_plan_artifact_for_planning_mode(
     tmp_path: Path,
     monkeypatch,
@@ -229,6 +664,68 @@ def test_build_result_payload_returns_plan_artifact_for_planning_mode(
     assert payload["agentProgress"]["phase"] == "planned"
 
 
+def test_build_result_payload_includes_langgraph_session_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(app, "run_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "run_context_cache", {})
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-session",
+            mode="execute_direct",
+            profile="implement",
+            model="gpt-5.4",
+            engine="langgraph-deepagents",
+            cwd=str(repo_root),
+            tool_group="all",
+            max_turns=30,
+            execution_id="exec-session",
+            thread_id="thread-123",
+            planning_thread_id="plan-thread-123",
+            execution_thread_id="thread-123",
+        )
+    )
+
+    payload = _build_result_payload(
+        instance_id="wf-session",
+        request=DaprAgentRunRequest(
+            prompt="Implement the task",
+            profile="implement",
+            cwd=str(repo_root),
+            engine="langgraph",
+            threadId="thread-123",
+        ),
+        workflow_output={
+            "content": "Implemented successfully",
+            "threadId": "thread-123",
+            "planningThreadId": "plan-thread-123",
+            "executionThreadId": "thread-123",
+            "plannerStatus": "approved",
+            "plannerCheckpointId": "checkpoint-1",
+            "sessionPersistence": "dapr-checkpointer",
+            "engineMetadata": {
+                "threadId": "thread-123",
+                "planningThreadId": "plan-thread-123",
+                "executionThreadId": "thread-123",
+                "checkpointStoreName": "workflowstatestore",
+                "checkpointKeyPrefix": "langgraph:checkpoint:",
+            },
+        },
+    )
+
+    assert payload["threadId"] == "thread-123"
+    assert payload["planningThreadId"] == "plan-thread-123"
+    assert payload["executionThreadId"] == "thread-123"
+    assert payload["plannerStatus"] == "approved"
+    assert payload["plannerCheckpointId"] == "checkpoint-1"
+    assert payload["sessionPersistence"] == "dapr-checkpointer"
+    assert payload["engineMetadata"]["checkpointStoreName"] == "workflowstatestore"
+
+
 def test_build_run_context_uses_request_model_over_runtime_default() -> None:
     context = _build_run_context(
         "wf-model",
@@ -255,6 +752,49 @@ def test_resolve_run_engine_prefers_langgraph_for_coding_profiles(monkeypatch) -
     )
 
     assert engine == app.LANGGRAPH_ENGINE_NAME
+
+
+def test_resolve_run_engine_honors_explicit_dapr_agent_override(monkeypatch) -> None:
+    monkeypatch.setattr(app, "is_langgraph_available", lambda: True)
+
+    engine = _resolve_run_engine(
+        DaprAgentRunRequest(
+            prompt="Implement the task",
+            profile="implement",
+            engine="dapr-agent",
+        )
+    )
+
+    assert engine == "dapr-agent"
+
+
+def test_execute_step_passes_explicit_engine(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_api_run(request: DaprAgentRunRequest) -> dict[str, object]:
+        captured["engine"] = request.engine
+        captured["profile"] = request.profile
+        return {"text": "ok", "engine": request.engine}
+
+    monkeypatch.setattr(app, "api_run", fake_api_run)
+
+    payload = execute_step(
+        ExecuteRequest(
+            step="run",
+            execution_id="exec-1",
+            workflow_id="wf-1",
+            node_id="node-1",
+            input={
+                "prompt": "Implement the task",
+                "engine": "langgraph",
+                "profile": "implement",
+            },
+        )
+    )
+
+    assert captured == {"engine": "langgraph", "profile": "implement"}
+    assert payload["success"] is True
+    assert payload["data"]["engine"] == "langgraph"
 
 
 def test_build_result_payload_marks_pending_plan_as_awaiting_approval(
@@ -585,13 +1125,14 @@ def test_api_run_approve_raises_workflow_event(monkeypatch) -> None:
     assert response["success"] is True
     assert response["approvalEventName"] == "approval-wf-approve"
     assert fake_client.raised == [
-        (
-            "wf-approve",
-            "approval-wf-approve",
-            {
-                "approved": True,
-                "reason": "Looks good",
-                "approvedBy": "reviewer@example.com",
+            (
+                "wf-approve",
+                "approval-wf-approve",
+                {
+                    "action": "approve",
+                    "approved": True,
+                    "reason": "Looks good",
+                    "approvedBy": "reviewer@example.com",
                 "respondedBy": "reviewer@example.com",
             },
         )
@@ -821,6 +1362,21 @@ def test_workspace_tools_honor_explicit_workspace_root(tmp_path: Path) -> None:
         files = list_files(".")
         assert files == ["README.md"]
         assert read_file("README.md") == "repo readme"
+    finally:
+        pop_tool_context(token)
+
+
+def test_workspace_tools_allow_absolute_paths_within_workspace_root(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    readme_path = repo_root / "README.md"
+    readme_path.write_text("repo readme", encoding="utf-8")
+
+    context = ToolRuntimeContext.from_workspace_root(repo_root)
+    token = push_tool_context(context)
+    try:
+        assert read_file(str(readme_path)) == "repo readme"
+        assert list_files(str(repo_root)) == ["README.md"]
     finally:
         pop_tool_context(token)
 

@@ -16,6 +16,7 @@ import {
 	buildDurableTimeline,
 	buildExecutionConsistency,
 	mapRuntimeStatusToLocalStatus,
+	reconcileAgentRunWithLivePayload,
 	toDurableAgentRunSummary,
 	toDurableExternalEventSummary,
 	toDurablePlanArtifactSummary,
@@ -41,6 +42,9 @@ function getAgentRuntimeTarget(
 		return { baseUrl: MS_AGENT_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "openshell/run") {
@@ -92,21 +96,30 @@ async function fetchAgentLivePayload(
 	if (!target) {
 		return null;
 	}
-	const response = await fetch(
-		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
-		{
-			headers: { Accept: "application/json" },
-			signal: AbortSignal.timeout(4000),
-			cache: "no-store",
-		},
-	);
-	if (!response.ok) {
+	try {
+		const response = await fetch(
+			`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
+			{
+				headers: { Accept: "application/json" },
+				signal: AbortSignal.timeout(4000),
+				cache: "no-store",
+			},
+		);
+		if (!response.ok) {
+			return null;
+		}
+		const payload = await response.json();
+		return payload && typeof payload === "object"
+			? (payload as Record<string, unknown>)
+			: null;
+	} catch (error) {
+		console.warn("[internal-workflows] Failed to fetch live agent payload", {
+			actionType,
+			instanceId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
-	const payload = await response.json();
-	return payload && typeof payload === "object"
-		? (payload as Record<string, unknown>)
-		: null;
 }
 
 function shouldFetchLiveAgentPayload(
@@ -117,7 +130,12 @@ function shouldFetchLiveAgentPayload(
 		return false;
 	}
 	if (
-		!["dapr-agent/run", "ms-agent/run", "openshell/run"].includes(actionType)
+		![
+			"dapr-agent/run",
+			"ms-agent/run",
+			"openshell/run",
+			"openshell-langgraph/run",
+		].includes(actionType)
 	) {
 		return false;
 	}
@@ -487,7 +505,8 @@ export async function getInternalWorkflowExecutionDetail(executionId: string) {
 			const framework =
 				actionType === "ms-agent/run"
 					? "ms-agent"
-					: actionType === "openshell/run"
+					: actionType === "openshell/run" ||
+							actionType === "openshell-langgraph/run"
 						? "openshell"
 						: actionType === "dapr-agent/run"
 							? "dapr-agent"
@@ -509,9 +528,10 @@ export async function getInternalWorkflowExecutionDetail(executionId: string) {
 					);
 				}
 			}
+			const effectiveRun = reconcileAgentRunWithLivePayload(run, livePayload);
 			return [
 				run.nodeId,
-				buildAgentNodeProgress(run, framework, livePayload),
+				buildAgentNodeProgress(effectiveRun, framework, livePayload),
 			] as const;
 		}),
 	);

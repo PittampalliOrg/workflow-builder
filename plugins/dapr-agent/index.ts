@@ -7,7 +7,7 @@ const daprAgentPlugin: IntegrationPlugin = {
 	type: "dapr-agent",
 	label: "Dapr Agent",
 	description:
-		"Durable autonomous coding agent built on Python Dapr Agents, LangGraph Deep Agents, and workspace/git tools",
+		"Durable Dapr coding agent with LangGraph Deep Agent support, plan artifacts, and workspace/git tools",
 	icon: DaprAgentIcon,
 	formFields: [],
 	actions: [
@@ -61,6 +61,27 @@ const daprAgentPlugin: IntegrationPlugin = {
 					required: false,
 					placeholder: "{{@nodeId:Dapr Plan.artifactRef}}",
 				},
+					{
+						key: "planningThreadId",
+						label: "Planning Thread ID (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "{{@nodeId:Dapr Plan.planningThreadId}}",
+					},
+					{
+						key: "executionThreadId",
+						label: "Execution Thread ID (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "{{@nodeId:Dapr Execute.executionThreadId}}",
+					},
+					{
+						key: "threadId",
+						label: "Legacy Thread ID Alias (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "{{@nodeId:Dapr Execute.threadId}}",
+					},
 				{
 					key: "workspaceRef",
 					label: "Workspace Ref (optional)",
@@ -203,6 +224,14 @@ const daprAgentPlugin: IntegrationPlugin = {
 			],
 			outputFields: [
 				{ field: "text", description: "Final agent output text" },
+				{ field: "engine", description: "Execution engine used for the run" },
+					{ field: "threadId", description: "Primary LangGraph thread identifier for the current phase" },
+					{ field: "planningThreadId", description: "LangGraph planner thread identifier used for durable planning" },
+					{ field: "executionThreadId", description: "LangGraph execution thread identifier used for durable execution" },
+					{ field: "plannerStatus", description: "Planner graph status for durable planning flows" },
+					{ field: "plannerCheckpointId", description: "Latest LangGraph planner checkpoint identifier" },
+					{ field: "sessionPersistence", description: "Session persistence backend active for the LangGraph run" },
+				{ field: "engineMetadata", description: "Engine-specific runtime metadata" },
 				{ field: "artifactRef", description: "Reference ID for the persisted plan artifact" },
 				{ field: "plan", description: "Structured approved or generated plan JSON" },
 				{ field: "planMarkdown", description: "Markdown plan preview" },

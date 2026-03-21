@@ -1,5 +1,3 @@
-import "server-only";
-
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { generateId } from "@/lib/utils/id";
 import { db } from "./index";

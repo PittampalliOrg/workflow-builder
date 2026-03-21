@@ -1,5 +1,3 @@
-import "server-only";
-
 import { and, desc, eq, isNull, or } from "drizzle-orm";
 import { db } from "./index";
 import {

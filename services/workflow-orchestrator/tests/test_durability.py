@@ -283,6 +283,40 @@ def test_build_planning_prompt_preserves_goal_but_forbids_mutation():
     assert "stop condition" not in prompt.lower() or "Plan toward this stop condition" in prompt
 
 
+def test_to_compact_agent_result_preserves_engine_metadata():
+    result = DYNAMIC._to_compact_agent_result(
+        raw_result={
+            "success": True,
+            "result": {
+                "final_answer": "Completed",
+                "engine": "langgraph-deepagents",
+                "engineMetadata": {"planner": "deepagents"},
+                "threadId": "thread-123",
+                "planningThreadId": "plan-thread-123",
+                "executionThreadId": "thread-123",
+                "plannerStatus": "approved",
+                "plannerCheckpointId": "checkpoint-1",
+                "sessionPersistence": "dapr-checkpointer",
+                "artifactRef": "plan_123",
+            },
+        },
+        workflow_id="child-1",
+        dapr_instance_id="instance-1",
+        child_workflow_name="dapr-agent/run",
+        child_app_id="dapr-agent-runtime",
+    )
+
+    assert result["engine"] == "langgraph-deepagents"
+    assert result["engineMetadata"] == {"planner": "deepagents"}
+    assert result["threadId"] == "thread-123"
+    assert result["planningThreadId"] == "plan-thread-123"
+    assert result["executionThreadId"] == "thread-123"
+    assert result["plannerStatus"] == "approved"
+    assert result["plannerCheckpointId"] == "checkpoint-1"
+    assert result["sessionPersistence"] == "dapr-checkpointer"
+    assert result["artifactRef"] == "plan_123"
+
+
 def test_track_agent_run_completed_keeps_terminal_status_when_event_published(monkeypatch):
     fake_connection = FakeConnection()
     monkeypatch.setattr(TRACK_AGENT_RUN, "_get_database_url", lambda: "postgres://example")
@@ -304,6 +338,27 @@ def test_track_agent_run_completed_keeps_terminal_status_when_event_published(mo
     _, params = fake_connection.cursor_instance.executions[0]
     assert params[0] == "completed"
     assert params[3] is True
+
+
+def test_track_agent_run_running_updates_scheduled_rows(monkeypatch):
+    fake_connection = FakeConnection()
+    monkeypatch.setattr(TRACK_AGENT_RUN, "_get_database_url", lambda: "postgres://example")
+    monkeypatch.setattr(TRACK_AGENT_RUN.psycopg2, "connect", lambda _url: fake_connection)
+    monkeypatch.setattr(TRACK_AGENT_RUN, "start_activity_span", lambda *_args, **_kwargs: nullcontext())
+
+    result = TRACK_AGENT_RUN.track_agent_run_running(
+        None,
+        {
+            "id": "run-2",
+            "result": {"status": "running"},
+        },
+    )
+
+    assert result["success"] is True
+    assert fake_connection.committed is True
+    sql, params = fake_connection.cursor_instance.executions[0]
+    assert "status = 'running'" in sql
+    assert params[1] == "run-2"
 
 
 def test_publish_phase_changed_persists_execution_phase_before_publish(monkeypatch):

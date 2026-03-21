@@ -14,6 +14,8 @@ import {
 	buildAgentNodeProgress,
 	buildExecutionConsistency,
 	mapRuntimeStatusToLocalStatus,
+	reconcileAgentRunWithLivePayload,
+	toDurableAgentRunSummary,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
 import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
@@ -35,6 +37,9 @@ function getAgentRuntimeTarget(
 		return { baseUrl: MS_AGENT_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "openshell/run") {
@@ -92,21 +97,30 @@ async function fetchAgentLivePayload(
 	if (!target) {
 		return null;
 	}
-	const response = await fetch(
-		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
-		{
-			headers: { Accept: "application/json" },
-			signal: AbortSignal.timeout(4000),
-			cache: "no-store",
-		},
-	);
-	if (!response.ok) {
+	try {
+		const response = await fetch(
+			`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
+			{
+				headers: { Accept: "application/json" },
+				signal: AbortSignal.timeout(4000),
+				cache: "no-store",
+			},
+		);
+		if (!response.ok) {
+			return null;
+		}
+		const payload = await response.json();
+		return payload && typeof payload === "object"
+			? (payload as Record<string, unknown>)
+			: null;
+	} catch (error) {
+		console.warn("Failed to fetch live agent payload", {
+			actionType,
+			instanceId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
-	const payload = await response.json();
-	return payload && typeof payload === "object"
-		? (payload as Record<string, unknown>)
-		: null;
 }
 
 function shouldFetchLiveAgentPayload(
@@ -116,7 +130,11 @@ function shouldFetchLiveAgentPayload(
 	if (!actionType || !status) {
 		return false;
 	}
-	if (!["dapr-agent/run", "openshell/run"].includes(actionType)) {
+	if (
+		!["dapr-agent/run", "openshell/run", "openshell-langgraph/run"].includes(
+			actionType,
+		)
+	) {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -254,13 +272,15 @@ export async function GET(
 			runtime,
 		});
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
+		const normalizedAgentRuns = toDurableAgentRunSummary(agentRuns);
 		const agentProgressEntries = await Promise.all(
-			agentRuns.map(async (run) => {
+			normalizedAgentRuns.map(async (run) => {
 				const actionType = nodeActionTypeMap.get(run.nodeId);
 				const framework =
 					actionType === "ms-agent/run"
 						? "ms-agent"
-						: actionType === "openshell/run"
+						: actionType === "openshell/run" ||
+								actionType === "openshell-langgraph/run"
 							? "openshell"
 							: actionType === "dapr-agent/run"
 								? "dapr-agent"
@@ -271,7 +291,12 @@ export async function GET(
 				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
 					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
 					: null;
-				const progress = buildAgentNodeProgress(run, framework, livePayload);
+				const effectiveRun = reconcileAgentRunWithLivePayload(run, livePayload);
+				const progress = buildAgentNodeProgress(
+					effectiveRun,
+					framework,
+					livePayload,
+				);
 				progress.nodeId = run.nodeId;
 				return [run.nodeId, progress] as const;
 			}),

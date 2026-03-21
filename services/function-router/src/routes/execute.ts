@@ -899,6 +899,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? args.goal ?? "",
 								mode: args.mode,
+								engine: args.engine,
 								profile: args.profile ?? args.mode ?? "implement",
 								model,
 								maxTurns: args.maxTurns,
