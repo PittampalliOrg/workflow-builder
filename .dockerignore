@@ -26,6 +26,10 @@ playwright.config.ts
 # Development
 .git
 .gitignore
+.github
+.build-trigger
+.cursor
+.devspace
 .env*
 .devenv*
 devenv.nix
@@ -42,6 +46,12 @@ devenv.lock
 
 # Documentation
 docs
+workspace-runs
+*.md
+*.txt
+*.png
+*.zip
+tsconfig.tsbuildinfo
 
 # Docker
 Dockerfile
