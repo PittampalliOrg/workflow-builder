@@ -21,9 +21,11 @@ from app import (
     _build_run_context,
     _build_result_payload,
     _build_task_prompt,
+    _event_payload_id,
     _load_workspace_session,
     _load_run_context,
     _normalize_run_request,
+    _publish_agent_events,
     _persist_run_context,
     _persist_workspace_session,
     _resolve_runner_workflow_client,
@@ -752,6 +754,51 @@ def test_build_run_context_derives_gitea_repository_url_for_openshell(
     )
 
 
+def test_build_result_payload_publishes_run_complete_event(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    published: list[dict[str, object]] = []
+    monkeypatch.setattr(app, "WORKSPACE_ROOT", tmp_path)
+    monkeypatch.setattr(app, "run_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "run_context_cache", {})
+    monkeypatch.setattr(
+        app,
+        "_publish_agent_events",
+        lambda run_context, events: published.extend(events),
+    )
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    _persist_run_context(
+        AgentRunContext(
+            instance_id="wf-complete",
+            mode="execute_direct",
+            profile="implement",
+            model="gpt-5.4",
+            cwd=str(repo_root),
+            tool_group="all",
+            max_turns=30,
+            execution_id="exec-complete",
+            trace_id="trace-complete",
+        )
+    )
+
+    payload = _build_result_payload(
+        instance_id="wf-complete",
+        request=DaprAgentRunRequest(
+            prompt="Ship the feature",
+            profile="implement",
+            cwd=str(repo_root),
+            executionId="exec-complete",
+        ),
+        workflow_output='{"content":"Completed the requested implementation"}',
+    )
+
+    assert payload["text"] == "Completed the requested implementation"
+    assert published[-1]["type"] == "run_complete"
+    assert published[-1]["id"] == _event_payload_id("wf-complete", "run_complete")
+
+
 def test_build_result_payload_returns_plan_artifact_for_planning_mode(
     tmp_path: Path,
     monkeypatch,
@@ -867,6 +914,58 @@ def test_build_result_payload_includes_langgraph_session_metadata(
     assert payload["plannerCheckpointId"] == "checkpoint-1"
     assert payload["sessionPersistence"] == "dapr-checkpointer"
     assert payload["engineMetadata"]["checkpointStoreName"] == "workflowstatestore"
+
+
+def test_publish_agent_events_posts_to_workflow_builder(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    def fake_urlopen(request, timeout: int = 0):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(request.header_items())
+        captured["body"] = request.data.decode("utf-8")
+        return FakeResponse()
+
+    monkeypatch.setattr(app, "WORKFLOW_BUILDER_BASE_URL", "http://workflow-builder.test")
+    monkeypatch.setattr(app, "WORKFLOW_BUILDER_INTERNAL_API_TOKEN", "secret-token")
+    monkeypatch.setattr(app.urllib.request, "urlopen", fake_urlopen)
+
+    _publish_agent_events(
+        AgentRunContext(
+            instance_id="run-123",
+            mode="execute_direct",
+            profile="implement",
+            model="gpt-5.4",
+            cwd="/tmp/repo",
+            tool_group="all",
+            max_turns=12,
+            execution_id="exec-123",
+        ),
+        [
+            {
+                "id": "run-123:run_started",
+                "ts": "2026-03-22T20:00:00Z",
+                "type": "run_started",
+                "phase": "executing",
+            }
+        ],
+    )
+
+    assert captured["url"] == (
+        "http://workflow-builder.test/api/internal/agent/workflows/executions/exec-123/events"
+    )
+    assert "secret-token" in str(captured["headers"])
+    assert '"daprInstanceId": "run-123"' in str(captured["body"])
+    assert '"type": "run_started"' in str(captured["body"])
 
 
 def test_build_run_context_uses_request_model_over_runtime_default() -> None:

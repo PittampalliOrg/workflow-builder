@@ -6,6 +6,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	serial,
 	text,
 	timestamp,
 	unique,
@@ -594,6 +595,66 @@ export const workflowAgentRuns = pgTable(
 		statusIdx: index("idx_workflow_agent_runs_status").on(
 			table.status,
 			table.eventPublishedAt,
+		),
+	}),
+);
+
+export type WorkflowAgentEventType =
+	| "run_started"
+	| "model_start"
+	| "model_complete"
+	| "tool_start"
+	| "tool_complete"
+	| "tool_error"
+	| "sandbox_output"
+	| "sandbox_output_partial"
+	| "sandbox_heartbeat"
+	| "run_complete"
+	| "run_error";
+
+export const workflowAgentEvents = pgTable(
+	"workflow_agent_events",
+	{
+		eventId: serial("event_id").primaryKey(),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowAgentRunId: text("workflow_agent_run_id").references(
+			() => workflowAgentRuns.id,
+			{
+				onDelete: "set null",
+			},
+		),
+		parentExecutionId: text("parent_execution_id"),
+		daprInstanceId: text("dapr_instance_id").notNull(),
+		sourceEventId: text("source_event_id").notNull(),
+		seq: integer("seq"),
+		eventType: text("event_type").notNull().$type<WorkflowAgentEventType>(),
+		phase: text("phase"),
+		toolName: text("tool_name"),
+		sandboxName: text("sandbox_name"),
+		traceId: text("trace_id"),
+		payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+		ts: timestamp("ts").notNull().defaultNow(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		executionSourceUnique: unique("uq_workflow_agent_events_source").on(
+			table.workflowExecutionId,
+			table.daprInstanceId,
+			table.sourceEventId,
+		),
+		executionSeqIdx: index("idx_workflow_agent_events_execution_seq").on(
+			table.workflowExecutionId,
+			table.eventId,
+		),
+		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
+			table.workflowAgentRunId,
+			table.eventId,
+		),
+		instanceSeqIdx: index("idx_workflow_agent_events_instance_seq").on(
+			table.daprInstanceId,
+			table.eventId,
 		),
 	}),
 );
@@ -1617,6 +1678,21 @@ export const workflowExecutionsRelations = relations(
 			references: [workflows.id],
 		}),
 		planArtifacts: many(workflowPlanArtifacts),
+		agentEvents: many(workflowAgentEvents),
+	}),
+);
+
+export const workflowAgentEventsRelations = relations(
+	workflowAgentEvents,
+	({ one }) => ({
+		workflowExecution: one(workflowExecutions, {
+			fields: [workflowAgentEvents.workflowExecutionId],
+			references: [workflowExecutions.id],
+		}),
+		agentRun: one(workflowAgentRuns, {
+			fields: [workflowAgentEvents.workflowAgentRunId],
+			references: [workflowAgentRuns.id],
+		}),
 	}),
 );
 
@@ -1681,6 +1757,8 @@ export type NewWorkflowWorkspaceSession =
 	typeof workflowWorkspaceSessions.$inferInsert;
 export type WorkflowAgentRun = typeof workflowAgentRuns.$inferSelect;
 export type NewWorkflowAgentRun = typeof workflowAgentRuns.$inferInsert;
+export type WorkflowAgentEvent = typeof workflowAgentEvents.$inferSelect;
+export type NewWorkflowAgentEvent = typeof workflowAgentEvents.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;
