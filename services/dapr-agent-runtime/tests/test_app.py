@@ -752,8 +752,6 @@ def test_build_run_context_derives_gitea_repository_url_for_openshell(
         context.repository_url
         == "http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-builder.git"
     )
-
-
 def test_build_result_payload_publishes_run_complete_event(
     tmp_path: Path,
     monkeypatch,
@@ -914,8 +912,6 @@ def test_build_result_payload_includes_langgraph_session_metadata(
     assert payload["plannerCheckpointId"] == "checkpoint-1"
     assert payload["sessionPersistence"] == "dapr-checkpointer"
     assert payload["engineMetadata"]["checkpointStoreName"] == "workflowstatestore"
-
-
 def test_publish_agent_events_posts_to_workflow_builder(monkeypatch) -> None:
     captured: dict[str, object] = {}
 

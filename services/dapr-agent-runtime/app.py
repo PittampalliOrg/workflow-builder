@@ -3395,6 +3395,7 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             summary=f"Starting {run_context.profile} run",
             currentStepName=run_context.profile,
         )
+<<<<<<< HEAD
         _push_stream_event(instance_id, {
             "type": "run_started",
             "ts": _utc_now_iso(),
