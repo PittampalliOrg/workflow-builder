@@ -18,6 +18,7 @@ import Link from "next/link";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AgentStreamInline } from "@/components/workflow-runs/agent-stream-inline";
 import { api } from "@/lib/api-client";
 import {
 	OUTPUT_DISPLAY_CONFIGS,
@@ -1435,6 +1436,12 @@ export function WorkflowRuns({
 
 						{isExpanded && (
 							<div className="border-t bg-muted/20">
+								{execution.status === "running" && (
+									<AgentStreamInline
+										executionId={execution.id}
+										isActive={true}
+									/>
+								)}
 								{executionLogs.length === 0 && execution.daprInstanceId ? (
 									// Dapr workflow - show phase/progress details
 									<div className="p-4">

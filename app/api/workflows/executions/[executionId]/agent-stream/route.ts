@@ -1,103 +1,158 @@
-/**
- * GET /api/workflows/executions/[executionId]/agent-stream
- *
- * SSE proxy for real-time agent activity streaming.
- * Connects directly to the agent runtime (bypasses Dapr sidecar to avoid
- * SSE buffering — same pattern as workflow-streaming-status.md).
- */
-
+import { eq } from "drizzle-orm";
+import { listAgentEvents, subscribeToAgentEvents } from "@/lib/agent-events";
 import { getSession } from "@/lib/auth-helpers";
 import { allowAnonymousDaprDebug } from "@/lib/dapr/debug-access";
 import { db } from "@/lib/db";
-import { workflowAgentRuns, workflowExecutions } from "@/lib/db/schema";
-import { eq } from "drizzle-orm";
+import { workflowExecutions } from "@/lib/db/schema";
+import { isValidInternalToken } from "@/lib/internal-api";
 import type { AgentStreamEvent } from "@/lib/types/agent-stream-events";
 
 export const dynamic = "force-dynamic";
 
-const DAPR_AGENT_RUNTIME_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+function formatSse(event: AgentStreamEvent, eventId: number): Uint8Array {
+	return new TextEncoder().encode(
+		`id: ${eventId}\nevent: agent_event\ndata: ${JSON.stringify(event)}\n\n`,
+	);
+}
+
+function snapshotEvent(input: {
+	executionId: string;
+	status: string;
+	phase: string | null;
+	progress: number | null;
+}): AgentStreamEvent {
+	return {
+		id: "0",
+		type: "state_snapshot",
+		ts: new Date().toISOString(),
+		phase: input.phase ?? undefined,
+		meta: {
+			workflowExecutionId: input.executionId,
+			status: input.status,
+			progress: input.progress,
+		},
+	};
+}
 
 export async function GET(
 	request: Request,
 	{ params }: { params: Promise<{ executionId: string }> },
 ) {
 	const session = await getSession(request);
-	if (!session?.user && !allowAnonymousDaprDebug()) {
+	const internalRequest = isValidInternalToken(request);
+	if (!session?.user && !internalRequest && !allowAnonymousDaprDebug()) {
 		return new Response("Unauthorized", { status: 401 });
 	}
 
 	const { executionId } = await params;
-
-	// Find the agent run's Dapr instance ID
-	const instanceId = await resolveAgentInstanceId(executionId);
-	if (!instanceId) {
-		return new Response("Agent run not found", { status: 404 });
+	const execution = await db.query.workflowExecutions.findFirst({
+		where: eq(workflowExecutions.id, executionId),
+		columns: { id: true, status: true, phase: true, progress: true },
+	});
+	if (!execution) {
+		return new Response("Execution not found", { status: 404 });
 	}
 
-	// Forward Last-Event-ID for reconnection
-	const lastEventId = request.headers.get("Last-Event-ID");
-	const upstreamHeaders: Record<string, string> = {
-		Accept: "text/event-stream",
-	};
-	if (lastEventId) {
-		upstreamHeaders["Last-Event-ID"] = lastEventId;
-	}
+	const lastEventIdRaw =
+		request.headers.get("Last-Event-ID") ??
+		new URL(request.url).searchParams.get("lastEventId");
+	const afterEventId = lastEventIdRaw
+		? Number.parseInt(lastEventIdRaw, 10)
+		: null;
+	const replayed = await listAgentEvents({
+		workflowExecutionId: executionId,
+		afterEventId:
+			afterEventId != null && Number.isFinite(afterEventId)
+				? afterEventId
+				: undefined,
+	});
+	const terminal =
+		execution.status === "success" ||
+		execution.status === "error" ||
+		execution.status === "cancelled";
 
-	// Direct HTTP to agent runtime (bypasses Dapr to avoid SSE buffering)
-	const streamUrl = `${DAPR_AGENT_RUNTIME_URL}/api/run/${instanceId}/stream`;
-	let upstreamResponse: Response;
-	try {
-		upstreamResponse = await fetch(streamUrl, {
-			headers: upstreamHeaders,
-			signal: request.signal,
-		});
-	} catch (error) {
-		console.error("[agent-stream] Failed to connect to agent runtime:", error);
-		return new Response("Agent runtime unavailable", { status: 502 });
-	}
+	const stream = new ReadableStream<Uint8Array>({
+		start(controller) {
+			let lastSeenEventId =
+				afterEventId != null && Number.isFinite(afterEventId)
+					? afterEventId
+					: 0;
 
-	if (!upstreamResponse.ok) {
-		const text = await upstreamResponse.text().catch(() => "");
-		return new Response(text || "Upstream error", {
-			status: upstreamResponse.status,
-		});
-	}
+			const enqueueEvent = (event: AgentStreamEvent, eventId: number) => {
+				controller.enqueue(formatSse(event, eventId));
+				if (eventId > lastSeenEventId) {
+					lastSeenEventId = eventId;
+				}
+			};
 
-	if (!upstreamResponse.body) {
-		return new Response("No stream body", { status: 502 });
-	}
+			controller.enqueue(
+				formatSse(
+					snapshotEvent({
+						executionId,
+						status: execution.status,
+						phase: execution.phase ?? null,
+						progress: execution.progress ?? null,
+					}),
+					0,
+				),
+			);
 
-	// Re-emit the upstream SSE stream to the browser
-	const encoder = new TextEncoder();
-	const reader = upstreamResponse.body.getReader();
-	const decoder = new TextDecoder();
-	let closed = false;
+			for (const event of replayed) {
+				enqueueEvent(event, event.eventId);
+			}
 
-	const stream = new ReadableStream({
-		async pull(controller) {
-			if (closed) {
+			if (terminal) {
 				controller.close();
 				return;
 			}
-			try {
-				const { done, value } = await reader.read();
-				if (done) {
-					closed = true;
-					controller.close();
+
+			const unsubscribe = subscribeToAgentEvents(executionId, (event) => {
+				if (event.eventId <= lastSeenEventId) {
 					return;
 				}
-				// Pass through SSE data as-is
-				controller.enqueue(value);
-			} catch {
-				closed = true;
-				controller.close();
-			}
-		},
-		cancel() {
-			closed = true;
-			reader.cancel().catch(() => {});
+				enqueueEvent(event, event.eventId);
+			});
+
+			let polling = false;
+			const poll = async () => {
+				if (polling) {
+					return;
+				}
+				polling = true;
+				try {
+					const freshEvents = await listAgentEvents({
+						workflowExecutionId: executionId,
+						afterEventId: lastSeenEventId,
+					});
+					for (const event of freshEvents) {
+						if (event.eventId <= lastSeenEventId) {
+							continue;
+						}
+						enqueueEvent(event, event.eventId);
+					}
+				} catch {
+				} finally {
+					polling = false;
+				}
+			};
+
+			const pollTimer = setInterval(() => {
+				void poll();
+			}, 2000);
+			const keepAlive = setInterval(() => {
+				controller.enqueue(new TextEncoder().encode(": keepalive\n\n"));
+			}, 30000);
+
+			const abort = () => {
+				clearInterval(pollTimer);
+				clearInterval(keepAlive);
+				unsubscribe();
+				try {
+					controller.close();
+				} catch {}
+			};
+
+			request.signal.addEventListener("abort", abort, { once: true });
 		},
 	});
 
@@ -109,72 +164,4 @@ export async function GET(
 			"X-Accel-Buffering": "no",
 		},
 	});
-}
-
-/**
- * Resolve the agent runtime Dapr instance ID from an execution ID.
- *
- * Resolution order:
- * 1. agent_runs by workflow_execution_id (most common — orchestrator creates agent child runs)
- * 2. agent_runs by parent_execution_id (legacy format)
- * 3. Agent runtime state store mapping: parent orchestrator ID → child workflow ID
- * 4. execution's own dapr_instance_id (when the orchestrator IS the agent runtime)
- */
-async function resolveAgentInstanceId(
-	executionId: string,
-): Promise<string | null> {
-	// Try agent_runs by workflow_execution_id
-	const agentRunsByExecution = await db
-		.select({ daprInstanceId: workflowAgentRuns.daprInstanceId })
-		.from(workflowAgentRuns)
-		.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
-		.orderBy(workflowAgentRuns.createdAt)
-		.limit(1);
-
-	if (agentRunsByExecution.length > 0 && agentRunsByExecution[0].daprInstanceId) {
-		return agentRunsByExecution[0].daprInstanceId;
-	}
-
-	// Get orchestrator's own dapr instance ID
-	const executions = await db
-		.select({ daprInstanceId: workflowExecutions.daprInstanceId })
-		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
-		.limit(1);
-
-	const orchestratorInstanceId = executions[0]?.daprInstanceId ?? null;
-
-	if (orchestratorInstanceId) {
-		// Try agent_runs by parent_execution_id (legacy format)
-		const agentRunsByParent = await db
-			.select({ daprInstanceId: workflowAgentRuns.daprInstanceId })
-			.from(workflowAgentRuns)
-			.where(eq(workflowAgentRuns.parentExecutionId, orchestratorInstanceId))
-			.orderBy(workflowAgentRuns.createdAt)
-			.limit(1);
-
-		if (agentRunsByParent.length > 0 && agentRunsByParent[0].daprInstanceId) {
-			return agentRunsByParent[0].daprInstanceId;
-		}
-
-		// Query agent runtime's state store mapping (parent → child workflow ID)
-		try {
-			const resolveUrl = `${DAPR_AGENT_RUNTIME_URL}/api/run/resolve-child?parentId=${encodeURIComponent(orchestratorInstanceId)}`;
-			const resp = await fetch(resolveUrl, {
-				signal: AbortSignal.timeout(5000),
-			});
-			if (resp.ok) {
-				const data = (await resp.json()) as { childInstanceId?: string };
-				if (data.childInstanceId) {
-					return data.childInstanceId;
-				}
-			}
-		} catch {
-			// Agent runtime unavailable or no mapping — fall through
-		}
-	}
-
-	// Fall back to execution's own dapr_instance_id
-	// (when the orchestrator IS the agent runtime, e.g. OpenShell LangGraph workflow)
-	return orchestratorInstanceId;
 }

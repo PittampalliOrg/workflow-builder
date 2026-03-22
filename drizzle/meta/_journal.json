@@ -141,6 +141,13 @@
 			"when": 1774033137857,
 			"tag": "0019_elite_george_stacy",
 			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "7",
+			"when": 1774190509968,
+			"tag": "0020_oval_titania",
+			"breakpoints": true
 		}
 	]
 }

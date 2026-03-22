@@ -271,10 +271,10 @@ function AgentProgressOverlay({
 				? `Step ${progress.completedSteps}/${progress.totalSteps}`
 				: progress.phase || "Running";
 	const detail =
+		progress.summary ||
 		progress.activeToolName ||
 		progress.currentStepName ||
-		progress.stopReason ||
-		progress.summary;
+		progress.stopReason;
 
 	return (
 		<div className="absolute right-2 bottom-2 left-2 rounded-lg border border-white/10 bg-black/55 px-2 py-1.5 text-white shadow-sm backdrop-blur-sm">

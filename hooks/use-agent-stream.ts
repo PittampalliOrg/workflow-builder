@@ -32,6 +32,10 @@ export type UseAgentStreamReturn = {
 	isLlmStreaming: boolean;
 	/** Sandbox output events */
 	sandboxOutputs: AgentStreamEvent[];
+	/** Lines of output from the currently running sandbox command */
+	activeSandboxLines: string[];
+	/** Command currently executing in the sandbox (null when idle) */
+	activeSandboxCommand: string | null;
 };
 
 export function useAgentStream({
@@ -44,9 +48,27 @@ export function useAgentStream({
 	const [currentPhase, setCurrentPhase] = useState<string | null>(null);
 	const [llmTokenBuffer, setLlmTokenBuffer] = useState("");
 	const [isLlmStreaming, setIsLlmStreaming] = useState(false);
+	const [activeSandboxLines, setActiveSandboxLines] = useState<string[]>([]);
+	const [activeSandboxCommand, setActiveSandboxCommand] = useState<
+		string | null
+	>(null);
 
 	const lastEventIdRef = useRef<string | null>(null);
 	const eventSourceRef = useRef<EventSource | null>(null);
+
+	useEffect(() => {
+		setEvents([]);
+		setIsConnected(false);
+		setActiveToolName(null);
+		setCurrentPhase(null);
+		setLlmTokenBuffer("");
+		setIsLlmStreaming(false);
+		setActiveSandboxLines([]);
+		setActiveSandboxCommand(null);
+		lastEventIdRef.current = null;
+		eventSourceRef.current?.close();
+		eventSourceRef.current = null;
+	}, [executionId]);
 
 	const processEvent = useCallback((event: AgentStreamEvent) => {
 		setEvents((prev) => {
@@ -66,6 +88,23 @@ export function useAgentStream({
 			case "tool_call_error":
 			case "tool_error":
 				setActiveToolName(null);
+				setActiveSandboxLines([]);
+				setActiveSandboxCommand(null);
+				break;
+			case "sandbox_output_partial":
+				if (event.output) {
+					setActiveSandboxLines((prev) => [...prev, event.output!]);
+				}
+				if (event.command) {
+					setActiveSandboxCommand(event.command);
+				}
+				break;
+			case "sandbox_output":
+				setActiveSandboxLines([]);
+				setActiveSandboxCommand(null);
+				break;
+			case "sandbox_heartbeat":
+				// Keep activeToolName alive during heartbeats — no state change needed
 				break;
 			case "llm_start":
 			case "model_start":
@@ -91,6 +130,8 @@ export function useAgentStream({
 			case "run_error":
 				setActiveToolName(null);
 				setIsLlmStreaming(false);
+				setActiveSandboxLines([]);
+				setActiveSandboxCommand(null);
 				break;
 		}
 
@@ -170,5 +211,7 @@ export function useAgentStream({
 		llmTokenBuffer,
 		isLlmStreaming,
 		sandboxOutputs,
+		activeSandboxLines,
+		activeSandboxCommand,
 	};
 }

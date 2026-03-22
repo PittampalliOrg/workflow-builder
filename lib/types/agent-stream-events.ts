@@ -15,6 +15,8 @@ export type AgentStreamEventType =
 	| "tool_call_end"
 	| "tool_call_error"
 	| "sandbox_output"
+	| "sandbox_output_partial"
+	| "sandbox_heartbeat"
 	| "state_snapshot"
 	| "run_complete"
 	| "run_error"
@@ -60,6 +62,16 @@ export type AgentStreamEvent = {
 	error?: string;
 	/** Finish reason */
 	finishReason?: string;
+	/** Sandbox heartbeat: elapsed seconds since command started */
+	elapsedSeconds?: number;
+	/** Sandbox heartbeat: current sandbox status */
+	sandboxStatus?: string;
+	/** Sandbox heartbeat: current sandbox phase */
+	sandboxPhase?: string;
+	/** Sandbox heartbeat: OpenShell run ID */
+	runId?: string;
+	/** Stream source for partial sandbox output */
+	stream?: "stdout" | "stderr";
 	/** Extra metadata */
 	meta?: Record<string, unknown>;
 };

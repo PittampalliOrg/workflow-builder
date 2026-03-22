@@ -6,6 +6,7 @@ import {
 	integer,
 	jsonb,
 	pgTable,
+	serial,
 	text,
 	timestamp,
 	unique,
@@ -594,6 +595,66 @@ export const workflowAgentRuns = pgTable(
 		statusIdx: index("idx_workflow_agent_runs_status").on(
 			table.status,
 			table.eventPublishedAt,
+		),
+	}),
+);
+
+export type WorkflowAgentEventType =
+	| "run_started"
+	| "turn_started"
+	| "llm_start"
+	| "llm_token"
+	| "llm_complete"
+	| "tool_call_start"
+	| "tool_call_end"
+	| "tool_call_error"
+	| "sandbox_output"
+	| "sandbox_output_partial"
+	| "sandbox_heartbeat"
+	| "state_snapshot"
+	| "run_complete"
+	| "run_error"
+	| "tool_start"
+	| "tool_complete"
+	| "tool_error"
+	| "model_start"
+	| "model_complete";
+
+export const workflowAgentEvents = pgTable(
+	"workflow_agent_events",
+	{
+		eventId: serial("event_id").primaryKey(),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowAgentRunId: text("workflow_agent_run_id").references(
+			() => workflowAgentRuns.id,
+			{ onDelete: "set null" },
+		),
+		parentExecutionId: text("parent_execution_id"),
+		daprInstanceId: text("dapr_instance_id").notNull(),
+		seq: integer("seq"),
+		eventType: text("event_type").notNull().$type<WorkflowAgentEventType>(),
+		phase: text("phase"),
+		toolName: text("tool_name"),
+		sandboxName: text("sandbox_name"),
+		traceId: text("trace_id"),
+		payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+		ts: timestamp("ts").notNull().defaultNow(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		executionSeqIdx: index("idx_workflow_agent_events_execution_seq").on(
+			table.workflowExecutionId,
+			table.eventId,
+		),
+		instanceSeqIdx: index("idx_workflow_agent_events_instance_seq").on(
+			table.daprInstanceId,
+			table.eventId,
+		),
+		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
+			table.workflowAgentRunId,
+			table.eventId,
 		),
 	}),
 );

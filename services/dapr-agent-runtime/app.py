@@ -16,6 +16,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 import re
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -336,6 +337,11 @@ DAPR_AGENT_RUN_STATE_KEY_PREFIX = os.environ.get(
     "DAPR_AGENT_RUN_STATE_KEY_PREFIX",
     f"{DAPR_AGENT_STATE_KEY_PREFIX}run:",
 )
+WORKFLOW_BUILDER_INTERNAL_BASE_URL = os.environ.get(
+    "WORKFLOW_BUILDER_INTERNAL_BASE_URL",
+    "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+).strip().rstrip("/")
+INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "").strip()
 DAPR_AGENT_ENABLE_MEMORY = os.environ.get("DAPR_AGENT_ENABLE_MEMORY", "true").strip().lower() == "true"
 DAPR_AGENT_ENABLE_REGISTRY = os.environ.get("DAPR_AGENT_ENABLE_REGISTRY", "true").strip().lower() == "true"
 DAPR_AGENT_LLM_BACKEND = os.environ.get("DAPR_AGENT_LLM_BACKEND", "auto").strip().lower()
@@ -740,6 +746,90 @@ run_state_store = StateStoreService(
     store_name=DAPR_AGENT_STATE_STORE_NAME,
     key_prefix=DAPR_AGENT_RUN_STATE_KEY_PREFIX,
 )
+
+
+def _run_state_http_key(key: str) -> str:
+    return f"{DAPR_AGENT_RUN_STATE_KEY_PREFIX}{key}"
+
+
+def _run_state_http_url(key: str) -> str:
+    qualified_key = quote(_run_state_http_key(key), safe="")
+    return f"http://127.0.0.1:{DAPR_HTTP_PORT}/v1.0/state/{DAPR_AGENT_STATE_STORE_NAME}/{qualified_key}"
+
+
+def _run_state_load(key: str, default: Any) -> Any:
+    try:
+        with urllib.request.urlopen(_run_state_http_url(key), timeout=5) as response:
+            payload = response.read()
+        if not payload:
+            return default
+        loaded = json.loads(payload.decode("utf-8"))
+        return loaded if loaded not in (None, "") else default
+    except Exception:
+        try:
+            return run_state_store.load(key=key, default=default)
+        except StateStoreError as exc:
+            logger.warning("Failed to load run state %s: %s", key, exc)
+            return default
+
+
+def _run_state_save(key: str, value: Any) -> None:
+    payload = json.dumps([{"key": _run_state_http_key(key), "value": value}]).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{DAPR_HTTP_PORT}/v1.0/state/{DAPR_AGENT_STATE_STORE_NAME}",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5):
+            return
+    except Exception:
+        try:
+            run_state_store.save(key=key, value=value)
+        except StateStoreError as exc:
+            logger.warning("Failed to persist run state %s: %s", key, exc)
+
+
+def _run_state_delete(key: str) -> None:
+    request = urllib.request.Request(_run_state_http_url(key), method="DELETE")
+    try:
+        with urllib.request.urlopen(request, timeout=5):
+            return
+    except Exception:
+        try:
+            run_state_store.delete(key=key)
+        except StateStoreError as exc:
+            logger.warning("Failed to delete run state %s: %s", key, exc)
+
+
+def _publish_agent_event_to_workflow_builder(instance_id: str, event: dict[str, Any]) -> None:
+    context = _load_run_context(instance_id)
+    if context is None or not context.execution_id or not INTERNAL_API_TOKEN:
+        return
+
+    request = urllib.request.Request(
+        f"{WORKFLOW_BUILDER_INTERNAL_BASE_URL}/api/internal/agent-events",
+        data=json.dumps(
+            {
+                "workflowExecutionId": context.execution_id,
+                "parentExecutionId": context.parent_execution_id,
+                "daprInstanceId": instance_id,
+                "events": [{k: v for k, v in event.items() if k != "_seq"}],
+            },
+            default=str,
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "X-Internal-Token": INTERNAL_API_TOKEN,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except Exception as exc:
+        logger.warning("Failed to publish agent event %s: %s", instance_id, exc)
 
 
 def _workspace_session_key(workspace_ref: str) -> str:
@@ -1731,6 +1821,10 @@ def _run_artifact_key(instance_id: str) -> str:
     return f"artifact:{instance_id}"
 
 
+def _run_stream_history_key(instance_id: str) -> str:
+    return f"stream-history:{instance_id}"
+
+
 def _execution_runs_key(execution_id: str) -> str:
     return f"execution:{execution_id}:runs"
 
@@ -1742,14 +1836,11 @@ def _utc_now_iso() -> str:
 def _persist_run_context(context: AgentRunContext) -> None:
     run_context_cache[context.instance_id] = context
     try:
-        run_state_store.save(
-            key=_run_context_key(context.instance_id),
-            value=context.to_record(),
-        )
+        _run_state_save(_run_context_key(context.instance_id), context.to_record())
         if context.execution_id:
-            record = run_state_store.load(
-                key=_execution_runs_key(context.execution_id),
-                default={"executionId": context.execution_id, "runIds": []},
+            record = _run_state_load(
+                _execution_runs_key(context.execution_id),
+                {"executionId": context.execution_id, "runIds": []},
             )
             run_ids = {
                 str(item).strip()
@@ -1757,14 +1848,11 @@ def _persist_run_context(context: AgentRunContext) -> None:
                 if str(item).strip()
             }
             run_ids.add(context.instance_id)
-            run_state_store.save(
-                key=_execution_runs_key(context.execution_id),
-                value={
-                    "executionId": context.execution_id,
-                    "runIds": sorted(run_ids),
-                },
+            _run_state_save(
+                _execution_runs_key(context.execution_id),
+                {"executionId": context.execution_id, "runIds": sorted(run_ids)},
             )
-    except StateStoreError as exc:
+    except Exception as exc:
         logger.warning("Failed to persist run context %s: %s", context.instance_id, exc)
 
 
@@ -1773,11 +1861,8 @@ def _load_run_context(instance_id: str) -> AgentRunContext | None:
     if cached is not None:
         return cached
     try:
-        record = run_state_store.load(
-            key=_run_context_key(instance_id),
-            default={},
-        )
-    except StateStoreError as exc:
+        record = _run_state_load(_run_context_key(instance_id), {})
+    except Exception as exc:
         logger.warning("Failed to load run context %s: %s", instance_id, exc)
         return None
     if not record:
@@ -1790,11 +1875,11 @@ def _load_run_context(instance_id: str) -> AgentRunContext | None:
 def _delete_run_context(instance_id: str) -> None:
     context = run_context_cache.pop(instance_id, None) or _load_run_context(instance_id)
     try:
-        run_state_store.delete(key=_run_context_key(instance_id))
+        _run_state_delete(_run_context_key(instance_id))
         if context and context.execution_id:
-            record = run_state_store.load(
-                key=_execution_runs_key(context.execution_id),
-                default={"executionId": context.execution_id, "runIds": []},
+            record = _run_state_load(
+                _execution_runs_key(context.execution_id),
+                {"executionId": context.execution_id, "runIds": []},
             )
             run_ids = {
                 str(item).strip()
@@ -1803,16 +1888,13 @@ def _delete_run_context(instance_id: str) -> None:
             }
             run_ids.discard(instance_id)
             if run_ids:
-                run_state_store.save(
-                    key=_execution_runs_key(context.execution_id),
-                    value={
-                        "executionId": context.execution_id,
-                        "runIds": sorted(run_ids),
-                    },
+                _run_state_save(
+                    _execution_runs_key(context.execution_id),
+                    {"executionId": context.execution_id, "runIds": sorted(run_ids)},
                 )
             else:
-                run_state_store.delete(key=_execution_runs_key(context.execution_id))
-    except StateStoreError as exc:
+                _run_state_delete(_execution_runs_key(context.execution_id))
+    except Exception as exc:
         logger.warning("Failed to delete run context %s: %s", instance_id, exc)
 
 
@@ -1820,11 +1902,8 @@ def _load_execution_run_ids(execution_id: str) -> list[str]:
     if not execution_id:
         return []
     try:
-        record = run_state_store.load(
-            key=_execution_runs_key(execution_id),
-            default={},
-        )
-    except StateStoreError as exc:
+        record = _run_state_load(_execution_runs_key(execution_id), {})
+    except Exception as exc:
         logger.warning("Failed to load run ids for execution %s: %s", execution_id, exc)
         return []
     return [
@@ -1916,15 +1995,15 @@ def _persist_workspace_mutation(instance_id: str, summary: dict[str, Any]) -> No
         "patch": "\n".join(deduped_patch_chunks).strip(),
     }
     try:
-        run_state_store.save(key=_mutation_summary_key(instance_id), value=payload)
-    except StateStoreError as exc:
+        _run_state_save(_mutation_summary_key(instance_id), payload)
+    except Exception as exc:
         logger.warning("Failed to persist workspace mutation summary %s: %s", instance_id, exc)
 
 
 def _load_workspace_mutation(instance_id: str) -> dict[str, Any] | None:
     try:
-        payload = run_state_store.load(key=_mutation_summary_key(instance_id), default={})
-    except StateStoreError as exc:
+        payload = _run_state_load(_mutation_summary_key(instance_id), {})
+    except Exception as exc:
         logger.warning("Failed to load workspace mutation summary %s: %s", instance_id, exc)
         return None
     return payload if payload else None
@@ -1959,15 +2038,15 @@ def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:
         "createdAt": _utc_now_iso(),
     }
     try:
-        run_state_store.save(key=_run_artifact_key(instance_id), value=artifact)
-    except StateStoreError as exc:
+        _run_state_save(_run_artifact_key(instance_id), artifact)
+    except Exception as exc:
         logger.warning("Failed to persist run artifact %s: %s", instance_id, exc)
 
 
 def _load_run_artifact(instance_id: str) -> dict[str, Any] | None:
     try:
-        artifact = run_state_store.load(key=_run_artifact_key(instance_id), default={})
-    except StateStoreError as exc:
+        artifact = _run_state_load(_run_artifact_key(instance_id), {})
+    except Exception as exc:
         logger.warning("Failed to load run artifact %s: %s", instance_id, exc)
         return None
     return artifact if artifact else None
@@ -2091,17 +2170,65 @@ _stream_queues: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = {}
 _stream_event_counter: dict[str, int] = {}
 _stream_lock = threading.Lock()
 _MAX_STREAM_QUEUE_SIZE = 500
+_MAX_STREAM_HISTORY_EVENTS = 400
+
+
+def _load_stream_history(instance_id: str) -> tuple[int, list[dict[str, Any]]]:
+    try:
+        record = _run_state_load(_run_stream_history_key(instance_id), {})
+    except Exception as exc:
+        logger.warning("Failed to load stream history %s: %s", instance_id, exc)
+        return 0, []
+
+    history: list[dict[str, Any]] = []
+    for event in record.get("events", []):
+        if isinstance(event, dict):
+            history.append(dict(event))
+    last_seq = int(record.get("lastSeq") or 0)
+    return last_seq, history[-_MAX_STREAM_HISTORY_EVENTS:]
+
+
+def _persist_stream_history(
+    instance_id: str,
+    *,
+    last_seq: int,
+    events: list[dict[str, Any]],
+) -> None:
+    try:
+        _run_state_save(
+            _run_stream_history_key(instance_id),
+            {"lastSeq": last_seq, "events": events[-_MAX_STREAM_HISTORY_EVENTS:]},
+        )
+    except Exception as exc:
+        logger.warning("Failed to persist stream history %s: %s", instance_id, exc)
+
+
+def _reset_stream_history(instance_id: str) -> None:
+    with _stream_lock:
+        _stream_event_counter.pop(instance_id, None)
+    try:
+        _run_state_delete(_run_stream_history_key(instance_id))
+    except Exception as exc:
+        logger.warning("Failed to reset stream history %s: %s", instance_id, exc)
 
 
 def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
     """Push an event to all SSE subscribers for this instance."""
     with _stream_lock:
+        counter = _stream_event_counter.get(instance_id)
+        if counter is None:
+            persisted_last_seq, _ = _load_stream_history(instance_id)
+            counter = persisted_last_seq
+        counter += 1
+        _stream_event_counter[instance_id] = counter
+        event = {**event, "id": str(counter), "_seq": counter}
+        _, history = _load_stream_history(instance_id)
+        history.append(event)
+        _persist_stream_history(instance_id, last_seq=counter, events=history)
+        _publish_agent_event_to_workflow_builder(instance_id, event)
         queues = _stream_queues.get(instance_id)
         if not queues:
             return
-        counter = _stream_event_counter.get(instance_id, 0) + 1
-        _stream_event_counter[instance_id] = counter
-        event = {**event, "_seq": counter}
         for q in queues:
             try:
                 q.put_nowait(event)
@@ -2152,15 +2279,15 @@ def _close_all_stream_queues(instance_id: str) -> None:
 
 def _persist_agent_progress(instance_id: str, progress: dict[str, Any]) -> None:
     try:
-        run_state_store.save(key=_run_progress_key(instance_id), value=progress)
-    except StateStoreError as exc:
+        _run_state_save(_run_progress_key(instance_id), progress)
+    except Exception as exc:
         logger.warning("Failed to persist run progress %s: %s", instance_id, exc)
 
 
 def _load_agent_progress(instance_id: str) -> dict[str, Any] | None:
     try:
-        progress = run_state_store.load(key=_run_progress_key(instance_id), default={})
-    except StateStoreError as exc:
+        progress = _run_state_load(_run_progress_key(instance_id), {})
+    except Exception as exc:
         logger.warning("Failed to load run progress %s: %s", instance_id, exc)
         return None
     return progress if progress else None
@@ -2182,8 +2309,8 @@ def _update_agent_progress(instance_id: str, **updates: Any) -> dict[str, Any] |
 
 def _delete_agent_progress(instance_id: str) -> None:
     try:
-        run_state_store.delete(key=_run_progress_key(instance_id))
-    except StateStoreError as exc:
+        _run_state_delete(_run_progress_key(instance_id))
+    except Exception as exc:
         logger.warning("Failed to delete run progress %s: %s", instance_id, exc)
 
 
@@ -2264,6 +2391,27 @@ def _record_langgraph_progress_event(
             activeToolName=None,
             stopReason=None,
             summary=recent_turns[-1]["summary"],
+            recentTurns=recent_turns,
+        )
+        return
+
+    if event_type == "sandbox_heartbeat":
+        elapsed = event.get("elapsedSeconds", 0)
+        sb_status = str(event.get("sandboxStatus") or "running")
+        tool_label = str(event.get("toolName") or "execute_openshell_command")
+        heartbeat_summary = f"Running {tool_label} ({elapsed}s, {sb_status})"
+        # Update the last recentTurns entry in-place so the activity timeline shows progress
+        if recent_turns and recent_turns[-1].get("status") == "running":
+            recent_turns[-1]["summary"] = heartbeat_summary
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration,
+            activeToolName=tool_label,
+            stopReason=None,
+            summary=heartbeat_summary,
             recentTurns=recent_turns,
         )
         return
@@ -3194,6 +3342,7 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     )
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
     if not ctx.is_replaying:
+        _reset_stream_history(instance_id)
         _persist_run_context(run_context)
         if parent_instance_id:
             run_state_store.save(
@@ -4051,7 +4200,7 @@ async def api_run_stream(instance_id: str, request: Request) -> StreamingRespons
             raise HTTPException(status_code=404, detail="Run not found")
 
     # Check for Last-Event-ID reconnection
-    last_event_id = request.headers.get("Last-Event-ID")
+    last_event_id = request.headers.get("Last-Event-ID") or request.query_params.get("lastEventId")
     last_seq = 0
     if last_event_id:
         try:
@@ -4063,6 +4212,9 @@ async def api_run_stream(instance_id: str, request: Request) -> StreamingRespons
 
     async def event_generator():
         try:
+            replayed_last_seq = last_seq
+            _, history = _load_stream_history(instance_id)
+
             # Send initial state snapshot
             yield _sse_format(
                 "agent_event",
@@ -4077,6 +4229,22 @@ async def api_run_stream(instance_id: str, request: Request) -> StreamingRespons
                 },
                 event_id="0",
             )
+
+            for historic_event in history:
+                seq = int(historic_event.get("_seq") or 0)
+                if seq <= last_seq:
+                    continue
+                replayed_last_seq = max(replayed_last_seq, seq)
+                yield _sse_format(
+                    "agent_event",
+                    {k: v for k, v in historic_event.items() if k != "_seq"},
+                    event_id=str(seq),
+                )
+
+            if history:
+                terminal_type = str(history[-1].get("type") or "").strip().lower()
+                if terminal_type in {"run_complete", "run_error"}:
+                    return
 
             while True:
                 # Check if client disconnected
@@ -4099,11 +4267,16 @@ async def api_run_stream(instance_id: str, request: Request) -> StreamingRespons
                     )
                     break
 
-                seq = event.pop("_seq", 0)
-                if seq <= last_seq:
+                seq = int(event.get("_seq") or 0)
+                if seq <= replayed_last_seq:
                     continue
 
-                yield _sse_format("agent_event", event, event_id=str(seq))
+                replayed_last_seq = seq
+                yield _sse_format(
+                    "agent_event",
+                    {k: v for k, v in event.items() if k != "_seq"},
+                    event_id=str(seq),
+                )
 
         except asyncio.CancelledError:
             pass

@@ -3,15 +3,19 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
+import subprocess
 from dataclasses import dataclass
 from dataclasses import field
 from functools import wraps
 import shlex
 from typing import Any, Callable, Sequence, TypedDict
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import msgpack
 
@@ -30,8 +34,12 @@ except ImportError:  # pragma: no cover
 
 try:
     from deepagents import create_deep_agent
+    from deepagents.backends.local_shell import LocalShellBackend
+    from deepagents.backends.protocol import ExecuteResponse
 except ImportError:  # pragma: no cover
     create_deep_agent = None
+    LocalShellBackend = None
+    ExecuteResponse = None
 
 try:
     from langchain.chat_models import init_chat_model
@@ -55,6 +63,157 @@ except ImportError:  # pragma: no cover
 
 
 LANGGRAPH_ENGINE_NAME = "langgraph-deepagents"
+
+_HEARTBEAT_TOOL_NAMES = {"ExecuteCommand", "execute_command", "execute_openshell_command", "execute"}
+_HEARTBEAT_INTERVAL = 1  # seconds (reduced from 5 for faster sandbox streaming)
+
+
+_STREAMING_BATCH_MAX_LINES = 10
+_STREAMING_BATCH_MAX_WAIT = 0.2  # seconds
+
+
+def _streaming_subprocess(
+    shell_command: str,
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    timeout: int | None = None,
+    tool_name: str = "execute",
+    progress_callback: Callable[[dict[str, Any]], None],
+) -> tuple[list[str], list[str], int]:
+    """Run a shell command with Popen + selectors, streaming partial output.
+
+    Emits ``sandbox_output_partial`` events (batched) and ``sandbox_heartbeat``
+    keep-alives via *progress_callback*.  Returns ``(stdout_lines, stderr_lines,
+    exit_code)`` after the process exits.
+    """
+    proc = subprocess.Popen(
+        shell_command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=cwd,
+        env=env,
+    )
+
+    sel = selectors.DefaultSelector()
+    sel.register(proc.stdout, selectors.EVENT_READ, "stdout")
+    sel.register(proc.stderr, selectors.EVENT_READ, "stderr")
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    start_time = time.monotonic()
+    last_heartbeat = start_time
+    batch: list[str] = []
+    batch_start = time.monotonic()
+    open_streams = 2
+
+    def _flush_batch() -> None:
+        nonlocal batch, batch_start
+        if batch:
+            progress_callback({
+                "event": "sandbox_output_partial",
+                "toolName": tool_name,
+                "command": shell_command,
+                "output": "\n".join(batch),
+            })
+            batch = []
+        batch_start = time.monotonic()
+
+    while open_streams > 0:
+        events = sel.select(timeout=min(_STREAMING_BATCH_MAX_WAIT, 1.0))
+        now = time.monotonic()
+
+        if not events:
+            _flush_batch()
+            if now - last_heartbeat >= _HEARTBEAT_INTERVAL:
+                last_heartbeat = now
+                progress_callback({
+                    "event": "sandbox_heartbeat",
+                    "toolName": tool_name,
+                    "elapsedSeconds": int(now - start_time),
+                    "sandboxStatus": "running",
+                    "sandboxPhase": "",
+                })
+            continue
+
+        for key, _ in events:
+            line = key.fileobj.readline()
+            if not line:
+                sel.unregister(key.fileobj)
+                open_streams -= 1
+                continue
+            stripped = line.rstrip("\n")
+            if key.data == "stdout":
+                stdout_lines.append(stripped)
+            else:
+                stderr_lines.append(stripped)
+            batch.append(stripped)
+
+            if len(batch) >= _STREAMING_BATCH_MAX_LINES or (now - batch_start) >= _STREAMING_BATCH_MAX_WAIT:
+                _flush_batch()
+
+        if now - last_heartbeat >= _HEARTBEAT_INTERVAL:
+            last_heartbeat = now
+            progress_callback({
+                "event": "sandbox_heartbeat",
+                "toolName": tool_name,
+                "elapsedSeconds": int(now - start_time),
+                "sandboxStatus": "running",
+                "sandboxPhase": "",
+            })
+
+    _flush_batch()
+    sel.close()
+    proc.wait(timeout=timeout)
+    return stdout_lines, stderr_lines, proc.returncode
+
+
+class HeartbeatLocalBackend(LocalShellBackend if LocalShellBackend is not None else object):
+    """LocalShellBackend that emits sandbox_heartbeat events during long execute() calls."""
+
+    def __init__(self, root_dir: str, *, progress_callback: ProgressCallback | None = None, **kwargs: Any):
+        if LocalShellBackend is not None:
+            super().__init__(root_dir=root_dir, virtual_mode=False, inherit_env=True, **kwargs)
+        self._progress_callback = progress_callback
+
+    def execute(self, command: str, *, timeout: int | None = None) -> Any:
+        if self._progress_callback is None:
+            return super().execute(command, timeout=timeout)
+
+        self._progress_callback({"event": "tool_start", "toolName": "execute"})
+
+        env = dict(os.environ)
+        env.update(self._env or {})
+        stdout_lines, stderr_lines, exit_code = _streaming_subprocess(
+            command,
+            cwd=str(self.cwd),
+            env=env,
+            timeout=timeout,
+            tool_name="execute",
+            progress_callback=self._progress_callback,
+        )
+
+        full_output = "\n".join(stdout_lines)
+        if stderr_lines:
+            full_output += ("\n" if full_output else "") + "\n".join(stderr_lines)
+
+        self._progress_callback({
+            "event": "sandbox_output",
+            "command": command,
+            "output": full_output[:4000],
+            "exitCode": exit_code,
+        })
+        self._progress_callback({
+            "event": "tool_complete",
+            "toolName": "execute",
+            "status": "completed" if exit_code == 0 else "nonzero_exit",
+        })
+
+        if ExecuteResponse is not None:
+            return ExecuteResponse(output=full_output, exit_code=exit_code)
+        return {"output": full_output, "exit_code": exit_code}
 LANGGRAPH_ENGINE_ENABLED = (
     os.environ.get("DAPR_AGENT_ENABLE_LANGGRAPH", "true").strip().lower() == "true"
 )
@@ -302,9 +461,11 @@ class OpenShellToolContext:
         *,
         cwd: str | None = None,
         timeout_seconds: int = 300,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
+        effective_run_id = run_id or f"{self.sandbox_name}-{uuid.uuid4().hex[:8]}"
         payload = {
-            "runId": f"{self.sandbox_name}-{uuid.uuid4().hex[:8]}",
+            "runId": effective_run_id,
             "sandboxName": self.sandbox_name,
             "provider": self.provider,
             "keep": self.keep,
@@ -354,6 +515,14 @@ class OpenShellToolContext:
             "timedOut": False,
             "sandboxName": str(response.get("sandboxName") or self.sandbox_name),
         }
+
+    def poll_run_status(self, run_id: str) -> dict[str, Any]:
+        """Poll the OpenShell status endpoint for a running command."""
+        return self._request(
+            method="GET",
+            path=f"/api/v1/agent-runs/{urllib.parse.quote(run_id, safe='')}",
+            timeout_seconds=10,
+        )
 
     def collect_repo_context(self) -> str:
         inventory = self.run_command(
@@ -494,6 +663,132 @@ def _coerce_recoverable_tool_error(tool_name: str, exc: Exception) -> dict[str, 
     return None
 
 
+_EXECUTE_TOOL_NAMES = {"execute_command", "ExecuteCommand"}
+
+
+def _run_with_heartbeats(
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    name: str,
+    progress_callback: ProgressCallback,
+) -> Any:
+    """Run a tool function in a background thread, emitting heartbeat events.
+
+    For execute_command tools, replaces subprocess.run with Popen streaming so
+    that partial output lines are pushed to SSE subscribers in real time.
+    """
+    if name in _EXECUTE_TOOL_NAMES:
+        return _run_execute_with_streaming(fn, args, kwargs, name=name, progress_callback=progress_callback)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_invoke_tool, fn, *args, **kwargs)
+        start_time = time.monotonic()
+        while not future.done():
+            try:
+                future.result(timeout=_HEARTBEAT_INTERVAL)
+            except TimeoutError:
+                pass
+            if future.done():
+                break
+            elapsed = int(time.monotonic() - start_time)
+            progress_callback({
+                "event": "sandbox_heartbeat",
+                "toolName": name,
+                "elapsedSeconds": elapsed,
+                "sandboxStatus": "running",
+                "sandboxPhase": "",
+            })
+        return future.result()
+
+
+def _run_execute_with_streaming(
+    fn: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    name: str,
+    progress_callback: ProgressCallback,
+) -> dict[str, Any]:
+    """Run execute_command with Popen streaming instead of subprocess.run.
+
+    Reproduces execute_command's argument resolution and pnpm fallback logic,
+    then delegates to _streaming_subprocess for real-time line output.
+    """
+    import shutil as _shutil
+    from tools import _resolve_tool_invocation, _extract_context, COMMAND_TIMEOUT_SECONDS
+
+    # Mirror execute_command's argument resolution
+    nested_args = kwargs.pop("args", None)
+    if not args and isinstance(nested_args, dict):
+        resolved_kwargs = {**nested_args, **kwargs}
+    elif nested_args is not None:
+        resolved_kwargs = {**{"args": nested_args}, **kwargs}
+    else:
+        resolved_kwargs = dict(kwargs)
+
+    # Also handle positional args (command, cwd)
+    command = str(resolved_kwargs.get("command", args[0] if args else ""))
+    cwd = str(resolved_kwargs.get("cwd", "."))
+
+    context = _extract_context()
+    working_directory = str(context.resolve_path(cwd))
+
+    shell_command = command
+    if "pnpm" in command and _shutil.which("pnpm") is None:
+        pnpm_fallback = None
+        if _shutil.which("corepack"):
+            pnpm_fallback = 'pnpm() { corepack pnpm "$@"; }'
+        elif _shutil.which("npx"):
+            pnpm_fallback = 'pnpm() { npx pnpm "$@"; }'
+        if pnpm_fallback:
+            shell_command = "\n".join([pnpm_fallback, command])
+
+    try:
+        stdout_lines, stderr_lines, exit_code = _streaming_subprocess(
+            shell_command,
+            cwd=working_directory,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            tool_name=name,
+            progress_callback=progress_callback,
+        )
+    except subprocess.TimeoutExpired:
+        from tools import _as_relative
+        rel_cwd = _as_relative(context.resolve_path(cwd), context.workspace_root) if working_directory != str(context.workspace_root) else "."
+        return {
+            "cwd": rel_cwd,
+            "exitCode": 124,
+            "stdout": "",
+            "stderr": f"Command timed out after {COMMAND_TIMEOUT_SECONDS} seconds",
+            "timedOut": True,
+        }
+
+    full_stdout = "\n".join(stdout_lines)
+    full_stderr = "\n".join(stderr_lines)
+
+    # Emit final sandbox_output for UI terminal
+    full_output = full_stdout
+    if full_stderr:
+        full_output += ("\n" if full_output else "") + full_stderr
+    progress_callback({
+        "event": "sandbox_output",
+        "command": command,
+        "output": full_output[:4000],
+        "exitCode": exit_code,
+    })
+
+    from tools import _as_relative
+    rel_cwd = _as_relative(context.resolve_path(cwd), context.workspace_root) if working_directory != str(context.workspace_root) else "."
+    return {
+        "cwd": rel_cwd,
+        "exitCode": exit_code,
+        "stdout": full_stdout[-12000:],
+        "stderr": full_stderr[-12000:],
+        "timedOut": False,
+    }
+
+
 def _bind_workspace_tools(
     tool_group: str,
     workspace_root: str,
@@ -527,7 +822,10 @@ def _bind_workspace_tools(
                         }
                     )
                 try:
-                    result = _invoke_tool(fn, *args, **kwargs)
+                    if progress_callback is not None and name in _HEARTBEAT_TOOL_NAMES:
+                        result = _run_with_heartbeats(fn, args, kwargs, name=name, progress_callback=progress_callback)
+                    else:
+                        result = _invoke_tool(fn, *args, **kwargs)
                 except Exception as exc:
                     recoverable = _coerce_recoverable_tool_error(name, exc)
                     if recoverable is not None:
@@ -675,11 +973,66 @@ def _bind_openshell_tools(
         timeout_value = int(resolved_kwargs.get("timeout_seconds", timeout_seconds) or timeout_seconds)
         if progress_callback is not None:
             progress_callback({"event": "tool_start", "toolName": "execute_openshell_command"})
-        result = context.run_command(
-            command_text,
-            cwd=command_cwd,
-            timeout_seconds=max(timeout_value, 30),
-        )
+
+        effective_timeout = max(timeout_value, 30)
+        run_id = f"{context.sandbox_name}-{uuid.uuid4().hex[:8]}"
+
+        # Run the blocking POST in a background thread so we can emit heartbeats
+        last_output_offset = 0
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                context.run_command,
+                command_text,
+                cwd=command_cwd,
+                timeout_seconds=effective_timeout,
+                run_id=run_id,
+            )
+            start_time = time.monotonic()
+            while not future.done():
+                try:
+                    future.result(timeout=_HEARTBEAT_INTERVAL)
+                except TimeoutError:
+                    pass
+                if future.done():
+                    break
+                elapsed = int(time.monotonic() - start_time)
+                # Try to get status from OpenShell; non-fatal on error
+                sandbox_status = "running"
+                sandbox_phase = ""
+                partial_stdout = ""
+                try:
+                    status_resp = context.poll_run_status(run_id)
+                    sandbox_status = str(status_resp.get("status") or "running")
+                    sandbox_phase = str(status_resp.get("phase") or "")
+                    partial_stdout = str(status_resp.get("stdout") or status_resp.get("output") or "")
+                except Exception:
+                    pass
+
+                # Emit any new partial output lines
+                if progress_callback is not None and partial_stdout and len(partial_stdout) > last_output_offset:
+                    new_text = partial_stdout[last_output_offset:]
+                    last_output_offset = len(partial_stdout)
+                    for line in new_text.splitlines():
+                        if line:
+                            progress_callback({
+                                "event": "sandbox_output_partial",
+                                "toolName": "execute_openshell_command",
+                                "command": command_text,
+                                "output": line,
+                            })
+
+                if progress_callback is not None:
+                    progress_callback({
+                        "event": "sandbox_heartbeat",
+                        "toolName": "execute_openshell_command",
+                        "elapsedSeconds": elapsed,
+                        "sandboxStatus": sandbox_status,
+                        "sandboxPhase": sandbox_phase,
+                        "runId": run_id,
+                    })
+
+            result = future.result()
+
         if progress_callback is not None:
             progress_callback(
                 {
@@ -1134,6 +1487,15 @@ def run_langgraph_task(
                 openshell_context,
                 progress_callback=progress_callback,
             )
+        # Provide a backend with heartbeat-enabled execute() for the built-in tools
+        backend = (
+            HeartbeatLocalBackend(
+                root_dir=workspace_root,
+                progress_callback=progress_callback,
+            )
+            if openshell_context is None and LocalShellBackend is not None
+            else None  # OpenShell path uses custom tools, no local backend
+        )
         graph = create_deep_agent(
             model=lang_model,
             tools=tools,
@@ -1147,6 +1509,7 @@ def run_langgraph_task(
             ),
             subagents=effective_subagents,
             checkpointer=checkpointer,
+            **({"backend": backend} if backend is not None else {}),
         )
         invoke_payload = {
             "messages": [

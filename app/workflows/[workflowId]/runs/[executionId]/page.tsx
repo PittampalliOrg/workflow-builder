@@ -158,7 +158,7 @@ export default function WorkflowRunDetailPage() {
 
 	const agentStream = useAgentStream({
 		executionId: executionId ?? null,
-		enabled: isRunActive,
+		enabled: Boolean(executionId),
 	});
 
 	useEffect(() => {
@@ -430,15 +430,22 @@ export default function WorkflowRunDetailPage() {
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="timeline">
-					{isRunActive && (agentStream.isLlmStreaming || agentStream.llmTokenBuffer) && (
-						<AgentLlmStream
-							tokenBuffer={agentStream.llmTokenBuffer}
-							isStreaming={agentStream.isLlmStreaming}
-						/>
-					)}
-					{isRunActive && agentStream.sandboxOutputs.length > 0 && (
-						<SandboxOutput outputs={agentStream.sandboxOutputs} />
-					)}
+					{isRunActive &&
+						(agentStream.isLlmStreaming || agentStream.llmTokenBuffer) && (
+							<AgentLlmStream
+								tokenBuffer={agentStream.llmTokenBuffer}
+								isStreaming={agentStream.isLlmStreaming}
+							/>
+						)}
+					{isRunActive &&
+						(agentStream.sandboxOutputs.length > 0 ||
+							agentStream.activeSandboxCommand) && (
+							<SandboxOutput
+								outputs={agentStream.sandboxOutputs}
+								activeSandboxLines={agentStream.activeSandboxLines}
+								activeSandboxCommand={agentStream.activeSandboxCommand}
+							/>
+						)}
 					<RunTimelineTab
 						agentStreamEvents={agentStream.events}
 						nodeIdFilter={selectedNodeId}
