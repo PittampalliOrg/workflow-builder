@@ -2986,13 +2986,18 @@ def process_agent_child_workflow(
             if explicit_require_file_changes is not None
             else bool(stop_condition) and _stop_condition_implies_file_changes(stop_condition)
         )
+        prompt_cwd = (
+            activity_input.get("sandboxRepoPath")
+            if is_openshell_langgraph_agent and activity_input.get("sandboxRepoPath")
+            else resolved_config.get("cwd")
+        )
         run_prompt = (
             native_child_task_override
             if isinstance(native_child_task_override, str)
             and native_child_task_override.strip()
             else _build_planning_prompt(
                 task_prompt=prompt,
-                cwd=resolved_config.get("cwd"),
+                cwd=prompt_cwd,
                 expected_output=resolved_config.get("expectedOutput"),
                 verify_commands=resolved_config.get("verifyCommands"),
                 stop_condition=stop_condition,
@@ -3002,7 +3007,7 @@ def process_agent_child_workflow(
                 prompt,
                 stop_condition,
                 require_file_changes,
-                resolved_config.get("cwd"),
+                prompt_cwd,
             )
         )
         child_input: dict[str, Any] = {
@@ -3091,6 +3096,26 @@ def process_agent_child_workflow(
                 child_input["writePolicy"] = resolved_config.get("writePolicy")
             if resolved_config.get("shellPolicy") is not None:
                 child_input["shellPolicy"] = resolved_config.get("shellPolicy")
+            if activity_input.get("actionType") is not None:
+                child_input["actionType"] = activity_input.get("actionType")
+            if activity_input.get("toolBackend") is not None:
+                child_input["toolBackend"] = activity_input.get("toolBackend")
+            if activity_input.get("sandboxName") is not None:
+                child_input["sandboxName"] = activity_input.get("sandboxName")
+            if activity_input.get("provider") is not None:
+                child_input["provider"] = activity_input.get("provider")
+            if activity_input.get("sandboxRepoPath") is not None:
+                child_input["sandboxRepoPath"] = activity_input.get("sandboxRepoPath")
+            if activity_input.get("repositoryUrl") is not None:
+                child_input["repositoryUrl"] = activity_input.get("repositoryUrl")
+            if activity_input.get("repositoryOwner") is not None:
+                child_input["repositoryOwner"] = activity_input.get("repositoryOwner")
+            if activity_input.get("repositoryRepo") is not None:
+                child_input["repositoryRepo"] = activity_input.get("repositoryRepo")
+            if activity_input.get("repositoryBranch") is not None:
+                child_input["repositoryBranch"] = activity_input.get("repositoryBranch")
+            if activity_input.get("repositoryToken") is not None:
+                child_input["repositoryToken"] = activity_input.get("repositoryToken")
             if artifact_ref:
                 child_input["artifactRef"] = artifact_ref
             if fetched_plan_artifact and isinstance(fetched_plan_artifact.get("planJson"), dict):

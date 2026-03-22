@@ -1,6 +1,7 @@
 import inspect
 import json
 import subprocess
+import urllib.error
 from pathlib import Path
 
 import app
@@ -305,12 +306,60 @@ def test_langgraph_execute_phase_uses_dapr_checkpointer_and_thread_id(
     assert captured["store_name"] == langgraph_engine.LANGGRAPH_CHECKPOINT_STORE_NAME
     assert captured["key_prefix"] == langgraph_engine.LANGGRAPH_CHECKPOINT_KEY_PREFIX
     assert captured["config"] == {"configurable": {"thread_id": "thread-123"}}
+    assert isinstance(
+        captured["create_kwargs"]["backend"],
+        langgraph_engine.HeartbeatLocalBackend,
+    )
     assert result.metadata["threadId"] == "thread-123"
     assert result.metadata["sessionPersistence"] == "dapr-checkpointer"
     assert (
         result.metadata["checkpointStoreName"]
         == langgraph_engine.LANGGRAPH_CHECKPOINT_STORE_NAME
     )
+
+
+def test_langgraph_execute_phase_uses_openshell_backend(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeGraph:
+        def invoke(self, payload, config=None):
+            captured["payload"] = payload
+            captured["config"] = config
+            return {"text": "Executed in sandbox"}
+
+    def fake_create_deep_agent(**kwargs):
+        captured["create_kwargs"] = kwargs
+        return FakeGraph()
+
+    monkeypatch.setattr(langgraph_engine, "is_langgraph_available", lambda: True)
+    monkeypatch.setattr(langgraph_engine, "_build_model", lambda model, api_key: object())
+    monkeypatch.setattr(langgraph_engine, "_build_checkpointer", lambda: object())
+    monkeypatch.setattr(langgraph_engine, "create_deep_agent", fake_create_deep_agent)
+
+    result = langgraph_engine.run_langgraph_task(
+        prompt="Implement the task",
+        workspace_root=str(tmp_path),
+        tool_group="all",
+        model="gpt-5.4",
+        profile="implement",
+        phase="execute",
+        thread_id="thread-456",
+        openshell_config={
+            "sandboxName": "openshell-test",
+            "repoPath": "/sandbox/repo",
+            "localWorkspaceRoot": str(tmp_path),
+        },
+    )
+
+    assert captured["config"] == {"configurable": {"thread_id": "thread-456"}}
+    assert captured["create_kwargs"]["tools"] == []
+    assert isinstance(
+        captured["create_kwargs"]["backend"],
+        langgraph_engine.OpenShellSandboxBackend,
+    )
+    assert "/sandbox/repo" in captured["create_kwargs"]["system_prompt"]
+    assert captured["create_kwargs"]["backend"]._context.local_workspace_root == str(tmp_path)
+    assert result.metadata["threadId"] == "thread-456"
 
 
 def test_openshell_tool_context_maps_legacy_workspace_cwd() -> None:
@@ -333,6 +382,39 @@ def test_openshell_tool_context_rewrites_legacy_workspace_cd_commands() -> None:
     command = context._compose_command("cd /workspace; git status --short", ".")
 
     assert command == "set -eu; cd /sandbox/repo; cd /sandbox/repo; git status --short"
+
+
+def test_openshell_tool_context_rewrites_local_workspace_root_paths() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+        local_workspace_root="/workspace/execution-123/workflow-builder",
+    )
+
+    command = context._compose_command(
+        "pnpm --dir /workspace/execution-123/workflow-builder type-check && "
+        "git -C /workspace/execution-123/workflow-builder status --short",
+        "/workspace/execution-123/workflow-builder",
+    )
+
+    assert "cd /sandbox/repo;" in command
+    assert "pnpm --dir /sandbox/repo type-check" in command
+    assert "git -C /sandbox/repo status --short" in command
+    assert "/workspace/execution-123/workflow-builder" not in command
+
+
+def test_openshell_tool_context_rewrites_generic_workspace_checkout_paths() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+
+    command = context._compose_command(
+        "git -C /workspace/execution-123/workflow-builder/packages/app diff --stat",
+        ".",
+    )
+
+    assert command == "set -eu; cd /sandbox/repo; git -C /sandbox/repo/packages/app diff --stat"
 
 
 def test_safe_dapr_checkpointer_disables_corrupting_put_writes(monkeypatch) -> None:
@@ -441,6 +523,163 @@ def test_schedule_workflow_run_passes_registered_workflow_object(monkeypatch) ->
     assert captured["input"]["traceId"] == "trace-123"
 
 
+def test_build_run_context_preserves_parent_execution_id() -> None:
+    request = DaprAgentRunRequest(
+        prompt="Plan the work",
+        executionId="exec-123",
+        parentExecutionId="parent-456",
+    )
+
+    result = _build_run_context("run-123", request)
+
+    assert result.execution_id == "exec-123"
+    assert result.parent_execution_id == "parent-456"
+
+
+def test_push_stream_event_uses_explicit_execution_context(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(app, "_load_stream_history", lambda instance_id: (0, []))
+    monkeypatch.setattr(app, "_persist_stream_history", lambda instance_id, last_seq, events: None)
+    monkeypatch.setattr(
+        app,
+        "_publish_agent_event_to_workflow_builder",
+        lambda instance_id, event, **kwargs: captured.update(
+            {
+                "instance_id": instance_id,
+                "event": event,
+                "kwargs": kwargs,
+            }
+        ),
+    )
+    app._stream_event_counter.clear()
+    app._stream_queues.clear()
+
+    app._push_stream_event(
+        "run-123",
+        {"type": "sandbox_output", "ts": "2026-03-22T00:00:00Z"},
+        workflow_execution_id="exec-123",
+        parent_execution_id="parent-456",
+    )
+
+    assert captured["instance_id"] == "run-123"
+    assert captured["kwargs"] == {
+        "workflow_execution_id": "exec-123",
+        "parent_execution_id": "parent-456",
+    }
+    assert captured["event"]["id"] == "1"
+
+
+def test_record_langgraph_progress_event_passes_run_context_to_stream(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    run_context = AgentRunContext(
+        instance_id="run-123",
+        mode="feature_delivery_execute",
+        profile="implement",
+        model="gpt-5.4",
+        cwd="/tmp/repo",
+        tool_group="all",
+        max_turns=5,
+        execution_id="exec-123",
+        parent_execution_id="parent-456",
+    )
+
+    monkeypatch.setattr(
+        app,
+        "_push_stream_event",
+        lambda instance_id, event, **kwargs: captured.update(
+            {
+                "instance_id": instance_id,
+                "event": event,
+                "kwargs": kwargs,
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_load_agent_progress", lambda instance_id: None)
+    monkeypatch.setattr(app, "_update_agent_progress", lambda *args, **kwargs: None)
+
+    app._record_langgraph_progress_event(
+        "run-123",
+        run_context,
+        phase="execute",
+        event={"event": "tool_start", "toolName": "execute"},
+    )
+
+    assert captured["instance_id"] == "run-123"
+    assert captured["kwargs"] == {
+        "workflow_execution_id": "exec-123",
+        "parent_execution_id": "parent-456",
+    }
+    assert captured["event"]["type"] == "tool_start"
+
+
+def test_publish_agent_event_retries_after_connection_failure(monkeypatch) -> None:
+    state: dict[str, object] = {}
+    now = {"value": 100.0}
+    attempts: list[str] = []
+
+    def fake_load(key: str, default):
+        return state.get(key, default)
+
+    def fake_save(key: str, value) -> None:
+        state[key] = value
+
+    def fake_delete(key: str) -> None:
+        state.pop(key, None)
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    def fake_urlopen(request, timeout=0):
+        attempts.append(request.full_url)
+        if len(attempts) == 1:
+            raise urllib.error.URLError(ConnectionRefusedError(111, "connection refused"))
+        return FakeResponse()
+
+    monkeypatch.setattr(app, "_run_state_load", fake_load)
+    monkeypatch.setattr(app, "_run_state_save", fake_save)
+    monkeypatch.setattr(app, "_run_state_delete", fake_delete)
+    monkeypatch.setattr(app.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(app.time, "time", lambda: now["value"])
+    monkeypatch.setattr(app, "INTERNAL_API_TOKEN", "test-token")
+    monkeypatch.setattr(
+        app,
+        "WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT",
+        "http://workflow-builder.test/api/internal/agent-events",
+    )
+
+    app.pending_agent_publish_instances.clear()
+
+    app._publish_agent_event_to_workflow_builder(
+        "run-123",
+        {"id": "7", "type": "sandbox_output", "ts": "2026-03-22T00:00:00Z"},
+        workflow_execution_id="exec-123",
+        parent_execution_id="parent-456",
+    )
+
+    pending_key = app._run_pending_agent_events_key("run-123")
+    pending_after_failure = state[pending_key]
+    assert len(pending_after_failure) == 1
+    assert pending_after_failure[0]["attempts"] == 1
+    assert "run-123" in app.pending_agent_publish_instances
+
+    now["value"] = 200.0
+    app._flush_pending_agent_events("run-123")
+
+    assert attempts == [
+        "http://workflow-builder.test/api/internal/agent-events",
+        "http://workflow-builder.test/api/internal/agent-events",
+    ]
+    assert pending_key not in state
+    assert "run-123" not in app.pending_agent_publish_instances
+
+
 def test_profiles_default_to_expected_tool_groups() -> None:
     assert PROFILE_TOOL_GROUPS["review"] == "read_only"
     assert PROFILE_TOOL_GROUPS["implement"] == "all"
@@ -476,6 +715,22 @@ def test_build_task_prompt_uses_sandbox_repo_path_for_openshell_backend() -> Non
 
     assert "Repository root inside sandbox:\n/sandbox/repo" in prompt
     assert "/tmp/local-clone" not in prompt
+
+
+def test_build_task_prompt_rewrites_openshell_verify_commands_to_sandbox_repo_path() -> None:
+    prompt = _build_task_prompt(
+        DaprAgentRunRequest(
+            prompt="Implement slash commands",
+            profile="implement",
+            cwd="/workspace/execution-123/workflow-builder",
+            toolBackend="openshell",
+            sandboxRepoPath="/sandbox/repo",
+            verifyCommands="pnpm --dir /workspace/execution-123/workflow-builder type-check",
+        )
+    )
+
+    assert "Verify commands:\npnpm --dir /sandbox/repo type-check" in prompt
+    assert "/workspace/execution-123/workflow-builder" not in prompt
 
 
 def test_openshell_cleanup_preserves_sandbox_when_keep_enabled(monkeypatch) -> None:
@@ -562,6 +817,36 @@ def test_openshell_run_command_returns_structured_nonzero_results(monkeypatch) -
     assert result["exitCode"] == 1
     assert result["stderr"] == ""
     assert result["sandboxName"] == "openshell-test"
+
+
+def test_openshell_backend_execute_uses_streamed_context(monkeypatch) -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+    captured: dict[str, object] = {}
+
+    def fake_execute_streamed(command: str, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return {
+            "stdout": "hello",
+            "stderr": "warning",
+            "exitCode": 1,
+        }
+
+    monkeypatch.setattr(context, "execute_streamed", fake_execute_streamed)
+
+    backend = langgraph_engine.OpenShellSandboxBackend(context)
+    result = backend.execute("pnpm type-check", timeout=45)
+
+    assert captured["command"] == "pnpm type-check"
+    assert captured["kwargs"]["cwd"] == "/sandbox/repo"
+    assert captured["kwargs"]["timeout_seconds"] == 45
+    assert captured["kwargs"]["tool_name"] == "execute"
+    assert result.exit_code == 1
+    assert "hello" in result.output
+    assert "[stderr] warning" in result.output
 
 
 def test_normalize_run_request_accepts_task_aliases() -> None:
@@ -750,6 +1035,49 @@ def test_build_run_context_derives_gitea_repository_url_for_openshell(
         context.repository_url
         == "http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-builder.git"
     )
+
+
+def test_resolve_tool_backend_infers_openshell_from_action_type() -> None:
+    request = DaprAgentRunRequest(
+        prompt="Inspect the repository",
+        actionType="openshell-langgraph/run",
+    )
+
+    assert app._resolve_tool_backend(request) == "openshell"
+
+
+def test_build_run_context_infers_openshell_from_action_type(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "workspace_state_store", FakeStateStore())
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-123",
+        execution_id="exec-123",
+        root_path=tmp_path,
+        working_directory=tmp_path,
+        enabled_tools=[],
+        repository_owner="giteaadmin",
+        repository_repo="workflow-builder",
+        repository_branch="main",
+    )
+    _persist_workspace_session(session)
+
+    context = _build_run_context(
+        "wf-openshell-action",
+        DaprAgentRunRequest(
+            prompt="Implement the task",
+            actionType="openshell-langgraph/run",
+            workspaceRef="workspace-123",
+        ),
+    )
+
+    assert context.tool_backend == "openshell"
+    assert context.sandbox_repo_path == "/sandbox/repo"
+    assert context.sandbox_name == "openshell-lg-wf-openshell-action"
 
 
 def test_build_result_payload_returns_plan_artifact_for_planning_mode(

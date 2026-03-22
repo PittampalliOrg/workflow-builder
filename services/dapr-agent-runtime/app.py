@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
@@ -342,6 +343,44 @@ WORKFLOW_BUILDER_INTERNAL_BASE_URL = os.environ.get(
     "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
 ).strip().rstrip("/")
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN", "").strip()
+WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT = (
+    f"{WORKFLOW_BUILDER_INTERNAL_BASE_URL}/api/internal/agent-events"
+)
+WORKFLOW_BUILDER_AGENT_EVENT_TIMEOUT_SECONDS = max(
+    float(os.environ.get("WORKFLOW_BUILDER_AGENT_EVENT_TIMEOUT_SECONDS", "2") or "2"),
+    0.5,
+)
+WORKFLOW_BUILDER_AGENT_EVENT_RETRY_INTERVAL_SECONDS = max(
+    float(
+        os.environ.get("WORKFLOW_BUILDER_AGENT_EVENT_RETRY_INTERVAL_SECONDS", "1")
+        or "1"
+    ),
+    0.25,
+)
+WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS = max(
+    float(
+        os.environ.get(
+            "WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS",
+            "1",
+        )
+        or "1"
+    ),
+    0.25,
+)
+WORKFLOW_BUILDER_AGENT_EVENT_RETRY_MAX_DELAY_SECONDS = max(
+    float(
+        os.environ.get(
+            "WORKFLOW_BUILDER_AGENT_EVENT_RETRY_MAX_DELAY_SECONDS",
+            "15",
+        )
+        or "15"
+    ),
+    WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS,
+)
+WORKFLOW_BUILDER_AGENT_EVENT_MAX_PENDING = max(
+    int(os.environ.get("WORKFLOW_BUILDER_AGENT_EVENT_MAX_PENDING", "1000") or "1000"),
+    1,
+)
 DAPR_AGENT_ENABLE_MEMORY = os.environ.get("DAPR_AGENT_ENABLE_MEMORY", "true").strip().lower() == "true"
 DAPR_AGENT_ENABLE_REGISTRY = os.environ.get("DAPR_AGENT_ENABLE_REGISTRY", "true").strip().lower() == "true"
 DAPR_AGENT_LLM_BACKEND = os.environ.get("DAPR_AGENT_LLM_BACKEND", "auto").strip().lower()
@@ -495,6 +534,7 @@ class WorkspaceCleanupRequest(BaseModel):
 
 class DaprAgentRunRequest(BaseModel):
     prompt: str = Field(min_length=1)
+    actionType: str | None = None
     mode: str | None = None
     engine: str | None = None
     toolBackend: str | None = None
@@ -629,6 +669,7 @@ class AgentRunContext:
     execute_after_approval: bool = True
     approval_event_name: str | None = None
     execution_id: str | None = None
+    parent_execution_id: str | None = None
     workspace_ref: str | None = None
     thread_id: str | None = None
     planning_thread_id: str | None = None
@@ -659,6 +700,7 @@ class AgentRunContext:
             "executeAfterApproval": self.execute_after_approval,
             "approvalEventName": self.approval_event_name,
             "executionId": self.execution_id,
+            "parentExecutionId": self.parent_execution_id,
             "workspaceRef": self.workspace_ref,
             "threadId": self.thread_id,
             "planningThreadId": self.planning_thread_id,
@@ -694,6 +736,7 @@ class AgentRunContext:
             ),
             approval_event_name=str(record.get("approvalEventName") or "").strip() or None,
             execution_id=str(record.get("executionId") or "").strip() or None,
+            parent_execution_id=str(record.get("parentExecutionId") or "").strip() or None,
             workspace_ref=str(record.get("workspaceRef") or "").strip() or None,
             thread_id=str(record.get("threadId") or "").strip() or None,
             planning_thread_id=(
@@ -725,6 +768,10 @@ runner = AgentRunner(name="dapr-agent-runtime", timeout_in_seconds=3600)
 _agent_lock = threading.Lock()
 _agent: DurableAgent | None = None
 _agent_subscribed = False
+pending_agent_publish_instances: set[str] = set()
+pending_agent_publish_lock = threading.Lock()
+agent_publish_retry_stop = threading.Event()
+agent_publish_retry_thread: threading.Thread | None = None
 run_context_cache: dict[str, AgentRunContext] = {}
 runtime_config_state: dict[str, Any] = {
     "storeName": DAPR_AGENT_RUNTIME_CONFIG_STORE,
@@ -803,19 +850,166 @@ def _run_state_delete(key: str) -> None:
             logger.warning("Failed to delete run state %s: %s", key, exc)
 
 
-def _publish_agent_event_to_workflow_builder(instance_id: str, event: dict[str, Any]) -> None:
-    context = _load_run_context(instance_id)
-    if context is None or not context.execution_id or not INTERNAL_API_TOKEN:
+def _mark_pending_agent_publish(instance_id: str) -> None:
+    with pending_agent_publish_lock:
+        pending_agent_publish_instances.add(instance_id)
+
+
+def _clear_pending_agent_publish(instance_id: str) -> None:
+    with pending_agent_publish_lock:
+        pending_agent_publish_instances.discard(instance_id)
+
+
+def _pending_agent_publish_snapshot() -> list[str]:
+    with pending_agent_publish_lock:
+        return list(pending_agent_publish_instances)
+
+
+def _load_pending_agent_events(instance_id: str) -> list[dict[str, Any]]:
+    try:
+        raw_events = _run_state_load(_run_pending_agent_events_key(instance_id), [])
+    except Exception as exc:
+        logger.warning("Failed to load pending agent events %s: %s", instance_id, exc)
+        return []
+
+    if not isinstance(raw_events, list):
+        return []
+
+    pending: list[dict[str, Any]] = []
+    for raw_event in raw_events[-WORKFLOW_BUILDER_AGENT_EVENT_MAX_PENDING:]:
+        if not isinstance(raw_event, dict):
+            continue
+        event = raw_event.get("event")
+        workflow_execution_id = str(raw_event.get("workflowExecutionId") or "").strip()
+        if not isinstance(event, dict) or not workflow_execution_id:
+            continue
+        pending.append(
+            {
+                "event": event,
+                "workflowExecutionId": workflow_execution_id,
+                "parentExecutionId": str(raw_event.get("parentExecutionId") or "").strip()
+                or None,
+                "attempts": max(int(raw_event.get("attempts") or 0), 0),
+                "nextAttemptAt": float(raw_event.get("nextAttemptAt") or 0),
+                "batchId": str(raw_event.get("batchId") or "").strip()
+                or f"{instance_id}:{event.get('id') or 'unknown'}",
+            }
+        )
+
+    return pending
+
+
+def _persist_pending_agent_events(instance_id: str, pending: list[dict[str, Any]]) -> None:
+    trimmed = pending[-WORKFLOW_BUILDER_AGENT_EVENT_MAX_PENDING:]
+    if trimmed:
+        try:
+            _run_state_save(_run_pending_agent_events_key(instance_id), trimmed)
+        except Exception as exc:
+            logger.warning("Failed to persist pending agent events %s: %s", instance_id, exc)
+            return
+        _mark_pending_agent_publish(instance_id)
         return
 
+    try:
+        _run_state_delete(_run_pending_agent_events_key(instance_id))
+    except Exception as exc:
+        logger.warning("Failed to clear pending agent events %s: %s", instance_id, exc)
+    _clear_pending_agent_publish(instance_id)
+
+
+def _next_agent_publish_retry_delay(attempts: int) -> float:
+    if attempts <= 0:
+        return WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS
+    return min(
+        WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS * (2 ** max(attempts - 1, 0)),
+        WORKFLOW_BUILDER_AGENT_EVENT_RETRY_MAX_DELAY_SECONDS,
+    )
+
+
+def _enqueue_pending_agent_event(
+    instance_id: str,
+    event: dict[str, Any],
+    *,
+    workflow_execution_id: str,
+    parent_execution_id: str | None,
+) -> dict[str, Any]:
+    return {
+        "event": {k: v for k, v in event.items() if k != "_seq"},
+        "workflowExecutionId": workflow_execution_id,
+        "parentExecutionId": parent_execution_id,
+        "attempts": 0,
+        "nextAttemptAt": 0.0,
+        "batchId": f"{instance_id}:{event.get('id') or uuid.uuid4().hex}",
+    }
+
+
+def _flush_pending_agent_events(
+    instance_id: str,
+    *,
+    new_event: dict[str, Any] | None = None,
+    workflow_execution_id: str | None = None,
+    parent_execution_id: str | None = None,
+) -> None:
+    pending = _load_pending_agent_events(instance_id)
+    if new_event is not None:
+        resolved_execution_id = str(workflow_execution_id or "").strip() or None
+        resolved_parent_execution_id = str(parent_execution_id or "").strip() or None
+        if resolved_execution_id is None:
+            context = _load_run_context(instance_id)
+            if context is not None:
+                resolved_execution_id = context.execution_id
+                resolved_parent_execution_id = (
+                    resolved_parent_execution_id or context.parent_execution_id
+                )
+        if not resolved_execution_id:
+            logger.warning(
+                "Skipping agent event publish for %s: missing workflow execution id (event=%s)",
+                instance_id,
+                new_event.get("type"),
+            )
+            return
+        pending.append(
+            _enqueue_pending_agent_event(
+                instance_id,
+                new_event,
+                workflow_execution_id=resolved_execution_id,
+                parent_execution_id=resolved_parent_execution_id,
+            )
+        )
+
+    if not pending:
+        _persist_pending_agent_events(instance_id, [])
+        return
+
+    if not INTERNAL_API_TOKEN:
+        logger.warning(
+            "Skipping agent event publish for %s: INTERNAL_API_TOKEN is not configured",
+            instance_id,
+        )
+        _persist_pending_agent_events(instance_id, pending)
+        return
+
+    now = time.time()
+    due_indexes = [
+        index
+        for index, item in enumerate(pending)
+        if float(item.get("nextAttemptAt") or 0) <= now
+    ]
+    due = [pending[index] for index in due_indexes]
+    if not due:
+        _persist_pending_agent_events(instance_id, pending)
+        return
+
+    first_due = due[0]
+    batch_id = f"{instance_id}:{due[0]['event'].get('id')}..{due[-1]['event'].get('id')}"
     request = urllib.request.Request(
-        f"{WORKFLOW_BUILDER_INTERNAL_BASE_URL}/api/internal/agent-events",
+        WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT,
         data=json.dumps(
             {
-                "workflowExecutionId": context.execution_id,
-                "parentExecutionId": context.parent_execution_id,
+                "workflowExecutionId": first_due["workflowExecutionId"],
+                "parentExecutionId": first_due.get("parentExecutionId"),
                 "daprInstanceId": instance_id,
-                "events": [{k: v for k, v in event.items() if k != "_seq"}],
+                "events": [item["event"] for item in due],
             },
             default=str,
         ).encode("utf-8"),
@@ -825,11 +1019,97 @@ def _publish_agent_event_to_workflow_builder(instance_id: str, event: dict[str, 
         },
         method="POST",
     )
+
+    logger.debug(
+        "Publishing %s agent event(s) for execution=%s parent=%s instance=%s batch=%s endpoint=%s",
+        len(due),
+        first_due["workflowExecutionId"],
+        first_due.get("parentExecutionId"),
+        instance_id,
+        batch_id,
+        WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT,
+    )
+
     try:
-        with urllib.request.urlopen(request, timeout=2):
-            return
+        with urllib.request.urlopen(
+            request,
+            timeout=WORKFLOW_BUILDER_AGENT_EVENT_TIMEOUT_SECONDS,
+        ) as response:
+            logger.info(
+                "Published %s agent event(s) for execution=%s instance=%s batch=%s status=%s",
+                len(due),
+                first_due["workflowExecutionId"],
+                instance_id,
+                batch_id,
+                getattr(response, "status", "unknown"),
+            )
+        due_index_set = set(due_indexes)
+        remaining = [
+            item for index, item in enumerate(pending) if index not in due_index_set
+        ]
+        _persist_pending_agent_events(instance_id, remaining)
+        return
+    except urllib.error.HTTPError as exc:
+        error_detail = f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')[:500]}"
+        error_class = "HTTPError"
     except Exception as exc:
-        logger.warning("Failed to publish agent event %s: %s", instance_id, exc)
+        error_detail = str(exc)
+        error_class = exc.__class__.__name__
+
+    updated_pending: list[dict[str, Any]] = []
+    for item in pending:
+        if item in due:
+            attempts = max(int(item.get("attempts") or 0), 0) + 1
+            updated_pending.append(
+                {
+                    **item,
+                    "attempts": attempts,
+                    "nextAttemptAt": now + _next_agent_publish_retry_delay(attempts),
+                    "lastError": error_detail,
+                }
+            )
+        else:
+            updated_pending.append(item)
+
+    _persist_pending_agent_events(instance_id, updated_pending)
+    logger.warning(
+        "Failed to publish %s agent event(s) for execution=%s instance=%s batch=%s target=%s errorClass=%s error=%s",
+        len(due),
+        first_due["workflowExecutionId"],
+        instance_id,
+        batch_id,
+        WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT,
+        error_class,
+        error_detail,
+    )
+
+
+def _agent_event_publish_retry_loop(stop_event: threading.Event) -> None:
+    while not stop_event.wait(WORKFLOW_BUILDER_AGENT_EVENT_RETRY_INTERVAL_SECONDS):
+        for instance_id in _pending_agent_publish_snapshot():
+            try:
+                _flush_pending_agent_events(instance_id)
+            except Exception as exc:
+                logger.warning(
+                    "Pending agent event retry loop failed for %s: %s",
+                    instance_id,
+                    exc,
+                )
+
+
+def _publish_agent_event_to_workflow_builder(
+    instance_id: str,
+    event: dict[str, Any],
+    *,
+    workflow_execution_id: str | None = None,
+    parent_execution_id: str | None = None,
+) -> None:
+    _flush_pending_agent_events(
+        instance_id,
+        new_event=event,
+        workflow_execution_id=workflow_execution_id,
+        parent_execution_id=parent_execution_id,
+    )
 
 
 def _workspace_session_key(workspace_ref: str) -> str:
@@ -1357,6 +1637,9 @@ def _build_task_prompt(request: DaprAgentRunRequest) -> str:
     profile = _normalize_profile(request.profile)
     run_mode = _normalize_run_mode(request.mode or request.profile)
     tool_backend = str(request.toolBackend or "").strip().lower()
+    verify_commands = str(request.verifyCommands or "").strip()
+    if tool_backend == "openshell" and request.cwd and request.sandboxRepoPath and verify_commands:
+        verify_commands = verify_commands.replace(request.cwd, request.sandboxRepoPath)
     segments = [
         f"Profile: {profile}",
         f"Run mode: {run_mode}",
@@ -1379,8 +1662,8 @@ def _build_task_prompt(request: DaprAgentRunRequest) -> str:
         segments.append(f"Expected output:\n{request.expectedOutput}")
     if request.stopCondition:
         segments.append(f"Stop condition:\n{request.stopCondition}")
-    if request.verifyCommands:
-        segments.append(f"Verify commands:\n{request.verifyCommands}")
+    if verify_commands:
+        segments.append(f"Verify commands:\n{verify_commands}")
     if request.instructionsOverlay:
         segments.append(f"Additional instructions:\n{request.instructionsOverlay}")
     if request.approvalMode:
@@ -1825,6 +2108,10 @@ def _run_stream_history_key(instance_id: str) -> str:
     return f"stream-history:{instance_id}"
 
 
+def _run_pending_agent_events_key(instance_id: str) -> str:
+    return f"pending-agent-events:{instance_id}"
+
+
 def _execution_runs_key(execution_id: str) -> str:
     return f"execution:{execution_id}:runs"
 
@@ -2212,7 +2499,13 @@ def _reset_stream_history(instance_id: str) -> None:
         logger.warning("Failed to reset stream history %s: %s", instance_id, exc)
 
 
-def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
+def _push_stream_event(
+    instance_id: str,
+    event: dict[str, Any],
+    *,
+    workflow_execution_id: str | None = None,
+    parent_execution_id: str | None = None,
+) -> None:
     """Push an event to all SSE subscribers for this instance."""
     with _stream_lock:
         counter = _stream_event_counter.get(instance_id)
@@ -2225,7 +2518,12 @@ def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
         _, history = _load_stream_history(instance_id)
         history.append(event)
         _persist_stream_history(instance_id, last_seq=counter, events=history)
-        _publish_agent_event_to_workflow_builder(instance_id, event)
+        _publish_agent_event_to_workflow_builder(
+            instance_id,
+            event,
+            workflow_execution_id=workflow_execution_id,
+            parent_execution_id=parent_execution_id,
+        )
         queues = _stream_queues.get(instance_id)
         if not queues:
             return
@@ -2332,7 +2630,12 @@ def _record_langgraph_progress_event(
         "phase": phase,
         **{k: v for k, v in event.items() if k != "event"},
     }
-    _push_stream_event(instance_id, stream_event)
+    _push_stream_event(
+        instance_id,
+        stream_event,
+        workflow_execution_id=run_context.execution_id,
+        parent_execution_id=run_context.parent_execution_id,
+    )
     progress_phase = (
         "planning" if phase == "plan" else _progress_phase_for_mode(run_context.mode)
     )
@@ -2511,6 +2814,9 @@ def _resolve_tool_backend(request: DaprAgentRunRequest) -> str | None:
     value = str(request.toolBackend or "").strip().lower()
     if value in {"openshell", "local"}:
         return value
+    action_type = str(request.actionType or "").strip().lower()
+    if action_type == "openshell-langgraph/run":
+        return "openshell"
     return None
 
 
@@ -3019,6 +3325,7 @@ def _build_run_context(
             _approval_event_name(instance_id) if _is_planning_mode(normalized_mode) else None
         ),
         execution_id=execution_id,
+        parent_execution_id=str(request.parentExecutionId or "").strip() or None,
         workspace_ref=request.workspaceRef,
         thread_id=thread_id,
         planning_thread_id=planning_thread_id,
@@ -3261,6 +3568,7 @@ def _run_langgraph_phase(
                 "repoBranch": run_context.repository_branch,
                 "repoToken": run_context.repository_token,
                 "repoPath": run_context.sandbox_repo_path,
+                "localWorkspaceRoot": run_context.cwd,
             }
             if run_context.tool_backend == "openshell"
             else None
@@ -3360,12 +3668,17 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             summary=f"Starting {run_context.profile} run",
             currentStepName=run_context.profile,
         )
-        _push_stream_event(instance_id, {
-            "type": "run_started",
-            "ts": _utc_now_iso(),
-            "phase": "reasoning",
-            "meta": {"profile": run_context.profile, "engine": run_context.engine},
-        })
+        _push_stream_event(
+            instance_id,
+            {
+                "type": "run_started",
+                "ts": _utc_now_iso(),
+                "phase": "reasoning",
+                "meta": {"profile": run_context.profile, "engine": run_context.engine},
+            },
+            workflow_execution_id=run_context.execution_id,
+            parent_execution_id=run_context.parent_execution_id,
+        )
     normalized_request = request.model_copy(
         update={
             "cwd": run_context.cwd,
@@ -3529,7 +3842,12 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
         cleanup_workflow_context(workflow_context_key)
         cleanup_workflow_context("__current_workflow_context__")
         # Signal SSE subscribers that the run is done
-        _push_stream_event(instance_id, {"type": "run_complete", "ts": _utc_now_iso()})
+        _push_stream_event(
+            instance_id,
+            {"type": "run_complete", "ts": _utc_now_iso()},
+            workflow_execution_id=run_context.execution_id,
+            parent_execution_id=run_context.parent_execution_id,
+        )
         _close_all_stream_queues(instance_id)
         # Clean up parent→child mapping
         if parent_instance_id:
@@ -3590,6 +3908,14 @@ def _extract_openai_api_key(credentials: dict[str, str] | None) -> str | None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _ensure_workspace_root()
+    logger.info(
+        "Configured workflow-builder agent event publish endpoint=%s timeout=%ss retryInterval=%ss retryBase=%ss retryMax=%ss",
+        WORKFLOW_BUILDER_AGENT_EVENTS_ENDPOINT,
+        WORKFLOW_BUILDER_AGENT_EVENT_TIMEOUT_SECONDS,
+        WORKFLOW_BUILDER_AGENT_EVENT_RETRY_INTERVAL_SECONDS,
+        WORKFLOW_BUILDER_AGENT_EVENT_RETRY_BASE_DELAY_SECONDS,
+        WORKFLOW_BUILDER_AGENT_EVENT_RETRY_MAX_DELAY_SECONDS,
+    )
     if ENABLE_DAPR_AGENTS_INSTRUMENTATION:
         try:
             from dapr_agents.observability import DaprAgentsInstrumentor
@@ -3598,13 +3924,14 @@ async def lifespan(_app: FastAPI):
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to enable dapr-agents instrumentation: %s", exc)
     try:
-        global _agent_subscribed, runtime_config_poll_thread
+        global _agent_subscribed, runtime_config_poll_thread, agent_publish_retry_thread
         agent = _get_agent()
         if not _agent_subscribed:
             runner.subscribe(agent)
             _agent_subscribed = True
         _apply_runtime_config_items(_fetch_runtime_config_items())
         runtime_config_poll_stop.clear()
+        agent_publish_retry_stop.clear()
         if runtime_config_poll_thread is None or not runtime_config_poll_thread.is_alive():
             runtime_config_poll_thread = threading.Thread(
                 target=_runtime_config_poll_loop,
@@ -3613,14 +3940,25 @@ async def lifespan(_app: FastAPI):
                 daemon=True,
             )
             runtime_config_poll_thread.start()
+        if agent_publish_retry_thread is None or not agent_publish_retry_thread.is_alive():
+            agent_publish_retry_thread = threading.Thread(
+                target=_agent_event_publish_retry_loop,
+                args=(agent_publish_retry_stop,),
+                name="agent-event-publish-retry",
+                daemon=True,
+            )
+            agent_publish_retry_thread.start()
     except Exception as exc:  # pragma: no cover
         logger.warning("Failed to eagerly initialize dapr-agent runtime: %s", exc)
     try:
         yield
     finally:
         runtime_config_poll_stop.set()
+        agent_publish_retry_stop.set()
         if runtime_config_poll_thread is not None:
             runtime_config_poll_thread.join(timeout=2)
+        if agent_publish_retry_thread is not None:
+            agent_publish_retry_thread.join(timeout=2)
         try:
             if _agent is not None and _agent_subscribed:
                 runner.shutdown(_agent)
@@ -4394,6 +4732,7 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         return {"success": False, "error": f"Unsupported step: {request.step}"}
     run_request = DaprAgentRunRequest(
         prompt=str(request.input.get("prompt") or request.input.get("goal") or "").strip(),
+        actionType=str(request.input.get("actionType") or "").strip() or None,
         mode=str(request.input.get("mode") or "").strip() or None,
         engine=str(request.input.get("engine") or "").strip() or None,
         toolBackend=str(request.input.get("toolBackend") or "").strip() or None,

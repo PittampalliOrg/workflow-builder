@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, asc, eq, gt, inArray } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowAgentEvents, workflowAgentRuns } from "@/lib/db/schema";
@@ -49,6 +50,17 @@ function publishAgentEvents(
 	}
 }
 
+function sourceEventIdForEvent(event: AgentStreamEvent, index: number): string {
+	const explicitId = typeof event.id === "string" ? event.id.trim() : "";
+	if (explicitId) {
+		return explicitId;
+	}
+
+	return createHash("sha256")
+		.update(JSON.stringify({ index, event }))
+		.digest("hex");
+}
+
 export async function appendAgentEvents(input: {
 	workflowExecutionId: string;
 	parentExecutionId?: string | null;
@@ -65,14 +77,20 @@ export async function appendAgentEvents(input: {
 		.where(eq(workflowAgentRuns.daprInstanceId, input.daprInstanceId))
 		.limit(1);
 
+	const preparedEvents = input.events.map((event, index) => ({
+		event,
+		sourceEventId: sourceEventIdForEvent(event, index),
+	}));
+
 	const inserted = await db
 		.insert(workflowAgentEvents)
 		.values(
-			input.events.map((event) => ({
+			preparedEvents.map(({ event, sourceEventId }) => ({
 				workflowExecutionId: input.workflowExecutionId,
 				workflowAgentRunId: agentRun?.id ?? null,
 				parentExecutionId: input.parentExecutionId ?? null,
 				daprInstanceId: input.daprInstanceId,
+				sourceEventId,
 				seq:
 					typeof event.id === "string" && /^\d+$/.test(event.id)
 						? Number.parseInt(event.id, 10)
@@ -94,6 +112,13 @@ export async function appendAgentEvents(input: {
 				ts: new Date(event.ts),
 			})),
 		)
+		.onConflictDoNothing({
+			target: [
+				workflowAgentEvents.workflowExecutionId,
+				workflowAgentEvents.daprInstanceId,
+				workflowAgentEvents.sourceEventId,
+			],
+		})
 		.returning({
 			eventId: workflowAgentEvents.eventId,
 			workflowExecutionId: workflowAgentEvents.workflowExecutionId,

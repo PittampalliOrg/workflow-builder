@@ -5,6 +5,7 @@ import os
 import re
 import selectors
 import subprocess
+import base64
 from dataclasses import dataclass
 from dataclasses import field
 from functools import wraps
@@ -35,11 +36,19 @@ except ImportError:  # pragma: no cover
 try:
     from deepagents import create_deep_agent
     from deepagents.backends.local_shell import LocalShellBackend
-    from deepagents.backends.protocol import ExecuteResponse
+    from deepagents.backends.protocol import (
+        ExecuteResponse,
+        FileDownloadResponse,
+        FileUploadResponse,
+    )
+    from deepagents.backends.sandbox import BaseSandbox
 except ImportError:  # pragma: no cover
     create_deep_agent = None
     LocalShellBackend = None
     ExecuteResponse = None
+    FileDownloadResponse = None
+    FileUploadResponse = None
+    BaseSandbox = None
 
 try:
     from langchain.chat_models import init_chat_model
@@ -330,6 +339,7 @@ ProgressCallback = Callable[[dict[str, Any]], None]
 class OpenShellToolContext:
     sandbox_name: str
     repo_path: str
+    local_workspace_root: str | None = None
     provider: str | None = None
     repo_url: str | None = None
     repo_branch: str | None = None
@@ -350,10 +360,22 @@ class OpenShellToolContext:
         candidate = str(raw_path or "").strip()
         if not candidate:
             return self.repo_path
+        if self.local_workspace_root:
+            local_root = self.local_workspace_root.rstrip("/")
+            if candidate == local_root:
+                return self.repo_path
+            local_prefix = f"{local_root}/"
+            if candidate.startswith(local_prefix):
+                suffix = candidate[len(local_prefix) :].strip("/")
+                return self.repo_path if not suffix else f"{self.repo_path.rstrip('/')}/{suffix}"
         legacy_aliases = {"/workspace", "/workspace/", "/repo", "/repo/"}
         if candidate in legacy_aliases:
             return self.repo_path
         if candidate.startswith("/workspace/"):
+            segments = [segment for segment in candidate.split("/") if segment]
+            if len(segments) >= 3:
+                suffix = "/".join(segments[3:])
+                return self.repo_path if not suffix else f"{self.repo_path.rstrip('/')}/{suffix}"
             suffix = candidate[len("/workspace/") :].strip("/")
             return self.repo_path if not suffix else f"{self.repo_path.rstrip('/')}/{suffix}"
         if candidate.startswith("/repo/"):
@@ -363,14 +385,13 @@ class OpenShellToolContext:
 
     def _rewrite_legacy_workspace_aliases(self, command: str) -> str:
         normalized_command = str(command or "")
-        return (
-            normalized_command
-            .replace("cd /workspace &&", f"cd {self.repo_path} &&")
-            .replace("cd /workspace;", f"cd {self.repo_path};")
-            .replace("cd /workspace\n", f"cd {self.repo_path}\n")
-            .replace("cd /repo &&", f"cd {self.repo_path} &&")
-            .replace("cd /repo;", f"cd {self.repo_path};")
-            .replace("cd /repo\n", f"cd {self.repo_path}\n")
+        if not normalized_command:
+            return normalized_command
+
+        return re.sub(
+            r"(?P<path>(?:/workspace|/repo)(?:/[^\s'\";|&()]+)*)",
+            lambda match: self._normalize_legacy_workspace_path(match.group("path")),
+            normalized_command,
         )
 
     def _ensure_pnpm_available(self, command: str) -> str:
@@ -398,6 +419,7 @@ class OpenShellToolContext:
         return cls(
             sandbox_name=sandbox_name[:63],
             repo_path=repo_path,
+            local_workspace_root=str(config.get("localWorkspaceRoot") or "").strip() or None,
             provider=str(config.get("provider") or "").strip() or None,
             repo_url=str(config.get("repoUrl") or "").strip() or None,
             repo_branch=str(config.get("repoBranch") or "").strip() or None,
@@ -516,6 +538,24 @@ class OpenShellToolContext:
             "sandboxName": str(response.get("sandboxName") or self.sandbox_name),
         }
 
+    def execute_streamed(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        timeout_seconds: int = 300,
+        progress_callback: ProgressCallback | None = None,
+        tool_name: str = "execute",
+    ) -> dict[str, Any]:
+        return _execute_with_openshell_streaming(
+            self,
+            command,
+            cwd=cwd,
+            timeout_seconds=timeout_seconds,
+            progress_callback=progress_callback,
+            tool_name=tool_name,
+        )
+
     def poll_run_status(self, run_id: str) -> dict[str, Any]:
         """Poll the OpenShell status endpoint for a running command."""
         return self._request(
@@ -568,6 +608,298 @@ class OpenShellToolContext:
             "patch": self.patch,
             "snapshotRefs": self.snapshot_refs,
         }
+
+
+def _execute_with_openshell_streaming(
+    context: Any,
+    command: str,
+    *,
+    cwd: str | None = None,
+    timeout_seconds: int = 300,
+    progress_callback: ProgressCallback | None = None,
+    tool_name: str = "execute",
+) -> dict[str, Any]:
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "tool_start",
+                    "toolName": tool_name,
+                    "sandboxBackend": "openshell",
+                }
+            )
+
+        effective_timeout = max(timeout_seconds, 30)
+        run_id = f"{context.sandbox_name}-{uuid.uuid4().hex[:8]}"
+        last_output_offset = 0
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(
+                context.run_command,
+                command,
+                cwd=cwd,
+                timeout_seconds=effective_timeout,
+                run_id=run_id,
+            )
+            start_time = time.monotonic()
+            while not future.done():
+                try:
+                    future.result(timeout=_HEARTBEAT_INTERVAL)
+                except TimeoutError:
+                    pass
+                if future.done():
+                    break
+
+                elapsed = int(time.monotonic() - start_time)
+                sandbox_status = "running"
+                sandbox_phase = ""
+                partial_stdout = ""
+                try:
+                    status_resp = context.poll_run_status(run_id)
+                    sandbox_status = str(status_resp.get("status") or "running")
+                    sandbox_phase = str(status_resp.get("phase") or "")
+                    partial_stdout = str(status_resp.get("stdout") or status_resp.get("output") or "")
+                except Exception:
+                    pass
+
+                if progress_callback is not None and partial_stdout and len(partial_stdout) > last_output_offset:
+                    new_text = partial_stdout[last_output_offset:]
+                    last_output_offset = len(partial_stdout)
+                    for line in new_text.splitlines():
+                        if line:
+                            progress_callback(
+                                {
+                                    "event": "sandbox_output_partial",
+                                    "toolName": tool_name,
+                                    "command": command,
+                                    "output": line,
+                                    "sandboxBackend": "openshell",
+                                }
+                            )
+
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "event": "sandbox_heartbeat",
+                            "toolName": tool_name,
+                            "elapsedSeconds": elapsed,
+                            "sandboxStatus": sandbox_status,
+                            "sandboxPhase": sandbox_phase,
+                            "runId": run_id,
+                            "sandboxBackend": "openshell",
+                        }
+                    )
+
+            result = future.result()
+
+        if progress_callback is not None:
+            progress_callback(
+                {
+                    "event": "tool_complete",
+                    "toolName": tool_name,
+                    "status": "completed" if int(result.get("exitCode") or 0) == 0 else "nonzero_exit",
+                    "sandboxBackend": "openshell",
+                }
+            )
+            progress_callback(
+                {
+                    "event": "sandbox_output",
+                    "toolName": tool_name,
+                    "command": command,
+                    "output": (
+                        f"{result.get('stdout') or ''}"
+                        f"{chr(10) if result.get('stdout') and result.get('stderr') else ''}"
+                        f"{result.get('stderr') or ''}"
+                    )[:4000],
+                    "exitCode": int(result.get("exitCode") or 0),
+                    "sandboxBackend": "openshell",
+                }
+            )
+
+        return result
+
+
+def _format_execute_response_output(
+    stdout: str,
+    stderr: str,
+    *,
+    exit_code: int,
+) -> str:
+    output_parts: list[str] = []
+    if stdout:
+        output_parts.append(stdout)
+    if stderr:
+        stderr_lines = stderr.strip().split("\n")
+        output_parts.extend(f"[stderr] {line}" for line in stderr_lines if line)
+    output = "\n".join(output_parts) if output_parts else "<no output>"
+    if exit_code != 0:
+        output = f"{output.rstrip()}\n\nExit code: {exit_code}"
+    return output
+
+
+class OpenShellSandboxBackend(BaseSandbox if BaseSandbox is not None else object):
+    def __init__(
+        self,
+        context: OpenShellToolContext,
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> None:
+        self._context = context
+        self._progress_callback = progress_callback
+
+    @property
+    def id(self) -> str:
+        return self._context.sandbox_name
+
+    def _emit_tool_event(self, event: dict[str, Any]) -> None:
+        if self._progress_callback is None:
+            return
+        event.setdefault("sandboxBackend", "openshell")
+        self._progress_callback(event)
+
+    def _run_backend_tool(self, tool_name: str, operation: Callable[[], Any]) -> Any:
+        self._emit_tool_event({"event": "tool_start", "toolName": tool_name})
+        try:
+            result = operation()
+        except Exception as exc:
+            self._emit_tool_event(
+                {
+                    "event": "tool_error",
+                    "toolName": tool_name,
+                    "error": str(exc),
+                }
+            )
+            raise
+        self._emit_tool_event(
+            {
+                "event": "tool_complete",
+                "toolName": tool_name,
+                "status": "completed",
+            }
+        )
+        return result
+
+    def _map_path(self, path: str) -> str:
+        return self._context._normalize_legacy_workspace_path(path)
+
+    def ls_info(self, path: str) -> list[dict[str, Any]]:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(path)
+        return self._run_backend_tool("ls", lambda: parent.ls_info(mapped_path))
+
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(file_path)
+        return self._run_backend_tool("read_file", lambda: parent.read(mapped_path, offset, limit))
+
+    def grep_raw(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+    ) -> list[dict[str, Any]] | str:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(path) if path else None
+        return self._run_backend_tool("grep", lambda: parent.grep_raw(pattern, mapped_path, glob))
+
+    def glob_info(self, pattern: str, path: str = "/") -> list[dict[str, Any]]:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(path)
+        return self._run_backend_tool("glob", lambda: parent.glob_info(pattern, mapped_path))
+
+    def write(self, file_path: str, content: str) -> Any:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(file_path)
+        return self._run_backend_tool("write_file", lambda: parent.write(mapped_path, content))
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> Any:
+        parent = super(OpenShellSandboxBackend, self)
+        mapped_path = self._map_path(file_path)
+        return self._run_backend_tool(
+            "edit_file",
+            lambda: parent.edit(mapped_path, old_string, new_string, replace_all),
+        )
+
+    def execute(self, command: str, *, timeout: int | None = None) -> Any:
+        result = self._context.execute_streamed(
+            command,
+            cwd=self._context.repo_path,
+            timeout_seconds=timeout or 300,
+            progress_callback=self._progress_callback,
+            tool_name="execute",
+        )
+        stdout = str(result.get("stdout") or "")
+        stderr = str(result.get("stderr") or "")
+        exit_code = int(result.get("exitCode") or 0)
+        output = _format_execute_response_output(stdout, stderr, exit_code=exit_code)
+        if ExecuteResponse is not None:
+            return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+        return {"output": output, "exit_code": exit_code, "truncated": False}
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[Any]:
+        responses: list[Any] = []
+        response_type = FileUploadResponse if FileUploadResponse is not None else dict
+        for path, content in files:
+            mapped_path = self._map_path(path)
+            encoded_content = json.dumps(content.decode("utf-8", errors="surrogateescape"))
+            encoded_path = json.dumps(mapped_path)
+            command = (
+                "python3 -c "
+                + shlex.quote(
+                    "import pathlib; "
+                    f"path = pathlib.Path({encoded_path}); "
+                    "path.parent.mkdir(parents=True, exist_ok=True); "
+                    f"path.write_text({encoded_content})"
+                )
+            )
+            result = self._context.run_command(command, cwd=self._context.repo_path, timeout_seconds=120)
+            error = None if int(result.get("exitCode") or 0) == 0 else "permission_denied"
+            if response_type is dict:
+                responses.append({"path": mapped_path, "error": error})
+            else:
+                responses.append(response_type(path=mapped_path, error=error))
+        return responses
+
+    def download_files(self, paths: list[str]) -> list[Any]:
+        responses: list[Any] = []
+        download_type = FileDownloadResponse if FileDownloadResponse is not None else dict
+        for path in paths:
+            mapped_path = self._map_path(path)
+            command = (
+                "python3 -c "
+                + shlex.quote(
+                    "import base64, pathlib, sys; "
+                    f"path = pathlib.Path({json.dumps(mapped_path)}); "
+                    "sys.stdout.write(base64.b64encode(path.read_bytes()).decode())"
+                )
+            )
+            result = self._context.run_command(command, cwd=self._context.repo_path, timeout_seconds=120)
+            if int(result.get("exitCode") or 0) != 0:
+                if download_type is dict:
+                    responses.append({"path": mapped_path, "content": None, "error": "file_not_found"})
+                else:
+                    responses.append(download_type(path=mapped_path, content=None, error="file_not_found"))
+                continue
+            try:
+                content = base64.b64decode(str(result.get("stdout") or "").encode("utf-8"))
+            except Exception:
+                content = None
+            if download_type is dict:
+                responses.append({"path": mapped_path, "content": content, "error": None if content is not None else "invalid_path"})
+            else:
+                responses.append(
+                    download_type(
+                        path=mapped_path,
+                        content=content,
+                        error=None if content is not None else "invalid_path",
+                    )
+                )
+        return responses
 
 
 class PlannerState(TypedDict, total=False):
@@ -971,86 +1303,14 @@ def _bind_openshell_tools(
         command_text = str(resolved_kwargs.get("command", command))
         command_cwd = str(resolved_kwargs.get("cwd", cwd))
         timeout_value = int(resolved_kwargs.get("timeout_seconds", timeout_seconds) or timeout_seconds)
-        if progress_callback is not None:
-            progress_callback({"event": "tool_start", "toolName": "execute_openshell_command"})
-
-        effective_timeout = max(timeout_value, 30)
-        run_id = f"{context.sandbox_name}-{uuid.uuid4().hex[:8]}"
-
-        # Run the blocking POST in a background thread so we can emit heartbeats
-        last_output_offset = 0
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                context.run_command,
-                command_text,
-                cwd=command_cwd,
-                timeout_seconds=effective_timeout,
-                run_id=run_id,
-            )
-            start_time = time.monotonic()
-            while not future.done():
-                try:
-                    future.result(timeout=_HEARTBEAT_INTERVAL)
-                except TimeoutError:
-                    pass
-                if future.done():
-                    break
-                elapsed = int(time.monotonic() - start_time)
-                # Try to get status from OpenShell; non-fatal on error
-                sandbox_status = "running"
-                sandbox_phase = ""
-                partial_stdout = ""
-                try:
-                    status_resp = context.poll_run_status(run_id)
-                    sandbox_status = str(status_resp.get("status") or "running")
-                    sandbox_phase = str(status_resp.get("phase") or "")
-                    partial_stdout = str(status_resp.get("stdout") or status_resp.get("output") or "")
-                except Exception:
-                    pass
-
-                # Emit any new partial output lines
-                if progress_callback is not None and partial_stdout and len(partial_stdout) > last_output_offset:
-                    new_text = partial_stdout[last_output_offset:]
-                    last_output_offset = len(partial_stdout)
-                    for line in new_text.splitlines():
-                        if line:
-                            progress_callback({
-                                "event": "sandbox_output_partial",
-                                "toolName": "execute_openshell_command",
-                                "command": command_text,
-                                "output": line,
-                            })
-
-                if progress_callback is not None:
-                    progress_callback({
-                        "event": "sandbox_heartbeat",
-                        "toolName": "execute_openshell_command",
-                        "elapsedSeconds": elapsed,
-                        "sandboxStatus": sandbox_status,
-                        "sandboxPhase": sandbox_phase,
-                        "runId": run_id,
-                    })
-
-            result = future.result()
-
-        if progress_callback is not None:
-            progress_callback(
-                {
-                    "event": "tool_complete",
-                    "toolName": "execute_openshell_command",
-                    "status": "completed" if int(result.get("exitCode") or 0) == 0 else "nonzero_exit",
-                }
-            )
-            # Emit sandbox output event for UI terminal display
-            progress_callback(
-                {
-                    "event": "sandbox_output",
-                    "command": command_text,
-                    "output": str(result.get("stdout") or result.get("output") or "")[:4000],
-                    "exitCode": int(result.get("exitCode") or 0),
-                }
-            )
-        return result
+        return _execute_with_openshell_streaming(
+            context,
+            command_text,
+            cwd=command_cwd,
+            timeout_seconds=timeout_value,
+            progress_callback=progress_callback,
+            tool_name="execute_openshell_command",
+        )
 
     execute_openshell_command.__name__ = "execute_openshell_command"
     execute_openshell_command.__doc__ = (
@@ -1482,27 +1742,29 @@ def run_langgraph_task(
                 workspace_root,
                 progress_callback=progress_callback,
             )
+            backend = (
+                HeartbeatLocalBackend(
+                    root_dir=workspace_root,
+                    progress_callback=progress_callback,
+                )
+                if LocalShellBackend is not None
+                else None
+            )
         else:
-            tools = _bind_openshell_tools(
+            tools = []
+            backend = OpenShellSandboxBackend(
                 openshell_context,
                 progress_callback=progress_callback,
             )
-        # Provide a backend with heartbeat-enabled execute() for the built-in tools
-        backend = (
-            HeartbeatLocalBackend(
-                root_dir=workspace_root,
-                progress_callback=progress_callback,
-            )
-            if openshell_context is None and LocalShellBackend is not None
-            else None  # OpenShell path uses custom tools, no local backend
-        )
         graph = create_deep_agent(
             model=lang_model,
             tools=tools,
             system_prompt=(
                 _build_system_prompt(phase, profile)
                 + (
-                    " You are operating inside an OpenShell sandbox. Use the shell tool for all repository inspection, edits, and verification."
+                    f" You are operating inside an OpenShell sandbox. The repository root is {openshell_context.repo_path}. "
+                    f"Use the built-in filesystem and execute tools against absolute paths under {openshell_context.repo_path}. "
+                    "Do not use local /workspace paths."
                     if openshell_context is not None
                     else ""
                 )

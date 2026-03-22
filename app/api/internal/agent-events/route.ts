@@ -40,6 +40,16 @@ export async function POST(request: Request) {
 		events,
 	});
 
+	if (persisted.length > 0) {
+		console.info(
+			`[agent-events] persisted count=${persisted.length} execution=${workflowExecutionId} instance=${daprInstanceId} range=${persisted[0]?.eventId ?? "n/a"}-${persisted.at(-1)?.eventId ?? "n/a"}`,
+		);
+	} else {
+		console.info(
+			`[agent-events] persisted count=0 deduped=${events.length} execution=${workflowExecutionId} instance=${daprInstanceId} submitted=${events.length}`,
+		);
+	}
+
 	return NextResponse.json({
 		success: true,
 		count: persisted.length,

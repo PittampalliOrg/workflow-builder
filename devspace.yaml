@@ -341,10 +341,32 @@ dev:
 
     # Patches to configure the pod for development
     patches:
-      - op: remove
+      - op: replace
         path: spec.containers.name=${APP_NAME}.livenessProbe
-      - op: remove
+        value:
+          tcpSocket:
+            port: ${CONTAINER_PORT}
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 2
+          failureThreshold: 4
+      - op: replace
         path: spec.containers.name=${APP_NAME}.readinessProbe
+        value:
+          tcpSocket:
+            port: ${CONTAINER_PORT}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 12
+      - op: add
+        path: spec.containers.name=${APP_NAME}.startupProbe
+        value:
+          tcpSocket:
+            port: ${CONTAINER_PORT}
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 60
       - op: replace
         path: spec.containers.name=${APP_NAME}.securityContext
         value:
@@ -746,10 +768,35 @@ dev:
           - .pytest_cache/
           - "*.pyc"
     patches:
-      - op: remove
+      - op: replace
         path: spec.containers.name=${DAPR_AGENT_APP_NAME}.livenessProbe
-      - op: remove
+        value:
+          httpGet:
+            path: /healthz
+            port: ${DAPR_AGENT_CONTAINER_PORT}
+          initialDelaySeconds: 20
+          periodSeconds: 30
+          timeoutSeconds: 2
+          failureThreshold: 4
+      - op: replace
         path: spec.containers.name=${DAPR_AGENT_APP_NAME}.readinessProbe
+        value:
+          httpGet:
+            path: /readyz
+            port: ${DAPR_AGENT_CONTAINER_PORT}
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 12
+      - op: add
+        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.startupProbe
+        value:
+          httpGet:
+            path: /readyz
+            port: ${DAPR_AGENT_CONTAINER_PORT}
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 60
       - op: replace
         path: spec.containers.name=${DAPR_AGENT_APP_NAME}.securityContext
         value:
@@ -779,6 +826,8 @@ dev:
         value: "3500"
       - name: DAPR_GRPC_PORT
         value: "50001"
+      - name: WORKFLOW_BUILDER_INTERNAL_BASE_URL
+        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
 
   workflow-orchestrator:
     namespace: ${APP_NAME}

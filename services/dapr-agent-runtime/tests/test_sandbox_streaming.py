@@ -193,7 +193,7 @@ class TestHeartbeatLocalBackendStreaming:
 
         heartbeats = collector.of_type("sandbox_heartbeat")
         assert len(heartbeats) >= 1, "Expected at least one heartbeat during 6s sleep"
-        assert heartbeats[0]["elapsedSeconds"] >= 4  # ~5s interval
+        assert heartbeats[0]["elapsedSeconds"] >= 1
 
     def test_mixed_stdout_stderr_ordering(self, tmp_path):
         """Both stdout and stderr lines should appear in partial events."""

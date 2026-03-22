@@ -49,6 +49,11 @@ const HTTP_TIMEOUT_MS = Number.parseInt(
 const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
 const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
 const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
+const DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS = 30_000;
+const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS = 300_000;
+const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = 120_000;
+const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 900_000;
 
 // Cold start detection: if response time is > 3x average, likely a cold start
 const COLD_START_MULTIPLIER = 3;
@@ -134,6 +139,56 @@ function resolveAgentHttpTimeoutMs(timeoutMinutes: unknown): number {
 	return Math.min(
 		Math.max(requestedTimeoutMs, MIN_AGENT_HTTP_TIMEOUT_MS),
 		MAX_AGENT_HTTP_TIMEOUT_MS,
+	);
+}
+
+function clampTimeoutMs(
+	value: number,
+	{
+		min,
+		max,
+	}: {
+		min: number;
+		max: number;
+	},
+): number {
+	return Math.min(Math.max(value, min), max);
+}
+
+function resolveWorkspaceUtilityTimeoutMs(input: {
+	toolId: string;
+	timeoutMs: unknown;
+	commandTimeoutMs: unknown;
+}): number {
+	const explicitTimeoutMs = asNumber(input.timeoutMs);
+	const explicitCommandTimeoutMs = asNumber(input.commandTimeoutMs);
+
+	if (input.toolId === "clone") {
+		return clampTimeoutMs(
+			explicitTimeoutMs ?? DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS,
+			{ min: 30_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
+		);
+	}
+
+	if (input.toolId === "command") {
+		return clampTimeoutMs(
+			explicitTimeoutMs ??
+				explicitCommandTimeoutMs ??
+				DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS,
+			{ min: 10_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
+		);
+	}
+
+	if (input.toolId === "profile") {
+		return clampTimeoutMs(
+			explicitCommandTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+			{ min: 10_000, max: MAX_WORKSPACE_PROFILE_TIMEOUT_MS },
+		);
+	}
+
+	return clampTimeoutMs(
+		explicitTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+		{ min: 10_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
 	);
 }
 
@@ -915,9 +970,22 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							pluginId === "workspace" && toolId === "cleanup";
 						const isWorkspaceCreatePullRequest =
 							pluginId === "workspace" && toolId === "create-pull-request";
+						const isWorkspaceUtility =
+							isWorkspaceProfile ||
+							isWorkspaceClone ||
+							isWorkspaceCommand ||
+							isWorkspaceFile ||
+							isWorkspaceCleanup ||
+							isWorkspaceCreatePullRequest;
 						requestTimeoutMs =
 							target.appId === "dapr-agent-runtime"
-								? resolveAgentHttpTimeoutMs(args.timeoutMinutes)
+								? isWorkspaceUtility
+									? resolveWorkspaceUtilityTimeoutMs({
+											toolId,
+											timeoutMs: args.timeoutMs,
+											commandTimeoutMs: args.commandTimeoutMs,
+										})
+									: resolveAgentHttpTimeoutMs(args.timeoutMinutes)
 								: HTTP_TIMEOUT_MS;
 						const controller = new AbortController();
 						timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
@@ -953,6 +1021,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/run`;
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? args.goal ?? "",
+								actionType: body.action_name ?? `${pluginId}/run`,
 								mode: args.mode,
 								engine: args.engine,
 								profile: args.profile ?? args.mode ?? "implement",
@@ -1316,6 +1385,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								},
 							);
 						} else {
+							console.log(
+								`[Execute Route] Dispatching ${functionSlug} to ${targetUrl} with timeout=${requestTimeoutMs}ms`,
+							);
+							const requestDispatchStartedAt = Date.now();
 							httpResponse = await fetch(targetUrl, {
 								method: "POST",
 								headers: {
@@ -1325,6 +1398,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								body: requestBody,
 								signal: controller.signal,
 							});
+							console.log(
+								`[Execute Route] ${functionSlug} received response headers from ${targetUrl} in ${Date.now() - requestDispatchStartedAt}ms`,
+							);
 						}
 
 						clearTimeout(timeoutId);
@@ -1556,9 +1632,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						}
 						timing.executionMs = Date.now() - executionStartTime;
 						if (httpError instanceof Error && httpError.name === "AbortError") {
+							console.error(
+								`[Execute Route] Timeout invoking ${functionSlug} at ${targetUrl} after ${requestTimeoutMs}ms`,
+							);
 							response = {
 								success: false,
-								error: `Request to ${target.appId} timed out after ${requestTimeoutMs}ms`,
+								error: `Request to ${target.appId} (${functionSlug}) timed out after ${requestTimeoutMs}ms`,
 								duration_ms: 0,
 							};
 						} else {

@@ -633,6 +633,7 @@ export const workflowAgentEvents = pgTable(
 		),
 		parentExecutionId: text("parent_execution_id"),
 		daprInstanceId: text("dapr_instance_id").notNull(),
+		sourceEventId: text("source_event_id").notNull(),
 		seq: integer("seq"),
 		eventType: text("event_type").notNull().$type<WorkflowAgentEventType>(),
 		phase: text("phase"),
@@ -655,6 +656,11 @@ export const workflowAgentEvents = pgTable(
 		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
 			table.workflowAgentRunId,
 			table.eventId,
+		),
+		sourceEventUnique: unique("uq_workflow_agent_events_source").on(
+			table.workflowExecutionId,
+			table.daprInstanceId,
+			table.sourceEventId,
 		),
 	}),
 );
