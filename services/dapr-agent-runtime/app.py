@@ -331,6 +331,17 @@ DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS = max(
     5,
 )
 SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agent")
+WORKFLOW_BUILDER_BASE_URL = (
+    os.environ.get(
+        "WORKFLOW_BUILDER_BASE_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).rstrip("/")
+)
+WORKFLOW_BUILDER_INTERNAL_API_TOKEN = (
+    os.environ.get("WORKFLOW_BUILDER_INTERNAL_API_TOKEN")
+    or os.environ.get("INTERNAL_API_TOKEN")
+    or ""
+).strip()
 
 
 PROFILE_INSTRUCTIONS: dict[str, str] = {
@@ -619,6 +630,92 @@ run_state_store = StateStoreService(
     store_name=DAPR_AGENT_STATE_STORE_NAME,
     key_prefix=DAPR_AGENT_RUN_STATE_KEY_PREFIX,
 )
+
+
+def _event_payload_id(instance_id: str, suffix: str) -> str:
+    return f"{instance_id}:{suffix}"
+
+
+def _publish_agent_events(
+    run_context: AgentRunContext | None,
+    events: list[dict[str, Any]],
+) -> None:
+    if run_context is None or not run_context.execution_id or not events:
+        return
+    if not WORKFLOW_BUILDER_INTERNAL_API_TOKEN:
+        logger.debug(
+            "Skipping workflow-builder agent event publish for %s: internal token missing",
+            run_context.instance_id,
+        )
+        return
+
+    url = (
+        f"{WORKFLOW_BUILDER_BASE_URL}/api/internal/agent/workflows/executions/"
+        f"{run_context.execution_id}/events"
+    )
+    payload = json.dumps(
+        {
+            "daprInstanceId": run_context.instance_id,
+            "events": events,
+        }
+    ).encode("utf-8")
+
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": WORKFLOW_BUILDER_INTERNAL_API_TOKEN,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if 200 <= response.status < 300:
+                    return
+        except Exception as exc:
+            if attempt == 3:
+                logger.warning(
+                    "Failed to publish workflow agent events for %s: %s",
+                    run_context.instance_id,
+                    exc,
+                )
+            else:
+                time.sleep(0.2 * attempt)
+
+
+def _emit_agent_event(
+    run_context: AgentRunContext | None,
+    *,
+    event_id: str,
+    event_type: str,
+    phase: str | None = None,
+    **payload: Any,
+) -> None:
+    if run_context is None:
+        return
+    event = {
+        "id": event_id,
+        "ts": _utc_now_iso(),
+        "type": event_type,
+        "runId": run_context.instance_id,
+        **({"phase": phase} if phase else {}),
+        **payload,
+    }
+    _publish_agent_events(run_context, [event])
+
+
+def _sandbox_output_text(result: Any) -> tuple[str, int | None]:
+    if isinstance(result, dict):
+        stdout = str(result.get("stdout") or "").strip()
+        stderr = str(result.get("stderr") or "").strip()
+        output = "\n".join(part for part in [stdout, stderr] if part)
+        exit_code = result.get("exitCode")
+        return output, int(exit_code) if isinstance(exit_code, int) else None
+    if isinstance(result, str):
+        return result.strip(), None
+    return json.dumps(result, default=str), None
 
 
 def _workspace_session_key(workspace_ref: str) -> str:
@@ -1246,6 +1343,14 @@ def _build_result_payload(
             },
         }
         _persist_run_artifact(instance_id, result)
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, "run_complete"),
+            event_type="run_complete",
+            phase="planned",
+            status="success",
+            text=plan_markdown,
+        )
         return result
     summary = summarize_command_changes(cwd)
     mutation_summary = _load_workspace_mutation(instance_id) or {}
@@ -1317,6 +1422,14 @@ def _build_result_payload(
         },
     }
     _persist_run_artifact(instance_id, result)
+    _emit_agent_event(
+        run_context,
+        event_id=_event_payload_id(instance_id, "run_complete"),
+        event_type="run_complete",
+        phase="completed",
+        status="success",
+        text=text,
+    )
     return result
 
 
@@ -1852,9 +1965,10 @@ class CodingDurableAgent(DurableAgent):
                 status="running",
             )
             next_iteration = int(existing_progress.get("currentIteration") or 0) + 1
+            phase = _progress_phase_for_mode(run_context.mode)
             _update_agent_progress(
                 instance_id,
-                phase=_progress_phase_for_mode(run_context.mode),
+                phase=phase,
                 status="running",
                 currentIteration=next_iteration,
                 activeToolName=None,
@@ -1864,7 +1978,31 @@ class CodingDurableAgent(DurableAgent):
                     else f"Reasoning iteration {next_iteration}"
                 ),
             )
-        return super().call_llm(ctx, payload)
+            _emit_agent_event(
+                run_context,
+                event_id=_event_payload_id(instance_id, f"model_start:{next_iteration}"),
+                event_type="model_start",
+                phase=phase,
+                turn=next_iteration,
+                text=(
+                    f"Planning iteration {next_iteration}"
+                    if _is_planning_mode(run_context.mode)
+                    else f"Reasoning iteration {next_iteration}"
+                ),
+            )
+        result = super().call_llm(ctx, payload)
+        if run_context is not None:
+            current_iteration = int(
+                (_load_agent_progress(instance_id) or {}).get("currentIteration") or 0
+            )
+            _emit_agent_event(
+                run_context,
+                event_id=_event_payload_id(instance_id, f"model_complete:{current_iteration}"),
+                event_type="model_complete",
+                phase=_progress_phase_for_mode(run_context.mode),
+                turn=current_iteration,
+            )
+        return result
 
     def run_tool(self, ctx: wf.WorkflowActivityContext, payload: dict[str, Any]) -> dict[str, Any]:
         tool_call = payload.get("tool_call", {})
@@ -1922,6 +2060,15 @@ class CodingDurableAgent(DurableAgent):
             summary=f"Running tool {fn_name}",
             recentTurns=recent_turns,
         )
+        tool_call_id = str(tool_call.get("id") or uuid.uuid4().hex)
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, f"tool_start:{tool_call_id}"),
+            event_type="tool_start",
+            phase=tool_phase,
+            toolName=fn_name,
+            toolArgs=args,
+        )
 
         allowed_names = {
             getattr(tool, "name", None) or getattr(tool, "__name__", "")
@@ -1962,7 +2109,7 @@ class CodingDurableAgent(DurableAgent):
 
         try:
             result = self._run_asyncio_task(_execute_tool())
-        except Exception:
+        except Exception as exc:
             recent_turns[-1] = {
                 "label": fn_name,
                 "summary": f"Failed {fn_name}",
@@ -1976,6 +2123,15 @@ class CodingDurableAgent(DurableAgent):
                 summary=f"Failed tool {fn_name}",
                 recentTurns=recent_turns,
             )
+            _emit_agent_event(
+                run_context,
+                event_id=_event_payload_id(instance_id, f"tool_error:{tool_call_id}"),
+                event_type="tool_error",
+                phase=_progress_phase_for_mode(run_context.mode),
+                toolName=fn_name,
+                toolArgs=args,
+                error=str(exc) or f"Failed tool {fn_name}",
+            )
             raise
         if isinstance(result, dict) and isinstance(tool_summary, dict):
             if (
@@ -1986,6 +2142,18 @@ class CodingDurableAgent(DurableAgent):
                 )
             ):
                 _persist_workspace_mutation(instance_id, tool_summary)
+        if fn_name == "execute_command" and command:
+            output_text, exit_code = _sandbox_output_text(result)
+            _emit_agent_event(
+                run_context,
+                event_id=_event_payload_id(instance_id, f"sandbox_output:{tool_call_id}"),
+                event_type="sandbox_output",
+                phase=tool_phase,
+                command=command,
+                output=output_text,
+                exitCode=exit_code,
+                status="nonzero_exit" if isinstance(exit_code, int) and exit_code != 0 else "success",
+            )
         logger.debug("Tool %s returned: %s (type: %s)", fn_name, result, type(result))
         serialized_result = serialize_tool_result(result)
         tool_result = ToolMessage(
@@ -2007,6 +2175,22 @@ class CodingDurableAgent(DurableAgent):
             activeToolName=None,
             summary=f"Completed tool {fn_name}",
             recentTurns=recent_turns,
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, f"tool_complete:{tool_call_id}"),
+            event_type="tool_complete",
+            phase=tool_phase,
+            toolName=fn_name,
+            toolArgs=args,
+            toolResult=serialized_result,
+            status=(
+                "nonzero_exit"
+                if fn_name == "execute_command"
+                and isinstance(result, dict)
+                and int(result.get("exitCode") or 0) != 0
+                else "success"
+            ),
         )
         return tool_result.model_dump()
 
@@ -2382,6 +2566,13 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             summary=f"Starting {run_context.profile} run",
             currentStepName=run_context.profile,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, "run_started"),
+            event_type="run_started",
+            phase=_progress_phase_for_mode(run_context.mode),
+            status="running",
+        )
     normalized_request = request.model_copy(
         update={
             "cwd": run_context.cwd,
@@ -2400,6 +2591,24 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             request=normalized_request,
             workflow_output=agent_result,
         )
+    except Exception as exc:
+        _update_agent_progress(
+            instance_id,
+            phase="failed",
+            status="failed",
+            activeToolName=None,
+            stopReason=str(exc),
+            summary=str(exc),
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, "run_error"),
+            event_type="run_error",
+            phase="failed",
+            status="error",
+            error=str(exc),
+        )
+        raise
     finally:
         cleanup_workflow_context(workflow_context_key)
         cleanup_workflow_context("__current_workflow_context__")
