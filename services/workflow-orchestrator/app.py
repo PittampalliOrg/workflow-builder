@@ -78,6 +78,7 @@ from activities.send_ap_callback import send_ap_callback, send_ap_step_update
 from activities.fetch_child_workflow import fetch_child_workflow
 from activities.track_agent_run import (
     track_agent_run_scheduled,
+    track_agent_run_running,
     track_agent_run_completed,
 )
 
@@ -442,6 +443,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
     wfr.register_activity(track_agent_run_scheduled)
+    wfr.register_activity(track_agent_run_running)
     wfr.register_activity(track_agent_run_completed)
     # AP workflow callback activities
     wfr.register_activity(send_ap_callback)
@@ -733,6 +735,7 @@ def _registered_activity_names() -> list[str]:
         terminate_durable_agent_run.__name__,
         cleanup_execution_workspaces.__name__,
         track_agent_run_scheduled.__name__,
+        track_agent_run_running.__name__,
         track_agent_run_completed.__name__,
         send_ap_callback.__name__,
         send_ap_step_update.__name__,

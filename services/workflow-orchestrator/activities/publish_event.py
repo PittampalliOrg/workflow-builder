@@ -83,8 +83,7 @@ def _persist_execution_phase(
                 UPDATE workflow_executions
                 SET
                     phase = %s,
-                    progress = %s,
-                    updated_at = now()
+                    progress = %s
                 WHERE id = %s
                 """,
                 (

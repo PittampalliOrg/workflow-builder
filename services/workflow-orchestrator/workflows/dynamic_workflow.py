@@ -1026,6 +1026,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 # Long-running native child workflows (bypass function-router).
                 if action_type in (
                     "openshell/run",
+                    "openshell-langgraph/run",
                     "dapr-agent/run",
                     "ms-agent/run",
                 ):

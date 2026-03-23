@@ -911,6 +911,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							args.workspaceRef.trim().length > 0;
 						const usesUnifiedAgentRunEndpoint =
 							target.appId === "dapr-agent-runtime";
+						const shouldWaitForUnifiedAgentCompletion =
+							isAgentRun &&
+							runMode === "execute_direct" &&
+							!usesUnifiedAgentRunEndpoint;
 
 						if (isDaprAgentRun) {
 							targetUrl = `${functionUrl}/api/run`;
@@ -937,7 +941,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								shellPolicy: args.shellPolicy,
 								artifactRef: args.artifactRef,
 								planJson: args.planJson,
-								waitForCompletion: true,
+								waitForCompletion: false,
 							});
 						} else if (isAgentRun) {
 							if (runMode === "plan_mode") {
@@ -970,7 +974,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									workflowId: body.workflow_id,
 									nodeId: body.node_id,
 									nodeName: body.node_name,
-									waitForCompletion: true,
+									waitForCompletion: usesUnifiedAgentRunEndpoint ? false : true,
 								});
 							} else {
 								targetUrl =
@@ -995,7 +999,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
-									waitForCompletion: runMode === "execute_direct",
+									waitForCompletion: shouldWaitForUnifiedAgentCompletion,
 									cleanupWorkspace: args.cleanupWorkspace,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
@@ -1329,6 +1333,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						if (
 							isAgentRun &&
 							runMode === "execute_direct" &&
+							shouldWaitForUnifiedAgentCompletion &&
 							resolvedMastra?.success === true
 						) {
 							const workflowId =

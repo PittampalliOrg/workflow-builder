@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 
 from tools import (
     DEFAULT_WORKSPACE_ROOT,
+    _run_git_completed,
     TOOL_GROUPS,
     WORKSPACE_ENABLED_TOOLS,
     ToolRuntimeContext,
@@ -1974,6 +1975,11 @@ def _build_result_payload(
             for file_change in summary["changeSummary"]["files"]
             if isinstance(file_change, dict) and str(file_change.get("path") or "").strip()
         ],
+        "fileSnapshots": _build_persisted_file_snapshots(
+            cwd,
+            patch,
+            summary["changeSummary"],
+        ),
         "verification": {
             "commands": _parse_verify_commands(request.verifyCommands),
             "status": "requested" if request.verifyCommands else "not_requested",
@@ -2292,6 +2298,7 @@ def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:
         "plannerCheckpointId": result.get("plannerCheckpointId"),
         "approvalPayload": result.get("approvalPayload"),
         "snapshotRefs": result.get("snapshotRefs") or [],
+        "fileSnapshots": result.get("fileSnapshots") or [],
         "createdAt": _utc_now_iso(),
     }
     try:
@@ -2391,6 +2398,185 @@ def _safe_workspace_file_snapshot(root: str, relative_path: str) -> dict[str, An
         "sizeBytes": stat.st_size,
         "modifiedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime)),
     }
+
+
+def _parse_patch_file_entries(patch: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def flush() -> None:
+        nonlocal current
+        if not current:
+            return
+        old_path = str(current.get("oldPath") or "").strip() or None
+        new_path = str(current.get("newPath") or "").strip() or None
+        if not old_path and not new_path:
+            current = None
+            return
+        if old_path and new_path and old_path != new_path:
+            status = "R"
+        elif not old_path and new_path:
+            status = "A"
+        elif old_path and not new_path:
+            status = "D"
+        else:
+            status = "M"
+        entries.append(
+            {
+                "path": new_path or old_path,
+                "oldPath": old_path,
+                "newPath": new_path,
+                "status": status,
+            }
+        )
+        current = None
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            parts = line.split()
+            old_path = parts[2][2:] if len(parts) > 2 and parts[2].startswith("a/") else None
+            new_path = parts[3][2:] if len(parts) > 3 and parts[3].startswith("b/") else None
+            current = {"oldPath": old_path, "newPath": new_path}
+            continue
+        if current is None:
+            continue
+        if line.startswith("rename from "):
+            current["oldPath"] = line.removeprefix("rename from ").strip() or None
+        elif line.startswith("rename to "):
+            current["newPath"] = line.removeprefix("rename to ").strip() or None
+        elif line.startswith("--- "):
+            value = line[4:].strip()
+            current["oldPath"] = None if value == "/dev/null" else re.sub(r"^a/", "", value)
+        elif line.startswith("+++ "):
+            value = line[4:].strip()
+            current["newPath"] = None if value == "/dev/null" else re.sub(r"^b/", "", value)
+
+    flush()
+    return entries
+
+
+def _read_text_file(path: Path) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return path.read_bytes().decode("utf-8", errors="replace")
+
+
+def _read_git_head_file(workspace_root: Path, relative_path: str | None) -> str | None:
+    normalized = str(relative_path or "").strip()
+    if not normalized:
+        return None
+    completed = _run_git_completed(["show", f"HEAD:{normalized}"], cwd=workspace_root)
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _build_persisted_file_snapshots(
+    workspace_root: str,
+    patch: str,
+    change_summary: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    root = Path(workspace_root).expanduser().resolve()
+    if not root.exists():
+        return []
+
+    patch_entries = _parse_patch_file_entries(patch)
+    if not patch_entries and isinstance(change_summary, dict):
+        for file_entry in change_summary.get("files") or []:
+            if not isinstance(file_entry, dict):
+                continue
+            path = str(file_entry.get("path") or "").strip()
+            if not path:
+                continue
+            raw_status = str(file_entry.get("status") or "").strip().lower()
+            if raw_status == "untracked":
+                status = "A"
+            elif raw_status in {"deleted", "d"}:
+                status = "D"
+            else:
+                status = "M"
+            patch_entries.append(
+                {
+                    "path": path,
+                    "oldPath": None if status == "A" else path,
+                    "newPath": None if status == "D" else path,
+                    "status": status,
+                }
+            )
+
+    snapshots: list[dict[str, Any]] = []
+    seen_paths: set[tuple[str, str | None]] = set()
+    for entry in patch_entries:
+        path = str(entry.get("path") or "").strip()
+        old_path = str(entry.get("oldPath") or "").strip() or None
+        new_path = str(entry.get("newPath") or "").strip() or None
+        status = str(entry.get("status") or "M").strip() or "M"
+        if not path:
+            continue
+        dedupe_key = (path, old_path)
+        if dedupe_key in seen_paths:
+            continue
+        seen_paths.add(dedupe_key)
+        old_content = None if status == "A" else _read_git_head_file(root, old_path or path)
+        new_content = (
+            None
+            if status == "D"
+            else _read_text_file(root / (new_path or path))
+        )
+        snapshots.append(
+            {
+                "path": path,
+                "oldPath": old_path,
+                "status": status,
+                "oldContent": old_content,
+                "newContent": new_content,
+            }
+        )
+
+    return snapshots
+
+
+def _load_persisted_file_snapshot(
+    execution_id: str,
+    relative_path: str,
+    *,
+    durable_instance_id: str | None = None,
+) -> dict[str, Any] | None:
+    run_ids = (
+        [durable_instance_id]
+        if durable_instance_id
+        else _load_execution_run_ids(execution_id)
+    )
+    requested_path = str(relative_path or "").strip()
+    if not requested_path:
+        return None
+    for run_id in run_ids:
+        artifact = _load_run_artifact(run_id)
+        if not isinstance(artifact, dict):
+            continue
+        file_snapshots = artifact.get("fileSnapshots")
+        if not isinstance(file_snapshots, list):
+            continue
+        for snapshot in file_snapshots:
+            if not isinstance(snapshot, dict):
+                continue
+            snapshot_path = str(snapshot.get("path") or "").strip()
+            snapshot_old_path = str(snapshot.get("oldPath") or "").strip()
+            if requested_path not in {snapshot_path, snapshot_old_path}:
+                continue
+            return {
+                "executionId": execution_id,
+                "path": snapshot_path or requested_path,
+                "oldPath": snapshot_old_path or None,
+                "status": str(snapshot.get("status") or "M"),
+                "oldContent": snapshot.get("oldContent"),
+                "newContent": snapshot.get("newContent"),
+            }
+    return None
 
 
 def _default_agent_progress(context: AgentRunContext, *, status: str = "scheduled") -> dict[str, Any]:
@@ -4382,6 +4568,19 @@ def workspace_execution_file_snapshot(
         if durableInstanceId
         else _load_execution_run_ids(execution_id)
     )
+    persisted_snapshot = _load_persisted_file_snapshot(
+        execution_id,
+        relative_path,
+        durable_instance_id=durableInstanceId,
+    )
+    if persisted_snapshot is not None:
+        return {
+            "success": True,
+            "executionId": execution_id,
+            "path": relative_path,
+            "durableInstanceId": durableInstanceId,
+            "snapshot": persisted_snapshot,
+        }
     for run_id in run_ids:
         context = _load_run_context(run_id)
         if context is None:
