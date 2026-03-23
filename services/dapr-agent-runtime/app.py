@@ -2202,6 +2202,7 @@ def _default_agent_progress(context: AgentRunContext, *, status: str = "schedule
 # ---------------------------------------------------------------------------
 _stream_queues: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = {}
 _stream_event_counter: dict[str, int] = {}
+_langgraph_event_counter: dict[str, int] = {}
 _stream_lock = threading.Lock()
 _MAX_STREAM_QUEUE_SIZE = 500
 
@@ -2228,6 +2229,13 @@ def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     pass
+
+
+def _next_langgraph_event_sequence(instance_id: str) -> int:
+    with _stream_lock:
+        counter = _langgraph_event_counter.get(instance_id, 0) + 1
+        _langgraph_event_counter[instance_id] = counter
+        return counter
 
 
 def _register_stream_queue(instance_id: str) -> asyncio.Queue[dict[str, Any] | None]:
@@ -2329,8 +2337,11 @@ def _record_langgraph_progress_event(
     )
     next_iteration = int(existing_progress.get("currentIteration") or 0)
     recent_turns = list(existing_progress.get("recentTurns") or [])
+    event_seq = _next_langgraph_event_sequence(instance_id)
+    event_suffix = f"langgraph:{phase}:{event_type}:{event_seq}"
 
     if event_type == "model_start":
+        turn = next_iteration + 1
         next_iteration += 1
         recent_turns.append(
             {
@@ -2354,9 +2365,18 @@ def _record_langgraph_progress_event(
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="model_start",
+            phase=progress_phase,
+            turn=turn,
+            text=recent_turns[-1]["summary"],
+        )
         return
 
     if event_type == "model_complete":
+        turn = next_iteration or 1
         recent_turns.append(
             {
                 "label": "model",
@@ -2379,6 +2399,13 @@ def _record_langgraph_progress_event(
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="model_complete",
+            phase=progress_phase,
+            turn=turn,
+        )
         return
 
     tool_name = str(event.get("toolName") or "tool").strip() or "tool"
@@ -2400,6 +2427,13 @@ def _record_langgraph_progress_event(
             stopReason=None,
             summary=f"Running tool {tool_name}",
             recentTurns=recent_turns,
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_start",
+            phase=progress_phase,
+            toolName=tool_name,
         )
         return
 
@@ -2424,6 +2458,14 @@ def _record_langgraph_progress_event(
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_complete",
+            phase=progress_phase,
+            toolName=tool_name,
+            status=tool_status or "completed",
+        )
         return
 
     if event_type == "tool_error":
@@ -2445,6 +2487,32 @@ def _record_langgraph_progress_event(
             stopReason=None,
             summary=message or f"Failed tool {tool_name}",
             recentTurns=recent_turns,
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_error",
+            phase=progress_phase,
+            toolName=tool_name,
+            error=message or f"Failed tool {tool_name}",
+        )
+        return
+
+    if event_type == "sandbox_output":
+        exit_code = event.get("exitCode")
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="sandbox_output",
+            phase=progress_phase,
+            command=str(event.get("command") or "").strip() or None,
+            output=str(event.get("output") or ""),
+            exitCode=int(exit_code) if isinstance(exit_code, int) else None,
+            status=(
+                "nonzero_exit"
+                if isinstance(exit_code, int) and exit_code != 0
+                else "success"
+            ),
         )
 
 
