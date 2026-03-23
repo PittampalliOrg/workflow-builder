@@ -2223,8 +2223,10 @@ def process_agent_child_workflow(
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
         "workspaceRef": resolved_config.get("workspaceRef"),
-        "repoUrl": resolved_config.get("repoUrl"),
-        "repoBranch": resolved_config.get("repoBranch"),
+        "repoUrl": resolved_config.get("repoUrl")
+        or resolved_config.get("repositoryUrl"),
+        "repoBranch": resolved_config.get("repoBranch")
+        or resolved_config.get("repositoryBranch"),
         "repoToken": resolved_config.get("repoToken"),
         "sandboxRepoPath": resolved_config.get("sandboxRepoPath"),
         "provider": resolved_config.get("provider"),

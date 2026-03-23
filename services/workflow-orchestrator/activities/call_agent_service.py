@@ -168,7 +168,7 @@ def _build_openshell_command(input_data: dict) -> str:
     model = str(input_data.get("model") or "").strip()
     if "/" in model:
         model = model.split("/", 1)[1].strip()
-    cwd = str(input_data.get("cwd") or "").strip()
+    cwd = str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
     if mode == "plan_mode":
         prompt = (
             f"{prompt}\n\n"
