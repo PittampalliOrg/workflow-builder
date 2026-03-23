@@ -298,6 +298,7 @@ function mapRowToMetadata(row: ChangeArtifactRow): ChangeArtifactMetadata {
 class WorkspaceChangeArtifactStore {
 	private readonly sql: Sql | null;
 	private readonly daprClient = new DaprClient();
+	private blobStorageMode: "binding" | "database" = BLOB_STORAGE_MODE;
 	private initPromise: Promise<void> | null = null;
 	private initialized = false;
 	private persistenceAvailable = false;
@@ -897,64 +898,40 @@ class WorkspaceChangeArtifactStore {
 			payload: payloadBytes.toString("base64"),
 			compressed,
 		};
-		if (BLOB_STORAGE_MODE === "database") {
-			if (!this.sql) {
-				throw new Error(
-					"Workspace change persistence database is not configured",
-				);
-			}
-			await this.sql`
-				insert into workspace_change_artifact_blob_payloads (
-					storage_ref,
-					payload_text,
-					created_at
-				)
-				values (
-					${storageRef},
-					${JSON.stringify(envelope)},
-					now()
-				)
-				on conflict (storage_ref)
-				do update set
-					payload_text = excluded.payload_text,
-					created_at = excluded.created_at
-			`;
+		if (this.blobStorageMode === "database") {
+			await this.writeBlobPayloadToDatabase(storageRef, envelope);
 			return;
 		}
-		await this.daprClient.binding.send(
-			RECON_BLOB_BINDING,
-			RECON_BLOB_OP_CREATE,
-			JSON.stringify(envelope),
-			buildBlobMetadata(storageRef, "application/json"),
-		);
+		try {
+			await this.daprClient.binding.send(
+				RECON_BLOB_BINDING,
+				RECON_BLOB_OP_CREATE,
+				JSON.stringify(envelope),
+				buildBlobMetadata(storageRef, "application/json"),
+			);
+		} catch (error) {
+			await this.fallbackBlobStorageMode(error, "write");
+			await this.writeBlobPayloadToDatabase(storageRef, envelope);
+		}
 	}
 
 	private async readBlobPayload(storageRef: string): Promise<Buffer> {
 		const rawResponse =
-			BLOB_STORAGE_MODE === "database"
-				? await (async () => {
-						if (!this.sql) {
-							throw new Error(
-								"Workspace change persistence database is not configured",
-							);
+			this.blobStorageMode === "database"
+				? await this.readBlobPayloadFromDatabase(storageRef)
+				: await (async () => {
+						try {
+							return (await this.daprClient.binding.send(
+								RECON_BLOB_BINDING,
+								RECON_BLOB_OP_GET,
+								"",
+								buildBlobMetadata(storageRef),
+							)) as unknown;
+						} catch (error) {
+							await this.fallbackBlobStorageMode(error, "read");
+							return await this.readBlobPayloadFromDatabase(storageRef);
 						}
-						const rows = await this.sql<BlobPayloadRow[]>`
-						select payload_text
-						from workspace_change_artifact_blob_payloads
-						where storage_ref = ${storageRef}
-						limit 1
-					`;
-						if (rows.length === 0) {
-							throw new Error(`Blob payload not found for ${storageRef}`);
-						}
-						return rows[0].payload_text;
-					})()
-				: ((await this.daprClient.binding.send(
-						RECON_BLOB_BINDING,
-						RECON_BLOB_OP_GET,
-						"",
-						buildBlobMetadata(storageRef),
-					)) as unknown);
+					})();
 		let parsed: BlobPayloadEnvelope;
 
 		if (rawResponse && typeof rawResponse === "object") {
@@ -1019,22 +996,21 @@ class WorkspaceChangeArtifactStore {
 
 	private async deleteBlobPayload(storageRef: string): Promise<void> {
 		try {
-			if (BLOB_STORAGE_MODE === "database") {
-				if (!this.sql) {
-					return;
-				}
-				await this.sql`
-					delete from workspace_change_artifact_blob_payloads
-					where storage_ref = ${storageRef}
-				`;
+			if (this.blobStorageMode === "database") {
+				await this.deleteBlobPayloadFromDatabase(storageRef);
 				return;
 			}
-			await this.daprClient.binding.send(
-				RECON_BLOB_BINDING,
-				RECON_BLOB_OP_DELETE,
-				"",
-				buildBlobMetadata(storageRef),
-			);
+			try {
+				await this.daprClient.binding.send(
+					RECON_BLOB_BINDING,
+					RECON_BLOB_OP_DELETE,
+					"",
+					buildBlobMetadata(storageRef),
+				);
+			} catch (error) {
+				await this.fallbackBlobStorageMode(error, "delete");
+				await this.deleteBlobPayloadFromDatabase(storageRef);
+			}
 		} catch {
 			// best-effort cleanup only
 		}
@@ -1146,13 +1122,17 @@ class WorkspaceChangeArtifactStore {
 			)
 		`;
 		try {
-			if (BLOB_STORAGE_MODE === "binding") {
-				await this.verifyBlobBindingRoundTrip();
+			if (this.blobStorageMode === "binding") {
+				try {
+					await this.verifyBlobBindingRoundTrip();
+				} catch (error) {
+					await this.fallbackBlobStorageMode(error, "initialize");
+				}
 			}
 			this.persistenceAvailable = true;
 			this.initializationError = null;
 			console.log(
-				`[workspace-change-artifacts] Persistence initialized (db=postgres, storage=${BLOB_STORAGE_MODE === "binding" ? `binding:${RECON_BLOB_BINDING}` : "database"}, prefix=${RECON_BLOB_PREFIX})`,
+				`[workspace-change-artifacts] Persistence initialized (db=postgres, storage=${this.blobStorageMode === "binding" ? `binding:${RECON_BLOB_BINDING}` : "database"}, prefix=${RECON_BLOB_PREFIX})`,
 			);
 		} catch (error) {
 			this.persistenceAvailable = false;
@@ -1187,6 +1167,82 @@ class WorkspaceChangeArtifactStore {
 			);
 		}
 		await this.deleteBlobPayload(probeRef);
+	}
+
+	private async writeBlobPayloadToDatabase(
+		storageRef: string,
+		envelope: BlobPayloadEnvelope,
+	): Promise<void> {
+		if (!this.sql) {
+			throw new Error(
+				"Workspace change persistence database is not configured",
+			);
+		}
+		await this.sql`
+			insert into workspace_change_artifact_blob_payloads (
+				storage_ref,
+				payload_text,
+				created_at
+			)
+			values (
+				${storageRef},
+				${JSON.stringify(envelope)},
+				now()
+			)
+			on conflict (storage_ref)
+			do update set
+				payload_text = excluded.payload_text,
+				created_at = excluded.created_at
+		`;
+	}
+
+	private async readBlobPayloadFromDatabase(
+		storageRef: string,
+	): Promise<string> {
+		if (!this.sql) {
+			throw new Error(
+				"Workspace change persistence database is not configured",
+			);
+		}
+		const rows = await this.sql<BlobPayloadRow[]>`
+			select payload_text
+			from workspace_change_artifact_blob_payloads
+			where storage_ref = ${storageRef}
+			limit 1
+		`;
+		if (rows.length === 0) {
+			throw new Error(`Blob payload not found for ${storageRef}`);
+		}
+		return rows[0].payload_text;
+	}
+
+	private async deleteBlobPayloadFromDatabase(
+		storageRef: string,
+	): Promise<void> {
+		if (!this.sql) {
+			return;
+		}
+		await this.sql`
+			delete from workspace_change_artifact_blob_payloads
+			where storage_ref = ${storageRef}
+		`;
+	}
+
+	private async fallbackBlobStorageMode(
+		error: unknown,
+		operation: "initialize" | "write" | "read" | "delete",
+	): Promise<void> {
+		if (this.blobStorageMode === "database") {
+			return;
+		}
+		if (!this.sql) {
+			throw error instanceof Error ? error : new Error(String(error));
+		}
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(
+			`[workspace-change-artifacts] Blob binding unavailable during ${operation}; falling back to database storage: ${message}`,
+		);
+		this.blobStorageMode = "database";
 	}
 }
 
