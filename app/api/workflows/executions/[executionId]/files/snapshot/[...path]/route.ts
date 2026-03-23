@@ -5,7 +5,8 @@ import { invokeService } from "@/lib/dapr/client";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 
-const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
+const DURABLE_AGENT_APP_ID =
+	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
 
 type ExecutionFileSnapshotResponse = {
 	success?: boolean;
@@ -80,9 +81,9 @@ export async function GET(
 		}
 
 		const response = await invokeService<ExecutionFileSnapshotResponse>({
-			appId: DAPR_AGENT_APP_ID,
+			appId: DURABLE_AGENT_APP_ID,
 			method: "GET",
-			path: `/v1.0/invoke/${encodeURIComponent(DAPR_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/files/snapshot?${query.toString()}`,
+			path: `/v1.0/invoke/${encodeURIComponent(DURABLE_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/files/snapshot?${query.toString()}`,
 			timeout: 20_000,
 		});
 

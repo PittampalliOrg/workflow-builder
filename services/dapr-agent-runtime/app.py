@@ -1908,7 +1908,8 @@ def _build_result_payload(
             text=plan_markdown,
         )
         return result
-    summary = summarize_command_changes(cwd)
+    change_root = _change_tracking_root(cwd)
+    summary = summarize_command_changes(change_root)
     mutation_summary = _load_workspace_mutation(instance_id) or {}
     if not summary["changeSummary"]["changed"] and isinstance(
         mutation_summary.get("changeSummary"), dict
@@ -1931,7 +1932,7 @@ def _build_result_payload(
     _persist_agent_progress(instance_id, progress)
     patch = ""
     try:
-        tool_context = ToolRuntimeContext.from_workspace_root(cwd)
+        tool_context = ToolRuntimeContext.from_workspace_root(change_root)
         token = push_tool_context(tool_context)
         try:
             patch = git_diff(".").get("diff", "")
@@ -1976,7 +1977,7 @@ def _build_result_payload(
             if isinstance(file_change, dict) and str(file_change.get("path") or "").strip()
         ],
         "fileSnapshots": _build_persisted_file_snapshots(
-            cwd,
+            change_root,
             patch,
             summary["changeSummary"],
         ),
@@ -2001,6 +2002,12 @@ def _build_result_payload(
             "sandboxName": run_context.sandbox_name if run_context else None,
         },
     }
+    _publish_execution_change_artifact(
+        run_context,
+        change_summary=summary["changeSummary"],
+        patch=patch,
+        file_snapshots=result["fileSnapshots"],
+    )
     _persist_run_artifact(instance_id, result)
     _emit_agent_event(
         run_context,
@@ -2071,6 +2078,10 @@ def _run_progress_key(instance_id: str) -> str:
 
 def _run_artifact_key(instance_id: str) -> str:
     return f"artifact:{instance_id}"
+
+
+def _change_artifact_publish_key(instance_id: str) -> str:
+    return f"artifact-published:{instance_id}"
 
 
 def _execution_runs_key(execution_id: str) -> str:
@@ -2180,6 +2191,17 @@ def _change_set_id_for_instance(instance_id: str) -> str:
     return f"{instance_id}-patch"
 
 
+def _normalize_change_file_status(raw_status: Any) -> str:
+    value = str(raw_status or "").strip().lower()
+    if value in {"a", "added", "untracked"}:
+        return "A"
+    if value in {"d", "deleted", "remove", "removed"}:
+        return "D"
+    if value in {"r", "renamed", "rename"}:
+        return "R"
+    return "M"
+
+
 def _empty_change_summary() -> dict[str, Any]:
     return {
         "files": [],
@@ -2270,6 +2292,199 @@ def _load_workspace_mutation(instance_id: str) -> dict[str, Any] | None:
         logger.warning("Failed to load workspace mutation summary %s: %s", instance_id, exc)
         return None
     return payload if payload else None
+
+
+def _change_tracking_root(cwd: str) -> str:
+    try:
+        candidate = Path(cwd).expanduser().resolve()
+    except Exception:
+        return str(Path(cwd).expanduser())
+    if not candidate.exists():
+        return str(candidate)
+    completed = _run_git_completed(["rev-parse", "--show-toplevel"], cwd=candidate)
+    if completed.returncode == 0 and completed.stdout.strip():
+        return str(Path(completed.stdout.strip()).expanduser().resolve())
+    return str(candidate)
+
+
+def _git_head_revision(root: str) -> str | None:
+    candidate = Path(root).expanduser().resolve()
+    if not candidate.exists():
+        return None
+    completed = _run_git_completed(["rev-parse", "HEAD"], cwd=candidate)
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.strip()
+    return value or None
+
+
+def _normalized_change_files(change_summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(change_summary, dict):
+        return []
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for file_entry in change_summary.get("files") or []:
+        if not isinstance(file_entry, dict):
+            continue
+        path = str(file_entry.get("path") or "").strip()
+        if not path:
+            continue
+        old_path = str(file_entry.get("oldPath") or "").strip() or None
+        status = _normalize_change_file_status(file_entry.get("status"))
+        dedupe_key = (path, old_path)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        normalized.append(
+            {
+                "path": path,
+                "status": status,
+                **({"oldPath": old_path} if old_path else {}),
+            }
+        )
+    return normalized
+
+
+def _persisted_snapshot_inputs(
+    file_snapshots: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    snapshots: list[dict[str, Any]] = []
+    if not isinstance(file_snapshots, list):
+        return snapshots
+    for snapshot in file_snapshots:
+        if not isinstance(snapshot, dict):
+            continue
+        path = str(snapshot.get("path") or "").strip()
+        if not path:
+            continue
+        old_path = str(snapshot.get("oldPath") or "").strip() or None
+        snapshots.append(
+            {
+                "path": path,
+                "status": _normalize_change_file_status(snapshot.get("status")),
+                **({"oldPath": old_path} if old_path else {}),
+                "isBinary": bool(snapshot.get("isBinary")),
+                **(
+                    {"language": str(snapshot.get("language")).strip()}
+                    if str(snapshot.get("language") or "").strip()
+                    else {}
+                ),
+                "oldContent": (
+                    snapshot.get("oldContent")
+                    if isinstance(snapshot.get("oldContent"), str)
+                    or snapshot.get("oldContent") is None
+                    else None
+                ),
+                "newContent": (
+                    snapshot.get("newContent")
+                    if isinstance(snapshot.get("newContent"), str)
+                    or snapshot.get("newContent") is None
+                    else None
+                ),
+            }
+        )
+    return snapshots
+
+
+def _publish_execution_change_artifact(
+    run_context: AgentRunContext | None,
+    *,
+    change_summary: dict[str, Any] | None,
+    patch: str,
+    file_snapshots: list[dict[str, Any]] | None,
+    operation: str = "agent-execute",
+) -> None:
+    if run_context is None or not run_context.execution_id or not run_context.workspace_ref:
+        return
+    if not WORKFLOW_BUILDER_INTERNAL_API_TOKEN:
+        logger.debug(
+            "Skipping durable execution change persistence for %s: internal token missing",
+            run_context.instance_id,
+        )
+        return
+
+    normalized_files = _normalized_change_files(change_summary)
+    normalized_snapshots = _persisted_snapshot_inputs(file_snapshots)
+    if not patch.strip() and not normalized_files and not normalized_snapshots:
+        return
+
+    try:
+        already_published = run_state_store.load(
+            key=_change_artifact_publish_key(run_context.instance_id),
+            default={},
+        )
+    except StateStoreError:
+        already_published = {}
+    if isinstance(already_published, dict) and already_published.get("published"):
+        return
+
+    stats = (
+        change_summary.get("stats")
+        if isinstance(change_summary, dict) and isinstance(change_summary.get("stats"), dict)
+        else {}
+    )
+    revision = _git_head_revision(run_context.cwd)
+    payload = json.dumps(
+        {
+            "workspaceRef": run_context.workspace_ref,
+            "operation": operation,
+            "sequence": 1,
+            "patch": patch,
+            "files": normalized_files,
+            "additions": int(stats.get("additions") or 0),
+            "deletions": int(stats.get("deletions") or 0),
+            "durableInstanceId": run_context.instance_id,
+            "includeInExecutionPatch": True,
+            "baseRevision": revision,
+            "headRevision": revision,
+            "fileSnapshots": normalized_snapshots,
+        }
+    ).encode("utf-8")
+    url = (
+        f"{WORKFLOW_BUILDER_BASE_URL}/api/internal/agent/workflows/executions/"
+        f"{run_context.execution_id}/changes"
+    )
+
+    for attempt in range(1, 4):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "X-Internal-Token": WORKFLOW_BUILDER_INTERNAL_API_TOKEN,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as response:
+                if 200 <= response.status < 300:
+                    try:
+                        run_state_store.save(
+                            key=_change_artifact_publish_key(run_context.instance_id),
+                            value={"published": True, "ts": _utc_now_iso()},
+                        )
+                    except StateStoreError as exc:
+                        logger.warning(
+                            "Failed to persist change artifact publish marker %s: %s",
+                            run_context.instance_id,
+                            exc,
+                        )
+                    logger.info(
+                        "Persisted durable execution change artifact for %s with %s files and %s bytes of patch",
+                        run_context.instance_id,
+                        len(normalized_files),
+                        len(patch.encode("utf-8")),
+                    )
+                    return
+        except Exception as exc:
+            if attempt == 3:
+                logger.warning(
+                    "Failed to persist durable execution change artifact for %s: %s",
+                    run_context.instance_id,
+                    exc,
+                )
+            else:
+                time.sleep(0.2 * attempt)
 
 
 def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:

@@ -122,6 +122,22 @@ export type WorkspaceChangeSummary = {
 	trackingError?: string;
 };
 
+export type PersistExecutionChangeArtifactInput = {
+	executionId: string;
+	workspaceRef: string;
+	operation: string;
+	sequence: number;
+	patch: string;
+	files: ChangeFileEntry[];
+	additions: number;
+	deletions: number;
+	durableInstanceId?: string;
+	includeInExecutionPatch?: boolean;
+	baseRevision?: string;
+	headRevision?: string;
+	fileSnapshots?: ChangeArtifactFileSnapshotInput[];
+};
+
 export type WorkspaceProfileInput = {
 	executionId: string;
 	name?: string;
@@ -279,6 +295,27 @@ class WorkspaceSessionManager {
 			return null;
 		}
 		return await changeArtifacts.getExecutionFileSnapshot(id, targetPath, opts);
+	}
+
+	async persistExecutionChangeArtifact(
+		input: PersistExecutionChangeArtifactInput,
+	): Promise<ChangeArtifactMetadata> {
+		await changeArtifacts.ensureReady();
+		return await changeArtifacts.save({
+			executionId: input.executionId.trim(),
+			workspaceRef: input.workspaceRef.trim(),
+			operation: input.operation.trim(),
+			sequence: input.sequence,
+			patch: input.patch,
+			files: input.files,
+			additions: input.additions,
+			deletions: input.deletions,
+			durableInstanceId: input.durableInstanceId?.trim() || undefined,
+			includeInExecutionPatch: input.includeInExecutionPatch,
+			baseRevision: input.baseRevision?.trim() || undefined,
+			headRevision: input.headRevision?.trim() || undefined,
+			fileSnapshots: input.fileSnapshots ?? [],
+		});
 	}
 
 	getWorkspaceRefByExecutionId(executionId: string): string | null {

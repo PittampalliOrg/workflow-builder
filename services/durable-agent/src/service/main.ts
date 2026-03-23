@@ -2642,6 +2642,172 @@ app.get("/api/workspaces/executions/:executionId/changes", async (req, res) => {
 	}
 });
 
+app.post(
+	"/api/workspaces/executions/:executionId/change-artifacts",
+	async (req, res) => {
+		try {
+			const executionId =
+				typeof req.params.executionId === "string"
+					? req.params.executionId.trim()
+					: "";
+			if (!executionId) {
+				res
+					.status(400)
+					.json({ success: false, error: "executionId is required" });
+				return;
+			}
+
+			const body =
+				req.body && typeof req.body === "object"
+					? (req.body as Record<string, unknown>)
+					: {};
+			const workspaceRef =
+				typeof body.workspaceRef === "string" ? body.workspaceRef.trim() : "";
+			const operation =
+				typeof body.operation === "string" ? body.operation.trim() : "";
+			const patch = typeof body.patch === "string" ? body.patch : "";
+			const sequence =
+				typeof body.sequence === "number" && Number.isFinite(body.sequence)
+					? body.sequence
+					: 1;
+			const durableInstanceId =
+				typeof body.durableInstanceId === "string"
+					? body.durableInstanceId.trim()
+					: undefined;
+			const includeInExecutionPatch =
+				typeof body.includeInExecutionPatch === "boolean"
+					? body.includeInExecutionPatch
+					: true;
+			const baseRevision =
+				typeof body.baseRevision === "string"
+					? body.baseRevision.trim()
+					: undefined;
+			const headRevision =
+				typeof body.headRevision === "string"
+					? body.headRevision.trim()
+					: undefined;
+
+			if (!workspaceRef) {
+				res
+					.status(400)
+					.json({ success: false, error: "workspaceRef is required" });
+				return;
+			}
+
+			if (!operation) {
+				res
+					.status(400)
+					.json({ success: false, error: "operation is required" });
+				return;
+			}
+
+			const files = Array.isArray(body.files)
+				? body.files
+						.filter(
+							(entry): entry is Record<string, unknown> =>
+								Boolean(entry) && typeof entry === "object",
+						)
+						.map((entry) => ({
+							path: typeof entry.path === "string" ? entry.path.trim() : "",
+							status:
+								entry.status === "A" ||
+								entry.status === "M" ||
+								entry.status === "D" ||
+								entry.status === "R"
+									? entry.status
+									: "M",
+							...(typeof entry.oldPath === "string" && entry.oldPath.trim()
+								? { oldPath: entry.oldPath.trim() }
+								: {}),
+						}))
+						.filter((entry) => entry.path.length > 0)
+				: [];
+
+			const fileSnapshots = Array.isArray(body.fileSnapshots)
+				? body.fileSnapshots
+						.filter(
+							(entry): entry is Record<string, unknown> =>
+								Boolean(entry) && typeof entry === "object",
+						)
+						.map((entry) => ({
+							path: typeof entry.path === "string" ? entry.path.trim() : "",
+							status:
+								entry.status === "A" ||
+								entry.status === "M" ||
+								entry.status === "D" ||
+								entry.status === "R"
+									? entry.status
+									: "M",
+							oldPath:
+								typeof entry.oldPath === "string" && entry.oldPath.trim()
+									? entry.oldPath.trim()
+									: undefined,
+							isBinary: Boolean(entry.isBinary),
+							language:
+								typeof entry.language === "string" && entry.language.trim()
+									? entry.language.trim()
+									: undefined,
+							oldContent:
+								typeof entry.oldContent === "string" ||
+								entry.oldContent === null
+									? (entry.oldContent as string | null)
+									: undefined,
+							newContent:
+								typeof entry.newContent === "string" ||
+								entry.newContent === null
+									? (entry.newContent as string | null)
+									: undefined,
+						}))
+						.filter((entry) => entry.path.length > 0)
+				: [];
+
+			const additions =
+				typeof body.additions === "number" && Number.isFinite(body.additions)
+					? body.additions
+					: 0;
+			const deletions =
+				typeof body.deletions === "number" && Number.isFinite(body.deletions)
+					? body.deletions
+					: 0;
+
+			if (!patch.trim() && files.length === 0 && fileSnapshots.length === 0) {
+				res.status(400).json({
+					success: false,
+					error: "patch, files, or fileSnapshots is required",
+				});
+				return;
+			}
+
+			const change = await workspaceSessions.persistExecutionChangeArtifact({
+				executionId,
+				workspaceRef,
+				operation,
+				sequence,
+				patch,
+				files,
+				additions,
+				deletions,
+				durableInstanceId,
+				includeInExecutionPatch,
+				baseRevision,
+				headRevision,
+				fileSnapshots,
+			});
+
+			res.json({
+				success: true,
+				executionId,
+				change,
+			});
+		} catch (err) {
+			res.status(500).json({
+				success: false,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+	},
+);
+
 app.get("/api/workspaces/executions/:executionId/patch", async (req, res) => {
 	try {
 		const executionId =
