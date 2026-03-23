@@ -2428,6 +2428,7 @@ def process_agent_child_workflow(
             )
             preferred_label = (
                 str(failure_payload.get("preferredExecutionProfile") or "").strip()
+                or str(failure_payload.get("executionProfile") or "").strip()
                 or preferred_execution_profile
                 or "default"
             )
