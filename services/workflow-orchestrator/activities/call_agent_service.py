@@ -165,9 +165,12 @@ def _build_minimal_plan(goal: str, plan_markdown: str) -> dict:
 def _build_openshell_command(input_data: dict) -> str:
     prompt = str(input_data.get("prompt") or "").strip()
     mode = str(input_data.get("mode") or "").strip().lower()
+    provider = str(input_data.get("provider") or "").strip().lower()
     model = str(input_data.get("model") or "").strip()
+    model_provider = ""
     if "/" in model:
-        model = model.split("/", 1)[1].strip()
+        model_provider, model = [part.strip() for part in model.split("/", 1)]
+        model_provider = model_provider.lower()
     cwd = str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
     if mode == "plan_mode":
         prompt = (
@@ -184,7 +187,12 @@ def _build_openshell_command(input_data: dict) -> str:
         "bypassPermissions",
         "--no-session-persistence",
     ]
-    if model:
+    normalized_provider = provider or model_provider
+    should_forward_model = bool(model) and (
+        model.startswith("claude")
+        or normalized_provider in {"anthropic", "claude"}
+    )
+    if should_forward_model:
         args.extend(["--model", model])
     command = " ".join(shlex.quote(part) for part in args)
     if cwd:
