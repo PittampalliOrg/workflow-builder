@@ -2715,7 +2715,7 @@ app.post(
 								entry.status === "D" ||
 								entry.status === "R"
 									? entry.status
-									: "M",
+									: "M" as "A" | "M" | "D" | "R",
 							...(typeof entry.oldPath === "string" && entry.oldPath.trim()
 								? { oldPath: entry.oldPath.trim() }
 								: {}),
@@ -2737,7 +2737,7 @@ app.post(
 								entry.status === "D" ||
 								entry.status === "R"
 									? entry.status
-									: "M",
+									: "M" as "A" | "M" | "D" | "R",
 							oldPath:
 								typeof entry.oldPath === "string" && entry.oldPath.trim()
 									? entry.oldPath.trim()
