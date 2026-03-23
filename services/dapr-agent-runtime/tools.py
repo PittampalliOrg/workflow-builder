@@ -35,6 +35,7 @@ DEFAULT_WORKSPACE_ROOT = os.environ.get("WORKSPACE_ROOT", "/workspace")
 MAX_FILE_SIZE_BYTES = int(os.environ.get("DAPR_AGENT_MAX_FILE_SIZE_BYTES", "262144"))
 MAX_GREP_RESULTS = int(os.environ.get("DAPR_AGENT_MAX_GREP_RESULTS", "200"))
 MAX_LIST_FILES = int(os.environ.get("DAPR_AGENT_MAX_LIST_FILES", "500"))
+COMMAND_TIMEOUT_SECONDS = int(os.environ.get("DAPR_AGENT_COMMAND_TIMEOUT_SECONDS", "120"))
 ACTIVE_TOOL_CONTEXT: ContextVar["ToolRuntimeContext | None"] = ContextVar(
     "active_tool_context",
     default=None,
@@ -80,7 +81,17 @@ class ToolRuntimeContext:
         return cls(workspace_root=root)
 
     def resolve_path(self, raw_path: str | None) -> Path:
-        candidate = (self.workspace_root / _normalize_workspace_path(raw_path)).resolve()
+        raw_value = str(raw_path or ".").strip()
+        if not raw_value or raw_value == "/":
+            candidate = self.workspace_root
+        else:
+            supplied_path = Path(raw_value).expanduser()
+            if supplied_path.is_absolute():
+                candidate = supplied_path.resolve()
+            else:
+                candidate = (
+                    self.workspace_root / _normalize_workspace_path(raw_value)
+                ).resolve()
         if candidate != self.workspace_root and self.workspace_root not in candidate.parents:
             raise ValueError(f"Path escapes workspace root: {raw_path}")
         return candidate
@@ -178,9 +189,20 @@ def _extract_context() -> ToolRuntimeContext:
     return ToolRuntimeContext.from_workspace_root(str(DEFAULT_WORKSPACE_ROOT))
 
 
+def _resolve_tool_invocation(
+    args_payload: Any | None,
+    kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(args_payload, dict):
+        return {**args_payload, **kwargs}
+    return dict(kwargs)
+
+
 @tool
-def read_file(path: str) -> str:
+def read_file(path: str, args: dict[str, Any] | None = None, **kwargs: Any) -> str:
     """Read a UTF-8 text file from the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.is_file():
@@ -191,8 +213,16 @@ def read_file(path: str) -> str:
 
 
 @tool
-def list_files(path: str = ".", pattern: str = "**/*") -> list[str]:
+def list_files(
+    path: str = ".",
+    pattern: str = "**/*",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> list[str]:
     """List files in a workspace directory using a glob pattern."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
+    pattern = str(resolved_kwargs.get("pattern", pattern))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -210,8 +240,16 @@ def list_files(path: str = ".", pattern: str = "**/*") -> list[str]:
 
 
 @tool
-def grep_search(pattern: str, path: str = ".") -> list[dict[str, Any]]:
+def grep_search(
+    pattern: str,
+    path: str = ".",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
     """Search UTF-8 text files in the workspace for a substring."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    pattern = str(resolved_kwargs.get("pattern", pattern))
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -242,8 +280,16 @@ def grep_search(pattern: str, path: str = ".") -> list[dict[str, Any]]:
 
 
 @tool
-def write_file(path: str, content: str) -> dict[str, Any]:
+def write_file(
+    path: str,
+    content: str,
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Write a UTF-8 text file in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
+    content = str(resolved_kwargs.get("content", content))
     context = _extract_context()
     resolved = context.resolve_path(path)
     context.record_modified(resolved)
@@ -253,8 +299,18 @@ def write_file(path: str, content: str) -> dict[str, Any]:
 
 
 @tool
-def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
+def edit_file(
+    path: str,
+    old_string: str,
+    new_string: str,
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Replace text in a UTF-8 text file in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
+    old_string = str(resolved_kwargs.get("old_string", old_string))
+    new_string = str(resolved_kwargs.get("new_string", new_string))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.is_file():
@@ -270,8 +326,14 @@ def edit_file(path: str, old_string: str, new_string: str) -> dict[str, Any]:
 
 
 @tool
-def delete_path(path: str) -> dict[str, Any]:
+def delete_path(
+    path: str,
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Delete a file or directory in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -285,8 +347,14 @@ def delete_path(path: str) -> dict[str, Any]:
 
 
 @tool
-def mkdir(path: str) -> dict[str, Any]:
+def mkdir(
+    path: str,
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Create a directory in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     resolved = context.resolve_path(path)
     resolved.mkdir(parents=True, exist_ok=True)
@@ -294,8 +362,14 @@ def mkdir(path: str) -> dict[str, Any]:
 
 
 @tool
-def file_stat(path: str) -> dict[str, Any]:
+def file_stat(
+    path: str,
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Return metadata for a workspace file or directory."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     resolved = context.resolve_path(path)
     if not resolved.exists():
@@ -413,8 +487,14 @@ def build_workspace_patch(workspace_root: str | os.PathLike[str]) -> str:
 
 
 @tool
-def git_status(path: str = ".") -> dict[str, Any]:
+def git_status(
+    path: str = ".",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Get git status in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     cwd = context.resolve_path(path)
     stdout = _run_git(["status", "--short", "--branch"], cwd=cwd)
@@ -422,8 +502,14 @@ def git_status(path: str = ".") -> dict[str, Any]:
 
 
 @tool
-def git_diff(path: str = ".") -> dict[str, Any]:
+def git_diff(
+    path: str = ".",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Get git diff in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     cwd = context.resolve_path(path)
     stdout = build_workspace_patch(cwd)
@@ -431,8 +517,16 @@ def git_diff(path: str = ".") -> dict[str, Any]:
 
 
 @tool
-def git_apply(patch: str, path: str = ".") -> dict[str, Any]:
+def git_apply(
+    patch: str,
+    path: str = ".",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Apply a unified diff patch in the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    patch = str(resolved_kwargs.get("patch", patch))
+    path = str(resolved_kwargs.get("path", path))
     context = _extract_context()
     cwd = context.resolve_path(path)
     completed = subprocess.run(
@@ -450,8 +544,16 @@ def git_apply(patch: str, path: str = ".") -> dict[str, Any]:
 
 
 @tool
-def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
+def execute_command(
+    command: str,
+    cwd: str = ".",
+    args: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
     """Run a shell command inside the workspace."""
+    resolved_kwargs = _resolve_tool_invocation(args, kwargs)
+    command = str(resolved_kwargs.get("command", command))
+    cwd = str(resolved_kwargs.get("cwd", cwd))
     context = _extract_context()
     working_directory = context.resolve_path(cwd)
     shell_command = command
@@ -463,15 +565,31 @@ def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
             pnpm_fallback = 'pnpm() { npx pnpm "$@"; }'
         if pnpm_fallback:
             shell_command = "\n".join([pnpm_fallback, command])
-    completed = subprocess.run(
-        shell_command,
-        cwd=working_directory,
-        shell=True,
-        text=True,
-        capture_output=True,
-        timeout=120,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            shell_command,
+            cwd=working_directory,
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "cwd": _as_relative(working_directory, context.workspace_root)
+            if working_directory != context.workspace_root
+            else ".",
+            "exitCode": 124,
+            "stdout": str(exc.stdout or "")[-12000:],
+            "stderr": (
+                (
+                    str(exc.stderr or "")
+                    + f"\nCommand timed out after {COMMAND_TIMEOUT_SECONDS} seconds"
+                )
+            )[-12000:],
+            "timedOut": True,
+        }
     return {
         "cwd": _as_relative(working_directory, context.workspace_root)
         if working_directory != context.workspace_root
@@ -479,6 +597,7 @@ def execute_command(command: str, cwd: str = ".") -> dict[str, Any]:
         "exitCode": completed.returncode,
         "stdout": completed.stdout[-12000:],
         "stderr": completed.stderr[-12000:],
+        "timedOut": False,
     }
 
 
