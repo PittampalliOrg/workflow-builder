@@ -2077,8 +2077,11 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
     is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
-    is_dapr_agent = action_type in {"dapr-agent/run", "openshell-langgraph/run"}
-    is_openshell_agent = action_type == "openshell/run"
+    is_openshell_agent = action_type in {
+        "openshell/run",
+        "openshell-langgraph/run",
+    }
+    is_dapr_agent = action_type == "dapr-agent/run"
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
