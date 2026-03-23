@@ -762,6 +762,68 @@ def call_durable_execute_plan_dag(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
+def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
+    """
+    Validate that a workspace can satisfy the requested execution capabilities.
+    """
+    workspace_ref = str(input_data.get("workspaceRef") or "").strip()
+    if not workspace_ref:
+        return {"success": False, "error": "workspaceRef is required"}
+
+    url = (
+        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+        f"{DAPR_AGENT_APP_ID}/method/api/workspaces/capabilities/validate"
+    )
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "workspace/validate-capabilities",
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.execution_id": input_data.get("executionId") or "",
+        "workspace.ref": workspace_ref,
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span("activity.validate_workspace_capabilities", otel, attrs):
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                return _post_json_with_details(
+                    client=client,
+                    url=url,
+                    payload={
+                        "workspaceRef": workspace_ref,
+                        "requiredCapabilities": input_data.get("requiredCapabilities"),
+                        "preferredExecutionProfile": input_data.get(
+                            "preferredExecutionProfile"
+                        ),
+                        "verifyCommands": input_data.get("verifyCommands"),
+                    },
+                    service_label="Workspace capability validation",
+                )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "HTTP 404" in message:
+                logger.info(
+                    "[Validate Workspace Capabilities] Capability validation endpoint "
+                    "not available on runtime; skipping preflight until runtime is updated"
+                )
+                return {
+                    "success": True,
+                    "skipped": True,
+                    "reason": "runtime_capability_validation_unavailable",
+                    "workspaceRef": workspace_ref,
+                    "requiredCapabilities": input_data.get("requiredCapabilities") or [],
+                    "preferredExecutionProfile": input_data.get(
+                        "preferredExecutionProfile"
+                    ),
+                }
+            logger.error(f"[Validate Workspace Capabilities] Failed: {message}")
+            return {"success": False, "error": message}
+        except Exception as e:
+            logger.error(f"[Validate Workspace Capabilities] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
 def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
     """
     Terminate a specific durable-agent run.

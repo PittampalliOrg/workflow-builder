@@ -226,6 +226,49 @@ def _restore_runtime_state(
     )
 
 
+def _seed_trigger_outputs(
+    node_outputs: NodeOutputs,
+    nodes: list[dict[str, Any]],
+    trigger_data: dict[str, Any],
+) -> None:
+    """
+    Seed trigger output aliases for template resolution.
+
+    Historically the runtime only exposed trigger data under the synthetic
+    ``trigger`` key. Saved workflow definitions now use the real trigger node id
+    in template expressions like ``{{@nodeId:Manual Trigger.feature_request}}``,
+    so direct workflow-builder launches need both forms present.
+    """
+    node_outputs.setdefault(
+        "trigger",
+        {
+            "label": "Trigger",
+            "actionType": "",
+            "data": trigger_data,
+        },
+    )
+
+    for node in nodes:
+        if node.get("type") != "trigger":
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            continue
+        node_outputs.setdefault(
+            node_id,
+            {
+                "label": str(node.get("label") or "Trigger"),
+                "actionType": str(
+                    ((node.get("config") or {}) if isinstance(node.get("config"), dict) else {}).get(
+                        "triggerType",
+                        "",
+                    )
+                ),
+                "data": trigger_data,
+            },
+        )
+
+
 def _should_continue_as_new(
     ctx: wf.DaprWorkflowContext,
     completed_since_checkpoint: int,
@@ -452,6 +495,83 @@ def _parse_optional_bool(value: object) -> bool | None:
         if normalized == "false":
             return False
     return None
+
+
+def _coerce_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        ]
+    parsed = _try_parse_json(value)
+    if isinstance(parsed, list):
+        return [
+            str(item).strip()
+            for item in parsed
+            if str(item).strip()
+        ]
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return []
+        if "\n" in trimmed:
+            return [line.strip() for line in trimmed.splitlines() if line.strip()]
+        if "," in trimmed:
+            return [part.strip() for part in trimmed.split(",") if part.strip()]
+        return [trimmed]
+    return []
+
+
+def _infer_coding_agent_capability_defaults(
+    resolved_config: dict[str, Any],
+    agent_config: dict[str, Any],
+) -> tuple[list[str], str | None]:
+    agent_profile_ref = (
+        resolved_config.get("agentProfileRef")
+        if isinstance(resolved_config.get("agentProfileRef"), dict)
+        else {}
+    )
+    template_id = str(agent_profile_ref.get("id") or "").strip()
+    template_slug = str(agent_profile_ref.get("slug") or "").strip().lower()
+    agent_name = str(agent_config.get("name") or "").strip().lower()
+    if (
+        template_id == "tpl_coding_agent"
+        or template_slug == "coding-agent"
+        or "coding agent" in agent_name
+    ):
+        return (["git", "bash"], "node-pnpm")
+    return ([], None)
+
+
+def _resolve_workspace_capability_requirements(
+    resolved_config: dict[str, Any],
+    agent_config: dict[str, Any],
+) -> tuple[list[str], str | None, list[str]]:
+    required_capabilities = _coerce_string_list(
+        resolved_config.get("requiredCapabilities")
+    )
+    if not required_capabilities:
+        required_capabilities = _coerce_string_list(
+            agent_config.get("requiredCapabilities")
+        )
+    preferred_execution_profile = (
+        str(
+            resolved_config.get("preferredExecutionProfile")
+            or agent_config.get("preferredExecutionProfile")
+            or ""
+        ).strip()
+        or None
+    )
+    if not required_capabilities and not preferred_execution_profile:
+        inferred_required, inferred_profile = _infer_coding_agent_capability_defaults(
+            resolved_config,
+            agent_config,
+        )
+        required_capabilities = inferred_required
+        preferred_execution_profile = inferred_profile
+    verify_commands = _coerce_string_list(resolved_config.get("verifyCommands"))
+    return required_capabilities, preferred_execution_profile, verify_commands
 
 
 def _is_native_child_workflow_enabled(
@@ -915,6 +1035,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         i,
         completed_since_checkpoint,
     ) = _restore_runtime_state(input_data, trigger_data)
+    _seed_trigger_outputs(node_outputs, nodes, trigger_data)
     continue_as_new_count = _safe_int(
         (input_data.get("_runtime") or {}).get("continueAsNewCount"),
         0,
@@ -2257,6 +2378,86 @@ def process_agent_child_workflow(
             or f"openshell-lg-{normalized_suffix}"
         )[:63]
 
+    workspace_ref = str(resolved_config.get("workspaceRef") or "").strip() or None
+    required_capabilities, preferred_execution_profile, verify_commands = (
+        _resolve_workspace_capability_requirements(
+            resolved_config,
+            agent_config,
+        )
+    )
+    should_validate_workspace_capabilities = (
+        workspace_ref is not None
+        and run_mode != "plan_mode"
+        and (
+            bool(required_capabilities)
+            or bool(preferred_execution_profile)
+            or bool(verify_commands)
+        )
+    )
+    if should_validate_workspace_capabilities:
+        from activities.call_agent_service import validate_workspace_capabilities
+
+        capability_validation = yield ctx.call_activity(
+            validate_workspace_capabilities,
+            input={
+                "workspaceRef": workspace_ref,
+                "requiredCapabilities": required_capabilities,
+                "preferredExecutionProfile": preferred_execution_profile,
+                "verifyCommands": verify_commands,
+                "parentExecutionId": ctx.instance_id,
+                "executionId": tracked_execution_id,
+                "nodeId": node_id,
+                "nodeName": node.get("label") or node_id,
+                "_otel": otel_ctx,
+            },
+        )
+        if (
+            not isinstance(capability_validation, dict)
+            or not capability_validation.get("success", False)
+        ):
+            failure_payload = (
+                capability_validation
+                if isinstance(capability_validation, dict)
+                else {"success": False, "error": "Workspace capability validation failed"}
+            )
+            missing_capabilities = _coerce_string_list(
+                failure_payload.get("missingCapabilities")
+            )
+            required_capability_list = _coerce_string_list(
+                failure_payload.get("requiredCapabilities")
+            )
+            preferred_label = (
+                str(failure_payload.get("preferredExecutionProfile") or "").strip()
+                or preferred_execution_profile
+                or "default"
+            )
+            error_message = (
+                f"Workspace execution profile {preferred_label} is missing capabilities: "
+                f"{', '.join(missing_capabilities)}"
+                if missing_capabilities
+                else str(failure_payload.get("error") or "Workspace capability validation failed")
+            )
+            return {
+                "success": False,
+                "error": error_message,
+                "stage": "workspace_capability_validation",
+                "requiredCapabilities": required_capability_list or required_capabilities,
+                "missingCapabilities": missing_capabilities,
+                "preferredExecutionProfile": preferred_label,
+                "workspaceProfile": failure_payload.get("workspaceProfile"),
+                "result": failure_payload,
+            }
+        activity_input["requiredCapabilities"] = (
+            capability_validation.get("requiredCapabilities") or required_capabilities
+        )
+        activity_input["preferredExecutionProfile"] = (
+            capability_validation.get("preferredExecutionProfile")
+            or preferred_execution_profile
+        )
+        activity_input["workspaceProfile"] = capability_validation.get(
+            "workspaceProfile"
+        )
+
     fetched_plan_artifact: dict[str, Any] | None = None
     if (is_dapr_agent or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
         from activities.persist_plan_artifact import fetch_plan_artifact
@@ -3012,6 +3213,16 @@ def process_agent_child_workflow(
             "_otel": otel_ctx,
             "traceId": _trace_id_from_otel_context(otel_ctx),
         }
+        if activity_input.get("requiredCapabilities") is not None:
+            child_input["requiredCapabilities"] = activity_input.get(
+                "requiredCapabilities"
+            )
+        if activity_input.get("preferredExecutionProfile") is not None:
+            child_input["preferredExecutionProfile"] = activity_input.get(
+                "preferredExecutionProfile"
+            )
+        if activity_input.get("workspaceProfile") is not None:
+            child_input["workspaceProfile"] = activity_input.get("workspaceProfile")
         if is_ms_agent:
             child_input["workflowTemplateId"] = (
                 resolved_config.get("workflowTemplateId") or "travel-planner"

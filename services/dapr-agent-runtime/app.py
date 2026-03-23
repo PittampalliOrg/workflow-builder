@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import threading
@@ -499,6 +500,13 @@ class WorkspaceCleanupRequest(BaseModel):
     workspaceRef: str | None = None
 
 
+class WorkspaceCapabilityValidationRequest(BaseModel):
+    workspaceRef: str = Field(min_length=1)
+    requiredCapabilities: list[str] | str | None = None
+    preferredExecutionProfile: str | None = None
+    verifyCommands: list[str] | str | None = None
+
+
 class DaprAgentRunRequest(BaseModel):
     prompt: str = Field(min_length=1)
     mode: str | None = None
@@ -544,6 +552,9 @@ class DaprAgentRunRequest(BaseModel):
     parentExecutionId: str | None = None
     artifactRef: str | None = None
     planJson: dict[str, Any] | list[dict[str, Any]] | None = None
+    requiredCapabilities: list[str] | str | None = None
+    preferredExecutionProfile: str | None = None
+    workspaceProfile: dict[str, Any] | None = None
 
 
 class ApproveRequest(BaseModel):
@@ -584,6 +595,10 @@ class WorkspaceSession:
     repository_owner: str | None = None
     repository_repo: str | None = None
     repository_branch: str | None = None
+    available_capabilities: list[str] = field(default_factory=list)
+    required_capabilities: list[str] = field(default_factory=list)
+    preferred_execution_profile: str | None = None
+    repository_signals: dict[str, Any] = field(default_factory=dict)
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -596,6 +611,10 @@ class WorkspaceSession:
             "repositoryOwner": self.repository_owner,
             "repositoryRepo": self.repository_repo,
             "repositoryBranch": self.repository_branch,
+            "availableCapabilities": list(self.available_capabilities),
+            "requiredCapabilities": list(self.required_capabilities),
+            "preferredExecutionProfile": self.preferred_execution_profile,
+            "repositorySignals": dict(self.repository_signals),
         }
 
     @classmethod
@@ -612,7 +631,101 @@ class WorkspaceSession:
             repository_owner=str(record.get("repositoryOwner") or "").strip() or None,
             repository_repo=str(record.get("repositoryRepo") or "").strip() or None,
             repository_branch=str(record.get("repositoryBranch") or "").strip() or None,
+            available_capabilities=[
+                str(item).strip().lower()
+                for item in (record.get("availableCapabilities") or [])
+                if str(item).strip()
+            ],
+            required_capabilities=[
+                str(item).strip().lower()
+                for item in (record.get("requiredCapabilities") or [])
+                if str(item).strip()
+            ],
+            preferred_execution_profile=(
+                str(record.get("preferredExecutionProfile") or "").strip() or None
+            ),
+            repository_signals=(
+                dict(record.get("repositorySignals"))
+                if isinstance(record.get("repositorySignals"), dict)
+                else {}
+            ),
         )
+
+
+def _build_workspace_profile(session: WorkspaceSession) -> dict[str, Any]:
+    execution_profile = _resolve_execution_profile(
+        session.preferred_execution_profile,
+        session.repository_signals,
+    )
+    return {
+        "workspaceRef": session.workspace_ref,
+        "executionId": session.execution_id,
+        "rootPath": str(session.root_path),
+        "workingDirectory": str(session.working_directory or session.root_path),
+        "backend": "local",
+        "availableCapabilities": list(session.available_capabilities),
+        "requiredCapabilities": list(session.required_capabilities),
+        "preferredExecutionProfile": session.preferred_execution_profile,
+        "executionProfile": execution_profile,
+        "repositorySignals": dict(session.repository_signals),
+    }
+
+
+def _validate_workspace_capabilities(
+    session: WorkspaceSession,
+    *,
+    required_capabilities: list[str] | None = None,
+    preferred_execution_profile: str | None = None,
+    verify_commands: list[str] | None = None,
+) -> dict[str, Any]:
+    session.available_capabilities = _detect_available_capabilities()
+    if session.working_directory and Path(session.working_directory).exists():
+        session.repository_signals = _detect_repository_signals(
+            Path(session.working_directory)
+        )
+    execution_profile = _resolve_execution_profile(
+        preferred_execution_profile or session.preferred_execution_profile,
+        session.repository_signals,
+    )
+    inferred_required = _required_capabilities_for_profile(
+        execution_profile,
+        session.repository_signals,
+    )
+    command_required = _infer_capabilities_from_commands(verify_commands or [])
+    normalized_required = sorted(
+        {
+            *session.required_capabilities,
+            *(required_capabilities or []),
+            *inferred_required,
+            *command_required,
+        }
+    )
+    session.required_capabilities = normalized_required
+    session.preferred_execution_profile = (
+        str(preferred_execution_profile).strip()
+        if isinstance(preferred_execution_profile, str)
+        and str(preferred_execution_profile).strip()
+        else session.preferred_execution_profile
+    )
+    missing_capabilities = [
+        capability
+        for capability in normalized_required
+        if capability not in session.available_capabilities
+    ]
+    _persist_workspace_session(session)
+    workspace_profile = _build_workspace_profile(session)
+    return {
+        "success": len(missing_capabilities) == 0,
+        "workspaceRef": session.workspace_ref,
+        "executionId": session.execution_id,
+        "workspaceProfile": workspace_profile,
+        "availableCapabilities": list(session.available_capabilities),
+        "requiredCapabilities": normalized_required,
+        "missingCapabilities": missing_capabilities,
+        "preferredExecutionProfile": session.preferred_execution_profile,
+        "executionProfile": workspace_profile["executionProfile"],
+        "repositorySignals": dict(session.repository_signals),
+    }
 
 
 @dataclass
@@ -644,6 +757,9 @@ class AgentRunContext:
     trace_id: str | None = None
     artifact_ref: str | None = None
     verify_commands: list[str] | None = None
+    required_capabilities: list[str] = field(default_factory=list)
+    preferred_execution_profile: str | None = None
+    workspace_profile: dict[str, Any] | None = None
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -674,6 +790,9 @@ class AgentRunContext:
             "traceId": self.trace_id,
             "artifactRef": self.artifact_ref,
             "verifyCommands": list(self.verify_commands or []),
+            "requiredCapabilities": list(self.required_capabilities),
+            "preferredExecutionProfile": self.preferred_execution_profile,
+            "workspaceProfile": dict(self.workspace_profile or {}),
         }
 
     @classmethod
@@ -722,6 +841,19 @@ class AgentRunContext:
                 if str(command).strip()
             ]
             or None,
+            required_capabilities=[
+                str(capability).strip().lower()
+                for capability in (record.get("requiredCapabilities") or [])
+                if str(capability).strip()
+            ],
+            preferred_execution_profile=(
+                str(record.get("preferredExecutionProfile") or "").strip() or None
+            ),
+            workspace_profile=(
+                dict(record.get("workspaceProfile"))
+                if isinstance(record.get("workspaceProfile"), dict)
+                else None
+            ),
         )
 
 
@@ -1192,9 +1324,175 @@ def _is_feature_execution_mode(mode: str) -> bool:
 
 
 def _parse_verify_commands(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
     if not isinstance(value, str):
         return []
-    return [line.strip() for line in value.splitlines() if line.strip()]
+    trimmed = value.strip()
+    if not trimmed:
+        return []
+    try:
+        parsed = json.loads(trimmed)
+        if isinstance(parsed, list):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    except json.JSONDecodeError:
+        pass
+    return [line.strip() for line in trimmed.splitlines() if line.strip()]
+
+
+KNOWN_WORKSPACE_CAPABILITIES = {
+    "git": ("git",),
+    "bash": ("bash", "sh"),
+    "node": ("node",),
+    "pnpm": ("pnpm",),
+    "npm": ("npm",),
+    "python": ("python3", "python"),
+    "uv": ("uv",),
+}
+
+EXECUTION_PROFILE_CAPABILITIES = {
+    "base": ["git", "bash"],
+    "node-pnpm": ["git", "bash", "node", "pnpm"],
+    "node-npm": ["git", "bash", "node", "npm"],
+    "python": ["git", "bash", "python"],
+    "python-uv": ["git", "bash", "python", "uv"],
+}
+
+
+def _normalize_capability_list(value: object) -> list[str]:
+    items: list[str] = []
+    if isinstance(value, list):
+        items = [str(item).strip().lower() for item in value]
+    elif isinstance(value, str):
+        trimmed = value.strip()
+        if trimmed:
+            try:
+                parsed = json.loads(trimmed)
+                if isinstance(parsed, list):
+                    items = [str(item).strip().lower() for item in parsed]
+                else:
+                    items = [part.strip().lower() for part in trimmed.split(",")]
+            except json.JSONDecodeError:
+                items = [part.strip().lower() for part in trimmed.split(",")]
+    return sorted({item for item in items if item})
+
+
+def _detect_available_capabilities() -> list[str]:
+    available = {
+        capability
+        for capability, binaries in KNOWN_WORKSPACE_CAPABILITIES.items()
+        if any(shutil.which(binary) for binary in binaries)
+    }
+    return sorted(available)
+
+
+def _detect_repository_signals(root: Path) -> dict[str, Any]:
+    package_json_path = root / "package.json"
+    pnpm_lock_path = root / "pnpm-lock.yaml"
+    package_lock_path = root / "package-lock.json"
+    pyproject_path = root / "pyproject.toml"
+    uv_lock_path = root / "uv.lock"
+
+    package_manager: str | None = None
+    if pnpm_lock_path.exists():
+        package_manager = "pnpm"
+    elif package_lock_path.exists():
+        package_manager = "npm"
+
+    if package_json_path.exists():
+        try:
+            package_json = json.loads(package_json_path.read_text(encoding="utf-8"))
+            package_manager_value = str(package_json.get("packageManager") or "").strip()
+            if package_manager_value.startswith("pnpm@"):
+                package_manager = "pnpm"
+            elif package_manager_value.startswith("npm@"):
+                package_manager = "npm"
+        except Exception:
+            pass
+
+    runtime_family = "generic"
+    if uv_lock_path.exists():
+        runtime_family = "python"
+        package_manager = package_manager or "uv"
+    elif pyproject_path.exists():
+        runtime_family = "python"
+    elif package_json_path.exists():
+        runtime_family = "node"
+
+    return {
+        "runtimeFamily": runtime_family,
+        "packageManager": package_manager,
+        "hasPackageJson": package_json_path.exists(),
+        "hasPyprojectToml": pyproject_path.exists(),
+        "hasUvLock": uv_lock_path.exists(),
+        "hasPnpmLock": pnpm_lock_path.exists(),
+        "hasPackageLock": package_lock_path.exists(),
+    }
+
+
+def _resolve_execution_profile(
+    preferred_profile: str | None,
+    repository_signals: dict[str, Any] | None,
+) -> str:
+    preferred = str(preferred_profile or "").strip().lower()
+    if preferred:
+        return preferred
+    signals = repository_signals or {}
+    package_manager = str(signals.get("packageManager") or "").strip().lower()
+    runtime_family = str(signals.get("runtimeFamily") or "").strip().lower()
+    if package_manager == "pnpm":
+        return "node-pnpm"
+    if package_manager == "npm":
+        return "node-npm"
+    if package_manager == "uv":
+        return "python-uv"
+    if runtime_family == "python":
+        return "python"
+    return "base"
+
+
+def _required_capabilities_for_profile(
+    execution_profile: str,
+    repository_signals: dict[str, Any] | None,
+) -> list[str]:
+    profile_caps = list(EXECUTION_PROFILE_CAPABILITIES.get(execution_profile, []))
+    if not profile_caps:
+        return []
+    signals = repository_signals or {}
+    package_manager = str(signals.get("packageManager") or "").strip().lower()
+    if execution_profile == "node-pnpm" and package_manager != "pnpm":
+        return ["git", "bash", "node"] if signals.get("hasPackageJson") else ["git", "bash"]
+    if execution_profile == "node-npm" and package_manager != "npm":
+        return ["git", "bash", "node"] if signals.get("hasPackageJson") else ["git", "bash"]
+    if execution_profile == "python-uv" and package_manager != "uv":
+        return ["git", "bash", "python"] if signals.get("hasPyprojectToml") else ["git", "bash"]
+    return profile_caps
+
+
+def _infer_capabilities_from_commands(commands: list[str]) -> list[str]:
+    inferred: set[str] = set()
+    for command in commands:
+        if not command.strip():
+            continue
+        try:
+            first = shlex.split(command)[0].strip().lower()
+        except Exception:
+            first = command.strip().split()[0].strip().lower()
+        if first == "pnpm":
+            inferred.update({"node", "pnpm"})
+        elif first in {"npm", "npx"}:
+            inferred.update({"node", "npm"})
+        elif first == "node":
+            inferred.add("node")
+        elif first in {"python", "python3"}:
+            inferred.add("python")
+        elif first == "uv":
+            inferred.update({"python", "uv"})
+        elif first == "git":
+            inferred.add("git")
+        elif first in {"bash", "sh"}:
+            inferred.add("bash")
+    return sorted(inferred)
 
 
 def _progress_phase_for_mode(mode: str, *, step: str = "active") -> str:
@@ -3722,6 +4020,16 @@ def _build_run_context(
     sandbox_repo_path = str(request.sandboxRepoPath or "").strip() or None
     if tool_backend == "openshell" and not sandbox_repo_path:
         sandbox_repo_path = "/sandbox/repo"
+    required_capabilities = _normalize_capability_list(request.requiredCapabilities)
+    workspace_profile = (
+        dict(request.workspaceProfile)
+        if isinstance(request.workspaceProfile, dict)
+        else (
+            _build_workspace_profile(workspace_session)
+            if workspace_session is not None
+            else None
+        )
+    )
     return AgentRunContext(
         instance_id=instance_id,
         mode=normalized_mode,
@@ -3752,6 +4060,11 @@ def _build_run_context(
         trace_id=trace_id,
         artifact_ref=artifact_ref,
         verify_commands=_parse_verify_commands(request.verifyCommands) or None,
+        required_capabilities=required_capabilities,
+        preferred_execution_profile=(
+            str(request.preferredExecutionProfile or "").strip() or None
+        ),
+        workspace_profile=workspace_profile,
     )
 
 
@@ -4504,15 +4817,11 @@ def workspace_profile(request: WorkspaceProfileRequest) -> dict[str, Any]:
         root_path=root_path,
         working_directory=root_path,
         enabled_tools=[str(item) for item in enabled_tools],
+        available_capabilities=_detect_available_capabilities(),
+        repository_signals=_detect_repository_signals(root_path),
     )
     _persist_workspace_session(session)
-    return {
-        "workspaceRef": workspace_ref,
-        "executionId": request.executionId,
-        "rootPath": str(root_path),
-        "backend": "local",
-        "workingDirectory": str(root_path),
-    }
+    return _build_workspace_profile(session)
 
 
 @app.post("/api/workspaces/clone")
@@ -4561,6 +4870,7 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
     session.repository_repo = request.repositoryRepo
     session.repository_branch = request.repositoryBranch
     session.working_directory = clone_path.resolve()
+    session.repository_signals = _detect_repository_signals(session.working_directory)
     _persist_workspace_session(session)
     return {
         "clonePath": str(clone_path),
@@ -4569,8 +4879,26 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
         "commitHash": commit_hash,
         "fileCount": file_count,
         "workingDirectory": str(session.working_directory),
+        "workspaceProfile": _build_workspace_profile(session),
         **summarize_command_changes(clone_path),
     }
+
+
+@app.post("/api/workspaces/capabilities/validate")
+def workspace_capabilities_validate(
+    request: WorkspaceCapabilityValidationRequest,
+) -> dict[str, Any]:
+    session = _workspace_from_ref(request.workspaceRef)
+    return _validate_workspace_capabilities(
+        session,
+        required_capabilities=_normalize_capability_list(
+            request.requiredCapabilities
+        ),
+        preferred_execution_profile=(
+            str(request.preferredExecutionProfile or "").strip() or None
+        ),
+        verify_commands=_parse_verify_commands(request.verifyCommands),
+    )
 
 
 @app.post("/api/workspaces/command")
@@ -5242,6 +5570,14 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         artifactRef=str(request.input.get("artifactRef") or "").strip() or None,
         planJson=request.input.get("planJson")
         if isinstance(request.input.get("planJson"), dict)
+        else None,
+        requiredCapabilities=request.input.get("requiredCapabilities"),
+        preferredExecutionProfile=(
+            str(request.input.get("preferredExecutionProfile") or "").strip()
+            or None
+        ),
+        workspaceProfile=request.input.get("workspaceProfile")
+        if isinstance(request.input.get("workspaceProfile"), dict)
         else None,
         openAIApiKey=_extract_openai_api_key(request.credentials),
     )

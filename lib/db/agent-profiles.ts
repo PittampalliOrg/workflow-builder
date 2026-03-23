@@ -46,6 +46,8 @@ type AgentProfileMemoryConfig = {
 
 type AgentProfileCapabilityConfig = {
 	agentType?: string;
+	requiredCapabilities?: string[];
+	preferredExecutionProfile?: string;
 };
 
 type AgentProfileInteractionConfig = {
@@ -66,6 +68,8 @@ export type AgentProfileSnapshot = {
 	timeoutMinutes: number;
 	defaultOptions: Record<string, unknown> | null;
 	memoryConfig: Record<string, unknown> | null;
+	requiredCapabilities: string[];
+	preferredExecutionProfile: string | null;
 };
 
 export type ResolvedAgentProfile = {
@@ -138,6 +142,35 @@ function coerceWarnings(input: unknown): ProfileCompatibilityWarning[] {
 		});
 	}
 	return warnings;
+}
+
+function normalizeCapabilities(input: unknown): string[] {
+	if (!Array.isArray(input)) return [];
+	return [
+		...new Set(
+			input
+				.map((value) =>
+					String(value || "")
+						.trim()
+						.toLowerCase(),
+				)
+				.filter(Boolean),
+		),
+	];
+}
+
+function defaultRequiredCapabilitiesForAgentType(agentType: string): string[] {
+	if (agentType.trim().toLowerCase() === "code-assistant") {
+		return ["git", "bash"];
+	}
+	return [];
+}
+
+function defaultExecutionProfileForAgentType(agentType: string): string | null {
+	if (agentType.trim().toLowerCase() === "code-assistant") {
+		return "node-pnpm";
+	}
+	return null;
 }
 
 function coerceObject(input: unknown): Record<string, unknown> {
@@ -373,7 +406,22 @@ function buildSnapshot(params: {
 			memoryCfg.memoryConfig && typeof memoryCfg.memoryConfig === "object"
 				? memoryCfg.memoryConfig
 				: null,
+		requiredCapabilities: [],
+		preferredExecutionProfile: null,
 	};
+
+	const normalizedRequiredCapabilities = normalizeCapabilities(
+		capabilityCfg.requiredCapabilities,
+	);
+	snapshot.requiredCapabilities =
+		normalizedRequiredCapabilities.length > 0
+			? normalizedRequiredCapabilities
+			: defaultRequiredCapabilitiesForAgentType(snapshot.agentType);
+	snapshot.preferredExecutionProfile =
+		typeof capabilityCfg.preferredExecutionProfile === "string" &&
+		capabilityCfg.preferredExecutionProfile.trim()
+			? capabilityCfg.preferredExecutionProfile.trim()
+			: defaultExecutionProfileForAgentType(snapshot.agentType);
 
 	const warnings = [
 		...coerceWarnings(templateVersion.compatibility),

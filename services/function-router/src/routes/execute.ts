@@ -1025,6 +1025,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const loopPolicy = buildLoopPolicyInput(args);
 						const model = parseDurableModelInput(args);
 						const agentConfig = parseDurableAgentConfig(args);
+						const requiredCapabilities =
+							parseStringArrayInput(args.requiredCapabilities) ??
+							parseStringArrayInput(agentConfig?.requiredCapabilities);
+						const preferredExecutionProfile =
+							typeof args.preferredExecutionProfile === "string" &&
+							args.preferredExecutionProfile.trim()
+								? args.preferredExecutionProfile.trim()
+								: typeof agentConfig?.preferredExecutionProfile === "string" &&
+										agentConfig.preferredExecutionProfile.trim()
+									? agentConfig.preferredExecutionProfile.trim()
+									: undefined;
 						const runMode =
 							typeof args.mode === "string"
 								? args.mode.trim().toLowerCase()
@@ -1083,6 +1094,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 											args.executeAfterApproval === "true",
 								toolPolicy: args.toolPolicy,
 								tools: args.tools,
+								requiredCapabilities,
+								preferredExecutionProfile,
 								writePolicy: args.writePolicy,
 								shellPolicy: args.shellPolicy,
 								artifactRef: args.artifactRef,

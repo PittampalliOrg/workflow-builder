@@ -62,6 +62,7 @@ from activities.call_agent_service import (
     call_durable_plan,
     call_durable_execute_plan,
     call_durable_execute_plan_dag,
+    validate_workspace_capabilities,
     terminate_ms_agent_run,
     terminate_durable_agent_run,
     terminate_durable_runs_by_parent_execution,
@@ -79,7 +80,6 @@ from activities.fetch_child_workflow import fetch_child_workflow
 from activities.track_agent_run import (
     track_agent_run_running,
     track_agent_run_scheduled,
-    track_agent_run_running,
     track_agent_run_completed,
 )
 
@@ -440,10 +440,10 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_durable_plan)
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
+    wfr.register_activity(validate_workspace_capabilities)
     wfr.register_activity(terminate_ms_agent_run)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
-    wfr.register_activity(track_agent_run_running)
     wfr.register_activity(track_agent_run_scheduled)
     wfr.register_activity(track_agent_run_running)
     wfr.register_activity(track_agent_run_completed)
@@ -733,6 +733,7 @@ def _registered_activity_names() -> list[str]:
         call_durable_plan.__name__,
         call_durable_execute_plan.__name__,
         call_durable_execute_plan_dag.__name__,
+        validate_workspace_capabilities.__name__,
         terminate_ms_agent_run.__name__,
         terminate_durable_agent_run.__name__,
         cleanup_execution_workspaces.__name__,

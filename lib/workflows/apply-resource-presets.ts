@@ -218,8 +218,19 @@ export async function applyResourcePresetsToNodes(input: {
 				maxTurns: resolvedProfile.snapshot.maxTurns,
 				timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
 				tools: toolNames,
+				requiredCapabilities: resolvedProfile.snapshot.requiredCapabilities,
+				preferredExecutionProfile:
+					resolvedProfile.snapshot.preferredExecutionProfile,
 				...(configuration ? { configuration } : {}),
 			};
+			if (!config.requiredCapabilities) {
+				config.requiredCapabilities =
+					resolvedProfile.snapshot.requiredCapabilities;
+			}
+			if (!config.preferredExecutionProfile) {
+				config.preferredExecutionProfile =
+					resolvedProfile.snapshot.preferredExecutionProfile;
+			}
 		} else {
 			config.agentConfig = {
 				name: resolvedProfile.template.name,
@@ -228,6 +239,9 @@ export async function applyResourcePresetsToNodes(input: {
 				maxTurns: resolvedProfile.snapshot.maxTurns,
 				timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
 				tools: toolNames,
+				requiredCapabilities: resolvedProfile.snapshot.requiredCapabilities,
+				preferredExecutionProfile:
+					resolvedProfile.snapshot.preferredExecutionProfile,
 				...(configuration ? { configuration } : {}),
 			};
 			config.model = modelSpec;

@@ -1776,6 +1776,8 @@ export type AgentProfileSnapshotData = {
 	timeoutMinutes: number;
 	defaultOptions: Record<string, unknown> | null;
 	memoryConfig: Record<string, unknown> | null;
+	requiredCapabilities: string[];
+	preferredExecutionProfile: string | null;
 };
 
 export type AgentProfileListItemData = {

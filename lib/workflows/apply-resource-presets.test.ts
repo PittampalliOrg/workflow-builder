@@ -30,6 +30,8 @@ describe("applyResourcePresetsToNodes", () => {
 				model: { provider: "openai", name: "gpt-5.4" },
 				maxTurns: 42,
 				timeoutMinutes: 18,
+				requiredCapabilities: ["git", "bash"],
+				preferredExecutionProfile: "node-pnpm",
 				tools: [
 					{ type: "workspace", ref: "read" },
 					{ type: "workspace", ref: "write" },
@@ -83,7 +85,11 @@ describe("applyResourcePresetsToNodes", () => {
 			maxTurns: 42,
 			timeoutMinutes: 18,
 			tools: ["read", "write", "edit", "bash"],
+			requiredCapabilities: ["git", "bash"],
+			preferredExecutionProfile: "node-pnpm",
 		});
+		expect(config.requiredCapabilities).toEqual(["git", "bash"]);
+		expect(config.preferredExecutionProfile).toBe("node-pnpm");
 		expect(result.refs).toEqual([
 			{
 				nodeId: "node-1",
@@ -110,6 +116,8 @@ describe("applyResourcePresetsToNodes", () => {
 				model: { provider: "openai", name: "gpt-5.2-codex" },
 				maxTurns: 42,
 				timeoutMinutes: 18,
+				requiredCapabilities: ["git", "bash"],
+				preferredExecutionProfile: "node-pnpm",
 				tools: [{ type: "workspace", ref: "read" }],
 			},
 		});
@@ -144,6 +152,8 @@ describe("applyResourcePresetsToNodes", () => {
 			maxTurns: 42,
 			timeoutMinutes: 18,
 			tools: ["read"],
+			requiredCapabilities: ["git", "bash"],
+			preferredExecutionProfile: "node-pnpm",
 		});
 	});
 
@@ -188,6 +198,8 @@ describe("applyResourcePresetsToNodes", () => {
 				model: { provider: "openai", name: "gpt-5.4" },
 				maxTurns: 30,
 				timeoutMinutes: 25,
+				requiredCapabilities: ["git", "bash"],
+				preferredExecutionProfile: "node-pnpm",
 				tools: [
 					{ type: "workspace", ref: "read" },
 					{ type: "workspace", ref: "edit" },
@@ -230,7 +242,11 @@ describe("applyResourcePresetsToNodes", () => {
 			maxTurns: 30,
 			timeoutMinutes: 25,
 			tools: ["read", "edit", "bash"],
+			requiredCapabilities: ["git", "bash"],
+			preferredExecutionProfile: "node-pnpm",
 		});
+		expect(config.requiredCapabilities).toEqual(["git", "bash"]);
+		expect(config.preferredExecutionProfile).toBe("node-pnpm");
 		expect(result.refs).toEqual([
 			{
 				nodeId: "node-3",

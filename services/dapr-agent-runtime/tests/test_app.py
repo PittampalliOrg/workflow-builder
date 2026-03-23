@@ -15,9 +15,11 @@ from app import (
     ExecuteRequest,
     PROFILE_TOOL_GROUPS,
     TerminateRequest,
+    WorkspaceCapabilityValidationRequest,
     WorkspaceCleanupRequest,
     WorkspaceProfileRequest,
     WorkspaceSession,
+    _detect_repository_signals,
     _build_run_context,
     _build_result_payload,
     _build_task_prompt,
@@ -28,6 +30,7 @@ from app import (
     _publish_agent_events,
     _persist_run_context,
     _persist_workspace_session,
+    _validate_workspace_capabilities,
     _resolve_runner_workflow_client,
     _resolve_effective_tool_group,
     _resolve_run_engine,
@@ -36,6 +39,7 @@ from app import (
     execute_step,
     api_run_approve,
     runtime_introspect,
+    workspace_capabilities_validate,
     workspace_change_artifact,
     workspace_cleanup,
     workspace_execution_changes,
@@ -1688,6 +1692,129 @@ def test_workspace_cleanup_uses_persisted_execution_refs(tmp_path: Path, monkeyp
 
     assert response["cleanedWorkspaceRefs"] == [profile["workspaceRef"]]
     assert workspace_root.exists() is False
+
+
+def test_workspace_profile_returns_capability_metadata(tmp_path: Path, monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(
+        app,
+        "_detect_available_capabilities",
+        lambda: ["bash", "git", "node", "pnpm"],
+    )
+
+    profile = workspace_profile(
+        WorkspaceProfileRequest(
+            executionId="exec-capabilities",
+            rootPath=str(tmp_path / "exec-capabilities"),
+            enabledTools=["read", "bash"],
+        )
+    )
+
+    assert profile["availableCapabilities"] == ["bash", "git", "node", "pnpm"]
+    assert profile["executionProfile"] == "base"
+    assert profile["repositorySignals"]["runtimeFamily"] == "generic"
+
+
+def test_detect_repository_signals_prefers_pnpm_repo(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "package.json").write_text(
+        json.dumps({"name": "demo", "packageManager": "pnpm@9.0.0"}),
+        encoding="utf-8",
+    )
+    (repo_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'", encoding="utf-8")
+
+    signals = _detect_repository_signals(repo_root)
+
+    assert signals["runtimeFamily"] == "node"
+    assert signals["packageManager"] == "pnpm"
+    assert signals["hasPackageJson"] is True
+    assert signals["hasPnpmLock"] is True
+
+
+def test_workspace_capability_validation_requires_pnpm_for_pnpm_repo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(app, "_detect_available_capabilities", lambda: ["bash", "git", "node"])
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "package.json").write_text(
+        json.dumps({"name": "demo", "packageManager": "pnpm@9.0.0"}),
+        encoding="utf-8",
+    )
+    (repo_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'", encoding="utf-8")
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-validate",
+        execution_id="exec-validate",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["read", "bash"],
+        preferred_execution_profile="node-pnpm",
+    )
+    _persist_workspace_session(session)
+
+    result = workspace_capabilities_validate(
+        WorkspaceCapabilityValidationRequest(
+            workspaceRef="workspace-validate",
+            verifyCommands=["pnpm type-check"],
+        )
+    )
+
+    assert result["success"] is False
+    assert result["executionProfile"] == "node-pnpm"
+    assert result["missingCapabilities"] == ["pnpm"]
+    assert result["requiredCapabilities"] == ["bash", "git", "node", "pnpm"]
+
+
+def test_workspace_capability_validation_succeeds_when_required_tools_exist(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(
+        app,
+        "_detect_available_capabilities",
+        lambda: ["bash", "git", "node", "pnpm"],
+    )
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "package.json").write_text(
+        json.dumps({"name": "demo", "packageManager": "pnpm@9.0.0"}),
+        encoding="utf-8",
+    )
+    (repo_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'", encoding="utf-8")
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-validate-ok",
+        execution_id="exec-validate-ok",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["read", "bash"],
+        preferred_execution_profile="node-pnpm",
+    )
+
+    result = _validate_workspace_capabilities(
+        session,
+        verify_commands=["pnpm type-check"],
+    )
+
+    assert result["success"] is True
+    assert result["missingCapabilities"] == []
+    assert result["workspaceProfile"]["executionProfile"] == "node-pnpm"
 
 
 def test_workspace_tools_honor_explicit_workspace_root(tmp_path: Path) -> None:
