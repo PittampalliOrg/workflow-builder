@@ -247,6 +247,49 @@ function parseFiles(input: ChangeFileEntry[] | string): ChangeFileEntry[] {
 	return [];
 }
 
+function splitPatchLines(content: string | null | undefined): string[] {
+	if (!content) {
+		return [];
+	}
+	const normalized = content.replace(/\r\n/g, "\n");
+	const lines = normalized.split("\n");
+	if (lines.length > 0 && lines[lines.length - 1] === "") {
+		lines.pop();
+	}
+	return lines;
+}
+
+function buildUnifiedPatch(input: {
+	path: string;
+	oldPath?: string;
+	status: ChangeFileStatus;
+	oldContent: string | null;
+	newContent: string | null;
+}): string {
+	const oldPath = input.oldPath || input.path;
+	const oldLabel = input.status === "A" ? "/dev/null" : `a/${oldPath}`;
+	const newLabel = input.status === "D" ? "/dev/null" : `b/${input.path}`;
+	const oldLines = splitPatchLines(input.oldContent);
+	const newLines = splitPatchLines(input.newContent);
+
+	if (oldLines.length === 0 && newLines.length === 0) {
+		return "";
+	}
+
+	const body = [
+		...oldLines.map((line) => `-${line}`),
+		...newLines.map((line) => `+${line}`),
+	].join("\n");
+
+	return [
+		`diff --git a/${oldPath} b/${input.path}`,
+		`--- ${oldLabel}`,
+		`+++ ${newLabel}`,
+		`@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+		body,
+	].join("\n");
+}
+
 function mapSnapshotRow(
 	row: ChangeArtifactFileRow,
 ): ChangeArtifactFileSnapshot {
@@ -677,7 +720,13 @@ class WorkspaceChangeArtifactStore {
 		});
 
 		const patches = await Promise.all(
-			filtered.map((entry) => this.readPatchFromMetadata(entry)),
+			filtered.map(async (entry) => {
+				const patch = await this.readPatchFromMetadata(entry);
+				if (patch.trim()) {
+					return patch;
+				}
+				return await this.buildPatchFromSnapshots(entry);
+			}),
 		);
 
 		return {
@@ -864,6 +913,67 @@ class WorkspaceChangeArtifactStore {
 			);
 		}
 		return patch;
+	}
+
+	private async buildPatchFromSnapshots(
+		metadata: ChangeArtifactMetadata,
+	): Promise<string> {
+		if (!this.sql) {
+			return "";
+		}
+
+		const rows = await this.sql<ChangeArtifactFileRow[]>`
+			select
+				id,
+				change_set_id,
+				sequence,
+				path,
+				old_path,
+				status,
+				is_binary,
+				language,
+				old_storage_ref,
+				new_storage_ref,
+				old_compressed,
+				new_compressed,
+				old_bytes,
+				new_bytes,
+				created_at,
+				null as base_revision,
+				null as head_revision
+			from workspace_change_artifact_files
+			where change_set_id = ${metadata.changeSetId}
+			order by sequence asc, created_at asc
+		`;
+
+		const patches = await Promise.all(
+			rows.map(async (row) => {
+				if (row.is_binary) {
+					return "";
+				}
+				const oldContent = row.old_storage_ref
+					? await this.readStoredTextPayload(
+							row.old_storage_ref,
+							row.old_compressed,
+						)
+					: null;
+				const newContent = row.new_storage_ref
+					? await this.readStoredTextPayload(
+							row.new_storage_ref,
+							row.new_compressed,
+						)
+					: null;
+				return buildUnifiedPatch({
+					path: row.path,
+					oldPath: row.old_path || undefined,
+					status: row.status,
+					oldContent,
+					newContent,
+				});
+			}),
+		);
+
+		return patches.filter(Boolean).join("\n");
 	}
 
 	private prepareStoredTextPayload(content: string): {

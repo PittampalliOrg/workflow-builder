@@ -214,6 +214,13 @@ async function loadInternalWorkflowExecution(executionId: string) {
 	});
 }
 
+function isMissingRuntimeStateError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	return error.message.includes("Dapr orchestrator error (404):");
+}
+
 async function loadInternalWorkflowExecutionRuntime(
 	execution: NonNullable<
 		Awaited<ReturnType<typeof loadInternalWorkflowExecution>>
@@ -233,18 +240,24 @@ async function loadInternalWorkflowExecutionRuntime(
 			const orchestratorUrl =
 				execution.workflow.daprOrchestratorUrl ||
 				(await getGenericOrchestratorUrl());
-			[runtimeStatus, runtimeHistory] = await Promise.all([
-				genericOrchestratorClient.getWorkflowStatus(
-					orchestratorUrl,
-					execution.daprInstanceId,
-				),
-				includeHistory
-					? genericOrchestratorClient.getWorkflowHistory(
-							orchestratorUrl,
-							execution.daprInstanceId,
-						)
-					: Promise.resolve(null),
-			]);
+			runtimeStatus = await genericOrchestratorClient
+				.getWorkflowStatus(orchestratorUrl, execution.daprInstanceId)
+				.catch((error) => {
+					if (isMissingRuntimeStateError(error)) {
+						return null;
+					}
+					throw error;
+				});
+			runtimeHistory = includeHistory
+				? await genericOrchestratorClient
+						.getWorkflowHistory(orchestratorUrl, execution.daprInstanceId)
+						.catch((error) => {
+							if (isMissingRuntimeStateError(error)) {
+								return null;
+							}
+							throw error;
+						})
+				: null;
 		} catch (error) {
 			console.warn(
 				`[internal-workflows] Failed to load runtime for ${execution.id}:`,

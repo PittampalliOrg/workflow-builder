@@ -9,7 +9,7 @@
 #
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default durable OpenShell authoring loop
-#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add dapr-agent-runtime + ms-agent-workflow
+#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add dapr-agent-runtime
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on durable-agent + Next.js UI
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every in-repo workflow service
@@ -19,8 +19,8 @@
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     durable-agent, fn-activepieces, fn-system, mcp-gateway,
-#     dapr-agent-runtime, and ms-agent-workflow.
+#     durable-agent, fn-activepieces, mcp-gateway,
+#     and dapr-agent-runtime.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 
@@ -42,9 +42,6 @@ vars:
   AI_CHATBOT_SOURCE_PATH: "../../ai/main"
   AI_CHATBOT_PUBLIC_URL:
     default: "https://ai-chatbot-ryzen.tail286401.ts.net"
-  MS_AGENT_APP_NAME: ms-agent-workflow
-  MS_AGENT_LOCAL_PORT: "3011"
-  MS_AGENT_CONTAINER_PORT: "8081"
   DAPR_AGENT_APP_NAME: dapr-agent-runtime
   DAPR_AGENT_LOCAL_PORT: "3012"
   DAPR_AGENT_CONTAINER_PORT: "8082"
@@ -129,11 +126,6 @@ vars:
       image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
-  CURRENT_MS_AGENT_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${MS_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${MS_AGENT_APP_NAME}"
   CURRENT_AI_CHATBOT_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
@@ -144,8 +136,6 @@ vars:
       image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
       printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
-  MS_AGENT_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
   CURRENT_DAPR_AGENT_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${DAPR_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_APP_NAME}:latest")"
@@ -456,6 +446,10 @@ dev:
         echo "=== DevSpace Development Container (AI Chatbot) ==="
         echo "Using source tree: ${AI_CHATBOT_SOURCE_PATH}"
 
+        # Install Claude Code CLI globally (for Claude Code provider)
+        echo "Installing Claude Code CLI..."
+        npm install -g @anthropic-ai/claude-code --prefix /usr/local 2>/dev/null || echo "Claude CLI already installed"
+
         corepack enable
         corepack prepare pnpm@${PNPM_VERSION} --activate
 
@@ -605,94 +599,8 @@ dev:
         value: "true"
       - name: DAPR_WORKFLOW_ENABLED
         value: "true"
-  ms-agent-workflow:
-    namespace: ${APP_NAME}
-    labelSelector:
-      app: ms-agent-workflow
-    container: ${MS_AGENT_APP_NAME}
-    devImage: ${MS_AGENT_DEV_IMAGE_REPOSITORY}:latest
-    workingDir: /app
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "2"
-        memory: 2Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (MS Agent Workflow) ==="
-        cd /app
-
-        python -m venv .venv
-        . .venv/bin/activate
-        pip install --upgrade pip
-        pip install -e .
-
-        exec uvicorn app:app --host 0.0.0.0 --port ${MS_AGENT_CONTAINER_PORT}
-    sync:
-      - path: ./services/ms-agent-workflow/:/app
-        initialSync: mirrorLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-ms-agent-deps
-              command: sh
-              args:
-                - -lc
-                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
-              failOnError: false
-              onChange:
-                - pyproject.toml
-        excludePaths:
-          - .venv/
-          - __pycache__/
-          - .pytest_cache/
-          - "*.pyc"
-    patches:
-      - op: remove
-        path: spec.containers.name=${MS_AGENT_APP_NAME}.livenessProbe
-      - op: remove
-        path: spec.containers.name=${MS_AGENT_APP_NAME}.readinessProbe
-      - op: replace
-        path: spec.containers.name=${MS_AGENT_APP_NAME}.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
-    ports:
-      - port: "${MS_AGENT_LOCAL_PORT}:${MS_AGENT_CONTAINER_PORT}"
-    env:
-      - name: PYTHONUNBUFFERED
-        value: "1"
-      - name: PYTHONDONTWRITEBYTECODE
-        value: "1"
-      - name: OTEL_SERVICE_NAME
-        value: "${MS_AGENT_APP_NAME}"
-      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-        value: "http://otel-collector.observability.svc.cluster.local:4318"
-      - name: OTEL_RESOURCE_ATTRIBUTES
-        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
-      - name: DAPR_HTTP_PORT
-        value: "3500"
-      - name: DAPR_GRPC_PORT
-        value: "50001"
-
-    # Use the shared ryzen wrapper so ArgoCD reconciliation is paused for both
-    # the workflow-builder UI app and this DevSpace-managed replacement.
+      - name: INTERNAL_API_TOKEN
+        value: ${INTERNAL_API_TOKEN}
   dapr-agent-runtime:
     namespace: ${APP_NAME}
     labelSelector:
@@ -768,6 +676,10 @@ dev:
         value: "1"
       - name: PYTHONDONTWRITEBYTECODE
         value: "1"
+      - name: WORKFLOW_BUILDER_BASE_URL
+        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
+      - name: WORKFLOW_BUILDER_INTERNAL_API_TOKEN
+        value: ${INTERNAL_API_TOKEN}
       - name: OTEL_SERVICE_NAME
         value: "${DAPR_AGENT_APP_NAME}"
       - name: OTEL_EXPORTER_OTLP_ENDPOINT
@@ -1131,94 +1043,6 @@ dev:
       - name: NODE_ENV
         value: development
 
-  fn-system:
-    # Knative Service — container name in stacks/ manifest is "function"
-    namespace: ${APP_NAME}
-    labelSelector:
-      serving.knative.dev/service: fn-system
-    container: function
-    devImage: ${FN_SYSTEM_DEV_IMAGE_REPOSITORY}:latest
-    workingDir: /app
-    resources:
-      requests:
-        cpu: 250m
-        memory: 256Mi
-      limits:
-        cpu: "1"
-        memory: 1Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (fn-system) ==="
-        cd /app
-
-        corepack enable
-        corepack prepare pnpm@${PNPM_VERSION} --activate
-
-        echo "Checking dependencies..."
-        if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
-           [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
-          echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
-          md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
-        else
-          echo "Dependencies up to date (cached)"
-        fi
-
-        export PATH="/app/node_modules/.bin:$PATH"
-
-        echo "Starting fn-system dev server..."
-        exec tsx watch src/index.ts
-    sync:
-      - path: ./services/fn-system/:/app
-        initialSync: mirrorLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-fn-system-deps
-              command: sh
-              args:
-                - -lc
-                - cd /app && pnpm install --frozen-lockfile
-              failOnError: true
-              onChange:
-                - package.json
-                - pnpm-lock.yaml
-        excludePaths:
-          - node_modules/
-          - dist/
-          - coverage/
-          - .turbo/
-    patches:
-      - op: remove
-        path: spec.containers.name=function.livenessProbe
-      - op: remove
-        path: spec.containers.name=function.readinessProbe
-      - op: replace
-        path: spec.containers.name=function.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
-    ports:
-      - port: "${FN_SYSTEM_LOCAL_PORT}:${FN_SYSTEM_CONTAINER_PORT}"
-    # OTEL vars set in stacks/ Knative Service. Only override NODE_ENV.
-    env:
-      - name: NODE_ENV
-        value: development
-
   mcp-gateway:
     namespace: ${APP_NAME}
     labelSelector:
@@ -1308,6 +1132,20 @@ dev:
         value: development
 
 profiles:
+  - name: ai-chatbot-dev
+    description: >
+      AI Chatbot + Workflow Builder UI development.
+      Starts: workflow-builder, ai-chatbot, workflow-orchestrator, function-router.
+    patches:
+      - op: remove
+        path: dev.dapr-agent-runtime
+      - op: remove
+        path: dev.durable-agent
+      - op: remove
+        path: dev.fn-activepieces
+      - op: remove
+        path: dev.mcp-gateway
+
   - name: openshell-inner-loop
     description: >
       Default short inner loop for durable workflow authoring and review.
@@ -1317,15 +1155,11 @@ profiles:
       - op: remove
         path: dev.ai-chatbot
       - op: remove
-        path: dev.ms-agent-workflow
-      - op: remove
         path: dev.dapr-agent-runtime
       - op: remove
         path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
-      - op: remove
-        path: dev.fn-system
       - op: remove
         path: dev.mcp-gateway
 
@@ -1337,8 +1171,6 @@ profiles:
       - op: remove
         path: dev.ai-chatbot
       - op: remove
-        path: dev.ms-agent-workflow
-      - op: remove
         path: dev.dapr-agent-runtime
       - op: remove
         path: dev.workflow-orchestrator
@@ -1348,8 +1180,6 @@ profiles:
         path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
-      - op: remove
-        path: dev.fn-system
       - op: remove
         path: dev.mcp-gateway
 
@@ -1362,8 +1192,6 @@ profiles:
       - op: remove
         path: dev.ai-chatbot
       - op: remove
-        path: dev.ms-agent-workflow
-      - op: remove
         path: dev.dapr-agent-runtime
       - op: remove
         path: dev.workflow-orchestrator
@@ -1371,8 +1199,6 @@ profiles:
         path: dev.function-router
       - op: remove
         path: dev.fn-activepieces
-      - op: remove
-        path: dev.fn-system
       - op: remove
         path: dev.mcp-gateway
 
@@ -1391,27 +1217,21 @@ profiles:
     description: >
       Full function execution pipeline for testing action routing.
       Starts: workflow-builder, function-router, fn-activepieces, workflow-orchestrator.
-      fn-system excluded (Knative scale-to-zero, dynamic deployment names).
+      Knative fn-system is intentionally not part of the DevSpace inner loop.
     patches:
       - op: remove
         path: dev.ai-chatbot
       - op: remove
-        path: dev.ms-agent-workflow
-      - op: remove
         path: dev.dapr-agent-runtime
       - op: remove
         path: dev.durable-agent
-      - op: remove
-        path: dev.fn-system
       - op: remove
         path: dev.mcp-gateway
 
   - name: full-agent-stack
     description: >
       Every workflow-related service defined in this repo that has a Deployment in the cluster.
-      Excludes durable-agent (no Deployment yet) and fn-system (Knative scale-to-zero).
+      Excludes durable-agent (no Deployment yet).
     patches:
       - op: remove
         path: dev.durable-agent
-      - op: remove
-        path: dev.fn-system

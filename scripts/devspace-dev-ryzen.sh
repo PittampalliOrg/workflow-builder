@@ -12,6 +12,7 @@ DEFAULT_DEVSPACE_PROFILE="openshell-inner-loop"
 # Mapping: dev entry name → ArgoCD app name (only entries with ArgoCD apps)
 declare -A DEV_TO_ARGO=(
   [app]="workflow-builder"
+  [ai-chatbot]="ai-chatbot"
   [workflow-orchestrator]="workflow-orchestrator"
   [function-router]="function-router"
   [mcp-gateway]="mcp-gateway"
@@ -27,7 +28,6 @@ declare -A DEV_TO_REPLACEMENT=(
   [fn-activepieces]="fn-activepieces-devspace"
   [fn-system]="fn-system-devspace"
   [mcp-gateway]="mcp-gateway-devspace"
-  [ms-agent-workflow]="ms-agent-workflow-devspace"
   [dapr-agent-runtime]="dapr-agent-runtime-devspace"
   [ai-chatbot]="ai-chatbot-devspace"
 )
@@ -39,7 +39,6 @@ declare -A DEV_TO_PRODUCTION=(
   [function-router]="function-router"
   [fn-activepieces]="fn-activepieces"
   [mcp-gateway]="mcp-gateway"
-  [ms-agent-workflow]="ms-agent-workflow"
   [dapr-agent-runtime]="dapr-agent-runtime"
   [ai-chatbot]="ai-chatbot"
 )
@@ -49,42 +48,46 @@ declare -A DEV_TO_PRODUCTION=(
 resolve_active_dev_entries() {
   local profile="$1"
 
-  # All dev entry names defined in devspace.yaml
-  local all_entries
-  all_entries=$(cd "$PROJECT_ROOT" && grep -E '^\s{2}[a-z]' devspace.yaml | \
-    sed -n '/^dev:/,/^[a-z]/{ /^  [a-z]/s/^\s*\([a-z][a-z0-9_-]*\):.*/\1/p }')
-
-  if [[ -z "$all_entries" ]]; then
-    # Fallback: hardcoded list of all dev entries
-    all_entries="app ai-chatbot ms-agent-workflow dapr-agent-runtime workflow-orchestrator function-router durable-agent fn-activepieces fn-system mcp-gateway"
-  fi
-
-  # Find which entries the profile removes
-  local removed_entries
-  removed_entries=$(cd "$PROJECT_ROOT" && python3 -c "
-import yaml, sys
-with open('devspace.yaml') as f:
-    cfg = yaml.safe_load(f)
-for p in cfg.get('profiles', []):
-    if p['name'] == '$profile':
-        for patch in p.get('patches', []):
-            if patch.get('op') == 'remove' and patch.get('path', '').startswith('dev.'):
-                print(patch['path'].split('dev.', 1)[1])
-        break
-" 2>/dev/null || echo "")
-
-  # Return entries not in the removed set
-  for entry in $all_entries; do
-    if ! echo "$removed_entries" | grep -qx "$entry"; then
-      echo "$entry"
-    fi
-  done
+  cd "$PROJECT_ROOT"
+  devspace print --profile "$profile" 2>/dev/null | awk '
+    /^dev:$/ { in_dev=1; next }
+    in_dev && /^[^[:space:]]/ { exit }
+    in_dev && /^    [a-z][a-z0-9_-]*:$/ {
+      gsub(/^    /, "", $0)
+      gsub(/:$/, "", $0)
+      print
+    }
+  '
 }
 
 ACTIVE_ENTRIES=()
 ARGO_APPS=()
 DEVSPACE_REPLACEMENT_DEPLOYMENTS=()
 PRODUCTION_DEPLOYMENTS=()
+
+has_healthy_replacement_deployment() {
+  local deployment="$1"
+  local available
+
+  available="$(kubectl get deployment "$deployment" \
+    --namespace "$WORKLOAD_NAMESPACE" \
+    -o jsonpath='{.status.availableReplicas}' 2>/dev/null || true)"
+
+  [[ -n "$available" && "$available" != "0" ]]
+}
+
+session_resources_already_running() {
+  local checked_any=false
+
+  for deployment in "${DEVSPACE_REPLACEMENT_DEPLOYMENTS[@]}"; do
+    checked_any=true
+    if ! has_healthy_replacement_deployment "$deployment"; then
+      return 1
+    fi
+  done
+
+  $checked_any
+}
 
 populate_arrays() {
   local profile="$1"
@@ -177,6 +180,13 @@ main() {
   printf '==> Profile: %s\n' "$profile"
   printf '==> Active dev entries: %s\n' "${ACTIVE_ENTRIES[*]}"
 
+  if session_resources_already_running; then
+    printf '==> Replacement deployments already running for %s; assuming the DevSpace session is active\n' "$profile"
+    printf '==> Use `devspace enter`, `devspace attach`, `devspace logs`, or `devspace sync` against the existing session\n'
+    trap - EXIT
+    exit 0
+  fi
+
   for app in "${ARGO_APPS[@]}"; do
     printf '==> Pausing ArgoCD reconciliation for %s\n' "$app"
     kubectl annotate application "$app" \
@@ -187,7 +197,23 @@ main() {
 
   printf '==> Starting DevSpace session\n'
   cd "$PROJECT_ROOT"
-  devspace dev "${devspace_args[@]}"
+  local devspace_log
+  devspace_log="$(mktemp)"
+
+  set +e
+  devspace dev "${devspace_args[@]}" 2>&1 | tee "$devspace_log"
+  local devspace_status=${PIPESTATUS[0]}
+  set -e
+
+  if [[ $devspace_status -ne 0 ]] && grep -q "there is another DevSpace session for the project" "$devspace_log"; then
+    rm -f "$devspace_log"
+    trap - EXIT
+    printf '==> Existing DevSpace session already running for %s; leaving it untouched\n' "$PROJECT_ROOT"
+    exit 0
+  fi
+
+  rm -f "$devspace_log"
+  return "$devspace_status"
 }
 
 main "$@"

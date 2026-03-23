@@ -184,6 +184,7 @@ let scorers: ScorerLike[] = [];
 let reconcileLoopStarted = false;
 let reconcilingRuns = false;
 let startupInitRetryTimer: NodeJS.Timeout | null = null;
+let sharedSandboxStarted = false;
 
 const WORKFLOW_STATUS_RUNNING = 0;
 const WORKFLOW_STATUS_COMPLETED = 1;
@@ -1032,8 +1033,17 @@ async function initAgent(): Promise<void> {
 			// Register built-in model providers (openai)
 			registerBuiltinProviders();
 
-			// Start sandbox
-			await sandbox.start();
+			// The shared sandbox is only required for direct non-workspace command
+			// execution paths. Keep the durable artifact and workflow APIs
+			// available even if SandboxClaim provisioning is temporarily unhealthy.
+			try {
+				await ensureSharedSandboxStarted();
+			} catch (error) {
+				console.warn(
+					"[durable-agent] Shared sandbox unavailable during startup; continuing with lazy initialization:",
+					error instanceof Error ? error.message : String(error),
+				);
+			}
 
 			// Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
 			const modelSpecRaw = process.env.MASTRA_MODEL_SPEC;
@@ -1211,6 +1221,7 @@ Be concise and direct. Use the appropriate tool for each task.`,
 			} catch {
 				/* best effort */
 			}
+			sharedSandboxStarted = false;
 			throw err;
 		} finally {
 			initializingPromise = null;
@@ -1251,6 +1262,14 @@ function scheduleStartupInitRetry(): void {
 		})();
 	}, STARTUP_INIT_RETRY_MS);
 	startupInitRetryTimer.unref();
+}
+
+async function ensureSharedSandboxStarted(): Promise<void> {
+	if (sharedSandboxStarted) {
+		return;
+	}
+	await sandbox.start();
+	sharedSandboxStarted = true;
 }
 
 // ── File Change Extraction ────────────────────────────────────
@@ -3489,6 +3508,7 @@ app.post("/api/plan", async (req, res) => {
 							success: result.success,
 						};
 					}
+					await ensureSharedSandboxStarted();
 					const result = await sandbox.executeCommand("sh", ["-c", command], {
 						timeout: commandTimeoutMs,
 						cwd: cwd || undefined,
@@ -4811,6 +4831,7 @@ async function shutdown(signal: string) {
 		await workspaceSessions.destroyAll();
 		if (agent) await agent.stop();
 		await sandbox.destroy();
+		sharedSandboxStarted = false;
 	} catch (err) {
 		console.error("[durable-agent] Shutdown error:", err);
 	}
