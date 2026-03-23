@@ -165,10 +165,13 @@ def _build_minimal_plan(goal: str, plan_markdown: str) -> dict:
 def _build_openshell_command(input_data: dict) -> str:
     prompt = str(input_data.get("prompt") or "").strip()
     mode = str(input_data.get("mode") or "").strip().lower()
+    provider = str(input_data.get("provider") or "").strip().lower()
     model = str(input_data.get("model") or "").strip()
+    model_provider = ""
     if "/" in model:
-        model = model.split("/", 1)[1].strip()
-    cwd = str(input_data.get("cwd") or "").strip()
+        model_provider, model = [part.strip() for part in model.split("/", 1)]
+        model_provider = model_provider.lower()
+    cwd = str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
     if mode == "plan_mode":
         prompt = (
             f"{prompt}\n\n"
@@ -184,7 +187,12 @@ def _build_openshell_command(input_data: dict) -> str:
         "bypassPermissions",
         "--no-session-persistence",
     ]
-    if model:
+    normalized_provider = provider or model_provider
+    should_forward_model = bool(model) and (
+        model.startswith("claude")
+        or normalized_provider in {"anthropic", "claude"}
+    )
+    if should_forward_model:
         args.extend(["--model", model])
     command = " ".join(shlex.quote(part) for part in args)
     if cwd:
@@ -275,7 +283,7 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
     )
     otel = input_data.get("_otel") or {}
     attrs = {
-        "action.type": "dapr-agent/run",
+        "action.type": str(input_data.get("actionType") or "dapr-agent/run"),
         "workflow.instance_id": input_data.get("parentExecutionId") or "",
         "workflow.id": input_data.get("workflowId") or "",
         "node.id": input_data.get("nodeId") or "",
@@ -298,6 +306,11 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                     "profile": input_data.get("profile")
                     or input_data.get("mode")
                     or "implement",
+                    "engine": input_data.get("engine"),
+                    "threadId": input_data.get("threadId"),
+                    "planningThreadId": input_data.get("planningThreadId"),
+                    "executionThreadId": input_data.get("executionThreadId"),
+                    "plannerResume": input_data.get("plannerResume"),
                     "model": input_data.get("model"),
                     "maxTurns": input_data.get("maxTurns"),
                     "timeoutMinutes": input_data.get("timeoutMinutes", 30),
@@ -309,12 +322,26 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
                     "expectedOutput": input_data.get("expectedOutput"),
                     "verifyCommands": input_data.get("verifyCommands"),
                     "approvalMode": input_data.get("approvalMode"),
+                    "approvalTimeoutMinutes": input_data.get("approvalTimeoutMinutes"),
+                    "executeAfterApproval": input_data.get("executeAfterApproval"),
                     "toolPolicy": input_data.get("toolPolicy"),
+                    "toolBackend": input_data.get("toolBackend"),
                     "tools": input_data.get("tools"),
                     "writePolicy": input_data.get("writePolicy"),
                     "shellPolicy": input_data.get("shellPolicy"),
+                    "sandboxName": input_data.get("sandboxName"),
+                    "provider": input_data.get("provider"),
+                    "sandboxRepoPath": input_data.get("sandboxRepoPath"),
+                    "repositoryUrl": input_data.get("repositoryUrl"),
+                    "repositoryOwner": input_data.get("repositoryOwner"),
+                    "repositoryRepo": input_data.get("repositoryRepo"),
+                    "repositoryBranch": input_data.get("repositoryBranch"),
+                    "repositoryToken": input_data.get("repositoryToken"),
+                    "artifactRef": input_data.get("artifactRef"),
+                    "planJson": input_data.get("planJson"),
                     "executionId": input_data.get("executionId"),
                     "dbExecutionId": input_data.get("dbExecutionId"),
+                    "parentExecutionId": input_data.get("parentExecutionId"),
                     "waitForCompletion": True,
                 }
                 return _post_json_with_details(
@@ -338,7 +365,7 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
     )
     otel = input_data.get("_otel") or {}
     attrs = {
-        "action.type": "openshell/run",
+        "action.type": str(input_data.get("actionType") or "openshell/run"),
         "workflow.instance_id": input_data.get("parentExecutionId") or "",
         "workflow.db_execution_id": input_data.get("executionId") or "",
         "workflow.id": input_data.get("workflowId") or "",
@@ -383,7 +410,11 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "nodeName": input_data.get("nodeName"),
                 "sandboxName": sandbox_name,
                 "provider": provider,
+                "engine": input_data.get("engine"),
+                "profile": input_data.get("profile"),
+                "mode": input_data.get("mode"),
                 "model": input_data.get("model"),
+                "maxTurns": input_data.get("maxTurns"),
                 "keep": _as_bool(input_data.get("keepSandbox"), True),
                 "timeoutSeconds": timeout_minutes * 60,
                 "repoUrl": input_data.get("repoUrl"),
@@ -392,6 +423,17 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "sandboxRepoPath": input_data.get("sandboxRepoPath")
                 or input_data.get("cwd"),
                 "command": command,
+                "artifactRef": input_data.get("artifactRef"),
+                "planJson": input_data.get("planJson"),
+                "stopCondition": input_data.get("stopCondition"),
+                "verifyCommands": input_data.get("verifyCommands"),
+                "instructionsOverlay": input_data.get("instructionsOverlay"),
+                "toolPolicy": input_data.get("toolPolicy"),
+                "writePolicy": input_data.get("writePolicy"),
+                "shellPolicy": input_data.get("shellPolicy"),
+                "planningThreadId": input_data.get("planningThreadId"),
+                "executionThreadId": input_data.get("executionThreadId"),
+                "agentConfig": input_data.get("agentConfig"),
                 "traceId": trace_id,
                 "_otel": otel if isinstance(otel, dict) else {},
             }
@@ -432,6 +474,7 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "childAppId": OPENSHELL_AGENT_APP_ID,
                 "sandboxName": data.get("sandboxName") or sandbox_name,
                 "provider": data.get("provider") or provider,
+                "engine": data.get("engine") or input_data.get("engine"),
                 "traceId": resolved_trace_id,
                 "text": text,
                 "content": text,

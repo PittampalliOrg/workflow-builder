@@ -12,11 +12,13 @@ import urllib.request
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 import re
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from tools import (
@@ -41,6 +43,12 @@ from tools import (
     resolve_tool_group,
     summarize_command_changes,
     write_file,
+)
+from langgraph_engine import (
+    LANGGRAPH_ENGINE_NAME,
+    build_langgraph_capabilities,
+    is_langgraph_available,
+    run_langgraph_task,
 )
 
 try:
@@ -69,6 +77,10 @@ except ImportError:  # pragma: no cover
     class _StubWorkflowModule:
         WorkflowRuntime = _StubWorkflowRuntime
 
+        @staticmethod
+        def when_any(tasks: list[Any]) -> Any:
+            return tasks[0]
+
     class DaprWorkflowClient:  # type: ignore[no-redef]
         def schedule_new_workflow(self, workflow: Any, input: dict[str, Any] | None = None, instance_id: str | None = None):
             raise RuntimeError("Dapr workflow client unavailable")
@@ -77,6 +89,9 @@ except ImportError:  # pragma: no cover
             raise RuntimeError("Dapr workflow client unavailable")
 
         def terminate_workflow(self, *args, **kwargs):
+            return None
+
+        def raise_workflow_event(self, *args, **kwargs):
             return None
 
     wf = _StubWorkflowModule()
@@ -291,7 +306,16 @@ DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.4")
 SERVICE_VERSION = "0.1.0"
 AGENT_TOOL_GROUP = os.environ.get("DAPR_AGENT_TOOL_GROUP", "all")
 WORKSPACE_ROOT = Path(DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
+GITEA_INTERNAL_CLONE_BASE_URL = (
+    os.environ.get("GITEA_INTERNAL_CLONE_BASE_URL")
+    or "http://gitea-http.gitea.svc.cluster.local:3000"
+).strip().rstrip("/")
 WORKFLOW_NAME = os.environ.get("DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME", "daprAgentRunWorkflowV1")
+PLAN_ACTIVITY_NAME = os.environ.get("DAPR_AGENT_LANGGRAPH_PLAN_ACTIVITY", "langgraphPlanActivity")
+EXECUTE_ACTIVITY_NAME = os.environ.get(
+    "DAPR_AGENT_LANGGRAPH_EXECUTE_ACTIVITY",
+    "langgraphExecuteActivity",
+)
 ENABLE_DAPR_AGENTS_INSTRUMENTATION = (
     os.environ.get("ENABLE_DAPR_AGENTS_INSTRUMENTATION", "true").strip().lower()
     == "true"
@@ -331,6 +355,18 @@ DAPR_AGENT_RUNTIME_CONFIG_POLL_INTERVAL_SECONDS = max(
     5,
 )
 SERVICE_AGENT_NAME = os.environ.get("DAPR_AGENT_SERVICE_NAME", "dapr-coding-agent")
+LANGGRAPH_PROFILE_SET = {
+    value.strip().lower()
+    for value in os.environ.get(
+        "DAPR_AGENT_LANGGRAPH_PROFILES",
+        "feature-delivery,implement,repair,plan-only",
+    ).split(",")
+    if value.strip()
+}
+DEFAULT_APPROVAL_TIMEOUT_MINUTES = max(
+    int(os.environ.get("DAPR_AGENT_DEFAULT_APPROVAL_TIMEOUT_MINUTES", "60") or "60"),
+    1,
+)
 WORKFLOW_BUILDER_BASE_URL = (
     os.environ.get(
         "WORKFLOW_BUILDER_BASE_URL",
@@ -465,6 +501,12 @@ class WorkspaceCleanupRequest(BaseModel):
 class DaprAgentRunRequest(BaseModel):
     prompt: str = Field(min_length=1)
     mode: str | None = None
+    engine: str | None = None
+    toolBackend: str | None = None
+    threadId: str | None = None
+    planningThreadId: str | None = None
+    executionThreadId: str | None = None
+    plannerResume: dict[str, Any] | None = None
     profile: str = Field(default="implement")
     model: str | None = None
     waitForCompletion: bool = Field(default=False)
@@ -477,15 +519,38 @@ class DaprAgentRunRequest(BaseModel):
     expectedOutput: str | None = None
     verifyCommands: str | None = None
     approvalMode: str | None = None
+    approvalTimeoutMinutes: int = Field(
+        default=DEFAULT_APPROVAL_TIMEOUT_MINUTES,
+        ge=1,
+        le=24 * 60,
+    )
+    executeAfterApproval: bool = Field(default=True)
     toolPolicy: str | None = None
     tools: str | list[str] | None = None
     writePolicy: str | None = None
     shellPolicy: str | None = None
     openAIApiKey: str | None = None
+    sandboxName: str | None = None
+    provider: str | None = None
+    sandboxRepoPath: str | None = None
+    repositoryUrl: str | None = None
+    repositoryOwner: str | None = None
+    repositoryRepo: str | None = None
+    repositoryBranch: str | None = None
+    repositoryToken: str | None = None
     executionId: str | None = None
     dbExecutionId: str | None = None
+    parentExecutionId: str | None = None
     artifactRef: str | None = None
     planJson: dict[str, Any] | list[dict[str, Any]] | None = None
+
+
+class ApproveRequest(BaseModel):
+    approved: bool = True
+    action: str | None = None
+    reason: str | None = None
+    approvedBy: str | None = None
+    payload: dict[str, Any] | None = None
 
 
 class ExecuteRequest(BaseModel):
@@ -556,8 +621,23 @@ class AgentRunContext:
     cwd: str
     tool_group: str
     max_turns: int
+    engine: str = "dapr-agent"
+    tool_backend: str | None = None
+    sandbox_name: str | None = None
+    sandbox_provider: str | None = None
+    sandbox_repo_path: str | None = None
+    repository_url: str | None = None
+    repository_owner: str | None = None
+    repository_repo: str | None = None
+    repository_branch: str | None = None
+    repository_token: str | None = None
+    execute_after_approval: bool = True
+    approval_event_name: str | None = None
     execution_id: str | None = None
     workspace_ref: str | None = None
+    thread_id: str | None = None
+    planning_thread_id: str | None = None
+    execution_thread_id: str | None = None
     trace_id: str | None = None
     artifact_ref: str | None = None
     verify_commands: list[str] | None = None
@@ -568,11 +648,26 @@ class AgentRunContext:
             "mode": self.mode,
             "profile": self.profile,
             "model": self.model,
+            "engine": self.engine,
+            "toolBackend": self.tool_backend,
             "cwd": self.cwd,
             "toolGroup": self.tool_group,
             "maxTurns": self.max_turns,
+            "sandboxName": self.sandbox_name,
+            "provider": self.sandbox_provider,
+            "sandboxRepoPath": self.sandbox_repo_path,
+            "repositoryUrl": self.repository_url,
+            "repositoryOwner": self.repository_owner,
+            "repositoryRepo": self.repository_repo,
+            "repositoryBranch": self.repository_branch,
+            "repositoryToken": self.repository_token,
+            "executeAfterApproval": self.execute_after_approval,
+            "approvalEventName": self.approval_event_name,
             "executionId": self.execution_id,
             "workspaceRef": self.workspace_ref,
+            "threadId": self.thread_id,
+            "planningThreadId": self.planning_thread_id,
+            "executionThreadId": self.execution_thread_id,
             "traceId": self.trace_id,
             "artifactRef": self.artifact_ref,
             "verifyCommands": list(self.verify_commands or []),
@@ -585,11 +680,37 @@ class AgentRunContext:
             mode=_normalize_run_mode(record.get("mode")),
             profile=_normalize_profile(str(record.get("profile") or "custom")),
             model=str(record.get("model") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
+            engine=str(record.get("engine") or "dapr-agent").strip() or "dapr-agent",
+            tool_backend=str(record.get("toolBackend") or "").strip() or None,
             cwd=_resolve_cwd(str(record.get("cwd") or "")),
             tool_group=_resolve_tool_group(str(record.get("toolGroup") or "all")),
             max_turns=max(int(record.get("maxTurns") or 30), 1),
+            sandbox_name=str(record.get("sandboxName") or "").strip() or None,
+            sandbox_provider=str(record.get("provider") or "").strip() or None,
+            sandbox_repo_path=str(record.get("sandboxRepoPath") or "").strip() or None,
+            repository_url=str(record.get("repositoryUrl") or "").strip() or None,
+            repository_owner=str(record.get("repositoryOwner") or "").strip() or None,
+            repository_repo=str(record.get("repositoryRepo") or "").strip() or None,
+            repository_branch=str(record.get("repositoryBranch") or "").strip() or None,
+            repository_token=str(record.get("repositoryToken") or "").strip() or None,
+            execute_after_approval=_coerce_bool(
+                record.get("executeAfterApproval"),
+                True,
+            ),
+            approval_event_name=str(record.get("approvalEventName") or "").strip() or None,
             execution_id=str(record.get("executionId") or "").strip() or None,
             workspace_ref=str(record.get("workspaceRef") or "").strip() or None,
+            thread_id=str(record.get("threadId") or "").strip() or None,
+            planning_thread_id=(
+                str(record.get("planningThreadId") or "").strip()
+                or str(record.get("threadId") or "").strip()
+                or None
+            ),
+            execution_thread_id=(
+                str(record.get("executionThreadId") or "").strip()
+                or str(record.get("threadId") or "").strip()
+                or None
+            ),
             trace_id=str(record.get("traceId") or "").strip() or None,
             artifact_ref=str(record.get("artifactRef") or "").strip() or None,
             verify_commands=[
@@ -1110,6 +1231,27 @@ def _resolve_effective_model(request: DaprAgentRunRequest) -> str:
     return _effective_default_model()
 
 
+def _approval_event_name(instance_id: str) -> str:
+    return f"dapr_agent_plan_approval_{instance_id}".lower()
+
+
+def _supports_langgraph(request: DaprAgentRunRequest) -> bool:
+    configured_engine = str(request.engine or "").strip().lower()
+    if configured_engine in {"langgraph", "deepagents", "deep-agent", LANGGRAPH_ENGINE_NAME.lower()}:
+        return True
+    if configured_engine in {"dapr-agent", "dapr_agents", "legacy"}:
+        return False
+    profile = _normalize_profile(request.profile)
+    return profile in LANGGRAPH_PROFILE_SET and is_langgraph_available()
+
+
+def _resolve_run_engine(request: DaprAgentRunRequest) -> str:
+    configured_engine = str(request.engine or "").strip().lower()
+    if configured_engine in {"dapr-agent", "dapr_agents", "legacy"}:
+        return "dapr-agent"
+    return LANGGRAPH_ENGINE_NAME if _supports_langgraph(request) else "dapr-agent"
+
+
 def _extract_json_block(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     candidates = [stripped]
@@ -1221,13 +1363,20 @@ def _extract_plan_payload(
 def _build_task_prompt(request: DaprAgentRunRequest) -> str:
     profile = _normalize_profile(request.profile)
     run_mode = _normalize_run_mode(request.mode or request.profile)
+    tool_backend = str(request.toolBackend or "").strip().lower()
     segments = [
         f"Profile: {profile}",
         f"Run mode: {run_mode}",
         f"Profile instructions: {PROFILE_INSTRUCTIONS[profile]}",
         f"Task:\n{request.prompt}",
     ]
-    if request.cwd:
+    if tool_backend == "openshell" and request.sandboxRepoPath:
+        segments.append(
+            "Repository root inside sandbox:\n"
+            f"{request.sandboxRepoPath}\n"
+            "Operate only within this sandbox repository root. When using tools, pass repository-relative paths such as '.' or 'src/app.ts'."
+        )
+    elif request.cwd:
         segments.append(
             "Repository root:\n"
             f"{request.cwd}\n"
@@ -1270,15 +1419,150 @@ def _build_task_prompt(request: DaprAgentRunRequest) -> str:
     return "\n\n".join(segment for segment in segments if segment.strip())
 
 
+def _resolve_langgraph_planning_thread_id(
+    *,
+    instance_id: str,
+    request: DaprAgentRunRequest,
+    execution_id: str | None,
+    artifact_ref: str | None,
+) -> str | None:
+    explicit_thread_id = str(request.planningThreadId or "").strip() or None
+    if explicit_thread_id:
+        return explicit_thread_id
+
+    run_engine = _resolve_run_engine(request)
+    if run_engine != LANGGRAPH_ENGINE_NAME:
+        return None
+
+    scope = (
+        execution_id
+        or str(request.workspaceRef or "").strip()
+        or artifact_ref
+        or instance_id
+    )
+    return f"lg:plan:{scope}"
+
+
+def _resolve_langgraph_execution_thread_id(
+    *,
+    instance_id: str,
+    request: DaprAgentRunRequest,
+    execution_id: str | None,
+    artifact_ref: str | None,
+) -> str | None:
+    explicit_thread_id = (
+        str(request.executionThreadId or "").strip()
+        or str(request.threadId or "").strip()
+        or None
+    )
+    if explicit_thread_id:
+        return explicit_thread_id
+
+    run_engine = _resolve_run_engine(request)
+    if run_engine != LANGGRAPH_ENGINE_NAME:
+        return None
+
+    scope = (
+        execution_id
+        or str(request.workspaceRef or "").strip()
+        or artifact_ref
+        or instance_id
+    )
+    return f"lg:exec:{scope}"
+
+
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "y", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "n", "off", ""}:
+            return False
+    return default
+
+
 def _build_result_payload(
     *,
     instance_id: str,
     request: DaprAgentRunRequest,
     workflow_output: Any,
+    pending_approval: bool = False,
 ) -> dict[str, Any]:
     text = _coerce_text(workflow_output)
     cwd = _resolve_request_cwd(request)
     run_context = _load_run_context(instance_id)
+    workflow_record = workflow_output if isinstance(workflow_output, dict) else {}
+    engine_metadata = (
+        workflow_record.get("engineMetadata")
+        if isinstance(workflow_record.get("engineMetadata"), dict)
+        else None
+    )
+    session_persistence = (
+        str(workflow_record.get("sessionPersistence") or "").strip() or None
+    )
+    planning_thread_id = (
+        str(workflow_record.get("planningThreadId") or "").strip()
+        or (
+            str(engine_metadata.get("planningThreadId") or "").strip()
+            if isinstance(engine_metadata, dict)
+            else ""
+        )
+        or (run_context.planning_thread_id if run_context else None)
+    )
+    execution_thread_id = (
+        str(workflow_record.get("executionThreadId") or "").strip()
+        or (
+            str(engine_metadata.get("executionThreadId") or "").strip()
+            if isinstance(engine_metadata, dict)
+            else ""
+        )
+        or (run_context.execution_thread_id if run_context else None)
+    )
+    thread_id = (
+        str(workflow_record.get("threadId") or "").strip()
+        or (
+            planning_thread_id
+            if _is_planning_mode(
+                request.mode or (run_context.mode if run_context is not None else request.profile)
+            )
+            else execution_thread_id
+        )
+        or (run_context.thread_id if run_context else None)
+    )
+    planner_status = (
+        str(workflow_record.get("plannerStatus") or "").strip()
+        or (
+            str(engine_metadata.get("plannerStatus") or "").strip()
+            if isinstance(engine_metadata, dict)
+            else ""
+        )
+        or None
+    )
+    planner_checkpoint_id = (
+        str(workflow_record.get("plannerCheckpointId") or "").strip()
+        or (
+            str(engine_metadata.get("plannerCheckpointId") or "").strip()
+            if isinstance(engine_metadata, dict)
+            else ""
+        )
+        or None
+    )
+    approval_payload = (
+        workflow_record.get("approvalPayload")
+        if isinstance(workflow_record.get("approvalPayload"), dict)
+        else (
+            engine_metadata.get("approvalPayload")
+            if isinstance(engine_metadata, dict)
+            and isinstance(engine_metadata.get("approvalPayload"), dict)
+            else None
+        )
+    )
     run_mode = _normalize_run_mode(
         request.mode or (run_context.mode if run_context is not None else request.profile)
     )
@@ -1293,14 +1577,35 @@ def _build_result_payload(
             if run_context and run_context.artifact_ref
             else str(request.artifactRef or "").strip() or f"plan_{instance_id}"
         )
+        approval_event_name = run_context.approval_event_name if run_context else _approval_event_name(instance_id)
+        phase = (
+            "awaiting_approval"
+            if pending_approval
+            else "failed"
+            if planner_status == "rejected"
+            else "planned"
+        )
         progress = {
             **progress,
-            "status": "completed",
-            "phase": "planned",
+            "status": (
+                "running"
+                if pending_approval
+                else "failed"
+                if planner_status == "rejected"
+                else "completed"
+            ),
+            "phase": phase,
             "summary": str(plan.get("summary") or text[:280] or progress.get("summary")),
             "activeToolName": None,
-            "stopReason": "plan generated",
-            "currentStepName": "plan",
+            "stopReason": (
+                "awaiting approval"
+                if pending_approval
+                else "plan rejected"
+                if planner_status == "rejected"
+                else "plan generated"
+            ),
+            "currentStepName": "approval" if pending_approval else "plan",
+            "approvalEventName": approval_event_name,
             "updatedAt": _utc_now_iso(),
         }
         _persist_agent_progress(instance_id, progress)
@@ -1310,6 +1615,21 @@ def _build_result_payload(
             "profile": _normalize_profile(request.profile),
             "mode": run_mode,
             "model": _resolve_effective_model(request),
+            "threadId": thread_id,
+            "planningThreadId": planning_thread_id,
+            "executionThreadId": execution_thread_id,
+            "plannerStatus": planner_status,
+            "plannerCheckpointId": planner_checkpoint_id,
+            "sessionPersistence": session_persistence,
+            "engineMetadata": engine_metadata,
+            "sandboxName": (
+                str(workflow_record.get("sandboxName") or "").strip()
+                or (run_context.sandbox_name if run_context else None)
+            ),
+            "provider": (
+                str(workflow_record.get("provider") or "").strip()
+                or (run_context.sandbox_provider if run_context else None)
+            ),
             "artifactRef": plan_artifact_ref,
             "plan": plan,
             "planMarkdown": plan_markdown,
@@ -1327,12 +1647,21 @@ def _build_result_payload(
             "snapshotRefs": [],
             "verification": {
                 "commands": plan.get("verificationCommands") or [],
-                "status": "planned",
+                "status": (
+                    "awaiting_approval"
+                    if pending_approval
+                    else "failed"
+                    if planner_status == "rejected"
+                    else "planned"
+                ),
             },
             "agentWorkflowId": instance_id,
             "daprInstanceId": instance_id,
             "traceId": run_context.trace_id if run_context else None,
             "agentProgress": progress,
+            "status": phase,
+            "approvalEventName": approval_event_name if pending_approval else None,
+            "approvalPayload": approval_payload if pending_approval else None,
             "runSummary": {
                 "profile": _normalize_profile(request.profile),
                 "mode": run_mode,
@@ -1340,6 +1669,9 @@ def _build_result_payload(
                 "cwd": cwd,
                 "workspaceRef": request.workspaceRef,
                 "toolGroup": _resolve_effective_tool_group(request),
+                "engine": run_context.engine if run_context else _resolve_run_engine(request),
+                "toolBackend": run_context.tool_backend if run_context else _resolve_tool_backend(request),
+                "sandboxName": run_context.sandbox_name if run_context else None,
             },
         }
         _persist_run_artifact(instance_id, result)
@@ -1391,6 +1723,21 @@ def _build_result_payload(
         "profile": _normalize_profile(request.profile),
         "mode": run_mode,
         "model": _resolve_effective_model(request),
+        "threadId": thread_id,
+        "planningThreadId": planning_thread_id,
+        "executionThreadId": execution_thread_id,
+        "plannerStatus": planner_status,
+        "plannerCheckpointId": planner_checkpoint_id,
+        "sessionPersistence": session_persistence,
+        "engineMetadata": engine_metadata,
+        "sandboxName": (
+            str(workflow_record.get("sandboxName") or "").strip()
+            or (run_context.sandbox_name if run_context else None)
+        ),
+        "provider": (
+            str(workflow_record.get("provider") or "").strip()
+            or (run_context.sandbox_provider if run_context else None)
+        ),
         "toolCalls": [],
         "usageTotals": {},
         "fileChanges": summary["changeSummary"]["files"],
@@ -1412,6 +1759,7 @@ def _build_result_payload(
         "daprInstanceId": instance_id,
         "traceId": run_context.trace_id if run_context else None,
         "agentProgress": progress,
+        "status": "completed",
         "runSummary": {
             "profile": _normalize_profile(request.profile),
             "mode": run_mode,
@@ -1419,6 +1767,9 @@ def _build_result_payload(
             "cwd": cwd,
             "workspaceRef": request.workspaceRef,
             "toolGroup": _resolve_effective_tool_group(request),
+            "engine": run_context.engine if run_context else _resolve_run_engine(request),
+            "toolBackend": run_context.tool_backend if run_context else _resolve_tool_backend(request),
+            "sandboxName": run_context.sandbox_name if run_context else None,
         },
     }
     _persist_run_artifact(instance_id, result)
@@ -1706,11 +2057,17 @@ def _persist_run_artifact(instance_id: str, result: dict[str, Any]) -> None:
         "daprInstanceId": instance_id,
         "cwd": context.cwd,
         "workspaceRef": context.workspace_ref,
+        "threadId": context.thread_id,
+        "planningThreadId": context.planning_thread_id,
+        "executionThreadId": context.execution_thread_id,
         "profile": context.profile,
         "patch": str(result.get("patch") or ""),
         "changeSummary": change_summary,
         "fileChanges": result.get("fileChanges") or [],
         "artifactRef": result.get("artifactRef"),
+        "plannerStatus": result.get("plannerStatus"),
+        "plannerCheckpointId": result.get("plannerCheckpointId"),
+        "approvalPayload": result.get("approvalPayload"),
         "snapshotRefs": result.get("snapshotRefs") or [],
         "createdAt": _utc_now_iso(),
     }
@@ -1780,7 +2137,14 @@ def _status_from_persisted_state(
         "status": normalized_status,
         "runtimeStatus": "PERSISTED_STATE",
         "traceId": resolved_trace_id,
+        "threadId": run_context.thread_id if run_context else None,
+        "planningThreadId": run_context.planning_thread_id if run_context else None,
+        "executionThreadId": run_context.execution_thread_id if run_context else None,
+        "plannerStatus": artifact.get("plannerStatus") if isinstance(artifact, dict) else None,
+        "plannerCheckpointId": artifact.get("plannerCheckpointId") if isinstance(artifact, dict) else None,
         "phase": progress.get("phase") if isinstance(progress, dict) else None,
+        "approvalEventName": progress.get("approvalEventName") if isinstance(progress, dict) else None,
+        "approvalPayload": artifact.get("approvalPayload") if isinstance(artifact, dict) else None,
         "agentProgress": progress,
         "serializedOutput": serialized_output,
     }
@@ -1809,7 +2173,7 @@ def _safe_workspace_file_snapshot(root: str, relative_path: str) -> dict[str, An
 def _default_agent_progress(context: AgentRunContext, *, status: str = "scheduled") -> dict[str, Any]:
     planning_mode = _is_planning_mode(context.mode)
     return {
-        "framework": "dapr-agent",
+        "framework": context.engine,
         "status": status,
         "phase": (
             "queued"
@@ -1827,9 +2191,76 @@ def _default_agent_progress(context: AgentRunContext, *, status: str = "schedule
         "agentWorkflowId": context.instance_id,
         "daprInstanceId": context.instance_id,
         "traceId": context.trace_id,
+        "approvalEventName": context.approval_event_name,
         "updatedAt": _utc_now_iso(),
         "recentTurns": [],
     }
+
+
+# ---------------------------------------------------------------------------
+# SSE stream infrastructure — per-instance event queues
+# ---------------------------------------------------------------------------
+_stream_queues: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = {}
+_stream_event_counter: dict[str, int] = {}
+_stream_lock = threading.Lock()
+_MAX_STREAM_QUEUE_SIZE = 500
+
+
+def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
+    """Push an event to all SSE subscribers for this instance."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id)
+        if not queues:
+            return
+        counter = _stream_event_counter.get(instance_id, 0) + 1
+        _stream_event_counter[instance_id] = counter
+        event = {**event, "_seq": counter}
+        for q in queues:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                # Drop oldest if queue is full
+                try:
+                    q.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    q.put_nowait(event)
+                except asyncio.QueueFull:
+                    pass
+
+
+def _register_stream_queue(instance_id: str) -> asyncio.Queue[dict[str, Any] | None]:
+    """Register a new SSE subscriber queue for an instance."""
+    q: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue(maxsize=_MAX_STREAM_QUEUE_SIZE)
+    with _stream_lock:
+        _stream_queues.setdefault(instance_id, []).append(q)
+    return q
+
+
+def _unregister_stream_queue(instance_id: str, q: asyncio.Queue[dict[str, Any] | None]) -> None:
+    """Remove an SSE subscriber queue."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id)
+        if queues:
+            try:
+                queues.remove(q)
+            except ValueError:
+                pass
+            if not queues:
+                _stream_queues.pop(instance_id, None)
+                _stream_event_counter.pop(instance_id, None)
+
+
+def _close_all_stream_queues(instance_id: str) -> None:
+    """Signal completion to all SSE subscribers for an instance."""
+    with _stream_lock:
+        queues = _stream_queues.get(instance_id, [])
+        for q in queues:
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
 
 
 def _persist_agent_progress(instance_id: str, progress: dict[str, Any]) -> None:
@@ -1869,6 +2300,154 @@ def _delete_agent_progress(instance_id: str) -> None:
         logger.warning("Failed to delete run progress %s: %s", instance_id, exc)
 
 
+def _record_langgraph_progress_event(
+    instance_id: str,
+    run_context: AgentRunContext,
+    *,
+    phase: str,
+    event: dict[str, Any],
+) -> None:
+    event_type = str(event.get("event") or "").strip().lower()
+    if not event_type:
+        return
+
+    # Push to SSE stream subscribers
+    stream_event = {
+        "type": event_type,
+        "ts": _utc_now_iso(),
+        "phase": phase,
+        **{k: v for k, v in event.items() if k != "event"},
+    }
+    _push_stream_event(instance_id, stream_event)
+    progress_phase = (
+        "planning" if phase == "plan" else _progress_phase_for_mode(run_context.mode)
+    )
+    current_step = "plan" if phase == "plan" else "implement"
+    existing_progress = _load_agent_progress(instance_id) or _default_agent_progress(
+        run_context,
+        status="running",
+    )
+    next_iteration = int(existing_progress.get("currentIteration") or 0)
+    recent_turns = list(existing_progress.get("recentTurns") or [])
+
+    if event_type == "model_start":
+        next_iteration += 1
+        recent_turns.append(
+            {
+                "label": "model",
+                "summary": (
+                    f"Planning iteration {next_iteration}"
+                    if phase == "plan"
+                    else f"Reasoning iteration {next_iteration}"
+                ),
+                "status": "running",
+            }
+        )
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration,
+            activeToolName=None,
+            stopReason=None,
+            summary=recent_turns[-1]["summary"],
+            recentTurns=recent_turns,
+        )
+        return
+
+    if event_type == "model_complete":
+        recent_turns.append(
+            {
+                "label": "model",
+                "summary": (
+                    f"Completed planning iteration {next_iteration or 1}"
+                    if phase == "plan"
+                    else f"Completed reasoning iteration {next_iteration or 1}"
+                ),
+                "status": "completed",
+            }
+        )
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration or 1,
+            activeToolName=None,
+            stopReason=None,
+            summary=recent_turns[-1]["summary"],
+            recentTurns=recent_turns,
+        )
+        return
+
+    tool_name = str(event.get("toolName") or "tool").strip() or "tool"
+    if event_type == "tool_start":
+        recent_turns.append(
+            {
+                "label": tool_name,
+                "summary": f"Running {tool_name}",
+                "status": "running",
+            }
+        )
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration,
+            activeToolName=tool_name,
+            stopReason=None,
+            summary=f"Running tool {tool_name}",
+            recentTurns=recent_turns,
+        )
+        return
+
+    if event_type == "tool_complete":
+        tool_status = str(event.get("status") or "completed").strip().lower()
+        status_label = "completed" if tool_status == "completed" else tool_status
+        recent_turns.append(
+            {
+                "label": tool_name,
+                "summary": f"{status_label.replace('_', ' ').capitalize()} {tool_name}",
+                "status": "completed" if tool_status == "completed" else "running",
+            }
+        )
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration,
+            activeToolName=None,
+            stopReason=None,
+            summary=recent_turns[-1]["summary"],
+            recentTurns=recent_turns,
+        )
+        return
+
+    if event_type == "tool_error":
+        message = str(event.get("error") or "").strip()
+        recent_turns.append(
+            {
+                "label": tool_name,
+                "summary": f"Failed {tool_name}",
+                "status": "failed",
+            }
+        )
+        _update_agent_progress(
+            instance_id,
+            phase=progress_phase,
+            status="running",
+            currentStepName=current_step,
+            currentIteration=next_iteration,
+            activeToolName=None,
+            stopReason=None,
+            summary=message or f"Failed tool {tool_name}",
+            recentTurns=recent_turns,
+        )
+
+
 def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
     if request.cwd:
         return _resolve_cwd(request.cwd)
@@ -1876,6 +2455,28 @@ def _resolve_request_cwd(request: DaprAgentRunRequest) -> str:
         session = _workspace_from_ref(request.workspaceRef)
         return str(session.working_directory or session.root_path)
     return _resolve_cwd(None)
+
+
+def _derive_repository_url(
+    repository_url: str | None,
+    repository_owner: str | None,
+    repository_repo: str | None,
+) -> str | None:
+    explicit = str(repository_url or "").strip()
+    if explicit:
+        return explicit
+    owner = str(repository_owner or "").strip()
+    repo = str(repository_repo or "").strip()
+    if not owner or not repo:
+        return None
+    return f"{GITEA_INTERNAL_CLONE_BASE_URL}/{owner}/{repo}.git"
+
+
+def _resolve_tool_backend(request: DaprAgentRunRequest) -> str | None:
+    value = str(request.toolBackend or "").strip().lower()
+    if value in {"openshell", "local"}:
+        return value
+    return None
 
 
 class CodingDurableAgent(DurableAgent):
@@ -2217,6 +2818,7 @@ def _build_agent_registry_metadata(
         "profiles": sorted(PROFILE_INSTRUCTIONS.keys()),
         "framework": "Dapr Agents",
         "durable": True,
+        "langgraph": build_langgraph_capabilities(),
         "workflowName": WORKFLOW_NAME,
         "toolGroup": "dynamic",
         "defaultModel": model,
@@ -2385,16 +2987,78 @@ def _build_run_context(
     artifact_ref = str(request.artifactRef or "").strip() or None
     if artifact_ref is None and _is_planning_mode(normalized_mode):
         artifact_ref = f"plan_{instance_id}"
+    planning_thread_id = _resolve_langgraph_planning_thread_id(
+        instance_id=instance_id,
+        request=request,
+        execution_id=execution_id,
+        artifact_ref=artifact_ref,
+    )
+    execution_thread_id = _resolve_langgraph_execution_thread_id(
+        instance_id=instance_id,
+        request=request,
+        execution_id=execution_id,
+        artifact_ref=artifact_ref,
+    )
+    thread_id = (
+        planning_thread_id
+        if _is_planning_mode(normalized_mode)
+        else execution_thread_id
+    )
+    workspace_session = (
+        _workspace_from_ref(request.workspaceRef) if request.workspaceRef else None
+    )
+    repository_owner = (
+        str(request.repositoryOwner or "").strip()
+        or (workspace_session.repository_owner if workspace_session else None)
+    )
+    repository_repo = (
+        str(request.repositoryRepo or "").strip()
+        or (workspace_session.repository_repo if workspace_session else None)
+    )
+    repository_url = _derive_repository_url(
+        str(request.repositoryUrl or "").strip()
+        or (workspace_session.repository_url if workspace_session else None),
+        repository_owner,
+        repository_repo,
+    )
+    repository_branch = (
+        str(request.repositoryBranch or "").strip()
+        or (workspace_session.repository_branch if workspace_session else None)
+    )
+    tool_backend = _resolve_tool_backend(request)
+    sandbox_name = str(request.sandboxName or "").strip() or None
+    if tool_backend == "openshell" and not sandbox_name:
+        sandbox_name = f"openshell-lg-{instance_id}".lower().replace("_", "-")[:63]
+    sandbox_repo_path = str(request.sandboxRepoPath or "").strip() or None
+    if tool_backend == "openshell" and not sandbox_repo_path:
+        sandbox_repo_path = "/sandbox/repo"
     return AgentRunContext(
         instance_id=instance_id,
         mode=normalized_mode,
         profile=_normalize_profile(request.profile),
         model=_resolve_effective_model(request),
+        engine=_resolve_run_engine(request),
+        tool_backend=tool_backend,
         cwd=_resolve_request_cwd(request),
         tool_group=_resolve_effective_tool_group(request),
         max_turns=request.maxTurns,
+        sandbox_name=sandbox_name,
+        sandbox_provider=str(request.provider or "").strip() or None,
+        sandbox_repo_path=sandbox_repo_path,
+        repository_url=repository_url or None,
+        repository_owner=repository_owner or None,
+        repository_repo=repository_repo or None,
+        repository_branch=repository_branch or None,
+        repository_token=str(request.repositoryToken or "").strip() or None,
+        execute_after_approval=_coerce_bool(request.executeAfterApproval, True),
+        approval_event_name=(
+            _approval_event_name(instance_id) if _is_planning_mode(normalized_mode) else None
+        ),
         execution_id=execution_id,
         workspace_ref=request.workspaceRef,
+        thread_id=thread_id,
+        planning_thread_id=planning_thread_id,
+        execution_thread_id=execution_thread_id,
         trace_id=trace_id,
         artifact_ref=artifact_ref,
         verify_commands=_parse_verify_commands(request.verifyCommands) or None,
@@ -2478,7 +3142,7 @@ def _schedule_workflow_run(
 ) -> None:
     client = _workflow_client_for_runs()
     client.schedule_new_workflow(
-        WORKFLOW_NAME,
+        dapr_agent_workflow,
         input=_workflow_input_for_request(request, trace_id=trace_id),
         instance_id=instance_id,
     )
@@ -2488,6 +3152,7 @@ def _wait_for_terminal_workflow_result(
     instance_id: str,
     *,
     timeout_seconds: int,
+    return_on_approval: bool = False,
 ) -> dict[str, Any]:
     client = _workflow_client_for_runs()
     deadline = time.monotonic() + timeout_seconds
@@ -2495,6 +3160,22 @@ def _wait_for_terminal_workflow_result(
         state = client.get_workflow_state(instance_id, fetch_payloads=True)
         runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
         normalized = str(runtime_status).lower()
+        progress = _load_agent_progress(instance_id) or {}
+        artifact = _load_run_artifact(instance_id) or {}
+        if return_on_approval and str(progress.get("phase") or "").strip().lower() == "awaiting_approval":
+            return {
+                "status": "awaiting_approval",
+                "payload": artifact
+                or {
+                    "success": True,
+                    "agentWorkflowId": instance_id,
+                    "daprInstanceId": instance_id,
+                    "traceId": progress.get("traceId"),
+                    "agentProgress": progress,
+                    "status": "awaiting_approval",
+                    "approvalEventName": progress.get("approvalEventName"),
+                },
+            }
         if normalized in {"completed", "failed", "terminated"}:
             parsed_output = _parse_serialized_output(getattr(state, "serialized_output", None))
             if isinstance(parsed_output, dict):
@@ -2502,8 +3183,6 @@ def _wait_for_terminal_workflow_result(
                     "status": normalized,
                     "payload": parsed_output,
                 }
-            artifact = _load_run_artifact(instance_id) or {}
-            progress = _load_agent_progress(instance_id) or {}
             return {
                 "status": normalized,
                 "payload": {
@@ -2536,6 +3215,144 @@ def _normalize_run_request(input_data: dict[str, Any] | str | None) -> DaprAgent
     return DaprAgentRunRequest.model_validate(payload)
 
 
+def _langgraph_phase_prompt(
+    request: DaprAgentRunRequest,
+    *,
+    phase: str,
+) -> str:
+    if phase == "plan":
+        return _build_task_prompt(
+            request.model_copy(
+                update={
+                    "mode": FEATURE_DELIVERY_PLAN_MODE,
+                }
+            )
+        )
+    if phase == "verify":
+        commands = _parse_verify_commands(request.verifyCommands)
+        return "\n\n".join(
+            segment
+            for segment in [
+                f"Task:\n{request.prompt}",
+                (
+                    "Approved plan JSON:\n"
+                    f"{json.dumps(request.planJson, indent=2, default=str)}"
+                    if request.planJson
+                    else ""
+                ),
+                (
+                    "Verification commands:\n" + "\n".join(commands)
+                    if commands
+                    else ""
+                ),
+                "Summarize the completed work and verification outcome.",
+            ]
+            if segment
+        )
+    return _build_task_prompt(
+        request.model_copy(
+            update={
+                "mode": FEATURE_DELIVERY_EXECUTE_MODE,
+            }
+        )
+    )
+
+
+def _run_langgraph_phase(
+    *,
+    request: DaprAgentRunRequest,
+    instance_id: str,
+    phase: str,
+) -> dict[str, Any]:
+    run_context = _load_run_context(instance_id) or _build_run_context(instance_id, request)
+    phase_thread_id = (
+        run_context.planning_thread_id
+        if phase == "plan"
+        else run_context.execution_thread_id
+    )
+    result = run_langgraph_task(
+        prompt=_langgraph_phase_prompt(request, phase=phase),
+        workspace_root=run_context.cwd,
+        tool_group=("planning" if phase == "plan" else run_context.tool_group),
+        model=run_context.model,
+        profile=run_context.profile,
+        phase=phase,
+        thread_id=phase_thread_id,
+        planner_resume=request.plannerResume if phase == "plan" else None,
+        require_review=(
+            bool(run_context.execute_after_approval) if phase == "plan" else False
+        ),
+        api_key=request.openAIApiKey,
+        progress_callback=lambda event: _record_langgraph_progress_event(
+            instance_id,
+            run_context,
+            phase=phase,
+            event=event,
+        ),
+        openshell_config=(
+            {
+                "sandboxName": run_context.sandbox_name,
+                "provider": run_context.sandbox_provider,
+                "repoUrl": run_context.repository_url,
+                "repoBranch": run_context.repository_branch,
+                "repoToken": run_context.repository_token,
+                "repoPath": run_context.sandbox_repo_path,
+            }
+            if run_context.tool_backend == "openshell"
+            else None
+        ),
+    )
+    if result.tool_summary.get("changeSummary") or result.tool_summary.get("patch"):
+        _persist_workspace_mutation(instance_id, result.tool_summary)
+    payload: dict[str, Any] = {
+        "content": result.text,
+        "text": result.text,
+        "engine": LANGGRAPH_ENGINE_NAME,
+        "engineMetadata": result.metadata,
+        "threadId": phase_thread_id,
+        "planningThreadId": run_context.planning_thread_id,
+        "executionThreadId": run_context.execution_thread_id,
+        "sandboxName": run_context.sandbox_name,
+        "provider": run_context.sandbox_provider,
+        "plannerStatus": result.metadata.get("plannerStatus"),
+        "plannerCheckpointId": result.metadata.get("plannerCheckpointId"),
+        "sessionPersistence": result.metadata.get("sessionPersistence"),
+    }
+    if result.structured_output:
+        payload["structured"] = result.structured_output
+    if phase == "plan":
+        payload["plan"] = result.structured_output or _extract_json_block(result.text) or {}
+        payload["planMarkdown"] = result.text
+        payload["status"] = (
+            "awaiting_approval" if result.metadata.get("resumable") else result.metadata.get("plannerStatus") or "planned"
+        )
+        if isinstance(result.metadata.get("approvalPayload"), dict):
+            payload["approvalPayload"] = result.metadata.get("approvalPayload")
+    else:
+        payload["status"] = "completed"
+    return payload
+
+
+@runtime.activity(name=PLAN_ACTIVITY_NAME)
+def langgraph_plan_activity(_ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    request = _normalize_run_request(payload)
+    return _run_langgraph_phase(
+        request=request,
+        instance_id=str(payload.get("instanceId") or ""),
+        phase="plan",
+    )
+
+
+@runtime.activity(name=EXECUTE_ACTIVITY_NAME)
+def langgraph_execute_activity(_ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    request = _normalize_run_request(payload)
+    return _run_langgraph_phase(
+        request=request,
+        instance_id=str(payload.get("instanceId") or ""),
+        phase="execute",
+    )
+
+
 @runtime.workflow(name=WORKFLOW_NAME)
 def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] | str) -> dict[str, Any]:
     trace_id = (
@@ -2553,9 +3370,21 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     store_workflow_context("__current_workflow_context__", workflow_context_carrier)
     request = _normalize_run_request(input_data)
     instance_id = ctx.instance_id
+    # Extract parent instance ID for parent→child mapping (enables BFF SSE resolution)
+    parent_instance_id = (
+        (input_data.get("parentExecutionId") if isinstance(input_data, dict) else None)
+        or request.parentExecutionId
+        or ""
+    )
     run_context = _build_run_context(instance_id, request, trace_id=trace_id)
     if not ctx.is_replaying:
         _persist_run_context(run_context)
+        if parent_instance_id:
+            run_state_store.save(
+                key=f"parent-child-map:{parent_instance_id}",
+                value={"childInstanceId": instance_id, "ts": _utc_now_iso()},
+            )
+            logger.info("[parent-child-map] Saved mapping: %s -> %s", parent_instance_id, instance_id)
         _persist_agent_progress(
             instance_id,
             _default_agent_progress(run_context, status="running"),
@@ -2566,6 +3395,12 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
             summary=f"Starting {run_context.profile} run",
             currentStepName=run_context.profile,
         )
+        _push_stream_event(instance_id, {
+            "type": "run_started",
+            "ts": _utc_now_iso(),
+            "phase": "reasoning",
+            "meta": {"profile": run_context.profile, "engine": run_context.engine},
+        })
         _emit_agent_event(
             run_context,
             event_id=_event_payload_id(instance_id, "run_started"),
@@ -2582,6 +3417,147 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
         }
     )
     try:
+        if run_context.engine == LANGGRAPH_ENGINE_NAME:
+            if not ctx.is_replaying:
+                _update_agent_progress(
+                    instance_id,
+                    phase="planning" if _is_planning_mode(run_context.mode) else "implementing",
+                    summary=(
+                        "Generating implementation plan with LangGraph"
+                        if _is_planning_mode(run_context.mode)
+                        else f"Starting {run_context.profile} run with LangGraph"
+                    ),
+                    currentStepName="plan" if _is_planning_mode(run_context.mode) else run_context.profile,
+                )
+            workflow_payload = {
+                **normalized_request.model_dump(exclude_none=True),
+                "instanceId": instance_id,
+            }
+            if _is_planning_mode(run_context.mode):
+                planning_result = yield ctx.call_activity(
+                    langgraph_plan_activity,
+                    input=workflow_payload,
+                )
+                pending_approval = False
+                plan_payload: dict[str, Any] | None = None
+                while True:
+                    pending_approval = (
+                        str(planning_result.get("status") or "").strip().lower()
+                        == "awaiting_approval"
+                    )
+                    plan_payload = _build_result_payload(
+                        instance_id=instance_id,
+                        request=normalized_request,
+                        workflow_output=planning_result,
+                        pending_approval=pending_approval,
+                    )
+                    if not pending_approval:
+                        break
+                    if not ctx.is_replaying:
+                        _update_agent_progress(
+                            instance_id,
+                            phase="awaiting_approval",
+                            status="running",
+                            summary="Plan ready for approval",
+                            currentStepName="approval",
+                            stopReason="awaiting approval",
+                        )
+                    approval_event = ctx.wait_for_external_event(run_context.approval_event_name)
+                    timeout_wait = ctx.create_timer(
+                        timedelta(minutes=max(request.approvalTimeoutMinutes, 1))
+                    )
+                    completed_task = yield wf.when_any([approval_event, timeout_wait])
+                    if completed_task == timeout_wait:
+                        _update_agent_progress(
+                            instance_id,
+                            phase="failed",
+                            status="failed",
+                            summary="Plan approval timed out",
+                            currentStepName="approval",
+                            stopReason="approval timeout",
+                        )
+                        return {
+                            **plan_payload,
+                            "success": False,
+                            "status": "failed",
+                            "error": f"Plan approval timed out after {request.approvalTimeoutMinutes} minutes",
+                        }
+                    approval_result = approval_event.get_result() or {}
+                    planner_resume = (
+                        dict(approval_result)
+                        if isinstance(approval_result, dict)
+                        else {"approved": False, "reason": "Plan was rejected"}
+                    )
+                    if not str(planner_resume.get("action") or "").strip():
+                        planner_resume["action"] = (
+                            "approve" if bool(planner_resume.get("approved", False)) else "reject"
+                        )
+                    planning_result = yield ctx.call_activity(
+                        langgraph_plan_activity,
+                        input={
+                            **workflow_payload,
+                            "plannerResume": planner_resume,
+                        },
+                    )
+                    if str(planning_result.get("status") or "").strip().lower() == "rejected":
+                        plan_payload = _build_result_payload(
+                            instance_id=instance_id,
+                            request=normalized_request,
+                            workflow_output=planning_result,
+                            pending_approval=False,
+                        )
+                        reason = (
+                            planner_resume.get("reason")
+                            if isinstance(planner_resume, dict)
+                            else None
+                        ) or "Plan was rejected"
+                        _update_agent_progress(
+                            instance_id,
+                            phase="failed",
+                            status="failed",
+                            summary=reason,
+                            currentStepName="approval",
+                            stopReason="plan rejected",
+                        )
+                        return {
+                            **plan_payload,
+                            "success": False,
+                            "status": "rejected",
+                            "approval": planner_resume,
+                            "error": reason,
+                        }
+                if plan_payload is None:
+                    raise RuntimeError("LangGraph planning did not return a result payload")
+                if not bool(run_context.execute_after_approval):
+                    return plan_payload
+                normalized_request = normalized_request.model_copy(
+                    update={
+                        "mode": FEATURE_DELIVERY_EXECUTE_MODE,
+                        "artifactRef": plan_payload.get("artifactRef"),
+                        "planJson": plan_payload.get("plan"),
+                    }
+                )
+                if not ctx.is_replaying:
+                    _update_agent_progress(
+                        instance_id,
+                        phase="implementing",
+                        status="running",
+                        summary="Plan approved. Executing with LangGraph",
+                        currentStepName="execute",
+                        stopReason=None,
+                    )
+            execute_result = yield ctx.call_activity(
+                langgraph_execute_activity,
+                input={
+                    **normalized_request.model_dump(exclude_none=True),
+                    "instanceId": instance_id,
+                },
+            )
+            return _build_result_payload(
+                instance_id=instance_id,
+                request=normalized_request,
+                workflow_output=execute_result,
+            )
         agent_result = yield from _build_run_agent(run_context).agent_workflow(
             ctx,
             {"task": _build_task_prompt(normalized_request)},
@@ -2612,6 +3588,15 @@ def dapr_agent_workflow(ctx: wf.DaprWorkflowContext, input_data: dict[str, Any] 
     finally:
         cleanup_workflow_context(workflow_context_key)
         cleanup_workflow_context("__current_workflow_context__")
+        # Signal SSE subscribers that the run is done
+        _push_stream_event(instance_id, {"type": "run_complete", "ts": _utc_now_iso()})
+        _close_all_stream_queues(instance_id)
+        # Clean up parent→child mapping
+        if parent_instance_id:
+            try:
+                run_state_store.delete(key=f"parent-child-map:{parent_instance_id}")
+            except Exception:
+                pass
 
 
 async def _run_agent_request(
@@ -2648,6 +3633,7 @@ async def _run_agent_request(
     terminal = _wait_for_terminal_workflow_result(
         instance_id,
         timeout_seconds=normalized_request.timeoutMinutes * 60,
+        return_on_approval=_is_planning_mode(normalized_request.mode),
     )
     return terminal["payload"]
 
@@ -2743,6 +3729,8 @@ def runtime_introspect() -> dict[str, Any]:
         "runtimeStatus": runtime_status,
         "features": [
             "durable-agent",
+            "langgraph",
+            "deep-agents",
             "workspace-tools",
             "persistent-memory",
             "state-store-backed-sessions",
@@ -2750,6 +3738,8 @@ def runtime_introspect() -> dict[str, Any]:
         ],
         "registeredWorkflows": [_workflow_descriptor(WORKFLOW_NAME)],
         "registeredActivities": [
+            _activity_descriptor(PLAN_ACTIVITY_NAME),
+            _activity_descriptor(EXECUTE_ACTIVITY_NAME),
             _activity_descriptor("workspace_profile"),
             _activity_descriptor("workspace_clone"),
             _activity_descriptor("workspace_command"),
@@ -2770,6 +3760,7 @@ def runtime_introspect() -> dict[str, Any]:
             ],
             "workspaceTools": WORKSPACE_ENABLED_TOOLS,
             "toolGroups": list(TOOL_GROUPS.keys()),
+            "langgraph": build_langgraph_capabilities(),
         },
         "registry": {
             "enabled": DAPR_AGENT_ENABLE_REGISTRY,
@@ -2789,6 +3780,7 @@ def runtime_introspect() -> dict[str, Any]:
             "defaultModel": _effective_default_model(),
             "instrumentationEnabled": ENABLE_DAPR_AGENTS_INSTRUMENTATION,
             "workspaceBindings": sum(len(refs) for refs in sessions_by_execution.values()),
+            "langgraph": build_langgraph_capabilities(),
         },
     }
 
@@ -3116,8 +4108,9 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
             )
         )
         if isinstance(workflow_output, dict):
+            output_status = str(workflow_output.get("status") or "").strip().lower()
             return {
-                "success": bool(workflow_output.get("success", False)),
+                "success": bool(workflow_output.get("success", output_status in {"completed", "planned", "awaiting_approval"})),
                 "result": workflow_output,
                 **workflow_output,
             }
@@ -3143,6 +4136,7 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
             trace_id=trace_id,
         )
     )
+    run_context = _load_run_context(instance_id)
     return {
         "success": True,
         "status": "running",
@@ -3150,10 +4144,25 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
         "workflowId": instance_id,
         "agentWorkflowId": instance_id,
         "daprInstanceId": instance_id,
+        "threadId": run_context.thread_id if run_context else None,
+        "planningThreadId": run_context.planning_thread_id if run_context else None,
+        "executionThreadId": run_context.execution_thread_id if run_context else None,
         "traceId": trace_id,
         "agentProgress": _load_agent_progress(instance_id),
         "status_url": f"/api/run/{instance_id}",
     }
+
+
+@app.get("/api/run/resolve-child")
+def api_resolve_child(parentId: str) -> dict[str, Any]:
+    """Resolve a child workflow instance ID from the parent orchestrator instance ID."""
+    mapping = run_state_store.load(key=f"parent-child-map:{parentId}", default={})
+    if not mapping:
+        raise HTTPException(status_code=404, detail="No child mapping found")
+    child_id = mapping.get("childInstanceId")
+    if not child_id:
+        raise HTTPException(status_code=404, detail="No child mapping found")
+    return {"childInstanceId": child_id, "parentId": parentId}
 
 
 @app.get("/api/run/{instance_id}")
@@ -3218,9 +4227,175 @@ def api_run_status(instance_id: str) -> dict[str, Any]:
         "status": normalized_status,
         "runtimeStatus": runtime_status,
         "traceId": resolved_trace_id,
+        "threadId": run_context.thread_id if run_context else None,
+        "planningThreadId": run_context.planning_thread_id if run_context else None,
+        "executionThreadId": run_context.execution_thread_id if run_context else None,
+        "plannerStatus": artifact.get("plannerStatus") if isinstance(artifact, dict) else None,
+        "plannerCheckpointId": artifact.get("plannerCheckpointId") if isinstance(artifact, dict) else None,
         "phase": progress.get("phase") if isinstance(progress, dict) else None,
+        "approvalEventName": progress.get("approvalEventName") if isinstance(progress, dict) else None,
+        "approvalPayload": artifact.get("approvalPayload") if isinstance(artifact, dict) else None,
         "agentProgress": progress,
         "serializedOutput": serialized_output,
+    }
+
+
+@app.get("/api/run/{instance_id}/stream")
+async def api_run_stream(instance_id: str, request: Request) -> StreamingResponse:
+    """SSE endpoint streaming real-time agent events for a run."""
+    run_context = _load_run_context(instance_id)
+    progress = _load_agent_progress(instance_id)
+    # Also check Dapr workflow state if no local context yet (race condition)
+    if run_context is None and progress is None:
+        workflow_client_instance = _resolve_runner_workflow_client()
+        if workflow_client_instance is not None:
+            try:
+                state = workflow_client_instance.get_workflow_state(instance_id, fetch_payloads=False)
+                runtime_status = getattr(getattr(state, "runtime_status", None), "name", "UNKNOWN")
+                if runtime_status.upper() in ("RUNNING", "PENDING", "SUSPENDED"):
+                    progress = {"status": "running", "phase": "starting"}
+            except Exception:
+                pass
+        if progress is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+    # Check for Last-Event-ID reconnection
+    last_event_id = request.headers.get("Last-Event-ID")
+    last_seq = 0
+    if last_event_id:
+        try:
+            last_seq = int(last_event_id)
+        except (ValueError, TypeError):
+            last_seq = 0
+
+    queue = _register_stream_queue(instance_id)
+
+    async def event_generator():
+        try:
+            # Send initial state snapshot
+            yield _sse_format(
+                "agent_event",
+                {
+                    "type": "state_snapshot",
+                    "ts": _utc_now_iso(),
+                    "phase": progress.get("phase") if isinstance(progress, dict) else None,
+                    "meta": {
+                        "agentProgress": progress,
+                        "lastSeq": last_seq,
+                    },
+                },
+                event_id="0",
+            )
+
+            while True:
+                # Check if client disconnected
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    # Send keepalive comment
+                    yield ": keepalive\n\n"
+                    continue
+
+                if event is None:
+                    # None signals run completion
+                    yield _sse_format(
+                        "agent_event",
+                        {"type": "run_complete", "ts": _utc_now_iso()},
+                        event_id="done",
+                    )
+                    break
+
+                seq = event.pop("_seq", 0)
+                if seq <= last_seq:
+                    continue
+
+                yield _sse_format("agent_event", event, event_id=str(seq))
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            _unregister_stream_queue(instance_id, queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse_format(event: str, data: dict[str, Any], *, event_id: str | None = None) -> str:
+    """Format a Server-Sent Event."""
+    lines = []
+    if event_id is not None:
+        lines.append(f"id: {event_id}")
+    lines.append(f"event: {event}")
+    lines.append(f"data: {json.dumps(data, default=str)}")
+    lines.append("")
+    lines.append("")
+    return "\n".join(lines)
+
+
+@app.post("/api/run/{instance_id}/approve")
+def api_run_approve(instance_id: str, request: ApproveRequest) -> dict[str, Any]:
+    run_context = _load_run_context(instance_id)
+    if run_context is None or not run_context.approval_event_name:
+        raise HTTPException(status_code=404, detail="Approval-capable run not found")
+    client = _workflow_client_for_runs()
+    approval_payload = dict(request.payload or {})
+    action = str(request.action or "").strip().lower()
+    if action not in {"approve", "reject", "edit"}:
+        action = "approve" if request.approved else "reject"
+    approval_payload.update(
+        {
+            "action": action,
+            "approved": request.approved if action != "edit" else approval_payload.get("approved"),
+            "reason": request.reason or approval_payload.get("reason"),
+            "approvedBy": request.approvedBy or approval_payload.get("approvedBy") or "api",
+            "respondedBy": request.approvedBy or approval_payload.get("respondedBy") or "api",
+        }
+    )
+    client.raise_workflow_event(
+        instance_id=instance_id,
+        event_name=run_context.approval_event_name,
+        data=approval_payload,
+    )
+    action = str(approval_payload.get("action") or "").strip().lower()
+    _update_agent_progress(
+        instance_id,
+        phase=(
+            "planning"
+            if action == "edit"
+            else "implementing"
+            if request.approved and run_context.execute_after_approval
+            else "completed"
+        ),
+        status=(
+            "running"
+            if action in {"approve", "edit"} and run_context.execute_after_approval
+            else "failed"
+        ),
+        summary=(
+            "Planner resume requested"
+            if action == "edit"
+            else "Approval received"
+            if request.approved
+            else (request.reason or "Plan rejected")
+        ),
+        currentStepName="approval",
+        stopReason=None if action in {"approve", "edit"} else "plan rejected",
+    )
+    return {
+        "success": True,
+        "instanceId": instance_id,
+        "approvalEventName": run_context.approval_event_name,
+        "approval": approval_payload,
     }
 
 
@@ -3256,6 +4431,14 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
     run_request = DaprAgentRunRequest(
         prompt=str(request.input.get("prompt") or request.input.get("goal") or "").strip(),
         mode=str(request.input.get("mode") or "").strip() or None,
+        engine=str(request.input.get("engine") or "").strip() or None,
+        toolBackend=str(request.input.get("toolBackend") or "").strip() or None,
+        threadId=str(request.input.get("threadId") or "").strip() or None,
+        planningThreadId=str(request.input.get("planningThreadId") or "").strip() or None,
+        executionThreadId=str(request.input.get("executionThreadId") or "").strip() or None,
+        plannerResume=request.input.get("plannerResume")
+        if isinstance(request.input.get("plannerResume"), dict)
+        else None,
         profile=str(request.input.get("profile") or request.input.get("mode") or "implement"),
         model=str(request.input.get("model") or "").strip() or None,
         waitForCompletion=True,
@@ -3263,11 +4446,26 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         maxTurns=int(request.input.get("maxTurns") or 30),
         workspaceRef=str(request.input.get("workspaceRef") or "").strip() or None,
         cwd=str(request.input.get("cwd") or "").strip() or None,
+        sandboxName=str(request.input.get("sandboxName") or "").strip() or None,
+        provider=str(request.input.get("provider") or "").strip() or None,
+        sandboxRepoPath=str(request.input.get("sandboxRepoPath") or "").strip() or None,
+        repositoryUrl=str(request.input.get("repositoryUrl") or "").strip() or None,
+        repositoryOwner=str(request.input.get("repositoryOwner") or "").strip() or None,
+        repositoryRepo=str(request.input.get("repositoryRepo") or "").strip() or None,
+        repositoryBranch=str(request.input.get("repositoryBranch") or "").strip() or None,
+        repositoryToken=str(request.input.get("repositoryToken") or "").strip() or None,
         stopCondition=str(request.input.get("stopCondition") or "").strip() or None,
         instructionsOverlay=str(request.input.get("instructionsOverlay") or "").strip() or None,
         expectedOutput=str(request.input.get("expectedOutput") or "").strip() or None,
         verifyCommands=str(request.input.get("verifyCommands") or "").strip() or None,
         approvalMode=str(request.input.get("approvalMode") or "").strip() or None,
+        approvalTimeoutMinutes=int(
+            request.input.get("approvalTimeoutMinutes") or DEFAULT_APPROVAL_TIMEOUT_MINUTES
+        ),
+        executeAfterApproval=_coerce_bool(
+            request.input.get("executeAfterApproval"),
+            True,
+        ),
         toolPolicy=str(request.input.get("toolPolicy") or "").strip() or None,
         writePolicy=str(request.input.get("writePolicy") or "").strip() or None,
         shellPolicy=str(request.input.get("shellPolicy") or "").strip() or None,

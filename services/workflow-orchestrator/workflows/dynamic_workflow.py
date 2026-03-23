@@ -650,6 +650,14 @@ def _to_compact_agent_result(
         "daprInstanceId": dapr_instance_id,
         "childWorkflowName": child_workflow_name,
         "childAppId": child_app_id,
+        "engine": payload.get("engine"),
+        "engineMetadata": payload.get("engineMetadata"),
+        "threadId": payload.get("threadId"),
+        "planningThreadId": payload.get("planningThreadId"),
+        "executionThreadId": payload.get("executionThreadId"),
+        "plannerStatus": payload.get("plannerStatus"),
+        "plannerCheckpointId": payload.get("plannerCheckpointId"),
+        "sessionPersistence": payload.get("sessionPersistence"),
         "text": text,
         "toolCalls": tool_calls,
         "loopStopReason": payload.get("stop_reason"),
@@ -2067,7 +2075,8 @@ def process_agent_child_workflow(
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
-    is_dapr_agent = action_type == "dapr-agent/run"
+    is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
+    is_dapr_agent = action_type in {"dapr-agent/run", "openshell-langgraph/run"}
     is_openshell_agent = action_type == "openshell/run"
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
@@ -2177,6 +2186,7 @@ def process_agent_child_workflow(
     node_id = str(node.get("id") or "unknown")
 
     activity_input = {
+        "actionType": action_type,
         "prompt": prompt,
         "cwd": resolved_config.get("cwd"),
         "model": resolved_config.get("model"),
@@ -2190,6 +2200,16 @@ def process_agent_child_workflow(
         "toolPolicy": resolved_config.get("toolPolicy"),
         "writePolicy": resolved_config.get("writePolicy"),
         "shellPolicy": resolved_config.get("shellPolicy"),
+        "engine": resolved_config.get("engine"),
+        "toolBackend": resolved_config.get("toolBackend"),
+        "sandboxName": resolved_config.get("sandboxName"),
+        "provider": resolved_config.get("provider"),
+        "sandboxRepoPath": resolved_config.get("sandboxRepoPath"),
+        "repositoryUrl": resolved_config.get("repositoryUrl"),
+        "repositoryOwner": resolved_config.get("repositoryOwner"),
+        "repositoryRepo": resolved_config.get("repositoryRepo"),
+        "repositoryBranch": resolved_config.get("repositoryBranch"),
+        "repositoryToken": resolved_config.get("repositoryToken"),
         "instructionsOverlay": resolved_config.get("instructionsOverlay"),
         "loopPolicy": resolved_config.get("loopPolicy"),
         "contextPolicyPreset": resolved_config.get("contextPolicyPreset"),
@@ -2199,8 +2219,10 @@ def process_agent_child_workflow(
         "instructions": resolved_config.get("instructions"),
         "tools": resolved_config.get("tools"),
         "workspaceRef": resolved_config.get("workspaceRef"),
-        "repoUrl": resolved_config.get("repoUrl"),
-        "repoBranch": resolved_config.get("repoBranch"),
+        "repoUrl": resolved_config.get("repoUrl")
+        or resolved_config.get("repositoryUrl"),
+        "repoBranch": resolved_config.get("repoBranch")
+        or resolved_config.get("repositoryBranch"),
         "repoToken": resolved_config.get("repoToken"),
         "sandboxRepoPath": resolved_config.get("sandboxRepoPath"),
         "provider": resolved_config.get("provider"),
@@ -2218,6 +2240,21 @@ def process_agent_child_workflow(
         "approvalTimeoutMinutes": approval_timeout_minutes,
         "_otel": otel_ctx,
     }
+    if is_openshell_langgraph_agent:
+        activity_input["engine"] = "langgraph"
+        activity_input["toolBackend"] = "openshell"
+        activity_input["sandboxRepoPath"] = (
+            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
+        )
+        sandbox_suffix = (
+            str(tracked_execution_id or ctx.instance_id or "").strip()
+            or f"{node_id}-{run_mode}"
+        )
+        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
+        activity_input["sandboxName"] = (
+            str(resolved_config.get("sandboxName") or "").strip()
+            or f"openshell-lg-{normalized_suffix}"
+        )[:63]
 
     fetched_plan_artifact: dict[str, Any] | None = None
     if (is_dapr_agent or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
@@ -2827,9 +2864,7 @@ def process_agent_child_workflow(
                 "approval": approval_result,
                 **execute_start_result,
             }
-        # OpenShell planned runs must continue on the direct runtime path after
-        # approval so granular sandbox/tool telemetry is emitted durably.
-        use_native_child_workflow = False
+        use_native_child_workflow = native_child_workflow_enabled
         run_mode = "execute_plan"
 
         if not use_native_child_workflow:
@@ -2972,6 +3007,7 @@ def process_agent_child_workflow(
             "workspaceRef": resolved_config.get("workspaceRef"),
             "cwd": resolved_config.get("cwd"),
             "executionId": tracked_execution_id,
+            "parentExecutionId": ctx.instance_id,
             "_otel": otel_ctx,
             "traceId": _trace_id_from_otel_context(otel_ctx),
         }
@@ -3018,6 +3054,18 @@ def process_agent_child_workflow(
                 child_input["profile"] = resolved_config.get("mode")
             if resolved_config.get("model") is not None:
                 child_input["model"] = resolved_config.get("model")
+            if resolved_config.get("threadId") is not None:
+                child_input["threadId"] = resolved_config.get("threadId")
+            if resolved_config.get("planningThreadId") is not None:
+                child_input["planningThreadId"] = resolved_config.get(
+                    "planningThreadId"
+                )
+            if resolved_config.get("executionThreadId") is not None:
+                child_input["executionThreadId"] = resolved_config.get(
+                    "executionThreadId"
+                )
+            if resolved_config.get("plannerResume") is not None:
+                child_input["plannerResume"] = resolved_config.get("plannerResume")
             if resolved_config.get("expectedOutput") is not None:
                 child_input["expectedOutput"] = resolved_config.get("expectedOutput")
             if resolved_config.get("verifyCommands") is not None:
@@ -3026,6 +3074,14 @@ def process_agent_child_workflow(
                 child_input["instructionsOverlay"] = resolved_config.get("instructionsOverlay")
             if resolved_config.get("approvalMode") is not None:
                 child_input["approvalMode"] = resolved_config.get("approvalMode")
+            if resolved_config.get("executeAfterApproval") is not None:
+                child_input["executeAfterApproval"] = resolved_config.get(
+                    "executeAfterApproval"
+                )
+            if resolved_config.get("approvalTimeoutMinutes") is not None:
+                child_input["approvalTimeoutMinutes"] = resolved_config.get(
+                    "approvalTimeoutMinutes"
+                )
             if resolved_config.get("toolPolicy") is not None:
                 child_input["toolPolicy"] = resolved_config.get("toolPolicy")
             if resolved_config.get("writePolicy") is not None:
@@ -3092,6 +3148,26 @@ def process_agent_child_workflow(
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )
+        if db_execution_id:
+            try:
+                from activities.track_agent_run import track_agent_run_running
+
+                yield ctx.call_activity(
+                    track_agent_run_running,
+                    input={
+                        "id": child_instance_id,
+                        "result": {
+                            "agentWorkflowId": child_instance_id,
+                            "daprInstanceId": child_instance_id,
+                            "status": "running",
+                        },
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    f"[Agent Workflow] Failed to persist native child running row for {child_instance_id}: {track_err}"
+                )
         timeout_timer = ctx.create_timer(timedelta(minutes=timeout_minutes))
         completed_task = yield wf.when_any([child_task, timeout_timer])
 
@@ -3460,6 +3536,27 @@ def process_agent_child_workflow(
                 instance_id=execute_child_instance_id,
                 app_id=orchestrator_config.DAPR_AGENT_APP_ID,
             )
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_running
+
+                    yield ctx.call_activity(
+                        track_agent_run_running,
+                        input={
+                            "id": execute_child_instance_id,
+                            "result": {
+                                "agentWorkflowId": execute_child_instance_id,
+                                "daprInstanceId": execute_child_instance_id,
+                                "status": "running",
+                                "artifactRef": planned_payload.get("artifactRef"),
+                            },
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        f"[Agent Workflow] Failed to persist execute child running row for {execute_child_instance_id}: {track_err}"
+                    )
             execute_timeout = ctx.create_timer(timedelta(minutes=timeout_minutes))
             execute_completed_task = yield wf.when_any([execute_child_task, execute_timeout])
             if execute_completed_task == execute_timeout:
