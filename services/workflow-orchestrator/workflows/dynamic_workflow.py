@@ -2077,11 +2077,9 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
     is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
-    is_openshell_agent = action_type in {
-        "openshell/run",
-        "openshell-langgraph/run",
-    }
+    is_openshell_agent = action_type == "openshell/run"
     is_dapr_agent = action_type == "dapr-agent/run"
+    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2102,7 +2100,7 @@ def process_agent_child_workflow(
     prompt = str(resolved_config.get("prompt", "") or "").strip()
     if (
         not prompt
-        and (is_dapr_agent or is_openshell_agent)
+        and (uses_dapr_agent_runtime or is_openshell_agent)
         and artifact_ref
         and mode == "execute_direct"
     ):
@@ -2111,7 +2109,7 @@ def process_agent_child_workflow(
         prompt = "Execute the provided plan"
     if not prompt and action_type == "durable/execute-plan-dag":
         prompt = "Execute the plan as a DAG workflow"
-    if not prompt and (is_ms_agent or (is_dapr_agent and mode == "plan_mode")):
+    if not prompt and (is_ms_agent or (uses_dapr_agent_runtime and mode == "plan_mode")):
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
@@ -2154,7 +2152,7 @@ def process_agent_child_workflow(
         from activities.call_agent_service import call_openshell_agent_run
 
         call_activity_fn = call_openshell_agent_run
-    elif is_dapr_agent:
+    elif uses_dapr_agent_runtime:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         call_activity_fn = None
     elif action_type == "durable/execute-plan-dag":
@@ -2178,7 +2176,7 @@ def process_agent_child_workflow(
         True
         if is_ms_agent
         else True
-        if is_dapr_agent
+        if uses_dapr_agent_runtime
         else False
         if is_openshell_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
@@ -2261,7 +2259,7 @@ def process_agent_child_workflow(
         )[:63]
 
     fetched_plan_artifact: dict[str, Any] | None = None
-    if (is_dapr_agent or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
+    if (uses_dapr_agent_runtime or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
         from activities.persist_plan_artifact import fetch_plan_artifact
 
         fetched = yield ctx.call_activity(
@@ -2950,7 +2948,7 @@ def process_agent_child_workflow(
                 if is_ms_agent
                 else (
                     orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
-                    if is_dapr_agent
+                    if uses_dapr_agent_runtime
                     else (
                         orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
                         if run_mode == "execute_plan"
@@ -2962,12 +2960,18 @@ def process_agent_child_workflow(
         )
         mode_suffix = (
             "plan"
-            if is_dapr_agent and run_mode == "plan_mode"
+            if uses_dapr_agent_runtime and run_mode == "plan_mode"
             else "execute-plan"
             if run_mode == "execute_plan"
             else "run"
         )
-        child_prefix = "msagent" if is_ms_agent else "dapr" if is_dapr_agent else "durable"
+        child_prefix = (
+            "msagent"
+            if is_ms_agent
+            else "dapr"
+            if uses_dapr_agent_runtime
+            else "durable"
+        )
         child_execution_index = _next_node_execution_count(
             node_execution_counts,
             node_id,
@@ -2998,7 +3002,7 @@ def process_agent_child_workflow(
                 verify_commands=resolved_config.get("verifyCommands"),
                 stop_condition=stop_condition,
             )
-            if is_dapr_agent and run_mode == "plan_mode"
+            if uses_dapr_agent_runtime and run_mode == "plan_mode"
             else _build_run_prompt(
                 prompt,
                 stop_condition,
@@ -3042,7 +3046,7 @@ def process_agent_child_workflow(
                 max_iterations = None
             if max_iterations is not None and max_iterations > 0:
                 child_input["maxIterations"] = max_iterations
-        elif is_dapr_agent:
+        elif uses_dapr_agent_runtime:
             child_input["mode"] = (
                 "feature_delivery_plan"
                 if run_mode == "plan_mode"
@@ -3138,7 +3142,7 @@ def process_agent_child_workflow(
                 )
 
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.DAPR_AGENT_APP_ID if is_dapr_agent else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
@@ -3148,7 +3152,7 @@ def process_agent_child_workflow(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
                 else orchestrator_config.DAPR_AGENT_APP_ID
-                if is_dapr_agent
+                if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )
@@ -3191,7 +3195,7 @@ def process_agent_child_workflow(
                     terminate_ms_agent_run
                     if is_ms_agent
                     else terminate_dapr_agent_run
-                    if is_dapr_agent
+                    if uses_dapr_agent_runtime
                     else terminate_durable_agent_run,
                     input={
                         "agentWorkflowId": child_instance_id,
@@ -3220,7 +3224,7 @@ def process_agent_child_workflow(
                     orchestrator_config.MS_AGENT_APP_ID
                     if is_ms_agent
                     else orchestrator_config.DAPR_AGENT_APP_ID
-                    if is_dapr_agent
+                    if uses_dapr_agent_runtime
                     else orchestrator_config.DURABLE_AGENT_APP_ID
                 ),
                 "error": f"Agent timed out after {timeout_minutes} minutes",
@@ -3252,7 +3256,7 @@ def process_agent_child_workflow(
         raw_result = child_task.get_result()
         if not isinstance(raw_result, dict):
             raw_result = {"content": str(raw_result)}
-        if is_dapr_agent and run_mode == "plan_mode":
+        if uses_dapr_agent_runtime and run_mode == "plan_mode":
             from activities.persist_plan_artifact import (
                 persist_plan_artifact,
                 update_plan_artifact_status,
@@ -3654,7 +3658,7 @@ def process_agent_child_workflow(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
                 else orchestrator_config.DAPR_AGENT_APP_ID
-                if is_dapr_agent
+                if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )
@@ -3668,7 +3672,7 @@ def process_agent_child_workflow(
                 result_payload["error"] = (
                     "Stop condition requires file changes, but child result explicitly reports no file changes."
                 )
-            elif is_dapr_agent:
+            elif uses_dapr_agent_runtime:
                 result_payload["success"] = False
                 result_payload["error"] = (
                     "Stop condition requires file changes, but the Dapr agent result did not provide verifiable file-change evidence."
