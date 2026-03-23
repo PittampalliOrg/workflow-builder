@@ -15,7 +15,10 @@ import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
 import { appConnections, workflowExecutions, workflows } from "@/lib/db/schema";
-import { generateWorkflowDefinition } from "@/lib/workflow-definition";
+import {
+	buildWorkflowExecutionIR,
+	WORKFLOW_EXECUTION_IR_VERSION,
+} from "@/lib/workflow-contract";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 function extractTraceHeaders(request: Request): Record<string, string> {
@@ -91,17 +94,20 @@ export async function POST(request: Request) {
 			);
 		}
 
-		// Generate workflow definition
-		const definition = generateWorkflowDefinition(
+		const executionIr = buildWorkflowExecutionIR({
+			workflowId,
+			name: workflow.name,
+			description: workflow.description || undefined,
+			author: session.user.email || session.user.id,
 			nodes,
 			edges,
-			workflowId,
-			workflow.name,
-			{
-				description: workflow.description || undefined,
-				author: session.user.email || session.user.id,
-			},
-		);
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
+		});
 
 		// Get orchestrator URL from Dapr config (falls back to env vars)
 		const defaultUrl = await getOrchestratorUrlAsync();
@@ -174,13 +180,15 @@ export async function POST(request: Request) {
 				phase: "running",
 				progress: 0,
 				input: triggerData,
+				executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+				executionIr,
 			})
 			.returning();
 
 		// Start the workflow
 		const result = await genericOrchestratorClient.startWorkflow(
 			orchestratorUrl,
-			definition,
+			executionIr.definition,
 			triggerData,
 			integrations,
 			execution.id,
@@ -195,6 +203,8 @@ export async function POST(request: Request) {
 				daprInstanceId: result.instanceId,
 				phase: "running",
 				progress: 0,
+				executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+				executionIr,
 			})
 			.where(eq(workflowExecutions.id, execution.id));
 

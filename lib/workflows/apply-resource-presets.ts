@@ -1,4 +1,5 @@
 import type { WorkflowResourceRefInput } from "@/lib/db/resources";
+import { resolveSandboxProfile } from "@/lib/agent-system/sandbox-profiles";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -176,6 +177,10 @@ export async function applyResourcePresetsToNodes(input: {
 		const modelSpec = `${resolvedProfile.snapshot.model.provider}/${resolvedProfile.snapshot.model.name}`;
 		const toolNames = resolvedProfile.snapshot.tools.map((tool) => tool.ref);
 		const configuration = buildRuntimeConfiguration(config);
+		const sandboxProfileRef =
+			resolvedProfile.snapshot.preferredSandboxProfile ??
+			resolvedProfile.snapshot.preferredExecutionProfile;
+		const sandboxProfile = resolveSandboxProfile(sandboxProfileRef);
 
 		config.agentProfileTemplateVersion =
 			resolvedProfile.templateVersion.version;
@@ -221,6 +226,8 @@ export async function applyResourcePresetsToNodes(input: {
 				requiredCapabilities: resolvedProfile.snapshot.requiredCapabilities,
 				preferredExecutionProfile:
 					resolvedProfile.snapshot.preferredExecutionProfile,
+				preferredSandboxProfile: sandboxProfileRef,
+				workspaceBackend: sandboxProfile?.backend ?? null,
 				...(configuration ? { configuration } : {}),
 			};
 			if (!config.requiredCapabilities) {
@@ -230,6 +237,12 @@ export async function applyResourcePresetsToNodes(input: {
 			if (!config.preferredExecutionProfile) {
 				config.preferredExecutionProfile =
 					resolvedProfile.snapshot.preferredExecutionProfile;
+			}
+			if (!config.preferredSandboxProfile) {
+				config.preferredSandboxProfile = sandboxProfileRef;
+			}
+			if (!config.workspaceBackend && sandboxProfile?.backend) {
+				config.workspaceBackend = sandboxProfile.backend;
 			}
 		} else {
 			config.agentConfig = {
@@ -242,6 +255,8 @@ export async function applyResourcePresetsToNodes(input: {
 				requiredCapabilities: resolvedProfile.snapshot.requiredCapabilities,
 				preferredExecutionProfile:
 					resolvedProfile.snapshot.preferredExecutionProfile,
+				preferredSandboxProfile: sandboxProfileRef,
+				workspaceBackend: sandboxProfile?.backend ?? null,
 				...(configuration ? { configuration } : {}),
 			};
 			config.model = modelSpec;

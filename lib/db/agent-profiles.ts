@@ -48,6 +48,7 @@ type AgentProfileCapabilityConfig = {
 	agentType?: string;
 	requiredCapabilities?: string[];
 	preferredExecutionProfile?: string;
+	preferredSandboxProfile?: string;
 };
 
 type AgentProfileInteractionConfig = {
@@ -70,6 +71,7 @@ export type AgentProfileSnapshot = {
 	memoryConfig: Record<string, unknown> | null;
 	requiredCapabilities: string[];
 	preferredExecutionProfile: string | null;
+	preferredSandboxProfile: string | null;
 };
 
 export type ResolvedAgentProfile = {
@@ -171,6 +173,10 @@ function defaultExecutionProfileForAgentType(agentType: string): string | null {
 		return "node-pnpm";
 	}
 	return null;
+}
+
+function defaultSandboxProfileForAgentType(agentType: string): string | null {
+	return defaultExecutionProfileForAgentType(agentType);
 }
 
 function coerceObject(input: unknown): Record<string, unknown> {
@@ -408,6 +414,7 @@ function buildSnapshot(params: {
 				: null,
 		requiredCapabilities: [],
 		preferredExecutionProfile: null,
+		preferredSandboxProfile: null,
 	};
 
 	const normalizedRequiredCapabilities = normalizeCapabilities(
@@ -422,6 +429,12 @@ function buildSnapshot(params: {
 		capabilityCfg.preferredExecutionProfile.trim()
 			? capabilityCfg.preferredExecutionProfile.trim()
 			: defaultExecutionProfileForAgentType(snapshot.agentType);
+	snapshot.preferredSandboxProfile =
+		typeof capabilityCfg.preferredSandboxProfile === "string" &&
+		capabilityCfg.preferredSandboxProfile.trim()
+			? capabilityCfg.preferredSandboxProfile.trim()
+			: (snapshot.preferredExecutionProfile ??
+				defaultSandboxProfileForAgentType(snapshot.agentType));
 
 	const warnings = [
 		...coerceWarnings(templateVersion.compatibility),

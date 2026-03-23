@@ -1036,6 +1036,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 										agentConfig.preferredExecutionProfile.trim()
 									? agentConfig.preferredExecutionProfile.trim()
 									: undefined;
+						const preferredSandboxProfile =
+							typeof args.preferredSandboxProfile === "string" &&
+							args.preferredSandboxProfile.trim()
+								? args.preferredSandboxProfile.trim()
+								: typeof agentConfig?.preferredSandboxProfile === "string" &&
+										agentConfig.preferredSandboxProfile.trim()
+									? agentConfig.preferredSandboxProfile.trim()
+									: undefined;
 						const runMode =
 							typeof args.mode === "string"
 								? args.mode.trim().toLowerCase()
@@ -1096,6 +1104,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								tools: args.tools,
 								requiredCapabilities,
 								preferredExecutionProfile,
+								preferredSandboxProfile,
 								writePolicy: args.writePolicy,
 								shellPolicy: args.shellPolicy,
 								artifactRef: args.artifactRef,

@@ -4,6 +4,7 @@ import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
+import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
 import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
@@ -37,6 +38,8 @@ export async function GET(request: Request) {
 			return NextResponse.json({
 				nodes: [],
 				edges: [],
+				specVersion: null,
+				spec: null,
 			});
 		}
 
@@ -44,6 +47,9 @@ export async function GET(request: Request) {
 			id: currentWorkflow.id,
 			nodes: currentWorkflow.nodes,
 			edges: currentWorkflow.edges,
+			specVersion:
+				(currentWorkflow as Record<string, unknown>).specVersion ?? null,
+			spec: (currentWorkflow as Record<string, unknown>).spec ?? null,
 		});
 	} catch (error) {
 		console.error("Failed to get current workflow:", error);
@@ -83,6 +89,12 @@ export async function POST(request: Request) {
 			userId: session.user.id,
 			projectId: session.user.projectId,
 		});
+		const canonicalSpec = resolveCanonicalWorkflowSpec({
+			name: CURRENT_WORKFLOW_NAME,
+			description: "Auto-saved current workflow",
+			nodes: presetApplied.nodes as any[],
+			edges,
+		});
 
 		// Check if current workflow exists
 		const [existingWorkflow] = await db
@@ -103,6 +115,8 @@ export async function POST(request: Request) {
 				.set({
 					nodes: presetApplied.nodes as any[],
 					edges,
+					specVersion: canonicalSpec.specVersion,
+					spec: canonicalSpec.spec,
 					updatedAt: new Date(),
 				})
 				.where(eq(workflows.id, existingWorkflow.id))
@@ -117,6 +131,9 @@ export async function POST(request: Request) {
 				id: updatedWorkflow.id,
 				nodes: updatedWorkflow.nodes,
 				edges: updatedWorkflow.edges,
+				specVersion:
+					(updatedWorkflow as Record<string, unknown>).specVersion ?? null,
+				spec: (updatedWorkflow as Record<string, unknown>).spec ?? null,
 			});
 		}
 
@@ -131,6 +148,8 @@ export async function POST(request: Request) {
 				description: "Auto-saved current workflow",
 				nodes: presetApplied.nodes as any[],
 				edges,
+				specVersion: canonicalSpec.specVersion,
+				spec: canonicalSpec.spec,
 				userId: session.user.id,
 				projectId: session.user.projectId,
 			})
@@ -145,6 +164,9 @@ export async function POST(request: Request) {
 			id: savedWorkflow.id,
 			nodes: savedWorkflow.nodes,
 			edges: savedWorkflow.edges,
+			specVersion:
+				(savedWorkflow as Record<string, unknown>).specVersion ?? null,
+			spec: (savedWorkflow as Record<string, unknown>).spec ?? null,
 		});
 	} catch (error) {
 		console.error("Failed to save current workflow:", error);

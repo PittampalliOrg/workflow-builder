@@ -526,7 +526,7 @@ def _coerce_string_list(value: object) -> list[str]:
 def _infer_coding_agent_capability_defaults(
     resolved_config: dict[str, Any],
     agent_config: dict[str, Any],
-) -> tuple[list[str], str | None]:
+) -> tuple[list[str], str | None, str | None]:
     agent_profile_ref = (
         resolved_config.get("agentProfileRef")
         if isinstance(resolved_config.get("agentProfileRef"), dict)
@@ -540,14 +540,14 @@ def _infer_coding_agent_capability_defaults(
         or template_slug == "coding-agent"
         or "coding agent" in agent_name
     ):
-        return (["git", "bash"], "node-pnpm")
-    return ([], None)
+        return (["git", "bash"], "node-pnpm", "node-pnpm")
+    return ([], None, None)
 
 
 def _resolve_workspace_capability_requirements(
     resolved_config: dict[str, Any],
     agent_config: dict[str, Any],
-) -> tuple[list[str], str | None, list[str]]:
+) -> tuple[list[str], str | None, str | None, list[str]]:
     required_capabilities = _coerce_string_list(
         resolved_config.get("requiredCapabilities")
     )
@@ -563,15 +563,39 @@ def _resolve_workspace_capability_requirements(
         ).strip()
         or None
     )
-    if not required_capabilities and not preferred_execution_profile:
-        inferred_required, inferred_profile = _infer_coding_agent_capability_defaults(
+    preferred_sandbox_profile = (
+        str(
+            resolved_config.get("preferredSandboxProfile")
+            or agent_config.get("preferredSandboxProfile")
+            or ""
+        ).strip()
+        or None
+    )
+    if (
+        not required_capabilities
+        and not preferred_execution_profile
+        and not preferred_sandbox_profile
+    ):
+        (
+            inferred_required,
+            inferred_profile,
+            inferred_sandbox_profile,
+        ) = _infer_coding_agent_capability_defaults(
             resolved_config,
             agent_config,
         )
         required_capabilities = inferred_required
         preferred_execution_profile = inferred_profile
+        preferred_sandbox_profile = inferred_sandbox_profile
+    if preferred_sandbox_profile is None:
+        preferred_sandbox_profile = preferred_execution_profile
     verify_commands = _coerce_string_list(resolved_config.get("verifyCommands"))
-    return required_capabilities, preferred_execution_profile, verify_commands
+    return (
+        required_capabilities,
+        preferred_execution_profile,
+        preferred_sandbox_profile,
+        verify_commands,
+    )
 
 
 def _is_native_child_workflow_enabled(
@@ -2379,7 +2403,12 @@ def process_agent_child_workflow(
         )[:63]
 
     workspace_ref = str(resolved_config.get("workspaceRef") or "").strip() or None
-    required_capabilities, preferred_execution_profile, verify_commands = (
+    (
+        required_capabilities,
+        preferred_execution_profile,
+        preferred_sandbox_profile,
+        verify_commands,
+    ) = (
         _resolve_workspace_capability_requirements(
             resolved_config,
             agent_config,
@@ -2403,7 +2432,9 @@ def process_agent_child_workflow(
                 "workspaceRef": workspace_ref,
                 "requiredCapabilities": required_capabilities,
                 "preferredExecutionProfile": preferred_execution_profile,
+                "sandboxProfileRef": preferred_sandbox_profile,
                 "verifyCommands": verify_commands,
+                "toolBackend": activity_input.get("toolBackend"),
                 "parentExecutionId": ctx.instance_id,
                 "executionId": tracked_execution_id,
                 "nodeId": node_id,
@@ -2445,6 +2476,8 @@ def process_agent_child_workflow(
                 "requiredCapabilities": required_capability_list or required_capabilities,
                 "missingCapabilities": missing_capabilities,
                 "preferredExecutionProfile": preferred_label,
+                "preferredSandboxProfile": failure_payload.get("preferredSandboxProfile")
+                or preferred_sandbox_profile,
                 "workspaceProfile": failure_payload.get("workspaceProfile"),
                 "result": failure_payload,
             }
@@ -2454,6 +2487,10 @@ def process_agent_child_workflow(
         activity_input["preferredExecutionProfile"] = (
             capability_validation.get("preferredExecutionProfile")
             or preferred_execution_profile
+        )
+        activity_input["preferredSandboxProfile"] = (
+            capability_validation.get("preferredSandboxProfile")
+            or preferred_sandbox_profile
         )
         activity_input["workspaceProfile"] = capability_validation.get(
             "workspaceProfile"
@@ -3221,6 +3258,10 @@ def process_agent_child_workflow(
         if activity_input.get("preferredExecutionProfile") is not None:
             child_input["preferredExecutionProfile"] = activity_input.get(
                 "preferredExecutionProfile"
+            )
+        if activity_input.get("preferredSandboxProfile") is not None:
+            child_input["preferredSandboxProfile"] = activity_input.get(
+                "preferredSandboxProfile"
             )
         if activity_input.get("workspaceProfile") is not None:
             child_input["workspaceProfile"] = activity_input.get("workspaceProfile")

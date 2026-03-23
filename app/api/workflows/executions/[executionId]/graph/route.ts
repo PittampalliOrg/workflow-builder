@@ -13,14 +13,17 @@ import { allowAnonymousDaprDebug } from "@/lib/dapr/debug-access";
 import { getWorkflowOrchestratorUrl } from "@/lib/config-service";
 import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
-import { workflows } from "@/lib/db/schema";
+import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { buildWorkflowRuntimeGraph } from "@/lib/workflow-runtime-graph";
+import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias";
 import type { DaprExecutionEvent } from "@/lib/types/workflow-ui";
 import type { GenericWorkflowHistoryEvent } from "@/lib/dapr-client";
 
 export const dynamic = "force-dynamic";
 
-function toExecutionEvents(events: GenericWorkflowHistoryEvent[]): DaprExecutionEvent[] {
+function toExecutionEvents(
+	events: GenericWorkflowHistoryEvent[],
+): DaprExecutionEvent[] {
 	return events.map((e) => ({
 		eventId: e.eventId ?? null,
 		eventType: e.eventType,
@@ -41,17 +44,38 @@ export async function GET(
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 
-	const { executionId: instanceId } = await params;
+	const { executionId: requestedExecutionId } = await params;
 
 	try {
+		const executionId =
+			await resolveWorkflowExecutionIdAlias(requestedExecutionId);
+		const execution = await db.query.workflowExecutions.findFirst({
+			where: eq(workflowExecutions.id, executionId),
+			with: {
+				workflow: true,
+			},
+		});
+
+		if (!execution) {
+			return NextResponse.json(
+				{ nodes: [], edges: [], source: "definition", layout: "auto" },
+				{ headers: { "Cache-Control": "no-store" } },
+			);
+		}
+
+		if (
+			!allowAnonymousDaprDebug() &&
+			execution.workflow.userId !== session?.user.id
+		) {
+			return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+		}
+
+		const instanceId = execution.daprInstanceId || execution.id;
 		const orchestratorUrl = await getWorkflowOrchestratorUrl();
 
 		// Fetch status and history in parallel
 		const [status, historyResponse] = await Promise.all([
-			genericOrchestratorClient.getWorkflowStatus(
-				orchestratorUrl,
-				instanceId,
-			),
+			genericOrchestratorClient.getWorkflowStatus(orchestratorUrl, instanceId),
 			genericOrchestratorClient
 				.getWorkflowHistory(orchestratorUrl, instanceId)
 				.catch(() => ({ instanceId, events: [] })),
@@ -59,7 +83,7 @@ export async function GET(
 
 		// Find the workflow definition in DB by name
 		const workflowName =
-			status.workflowName || status.workflowId || "unknown";
+			status.workflowName || status.workflowId || execution.workflow.name;
 		const [workflow] = await db
 			.select({ nodes: workflows.nodes, edges: workflows.edges })
 			.from(workflows)
@@ -78,7 +102,8 @@ export async function GET(
 			edges: workflow.edges,
 			executionHistory: toExecutionEvents(historyResponse.events),
 			daprStatus: {
-				runtimeStatus: status.runtimeStatus as import("@/lib/types/workflow-ui").DaprRuntimeStatus,
+				runtimeStatus:
+					status.runtimeStatus as import("@/lib/types/workflow-ui").DaprRuntimeStatus,
 				currentNodeId: status.currentNodeId,
 				currentNodeName: status.currentNodeName,
 				error: status.error,

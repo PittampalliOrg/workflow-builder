@@ -7,9 +7,11 @@ as durable Dapr workflows and report completion via pub/sub external events.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
+from pathlib import Path
 from urllib.parse import quote
 
 import httpx
@@ -29,6 +31,39 @@ MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
 _OPEN_TAG = "<proposed_plan>"
 _CLOSE_TAG = "</proposed_plan>"
 _PLAN_LINE_PATTERN = re.compile(r"^\s*(?:[-*]|\d+\.)\s+(.*\S)\s*$")
+_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] | None = None
+_DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] = {
+    "base": {
+        "id": "base",
+        "backend": "local",
+        "declaredCapabilities": ["bash", "git"],
+        "sandboxImage": None,
+    },
+    "node-pnpm": {
+        "id": "node-pnpm",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "node", "pnpm"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "node-npm": {
+        "id": "node-npm",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "node", "npm"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "python": {
+        "id": "python",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "python"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "python-uv": {
+        "id": "python-uv",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "python", "uv"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+}
 
 
 def _post_json_with_details(
@@ -73,6 +108,165 @@ def _as_bool(value: object, default: bool) -> bool:
         if normalized == "false":
             return False
     return default
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [
+            str(item).strip().lower()
+            for item in value
+            if str(item).strip()
+        ]
+    if isinstance(value, str):
+        return [
+            item.strip().lower()
+            for item in value.split(",")
+            if item.strip()
+        ]
+    return []
+
+
+def _verify_command_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [line.strip() for line in value.splitlines() if line.strip()]
+    return []
+
+
+def _load_sandbox_profile_catalog() -> dict[str, dict[str, object]]:
+    global _SANDBOX_PROFILE_CATALOG
+    if _SANDBOX_PROFILE_CATALOG is not None:
+        return _SANDBOX_PROFILE_CATALOG
+    catalog_path: Path | None = None
+    for candidate in (
+        Path(__file__).resolve().parent.parent.parent / "config" / "sandbox-profiles.json",
+        Path.cwd() / "config" / "sandbox-profiles.json",
+    ):
+        if candidate.exists():
+            catalog_path = candidate
+            break
+    try:
+        parsed = (
+            json.loads(catalog_path.read_text(encoding="utf-8"))
+            if catalog_path is not None
+            else {}
+        )
+    except Exception:
+        parsed = {}
+    profiles = parsed.get("profiles") if isinstance(parsed, dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+    _SANDBOX_PROFILE_CATALOG = {
+        str(profile_id): value
+        for profile_id, value in profiles.items()
+        if isinstance(value, dict)
+    }
+    if not _SANDBOX_PROFILE_CATALOG:
+        _SANDBOX_PROFILE_CATALOG = dict(_DEFAULT_SANDBOX_PROFILE_CATALOG)
+    return _SANDBOX_PROFILE_CATALOG
+
+
+def _resolve_sandbox_profile(input_data: dict, result: dict) -> dict[str, object] | None:
+    profile_ref = (
+        str(
+            input_data.get("sandboxProfileRef")
+            or result.get("sandboxProfileRef")
+            or result.get("preferredSandboxProfile")
+            or result.get("preferredExecutionProfile")
+            or result.get("executionProfile")
+            or input_data.get("preferredSandboxProfile")
+            or input_data.get("preferredExecutionProfile")
+            or ""
+        ).strip()
+        or None
+    )
+    if profile_ref is None:
+        return None
+    return _load_sandbox_profile_catalog().get(profile_ref)
+
+
+def _merge_openshell_capability_validation(
+    result: dict,
+    input_data: dict,
+) -> dict:
+    sandbox_profile = _resolve_sandbox_profile(input_data, result)
+    backend = (
+        str(input_data.get("toolBackend") or "").strip().lower()
+        or str((sandbox_profile or {}).get("backend") or "").strip().lower()
+    )
+    if backend != "openshell":
+        return result
+
+    preferred_execution_profile = (
+        str(
+            result.get("preferredExecutionProfile")
+            or result.get("executionProfile")
+            or input_data.get("preferredExecutionProfile")
+            or ""
+        ).strip()
+        or None
+    )
+    sandbox_profile_ref = (
+        str(
+            input_data.get("sandboxProfileRef")
+            or result.get("sandboxProfileRef")
+            or result.get("preferredSandboxProfile")
+            or preferred_execution_profile
+            or ""
+        ).strip()
+        or None
+    )
+    required_capabilities = set(
+        _string_list(result.get("requiredCapabilities"))
+        or _string_list(input_data.get("requiredCapabilities"))
+    )
+    if preferred_execution_profile == "node-pnpm":
+        required_capabilities.update({"bash", "git", "node", "pnpm"})
+    elif preferred_execution_profile == "node-npm":
+        required_capabilities.update({"bash", "git", "node", "npm"})
+
+    for command in _verify_command_list(input_data.get("verifyCommands")):
+        first = shlex.split(command)[0].strip().lower() if command.strip() else ""
+        if first == "pnpm":
+            required_capabilities.update({"node", "pnpm"})
+        elif first in {"npm", "npx"}:
+            required_capabilities.update({"node", "npm"})
+
+    available_capabilities = set(_string_list(result.get("availableCapabilities")))
+    available_capabilities.update(
+        _string_list((sandbox_profile or {}).get("declaredCapabilities"))
+    )
+    missing_capabilities = sorted(required_capabilities - available_capabilities)
+
+    workspace_profile = (
+        dict(result.get("workspaceProfile"))
+        if isinstance(result.get("workspaceProfile"), dict)
+        else {}
+    )
+    workspace_profile["backend"] = "openshell"
+    workspace_profile["availableCapabilities"] = sorted(available_capabilities)
+    workspace_profile["requiredCapabilities"] = sorted(required_capabilities)
+    if sandbox_profile_ref:
+        workspace_profile["sandboxProfileRef"] = sandbox_profile_ref
+    if sandbox_profile and sandbox_profile.get("sandboxImage"):
+        workspace_profile["sandboxImage"] = sandbox_profile.get("sandboxImage")
+    if preferred_execution_profile:
+        workspace_profile["preferredExecutionProfile"] = preferred_execution_profile
+        workspace_profile["executionProfile"] = preferred_execution_profile
+
+    merged = dict(result)
+    merged["workspaceProfile"] = workspace_profile
+    merged["availableCapabilities"] = sorted(available_capabilities)
+    merged["requiredCapabilities"] = sorted(required_capabilities)
+    merged["missingCapabilities"] = missing_capabilities
+    merged["preferredExecutionProfile"] = preferred_execution_profile
+    merged["preferredSandboxProfile"] = sandbox_profile_ref
+    merged["sandboxProfileRef"] = sandbox_profile_ref
+    if preferred_execution_profile:
+        merged["executionProfile"] = preferred_execution_profile
+    merged["success"] = len(missing_capabilities) == 0
+    return merged
 
 
 def _trace_id_from_traceparent(traceparent: object) -> str | None:
@@ -787,7 +981,7 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
     with start_activity_span("activity.validate_workspace_capabilities", otel, attrs):
         try:
             with httpx.Client(timeout=15.0) as client:
-                return _post_json_with_details(
+                result = _post_json_with_details(
                     client=client,
                     url=url,
                     payload={
@@ -796,10 +990,13 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
                         "preferredExecutionProfile": input_data.get(
                             "preferredExecutionProfile"
                         ),
+                        "sandboxProfileRef": input_data.get("sandboxProfileRef"),
                         "verifyCommands": input_data.get("verifyCommands"),
+                        "toolBackend": input_data.get("toolBackend"),
                     },
                     service_label="Workspace capability validation",
                 )
+                return _merge_openshell_capability_validation(result, input_data)
         except RuntimeError as exc:
             message = str(exc)
             if "HTTP 404" in message:

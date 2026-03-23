@@ -22,7 +22,10 @@ import {
 	toDurablePlanArtifactSummary,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
-import { generateWorkflowDefinition } from "@/lib/workflow-definition";
+import {
+	buildWorkflowExecutionIR,
+	WORKFLOW_EXECUTION_IR_VERSION,
+} from "@/lib/workflow-contract";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
@@ -406,16 +409,20 @@ export async function startInternalWorkflowExecution(input: {
 	const workflow = input.workflow;
 	const nodes = workflow.nodes as WorkflowNode[];
 	const edges = workflow.edges as WorkflowEdge[];
-	const definition = generateWorkflowDefinition(
+	const executionIr = buildWorkflowExecutionIR({
+		workflowId: workflow.id,
+		name: workflow.name,
+		description: workflow.description || undefined,
+		author: workflow.userId,
 		nodes,
 		edges,
-		workflow.id,
-		workflow.name,
-		{
-			description: workflow.description || undefined,
-			author: workflow.userId,
-		},
-	);
+		spec: (workflow as Record<string, unknown>).spec,
+		specVersion:
+			((workflow as Record<string, unknown>).specVersion as
+				| string
+				| null
+				| undefined) ?? null,
+	});
 	const nodeConnectionMap = await extractNodeConnectionMap(
 		nodes,
 		workflow.userId,
@@ -432,6 +439,8 @@ export async function startInternalWorkflowExecution(input: {
 			phase: "running",
 			progress: 0,
 			input: input.triggerData,
+			executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+			executionIr,
 		})
 		.returning();
 
@@ -441,7 +450,7 @@ export async function startInternalWorkflowExecution(input: {
 	try {
 		result = await genericOrchestratorClient.startWorkflow(
 			orchestratorUrl,
-			definition,
+			executionIr.definition,
 			input.triggerData,
 			{},
 			execution.id,
@@ -469,6 +478,8 @@ export async function startInternalWorkflowExecution(input: {
 			daprInstanceId: result.instanceId,
 			phase: "running",
 			progress: 0,
+			executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+			executionIr,
 		})
 		.where(eq(workflowExecutions.id, execution.id));
 

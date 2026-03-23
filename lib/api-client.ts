@@ -30,6 +30,7 @@ import type {
 	DaprDebugAppDetailResponse,
 	DaprDebugOverviewResponse,
 } from "./types/dapr-debug";
+import type { WorkflowSpec } from "./workflow-spec/types";
 import type {
 	AgentNodeProgress,
 	DurableAgentRunSummary,
@@ -50,6 +51,8 @@ export type WorkflowData = {
 	description?: string;
 	nodes: WorkflowNode[];
 	edges: WorkflowEdge[];
+	specVersion?: string | null;
+	spec?: WorkflowSpec | null;
 	visibility?: WorkflowVisibility;
 };
 
@@ -1778,6 +1781,7 @@ export type AgentProfileSnapshotData = {
 	memoryConfig: Record<string, unknown> | null;
 	requiredCapabilities: string[];
 	preferredExecutionProfile: string | null;
+	preferredSandboxProfile: string | null;
 };
 
 export type AgentProfileListItemData = {

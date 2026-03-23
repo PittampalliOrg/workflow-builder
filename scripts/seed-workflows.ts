@@ -28,6 +28,7 @@ import {
 	workflows,
 } from "../lib/db/schema";
 import { generateId } from "../lib/utils/id";
+import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 import { normalizeWorkflowNodes } from "../lib/workflows/normalize-nodes";
 
 const DATABASE_URL =
@@ -41,6 +42,12 @@ const AI_CODING_AGENT_WORKFLOW_ID = "aicodingagent001";
 const AI_CODING_AGENT_WORKFLOW_NAME = "AI Coding Agent";
 const AI_CODING_AGENT_WORKFLOW_DESCRIPTION =
 	"System workflow for ai/main coding sessions. Clones the selected repository into a sandbox, creates an OpenShell coding plan, waits for approval, and then executes the approved plan in the same run.";
+const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID =
+	"2mjd2mrptkf8zaxembsbp";
+const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_NAME =
+	"OpenShell LangGraph Feature Delivery";
+const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_DESCRIPTION =
+	"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.";
 const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
 const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
 const MS_AGENT_WORKFLOW_DESCRIPTION =
@@ -100,6 +107,23 @@ const PLANNER_INSTRUCTIONS =
 
 const EXECUTOR_INSTRUCTIONS =
 	"You are an autonomous coding agent operating on a real git workspace. Inspect relevant files before changing code, then make concrete file edits instead of returning only a plan. When code changes are requested, run targeted validation commands and iterate until failures are addressed. Prefer direct replacement of stale legacy code when a better implementation is required. Before finishing, confirm git diff is non-empty and report changed files, validation commands, and any remaining risks.";
+
+const OPENSHELL_FEATURE_IDS = {
+	trigger: "pyfRyGXMGC4XjyAsuUqHP",
+	profile: "bsvzX1JV4drJaHWrqJ0X6",
+	clone: "kd2jQ1LXuPulwa6DYrYcS",
+	plan: "UQTpn3KVZ_6Zv7uzA6ril",
+	execute: "084qYyW7OIG9R6ro3v2kR",
+	review: "0uS-4imBYrFvz81G63Lq5",
+} as const;
+
+const OPENSHELL_FEATURE_EDGE_IDS = [
+	"fivLJSWp--wp9jk60o3Zv",
+	"D-6Bw2hYnFuiv_iFPLnTJ",
+	"1scYFdFp6dscbGiMlWI7g",
+	"qa4XLL54R6_eKdss58ZRF",
+	"YpUGC9sdpzb2dcLzJQQ5f",
+] as const;
 
 async function resolveGithubUserId(db: ReturnType<typeof drizzle>) {
 	const configuredUserId =
@@ -277,6 +301,319 @@ async function resolveLatestGithubConnection(
 		connectionId: connection.id,
 		connectionExternalId: connection.externalId,
 	};
+}
+
+function buildOpenShellFeatureReviewCommand() {
+	return `cat <<'__WF_OPEN_SHELL_REVIEW__'
+OpenShell LangGraph execution review
+===================================
+Sandbox name:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.sandboxName}}
+
+Provider:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.provider}}
+
+File changes:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.fileChanges}}
+
+Change summary:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.changeSummary}}
+
+Snapshot refs:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.snapshotRefs}}
+
+Patch:
+{{@${OPENSHELL_FEATURE_IDS.execute}:OpenShell LangGraph Execute.patch}}
+__WF_OPEN_SHELL_REVIEW__`;
+}
+
+function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
+	connectionId?: string;
+	connectionExternalId?: string;
+	agentProfileVersion?: number;
+}) {
+	const connectionId = input?.connectionId;
+	const connectionExternalId = input?.connectionExternalId;
+	const agentProfileVersion = input?.agentProfileVersion ?? 2;
+	const workspaceRef = `{{@${OPENSHELL_FEATURE_IDS.profile}:Workspace Profile.workspaceRef}}`;
+	const clonePath = `{{@${OPENSHELL_FEATURE_IDS.clone}:Workspace Clone.clonePath}}`;
+	const executionId = `{{@${OPENSHELL_FEATURE_IDS.profile}:Workspace Profile.executionId}}`;
+	const authValue = connectionExternalId
+		? `{{connections['${connectionExternalId}']}}`
+		: "{{connections['github']}}";
+	const agentProfileRef = JSON.stringify({
+		id: AGENT_PROFILE_TEMPLATE_ID,
+		slug: "coding-agent",
+		name: "Coding Agent",
+		version: agentProfileVersion,
+	});
+	const agentConfig = JSON.stringify({
+		name: "Coding Agent",
+		instructions: EXECUTOR_INSTRUCTIONS,
+		modelSpec: "gpt-5.4",
+		maxTurns: 260,
+		timeoutMinutes: 120,
+		tools: ["glob", "grep", "read", "edit", "write", "bash"],
+		requiredCapabilities: ["git", "bash"],
+		preferredExecutionProfile: "node-pnpm",
+		preferredSandboxProfile: "node-pnpm",
+		workspaceBackend: "openshell",
+	});
+
+	return normalizeWorkflowNodes([
+		{
+			id: OPENSHELL_FEATURE_IDS.trigger,
+			type: "trigger",
+			position: { x: 12, y: 12 },
+			data: {
+				type: "trigger",
+				label: "Manual Trigger",
+				description:
+					"Run this workflow and paste the feature request into the Run Workflow form.",
+				config: {
+					triggerType: "Manual",
+					inputSchema: JSON.stringify([
+						{
+							name: "feature_request",
+							type: "TEXT",
+							required: true,
+							description:
+								"Describe the feature, bug fix, or implementation task for this run.",
+						},
+					]),
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.profile,
+			type: "action",
+			position: { x: 12, y: 224 },
+			data: {
+				type: "action",
+				label: "Workspace Profile",
+				description: "Create an execution-scoped workspace session.",
+				config: {
+					name: "openshell-langgraph-feature-delivery",
+					actionType: "workspace/profile",
+					enabledTools: JSON.stringify([
+						"read",
+						"write",
+						"edit",
+						"list",
+						"bash",
+					]),
+					commandTimeoutMs: "120000",
+					requireReadBeforeWrite: "true",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.clone,
+			type: "action",
+			position: { x: 12, y: 436 },
+			data: {
+				type: "action",
+				label: "Workspace Clone",
+				description: "Clone the target repository into the workspace.",
+				config: {
+					auth: authValue,
+					targetDir: "workflow-builder",
+					actionType: "workspace/clone",
+					workspaceRef,
+					repositoryOwner: "PittampalliOrg",
+					repositoryRepo: "ai-chatbot",
+					repositoryBranch: "main",
+					...(connectionId ? { integrationId: connectionId } : {}),
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.plan,
+			type: "action",
+			position: { x: 12, y: 648 },
+			data: {
+				type: "action",
+				label: "OpenShell LangGraph Plan",
+				description:
+					"Inspect the repository inside OpenShell, build a concrete implementation plan, and wait for approval.",
+				config: {
+					cwd: clonePath,
+					mode: "plan_mode",
+					model: "gpt-5.4",
+					tools: JSON.stringify([
+						"glob",
+						"grep",
+						"read",
+						"edit",
+						"write",
+						"bash",
+					]),
+					engine: "langgraph",
+					prompt:
+						"You are planning a repository feature delivery task for this specific codebase.\n\nUser feature request:\n{{@trigger:Manual.feature_request}}\n\nPlanning requirements:\n- Inspect the repository first and stay read-only during this step.\n- Build a concrete implementation plan for this exact repository, not a generic solution.\n- Prefer the smallest cohesive change set that satisfies the request.\n- Identify the likely files/modules to touch, tests to add or update, validation commands to run, and any important risks or assumptions.\n- If the request is underspecified, make the minimum necessary assumptions and state them explicitly.\n\nReturn only the final implementation plan for approval.",
+					profile: "feature-delivery",
+					maxTurns: "24",
+					actionType: "openshell-langgraph/run",
+					toolPolicy: "all",
+					agentConfig,
+					shellPolicy: "workspace-safe",
+					writePolicy: "workspace-only",
+					workspaceRef,
+					repositoryUrl:
+						"https://github.com/PittampalliOrg/workflow-builder.git",
+					stopCondition:
+						"An implementation plan exists for the user request and is ready for review and approval.",
+					expectedOutput:
+						"An approved implementation plan with impacted files, validation steps, assumptions, and risks.",
+					repositoryRepo: "workflow-builder",
+					timeoutMinutes: "60",
+					verifyCommands: "pnpm type-check\npnpm fix",
+					agentProfileRef,
+					repositoryOwner: "PittampalliOrg",
+					sandboxRepoPath: "/sandbox/repo",
+					planningThreadId: `lg:plan:${executionId}`,
+					repositoryBranch: "main",
+					workspaceBackend: "openshell",
+					executionThreadId: `lg:exec:${executionId}`,
+					instructionsOverlay: `${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}`,
+					executeAfterApproval: "false",
+					requiredCapabilities: JSON.stringify(["git", "bash"]),
+					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
+					approvalTimeoutMinutes: "1440",
+					preferredSandboxProfile: "node-pnpm",
+					preferredExecutionProfile: "node-pnpm",
+					agentProfileTemplateVersion: String(agentProfileVersion),
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.execute,
+			type: "action",
+			position: { x: 12, y: 860 },
+			data: {
+				type: "action",
+				label: "OpenShell LangGraph Execute",
+				description:
+					"Implement the approved plan inside OpenShell, validate the changes, and summarize the result.",
+				config: {
+					cwd: clonePath,
+					mode: "execute_direct",
+					model: "gpt-5.4",
+					tools: JSON.stringify([
+						"glob",
+						"grep",
+						"read",
+						"edit",
+						"write",
+						"bash",
+					]),
+					engine: "langgraph",
+					prompt:
+						"Implement the approved feature plan for this repository.\n\nOriginal user feature request:\n{{@trigger:Manual.feature_request}}\n\nExecution requirements:\n- Follow the approved plan artifact as the primary source of truth.\n- Match existing repository patterns and architecture.\n- Keep the change set cohesive and avoid unrelated edits.\n- Add or update tests when behavior changes.\n- Run the provided validation commands and any targeted checks needed for the changed code.\n- If the approved plan needs a small adaptation based on repository realities, make the smallest justified adjustment and explain it clearly in the final summary.\n\nReturn a concise engineering summary that includes changed files, verification results, and residual risks.",
+					profile: "implement",
+					maxTurns: "80",
+					actionType: "openshell-langgraph/run",
+					toolPolicy: "all",
+					agentConfig,
+					artifactRef: `{{@${OPENSHELL_FEATURE_IDS.plan}:OpenShell LangGraph Plan.artifactRef}}`,
+					shellPolicy: "workspace-safe",
+					writePolicy: "workspace-only",
+					workspaceRef,
+					repositoryUrl:
+						"https://github.com/PittampalliOrg/workflow-builder.git",
+					stopCondition:
+						"The requested feature is implemented, relevant verification has been run, and the final response includes changed files, verification results, and residual risks.",
+					expectedOutput:
+						"A concise engineering summary, changed-file list, verification results, and residual risks.",
+					repositoryRepo: "workflow-builder",
+					timeoutMinutes: "60",
+					verifyCommands: "pnpm type-check\npnpm fix",
+					agentProfileRef,
+					repositoryOwner: "PittampalliOrg",
+					sandboxRepoPath: "/sandbox/repo",
+					planningThreadId: `lg:plan:${executionId}`,
+					repositoryBranch: "main",
+					workspaceBackend: "openshell",
+					executionThreadId: `lg:exec:${executionId}`,
+					instructionsOverlay: `${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}`,
+					requiredCapabilities: JSON.stringify(["git", "bash"]),
+					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
+					preferredSandboxProfile: "node-pnpm",
+					preferredExecutionProfile: "node-pnpm",
+					agentProfileTemplateVersion: String(agentProfileVersion),
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.review,
+			type: "action",
+			position: { x: 12, y: 1072 },
+			data: {
+				type: "action",
+				label: "Review Workspace Changes",
+				description:
+					"Show persisted OpenShell file change context from the execute step output.",
+				config: {
+					command: buildOpenShellFeatureReviewCommand(),
+					timeoutMs: "120000",
+					actionType: "workspace/command",
+					workspaceRef,
+					continueOnError: "true",
+				},
+				status: "idle",
+			},
+		},
+	]);
+}
+
+function buildOpenShellLangGraphFeatureDeliveryEdges() {
+	return [
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[0],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.trigger,
+			target: OPENSHELL_FEATURE_IDS.profile,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[1],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.profile,
+			target: OPENSHELL_FEATURE_IDS.clone,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[2],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.clone,
+			target: OPENSHELL_FEATURE_IDS.plan,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[3],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.plan,
+			target: OPENSHELL_FEATURE_IDS.execute,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[4],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.execute,
+			target: OPENSHELL_FEATURE_IDS.review,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+	];
 }
 
 function buildNodes(profileVersion: number) {
@@ -1586,7 +1923,15 @@ async function upsertWorkflow(params: {
 	projectId: string;
 	nodes: ReturnType<typeof normalizeWorkflowNodes>;
 	edges: ReturnType<typeof buildEdges>;
+	visibility?: "private" | "public";
 }) {
+	const resolved = resolveCanonicalWorkflowSpec({
+		name: params.name,
+		description: params.description,
+		nodes: params.nodes as never,
+		edges: params.edges as never,
+	});
+	const visibility = params.visibility ?? "private";
 	const existing = await params.db.query.workflows.findFirst({
 		where: eq(workflows.id, params.workflowId),
 	});
@@ -1600,7 +1945,9 @@ async function upsertWorkflow(params: {
 			projectId: params.projectId,
 			nodes: params.nodes,
 			edges: params.edges,
-			visibility: "private",
+			specVersion: resolved.specVersion,
+			spec: resolved.spec,
+			visibility,
 			engineType: "dapr",
 		});
 		console.log(
@@ -1627,7 +1974,9 @@ async function upsertWorkflow(params: {
 			projectId: params.projectId,
 			nodes: params.nodes,
 			edges: params.edges,
-			visibility: "private",
+			specVersion: resolved.specVersion,
+			spec: resolved.spec,
+			visibility,
 			engineType: "dapr",
 			updatedAt: new Date(),
 		})
@@ -1721,6 +2070,54 @@ async function seedWorkflow() {
 			nodes: buildAiCodingAgentNodes(),
 			edges: buildAiCodingAgentEdges(),
 		});
+
+		await upsertWorkflow({
+			db,
+			workflowId: OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID,
+			name: OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_NAME,
+			description: OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_DESCRIPTION,
+			userId,
+			projectId,
+			nodes: buildOpenShellLangGraphFeatureDeliveryNodes({
+				connectionId: githubConnection?.connectionId,
+				connectionExternalId: githubConnection?.connectionExternalId,
+				agentProfileVersion: profileVersion,
+			}),
+			edges: buildOpenShellLangGraphFeatureDeliveryEdges(),
+			visibility: "public",
+		});
+
+		await db
+			.delete(workflowResourceRefs)
+			.where(
+				eq(
+					workflowResourceRefs.workflowId,
+					OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID,
+				),
+			);
+
+		await db.insert(workflowResourceRefs).values([
+			{
+				id: generateId(),
+				workflowId: OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID,
+				nodeId: OPENSHELL_FEATURE_IDS.plan,
+				resourceType: "agent_profile",
+				resourceId: AGENT_PROFILE_TEMPLATE_ID,
+				resourceVersion: profileVersion,
+			},
+			{
+				id: generateId(),
+				workflowId: OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID,
+				nodeId: OPENSHELL_FEATURE_IDS.execute,
+				resourceType: "agent_profile",
+				resourceId: AGENT_PROFILE_TEMPLATE_ID,
+				resourceVersion: profileVersion,
+			},
+		]);
+
+		console.log(
+			`[seed-workflows] Reconciled workflow_resource_refs for ${OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID} (profile version ${profileVersion})`,
+		);
 
 		await upsertWorkflow({
 			db,

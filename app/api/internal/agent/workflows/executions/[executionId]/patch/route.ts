@@ -4,6 +4,7 @@ import { isValidInternalToken } from "@/lib/internal-api";
 
 const DURABLE_AGENT_APP_ID =
 	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
+const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 function errorMessage(data: unknown, fallback: string): string {
 	if (!data || typeof data !== "object") {
@@ -13,6 +14,30 @@ function errorMessage(data: unknown, fallback: string): string {
 	return typeof candidate === "string" && candidate.length > 0
 		? candidate
 		: fallback;
+}
+
+async function loadPatchFromApp(
+	appId: string,
+	executionId: string,
+	durableInstanceId?: string,
+) {
+	const query = durableInstanceId
+		? `?durableInstanceId=${encodeURIComponent(durableInstanceId)}`
+		: "";
+	return await invokeService<{
+		success?: boolean;
+		executionId?: string;
+		durableInstanceId?: string;
+		patch?: string;
+		changeSets?: unknown[];
+		pending?: boolean;
+		error?: string;
+	}>({
+		appId,
+		method: "GET",
+		path: `/v1.0/invoke/${encodeURIComponent(appId)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/patch${query}`,
+		timeout: 20_000,
+	});
 }
 
 export async function GET(
@@ -38,20 +63,11 @@ export async function GET(
 			? `?durableInstanceId=${encodeURIComponent(durableInstanceId)}`
 			: "";
 
-		const response = await invokeService<{
-			success?: boolean;
-			executionId?: string;
-			durableInstanceId?: string;
-			patch?: string;
-			changeSets?: unknown[];
-			pending?: boolean;
-			error?: string;
-		}>({
-			appId: DURABLE_AGENT_APP_ID,
-			method: "GET",
-			path: `/v1.0/invoke/${encodeURIComponent(DURABLE_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/patch${query}`,
-			timeout: 20_000,
-		});
+		const response = await loadPatchFromApp(
+			DURABLE_AGENT_APP_ID,
+			executionId,
+			durableInstanceId || undefined,
+		);
 
 		if (response.status === 404) {
 			return NextResponse.json(
@@ -71,7 +87,24 @@ export async function GET(
 			);
 		}
 
-		if (!response.ok || !response.data) {
+		let responseData = response.data;
+		if (
+			response.ok &&
+			responseData &&
+			typeof responseData.patch === "string" &&
+			responseData.patch.trim().length === 0
+		) {
+			const fallback = await loadPatchFromApp(
+				DAPR_AGENT_APP_ID,
+				executionId,
+				durableInstanceId || undefined,
+			);
+			if (fallback.ok && fallback.data) {
+				responseData = fallback.data;
+			}
+		}
+
+		if (!response.ok || !responseData) {
 			return NextResponse.json(
 				{
 					error: errorMessage(response.data, "Failed to fetch execution patch"),
@@ -80,7 +113,7 @@ export async function GET(
 			);
 		}
 
-		return NextResponse.json(response.data, {
+		return NextResponse.json(responseData, {
 			headers: {
 				"Cache-Control": "no-store",
 			},

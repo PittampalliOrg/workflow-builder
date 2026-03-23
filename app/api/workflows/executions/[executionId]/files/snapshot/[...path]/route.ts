@@ -7,6 +7,7 @@ import { workflowExecutions } from "@/lib/db/schema";
 
 const DURABLE_AGENT_APP_ID =
 	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
+const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 type ExecutionFileSnapshotResponse = {
 	success?: boolean;
@@ -16,6 +17,25 @@ type ExecutionFileSnapshotResponse = {
 	snapshot?: unknown | null;
 	error?: string;
 };
+
+async function loadSnapshotFromApp(
+	appId: string,
+	executionId: string,
+	filePath: string,
+	durableInstanceId?: string,
+) {
+	const query = new URLSearchParams();
+	query.set("path", filePath);
+	if (durableInstanceId) {
+		query.set("durableInstanceId", durableInstanceId);
+	}
+	return await invokeService<ExecutionFileSnapshotResponse>({
+		appId,
+		method: "GET",
+		path: `/v1.0/invoke/${encodeURIComponent(appId)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/files/snapshot?${query.toString()}`,
+		timeout: 20_000,
+	});
+}
 
 function errorMessage(data: unknown, fallback: string): string {
 	if (!data || typeof data !== "object") {
@@ -74,18 +94,12 @@ export async function GET(
 
 		const url = new URL(request.url);
 		const durableInstanceId = url.searchParams.get("durableInstanceId")?.trim();
-		const query = new URLSearchParams();
-		query.set("path", filePath);
-		if (durableInstanceId) {
-			query.set("durableInstanceId", durableInstanceId);
-		}
-
-		const response = await invokeService<ExecutionFileSnapshotResponse>({
-			appId: DURABLE_AGENT_APP_ID,
-			method: "GET",
-			path: `/v1.0/invoke/${encodeURIComponent(DURABLE_AGENT_APP_ID)}/method/api/workspaces/executions/${encodeURIComponent(executionId)}/files/snapshot?${query.toString()}`,
-			timeout: 20_000,
-		});
+		const response = await loadSnapshotFromApp(
+			DURABLE_AGENT_APP_ID,
+			executionId,
+			filePath,
+			durableInstanceId || undefined,
+		);
 
 		// Snapshot rows may be missing for older executions or if the
 		// runtime did not persist a matching file view. Degrade gracefully
@@ -107,7 +121,20 @@ export async function GET(
 			);
 		}
 
-		if (!response.ok || !response.data) {
+		let responseData = response.data;
+		if (response.ok && responseData && responseData.snapshot == null) {
+			const fallback = await loadSnapshotFromApp(
+				DAPR_AGENT_APP_ID,
+				executionId,
+				filePath,
+				durableInstanceId || undefined,
+			);
+			if (fallback.ok && fallback.data) {
+				responseData = fallback.data;
+			}
+		}
+
+		if (!response.ok || !responseData) {
 			return NextResponse.json(
 				{
 					error: errorMessage(
@@ -125,7 +152,7 @@ export async function GET(
 				executionId,
 				path: filePath,
 				durableInstanceId,
-				snapshot: response.data.snapshot,
+				snapshot: responseData.snapshot,
 			},
 			{
 				headers: {

@@ -323,6 +323,41 @@ function getTriggerOutputFieldSet(spec: WorkflowSpec): Set<string> {
 			? triggerConfig.triggerType.toLowerCase()
 			: "";
 
+	if (triggerType === "manual") {
+		const inputSchema =
+			typeof triggerConfig?.inputSchema === "string"
+				? triggerConfig.inputSchema
+				: "";
+		if (!inputSchema.trim()) {
+			return allowed;
+		}
+
+		try {
+			const parsedSchema = JSON.parse(inputSchema) as unknown;
+			if (!Array.isArray(parsedSchema)) {
+				return allowed;
+			}
+
+			for (const field of parsedSchema) {
+				if (!field || typeof field !== "object" || Array.isArray(field)) {
+					continue;
+				}
+
+				const name =
+					typeof (field as { name?: unknown }).name === "string"
+						? (field as { name: string }).name.trim()
+						: "";
+				if (name) {
+					allowed.add(name);
+				}
+			}
+		} catch {
+			// Ignore invalid schema JSON and keep default trigger fields.
+		}
+
+		return allowed;
+	}
+
 	if (triggerType !== "webhook") {
 		return allowed;
 	}

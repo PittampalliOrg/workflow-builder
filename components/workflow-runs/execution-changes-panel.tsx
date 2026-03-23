@@ -15,6 +15,7 @@ import {
 	CommitMetadata,
 	CommitSeparator,
 } from "@/components/ai-elements/commit";
+import { CodeBlock } from "@/components/ai-elements/code-block";
 import {
 	FileTree,
 	FileTreeFile,
@@ -157,6 +158,40 @@ function parsePatchPath(headerLine: string): string {
 	return match[2];
 }
 
+function parsePatchPathFromPair(
+	oldHeaderLine: string,
+	newHeaderLine: string,
+): { path: string; type: UnifiedPatchSection["type"] } | null {
+	const oldMatch = oldHeaderLine.match(/^---\s+(?:a\/)?(.+)$/);
+	const newMatch = newHeaderLine.match(/^\+\+\+\s+(?:b\/)?(.+)$/);
+	if (!oldMatch || !newMatch) {
+		return null;
+	}
+
+	const oldPath = oldMatch[1] ?? "";
+	const newPath = newMatch[1] ?? "";
+	if (!oldPath || !newPath) {
+		return null;
+	}
+
+	if (oldPath === "/dev/null") {
+		return {
+			path: newPath,
+			type: "added",
+		};
+	}
+	if (newPath === "/dev/null") {
+		return {
+			path: oldPath,
+			type: "deleted",
+		};
+	}
+	return {
+		path: newPath,
+		type: "modified",
+	};
+}
+
 function splitUnifiedPatchFiles(patch: string): UnifiedPatchSection[] {
 	const lines = patch.split("\n");
 	const sections: UnifiedPatchSection[] = [];
@@ -170,7 +205,10 @@ function splitUnifiedPatchFiles(patch: string): UnifiedPatchSection[] {
 		current = null;
 	};
 
-	for (const line of lines) {
+	for (let index = 0; index < lines.length; index += 1) {
+		const line = lines[index] ?? "";
+		const nextLine = lines[index + 1] ?? "";
+
 		if (line.startsWith("diff --git ")) {
 			pushCurrent();
 			current = {
@@ -179,6 +217,19 @@ function splitUnifiedPatchFiles(patch: string): UnifiedPatchSection[] {
 				type: "modified",
 				lines: [line],
 			};
+			continue;
+		}
+
+		if (line.startsWith("--- ") && nextLine.startsWith("+++ ")) {
+			pushCurrent();
+			const pairInfo = parsePatchPathFromPair(line, nextLine);
+			current = {
+				header: `${line}\n${nextLine}`,
+				path: pairInfo?.path ?? "Patch",
+				type: pairInfo?.type ?? "modified",
+				lines: [line, nextLine],
+			};
+			index += 1;
 			continue;
 		}
 
@@ -836,6 +887,13 @@ export function ExecutionChangesPanel({
 		return patchSections.filter((section) => section.path === selectedFilePath);
 	}, [patchSections, selectedFilePath]);
 
+	const selectedFileEntry = useMemo(() => {
+		if (!selectedFilePath) {
+			return null;
+		}
+		return fileEntries.find((file) => file.path === selectedFilePath) ?? null;
+	}, [fileEntries, selectedFilePath]);
+
 	const selectedPatch = useMemo(
 		() =>
 			selectedSections.map((section) => section.lines.join("\n")).join("\n\n"),
@@ -863,8 +921,25 @@ export function ExecutionChangesPanel({
 		return snapshotErrorByPath[selectedFilePath];
 	}, [selectedFilePath, snapshotErrorByPath]);
 
+	const selectedHasSnapshotContent = useMemo(() => {
+		if (!selectedSnapshot || selectedSnapshot.isBinary) {
+			return false;
+		}
+		return (
+			selectedSnapshot.oldContent !== null ||
+			selectedSnapshot.newContent !== null
+		);
+	}, [selectedSnapshot]);
+
 	const selectedSnapshotLoading = Boolean(
 		selectedFilePath && snapshotLoadingPath === selectedFilePath,
+	);
+
+	const showSelectedRawPatchFallback = Boolean(
+		!selectedSnapshotLoading &&
+			!selectedSnapshotError &&
+			!selectedHasSnapshotContent &&
+			selectedPatch.trim(),
 	);
 
 	const selectedFileStats = useMemo<FileStats | null>(() => {
@@ -905,15 +980,20 @@ export function ExecutionChangesPanel({
 			statuses.add(sectionTypeToStatus(section.type));
 		}
 
+		const inferredStatus =
+			selectedSnapshot?.status ??
+			selectedFileEntry?.status ??
+			(statuses.size === 1 ? Array.from(statuses)[0] : "M");
+
 		return {
 			additions,
 			deletions,
 			hunks,
 			lines,
 			sections: selectedSections.length,
-			status: statuses.size === 1 ? Array.from(statuses)[0] : "M",
+			status: inferredStatus,
 		};
-	}, [selectedSections, selectedSnapshot]);
+	}, [selectedFileEntry, selectedSections, selectedSnapshot]);
 
 	const selectedDiffResult = useMemo<DiffResult | null>(() => {
 		if (
@@ -1348,7 +1428,7 @@ export function ExecutionChangesPanel({
 									) : null}
 								</div>
 								<div className="flex items-center gap-1.5">
-									{selectedDiffText ? (
+									{selectedDiffText && !showSelectedRawPatchFallback ? (
 										<DiffToolbar
 											contentMode={contentMode}
 											onContentModeChange={setContentMode}
@@ -1424,6 +1504,18 @@ export function ExecutionChangesPanel({
 												</span>
 											</div>
 										</div>
+									</div>
+								) : showSelectedRawPatchFallback ? (
+									<div className="space-y-3 p-3">
+										<div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-amber-700 text-xs dark:text-amber-300">
+											Snapshot content was not persisted for this file, so this
+											view is showing the persisted patch instead.
+										</div>
+										<CodeBlock
+											className="border-zinc-800 bg-[#0d1117]"
+											code={selectedPatch}
+											language="diff"
+										/>
 									</div>
 								) : selectedDiffText ? (
 									<MonacoDiffView

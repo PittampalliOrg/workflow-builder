@@ -16,7 +16,10 @@ import {
 	workflows,
 } from "@/lib/db/schema";
 import { isValidInternalToken } from "@/lib/internal-api";
-import { generateWorkflowDefinition } from "@/lib/workflow-definition";
+import {
+	buildWorkflowExecutionIR,
+	WORKFLOW_EXECUTION_IR_VERSION,
+} from "@/lib/workflow-contract";
 
 type RouteParams = {
 	params: Promise<{ projectId: string; workflowId: string }>;
@@ -180,6 +183,32 @@ export async function POST(request: Request, { params }: RouteParams) {
 		toolName,
 		input,
 	});
+	const triggerData = {
+		__mcp: {
+			runId: run.id,
+			projectId,
+			workflowId: workflow.id,
+			toolName,
+			returnsResponse: trigger.returnsResponse,
+		},
+		...input,
+	};
+	const nodes = workflow.nodes as unknown as any[];
+	const edges = workflow.edges as unknown as any[];
+	const executionIr = buildWorkflowExecutionIR({
+		workflowId: workflow.id,
+		name: workflow.name,
+		description: workflow.description || undefined,
+		author: workflow.userId,
+		nodes,
+		edges,
+		spec: (workflow as Record<string, unknown>).spec,
+		specVersion:
+			((workflow as Record<string, unknown>).specVersion as
+				| string
+				| null
+				| undefined) ?? null,
+	});
 
 	// Create execution record (links to monitor UI).
 	const [execution] = await db
@@ -188,31 +217,11 @@ export async function POST(request: Request, { params }: RouteParams) {
 			workflowId: workflow.id,
 			userId: workflow.userId,
 			status: "running",
-			input: {
-				__mcp: {
-					runId: run.id,
-					projectId,
-					workflowId: workflow.id,
-					toolName,
-					returnsResponse: trigger.returnsResponse,
-				},
-				...input,
-			},
+			input: triggerData,
+			executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+			executionIr,
 		})
 		.returning();
-
-	const nodes = workflow.nodes as unknown as any[];
-	const edges = workflow.edges as unknown as any[];
-	const definition = generateWorkflowDefinition(
-		nodes,
-		edges,
-		workflow.id,
-		workflow.name,
-		{
-			description: workflow.description || undefined,
-			author: workflow.userId,
-		},
-	);
 
 	const nodeConnectionMap = await extractNodeConnectionMap(
 		nodes,
@@ -225,17 +234,8 @@ export async function POST(request: Request, { params }: RouteParams) {
 
 	const result = await genericOrchestratorClient.startWorkflow(
 		orchestratorUrl || defaultOrchestratorUrl,
-		definition,
-		{
-			__mcp: {
-				runId: run.id,
-				projectId,
-				workflowId: workflow.id,
-				toolName,
-				returnsResponse: trigger.returnsResponse,
-			},
-			...input,
-		},
+		executionIr.definition,
+		triggerData,
 		{},
 		execution.id,
 		nodeConnectionMap,
@@ -247,6 +247,8 @@ export async function POST(request: Request, { params }: RouteParams) {
 			daprInstanceId: result.instanceId,
 			phase: "running",
 			progress: 0,
+			executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+			executionIr,
 		})
 		.where(eq(workflowExecutions.id, execution.id));
 

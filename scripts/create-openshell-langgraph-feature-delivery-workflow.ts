@@ -30,6 +30,7 @@ import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
 } from "../lib/workflows/apply-resource-presets";
+import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const DEFAULT_NAME = "OpenShell LangGraph Feature Delivery";
@@ -41,10 +42,11 @@ const DEFAULT_MODEL = "gpt-5.4";
 const DEFAULT_VERIFY_COMMANDS = `pnpm type-check
 pnpm fix`;
 
-const PLAN_PROMPT = `You are planning a repository feature delivery task for this specific codebase.
+function buildPlanPrompt(triggerId: string): string {
+	return `You are planning a repository feature delivery task for this specific codebase.
 
 User feature request:
-{{@trigger:Manual.feature_request}}
+{{@${triggerId}:Manual Trigger.feature_request}}
 
 Planning requirements:
 - Inspect the repository first and stay read-only during this step.
@@ -54,11 +56,13 @@ Planning requirements:
 - If the request is underspecified, make the minimum necessary assumptions and state them explicitly.
 
 Return only the final implementation plan for approval.`;
+}
 
-const EXECUTE_PROMPT = `Implement the approved feature plan for this repository.
+function buildExecutePrompt(triggerId: string): string {
+	return `Implement the approved feature plan for this repository.
 
 Original user feature request:
-{{@trigger:Manual.feature_request}}
+{{@${triggerId}:Manual Trigger.feature_request}}
 
 Execution requirements:
 - Follow the approved plan artifact as the primary source of truth.
@@ -69,6 +73,7 @@ Execution requirements:
 - If the approved plan needs a small adaptation based on repository realities, make the smallest justified adjustment and explain it clearly in the final summary.
 
 Return a concise engineering summary that includes changed files, verification results, and residual risks.`;
+}
 
 type Args = {
 	userEmail?: string;
@@ -353,6 +358,8 @@ function buildWorkflowGraph(input: {
 	const executionIdTemplate = `{{@${profileId}:Workspace Profile.executionId}}`;
 	const planningThreadTemplate = `lg:plan:${executionIdTemplate}`;
 	const executionThreadTemplate = `lg:exec:${executionIdTemplate}`;
+	const planPrompt = buildPlanPrompt(triggerId);
+	const executePrompt = buildExecutePrompt(triggerId);
 	const enabledTools = JSON.stringify([
 		"read",
 		"write",
@@ -472,7 +479,7 @@ function buildWorkflowGraph(input: {
 					...commonAgentConfig,
 					mode: "plan_mode",
 					profile: "feature-delivery",
-					prompt: PLAN_PROMPT,
+					prompt: planPrompt,
 					maxTurns: "24",
 					executeAfterApproval: "false",
 					approvalTimeoutMinutes: "1440",
@@ -497,7 +504,7 @@ function buildWorkflowGraph(input: {
 					...commonAgentConfig,
 					mode: "execute_direct",
 					profile: "implement",
-					prompt: EXECUTE_PROMPT,
+					prompt: executePrompt,
 					artifactRef: artifactRefTemplate,
 				},
 				status: "idle",
@@ -617,6 +624,13 @@ async function main() {
 			userId,
 			projectId,
 		});
+		const resolvedSpec = resolveCanonicalWorkflowSpec({
+			name: args.name,
+			description:
+				"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.",
+			nodes: presetApplied.nodes as never,
+			edges: built.edges as never,
+		});
 
 		const existing = await db.query.workflows.findFirst({
 			where: and(eq(workflows.userId, userId), eq(workflows.name, args.name)),
@@ -630,6 +644,8 @@ async function main() {
 						"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.",
 					nodes: presetApplied.nodes,
 					edges: built.edges,
+					specVersion: resolvedSpec.specVersion,
+					spec: resolvedSpec.spec,
 					engineType: "dapr",
 					updatedAt: new Date(),
 				})
@@ -671,6 +687,8 @@ async function main() {
 				projectId,
 				nodes: presetApplied.nodes,
 				edges: built.edges,
+				specVersion: resolvedSpec.specVersion,
+				spec: resolvedSpec.spec,
 				visibility: "private",
 				engineType: "dapr",
 			})

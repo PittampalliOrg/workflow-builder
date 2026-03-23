@@ -64,64 +64,69 @@ async function SidebarWrapper({ children }: { children: ReactNode }) {
 	);
 }
 
-const RootLayout = ({ children }: RootLayoutProps) => (
-	<html lang="en" suppressHydrationWarning>
-		<head>
-			<script
-				// biome-ignore lint/security/noDangerouslySetInnerHtml: required to expose selected env vars to the client at runtime
-				dangerouslySetInnerHTML={{
-					__html: `window.ENV=${JSON.stringify({
-						NEXT_PUBLIC_AUTH_PROVIDERS: process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
-						NEXT_PUBLIC_GITHUB_CLIENT_ID:
-							process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
-						NEXT_PUBLIC_APP_URL:
-							process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL,
-						NEXT_PUBLIC_GOOGLE_CLIENT_ID:
-							process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
-					})}`,
-				}}
-			/>
-		</head>
-		<body className={cn(sans.variable, mono.variable, "antialiased")}>
-			<ThemeProvider
-				attribute="class"
-				defaultTheme="system"
-				disableTransitionOnChange
-				enableSystem
-			>
-				<Provider>
-					<AuthProvider>
-						<OverlayProvider>
-							<Suspense
-								fallback={
-									<GitHubStarsProvider stars={null}>
-										<SidebarProvider>
-											<SidebarInset className="relative bg-transparent">
-												<ReactFlowProvider>
-													<PersistentCanvas />
-													<div className="pointer-events-none relative z-10 min-h-0 flex-1 overflow-y-auto">
-														{children}
-													</div>
-												</ReactFlowProvider>
-											</SidebarInset>
-										</SidebarProvider>
-									</GitHubStarsProvider>
-								}
-							>
-								<GitHubStarsLoader>
-									<SidebarWrapper>{children}</SidebarWrapper>
-								</GitHubStarsLoader>
-							</Suspense>
-							<Toaster />
-							<GlobalModals />
-						</OverlayProvider>
-					</AuthProvider>
-				</Provider>
-			</ThemeProvider>
-			<Analytics />
-			<SpeedInsights />
-		</body>
-	</html>
-);
+const RootLayout = async ({ children }: RootLayoutProps) => {
+	const initialSession = await getSessionFromCookie();
+
+	return (
+		<html lang="en" suppressHydrationWarning>
+			<head>
+				<script
+					// biome-ignore lint/security/noDangerouslySetInnerHtml: required to expose selected env vars to the client at runtime
+					dangerouslySetInnerHTML={{
+						__html: `window.ENV=${JSON.stringify({
+							NEXT_PUBLIC_AUTH_PROVIDERS:
+								process.env.NEXT_PUBLIC_AUTH_PROVIDERS,
+							NEXT_PUBLIC_GITHUB_CLIENT_ID:
+								process.env.NEXT_PUBLIC_GITHUB_CLIENT_ID,
+							NEXT_PUBLIC_APP_URL:
+								process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL,
+							NEXT_PUBLIC_GOOGLE_CLIENT_ID:
+								process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID,
+						})}`,
+					}}
+				/>
+			</head>
+			<body className={cn(sans.variable, mono.variable, "antialiased")}>
+				<ThemeProvider
+					attribute="class"
+					defaultTheme="system"
+					disableTransitionOnChange
+					enableSystem
+				>
+					<Provider>
+						<AuthProvider initialSession={initialSession}>
+							<OverlayProvider>
+								<Suspense
+									fallback={
+										<GitHubStarsProvider stars={null}>
+											<SidebarProvider>
+												<SidebarInset className="relative bg-transparent">
+													<ReactFlowProvider>
+														<PersistentCanvas />
+														<div className="pointer-events-none relative z-10 min-h-0 flex-1 overflow-y-auto">
+															{children}
+														</div>
+													</ReactFlowProvider>
+												</SidebarInset>
+											</SidebarProvider>
+										</GitHubStarsProvider>
+									}
+								>
+									<GitHubStarsLoader>
+										<SidebarWrapper>{children}</SidebarWrapper>
+									</GitHubStarsLoader>
+								</Suspense>
+								<Toaster />
+								<GlobalModals />
+							</OverlayProvider>
+						</AuthProvider>
+					</Provider>
+				</ThemeProvider>
+				<Analytics />
+				<SpeedInsights />
+			</body>
+		</html>
+	);
+};
 
 export default RootLayout;

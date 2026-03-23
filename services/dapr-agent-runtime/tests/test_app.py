@@ -1702,7 +1702,7 @@ def test_workspace_profile_returns_capability_metadata(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         app,
         "_detect_available_capabilities",
-        lambda: ["bash", "git", "node", "pnpm"],
+        lambda _tool_backend=None: ["bash", "git", "node", "pnpm"],
     )
 
     profile = workspace_profile(
@@ -1743,7 +1743,11 @@ def test_workspace_capability_validation_requires_pnpm_for_pnpm_repo(
     monkeypatch.setattr(app, "workspace_state_store", fake_store)
     monkeypatch.setattr(app, "workspace_sessions", {})
     monkeypatch.setattr(app, "sessions_by_execution", {})
-    monkeypatch.setattr(app, "_detect_available_capabilities", lambda: ["bash", "git", "node"])
+    monkeypatch.setattr(
+        app,
+        "_detect_available_capabilities",
+        lambda _tool_backend=None: ["bash", "git", "node"],
+    )
 
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -1776,6 +1780,59 @@ def test_workspace_capability_validation_requires_pnpm_for_pnpm_repo(
     assert result["requiredCapabilities"] == ["bash", "git", "node", "pnpm"]
 
 
+def test_workspace_capability_validation_succeeds_for_openshell_pnpm_repo(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+    monkeypatch.setattr(
+        app,
+        "_detect_available_capabilities",
+        lambda tool_backend=None: (
+            app._finalize_available_capabilities(
+                {"bash", "git", "node", "npm", "corepack", "python"}
+            )
+            if tool_backend == "openshell"
+            else ["bash", "git", "python"]
+        ),
+    )
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "package.json").write_text(
+        json.dumps({"name": "demo", "packageManager": "pnpm@9.0.0"}),
+        encoding="utf-8",
+    )
+    (repo_root / "pnpm-lock.yaml").write_text("lockfileVersion: '9.0'", encoding="utf-8")
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-validate-openshell",
+        execution_id="exec-validate-openshell",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["read", "bash"],
+        preferred_execution_profile="node-pnpm",
+    )
+    _persist_workspace_session(session)
+
+    result = workspace_capabilities_validate(
+        WorkspaceCapabilityValidationRequest(
+            workspaceRef="workspace-validate-openshell",
+            verifyCommands=["pnpm type-check"],
+            toolBackend="openshell",
+        )
+    )
+
+    assert result["success"] is True
+    assert result["missingCapabilities"] == []
+    assert result["workspaceProfile"]["backend"] == "openshell"
+    assert result["workspaceProfile"]["executionProfile"] == "node-pnpm"
+    assert "pnpm" in result["availableCapabilities"]
+
+
 def test_workspace_capability_validation_succeeds_when_required_tools_exist(
     tmp_path: Path,
     monkeypatch,
@@ -1787,7 +1844,7 @@ def test_workspace_capability_validation_succeeds_when_required_tools_exist(
     monkeypatch.setattr(
         app,
         "_detect_available_capabilities",
-        lambda: ["bash", "git", "node", "pnpm"],
+        lambda _tool_backend=None: ["bash", "git", "node", "pnpm"],
     )
 
     repo_root = tmp_path / "repo"

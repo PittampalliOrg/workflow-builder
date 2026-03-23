@@ -153,6 +153,9 @@ export const workflows = pgTable("workflows", {
 	nodes: jsonb("nodes").notNull().$type<any[]>(),
 	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
 	edges: jsonb("edges").notNull().$type<any[]>(),
+	specVersion: text("spec_version"),
+	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - authoring spec
+	spec: jsonb("spec").$type<any>(),
 	visibility: text("visibility")
 		.notNull()
 		.default("private")
@@ -408,6 +411,9 @@ export const workflowExecutions = pgTable(
 		input: jsonb("input").$type<Record<string, any>>(),
 		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
 		output: jsonb("output").$type<any>(),
+		executionIrVersion: text("execution_ir_version"),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - immutable execution contract snapshot
+		executionIr: jsonb("execution_ir").$type<any>(),
 		error: text("error"),
 		// Dapr execution fields
 		daprInstanceId: text("dapr_instance_id"), // Dapr workflow instance ID for correlation

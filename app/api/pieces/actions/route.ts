@@ -3,7 +3,6 @@ import { convertApPiecesToIntegrations } from "@/lib/activepieces/action-adapter
 import { isPieceInstalled } from "@/lib/activepieces/installed-pieces";
 import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
 import type { IntegrationDefinition } from "@/lib/actions/types";
-import { getSession } from "@/lib/auth-helpers";
 import { listPieceMetadata } from "@/lib/db/piece-metadata";
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -139,12 +138,6 @@ function searchPieces(
  */
 export async function GET(request: Request) {
 	try {
-		const session = await getSession(request);
-
-		if (!session?.user) {
-			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-		}
-
 		const { searchParams } = new URL(request.url);
 		const searchQuery = searchParams.get("searchQuery")?.trim() || "";
 		const scope = searchParams.get("scope") || "installed";

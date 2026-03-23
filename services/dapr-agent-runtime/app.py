@@ -504,7 +504,9 @@ class WorkspaceCapabilityValidationRequest(BaseModel):
     workspaceRef: str = Field(min_length=1)
     requiredCapabilities: list[str] | str | None = None
     preferredExecutionProfile: str | None = None
+    sandboxProfileRef: str | None = None
     verifyCommands: list[str] | str | None = None
+    toolBackend: str | None = None
 
 
 class DaprAgentRunRequest(BaseModel):
@@ -554,6 +556,7 @@ class DaprAgentRunRequest(BaseModel):
     planJson: dict[str, Any] | list[dict[str, Any]] | None = None
     requiredCapabilities: list[str] | str | None = None
     preferredExecutionProfile: str | None = None
+    preferredSandboxProfile: str | None = None
     workspaceProfile: dict[str, Any] | None = None
 
 
@@ -652,23 +655,36 @@ class WorkspaceSession:
         )
 
 
-def _build_workspace_profile(session: WorkspaceSession) -> dict[str, Any]:
+def _build_workspace_profile(
+    session: WorkspaceSession,
+    *,
+    backend: str | None = None,
+    sandbox_profile_ref: str | None = None,
+    sandbox_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     execution_profile = _resolve_execution_profile(
         session.preferred_execution_profile,
         session.repository_signals,
     )
-    return {
+    profile_payload = {
         "workspaceRef": session.workspace_ref,
         "executionId": session.execution_id,
         "rootPath": str(session.root_path),
         "workingDirectory": str(session.working_directory or session.root_path),
-        "backend": "local",
+        "backend": str(backend or "local").strip() or "local",
         "availableCapabilities": list(session.available_capabilities),
         "requiredCapabilities": list(session.required_capabilities),
         "preferredExecutionProfile": session.preferred_execution_profile,
         "executionProfile": execution_profile,
         "repositorySignals": dict(session.repository_signals),
     }
+    if sandbox_profile_ref:
+        profile_payload["sandboxProfileRef"] = sandbox_profile_ref
+    if isinstance(sandbox_profile, dict):
+        sandbox_image = str(sandbox_profile.get("sandboxImage") or "").strip()
+        if sandbox_image:
+            profile_payload["sandboxImage"] = sandbox_image
+    return profile_payload
 
 
 def _validate_workspace_capabilities(
@@ -677,8 +693,18 @@ def _validate_workspace_capabilities(
     required_capabilities: list[str] | None = None,
     preferred_execution_profile: str | None = None,
     verify_commands: list[str] | None = None,
+    tool_backend: str | None = None,
+    sandbox_profile_ref: str | None = None,
 ) -> dict[str, Any]:
-    session.available_capabilities = _detect_available_capabilities()
+    normalized_tool_backend = str(tool_backend or "").strip().lower() or "local"
+    sandbox_profile = _resolve_sandbox_profile(
+        sandbox_profile_ref,
+        preferred_execution_profile or session.preferred_execution_profile,
+    )
+    session.available_capabilities = _detect_available_capabilities(
+        normalized_tool_backend,
+        sandbox_profile,
+    )
     if session.working_directory and Path(session.working_directory).exists():
         session.repository_signals = _detect_repository_signals(
             Path(session.working_directory)
@@ -713,7 +739,16 @@ def _validate_workspace_capabilities(
         if capability not in session.available_capabilities
     ]
     _persist_workspace_session(session)
-    workspace_profile = _build_workspace_profile(session)
+    workspace_profile = _build_workspace_profile(
+        session,
+        backend=normalized_tool_backend,
+        sandbox_profile_ref=(
+            str(sandbox_profile_ref or "").strip()
+            or str((sandbox_profile or {}).get("id") or "").strip()
+            or None
+        ),
+        sandbox_profile=sandbox_profile,
+    )
     return {
         "success": len(missing_capabilities) == 0,
         "workspaceRef": session.workspace_ref,
@@ -1348,6 +1383,53 @@ KNOWN_WORKSPACE_CAPABILITIES = {
     "npm": ("npm",),
     "python": ("python3", "python"),
     "uv": ("uv",),
+    "corepack": ("corepack",),
+    "npx": ("npx",),
+}
+
+OPENSHELL_DECLARED_CAPABILITIES = [
+    "bash",
+    "git",
+    "node",
+    "npm",
+    "corepack",
+    "python",
+]
+SANDBOX_PROFILE_CATALOG_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "sandbox-profiles.json"
+)
+_sandbox_profile_catalog_cache: dict[str, dict[str, Any]] | None = None
+DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, Any]] = {
+    "base": {
+        "id": "base",
+        "backend": "local",
+        "declaredCapabilities": ["bash", "git"],
+        "sandboxImage": None,
+    },
+    "node-pnpm": {
+        "id": "node-pnpm",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "node", "pnpm"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "node-npm": {
+        "id": "node-npm",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "node", "npm"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "python": {
+        "id": "python",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "python"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
+    "python-uv": {
+        "id": "python-uv",
+        "backend": "openshell",
+        "declaredCapabilities": ["bash", "git", "python", "uv"],
+        "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
+    },
 }
 
 EXECUTION_PROFILE_CAPABILITIES = {
@@ -1377,13 +1459,87 @@ def _normalize_capability_list(value: object) -> list[str]:
     return sorted({item for item in items if item})
 
 
-def _detect_available_capabilities() -> list[str]:
+def _load_sandbox_profile_catalog() -> dict[str, dict[str, Any]]:
+    global _sandbox_profile_catalog_cache
+    if _sandbox_profile_catalog_cache is not None:
+        return _sandbox_profile_catalog_cache
+    catalog_path: Path | None = None
+    for candidate in (
+        SANDBOX_PROFILE_CATALOG_PATH,
+        Path.cwd() / "config" / "sandbox-profiles.json",
+    ):
+        if candidate.exists():
+            catalog_path = candidate
+            break
+    try:
+        parsed = (
+            json.loads(catalog_path.read_text(encoding="utf-8"))
+            if catalog_path is not None
+            else {}
+        )
+    except Exception:
+        parsed = {}
+    profiles = parsed.get("profiles") if isinstance(parsed, dict) else {}
+    if not isinstance(profiles, dict):
+        profiles = {}
+    _sandbox_profile_catalog_cache = {
+        str(profile_id): value
+        for profile_id, value in profiles.items()
+        if isinstance(value, dict)
+    }
+    if not _sandbox_profile_catalog_cache:
+        _sandbox_profile_catalog_cache = dict(DEFAULT_SANDBOX_PROFILE_CATALOG)
+    return _sandbox_profile_catalog_cache
+
+
+def _resolve_sandbox_profile(
+    sandbox_profile_ref: str | None,
+    preferred_execution_profile: str | None,
+) -> dict[str, Any] | None:
+    profile_key = (
+        str(sandbox_profile_ref or "").strip()
+        or str(preferred_execution_profile or "").strip()
+        or None
+    )
+    if profile_key is None:
+        return None
+    return _load_sandbox_profile_catalog().get(profile_key)
+
+
+def _finalize_available_capabilities(capabilities: set[str]) -> list[str]:
+    normalized = {
+        str(capability).strip().lower()
+        for capability in capabilities
+        if str(capability).strip()
+    }
+    if "node" in normalized and (
+        "pnpm" in normalized
+        or "corepack" in normalized
+        or "npx" in normalized
+        or "npm" in normalized
+    ):
+        normalized.add("pnpm")
+    return sorted(normalized)
+
+
+def _detect_available_capabilities(
+    tool_backend: str | None = None,
+    sandbox_profile: dict[str, Any] | None = None,
+) -> list[str]:
+    declared_capabilities = _normalize_capability_list(
+        sandbox_profile.get("declaredCapabilities") if isinstance(sandbox_profile, dict) else None
+    )
+    if declared_capabilities:
+        return _finalize_available_capabilities(set(declared_capabilities))
+    normalized_tool_backend = str(tool_backend or "").strip().lower()
+    if normalized_tool_backend == "openshell":
+        return _finalize_available_capabilities(set(OPENSHELL_DECLARED_CAPABILITIES))
     available = {
         capability
         for capability, binaries in KNOWN_WORKSPACE_CAPABILITIES.items()
         if any(shutil.which(binary) for binary in binaries)
     }
-    return sorted(available)
+    return _finalize_available_capabilities(available)
 
 
 def _detect_repository_signals(root: Path) -> dict[str, Any]:
@@ -4894,10 +5050,12 @@ def workspace_capabilities_validate(
         required_capabilities=_normalize_capability_list(
             request.requiredCapabilities
         ),
+        sandbox_profile_ref=(str(request.sandboxProfileRef or "").strip() or None),
         preferred_execution_profile=(
             str(request.preferredExecutionProfile or "").strip() or None
         ),
         verify_commands=_parse_verify_commands(request.verifyCommands),
+        tool_backend=(str(request.toolBackend or "").strip() or None),
     )
 
 
@@ -5574,6 +5732,10 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         requiredCapabilities=request.input.get("requiredCapabilities"),
         preferredExecutionProfile=(
             str(request.input.get("preferredExecutionProfile") or "").strip()
+            or None
+        ),
+        preferredSandboxProfile=(
+            str(request.input.get("preferredSandboxProfile") or "").strip()
             or None
         ),
         workspaceProfile=request.input.get("workspaceProfile")

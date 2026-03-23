@@ -5,6 +5,8 @@ import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import type { WorkflowResourceRefInput } from "@/lib/db/resources";
+import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
+import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
 import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
@@ -40,6 +42,55 @@ function sanitizeNodesForPublicView(
 		}
 		return sanitizedNode;
 	});
+}
+
+function sanitizeConfigRecord(
+	config: Record<string, unknown>,
+): Record<string, unknown> {
+	const { integrationId: _, auth: _auth, ...rest } = config;
+	return rest;
+}
+
+function sanitizeSpecForPublicView(spec: unknown): unknown {
+	if (!spec || typeof spec !== "object") {
+		return spec;
+	}
+	const record = spec as Record<string, unknown>;
+	const trigger =
+		record.trigger && typeof record.trigger === "object"
+			? (record.trigger as Record<string, unknown>)
+			: null;
+	const triggerConfig =
+		trigger?.config && typeof trigger.config === "object"
+			? sanitizeConfigRecord(trigger.config as Record<string, unknown>)
+			: trigger?.config;
+	const steps = Array.isArray(record.steps)
+		? record.steps.map((step) => {
+				if (!step || typeof step !== "object") {
+					return step;
+				}
+				const stepRecord = step as Record<string, unknown>;
+				return {
+					...stepRecord,
+					config:
+						stepRecord.config && typeof stepRecord.config === "object"
+							? sanitizeConfigRecord(
+									stepRecord.config as Record<string, unknown>,
+								)
+							: stepRecord.config,
+				};
+			})
+		: record.steps;
+	return {
+		...record,
+		trigger: trigger
+			? {
+					...trigger,
+					config: triggerConfig,
+				}
+			: record.trigger,
+		steps,
+	};
 }
 
 export async function GET(
@@ -80,6 +131,9 @@ export async function GET(
 				: sanitizeNodesForPublicView(
 						workflow.nodes as Record<string, unknown>[],
 					),
+			spec: isOwner
+				? (workflow as Record<string, unknown>).spec
+				: sanitizeSpecForPublicView((workflow as Record<string, unknown>).spec),
 			createdAt: workflow.createdAt.toISOString(),
 			updatedAt: workflow.updatedAt.toISOString(),
 			isOwner,
@@ -190,6 +244,40 @@ export async function PATCH(
 		}
 
 		const updateData = buildUpdateData(body);
+
+		const effectiveNodes = Array.isArray(body.nodes)
+			? (body.nodes as WorkflowNode[])
+			: ((existingWorkflow.nodes as WorkflowNode[]) ?? []);
+		const effectiveEdges = Array.isArray(body.edges)
+			? (body.edges as WorkflowEdge[])
+			: ((existingWorkflow.edges as WorkflowEdge[]) ?? []);
+		const effectiveName =
+			typeof updateData.name === "string"
+				? updateData.name
+				: existingWorkflow.name;
+		const effectiveDescription =
+			typeof updateData.description === "string"
+				? updateData.description
+				: (existingWorkflow.description ?? undefined);
+		const canonicalSpec = resolveCanonicalWorkflowSpec({
+			name: effectiveName,
+			description: effectiveDescription,
+			nodes: effectiveNodes,
+			edges: effectiveEdges,
+			spec:
+				body.spec !== undefined
+					? body.spec
+					: (existingWorkflow as Record<string, unknown>).spec,
+			specVersion:
+				typeof body.specVersion === "string"
+					? body.specVersion
+					: (((existingWorkflow as Record<string, unknown>).specVersion as
+							| string
+							| null
+							| undefined) ?? null),
+		});
+		updateData.specVersion = canonicalSpec.specVersion;
+		updateData.spec = canonicalSpec.spec;
 
 		const [updatedWorkflow] = await db
 			.update(workflows)

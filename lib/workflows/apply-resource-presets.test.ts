@@ -32,6 +32,7 @@ describe("applyResourcePresetsToNodes", () => {
 				timeoutMinutes: 18,
 				requiredCapabilities: ["git", "bash"],
 				preferredExecutionProfile: "node-pnpm",
+				preferredSandboxProfile: "node-pnpm",
 				tools: [
 					{ type: "workspace", ref: "read" },
 					{ type: "workspace", ref: "write" },
@@ -87,9 +88,12 @@ describe("applyResourcePresetsToNodes", () => {
 			tools: ["read", "write", "edit", "bash"],
 			requiredCapabilities: ["git", "bash"],
 			preferredExecutionProfile: "node-pnpm",
+			preferredSandboxProfile: "node-pnpm",
+			workspaceBackend: "openshell",
 		});
 		expect(config.requiredCapabilities).toEqual(["git", "bash"]);
 		expect(config.preferredExecutionProfile).toBe("node-pnpm");
+		expect(config.preferredSandboxProfile).toBe("node-pnpm");
 		expect(result.refs).toEqual([
 			{
 				nodeId: "node-1",
@@ -118,6 +122,7 @@ describe("applyResourcePresetsToNodes", () => {
 				timeoutMinutes: 18,
 				requiredCapabilities: ["git", "bash"],
 				preferredExecutionProfile: "node-pnpm",
+				preferredSandboxProfile: "node-pnpm",
 				tools: [{ type: "workspace", ref: "read" }],
 			},
 		});
@@ -154,6 +159,8 @@ describe("applyResourcePresetsToNodes", () => {
 			tools: ["read"],
 			requiredCapabilities: ["git", "bash"],
 			preferredExecutionProfile: "node-pnpm",
+			preferredSandboxProfile: "node-pnpm",
+			workspaceBackend: "openshell",
 		});
 	});
 
@@ -200,6 +207,7 @@ describe("applyResourcePresetsToNodes", () => {
 				timeoutMinutes: 25,
 				requiredCapabilities: ["git", "bash"],
 				preferredExecutionProfile: "node-pnpm",
+				preferredSandboxProfile: "node-pnpm",
 				tools: [
 					{ type: "workspace", ref: "read" },
 					{ type: "workspace", ref: "edit" },
@@ -244,9 +252,12 @@ describe("applyResourcePresetsToNodes", () => {
 			tools: ["read", "edit", "bash"],
 			requiredCapabilities: ["git", "bash"],
 			preferredExecutionProfile: "node-pnpm",
+			preferredSandboxProfile: "node-pnpm",
+			workspaceBackend: "openshell",
 		});
 		expect(config.requiredCapabilities).toEqual(["git", "bash"]);
 		expect(config.preferredExecutionProfile).toBe("node-pnpm");
+		expect(config.preferredSandboxProfile).toBe("node-pnpm");
 		expect(result.refs).toEqual([
 			{
 				nodeId: "node-3",

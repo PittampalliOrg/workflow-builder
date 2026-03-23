@@ -6,6 +6,7 @@ import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
+import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
 import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
@@ -81,6 +82,17 @@ export async function POST(request: Request) {
 			workflowName = `Untitled ${count}`;
 		}
 
+		const canonicalSpec = resolveCanonicalWorkflowSpec({
+			name: workflowName,
+			description:
+				typeof body.description === "string" ? body.description : undefined,
+			nodes,
+			edges: body.edges,
+			spec: body.spec,
+			specVersion:
+				typeof body.specVersion === "string" ? body.specVersion : null,
+		});
+
 		// Generate workflow ID first
 		const workflowId = generateId();
 
@@ -92,6 +104,8 @@ export async function POST(request: Request) {
 				description: body.description,
 				nodes,
 				edges: body.edges,
+				specVersion: canonicalSpec.specVersion,
+				spec: canonicalSpec.spec,
 				userId: session.user.id,
 				projectId: session.user.projectId,
 			})

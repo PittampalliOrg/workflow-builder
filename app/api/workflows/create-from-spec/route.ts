@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import { generateId } from "@/lib/utils/id";
+import { WORKFLOW_SPEC_API_VERSION } from "@/lib/workflow-spec/types";
 import { compileWorkflowSpecToGraph } from "@/lib/workflow-spec/compile";
 import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
 import { lintWorkflowSpec } from "@/lib/workflow-spec/lint";
@@ -101,6 +102,8 @@ export async function POST(request: Request) {
 				description: effectiveSpec.description,
 				nodes: presetApplied.nodes as any[],
 				edges,
+				specVersion: WORKFLOW_SPEC_API_VERSION,
+				spec: effectiveSpec,
 				userId: session.user.id,
 				projectId: session.user.projectId,
 				engineType: "dapr",

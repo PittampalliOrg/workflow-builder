@@ -13,8 +13,11 @@ import {
 	workflowExecutions,
 	workflows,
 } from "@/lib/db/schema";
+import {
+	buildWorkflowExecutionIR,
+	WORKFLOW_EXECUTION_IR_VERSION,
+} from "@/lib/workflow-contract";
 import type { McpInputProperty } from "@/lib/mcp/types";
-import { generateWorkflowDefinition } from "@/lib/workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 function extractTraceHeaders(request: Request): Record<string, string> {
@@ -198,6 +201,21 @@ export async function POST(
 				);
 			}
 
+			const executionIr = buildWorkflowExecutionIR({
+				workflowId,
+				name: workflow.name,
+				description: workflow.description || undefined,
+				author: session.user.email || session.user.id,
+				nodes,
+				edges,
+				spec: (workflow as Record<string, unknown>).spec,
+				specVersion:
+					((workflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+
 			// Create execution record
 			const [execution] = await db
 				.insert(workflowExecutions)
@@ -206,22 +224,12 @@ export async function POST(
 					userId: session.user.id,
 					status: "running",
 					input,
+					executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+					executionIr,
 				})
 				.returning();
 
 			try {
-				// Generate workflow definition from the visual graph
-				const definition = generateWorkflowDefinition(
-					nodes,
-					edges,
-					workflowId,
-					workflow.name,
-					{
-						description: workflow.description || undefined,
-						author: session.user.email || session.user.id,
-					},
-				);
-
 				// Build per-node connection map from auth templates in node configs
 				// Instead of decrypting all connections upfront, we pass connection external IDs
 				// per node. The function-router calls the internal decrypt API at execution time
@@ -293,7 +301,7 @@ export async function POST(
 				// Credentials are resolved at execution time by function-router via internal decrypt API
 				const genericResult = await genericOrchestratorClient.startWorkflow(
 					orchestratorUrl,
-					definition,
+					executionIr.definition,
 					input,
 					{}, // integrations — empty, credentials resolved at function-router
 					execution.id, // Database execution ID for logging
@@ -309,6 +317,8 @@ export async function POST(
 						daprInstanceId: genericResult.instanceId,
 						phase: "running",
 						progress: 0,
+						executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
+						executionIr,
 					})
 					.where(eq(workflowExecutions.id, execution.id));
 
