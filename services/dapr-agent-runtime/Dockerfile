@@ -10,6 +10,7 @@ WORKDIR /app
 
 COPY services/dapr-agent-runtime/pyproject.toml ./pyproject.toml
 COPY services/dapr-agent-runtime/app.py ./app.py
+COPY services/dapr-agent-runtime/langgraph_engine.py ./langgraph_engine.py
 COPY services/dapr-agent-runtime/tools.py ./tools.py
 
 RUN pip install --no-cache-dir --upgrade pip && \
