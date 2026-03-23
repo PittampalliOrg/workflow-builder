@@ -1,897 +1,235 @@
 # Workflow Builder Architecture
 
-A visual workflow builder with Dapr durable workflows and OpenShell-backed agent execution on Kubernetes.
+Workflow Builder is a visual workflow system that uses Dapr Workflows for durable orchestration, a repo-aware agent execution layer for coding tasks, and durable review artifacts for traces, patches, and file snapshots.
 
-## Table of Contents
+## Current Runtime Model
 
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Components](#components)
-- [Data Flow](#data-flow)
-- [API Reference](#api-reference)
-- [Workflow Definition Schema](#workflow-definition-schema)
-- [Function Registry](#function-registry)
-- [Deployment](#deployment)
-- [Configuration](#configuration)
-- [Monitoring & Observability](#monitoring--observability)
+The validated `kind-ryzen` / active-development runtime is:
 
----
+- `workflow-builder`: Next.js UI and BFF
+- `workflow-orchestrator`: Python Dapr durable workflow owner
+- `function-router`: repo-aware action router
+- `dapr-agent-runtime`: LangGraph / DeepAgents-compatible coding backend for `openshell-langgraph/run`
+- `durable-agent`: shared workspace session and durable change-artifact service
+- `ms-agent-workflow`: compatibility backend under the same durable parent model
+- `fn-activepieces`: default SaaS action backend
+- `postgresql`: workflow definitions, execution state, approvals, child-run metadata, and durable review artifacts
+- `redis` + Dapr sidecars: workflow state, pub/sub, invocation, actors
 
-## Overview
+Historical docs and older manifests may still mention `openshell-agent-runtime`, `function-runner`, or older `durable-agent` execution ownership. Those are not the current primary execution path on `ryzen`.
 
-The Workflow Builder is a visual workflow automation platform that enables users to design, execute, and monitor workflows through a drag-and-drop interface. The current Ryzen deployment uses:
+## Design Principles
 
-- **Next.js** for the visual builder UI and BFF (Backend for Frontend)
-- **Dapr Workflows** for durable, stateful workflow orchestration
-- **PostgreSQL** for workflow definitions, execution records, approvals, and child-run metadata
-- **Redis** for Dapr workflow state and pub/sub messaging
-- **OpenTelemetry + Tempo/Grafana** for traces and run review
+### One durable parent workflow
 
-## Current Runtime Note
+`workflow-orchestrator` is the orchestration owner for long-running workflows. It owns:
 
-Some older sections in this document still refer to historical `function-runner` and `durable-agent` naming. The current `kind-ryzen` runtime you should reason about today is:
+- durable parent workflow state
+- approval gates and timeouts
+- child-run scheduling
+- final workflow status
 
-- `workflow-builder`: Next.js UI + BFF
-- `workflow-orchestrator`: Python Dapr durable workflow interpreter and approval owner
-- `function-router`: action routing layer for `system/*`, `workspace/*`, Activepieces, and compatibility runtimes
-- `openshell-agent-runtime`: OpenShell adapter invoked as the `openshell/run` child runtime
-- `openshell`: sandbox substrate that actually provisions and runs coding sandboxes
-- `dapr-agent-runtime` and `ms-agent-workflow`: compatibility backends that still run under the same durable parent model
-- `postgresql`: workflow definitions, execution records, approvals, plan artifacts, and child-run metadata
-- Dapr control plane + sidecars: service invocation, workflows, actors, state, pub/sub
+Agent backends do not own orchestration. They execute child work and report progress/results back to the parent.
 
-When this document and the live cluster disagree, prefer the runtime described above and the manifests in `stacks/main`.
+### One shared agent lifecycle
 
-## Current Local Runtime
+The desired contract across agent backends is:
 
-The most important request paths on `kind-ryzen` are:
+1. load or create a workspace profile
+2. clone or reconnect to the target repo
+3. execute planning or coding work in the chosen backend
+4. persist review artifacts as a durable execution change set
+5. expose changes, patch, and file snapshots through the review APIs
+
+This keeps repo preparation and review persistence consistent even when the reasoning backend changes.
+
+### Durable review artifacts
+
+For successful coding runs, review data is persisted independently of the live workspace:
+
+- child-run metadata
+- plan artifacts
+- traces and trace IDs
+- file-change summaries
+- unified patches
+- file snapshots with `oldContent`, `newContent`, `oldPath`, and `status`
+
+The review UI should read those persisted artifacts, not ephemeral workspace state.
+
+## High-Level Architecture
+
+```text
+browser
+  -> workflow-builder (Next.js UI + BFF)
+  -> workflow-orchestrator (Dapr durable parent workflow)
+     -> function-router
+        -> system/* and workspace/* handlers
+        -> fn-activepieces for SaaS actions
+        -> dapr-agent-runtime for openshell-langgraph/run and dapr-agent/run
+        -> ms-agent-workflow for ms-agent/run
+
+dapr-agent-runtime
+  -> shared workspace/session contract
+  -> durable-agent change-artifact service
+  -> persisted review artifacts in PostgreSQL
+```
+
+## Core Request Paths
 
 ### Visual workflow execution
 
-1. Browser calls the Next.js BFF in `workflow-builder`
-2. The BFF forwards workflow execution requests to `workflow-orchestrator`
-3. `workflow-orchestrator` interprets the workflow definition and schedules Dapr workflow/activity work
-4. Action nodes are routed through `function-router` and related runtime services
-5. Execution status and results are stored in PostgreSQL and exposed back through the BFF
+1. Browser starts a run through `workflow-builder`.
+2. The BFF calls `workflow-orchestrator`.
+3. `workflow-orchestrator` interprets the stored workflow definition.
+4. Action nodes are routed through `function-router`.
+5. Execution state is persisted durably and exposed back through the BFF.
 
-### Durable OpenShell coding execution
+### Durable coding execution
 
-1. A workflow step or built-in piece selects `openshell/run`
-2. `workflow-orchestrator` starts a durable child-run sequence for that node
-3. The orchestrator calls `openshell-agent-runtime` for plan mode
-4. The durable workflow persists the plan artifact and waits on an external approval event
-5. Once approved, the orchestrator calls `openshell-agent-runtime` again for execution mode
-6. `openshell-agent-runtime` drives the actual sandbox work in `openshell`
-7. Results return to the orchestrator as normalized step output, then back to the UI/API caller
-8. File changes, patch artifacts, child-run state, and trace IDs are persisted for run review in the app
+1. A workflow node selects `openshell-langgraph/run`.
+2. `workflow-orchestrator` starts a durable child-run sequence for that node.
+3. `function-router` routes the action to `dapr-agent-runtime`.
+4. `dapr-agent-runtime` starts the planning child run and returns child identity immediately.
+5. The parent workflow persists approval context and waits durably for approval.
+6. After approval, the orchestrator starts the execute child run.
+7. The backend performs repo-aware coding work through the shared workspace/session contract.
+8. `durable-agent` persists the final change set, patch, and file snapshots.
+9. The parent workflow records normalized child output and completes.
 
 ### Compatibility backends
 
-Compatibility runtimes still exist, but they are execution backends only:
+Compatibility runtimes still exist, but they run under the same parent workflow contract:
 
-1. `dapr-agent/run` calls `dapr-agent-runtime`
-2. `ms-agent/run` calls `ms-agent-workflow`
-3. Both run under the same `workflow-orchestrator` durable parent execution, approval model, and persistence contract
+- `openshell-langgraph/run` -> `dapr-agent-runtime`
+- `dapr-agent/run` -> `dapr-agent-runtime`
+- `ms-agent/run` -> `ms-agent-workflow`
 
-### Repo-aware execution path
+## Component Responsibilities
 
-`function-router` and related services are also Gitea-aware:
+### workflow-builder
 
-- local repo cloning and branch resolution use the in-cluster Gitea service
-- the runtime assumes the local platform includes both the Gitea git server and the local registry
-- the app repo and the `stacks` repo participate in different parts of the overall deployment flow
-- workspace-oriented steps like `workspace/profile`, `workspace/clone`, and `workspace/command` stay on this path
+Provides:
 
-### Key Features
+- React Flow visual builder
+- run launch and approval UX
+- run review UI for logs, traces, changes, patch, and snapshots
+- BFF routes that proxy to orchestrator and internal review endpoints
 
-- Visual drag-and-drop workflow designer
-- 44+ built-in functions across 14 integrations
-- Support for custom OCI container functions
-- External HTTP webhook functions
-- Approval gates with timeout handling
-- Template variable substitution between nodes
-- Real-time execution monitoring
+### workflow-orchestrator
 
----
+Provides:
 
-## Architecture
+- generic Dapr workflow interpreter
+- durable approval waits
+- child-run scheduling and timeout ownership
+- normalized execution state in PostgreSQL
+- internal APIs for workflow status and agent review data
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              Kubernetes Cluster                              │
-│                                                                              │
-│  ┌────────────────────┐                                                     │
-│  │     Ingress        │                                                     │
-│  │  (ingress-nginx)   │                                                     │
-│  └─────────┬──────────┘                                                     │
-│            │                                                                 │
-│            ▼                                                                 │
-│  ┌────────────────────┐     HTTP        ┌────────────────────────────────┐  │
-│  │    Next.js App     │────────────────▶│    workflow-orchestrator       │  │
-│  │                    │                 │                                │  │
-│  │  • Visual Builder  │                 │  • Python Dapr Workflow Runtime│  │
-│  │  • BFF API Routes  │                 │  • Dynamic Workflow Interpreter│  │
-│  │  • Run Review UI   │                 │  • Approval Ownership          │  │
-│  │  • Auth (Better)   │                 │  • Child-run Scheduling        │  │
-│  │                    │                 │                                │  │
-│  │  Port: 3000        │                 │  Port: 8080 + Dapr Sidecar     │  │
-│  └────────────────────┘                 └───────┬──────────────┬─────────┘  │
-│            │                                    │              │            │
-│            ▼                                    │              │            │
-│  ┌────────────────────┐                        ▼              ▼            │
-│  │    PostgreSQL      │         ┌────────────────────┐  ┌────────────────┐ │
-│  │                    │◀───────▶│  function-router   │  │openshell-agent │ │
-│  │  • workflows       │         │                    │  │-runtime        │ │
-│  │  • executions      │         │ • system/*         │  │                │ │
-│  │  • agent runs      │         │ • workspace/*      │  │ • plan/run API │ │
-│  │  • approvals       │         │ • Activepieces     │  │ • trace/patch  │ │
-│  │  • plan artifacts  │         │ • compatibility rt │  │ • child-run md │ │
-│  │                    │         │                    │  │                │ │
-│  │  Port: 5432        │         │  Port: 8080        │  │  Port: 8080    │ │
-│  └────────────────────┘         └─────────┬──────────┘  └──────┬─────────┘ │
-│                                           │                    │           │
-│                                           ▼                    ▼           │
-│                                 ┌────────────────┐   ┌──────────────────┐  │
-│                                 │ compatibility  │   │    openshell     │  │
-│                                 │ runtimes       │   │                  │  │
-│                                 │                │   │ • sandbox create │  │
-│                                 │ • dapr-agent   │   │ • sandbox run    │  │
-│                                 │ • ms-agent     │   │ • policy/logs    │  │
-│                                 └────────────────┘   └──────────────────┘  │
-│                                                                              │
-│  ┌────────────────────────────────────────────────────────────────────────┐ │
-│  │                        Dapr Infrastructure                              │ │
-│  │                                                                         │ │
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────┐ │ │
-│  │  │     Redis       │  │  Azure Key      │  │   Azure App Config     │ │ │
-│  │  │  State Store    │  │    Vault        │  │   (Dynamic Config)     │ │ │
-│  │  │  + Pub/Sub      │  │  (Secrets)      │  │                        │ │ │
-│  │  └─────────────────┘  └─────────────────┘  └─────────────────────────┘ │ │
-│  └────────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+Key files:
 
----
-
-## Components
-
-### 1. Next.js Application
-
-The frontend and BFF layer providing:
-
-| Feature | Description |
-|---------|-------------|
-| Visual Builder | React Flow-based drag-and-drop workflow designer |
-| Node Configuration | Properties panel for configuring each workflow node |
-| Execution Monitor | Real-time workflow execution status and logs |
-| Integration Management | Configure API keys and OAuth connections |
-| Authentication | Better Auth with email/password and anonymous users |
-
-**Key Files:**
-- `app/workflows/[workflowId]/page.tsx` - Workflow editor
-- `app/api/orchestrator/workflows/` - API routes proxying to orchestrator
-- `components/workflow/` - React Flow canvas and node components
-
-### 2. Workflow Orchestrator
-
-The Dapr workflow runtime service that:
-
-| Feature | Description |
-|---------|-------------|
-| Dynamic Interpreter | Executes any workflow definition without code generation |
-| Activity Scheduling | Calls `function-router`, `openshell-agent-runtime`, and compatibility runtimes for action nodes |
-| State Management | Persists workflow state in Redis via Dapr |
-| Event Handling | Supports approval gates with external events |
-| Timer Support | Creates durable timers for delays and timeouts |
-| Review Persistence | Records child runs, plan artifacts, trace IDs, and OpenShell patch metadata in Postgres |
-
-**Technology Stack:**
-- Python + FastAPI
-- Dapr Workflow SDK
-- Dapr Sidecar for service invocation
-
-**Key Files:**
 - `services/workflow-orchestrator/workflows/dynamic_workflow.py`
 - `services/workflow-orchestrator/activities/call_agent_service.py`
+- `services/workflow-orchestrator/activities/track_agent_run.py`
 - `services/workflow-orchestrator/app.py`
 
-### 2a. MS Agent Workflow
-
-The Microsoft-agent child workflow service provides template-driven durable agent execution inside the same platform:
-
-| Feature | Description |
-|---------|-------------|
-| Template engine | Generic step loop over `WorkflowTemplate` and `TemplateStep` definitions |
-| Current templates | `travel-planner`, `code-review` |
-| Tool groups | `read_only`, `read_write`, `all` |
-| Runtime overrides | model, max iterations, instructions overlay, Dapr config-backed defaults |
-| Workspace model | repo tools operate relative to `cwd`; `workspaceRef` is trace metadata |
-
-Key runtime behavior:
-
-- `code-review` uses three steps: structure analysis, review, optional fix application
-- tool-backed steps run in `ms-agent-workflow`, not in the Next.js app
-- the service is durable because it is invoked through Dapr child workflows, not because Microsoft Agent Framework itself provides durability
-
-### 3. Function Router
-
-The repo-aware execution router supporting built-in system/workspace actions, Activepieces, and compatibility runtimes:
-
-| Type | Description | Use Case |
-|------|-------------|----------|
-| **system/workspace** | Internal handlers for repo/session tasks | Sandbox prep, clone, shell commands |
-| **openshell/\*** | Routed to `openshell-agent-runtime` | Durable coding agent plan/run |
-| **activepieces** | Third-party action catalog | SaaS integrations |
-| **compatibility runtimes** | Routed child backends | `dapr-agent/run`, `ms-agent/run` |
-
-**Key Files:**
-- `services/function-router/src/core/registry.ts`
-- `services/function-router/src/core/openfunction-resolver.ts`
-
-### 4. OpenShell Agent Runtime
-
-The OpenShell adapter converts durable workflow child-run requests into sandbox operations:
-
-| Feature | Description |
-|---------|-------------|
-| Plan/Run Split | Supports durable plan mode followed by approved execution mode |
-| Trace Propagation | Preserves trace context across Dapr and OpenShell |
-| Change Artifacts | Persists `fileChanges`, `changeSummary`, and unified diffs for app review |
-| Sandbox Metadata | Returns sandbox identity, repo path, and child-run status |
-
-The adapter is an execution backend. It does not own workflow durability; `workflow-orchestrator` remains the sole orchestration owner.
-
-### 4. Dapr Components
-
-| Component | Type | Purpose |
-|-----------|------|---------|
-| `workflowstatestore` | state.redis | Persist workflow execution state |
-| `workflowpubsub` | pubsub.redis | Workflow event messaging |
-| `azure-keyvault` | secretstores.azure.keyvault | API key storage |
-| `azureappconfig` | configuration.azure.appconfig | Dynamic configuration |
-
----
-
-## Data Flow
-
-### Workflow Execution Flow
-
-```
-1. User triggers workflow via UI or API
-                    │
-                    ▼
-2. Next.js BFF validates and forwards to orchestrator
-                    │
-                    ▼
-3. Orchestrator receives WorkflowDefinition + TriggerData
-                    │
-                    ▼
-4. Dapr schedules dynamicWorkflow with unique instanceId
-                    │
-                    ▼
-5. For each node in executionOrder:
-   │
-   ├──▶ [action/activity] → Call function-runner via Dapr
-   │         │
-   │         ├──▶ builtin: Execute TypeScript handler
-   │         ├──▶ oci: Create K8s Job, wait for completion
-   │         └──▶ http: Call external webhook
-   │
-   ├──▶ [approval-gate] → Wait for external event or timeout
-   │
-   ├──▶ [timer] → Create Dapr timer
-   │
-   └──▶ [condition] → Evaluate and branch
-                    │
-                    ▼
-6. Workflow completes, outputs stored in state
-                    │
-                    ▼
-7. Status available via GET /api/v2/workflows/{id}/status
-```
-
-### Template Variable Resolution
-
-Node outputs can be referenced in subsequent nodes using template syntax:
-
-```
-{{nodeName.field}}           → Access output field
-{{nodeName.nested.field}}    → Access nested field
-{{trigger.inputField}}       → Access trigger data
-```
-
-**Example:**
-```json
-{
-  "config": {
-    "message": "UUID generated: {{GetUUID.data.uuid}}"
-  }
-}
-```
-
----
-
-## API Reference
-
-### Start Workflow
-
-```http
-POST /api/v2/workflows
-Content-Type: application/json
-
-{
-  "definition": {
-    "id": "my-workflow",
-    "name": "My Workflow",
-    "version": "1.0.0",
-    "nodes": [...],
-    "edges": [...],
-    "executionOrder": ["node-1", "node-2"]
-  },
-  "triggerData": {
-    "input": "value"
-  },
-  "integrations": {
-    "openai": {"apiKey": "sk-..."}
-  }
-}
-```
-
-**Response:**
-```json
-{
-  "instanceId": "my-workflow-1234567890-abc123",
-  "workflowId": "my-workflow",
-  "status": "started"
-}
-```
-
-### Get Workflow Status
-
-```http
-GET /api/v2/workflows/{instanceId}/status
-```
-
-**Response:**
-```json
-{
-  "instanceId": "my-workflow-1234567890-abc123",
-  "workflowId": "my-workflow",
-  "runtimeStatus": "COMPLETED",
-  "phase": "completed",
-  "progress": 100,
-  "outputs": {
-    "trigger": {...},
-    "node-1": {"success": true, "data": {...}},
-    "node-2": {"success": true, "data": {...}}
-  },
-  "startedAt": "2026-02-04T18:00:00Z",
-  "completedAt": "2026-02-04T18:00:05Z"
-}
-```
-
-### Raise Event (for Approval Gates)
-
-```http
-POST /api/v2/workflows/{instanceId}/events
-Content-Type: application/json
-
-{
-  "eventName": "approval_node-1",
-  "eventData": {
-    "approved": true,
-    "reason": "Looks good"
-  }
-}
-```
-
-### Additional Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v2/workflows/{id}/terminate` | Terminate running workflow |
-| POST | `/api/v2/workflows/{id}/pause` | Suspend workflow |
-| POST | `/api/v2/workflows/{id}/resume` | Resume suspended workflow |
-| DELETE | `/api/v2/workflows/{id}` | Purge completed workflow |
-
-### Function Runner API
-
-```http
-POST /execute
-Content-Type: application/json
-
-{
-  "function_slug": "openai/generate-text",
-  "execution_id": "exec-123",
-  "workflow_id": "wf-456",
-  "node_id": "node-1",
-  "node_name": "Generate Response",
-  "input": {
-    "aiPrompt": "Write a haiku about clouds",
-    "aiModel": "gpt-4o"
-  },
-  "node_outputs": {}
-}
-```
-
----
-
-## Workflow Definition Schema
-
-### Complete Schema
-
-```typescript
-interface WorkflowDefinition {
-  id: string;                    // Unique workflow identifier
-  name: string;                  // Display name
-  version: string;               // Semantic version
-  nodes: SerializedNode[];       // Array of workflow nodes
-  edges: SerializedEdge[];       // Connections between nodes
-  executionOrder: string[];      // Topologically sorted node IDs
-  metadata?: {
-    description?: string;
-    author?: string;
-    tags?: string[];
-  };
-}
-
-interface SerializedNode {
-  id: string;                    // Unique node identifier
-  type: WorkflowNodeType;        // Node type
-  label: string;                 // Display name
-  description?: string;          // Optional description
-  enabled: boolean;              // Whether node is active
-  position: { x: number; y: number };
-  config: Record<string, unknown>;
-}
-
-type WorkflowNodeType =
-  | "trigger"        // Entry point
-  | "action"         // Execute function
-  | "activity"       // Alias for action
-  | "condition"      // Branch logic
-  | "approval-gate"  // Wait for approval
-  | "timer"          // Delay execution
-  | "publish-event"; // Emit event
-```
-
-### Node Configuration Examples
-
-#### Action Node (HTTP Request)
-```json
-{
-  "id": "action-1",
-  "type": "action",
-  "label": "Fetch Data",
-  "enabled": true,
-  "position": {"x": 200, "y": 100},
-  "config": {
-    "actionId": "system/http-request",
-    "url": "https://api.example.com/data",
-    "method": "GET",
-    "headers": "{\"Authorization\": \"Bearer {{trigger.token}}\"}"
-  }
-}
-```
-
-#### Action Node (OpenAI)
-```json
-{
-  "id": "action-2",
-  "type": "action",
-  "label": "Generate Text",
-  "enabled": true,
-  "position": {"x": 400, "y": 100},
-  "config": {
-    "actionId": "openai/generate-text",
-    "aiModel": "gpt-4o",
-    "aiPrompt": "Summarize: {{FetchData.data.content}}",
-    "aiFormat": "text"
-  }
-}
-```
-
-#### Approval Gate
-```json
-{
-  "id": "approval-1",
-  "type": "approval-gate",
-  "label": "Manager Approval",
-  "enabled": true,
-  "position": {"x": 600, "y": 100},
-  "config": {
-    "eventName": "manager_approval",
-    "timeoutHours": 24,
-    "message": "Please review the generated content"
-  }
-}
-```
-
-#### Timer Node
-```json
-{
-  "id": "timer-1",
-  "type": "timer",
-  "label": "Wait 5 Minutes",
-  "enabled": true,
-  "position": {"x": 800, "y": 100},
-  "config": {
-    "durationMinutes": 5
-  }
-}
-```
-
----
-
-## Function Registry
-
-### Built-in Functions (44 total)
-
-| Plugin | Functions | Description |
-|--------|-----------|-------------|
-| **openai** | `generate-text`, `generate-image` | AI text and image generation |
-| **slack** | `send-message` | Send Slack messages |
-| **github** | `create-issue`, `list-issues`, `get-issue`, `update-issue` | GitHub issue management |
-| **linear** | `create-ticket`, `find-issues` | Linear project management |
-| **stripe** | `create-customer`, `get-customer`, `create-invoice` | Payment processing |
-| **resend** | `send-email` | Email delivery |
-| **blob** | `put`, `list` | Vercel Blob storage |
-| **clerk** | `get-user`, `create-user`, `update-user`, `delete-user` | User management |
-| **fal** | `generate-image`, `generate-video`, `upscale-image`, `remove-background`, `image-to-image` | AI media generation |
-| **firecrawl** | `scrape`, `search` | Web scraping |
-| **perplexity** | `search`, `ask`, `research` | AI search |
-| **superagent** | `guard`, `redact` | Content moderation |
-| **v0** | `create-chat`, `send-message` | Vercel v0 integration |
-| **webflow** | `list-sites`, `get-site`, `publish-site` | Webflow CMS |
-| **system** | `http-request` | Generic HTTP calls |
-
-### Database Schema
-
-```sql
-CREATE TABLE functions (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  slug TEXT UNIQUE NOT NULL,        -- e.g., "openai/generate-text"
-  description TEXT,
-  plugin_id TEXT NOT NULL,          -- e.g., "openai"
-  version TEXT DEFAULT '1.0.0',
-  execution_type TEXT DEFAULT 'builtin',  -- builtin | oci | http
-
-  -- OCI function config
-  image_ref TEXT,                   -- Container image reference
-  command TEXT,                     -- Override entrypoint
-  working_dir TEXT,
-  container_env JSONB,
-
-  -- HTTP function config
-  webhook_url TEXT,
-  webhook_method TEXT DEFAULT 'POST',
-  webhook_headers JSONB,
-  webhook_timeout_seconds INTEGER DEFAULT 30,
-
-  -- Schema definitions
-  input_schema JSONB,               -- JSON Schema for input
-  output_schema JSONB,              -- JSON Schema for output
-
-  -- Execution config
-  timeout_seconds INTEGER DEFAULT 300,
-  retry_policy JSONB,
-  max_concurrency INTEGER DEFAULT 0,
-
-  -- Metadata
-  integration_type TEXT,            -- For credential lookup
-  is_builtin BOOLEAN DEFAULT false,
-  is_enabled BOOLEAN DEFAULT true,
-  is_deprecated BOOLEAN DEFAULT false,
-  created_at TIMESTAMP DEFAULT now(),
-  updated_at TIMESTAMP DEFAULT now()
-);
-```
-
-### Adding Custom Functions
-
-#### OCI Container Function
-
-1. Create a container that reads `INPUT` env var and outputs JSON to stdout:
-
-```typescript
-// index.ts
-const input = JSON.parse(process.env.INPUT || '{}');
-const result = { processed: input.value * 2 };
-console.log(JSON.stringify(result));
-```
-
-2. Build and push to registry:
-```bash
-docker build -t gitea.cnoe.localtest.me:8443/functions/my-func:v1 .
-docker push gitea.cnoe.localtest.me:8443/functions/my-func:v1
-```
-
-3. Register in database:
-```sql
-INSERT INTO functions (name, slug, plugin_id, execution_type, image_ref)
-VALUES ('My Custom Function', 'custom/my-func', 'custom', 'oci',
-        'gitea.cnoe.localtest.me:8443/functions/my-func:v1');
-```
-
-#### HTTP Webhook Function
-
-```sql
-INSERT INTO functions (name, slug, plugin_id, execution_type, webhook_url, webhook_method)
-VALUES ('External API', 'external/api-call', 'external', 'http',
-        'https://api.example.com/webhook', 'POST');
-```
-
----
-
-## Deployment
-
-### Prerequisites
-
-- Kubernetes cluster (Kind, EKS, GKE, AKS)
-- Dapr installed with workflow support
-- Redis for state store
-- PostgreSQL for persistence
-- (Optional) Knative Serving for scale-to-zero
-- (Optional) KEDA for event-driven autoscaling
-
-### Deploy with Kustomize
-
-```bash
-# Kubernetes manifests are managed in the stacks repo (idpbuilder + ArgoCD).
-# See: ~/repos/PittampalliOrg/stacks/main/CLAUDE.md
-cd ~/repos/PittampalliOrg/stacks/main
-source deployment/scripts/cluster-menu.sh
-clu
-
-# Verify deployment
-kubectl get pods -n workflow-builder
-kubectl get components.dapr.io -n workflow-builder
-```
-
-### Manual Deployment Steps
-
-1. **Create namespace:**
-```bash
-kubectl create namespace workflow-builder
-```
-
-2. **Deploy PostgreSQL:**
-```bash
-kubectl apply -f k8s/postgresql.yaml
-```
-
-3. **Create secrets:**
-```bash
-kubectl create secret generic workflow-builder-secrets \
-  --from-literal=DATABASE_URL=postgresql://postgres:password@postgresql:5432/workflow_builder \
-  --from-literal=BETTER_AUTH_SECRET=your-secret-key \
-  -n workflow-builder
-```
-
-4. **Run database migrations:**
-```bash
-pnpm db:migrate
-pnpm seed-functions
-```
-
-5. **Deploy services:**
-```bash
-# Kubernetes manifests live in the stacks repo.
-cd ~/repos/PittampalliOrg/stacks/main
-source deployment/scripts/cluster-menu.sh
-clu
-```
-
-### Docker Images
-
-| Image | Registry Path |
-|-------|---------------|
-| workflow-builder | `gitea.cnoe.localtest.me:8443/giteaadmin/workflow-builder:latest` |
-| workflow-orchestrator | `gitea.cnoe.localtest.me:8443/giteaadmin/workflow-orchestrator:latest` |
-| function-runner | `gitea.cnoe.localtest.me:8443/giteaadmin/function-runner:latest` |
-| activity-executor | `gitea.cnoe.localtest.me:8443/giteaadmin/activity-executor:latest` |
-
-### Build Images
-
-```bash
-# Build all images
-docker build -t workflow-builder .
-docker build -t workflow-orchestrator -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
-docker build -t function-runner -f services/function-runner/Dockerfile .
-docker build -t activity-executor -f services/activity-executor/Dockerfile .
-```
-
----
-
-## Configuration
-
-### Environment Variables
-
-#### Next.js Application
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | PostgreSQL connection string | (required) |
-| `BETTER_AUTH_SECRET` | Auth encryption secret | (required) |
-| `NEXT_PUBLIC_APP_URL` | Public app URL | `http://localhost:3000` |
-| `WORKFLOW_ORCHESTRATOR_URL` | Orchestrator service URL | `http://workflow-orchestrator:8080` |
-
-#### Workflow Orchestrator
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | HTTP server port | `8080` |
-| `DAPR_HOST` | Dapr sidecar host | `localhost` |
-| `DAPR_HTTP_PORT` | Dapr HTTP port | `3500` |
-| `DAPR_GRPC_PORT` | Dapr gRPC port | `50001` |
-| `FUNCTION_RUNNER_APP_ID` | Function runner Dapr app ID | `function-runner` |
-| `USE_FUNCTION_RUNNER` | Use function-runner vs activity-executor | `true` |
-
-#### Function Runner
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | HTTP server port | `8080` |
-| `DATABASE_URL` | PostgreSQL connection string | (required) |
-| `K8S_NAMESPACE` | Kubernetes namespace for jobs | `workflow-builder` |
-| `DAPR_SECRETS_STORE` | Dapr secret store component | `azure-keyvault` |
-| `SECRETS_FALLBACK_DB` | Fall back to DB for secrets | `true` |
-
-### Dapr Configuration
-
-#### Workflow State Store (Redis)
-```yaml
-apiVersion: dapr.io/v1alpha1
-kind: Component
-metadata:
-  name: workflowstatestore
-spec:
-  type: state.redis
-  version: v1
-  metadata:
-    - name: redisHost
-      value: "redis-service.dapr-agents.svc.cluster.local:6379"
-    - name: actorStateStore
-      value: "true"
-```
-
-#### Secret Store (Azure Key Vault)
-```yaml
-apiVersion: dapr.io/v1alpha1
-kind: Component
-metadata:
-  name: azure-keyvault
-spec:
-  type: secretstores.azure.keyvault
-  version: v1
-  metadata:
-    - name: vaultName
-      value: "your-keyvault-name"
-    - name: azureClientId
-      value: ""  # Uses workload identity
-```
-
----
-
-## Monitoring & Observability
-
-### Health Endpoints
-
-| Service | Endpoint | Description |
-|---------|----------|-------------|
-| workflow-orchestrator | `/healthz` | Liveness probe |
-| workflow-orchestrator | `/readyz` | Readiness probe |
-| function-runner | `/healthz` | Liveness probe |
-| function-runner | `/readyz` | Readiness probe (checks DB) |
-| function-runner | `/status` | Detailed status with function count |
-
-### Distributed Tracing
-
-Tracing is configured via Dapr to Jaeger:
-
-```yaml
-spec:
-  tracing:
-    samplingRate: "1"
-    zipkin:
-      endpointAddress: "http://jaeger-collector.observability:9411/api/v2/spans"
-```
-
-### Logs
-
-```bash
-# Orchestrator logs
-kubectl logs -l app.kubernetes.io/name=workflow-orchestrator -c workflow-orchestrator
-
-# Function runner logs
-kubectl logs -l app.kubernetes.io/name=function-runner -c function-runner
-
-# Dapr sidecar logs
-kubectl logs -l app.kubernetes.io/name=workflow-orchestrator -c daprd
-```
-
-### Metrics
-
-Dapr exposes Prometheus metrics on port 9090:
-
-```bash
-# Get metrics
-curl http://localhost:9090/metrics
-```
-
-Key metrics:
-- `dapr_runtime_workflow_*` - Workflow execution metrics
-- `dapr_runtime_service_invocation_*` - Service invocation latency
-- `dapr_runtime_component_*` - Component health
-
----
-
-## Troubleshooting
-
-### Common Issues
-
-#### Workflow stuck in PENDING
-```bash
-# Check orchestrator logs
-kubectl logs deployment/workflow-orchestrator -c workflow-orchestrator
-
-# Verify Dapr sidecar is ready
-kubectl logs deployment/workflow-orchestrator -c daprd
-```
-
-#### Function execution fails
-```bash
-# Check function-runner logs
-kubectl logs deployment/function-runner -c function-runner
-
-# Test function directly
-kubectl run test --rm -it --image=curlimages/curl -- \
-  curl -X POST http://function-runner:8080/execute \
-  -H "Content-Type: application/json" \
-  -d '{"function_slug":"system/http-request",...}'
-```
-
-#### Database connection issues
-```bash
-# Verify PostgreSQL is accessible
-kubectl exec deployment/function-runner -c function-runner -- \
-  nc -zv postgresql 5432
-
-# Check secret configuration
-kubectl get secret workflow-builder-secrets -o yaml
-```
-
-### Debug Commands
-
-```bash
-# List all workflow-related pods
-kubectl get pods -n workflow-builder
-
-# Check Dapr components
-kubectl get components.dapr.io -n workflow-builder
-
-# View Dapr configuration
-kubectl get configurations.dapr.io -n workflow-builder
-
-# Test inter-service communication
-kubectl run test --rm -it --image=curlimages/curl -- \
-  curl http://workflow-orchestrator:8080/healthz
-```
-
----
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0.0 | 2026-02-04 | Initial release with Dapr workflow support |
-
----
-
-## References
-
-- [Dapr Workflows Documentation](https://docs.dapr.io/developing-applications/building-blocks/workflow/)
-- [Dapr Service Invocation](https://docs.dapr.io/developing-applications/building-blocks/service-invocation/)
-- [Knative Serving](https://knative.dev/docs/serving/)
-- [KEDA Autoscaling](https://keda.sh/)
+### function-router
+
+Provides:
+
+- routing for `system/*` and `workspace/*`
+- routing for agent backends
+- default routing to `fn-activepieces`
+- runtime contract normalization between the parent workflow and child services
+
+Important current routes:
+
+- `openshell-langgraph/*` -> `dapr-agent-runtime`
+- `dapr-agent/*` -> `dapr-agent-runtime`
+- `ms-agent/*` -> `ms-agent-workflow`
+- `_default` -> `fn-activepieces`
+
+### dapr-agent-runtime
+
+Provides:
+
+- LangGraph / DeepAgents-compatible coding execution
+- planning and execute child runs
+- durable progress events for tool calls and sandbox output
+- final execution review artifact publication
+
+It is an execution backend, not the orchestration owner.
+
+### durable-agent
+
+Provides shared durable services around coding runs:
+
+- workspace profiles and repo sessions
+- execution change-artifact persistence
+- patch and snapshot storage
+- durable read APIs for review data
+
+This is where backend-independent review data should live.
+
+### ms-agent-workflow
+
+Provides template-driven Microsoft-agent execution under the same durable parent workflow model. It is a compatibility backend, not the core coding path on `ryzen`.
+
+## Persisted Data Model
+
+### PostgreSQL stores
+
+- workflow definitions
+- workflow executions
+- approval records
+- child-run metadata
+- plan artifacts
+- execution change sets
+- persisted file snapshots
+
+### Dapr stores
+
+Dapr durability is used for:
+
+- workflow state and replay
+- timers and external events
+- child workflow delivery
+- service invocation and pub/sub support
+
+Dapr state is not the review surface. The review surface is the persisted execution artifact set.
+
+## Review Pipeline
+
+For coding runs, the review UI should reason about data in this order:
+
+1. persisted execution change set
+2. persisted patch
+3. persisted file snapshots
+4. historical compatibility fallback only when an old run predates snapshot persistence
+
+For new successful text-file runs, missing snapshots should be treated as a bug signal, not normal behavior.
+
+## Approval and Timeout Semantics
+
+- Parent workflow timeout is authoritative.
+- Long-running child execution must not be treated as a long blocking HTTP request.
+- Approval waits are durable external events against the parent workflow.
+- Child execution can outlive an individual HTTP request, but it must not outlive the parent timeout policy silently.
+
+## Current Operator Mental Model
+
+When debugging `workflow-builder`, think in this order:
+
+1. Is the parent workflow healthy in `workflow-orchestrator`?
+2. Did `function-router` route the action to the intended backend?
+3. Did the child backend produce durable agent progress events?
+4. Did the backend persist a real execution change set?
+5. Is the UI reading persisted review data rather than a fallback?
+
+## Deployment Truth
+
+On `ryzen`, app code and cluster manifests are separate concerns:
+
+- app repos produce images
+- `stacks/main` declares which image tags and manifests Argo should run
+
+Pushing only app code is not enough to change the live cluster. Live state changes when the required images exist and `stacks/main` is updated to point at them.
