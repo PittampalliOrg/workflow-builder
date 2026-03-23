@@ -115,6 +115,22 @@ type MastraToolResponse = {
 	message?: unknown;
 };
 
+function isPendingApprovalAgentResult(value: unknown): boolean {
+	if (!isPlainObject(value)) return false;
+	const plannerStatus =
+		typeof value.plannerStatus === "string"
+			? value.plannerStatus.trim().toLowerCase()
+			: "";
+	const status =
+		typeof value.status === "string" ? value.status.trim().toLowerCase() : "";
+	return (
+		typeof value.artifactRef === "string" ||
+		isPlainObject(value.approvalPayload) ||
+		plannerStatus === "awaiting_review" ||
+		status === "awaiting_approval"
+	);
+}
+
 function asNumber(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) return value;
 	if (typeof value !== "string") return undefined;
@@ -893,6 +909,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const hasWorkspaceRef =
 							typeof args.workspaceRef === "string" &&
 							args.workspaceRef.trim().length > 0;
+						const usesUnifiedAgentRunEndpoint =
+							target.appId === "dapr-agent-runtime";
 
 						if (isDaprAgentRun) {
 							targetUrl = `${functionUrl}/api/run`;
@@ -923,9 +941,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							});
 						} else if (isAgentRun) {
 							if (runMode === "plan_mode") {
-								targetUrl = `${functionUrl}/api/plan`;
+								targetUrl = usesUnifiedAgentRunEndpoint
+									? `${functionUrl}/api/run`
+									: `${functionUrl}/api/plan`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
+									mode: "plan_mode",
 									cwd: args.cwd ?? "",
 									executionMode:
 										typeof args.workspaceRef === "string" &&
@@ -949,13 +970,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									workflowId: body.workflow_id,
 									nodeId: body.node_id,
 									nodeName: body.node_name,
+									waitForCompletion: true,
 								});
 							} else {
-								targetUrl = hasWorkspaceRef
-									? `${functionUrl}/api/run-sandboxed`
-									: `${functionUrl}/api/run`;
+								targetUrl =
+									hasWorkspaceRef && !usesUnifiedAgentRunEndpoint
+										? `${functionUrl}/api/run-sandboxed`
+										: `${functionUrl}/api/run`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
+									mode: runMode || "execute_direct",
 									cwd: args.cwd ?? "",
 									executionMode:
 										typeof args.workspaceRef === "string" &&
@@ -1260,6 +1284,21 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								? (parsed as MastraToolResponse)
 								: undefined;
 						let resolvedMastra = parsedMastra;
+						if (
+							isAgentRun &&
+							resolvedMastra?.success === false &&
+							(isPendingApprovalAgentResult(resolvedMastra) ||
+								isPendingApprovalAgentResult(resolvedMastra?.result))
+						) {
+							resolvedMastra = {
+								...resolvedMastra,
+								success: true,
+								status:
+									typeof resolvedMastra.status === "string"
+										? resolvedMastra.status
+										: "awaiting_approval",
+							};
+						}
 						if (
 							!resolvedMastra?.success &&
 							parsed &&

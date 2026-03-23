@@ -558,6 +558,8 @@ class ExecuteRequest(BaseModel):
     execution_id: str = Field(min_length=1)
     workflow_id: str = Field(min_length=1)
     node_id: str = Field(min_length=1)
+    db_execution_id: str | None = None
+    parent_execution_id: str | None = None
     input: dict[str, Any] = Field(default_factory=dict)
     node_outputs: dict[str, Any] | None = None
     credentials: dict[str, str] | None = None
@@ -724,6 +726,8 @@ class AgentRunContext:
 
 workspace_sessions: dict[str, WorkspaceSession] = {}
 sessions_by_execution: dict[str, set[str]] = {}
+_langgraph_event_counters: dict[str, int] = {}
+_langgraph_event_lock = threading.Lock()
 runtime = wf.WorkflowRuntime()
 workflow_client = DaprWorkflowClient()
 runner = AgentRunner(name="dapr-agent-runtime", timeout_in_seconds=3600)
@@ -755,6 +759,13 @@ run_state_store = StateStoreService(
 
 def _event_payload_id(instance_id: str, suffix: str) -> str:
     return f"{instance_id}:{suffix}"
+
+
+def _next_langgraph_event_sequence(instance_id: str) -> int:
+    with _langgraph_event_lock:
+        next_value = int(_langgraph_event_counters.get(instance_id) or 0) + 1
+        _langgraph_event_counters[instance_id] = next_value
+        return next_value
 
 
 def _publish_agent_events(
@@ -837,6 +848,218 @@ def _sandbox_output_text(result: Any) -> tuple[str, int | None]:
     if isinstance(result, str):
         return result.strip(), None
     return json.dumps(result, default=str), None
+
+
+def _progress_event_mapping(event: Any) -> dict[str, Any]:
+    return event if isinstance(event, dict) else {}
+
+
+def _progress_nested_mapping(event: dict[str, Any], key: str) -> dict[str, Any]:
+    value = event.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _compact_progress_event_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        trimmed = value.strip()
+        return trimmed or None
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_progress_event_value(item)
+            for key, item in value.items()
+            if _compact_progress_event_value(item) is not None
+        }
+    if isinstance(value, (list, tuple)):
+        compacted = [
+            _compact_progress_event_value(item)
+            for item in value
+        ]
+        filtered = [item for item in compacted if item is not None]
+        return filtered or None
+    return str(value)
+
+
+def _first_progress_value(*values: Any) -> Any:
+    for value in values:
+        compacted = _compact_progress_event_value(value)
+        if compacted is not None:
+            return compacted
+    return None
+
+
+def _progress_tool_name(event: dict[str, Any]) -> str:
+    tool = _progress_nested_mapping(event, "tool")
+    meta = _progress_nested_mapping(event, "meta")
+    name = _first_progress_value(
+        event.get("toolName"),
+        event.get("tool_name"),
+        event.get("name"),
+        event.get("label"),
+        event.get("tool"),
+        tool.get("name"),
+        tool.get("toolName"),
+        meta.get("toolName"),
+        meta.get("tool_name"),
+        meta.get("name"),
+    )
+    return str(name or "tool").strip() or "tool"
+
+
+def _progress_tool_args(event: dict[str, Any]) -> Any:
+    tool = _progress_nested_mapping(event, "tool")
+    meta = _progress_nested_mapping(event, "meta")
+    direct = _first_progress_value(
+        event.get("toolArgs"),
+        event.get("toolInput"),
+        event.get("input"),
+        event.get("args"),
+        event.get("arguments"),
+        event.get("kwargs"),
+        event.get("parameters"),
+        event.get("params"),
+        tool.get("args"),
+        tool.get("input"),
+        meta.get("toolArgs"),
+        meta.get("input"),
+        meta.get("args"),
+        meta.get("arguments"),
+    )
+    if direct is not None:
+        return direct
+    command = _first_progress_value(
+        event.get("command"),
+        event.get("cmd"),
+        meta.get("command"),
+        meta.get("cmd"),
+    )
+    cwd = _first_progress_value(event.get("cwd"), meta.get("cwd"))
+    timeout_seconds = _first_progress_value(
+        event.get("timeout_seconds"),
+        event.get("timeoutSeconds"),
+        meta.get("timeout_seconds"),
+        meta.get("timeoutSeconds"),
+    )
+    if command is None and cwd is None and timeout_seconds is None:
+        return None
+    payload: dict[str, Any] = {}
+    if command is not None:
+        payload["command"] = command
+    if cwd is not None:
+        payload["cwd"] = cwd
+    if timeout_seconds is not None:
+        payload["timeout_seconds"] = timeout_seconds
+    return payload or None
+
+
+def _progress_tool_result(event: dict[str, Any]) -> Any:
+    tool = _progress_nested_mapping(event, "tool")
+    meta = _progress_nested_mapping(event, "meta")
+    direct = _first_progress_value(
+        event.get("toolResult"),
+        event.get("result"),
+        event.get("output"),
+        event.get("response"),
+        meta.get("toolResult"),
+        meta.get("result"),
+        meta.get("output"),
+        tool.get("result"),
+        tool.get("output"),
+    )
+    if direct is not None:
+        return direct
+    error_text = _first_progress_value(
+        event.get("error"),
+        event.get("errorText"),
+        meta.get("error"),
+        meta.get("errorText"),
+    )
+    if error_text is not None:
+        return {"error": error_text}
+    command = _first_progress_value(
+        event.get("command"),
+        event.get("cmd"),
+        meta.get("command"),
+        meta.get("cmd"),
+    )
+    stdout = _first_progress_value(
+        event.get("stdout"),
+        meta.get("stdout"),
+    )
+    stderr = _first_progress_value(
+        event.get("stderr"),
+        meta.get("stderr"),
+    )
+    exit_code = _first_progress_value(
+        event.get("exitCode"),
+        event.get("exit_code"),
+        event.get("returncode"),
+        meta.get("exitCode"),
+        meta.get("exit_code"),
+        meta.get("returncode"),
+    )
+    if command is None and stdout is None and stderr is None and exit_code is None:
+        return None
+    payload: dict[str, Any] = {}
+    if command is not None:
+        payload["command"] = command
+    if stdout is not None:
+        payload["stdout"] = stdout
+    if stderr is not None:
+        payload["stderr"] = stderr
+    if exit_code is not None:
+        payload["exitCode"] = exit_code
+    return payload or None
+
+
+def _progress_event_exit_code(event: dict[str, Any]) -> int | None:
+    value = _first_progress_value(
+        event.get("exitCode"),
+        event.get("exit_code"),
+        event.get("returncode"),
+        _progress_nested_mapping(event, "meta").get("exitCode"),
+        _progress_nested_mapping(event, "meta").get("exit_code"),
+        _progress_nested_mapping(event, "meta").get("returncode"),
+    )
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.isdigit() or (
+            stripped.startswith("-") and stripped[1:].isdigit()
+        ):
+            return int(stripped)
+    return None
+
+
+def _progress_event_command(event: dict[str, Any]) -> str | None:
+    value = _first_progress_value(
+        event.get("command"),
+        event.get("cmd"),
+        _progress_nested_mapping(event, "meta").get("command"),
+        _progress_nested_mapping(event, "meta").get("cmd"),
+    )
+    if isinstance(value, str):
+        return value
+    tool_args = _progress_tool_args(event)
+    if isinstance(tool_args, dict):
+        command = tool_args.get("command") or tool_args.get("cmd")
+        if isinstance(command, str) and command.strip():
+            return command.strip()
+    return None
+
+
+def _progress_event_output_text(event: dict[str, Any]) -> str:
+    explicit_output = _first_progress_value(
+        event.get("output"),
+        _progress_nested_mapping(event, "meta").get("output"),
+    )
+    if isinstance(explicit_output, str) and explicit_output.strip():
+        return explicit_output.strip()
+    tool_result = _progress_tool_result(event)
+    output_text, _ = _sandbox_output_text(tool_result)
+    return output_text
 
 
 def _workspace_session_key(workspace_ref: str) -> str:
@@ -2329,8 +2552,11 @@ def _record_langgraph_progress_event(
     )
     next_iteration = int(existing_progress.get("currentIteration") or 0)
     recent_turns = list(existing_progress.get("recentTurns") or [])
+    event_seq = _next_langgraph_event_sequence(instance_id)
+    event_suffix = f"langgraph:{phase}:{event_type}:{event_seq}"
 
     if event_type == "model_start":
+        turn = next_iteration + 1
         next_iteration += 1
         recent_turns.append(
             {
@@ -2354,9 +2580,18 @@ def _record_langgraph_progress_event(
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="model_start",
+            phase=progress_phase,
+            turn=turn,
+            text=recent_turns[-1]["summary"],
+        )
         return
 
     if event_type == "model_complete":
+        turn = next_iteration or 1
         recent_turns.append(
             {
                 "label": "model",
@@ -2379,9 +2614,17 @@ def _record_langgraph_progress_event(
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="model_complete",
+            phase=progress_phase,
+            turn=turn,
+        )
         return
 
-    tool_name = str(event.get("toolName") or "tool").strip() or "tool"
+    tool_name = _progress_tool_name(event)
+    tool_args = _progress_tool_args(event)
     if event_type == "tool_start":
         recent_turns.append(
             {
@@ -2401,10 +2644,19 @@ def _record_langgraph_progress_event(
             summary=f"Running tool {tool_name}",
             recentTurns=recent_turns,
         )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_start",
+            phase=progress_phase,
+            toolName=tool_name,
+            toolArgs=tool_args,
+        )
         return
 
     if event_type == "tool_complete":
         tool_status = str(event.get("status") or "completed").strip().lower()
+        tool_result = _progress_tool_result(event)
         status_label = "completed" if tool_status == "completed" else tool_status
         recent_turns.append(
             {
@@ -2423,6 +2675,16 @@ def _record_langgraph_progress_event(
             stopReason=None,
             summary=recent_turns[-1]["summary"],
             recentTurns=recent_turns,
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_complete",
+            phase=progress_phase,
+            toolName=tool_name,
+            toolArgs=tool_args,
+            toolResult=tool_result,
+            status=tool_status or "completed",
         )
         return
 
@@ -2445,6 +2707,33 @@ def _record_langgraph_progress_event(
             stopReason=None,
             summary=message or f"Failed tool {tool_name}",
             recentTurns=recent_turns,
+        )
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="tool_error",
+            phase=progress_phase,
+            toolName=tool_name,
+            toolArgs=tool_args,
+            error=message or f"Failed tool {tool_name}",
+        )
+        return
+
+    if event_type == "sandbox_output":
+        exit_code = _progress_event_exit_code(event)
+        _emit_agent_event(
+            run_context,
+            event_id=_event_payload_id(instance_id, event_suffix),
+            event_type="sandbox_output",
+            phase=progress_phase,
+            command=_progress_event_command(event),
+            output=_progress_event_output_text(event),
+            exitCode=exit_code,
+            status=(
+                "nonzero_exit"
+                if exit_code is not None and exit_code != 0
+                else "success"
+            ),
         )
 
 
@@ -3163,10 +3452,10 @@ def _wait_for_terminal_workflow_result(
         progress = _load_agent_progress(instance_id) or {}
         artifact = _load_run_artifact(instance_id) or {}
         if return_on_approval and str(progress.get("phase") or "").strip().lower() == "awaiting_approval":
-            return {
-                "status": "awaiting_approval",
-                "payload": artifact
-                or {
+            approval_payload = (
+                artifact
+                if artifact
+                else {
                     "success": True,
                     "agentWorkflowId": instance_id,
                     "daprInstanceId": instance_id,
@@ -3174,6 +3463,22 @@ def _wait_for_terminal_workflow_result(
                     "agentProgress": progress,
                     "status": "awaiting_approval",
                     "approvalEventName": progress.get("approvalEventName"),
+                }
+            )
+            return {
+                "status": "awaiting_approval",
+                "payload": {
+                    **approval_payload,
+                    "success": bool(approval_payload.get("success", True)),
+                    "status": str(approval_payload.get("status") or "awaiting_approval"),
+                    "agentWorkflowId": approval_payload.get("agentWorkflowId") or instance_id,
+                    "daprInstanceId": approval_payload.get("daprInstanceId") or instance_id,
+                    "traceId": approval_payload.get("traceId") or progress.get("traceId"),
+                    "agentProgress": approval_payload.get("agentProgress") or progress,
+                    "approvalEventName": approval_payload.get("approvalEventName")
+                    or progress.get("approvalEventName"),
+                    "approvalPayload": approval_payload.get("approvalPayload")
+                    or artifact.get("approvalPayload"),
                 },
             }
         if normalized in {"completed", "failed", "terminated"}:
@@ -4093,8 +4398,14 @@ def workspace_execution_file_snapshot(
     raise HTTPException(status_code=404, detail="File snapshot not found for execution")
 
 
-@app.post("/api/run")
-def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, Any]:
+def _start_agent_run(
+    request: DaprAgentRunRequest,
+    http_request: Request,
+    *,
+    mode_override: str | None = None,
+) -> dict[str, Any]:
+    if mode_override:
+        request = request.model_copy(update={"mode": mode_override})
     instance_id = f"dapr-agent-run-{uuid.uuid4().hex[:12]}"
     otel_ctx = _otel_context_from_headers(http_request)
     trace_id = _trace_id_from_otel(otel_ctx) or _current_trace_id()
@@ -4151,6 +4462,39 @@ def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, An
         "agentProgress": _load_agent_progress(instance_id),
         "status_url": f"/api/run/{instance_id}",
     }
+
+
+@app.post("/api/plan")
+def api_plan(request: DaprAgentRunRequest, http_request: Request) -> dict[str, Any]:
+    return _start_agent_run(
+        request.model_copy(
+            update={
+                "mode": PLAN_MODE,
+                "waitForCompletion": True,
+            }
+        ),
+        http_request,
+    )
+
+
+@app.post("/api/run")
+def api_run(request: DaprAgentRunRequest, http_request: Request) -> dict[str, Any]:
+    return _start_agent_run(request, http_request)
+
+
+@app.post("/api/run-sandboxed")
+def api_run_sandboxed(
+    request: DaprAgentRunRequest,
+    http_request: Request,
+) -> dict[str, Any]:
+    return _start_agent_run(
+        request.model_copy(
+            update={
+                "mode": EXECUTE_MODE,
+            }
+        ),
+        http_request,
+    )
 
 
 @app.get("/api/run/resolve-child")
@@ -4469,6 +4813,18 @@ def execute_step(request: ExecuteRequest) -> dict[str, Any]:
         toolPolicy=str(request.input.get("toolPolicy") or "").strip() or None,
         writePolicy=str(request.input.get("writePolicy") or "").strip() or None,
         shellPolicy=str(request.input.get("shellPolicy") or "").strip() or None,
+        executionId=(
+            str(request.input.get("executionId") or request.parent_execution_id or request.execution_id).strip()
+            or None
+        ),
+        dbExecutionId=(
+            str(request.input.get("dbExecutionId") or request.db_execution_id or "").strip()
+            or None
+        ),
+        parentExecutionId=(
+            str(request.input.get("parentExecutionId") or request.parent_execution_id or request.execution_id).strip()
+            or None
+        ),
         artifactRef=str(request.input.get("artifactRef") or "").strip() or None,
         planJson=request.input.get("planJson")
         if isinstance(request.input.get("planJson"), dict)

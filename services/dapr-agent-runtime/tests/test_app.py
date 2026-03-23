@@ -1431,6 +1431,107 @@ def test_rejected_tool_attempt_still_advances_iteration(monkeypatch) -> None:
     ]
 
 
+def test_record_langgraph_progress_event_normalizes_tool_payloads(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "run_state_store", fake_store)
+    monkeypatch.setattr(app, "run_context_cache", {})
+    emitted_events: list[dict[str, object]] = []
+    streamed_events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        app,
+        "_emit_agent_event",
+        lambda _run_context, **payload: emitted_events.append(payload),
+    )
+    monkeypatch.setattr(
+        app,
+        "_push_stream_event",
+        lambda _instance_id, event: streamed_events.append(event),
+    )
+
+    run_context = AgentRunContext(
+        instance_id="wf-langgraph-tool",
+        mode="execute_direct",
+        profile="review",
+        model="gpt-5.4",
+        engine="langgraph-deepagents",
+        cwd="/tmp",
+        tool_group="all",
+        max_turns=24,
+        trace_id="trace-langgraph-tool",
+    )
+    _persist_run_context(run_context)
+    app._persist_agent_progress(
+        "wf-langgraph-tool",
+        app._default_agent_progress(run_context, status="running"),
+    )
+
+    app._record_langgraph_progress_event(
+        "wf-langgraph-tool",
+        run_context,
+        phase="execute",
+        event={
+            "event": "tool_complete",
+            "name": "ExecuteCommand",
+            "input": {"command": "find . -maxdepth 1 -type f"},
+            "output": {
+                "stdout": "README.md\npackage.json\n",
+                "stderr": "",
+                "exitCode": 0,
+            },
+            "status": "completed",
+        },
+    )
+
+    assert streamed_events[0]["type"] == "tool_complete"
+    assert emitted_events[0]["event_type"] == "tool_complete"
+    assert emitted_events[0]["toolName"] == "ExecuteCommand"
+    assert emitted_events[0]["toolArgs"] == {
+        "command": "find . -maxdepth 1 -type f",
+    }
+    assert emitted_events[0]["toolResult"] == {
+        "stdout": "README.md\npackage.json\n",
+        "exitCode": 0,
+    }
+
+
+def test_record_langgraph_progress_event_normalizes_sandbox_output(monkeypatch) -> None:
+    emitted_events: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        app,
+        "_emit_agent_event",
+        lambda _run_context, **payload: emitted_events.append(payload),
+    )
+    monkeypatch.setattr(app, "_push_stream_event", lambda *_args, **_kwargs: None)
+
+    run_context = AgentRunContext(
+        instance_id="wf-langgraph-sandbox",
+        mode="execute_direct",
+        profile="review",
+        model="gpt-5.4",
+        engine="langgraph-deepagents",
+        cwd="/tmp",
+        tool_group="all",
+        max_turns=24,
+        trace_id="trace-langgraph-sandbox",
+    )
+
+    app._record_langgraph_progress_event(
+        "wf-langgraph-sandbox",
+        run_context,
+        phase="execute",
+        event={
+            "event": "sandbox_output",
+            "cmd": "pwd",
+            "result": {"stdout": "/sandbox/repo\n", "stderr": "", "returncode": "0"},
+        },
+    )
+
+    assert emitted_events[0]["event_type"] == "sandbox_output"
+    assert emitted_events[0]["command"] == "pwd"
+    assert emitted_events[0]["output"] == "/sandbox/repo"
+    assert emitted_events[0]["exitCode"] == 0
+
+
 def test_call_llm_advances_iteration(monkeypatch) -> None:
     fake_store = FakeStateStore()
     monkeypatch.setattr(app, "run_state_store", fake_store)

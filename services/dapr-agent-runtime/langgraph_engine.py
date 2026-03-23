@@ -44,6 +44,12 @@ except ImportError:  # pragma: no cover
     ChatOpenAI = None
 
 try:
+    from dapr_agents.tool.utils.serialization import serialize_tool_result
+except ImportError:  # pragma: no cover
+    def serialize_tool_result(result: Any) -> Any:  # type: ignore[no-redef]
+        return result
+
+try:
     from langgraph.graph import END, START, StateGraph
     from langgraph.types import Command, interrupt
 except ImportError:  # pragma: no cover
@@ -165,6 +171,37 @@ class LangGraphRunResult:
 
 
 ProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _compact_progress_payload(
+    value: Any,
+    *,
+    max_string_length: int = 4000,
+    max_items: int = 50,
+) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value[:max_string_length]
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_progress_payload(
+                item,
+                max_string_length=max_string_length,
+                max_items=max_items,
+            )
+            for key, item in list(value.items())[:max_items]
+        }
+    if isinstance(value, (list, tuple)):
+        return [
+            _compact_progress_payload(
+                item,
+                max_string_length=max_string_length,
+                max_items=max_items,
+            )
+            for item in list(value)[:max_items]
+        ]
+    return str(value)[:max_string_length]
 
 
 @dataclass
@@ -519,11 +556,15 @@ def _bind_workspace_tools(
         ):
             @wraps(fn)
             def wrapped(*args: Any, **kwargs: Any) -> Any:
+                tool_args = _compact_progress_payload(
+                    kwargs if kwargs else {"args": list(args)} if args else None
+                )
                 if progress_callback is not None:
                     progress_callback(
                         {
                             "event": "tool_start",
                             "toolName": name,
+                            "toolArgs": tool_args,
                         }
                     )
                 try:
@@ -537,6 +578,8 @@ def _bind_workspace_tools(
                                     "event": "tool_complete",
                                     "toolName": name,
                                     "status": "recoverable_error",
+                                    "toolArgs": tool_args,
+                                    "toolResult": _compact_progress_payload(recoverable),
                                 }
                             )
                         return recoverable
@@ -546,6 +589,7 @@ def _bind_workspace_tools(
                                 "event": "tool_error",
                                 "toolName": name,
                                 "error": str(exc),
+                                "toolArgs": tool_args,
                             }
                         )
                     raise
@@ -555,6 +599,8 @@ def _bind_workspace_tools(
                             "event": "tool_complete",
                             "toolName": name,
                             "status": "completed",
+                            "toolArgs": tool_args,
+                            "toolResult": _compact_progress_payload(serialize_tool_result(result)),
                         }
                     )
                 return result
@@ -673,8 +719,21 @@ def _bind_openshell_tools(
         command_text = str(resolved_kwargs.get("command", command))
         command_cwd = str(resolved_kwargs.get("cwd", cwd))
         timeout_value = int(resolved_kwargs.get("timeout_seconds", timeout_seconds) or timeout_seconds)
+        tool_args = _compact_progress_payload(
+            {
+                "command": command_text,
+                "cwd": command_cwd,
+                "timeout_seconds": timeout_value,
+            }
+        )
         if progress_callback is not None:
-            progress_callback({"event": "tool_start", "toolName": "execute_openshell_command"})
+            progress_callback(
+                {
+                    "event": "tool_start",
+                    "toolName": "execute_openshell_command",
+                    "toolArgs": tool_args,
+                }
+            )
         result = context.run_command(
             command_text,
             cwd=command_cwd,
@@ -685,7 +744,13 @@ def _bind_openshell_tools(
                 {
                     "event": "tool_complete",
                     "toolName": "execute_openshell_command",
-                    "status": "completed" if int(result.get("exitCode") or 0) == 0 else "nonzero_exit",
+                    "status": (
+                        "completed"
+                        if int(result.get("exitCode") or 0) == 0
+                        else "nonzero_exit"
+                    ),
+                    "toolArgs": tool_args,
+                    "toolResult": _compact_progress_payload(result),
                 }
             )
             # Emit sandbox output event for UI terminal display
