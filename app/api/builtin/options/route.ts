@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
 import { getSession } from "@/lib/auth-helpers";
 import { getAppConnectionByExternalId } from "@/lib/db/app-connections";
+import { listAgentProfileTemplates } from "@/lib/db/agent-profiles";
 import {
 	AppConnectionType,
 	type AppConnectionValue,
@@ -622,6 +623,26 @@ export async function POST(request: Request) {
 		}
 
 		const normalizedActionName = normalizeActionName(rawBody.actionName);
+
+		if (
+			(normalizedActionName === "durable/run" ||
+				normalizedActionName === "dapr-agent/run" ||
+				normalizedActionName === "openshell-langgraph/run") &&
+			rawBody.propertyName === "agentProfileTemplateId"
+		) {
+			const templates = await listAgentProfileTemplates({
+				includeDisabled: false,
+			});
+			return NextResponse.json({
+				options: filterOptions(
+					templates.map((template) => ({
+						label: `${template.name} (v${template.defaultVersion})`,
+						value: template.id,
+					})),
+					rawBody.searchValue,
+				),
+			});
+		}
 
 		// Tools multi-select for workspace/profile
 		if (

@@ -2121,9 +2121,9 @@ const workflowDashboardApi = {
 		const query = new URLSearchParams();
 		if (params?.search) query.set("search", params.search);
 		const qs = query.toString();
-		return apiCall<
-			import("./types/workflow-dashboard").WorkflowNamesResponse
-		>(`/api/workflows/names${qs ? `?${qs}` : ""}`);
+		return apiCall<import("./types/workflow-dashboard").WorkflowNamesResponse>(
+			`/api/workflows/names${qs ? `?${qs}` : ""}`,
+		);
 	},
 	getNameDetail: (appId: string, workflowName: string) =>
 		apiCall<import("./types/workflow-dashboard").WorkflowNameDetail>(
@@ -2133,7 +2133,12 @@ const workflowDashboardApi = {
 		apiCall<import("./types/workflow-dashboard").WorkflowExecutionDetail>(
 			`/api/workflows/executions/${encodeURIComponent(instanceId)}/detail`,
 		),
-	listAllExecutions: (params?: { search?: string; limit?: number; offset?: number; latestOnly?: boolean }) => {
+	listAllExecutions: (params?: {
+		search?: string;
+		limit?: number;
+		offset?: number;
+		latestOnly?: boolean;
+	}) => {
 		const query = new URLSearchParams();
 		if (params?.search) query.set("search", params.search);
 		if (params?.limit) query.set("limit", String(params.limit));
@@ -2153,7 +2158,16 @@ const workflowDashboardApi = {
 			`/api/workflows/executions/${encodeURIComponent(instanceId)}/graph`,
 		),
 	getExecutionRelationships: (instanceId: string) =>
-		apiCall<{ relationships: Array<{ instanceId: string; status: import("./types/workflow-ui").WorkflowUIStatus; relationship: "rerun-source" | "rerun-child"; appId: string; startTime: string; endTime: string | null }> }>(
+		apiCall<{
+			relationships: Array<{
+				instanceId: string;
+				status: import("./types/workflow-ui").WorkflowUIStatus;
+				relationship: "rerun-source" | "rerun-child";
+				appId: string;
+				startTime: string;
+				endTime: string | null;
+			}>;
+		}>(
 			`/api/workflows/executions/${encodeURIComponent(instanceId)}/relationships`,
 		),
 	terminateExecution: (instanceId: string) =>
@@ -2162,10 +2176,13 @@ const workflowDashboardApi = {
 			{ method: "POST" },
 		),
 	rerunExecution: (instanceId: string) =>
-		apiCall<{ success: boolean; newInstanceId: string; newExecutionId: string }>(
-			`/api/workflows/executions/${encodeURIComponent(instanceId)}/rerun`,
-			{ method: "POST" },
-		),
+		apiCall<{
+			success: boolean;
+			newInstanceId: string;
+			newExecutionId: string;
+		}>(`/api/workflows/executions/${encodeURIComponent(instanceId)}/rerun`, {
+			method: "POST",
+		}),
 };
 
 const discoveredAgentApi = {
@@ -2185,8 +2202,16 @@ const discoveredAgentApi = {
 		),
 };
 
+const agentRunsApi = {
+	list: (appId: string, agentName: string) =>
+		apiCall<{ runs: import("./db/schema").WorkflowAgentRun[] }>(
+			`/api/agents/discovered/${encodeURIComponent(appId)}/${encodeURIComponent(agentName)}/runs`,
+		),
+};
+
 // Export all APIs as a single object
 export const api = {
+	agentRuns: agentRunsApi,
 	agent: agentApi,
 	ai: aiApi,
 	aiChat: aiChatApi,

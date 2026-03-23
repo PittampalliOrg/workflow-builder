@@ -303,6 +303,7 @@ def call_dapr_agent_run(ctx, input_data: dict) -> dict:
             with httpx.Client(timeout=request_timeout_seconds) as client:
                 payload = {
                     "prompt": input_data.get("prompt", ""),
+                    "actionType": input_data.get("actionType"),
                     "profile": input_data.get("profile")
                     or input_data.get("mode")
                     or "implement",

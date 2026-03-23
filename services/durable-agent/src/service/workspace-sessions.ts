@@ -1352,21 +1352,18 @@ class WorkspaceSessionManager {
 		return files;
 	}
 
-	private parseNumStatOutput(raw: string): {
+	private computeStatsFromPatch(patch: string): {
 		additions: number;
 		deletions: number;
 	} {
 		let additions = 0;
 		let deletions = 0;
-		for (const line of raw.split("\n")) {
-			const trimmed = line.trim();
-			if (!trimmed) continue;
-			const parts = trimmed.split("\t");
-			if (parts.length < 3) continue;
-			const add = Number.parseInt(parts[0], 10);
-			const del = Number.parseInt(parts[1], 10);
-			if (Number.isFinite(add)) additions += add;
-			if (Number.isFinite(del)) deletions += del;
+		for (const line of patch.split("\n")) {
+			if (line.startsWith("+") && !line.startsWith("+++")) {
+				additions++;
+			} else if (line.startsWith("-") && !line.startsWith("---")) {
+				deletions++;
+			}
 		}
 		return { additions, deletions };
 	}
@@ -1528,14 +1525,7 @@ class WorkspaceSessionManager {
 			}
 			const files = this.parseNameStatusOutput(statusResult.stdout);
 
-			const numStatResult = await this.runTrackingGit(
-				session,
-				"git diff --cached --numstat HEAD",
-			);
-			if (!numStatResult.success || numStatResult.exitCode !== 0) {
-				throw new Error(numStatResult.stderr || "git diff --numstat failed");
-			}
-			const stats = this.parseNumStatOutput(numStatResult.stdout);
+			const stats = this.computeStatsFromPatch(patch);
 			const fileSnapshots: ChangeArtifactFileSnapshotInput[] = [];
 
 			for (const file of files) {

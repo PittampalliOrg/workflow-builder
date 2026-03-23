@@ -4,12 +4,16 @@ import { format } from "date-fns";
 import {
 	AlertTriangle,
 	Bot,
+	CheckCircle2,
 	ChevronDown,
 	ChevronRight,
+	Clock,
 	ExternalLink,
 	Info,
+	Loader2,
 	Square,
 	Workflow,
+	XCircle,
 } from "lucide-react";
 
 import Link from "next/link";
@@ -25,7 +29,9 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { AgentStreamInline } from "@/components/workflow-runs/agent-stream-inline";
 import { api } from "@/lib/api-client";
+import type { WorkflowAgentRun } from "@/lib/db/schema";
 import type { AgentType, DiscoveredAgent } from "@/lib/types/discovered-agent";
 
 function formatTimestamp(iso: string | null): string {
@@ -53,6 +59,19 @@ function TypeBadge({ type }: { type: AgentType }) {
 	);
 }
 
+function RunStatusIcon({ status }: { status: string }) {
+	switch (status) {
+		case "completed":
+			return <CheckCircle2 className="size-4 text-green-500" />;
+		case "failed":
+			return <XCircle className="size-4 text-red-500" />;
+		case "running":
+			return <Loader2 className="size-4 animate-spin text-blue-500" />;
+		default:
+			return <Clock className="size-4 text-muted-foreground" />;
+	}
+}
+
 export default function AgentDetailPage() {
 	const params = useParams<{ appId: string; agentName: string }>();
 	const appId = decodeURIComponent(params.appId);
@@ -62,6 +81,8 @@ export default function AgentDetailPage() {
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [instructionsOpen, setInstructionsOpen] = useState(false);
+	const [runs, setRuns] = useState<WorkflowAgentRun[]>([]);
+	const [runsLoading, setRunsLoading] = useState(true);
 
 	const fetchAgent = useCallback(async () => {
 		try {
@@ -75,9 +96,21 @@ export default function AgentDetailPage() {
 		}
 	}, [appId, agentName]);
 
+	const fetchRuns = useCallback(async () => {
+		try {
+			const result = await api.agentRuns.list(appId, agentName);
+			setRuns(result.runs);
+		} catch (err) {
+			console.error("Failed to fetch agent runs:", err);
+		} finally {
+			setRunsLoading(false);
+		}
+	}, [appId, agentName]);
+
 	useEffect(() => {
 		fetchAgent();
-	}, [fetchAgent]);
+		fetchRuns();
+	}, [fetchAgent, fetchRuns]);
 
 	const copyInstructions = () => {
 		if (!agent?.instructions) return;
@@ -299,6 +332,79 @@ export default function AgentDetailPage() {
 						</Button>
 					</Link>
 				</div>
+			</div>
+
+			{/* Recent Runs */}
+			<div className="mt-6 border-t pt-6">
+				<h2 className="mb-4 font-semibold text-lg">Recent Runs</h2>
+				{runsLoading ? (
+					<div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
+						<Loader2 className="size-4 animate-spin" />
+						Loading runs...
+					</div>
+				) : runs.length === 0 ? (
+					<div className="py-8 text-center text-sm text-muted-foreground">
+						No runs yet
+					</div>
+				) : (
+					<div className="space-y-2">
+						{runs.map((run) => {
+							const isRunning =
+								run.status === "running" || run.status === "scheduled";
+							const duration =
+								run.completedAt && run.createdAt
+									? Math.round(
+											(new Date(run.completedAt).getTime() -
+												new Date(run.createdAt).getTime()) /
+												1000,
+										)
+									: null;
+
+							return (
+								<div key={run.id} className="rounded-lg border">
+									<Link
+										href={`/workflows/${run.workflowId}/runs/${run.workflowExecutionId}`}
+										className="flex items-center gap-3 px-4 py-3 hover:bg-muted/50"
+									>
+										<RunStatusIcon status={run.status} />
+										<div className="min-w-0 flex-1">
+											<div className="flex items-center gap-2">
+												<span className="truncate font-mono text-xs text-muted-foreground">
+													{run.daprInstanceId}
+												</span>
+												<Badge variant="outline" className="text-xs">
+													{run.mode}
+												</Badge>
+											</div>
+											<div className="mt-0.5 text-xs text-muted-foreground">
+												{formatTimestamp(run.createdAt?.toString() ?? null)}
+												{duration !== null && ` · ${duration}s`}
+											</div>
+										</div>
+										<Badge
+											variant={
+												run.status === "completed"
+													? "default"
+													: run.status === "failed"
+														? "destructive"
+														: "secondary"
+											}
+											className="text-xs"
+										>
+											{run.status}
+										</Badge>
+									</Link>
+									{isRunning && (
+										<AgentStreamInline
+											executionId={run.workflowExecutionId}
+											isActive={true}
+										/>
+									)}
+								</div>
+							);
+						})}
+					</div>
+				)}
 			</div>
 		</div>
 	);

@@ -1,8 +1,4 @@
-import {
-	replaceWorkflowResourceRefs,
-	type WorkflowResourceRefInput,
-} from "@/lib/db/resources";
-import { getResolvedAgentProfileTemplate } from "@/lib/db/agent-profiles";
+import type { WorkflowResourceRefInput } from "@/lib/db/resources";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -57,6 +53,71 @@ function parseConfigMetadata(
 	}
 }
 
+function parseRequestedVersion(
+	config: Record<string, unknown>,
+	agentProfileTemplateId: string,
+): number | undefined {
+	const agentProfileRef = asRecord(config.agentProfileRef);
+	const pinnedTemplateId =
+		agentProfileRef && typeof agentProfileRef.id === "string"
+			? agentProfileRef.id
+			: null;
+	if (pinnedTemplateId !== agentProfileTemplateId) {
+		return undefined;
+	}
+	const rawVersion = config.agentProfileTemplateVersion;
+	if (typeof rawVersion === "number" && rawVersion > 0) {
+		return rawVersion;
+	}
+	if (typeof rawVersion === "string") {
+		const parsedVersion = Number.parseInt(rawVersion, 10);
+		if (Number.isFinite(parsedVersion) && parsedVersion > 0) {
+			return parsedVersion;
+		}
+	}
+	return undefined;
+}
+
+function buildRuntimeConfiguration(config: Record<string, unknown>) {
+	const configStoreName = asNonEmptyString(config.configStoreName);
+	const configName = asNonEmptyString(config.configName);
+	const configKeys = parseConfigKeys(config.configKeys);
+	const configMetadata = parseConfigMetadata(config.configMetadata);
+	return configStoreName
+		? {
+				storeName: configStoreName,
+				...(configName ? { configName } : {}),
+				...(configKeys ? { keys: configKeys } : {}),
+				...(configMetadata ? { metadata: configMetadata } : {}),
+			}
+		: undefined;
+}
+
+function resolveDefaultDaprAgentProfile(input: {
+	agentType: string;
+	mode: string | null;
+	explicitProfile: string | null;
+}): string {
+	if (input.explicitProfile) {
+		return input.explicitProfile;
+	}
+	const normalizedType = input.agentType.trim().toLowerCase();
+	if (normalizedType === "planning") {
+		return "plan-only";
+	}
+	if (normalizedType === "research") {
+		return "review";
+	}
+	return input.mode === "execute_direct" ? "implement" : "feature-delivery";
+}
+
+function resolveConfiguredModel(
+	config: Record<string, unknown>,
+	fallbackModel: string,
+): string {
+	return asNonEmptyString(config.model) ?? fallbackModel;
+}
+
 export async function applyResourcePresetsToNodes(input: {
 	nodes: unknown[];
 	userId: string;
@@ -77,7 +138,12 @@ export async function applyResourcePresetsToNodes(input: {
 		if (!data) continue;
 		const config = asRecord(data.config);
 		if (!config) continue;
-		if (asNonEmptyString(config.actionType) !== "durable/run") {
+		const actionType = asNonEmptyString(config.actionType);
+		if (
+			actionType !== "durable/run" &&
+			actionType !== "dapr-agent/run" &&
+			actionType !== "openshell-langgraph/run"
+		) {
 			continue;
 		}
 
@@ -85,32 +151,20 @@ export async function applyResourcePresetsToNodes(input: {
 			config.agentProfileTemplateId,
 		);
 		if (!agentProfileTemplateId) {
-			throw new Error(
-				`Durable run node ${nodeId} is missing agentProfileTemplateId`,
-			);
-		}
-
-		let requestedVersion: number | undefined;
-		const agentProfileRef = asRecord(config.agentProfileRef);
-		const pinnedTemplateId =
-			agentProfileRef && typeof agentProfileRef.id === "string"
-				? agentProfileRef.id
-				: null;
-		if (pinnedTemplateId === agentProfileTemplateId) {
-			const rawVersion = config.agentProfileTemplateVersion;
-			if (typeof rawVersion === "number" && rawVersion > 0) {
-				requestedVersion = rawVersion;
-			} else if (typeof rawVersion === "string") {
-				const parsedVersion = Number.parseInt(rawVersion, 10);
-				if (Number.isFinite(parsedVersion) && parsedVersion > 0) {
-					requestedVersion = parsedVersion;
-				}
+			if (actionType === "durable/run") {
+				throw new Error(
+					`Durable run node ${nodeId} is missing agentProfileTemplateId`,
+				);
 			}
+			continue;
 		}
 
+		const { getResolvedAgentProfileTemplate } = await import(
+			"@/lib/db/agent-profiles"
+		);
 		const resolvedProfile = await getResolvedAgentProfileTemplate({
 			templateId: agentProfileTemplateId,
-			version: requestedVersion,
+			version: parseRequestedVersion(config, agentProfileTemplateId),
 			includeDisabled: false,
 		});
 		if (!resolvedProfile) {
@@ -121,18 +175,7 @@ export async function applyResourcePresetsToNodes(input: {
 
 		const modelSpec = `${resolvedProfile.snapshot.model.provider}/${resolvedProfile.snapshot.model.name}`;
 		const toolNames = resolvedProfile.snapshot.tools.map((tool) => tool.ref);
-		const configStoreName = asNonEmptyString(config.configStoreName);
-		const configName = asNonEmptyString(config.configName);
-		const configKeys = parseConfigKeys(config.configKeys);
-		const configMetadata = parseConfigMetadata(config.configMetadata);
-		const configuration = configStoreName
-			? {
-					storeName: configStoreName,
-					...(configName ? { configName } : {}),
-					...(configKeys ? { keys: configKeys } : {}),
-					...(configMetadata ? { metadata: configMetadata } : {}),
-				}
-			: undefined;
+		const configuration = buildRuntimeConfiguration(config);
 
 		config.agentProfileTemplateVersion =
 			resolvedProfile.templateVersion.version;
@@ -142,18 +185,55 @@ export async function applyResourcePresetsToNodes(input: {
 			name: resolvedProfile.template.name,
 			version: resolvedProfile.templateVersion.version,
 		};
-		config.agentConfig = {
-			name: resolvedProfile.template.name,
-			instructions: resolvedProfile.snapshot.instructions,
-			modelSpec,
-			maxTurns: resolvedProfile.snapshot.maxTurns,
-			timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
-			tools: toolNames,
-			...(configuration ? { configuration } : {}),
-		};
-		config.model = modelSpec;
-		config.maxTurns = String(resolvedProfile.snapshot.maxTurns);
-		config.timeoutMinutes = String(resolvedProfile.snapshot.timeoutMinutes);
+		if (
+			actionType === "dapr-agent/run" ||
+			actionType === "openshell-langgraph/run"
+		) {
+			const mode = asNonEmptyString(config.mode) ?? "plan_mode";
+			const existingInstructions = asNonEmptyString(config.instructionsOverlay);
+			const selectedModel = resolveConfiguredModel(config, modelSpec);
+			config.engine = asNonEmptyString(config.engine) ?? "langgraph";
+			config.profile = resolveDefaultDaprAgentProfile({
+				agentType: resolvedProfile.snapshot.agentType,
+				mode,
+				explicitProfile: asNonEmptyString(config.profile),
+			});
+			config.instructionsOverlay = existingInstructions
+				? `${resolvedProfile.snapshot.instructions}\n\nAdditional workflow instructions:\n${existingInstructions}`
+				: resolvedProfile.snapshot.instructions;
+			config.model = selectedModel;
+			config.maxTurns =
+				asNonEmptyString(config.maxTurns) ??
+				String(resolvedProfile.snapshot.maxTurns);
+			config.timeoutMinutes =
+				asNonEmptyString(config.timeoutMinutes) ??
+				String(resolvedProfile.snapshot.timeoutMinutes);
+			if (!asNonEmptyString(config.tools)) {
+				config.tools = JSON.stringify(toolNames);
+			}
+			config.agentConfig = {
+				name: resolvedProfile.template.name,
+				instructions: resolvedProfile.snapshot.instructions,
+				modelSpec: selectedModel,
+				maxTurns: resolvedProfile.snapshot.maxTurns,
+				timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
+				tools: toolNames,
+				...(configuration ? { configuration } : {}),
+			};
+		} else {
+			config.agentConfig = {
+				name: resolvedProfile.template.name,
+				instructions: resolvedProfile.snapshot.instructions,
+				modelSpec,
+				maxTurns: resolvedProfile.snapshot.maxTurns,
+				timeoutMinutes: resolvedProfile.snapshot.timeoutMinutes,
+				tools: toolNames,
+				...(configuration ? { configuration } : {}),
+			};
+			config.model = modelSpec;
+			config.maxTurns = String(resolvedProfile.snapshot.maxTurns);
+			config.timeoutMinutes = String(resolvedProfile.snapshot.timeoutMinutes);
+		}
 
 		delete config.agentId;
 		delete config.instructionsPresetId;
@@ -166,7 +246,12 @@ export async function applyResourcePresetsToNodes(input: {
 		delete config.modelProfileVersion;
 		delete config.modelProfileRef;
 		delete config.instructions;
-		delete config.tools;
+		if (
+			actionType !== "dapr-agent/run" &&
+			actionType !== "openshell-langgraph/run"
+		) {
+			delete config.tools;
+		}
 		delete config.structuredOutputSchema;
 
 		refs.push({
@@ -184,5 +269,6 @@ export async function persistWorkflowResourceRefs(input: {
 	workflowId: string;
 	refs: WorkflowResourceRefInput[];
 }) {
+	const { replaceWorkflowResourceRefs } = await import("@/lib/db/resources");
 	await replaceWorkflowResourceRefs(input.workflowId, input.refs);
 }

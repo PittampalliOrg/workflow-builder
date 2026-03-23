@@ -18,11 +18,13 @@ import Link from "next/link";
 import type { JSX } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { AgentStreamInline } from "@/components/workflow-runs/agent-stream-inline";
 import { api } from "@/lib/api-client";
 import {
 	OUTPUT_DISPLAY_CONFIGS,
 	type OutputDisplayConfig,
 } from "@/lib/output-display-configs";
+import { parseExecutionFileChangeData } from "@/lib/transforms/workflow-ui";
 import { cn } from "@/lib/utils";
 import { getRelativeTime } from "@/lib/utils/time";
 import {
@@ -116,60 +118,6 @@ function isBase64ImageOutput(output: unknown): output is { base64: string } {
 	);
 }
 
-type OutputChangeSummary = {
-	changed: boolean;
-	files: number;
-	additions: number;
-	deletions: number;
-	patchRef?: string;
-};
-
-function extractOutputChangeSummary(
-	output: unknown,
-): OutputChangeSummary | null {
-	if (!output || typeof output !== "object") {
-		return null;
-	}
-	const record = output as Record<string, unknown>;
-	const summaryRaw =
-		typeof record.changeSummary === "object" && record.changeSummary
-			? (record.changeSummary as Record<string, unknown>)
-			: null;
-	if (!summaryRaw) {
-		return null;
-	}
-
-	const statsRaw =
-		typeof summaryRaw.stats === "object" && summaryRaw.stats
-			? (summaryRaw.stats as Record<string, unknown>)
-			: null;
-	const filesFromArray = Array.isArray(summaryRaw.files)
-		? summaryRaw.files.length
-		: 0;
-
-	const files =
-		typeof statsRaw?.files === "number" ? statsRaw.files : filesFromArray;
-	const additions =
-		typeof statsRaw?.additions === "number" ? statsRaw.additions : 0;
-	const deletions =
-		typeof statsRaw?.deletions === "number" ? statsRaw.deletions : 0;
-	const changed =
-		typeof summaryRaw.changed === "boolean"
-			? summaryRaw.changed
-			: files > 0 || additions > 0 || deletions > 0;
-
-	const patchRef =
-		typeof summaryRaw.patchRef === "string" ? summaryRaw.patchRef : undefined;
-
-	return {
-		changed,
-		files,
-		additions,
-		deletions,
-		patchRef,
-	};
-}
-
 // Helper to convert execution logs to a map by nodeId for the global atom
 function createExecutionLogsMap(logs: ExecutionLog[]): Record<
 	string,
@@ -249,6 +197,32 @@ function JsonWithLinks({ data }: { data: unknown }) {
 			})}
 		</>
 	);
+}
+
+function fileStatusLabel(status: string): string {
+	switch (status) {
+		case "A":
+			return "Added";
+		case "D":
+			return "Deleted";
+		case "R":
+			return "Renamed";
+		default:
+			return "Modified";
+	}
+}
+
+function fileStatusClass(status: string): string {
+	switch (status) {
+		case "A":
+			return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300";
+		case "D":
+			return "bg-rose-500/15 text-rose-600 dark:text-rose-300";
+		case "R":
+			return "bg-amber-500/15 text-amber-700 dark:text-amber-300";
+		default:
+			return "bg-sky-500/15 text-sky-700 dark:text-sky-300";
+	}
 }
 
 // Reusable copy button component
@@ -460,8 +434,19 @@ function OutputDisplay({
 
 	const richResult = renderRichResult();
 	const hasRichResult = richResult !== null;
-	const changeSummary = extractOutputChangeSummary(output);
-	const hasChangeSummary = Boolean(changeSummary?.changed);
+	const changeData = parseExecutionFileChangeData(output);
+	const changeFileCount =
+		changeData?.stats?.files ?? changeData?.files.length ?? 0;
+	const changeAdditions = changeData?.stats?.additions ?? 0;
+	const changeDeletions = changeData?.stats?.deletions ?? 0;
+	const hasChangeSummary = Boolean(
+		changeData &&
+			(changeData.files.length > 0 ||
+				changeData.snapshotRefs.length > 0 ||
+				changeData.patch?.trim() ||
+				changeData.patchRef?.trim() ||
+				changeFileCount > 0),
+	);
 
 	// Determine external link for URL type configs
 	const externalLink =
@@ -471,29 +456,58 @@ function OutputDisplay({
 
 	return (
 		<>
-			{hasChangeSummary && changeSummary && (
+			{hasChangeSummary && changeData && (
 				<CollapsibleSection title="File Changes">
 					<div className="rounded-lg border bg-muted/50 p-3">
 						<div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
 							<span className="rounded bg-muted px-2 py-1 font-medium">
-								{changeSummary.files}{" "}
-								{changeSummary.files === 1 ? "file" : "files"}
+								{changeFileCount} {changeFileCount === 1 ? "file" : "files"}
 							</span>
 							<span className="rounded bg-emerald-500/15 px-2 py-1 text-emerald-600 dark:text-emerald-300">
-								+{changeSummary.additions}
+								+{changeAdditions}
 							</span>
 							<span className="rounded bg-rose-500/15 px-2 py-1 text-rose-600 dark:text-rose-300">
-								-{changeSummary.deletions}
+								-{changeDeletions}
 							</span>
-							{changeSummary.patchRef && (
+							{changeData.patchRef && (
 								<code className="rounded bg-muted px-2 py-1">
-									{changeSummary.patchRef}
+									{changeData.patchRef}
 								</code>
 							)}
 						</div>
+						{changeData.files.length > 0 && (
+							<div className="mb-3 space-y-2">
+								{changeData.files.slice(0, 8).map((file) => (
+									<div
+										key={`${file.status}:${file.path}:${file.oldPath ?? ""}`}
+										className="flex items-center gap-2 rounded border bg-background/80 px-2 py-1.5 text-xs"
+									>
+										<span
+											className={cn(
+												"rounded px-2 py-0.5 font-medium",
+												fileStatusClass(file.status),
+											)}
+										>
+											{fileStatusLabel(file.status)}
+										</span>
+										<code className="min-w-0 flex-1 truncate">{file.path}</code>
+										{file.oldPath && (
+											<code className="truncate text-muted-foreground">
+												from {file.oldPath}
+											</code>
+										)}
+									</div>
+								))}
+								{changeData.files.length > 8 && (
+									<div className="text-xs text-muted-foreground">
+										+{changeData.files.length - 8} more changed files
+									</div>
+								)}
+							</div>
+						)}
 						{runDetailHref && (
 							<Button asChild size="sm" variant="outline">
-								<Link href={`${runDetailHref}#file-changes`}>
+								<Link href={`${runDetailHref}?tab=changes`}>
 									<ExternalLink className="mr-2 h-3 w-3" />
 									Inspect Full Diff
 								</Link>
@@ -1422,6 +1436,12 @@ export function WorkflowRuns({
 
 						{isExpanded && (
 							<div className="border-t bg-muted/20">
+								{execution.status === "running" && (
+									<AgentStreamInline
+										executionId={execution.id}
+										isActive={true}
+									/>
+								)}
 								{executionLogs.length === 0 && execution.daprInstanceId ? (
 									// Dapr workflow - show phase/progress details
 									<div className="p-4">

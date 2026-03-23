@@ -1,4 +1,8 @@
-import { relations } from "drizzle-orm";
+import {
+	relations,
+	type InferInsertModel,
+	type InferSelectModel,
+} from "drizzle-orm";
 import {
 	boolean,
 	foreignKey,
@@ -541,6 +545,7 @@ export const workflowWorkspaceSessions = pgTable(
 export type WorkflowAgentRunMode = "run" | "plan" | "execute_plan";
 export type WorkflowAgentRunStatus =
 	| "scheduled"
+	| "running"
 	| "completed"
 	| "failed"
 	| "event_published";
@@ -600,16 +605,24 @@ export const workflowAgentRuns = pgTable(
 
 export type WorkflowAgentEventType =
 	| "run_started"
-	| "model_start"
-	| "model_complete"
-	| "tool_start"
-	| "tool_complete"
-	| "tool_error"
+	| "turn_started"
+	| "llm_start"
+	| "llm_token"
+	| "llm_complete"
+	| "tool_call_start"
+	| "tool_call_end"
+	| "tool_call_error"
 	| "sandbox_output"
 	| "sandbox_output_partial"
 	| "sandbox_heartbeat"
+	| "state_snapshot"
 	| "run_complete"
-	| "run_error";
+	| "run_error"
+	| "tool_start"
+	| "tool_complete"
+	| "tool_error"
+	| "model_start"
+	| "model_complete";
 
 export const workflowAgentEvents = pgTable(
 	"workflow_agent_events",
@@ -620,9 +633,7 @@ export const workflowAgentEvents = pgTable(
 			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
 		workflowAgentRunId: text("workflow_agent_run_id").references(
 			() => workflowAgentRuns.id,
-			{
-				onDelete: "set null",
-			},
+			{ onDelete: "set null" },
 		),
 		parentExecutionId: text("parent_execution_id"),
 		daprInstanceId: text("dapr_instance_id").notNull(),
@@ -633,30 +644,35 @@ export const workflowAgentEvents = pgTable(
 		toolName: text("tool_name"),
 		sandboxName: text("sandbox_name"),
 		traceId: text("trace_id"),
-		payload: jsonb("payload").notNull().$type<Record<string, unknown>>(),
+		payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
 		ts: timestamp("ts").notNull().defaultNow(),
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => ({
-		executionSourceUnique: unique("uq_workflow_agent_events_source").on(
-			table.workflowExecutionId,
-			table.daprInstanceId,
-			table.sourceEventId,
-		),
 		executionSeqIdx: index("idx_workflow_agent_events_execution_seq").on(
 			table.workflowExecutionId,
-			table.eventId,
-		),
-		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
-			table.workflowAgentRunId,
 			table.eventId,
 		),
 		instanceSeqIdx: index("idx_workflow_agent_events_instance_seq").on(
 			table.daprInstanceId,
 			table.eventId,
 		),
+		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
+			table.workflowAgentRunId,
+			table.eventId,
+		),
+		sourceEventUnique: unique("uq_workflow_agent_events_source").on(
+			table.workflowExecutionId,
+			table.daprInstanceId,
+			table.sourceEventId,
+		),
 	}),
 );
+
+export type WorkflowAgentEvent = InferSelectModel<typeof workflowAgentEvents>;
+export type NewWorkflowAgentEvent = InferInsertModel<
+	typeof workflowAgentEvents
+>;
 
 export type WorkflowAiMessageRole = "user" | "assistant" | "system";
 
@@ -1677,21 +1693,6 @@ export const workflowExecutionsRelations = relations(
 			references: [workflows.id],
 		}),
 		planArtifacts: many(workflowPlanArtifacts),
-		agentEvents: many(workflowAgentEvents),
-	}),
-);
-
-export const workflowAgentEventsRelations = relations(
-	workflowAgentEvents,
-	({ one }) => ({
-		workflowExecution: one(workflowExecutions, {
-			fields: [workflowAgentEvents.workflowExecutionId],
-			references: [workflowExecutions.id],
-		}),
-		agentRun: one(workflowAgentRuns, {
-			fields: [workflowAgentEvents.workflowAgentRunId],
-			references: [workflowAgentRuns.id],
-		}),
 	}),
 );
 
@@ -1756,8 +1757,6 @@ export type NewWorkflowWorkspaceSession =
 	typeof workflowWorkspaceSessions.$inferInsert;
 export type WorkflowAgentRun = typeof workflowAgentRuns.$inferSelect;
 export type NewWorkflowAgentRun = typeof workflowAgentRuns.$inferInsert;
-export type WorkflowAgentEvent = typeof workflowAgentEvents.$inferSelect;
-export type NewWorkflowAgentEvent = typeof workflowAgentEvents.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;

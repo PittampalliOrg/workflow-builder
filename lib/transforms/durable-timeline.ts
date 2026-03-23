@@ -796,6 +796,84 @@ function asOptionalNumber(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function normalizeLiveRunStatus(
+	value: unknown,
+): "scheduled" | "running" | "completed" | "failed" | null {
+	if (typeof value !== "string") {
+		return null;
+	}
+	const normalized = value.trim().toLowerCase();
+	if (!normalized) {
+		return null;
+	}
+	if (normalized === "scheduled" || normalized === "pending") {
+		return "scheduled";
+	}
+	if (normalized === "running" || normalized === "awaiting_approval") {
+		return "running";
+	}
+	if (normalized === "completed" || normalized === "success") {
+		return "completed";
+	}
+	if (
+		normalized === "failed" ||
+		normalized === "error" ||
+		normalized === "terminated" ||
+		normalized === "cancelled"
+	) {
+		return "failed";
+	}
+	return null;
+}
+
+export function reconcileAgentRunWithLivePayload(
+	run: DurableAgentRunSummary,
+	livePayload?: unknown,
+): DurableAgentRunSummary {
+	const live = asRecord(livePayload);
+	if (!live) {
+		return run;
+	}
+
+	const liveStatus =
+		normalizeLiveRunStatus(live.status) ??
+		normalizeLiveRunStatus(live.runtimeStatus) ??
+		null;
+	const resultRecord = asRecord(run.result) ?? {};
+	const embeddedProgress = asRecord(live.agentProgress);
+	const mergedResult =
+		Object.keys(resultRecord).length > 0 || liveStatus || embeddedProgress
+			? {
+					...resultRecord,
+					...(liveStatus ? { status: liveStatus } : {}),
+					...(typeof live.traceId === "string"
+						? { traceId: live.traceId }
+						: {}),
+					...(typeof live.threadId === "string"
+						? { threadId: live.threadId }
+						: {}),
+					...(typeof live.planningThreadId === "string"
+						? { planningThreadId: live.planningThreadId }
+						: {}),
+					...(typeof live.executionThreadId === "string"
+						? { executionThreadId: live.executionThreadId }
+						: {}),
+					...(embeddedProgress ? { agentProgress: embeddedProgress } : {}),
+				}
+			: run.result;
+
+	return {
+		...run,
+		status: liveStatus ?? run.status,
+		error:
+			getStringField(live, ["error"]) ??
+			getStringField(resultRecord, ["error"]) ??
+			run.error,
+		lastReconciledAt: toIso(new Date()) ?? run.lastReconciledAt,
+		result: mergedResult,
+	};
+}
+
 function buildDerivedAgentProgress(
 	run: AgentRunLike | DurableAgentRunSummary,
 	framework: AgentProgressFramework,

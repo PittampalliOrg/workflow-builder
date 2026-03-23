@@ -77,7 +77,10 @@ function findOpenShellSandbox(
 
 	for (const run of agentRuns) {
 		const nodeConfig = nodeConfigMap.get(run.nodeId);
-		if (nodeConfig?.actionType !== "openshell/run") {
+		if (
+			nodeConfig?.actionType !== "openshell/run" &&
+			nodeConfig?.actionType !== "openshell-langgraph/run"
+		) {
 			continue;
 		}
 		const sandboxName =
@@ -104,7 +107,10 @@ function findOpenShellSandbox(
 
 	for (const [nodeKey, value] of Object.entries(outputs)) {
 		const nodeConfig = nodeConfigMap.get(nodeKey);
-		if (nodeConfig?.actionType !== "openshell/run") {
+		if (
+			nodeConfig?.actionType !== "openshell/run" &&
+			nodeConfig?.actionType !== "openshell-langgraph/run"
+		) {
 			continue;
 		}
 		const record = asRecord(value);

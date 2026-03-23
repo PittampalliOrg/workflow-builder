@@ -1,6 +1,6 @@
 {
-	"id": "82c02de7-a335-44e8-81e4-955bcdb6026a",
-	"prevId": "ae8a5bfd-4ac9-4b0f-99ac-5cc8b856a5cc",
+	"id": "d2032906-69a2-445b-b0bd-ca57de074a38",
+	"prevId": "82c02de7-a335-44e8-81e4-955bcdb6026a",
 	"version": "7",
 	"dialect": "postgresql",
 	"tables": {
@@ -5233,6 +5233,12 @@
 					"primaryKey": false,
 					"notNull": true
 				},
+				"source_event_id": {
+					"name": "source_event_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
 				"seq": {
 					"name": "seq",
 					"type": "integer",
@@ -5376,7 +5382,17 @@
 				}
 			},
 			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
+			"uniqueConstraints": {
+				"uq_workflow_agent_events_source": {
+					"name": "uq_workflow_agent_events_source",
+					"nullsNotDistinct": false,
+					"columns": [
+						"workflow_execution_id",
+						"dapr_instance_id",
+						"source_event_id"
+					]
+				}
+			},
 			"policies": {},
 			"checkConstraints": {},
 			"isRLSEnabled": false

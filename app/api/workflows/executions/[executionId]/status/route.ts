@@ -14,9 +14,16 @@ import {
 	buildAgentNodeProgress,
 	buildExecutionConsistency,
 	mapRuntimeStatusToLocalStatus,
+	reconcileAgentRunWithLivePayload,
+	toDurableAgentRunSummary,
 	toDurableRuntimeSnapshot,
 } from "@/lib/transforms/durable-timeline";
+import {
+	deriveAgentRunsFromExecutionOutput,
+	extractExecutionTraceIds,
+} from "@/lib/transforms/workflow-ui";
 import type { AgentNodeProgress } from "@/lib/types/durable-timeline";
+import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias";
 
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
@@ -35,6 +42,9 @@ function getAgentRuntimeTarget(
 		return { baseUrl: MS_AGENT_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "dapr-agent/run") {
+		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
 	}
 	if (actionType === "openshell/run") {
@@ -92,21 +102,30 @@ async function fetchAgentLivePayload(
 	if (!target) {
 		return null;
 	}
-	const response = await fetch(
-		`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
-		{
-			headers: { Accept: "application/json" },
-			signal: AbortSignal.timeout(4000),
-			cache: "no-store",
-		},
-	);
-	if (!response.ok) {
+	try {
+		const response = await fetch(
+			`${target.baseUrl.replace(/\/+$/, "")}${target.path}/${encodeURIComponent(instanceId)}`,
+			{
+				headers: { Accept: "application/json" },
+				signal: AbortSignal.timeout(4000),
+				cache: "no-store",
+			},
+		);
+		if (!response.ok) {
+			return null;
+		}
+		const payload = await response.json();
+		return payload && typeof payload === "object"
+			? (payload as Record<string, unknown>)
+			: null;
+	} catch (error) {
+		console.warn("Failed to fetch live agent payload", {
+			actionType,
+			instanceId,
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return null;
 	}
-	const payload = await response.json();
-	return payload && typeof payload === "object"
-		? (payload as Record<string, unknown>)
-		: null;
 }
 
 function shouldFetchLiveAgentPayload(
@@ -116,7 +135,11 @@ function shouldFetchLiveAgentPayload(
 	if (!actionType || !status) {
 		return false;
 	}
-	if (!["dapr-agent/run", "openshell/run"].includes(actionType)) {
+	if (
+		!["dapr-agent/run", "openshell/run", "openshell-langgraph/run"].includes(
+			actionType,
+		)
+	) {
 		return false;
 	}
 	return !["completed", "failed", "error", "terminated", "cancelled"].includes(
@@ -129,7 +152,9 @@ export async function GET(
 	context: { params: Promise<{ executionId: string }> },
 ) {
 	try {
-		const { executionId } = await context.params;
+		const { executionId: requestedExecutionId } = await context.params;
+		const executionId =
+			await resolveWorkflowExecutionIdAlias(requestedExecutionId);
 		const session = await getSession(request);
 
 		if (!session?.user) {
@@ -254,13 +279,25 @@ export async function GET(
 			runtime,
 		});
 		const nodeActionTypeMap = getNodeActionTypeMap(execution.workflow.nodes);
+		const persistedAgentRuns = toDurableAgentRunSummary(agentRuns);
+		const normalizedAgentRuns =
+			persistedAgentRuns.length > 0
+				? persistedAgentRuns
+				: deriveAgentRunsFromExecutionOutput(execution.output, {
+						executionId,
+						parentExecutionId: execution.daprInstanceId ?? execution.id,
+						startedAt: execution.startedAt,
+						completedAt: execution.completedAt,
+						executionStatus: execution.status,
+					});
 		const agentProgressEntries = await Promise.all(
-			agentRuns.map(async (run) => {
+			normalizedAgentRuns.map(async (run) => {
 				const actionType = nodeActionTypeMap.get(run.nodeId);
 				const framework =
 					actionType === "ms-agent/run"
 						? "ms-agent"
-						: actionType === "openshell/run"
+						: actionType === "openshell/run" ||
+								actionType === "openshell-langgraph/run"
 							? "openshell"
 							: actionType === "dapr-agent/run"
 								? "dapr-agent"
@@ -271,7 +308,12 @@ export async function GET(
 				const livePayload = shouldFetchLiveAgentPayload(actionType, run.status)
 					? await fetchAgentLivePayload(actionType, run.daprInstanceId)
 					: null;
-				const progress = buildAgentNodeProgress(run, framework, livePayload);
+				const effectiveRun = reconcileAgentRunWithLivePayload(run, livePayload);
+				const progress = buildAgentNodeProgress(
+					effectiveRun,
+					framework,
+					livePayload,
+				);
 				progress.nodeId = run.nodeId;
 				return [run.nodeId, progress] as const;
 			}),
@@ -290,6 +332,7 @@ export async function GET(
 				runtime?.traceId ??
 				Object.values(agentProgressByNode).find((value) => value.traceId)
 					?.traceId ??
+				extractExecutionTraceIds(execution.output)[0] ??
 				null,
 			phase: runtime?.phase ?? execution.phase,
 			progress: runtime?.progress ?? execution.progress,

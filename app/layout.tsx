@@ -55,7 +55,7 @@ async function SidebarWrapper({ children }: { children: ReactNode }) {
 					{/* Canvas renders behind everything in the content area */}
 					<PersistentCanvas />
 					{/* Page content overlays the canvas */}
-					<div className="pointer-events-none relative z-10 min-h-0 flex-1">
+					<div className="pointer-events-none relative z-10 min-h-0 flex-1 overflow-y-auto">
 						{children}
 					</div>
 				</ReactFlowProvider>
@@ -99,7 +99,7 @@ const RootLayout = ({ children }: RootLayoutProps) => (
 											<SidebarInset className="relative bg-transparent">
 												<ReactFlowProvider>
 													<PersistentCanvas />
-													<div className="pointer-events-none relative z-10 min-h-0 flex-1">
+													<div className="pointer-events-none relative z-10 min-h-0 flex-1 overflow-y-auto">
 														{children}
 													</div>
 												</ReactFlowProvider>

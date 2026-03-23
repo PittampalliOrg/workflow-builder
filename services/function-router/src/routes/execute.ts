@@ -46,6 +46,14 @@ const HTTP_TIMEOUT_MS = Number.parseInt(
 	process.env.HTTP_TIMEOUT_MS || "60000",
 	10,
 );
+const AGENT_HTTP_TIMEOUT_BUFFER_MS = 30_000;
+const MIN_AGENT_HTTP_TIMEOUT_MS = 90_000;
+const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
+const DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS = 30_000;
+const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000;
+const DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS = 300_000;
+const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = 120_000;
+const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 900_000;
 
 // Cold start detection: if response time is > 3x average, likely a cold start
 const COLD_START_MULTIPLIER = 3;
@@ -138,6 +146,96 @@ function asNumber(value: unknown): number | undefined {
 	if (!trimmed) return undefined;
 	const parsed = Number.parseInt(trimmed, 10);
 	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function resolveAgentHttpTimeoutMs(timeoutMinutes: unknown): number {
+	const parsedTimeoutMinutes = asNumber(timeoutMinutes) ?? 30;
+	const requestedTimeoutMs =
+		Math.max(parsedTimeoutMinutes, 1) * 60_000 + AGENT_HTTP_TIMEOUT_BUFFER_MS;
+	return Math.min(
+		Math.max(requestedTimeoutMs, MIN_AGENT_HTTP_TIMEOUT_MS),
+		MAX_AGENT_HTTP_TIMEOUT_MS,
+	);
+}
+
+function clampTimeoutMs(
+	value: number,
+	{
+		min,
+		max,
+	}: {
+		min: number;
+		max: number;
+	},
+): number {
+	return Math.min(Math.max(value, min), max);
+}
+
+function resolveWorkspaceUtilityTimeoutMs(input: {
+	toolId: string;
+	timeoutMs: unknown;
+	commandTimeoutMs: unknown;
+}): number {
+	const explicitTimeoutMs = asNumber(input.timeoutMs);
+	const explicitCommandTimeoutMs = asNumber(input.commandTimeoutMs);
+
+	if (input.toolId === "clone") {
+		return clampTimeoutMs(
+			explicitTimeoutMs ?? DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS,
+			{ min: 30_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
+		);
+	}
+
+	if (input.toolId === "command") {
+		return clampTimeoutMs(
+			explicitTimeoutMs ??
+				explicitCommandTimeoutMs ??
+				DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS,
+			{ min: 10_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
+		);
+	}
+
+	if (input.toolId === "profile") {
+		return clampTimeoutMs(
+			explicitCommandTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+			{ min: 10_000, max: MAX_WORKSPACE_PROFILE_TIMEOUT_MS },
+		);
+	}
+
+	return clampTimeoutMs(
+		explicitTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+		{ min: 10_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
+	);
+}
+
+function normalizeSandboxSegment(value: string): string {
+	return value
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+}
+
+function resolveOpenShellLangGraphSandboxName(input: {
+	explicitSandboxName: unknown;
+	dbExecutionId: string | null | undefined;
+	executionId: string;
+}): string | undefined {
+	if (
+		typeof input.explicitSandboxName === "string" &&
+		input.explicitSandboxName.trim().length > 0
+	) {
+		return input.explicitSandboxName.trim().slice(0, 63);
+	}
+	const rawScope =
+		(typeof input.dbExecutionId === "string" && input.dbExecutionId.trim()) ||
+		input.executionId;
+	const normalizedScope = normalizeSandboxSegment(rawScope);
+	if (!normalizedScope) {
+		return undefined;
+	}
+	return `openshell-lg-${normalizedScope}`.slice(0, 63);
 }
 
 function isNoFileChangeReviewResult(
@@ -819,13 +917,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 					console.log(
 						`[Execute Route] Invoking ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
-
-					const controller = new AbortController();
-					const timeoutId = setTimeout(
-						() => controller.abort(),
-						HTTP_TIMEOUT_MS,
-					);
-					const executionStartTime = Date.now();
+					let requestTimeoutMs = HTTP_TIMEOUT_MS;
+					let timeoutId: ReturnType<typeof setTimeout> | undefined;
+					let executionStartTime = Date.now();
 
 					try {
 						const { toolId, args } = parseMastraToolInput(
@@ -873,7 +967,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const isAgentRun = toolId === "run";
 						const isDaprAgentRun =
 							target.appId === "dapr-agent-runtime" &&
-							pluginId === "dapr-agent" &&
+							(pluginId === "dapr-agent" ||
+								pluginId === "openshell-langgraph") &&
 							toolId === "run";
 						const isPlan = toolId === "plan";
 						const isClaudePlan = toolId === "claude-plan";
@@ -891,11 +986,39 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							pluginId === "workspace" && toolId === "cleanup";
 						const isWorkspaceCreatePullRequest =
 							pluginId === "workspace" && toolId === "create-pull-request";
+						const isWorkspaceUtility =
+							isWorkspaceProfile ||
+							isWorkspaceClone ||
+							isWorkspaceCommand ||
+							isWorkspaceFile ||
+							isWorkspaceCleanup ||
+							isWorkspaceCreatePullRequest;
+						requestTimeoutMs =
+							target.appId === "dapr-agent-runtime"
+								? isWorkspaceUtility
+									? resolveWorkspaceUtilityTimeoutMs({
+											toolId,
+											timeoutMs: args.timeoutMs,
+											commandTimeoutMs: args.commandTimeoutMs,
+										})
+									: resolveAgentHttpTimeoutMs(args.timeoutMinutes)
+								: HTTP_TIMEOUT_MS;
+						const controller = new AbortController();
+						timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
+						executionStartTime = Date.now();
 						const workspaceExecutionId =
 							typeof body.db_execution_id === "string" &&
 							body.db_execution_id.trim()
 								? body.db_execution_id.trim()
 								: body.execution_id;
+						const openshellLanggraphSandboxName =
+							pluginId === "openshell-langgraph"
+								? resolveOpenShellLangGraphSandboxName({
+										explicitSandboxName: args.sandboxName,
+										dbExecutionId: body.db_execution_id,
+										executionId: workspaceExecutionId,
+									})
+								: undefined;
 
 						let targetUrl: string;
 						let requestBody: string;
@@ -920,7 +1043,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/run`;
 							requestBody = JSON.stringify({
 								prompt: args.prompt ?? args.goal ?? "",
+								actionType: body.action_name ?? `${pluginId}/run`,
 								mode: args.mode,
+								engine: args.engine,
 								profile: args.profile ?? args.mode ?? "implement",
 								model,
 								maxTurns: args.maxTurns,
@@ -930,11 +1055,32 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									typeof args.workspaceRef === "string"
 										? args.workspaceRef
 										: undefined,
+								toolBackend:
+									pluginId === "openshell-langgraph"
+										? "openshell"
+										: args.toolBackend,
+								sandboxName:
+									pluginId === "openshell-langgraph"
+										? openshellLanggraphSandboxName
+										: args.sandboxName,
+								provider: args.provider,
+								sandboxRepoPath: args.sandboxRepoPath,
+								repositoryUrl: args.repositoryUrl,
+								repositoryOwner: args.repositoryOwner,
+								repositoryRepo: args.repositoryRepo,
+								repositoryBranch: args.repositoryBranch,
+								repositoryToken: args.repositoryToken,
 								stopCondition: args.stopCondition,
 								instructionsOverlay: args.instructionsOverlay,
 								expectedOutput: args.expectedOutput,
 								verifyCommands: args.verifyCommands,
 								approvalMode: args.approvalMode,
+								approvalTimeoutMinutes: args.approvalTimeoutMinutes,
+								executeAfterApproval:
+									args.executeAfterApproval === undefined
+										? true
+										: args.executeAfterApproval === true ||
+											args.executeAfterApproval === "true",
 								toolPolicy: args.toolPolicy,
 								tools: args.tools,
 								writePolicy: args.writePolicy,
@@ -1267,6 +1413,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								},
 							);
 						} else {
+							console.log(
+								`[Execute Route] Dispatching ${functionSlug} to ${targetUrl} with timeout=${requestTimeoutMs}ms`,
+							);
+							const requestDispatchStartedAt = Date.now();
 							httpResponse = await fetch(targetUrl, {
 								method: "POST",
 								headers: {
@@ -1276,6 +1426,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								body: requestBody,
 								signal: controller.signal,
 							});
+							console.log(
+								`[Execute Route] ${functionSlug} received response headers from ${targetUrl} in ${Date.now() - requestDispatchStartedAt}ms`,
+							);
 						}
 
 						clearTimeout(timeoutId);
@@ -1518,12 +1671,17 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							);
 						}
 					} catch (httpError) {
-						clearTimeout(timeoutId);
+						if (timeoutId) {
+							clearTimeout(timeoutId);
+						}
 						timing.executionMs = Date.now() - executionStartTime;
 						if (httpError instanceof Error && httpError.name === "AbortError") {
+							console.error(
+								`[Execute Route] Timeout invoking ${functionSlug} at ${targetUrl} after ${requestTimeoutMs}ms`,
+							);
 							response = {
 								success: false,
-								error: `Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
+								error: `Request to ${target.appId} (${functionSlug}) timed out after ${requestTimeoutMs}ms`,
 								duration_ms: 0,
 							};
 						} else {

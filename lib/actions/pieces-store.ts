@@ -3,6 +3,7 @@
 import { atom, useAtomValue, useSetAtom } from "jotai";
 import { useCallback, useEffect, useMemo } from "react";
 import { api } from "@/lib/api-client";
+import { getBuiltinPieces } from "@/lib/actions/builtin-pieces";
 import { LEGACY_ACTION_MAPPINGS } from "@/lib/actions/legacy-action-mappings";
 import type {
 	ActionDefinition,
@@ -19,7 +20,7 @@ type PiecesState = {
 };
 
 const piecesStateAtom = atom<PiecesState>({
-	pieces: [],
+	pieces: getBuiltinPieces(),
 	loaded: false,
 	loading: false,
 	error: null,
@@ -140,7 +141,7 @@ export function usePiecesCatalog() {
 		void loadPiecesCatalog()
 			.then((pieces) => {
 				setState({
-					pieces,
+					pieces: mergeCatalogPieces(getBuiltinPieces(), pieces),
 					loaded: true,
 					loading: false,
 					error: null,

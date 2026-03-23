@@ -1,0 +1,2 @@
+ALTER TABLE "workflow_agent_events" ADD COLUMN "source_event_id" text NOT NULL;--> statement-breakpoint
+ALTER TABLE "workflow_agent_events" ADD CONSTRAINT "uq_workflow_agent_events_source" UNIQUE("workflow_execution_id","dapr_instance_id","source_event_id");

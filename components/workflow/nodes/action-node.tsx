@@ -157,6 +157,7 @@ const getProviderLogo = (
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
 		case "openshell/run":
+		case "openshell-langgraph/run":
 			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
 		case "dapr-agent/run":
 			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
@@ -260,7 +261,9 @@ function AgentProgressOverlay({
 	const isRunning =
 		progress.status === "running" || progress.status === "scheduled";
 	const primaryLabel =
-		actionType === "dapr-agent/run" || actionType === "openshell/run"
+		actionType === "dapr-agent/run" ||
+		actionType === "openshell/run" ||
+		actionType === "openshell-langgraph/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
 				: progress.phase || "Running"
@@ -268,10 +271,10 @@ function AgentProgressOverlay({
 				? `Step ${progress.completedSteps}/${progress.totalSteps}`
 				: progress.phase || "Running";
 	const detail =
+		progress.summary ||
 		progress.activeToolName ||
 		progress.currentStepName ||
-		progress.stopReason ||
-		progress.summary;
+		progress.stopReason;
 
 	return (
 		<div className="absolute right-2 bottom-2 left-2 rounded-lg border border-white/10 bg-black/55 px-2 py-1.5 text-white shadow-sm backdrop-blur-sm">
@@ -443,7 +446,10 @@ export const ActionNode = memo(
 
 		// Get model for AI nodes
 		const getAiModel = (): string | null => {
-			if (actionType === "openshell/run") {
+			if (
+				actionType === "openshell/run" ||
+				actionType === "openshell-langgraph/run"
+			) {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
 					: "anthropic/claude-sonnet-4-6";
@@ -501,7 +507,8 @@ export const ActionNode = memo(
 				<StatusBadge status={status} />
 				{(actionType === "ms-agent/run" ||
 					actionType === "dapr-agent/run" ||
-					actionType === "openshell/run") && (
+					actionType === "openshell/run" ||
+					actionType === "openshell-langgraph/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}
 						progress={agentProgress}

@@ -1111,9 +1111,21 @@ export const PanelInner = () => {
 									disabled={isGenerating || !isOwner}
 									id="description"
 									onChange={(e) => handleUpdateDescription(e.target.value)}
-									placeholder="Optional description"
+									placeholder={
+										selectedNode.data.type === "trigger" &&
+										selectedNode.data.config?.triggerType === "Manual"
+											? "Optional editor note shown on the canvas"
+											: "Optional description"
+									}
 									value={selectedNode.data.description || ""}
 								/>
+								{selectedNode.data.type === "trigger" &&
+								selectedNode.data.config?.triggerType === "Manual" ? (
+									<p className="text-muted-foreground text-xs">
+										This is only a static note for the canvas. Enter the actual
+										feature request in the Run Workflow form.
+									</p>
+								) : null}
 							</div>
 						</>
 					) : null}

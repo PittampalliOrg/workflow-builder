@@ -9,6 +9,7 @@ export const WHILE_NODE_HEADER_HEIGHT = 44;
 const SUPPORTED_WHILE_BODY_ACTION_TYPES = new Set<string>([
 	"dapr-agent/run",
 	"openshell/run",
+	"openshell-langgraph/run",
 ]);
 
 export function isWhileNode(node: Pick<WorkflowNode, "type">): boolean {

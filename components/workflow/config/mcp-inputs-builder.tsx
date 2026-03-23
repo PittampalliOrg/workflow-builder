@@ -7,138 +7,163 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
 } from "@/components/ui/select";
 
 export type McpInputProperty = {
-  id?: string;
-  name: string;
-  type: "TEXT" | "NUMBER" | "BOOLEAN" | "DATE" | "ARRAY" | "OBJECT";
-  required: boolean;
-  description?: string;
+	id?: string;
+	name: string;
+	type: "TEXT" | "NUMBER" | "BOOLEAN" | "DATE" | "ARRAY" | "OBJECT";
+	required: boolean;
+	description?: string;
 };
 
+export const DEFAULT_FEATURE_REQUEST_HELP_TEXT =
+	"Describe the feature, bug fix, or implementation task for this run.";
+
 type Props = {
-  value: McpInputProperty[];
-  onChange: (next: McpInputProperty[]) => void;
-  disabled?: boolean;
+	value: McpInputProperty[];
+	onChange: (next: McpInputProperty[]) => void;
+	disabled?: boolean;
 };
 
 export function McpInputsBuilder({ value, onChange, disabled }: Props) {
-  const add = () => {
-    onChange([
-      ...value,
-      { id: nanoid(), name: "", type: "TEXT", required: true, description: "" },
-    ]);
-  };
+	const add = () => {
+		onChange([
+			...value,
+			{ id: nanoid(), name: "", type: "TEXT", required: true, description: "" },
+		]);
+	};
 
-  const update = (idx: number, patch: Partial<McpInputProperty>) => {
-    const next = [...value];
-    next[idx] = { ...next[idx], ...patch };
-    onChange(next);
-  };
+	const update = (idx: number, patch: Partial<McpInputProperty>) => {
+		const next = [...value];
+		const updated = { ...next[idx], ...patch };
+		if (updated.name.trim() === "feature_request") {
+			updated.type = "TEXT";
+			updated.required = true;
+			updated.description = DEFAULT_FEATURE_REQUEST_HELP_TEXT;
+		}
+		next[idx] = updated;
+		onChange(next);
+	};
 
-  const remove = (idx: number) => {
-    onChange(value.filter((_, i) => i !== idx));
-  };
+	const remove = (idx: number) => {
+		onChange(value.filter((_, i) => i !== idx));
+	};
 
-  return (
-    <div className="space-y-3">
-      {value.map((prop, idx) => {
-        const key = prop.id || `${idx}`;
-        return (
-          <div className="space-y-2 rounded-md border p-3" key={key}>
-            <div className="flex items-end gap-2">
-              <div className="flex-1 space-y-2">
-                <Label className="ml-1" htmlFor={`mcp-name-${idx}`}>
-                  Name
-                </Label>
-                <Input
-                  disabled={disabled}
-                  id={`mcp-name-${idx}`}
-                  onChange={(e) => update(idx, { name: e.target.value })}
-                  placeholder="parameterName"
-                  value={prop.name}
-                />
-              </div>
+	return (
+		<div className="space-y-3">
+			{value.map((prop, idx) => {
+				const key = prop.id || `${idx}`;
+				const isFeatureRequestField = prop.name.trim() === "feature_request";
+				return (
+					<div className="space-y-2 rounded-md border p-3" key={key}>
+						<div className="flex items-end gap-2">
+							<div className="flex-1 space-y-2">
+								<Label className="ml-1" htmlFor={`mcp-name-${idx}`}>
+									Name
+								</Label>
+								<Input
+									disabled={disabled}
+									id={`mcp-name-${idx}`}
+									onChange={(e) => update(idx, { name: e.target.value })}
+									placeholder="parameterName"
+									value={prop.name}
+								/>
+							</div>
 
-              <div className="flex-1 space-y-2">
-                <Label className="ml-1" htmlFor={`mcp-type-${idx}`}>
-                  Type
-                </Label>
-                <Select
-                  disabled={disabled}
-                  onValueChange={(v) =>
-                    update(idx, { type: v as McpInputProperty["type"] })
-                  }
-                  value={prop.type}
-                >
-                  <SelectTrigger className="w-full" id={`mcp-type-${idx}`}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="TEXT">Text</SelectItem>
-                    <SelectItem value="NUMBER">Number</SelectItem>
-                    <SelectItem value="BOOLEAN">Boolean</SelectItem>
-                    <SelectItem value="DATE">Date</SelectItem>
-                    <SelectItem value="ARRAY">Array</SelectItem>
-                    <SelectItem value="OBJECT">Object</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+							<div className="flex-1 space-y-2">
+								<Label className="ml-1" htmlFor={`mcp-type-${idx}`}>
+									Type
+								</Label>
+								<Select
+									disabled={disabled}
+									onValueChange={(v) =>
+										update(idx, { type: v as McpInputProperty["type"] })
+									}
+									value={isFeatureRequestField ? "TEXT" : prop.type}
+								>
+									<SelectTrigger className="w-full" id={`mcp-type-${idx}`}>
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="TEXT">Text</SelectItem>
+										<SelectItem value="NUMBER">Number</SelectItem>
+										<SelectItem value="BOOLEAN">Boolean</SelectItem>
+										<SelectItem value="DATE">Date</SelectItem>
+										<SelectItem value="ARRAY">Array</SelectItem>
+										<SelectItem value="OBJECT">Object</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
 
-              <div className="flex items-center gap-2 pb-1">
-                <Checkbox
-                  checked={prop.required}
-                  disabled={disabled}
-                  onCheckedChange={(checked) =>
-                    update(idx, { required: Boolean(checked) })
-                  }
-                />
-                <span className="text-muted-foreground text-sm">Required</span>
-              </div>
+							<div className="flex items-center gap-2 pb-1">
+								<Checkbox
+									checked={isFeatureRequestField ? true : prop.required}
+									disabled={disabled || isFeatureRequestField}
+									onCheckedChange={(checked) =>
+										update(idx, { required: Boolean(checked) })
+									}
+								/>
+								<span className="text-muted-foreground text-sm">Required</span>
+							</div>
 
-              <Button
-                disabled={disabled}
-                onClick={() => remove(idx)}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <Trash2 className="size-4" />
-              </Button>
-            </div>
+							<Button
+								disabled={disabled}
+								onClick={() => remove(idx)}
+								size="icon"
+								type="button"
+								variant="ghost"
+							>
+								<Trash2 className="size-4" />
+							</Button>
+						</div>
 
-            <div className="space-y-2">
-              <Label className="ml-1" htmlFor={`mcp-desc-${idx}`}>
-                Description (optional)
-              </Label>
-              <Input
-                disabled={disabled}
-                id={`mcp-desc-${idx}`}
-                onChange={(e) => update(idx, { description: e.target.value })}
-                placeholder="Describe this parameter"
-                value={prop.description || ""}
-              />
-            </div>
-          </div>
-        );
-      })}
+						<div className="space-y-2">
+							<Label className="ml-1" htmlFor={`mcp-desc-${idx}`}>
+								Help Text (optional)
+							</Label>
+							<Input
+								disabled={disabled || isFeatureRequestField}
+								id={`mcp-desc-${idx}`}
+								onChange={(e) => update(idx, { description: e.target.value })}
+								placeholder={
+									isFeatureRequestField
+										? DEFAULT_FEATURE_REQUEST_HELP_TEXT
+										: "Shown below this field in the Run Workflow form"
+								}
+								value={
+									isFeatureRequestField
+										? DEFAULT_FEATURE_REQUEST_HELP_TEXT
+										: prop.description || ""
+								}
+							/>
+							{isFeatureRequestField ? (
+								<p className="text-muted-foreground text-xs">
+									This field is the per-run task entry point. People type the
+									feature description in the Run Workflow dialog, not here in
+									the editor.
+								</p>
+							) : null}
+						</div>
+					</div>
+				);
+			})}
 
-      <Button
-        className="w-full"
-        disabled={disabled}
-        onClick={add}
-        type="button"
-        variant="outline"
-      >
-        <Plus className="size-4" />
-        Add Parameter
-      </Button>
-    </div>
-  );
+			<Button
+				className="w-full"
+				disabled={disabled}
+				onClick={add}
+				type="button"
+				variant="outline"
+			>
+				<Plus className="size-4" />
+				Add Parameter
+			</Button>
+		</div>
+	);
 }

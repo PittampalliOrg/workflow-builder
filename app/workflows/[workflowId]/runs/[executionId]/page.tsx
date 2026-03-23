@@ -9,6 +9,7 @@ import {
 	useSearchParams,
 } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { AgentLlmStream } from "@/components/workflow-runs/agent-llm-stream";
 import { ExecutionChangesPanel } from "@/components/workflow-runs/execution-changes-panel";
 import { RunArtifactsTab } from "@/components/workflow-runs/run-artifacts-tab";
 import { RunChildRunsTab } from "@/components/workflow-runs/run-child-runs-tab";
@@ -17,13 +18,16 @@ import { RunOverviewTab } from "@/components/workflow-runs/run-overview-tab";
 import { RunTimelineTab } from "@/components/workflow-runs/run-timeline-tab";
 import { RunTraceTab } from "@/components/workflow-runs/run-trace-tab";
 import { RunSandboxTab } from "@/components/workflow-runs/run-sandbox-tab";
+import { SandboxOutput } from "@/components/workflow-runs/sandbox-output";
 import { ExecutionStatusBadge } from "@/components/workflow-runs/execution-status-badge";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAgentStream } from "@/hooks/use-agent-stream";
 import { useMonitorExecution } from "@/hooks/use-monitor-execution";
 import { api } from "@/lib/api-client";
 import {
+	extractExecutionTraceIds,
 	parseDaprAgentOutput,
 	parseExecutionFileChangeData,
 } from "@/lib/transforms/workflow-ui";
@@ -146,6 +150,16 @@ export default function WorkflowRunDetailPage() {
 	const effectiveStatus = useMemo(() => {
 		return runtimeStatus?.status ?? details?.execution.status ?? "unknown";
 	}, [details?.execution.status, runtimeStatus?.status]);
+	const canonicalExecutionId = details?.execution.id ?? executionId;
+
+	const isRunActive = ["running", "pending"].includes(
+		effectiveStatus.toLowerCase(),
+	);
+
+	const agentStream = useAgentStream({
+		executionId: executionId ?? null,
+		enabled: Boolean(executionId),
+	});
 
 	useEffect(() => {
 		const normalized = effectiveStatus.toLowerCase();
@@ -159,6 +173,20 @@ export default function WorkflowRunDetailPage() {
 
 		return () => clearInterval(interval);
 	}, [effectiveStatus, load]);
+
+	useEffect(() => {
+		if (!workflowId || !executionId || !details?.execution.id) {
+			return;
+		}
+		if (details.execution.id === executionId) {
+			return;
+		}
+		const query = searchParams.toString();
+		router.replace(
+			`/workflows/${workflowId}/runs/${details.execution.id}${query ? `?${query}` : ""}`,
+			{ scroll: false },
+		);
+	}, [details?.execution.id, executionId, router, searchParams, workflowId]);
 
 	const activeTab = normalizeTab(searchParams.get("tab"));
 	const selectedFilePath = searchParams.get("file");
@@ -234,10 +262,14 @@ export default function WorkflowRunDetailPage() {
 
 		push(details?.runtime?.traceId ?? null);
 		push(runtimeStatus?.traceId);
+		for (const traceId of extractExecutionTraceIds(details?.execution.output)) {
+			push(traceId);
+		}
 
 		return Array.from(ids);
 	}, [
 		details?.agentRuns,
+		details?.execution.output,
 		details?.runtime?.traceId,
 		runtimeStatus?.agentProgressByNode,
 		runtimeStatus?.traceId,
@@ -304,6 +336,17 @@ export default function WorkflowRunDetailPage() {
 									{workflowName}
 								</h1>
 								<ExecutionStatusBadge status={effectiveStatus} />
+								{agentStream.isConnected && (
+									<span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+										<span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+										Live
+									</span>
+								)}
+								{agentStream.activeToolName && (
+									<span className="text-xs text-muted-foreground">
+										{agentStream.activeToolName}
+									</span>
+								)}
 							</div>
 							<p className="font-mono text-muted-foreground text-xs">
 								Run ID: {details.execution.id}
@@ -387,7 +430,24 @@ export default function WorkflowRunDetailPage() {
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="timeline">
+					{isRunActive &&
+						(agentStream.isLlmStreaming || agentStream.llmTokenBuffer) && (
+							<AgentLlmStream
+								tokenBuffer={agentStream.llmTokenBuffer}
+								isStreaming={agentStream.isLlmStreaming}
+							/>
+						)}
+					{isRunActive &&
+						(agentStream.sandboxOutputs.length > 0 ||
+							agentStream.activeSandboxCommand) && (
+							<SandboxOutput
+								outputs={agentStream.sandboxOutputs}
+								activeSandboxLines={agentStream.activeSandboxLines}
+								activeSandboxCommand={agentStream.activeSandboxCommand}
+							/>
+						)}
 					<RunTimelineTab
+						agentStreamEvents={agentStream.events}
 						nodeIdFilter={selectedNodeId}
 						timeline={details.timeline ?? []}
 					/>
@@ -409,7 +469,7 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="artifacts">
 					<RunArtifactsTab
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						externalEvents={details.externalEvents ?? []}
 						planArtifacts={details.planArtifacts ?? []}
 					/>
@@ -417,7 +477,7 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="changes">
 					<ExecutionChangesPanel
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						fallbackData={executionFileChangeData}
 						initialSelectedFilePath={selectedFilePath}
 						onSelectedFilePathChange={(path) =>
@@ -429,7 +489,7 @@ export default function WorkflowRunDetailPage() {
 				<TabsContent className="mt-0 space-y-3" value="trace">
 					<RunTraceTab
 						daprInstanceId={details.execution.daprInstanceId}
-						executionId={executionId}
+						executionId={canonicalExecutionId}
 						onSelectedSpanIdChange={(spanId) =>
 							updateQuery({ spanId, tab: "trace" })
 						}
@@ -444,7 +504,10 @@ export default function WorkflowRunDetailPage() {
 				</TabsContent>
 
 				<TabsContent className="mt-0 space-y-3" value="sandbox">
-					<RunSandboxTab executionId={executionId} workflowId={workflowId} />
+					<RunSandboxTab
+						executionId={canonicalExecutionId}
+						workflowId={workflowId}
+					/>
 				</TabsContent>
 			</Tabs>
 		</div>

@@ -1,4 +1,9 @@
-import type { IntegrationDefinition } from "@/lib/actions/types";
+import type {
+	ActionConfigField,
+	ActionConfigFieldBase,
+	IntegrationDefinition,
+	OutputField,
+} from "@/lib/actions/types";
 
 /**
  * Builtin pieces that should appear in the action palette alongside AP pieces.
@@ -660,7 +665,7 @@ const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
 			slug: "run",
 			label: "Run OpenShell Coding Agent",
 			description:
-				"Run a coding workflow through OpenShell sandboxes with Claude-style non-interactive execution and workflow-managed approval",
+				"Run a coding workflow through OpenShell (Quickshell) sandboxes with Claude-style non-interactive execution and workflow-managed approval",
 			category: "OpenShell Agent",
 			configFields: [
 				{
@@ -946,16 +951,16 @@ const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
 
 const DAPR_AGENT_PIECE: IntegrationDefinition = {
 	type: "dapr-agent",
-	label: "Legacy Dapr Agent",
+	label: "Dapr Agent",
 	pieceName: "dapr-agent",
 	logoUrl: "",
 	actions: [
 		{
 			slug: "run",
-			label: "Run Legacy Dapr Agent",
+			label: "Run Dapr Agent",
 			description:
-				"Legacy compatibility path for older workflows that still target the Dapr agent runtime",
-			category: "Legacy Dapr Agent",
+				"Run a Dapr-backed coding workflow through LangGraph or the legacy Dapr Agents runtime",
+			category: "Dapr Agent",
 			configFields: [
 				{
 					key: "mode",
@@ -967,6 +972,32 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 						{ label: "Plan Feature", value: "plan_mode" },
 						{ label: "Implement Existing Plan", value: "execute_direct" },
 					],
+				},
+				{
+					key: "engine",
+					label: "Engine",
+					type: "select",
+					required: false,
+					defaultValue: "langgraph",
+					options: [
+						{ label: "LangGraph Deep Agent", value: "langgraph" },
+						{ label: "Dapr Agents Runtime", value: "dapr-agent" },
+						{ label: "Auto Detect", value: "auto" },
+					],
+				},
+				{
+					key: "agentProfileTemplateId",
+					label: "Agent Profile Template (optional)",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select a reusable agent profile template",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "dapr-agent",
+						actionName: "dapr-agent/run",
+						propName: "agentProfileTemplateId",
+						refreshers: [],
+					},
 				},
 				{
 					key: "profile",
@@ -997,6 +1028,27 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					type: "template-input",
 					required: false,
 					placeholder: "{{@nodeId:Legacy Dapr Plan.artifactRef}}",
+				},
+				{
+					key: "planningThreadId",
+					label: "Planning Thread ID (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:LangGraph Plan.planningThreadId}}",
+				},
+				{
+					key: "executionThreadId",
+					label: "Execution Thread ID (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:LangGraph Execute.executionThreadId}}",
+				},
+				{
+					key: "threadId",
+					label: "Legacy Thread ID Alias (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "{{@nodeId:LangGraph Execute.threadId}}",
 				},
 				{
 					key: "workspaceRef",
@@ -1140,6 +1192,39 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 			],
 			outputFields: [
 				{ field: "text", description: "Final agent output text" },
+				{ field: "engine", description: "Execution engine used for the run" },
+				{
+					field: "threadId",
+					description:
+						"Primary LangGraph thread identifier for the current phase",
+				},
+				{
+					field: "planningThreadId",
+					description:
+						"LangGraph planner thread identifier used for durable planning",
+				},
+				{
+					field: "executionThreadId",
+					description:
+						"LangGraph execution thread identifier used for durable execution",
+				},
+				{
+					field: "plannerStatus",
+					description: "Planner graph status for durable planning flows",
+				},
+				{
+					field: "plannerCheckpointId",
+					description: "Latest LangGraph planner checkpoint identifier",
+				},
+				{
+					field: "sessionPersistence",
+					description:
+						"Session persistence backend active for the LangGraph run",
+				},
+				{
+					field: "engineMetadata",
+					description: "Engine-specific metadata for the run",
+				},
 				{
 					field: "artifactRef",
 					description: "Reference ID for the persisted plan artifact",
@@ -1180,6 +1265,100 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 				},
 				{ field: "daprInstanceId", description: "Dapr workflow instance ID" },
 			],
+		},
+	],
+};
+
+function isActionConfigFieldBase(
+	field: ActionConfigField,
+): field is ActionConfigFieldBase {
+	return field.type !== "group";
+}
+
+function cloneOpenShellLangGraphConfigField(
+	field: ActionConfigField,
+): ActionConfigField {
+	if (!isActionConfigFieldBase(field)) {
+		return field;
+	}
+	if (field.key === "engine" && field.type === "select") {
+		return {
+			...field,
+			defaultValue: "langgraph",
+			options: [{ label: "LangGraph Deep Agent", value: "langgraph" }],
+		};
+	}
+	if (
+		field.key === "agentProfileTemplateId" &&
+		field.type === "dynamic-select"
+	) {
+		return {
+			...field,
+			dynamicOptions: {
+				provider: field.dynamicOptions?.provider ?? "builtin",
+				pieceName: field.dynamicOptions?.pieceName ?? "openshell-langgraph",
+				actionName: "openshell-langgraph/run",
+				propName: field.dynamicOptions?.propName ?? "agentProfileTemplateId",
+				refreshers: field.dynamicOptions?.refreshers ?? [],
+			},
+		};
+	}
+	if (field.key === "cwd" && field.type === "template-input") {
+		return {
+			...field,
+			label: "Sandbox Working Directory (optional)",
+			placeholder: "/sandbox/repo",
+		};
+	}
+	return field;
+}
+
+function buildOpenShellLangGraphOutputFields(): OutputField[] {
+	const baseOutputFields = DAPR_AGENT_PIECE.actions[0].outputFields ?? [];
+	return [
+		...baseOutputFields,
+		{
+			field: "provider",
+			description: "OpenShell provider used for the run",
+		},
+		{
+			field: "sandboxName",
+			description: "OpenShell sandbox name",
+		},
+	];
+}
+
+const OPENSHELL_LANGGRAPH_AGENT_PIECE: IntegrationDefinition = {
+	type: "openshell-langgraph",
+	label: "OpenShell LangGraph Agent",
+	pieceName: "openshell-langgraph",
+	logoUrl: "",
+	actions: [
+		{
+			...DAPR_AGENT_PIECE.actions[0],
+			label: "Run OpenShell LangGraph Agent",
+			description:
+				"Run a LangGraph-backed coding workflow inside OpenShell sandboxes with workflow-managed approval",
+			category: "OpenShell Agent",
+			configFields: DAPR_AGENT_PIECE.actions[0].configFields
+				.map(cloneOpenShellLangGraphConfigField)
+				.concat([
+					{
+						key: "sandboxRepoPath",
+						label: "Sandbox Repo Path (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "/sandbox/repo",
+					},
+					{
+						key: "provider",
+						label: "OpenShell Provider (optional)",
+						type: "text",
+						required: false,
+						placeholder: "claude",
+					},
+				]),
+			outputFields: buildOpenShellLangGraphOutputFields(),
 		},
 	],
 };
@@ -1770,6 +1949,7 @@ export function getBuiltinPieces(): IntegrationDefinition[] {
 		MCP_PIECE,
 		WORKSPACE_PIECE,
 		OPENSHELL_AGENT_PIECE,
+		OPENSHELL_LANGGRAPH_AGENT_PIECE,
 		MS_AGENT_PIECE,
 		DAPR_AGENT_PIECE,
 	];

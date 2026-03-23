@@ -9,6 +9,7 @@ import type {
 	WorkflowExecution,
 	WorkflowExecutionLog,
 } from "@/lib/db/schema";
+import type { DurableAgentRunSummary } from "@/lib/types/durable-timeline";
 import type {
 	DaprAgentTask,
 	DaprExecutionEvent,
@@ -258,6 +259,14 @@ export type ExecutionOutputFileChangeData = {
 	stats?: ExecutionOutputFileChangeSummary;
 	sourceNodeKey?: string;
 	durableInstanceId?: string;
+};
+
+type DerivedExecutionOutputAgentRunOptions = {
+	executionId: string;
+	parentExecutionId: string;
+	startedAt?: string | Date | null;
+	completedAt?: string | Date | null;
+	executionStatus?: string | null;
 };
 
 /**
@@ -527,27 +536,34 @@ function buildCandidateRecords(
 	const candidates: Array<{
 		nodeKey?: string;
 		record: Record<string, unknown>;
-	}> = [{ record: root }];
-	const nestedResult = asRecord(root.result);
-	if (nestedResult) {
-		candidates.push({ record: nestedResult });
-	}
+	}> = [];
+	const pushRecord = (record: Record<string, unknown>, nodeKey?: string) => {
+		candidates.push({ nodeKey, record });
+		const nestedData = asRecord(record.data);
+		if (nestedData) {
+			candidates.push({ nodeKey, record: nestedData });
+			const nestedDataResult = asRecord(nestedData.result);
+			if (nestedDataResult) {
+				candidates.push({ nodeKey, record: nestedDataResult });
+			}
+		}
+		const nestedResult = asRecord(record.result);
+		if (nestedResult) {
+			candidates.push({ nodeKey, record: nestedResult });
+			const nestedResultData = asRecord(nestedResult.data);
+			if (nestedResultData) {
+				candidates.push({ nodeKey, record: nestedResultData });
+			}
+		}
+	};
+
+	pushRecord(root);
 
 	const outputs = asRecord(root.outputs);
 	if (outputs) {
 		const preferred = asRecord(outputs.da_agent_system_demo);
 		if (preferred) {
-			candidates.push({
-				nodeKey: "da_agent_system_demo",
-				record: preferred,
-			});
-			const preferredResult = asRecord(preferred.result);
-			if (preferredResult) {
-				candidates.push({
-					nodeKey: "da_agent_system_demo",
-					record: preferredResult,
-				});
-			}
+			pushRecord(preferred, "da_agent_system_demo");
 		}
 		for (const [key, value] of Object.entries(outputs)) {
 			if (key === "da_agent_system_demo") {
@@ -555,16 +571,82 @@ function buildCandidateRecords(
 			}
 			const record = asRecord(value);
 			if (record) {
-				candidates.push({ nodeKey: key, record });
-				const nestedOutputResult = asRecord(record.result);
-				if (nestedOutputResult) {
-					candidates.push({ nodeKey: key, record: nestedOutputResult });
-				}
+				pushRecord(record, key);
 			}
 		}
 	}
 
 	return candidates;
+}
+
+function buildOutputNodeRecords(
+	output: unknown,
+): Array<{ nodeKey: string; record: Record<string, unknown> }> {
+	const root = asRecord(output);
+	const outputs = root ? asRecord(root.outputs) : null;
+	if (!outputs) {
+		return [];
+	}
+
+	const records: Array<{ nodeKey: string; record: Record<string, unknown> }> =
+		[];
+	for (const [nodeKey, value] of Object.entries(outputs)) {
+		const outputRecord = asRecord(value);
+		if (!outputRecord) {
+			continue;
+		}
+		const dataRecord = asRecord(outputRecord.data) ?? outputRecord;
+		records.push({ nodeKey, record: dataRecord });
+	}
+	return records;
+}
+
+function looksLikeDerivedAgentRunRecord(
+	record: Record<string, unknown>,
+): boolean {
+	for (const key of [
+		"agentWorkflowId",
+		"daprInstanceId",
+		"traceId",
+		"agentProgress",
+		"changeSummary",
+		"fileChanges",
+		"patch",
+		"sandboxName",
+		"engineMetadata",
+		"sessionPersistence",
+		"verification",
+		"mode",
+	]) {
+		if (record[key] != null) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function fallbackDerivedRunStatus(
+	executionStatus: string | null | undefined,
+): string {
+	const normalized = executionStatus?.trim().toLowerCase();
+	if (normalized === "success" || normalized === "completed") {
+		return "completed";
+	}
+	if (normalized === "error" || normalized === "failed") {
+		return "failed";
+	}
+	return "running";
+}
+
+function readTraceIdFromRecord(
+	record: Record<string, unknown>,
+): string | undefined {
+	const direct = toOptionalString(record.traceId);
+	if (direct) {
+		return direct;
+	}
+	const progress = asRecord(record.agentProgress);
+	return progress ? toOptionalString(progress.traceId) : undefined;
 }
 
 export function parseExecutionFileChangeData(
@@ -600,6 +682,20 @@ export function parseExecutionFileChangeData(
 					additions: toOptionalInt(summaryStats.additions),
 					deletions: toOptionalInt(summaryStats.deletions),
 				};
+			}
+			const summaryPatch = toOptionalString(
+				summary.inlinePatchPreview ?? summary.patch,
+			);
+			if (!patch && summaryPatch) {
+				patch = summaryPatch;
+				sourceNodeKey ??= candidate.nodeKey;
+			}
+			const summaryPatchRef = toOptionalString(
+				summary.patchRef ?? summary.patch_ref,
+			);
+			if (!patchRef && summaryPatchRef) {
+				patchRef = summaryPatchRef;
+				sourceNodeKey ??= candidate.nodeKey;
 			}
 		}
 
@@ -689,6 +785,63 @@ export function parseExecutionFileChangeData(
 		sourceNodeKey,
 		durableInstanceId,
 	};
+}
+
+export function extractExecutionTraceIds(output: unknown): string[] {
+	const ids = new Set<string>();
+	for (const candidate of buildCandidateRecords(output)) {
+		const traceId = readTraceIdFromRecord(candidate.record);
+		if (traceId) {
+			ids.add(traceId);
+		}
+	}
+	return Array.from(ids);
+}
+
+export function deriveAgentRunsFromExecutionOutput(
+	output: unknown,
+	options: DerivedExecutionOutputAgentRunOptions,
+): DurableAgentRunSummary[] {
+	const createdAt =
+		parseTimestamp(options.startedAt) || new Date(0).toISOString();
+	const completedAt = parseTimestamp(options.completedAt);
+	const runs: DurableAgentRunSummary[] = [];
+
+	for (const { nodeKey, record } of buildOutputNodeRecords(output)) {
+		if (!looksLikeDerivedAgentRunRecord(record)) {
+			continue;
+		}
+		const status =
+			toOptionalString(record.status) ??
+			fallbackDerivedRunStatus(options.executionStatus);
+		const agentWorkflowId =
+			toOptionalString(record.agentWorkflowId ?? record.daprInstanceId) ??
+			`derived:${options.executionId}:${nodeKey}`;
+		const daprInstanceId =
+			toOptionalString(record.daprInstanceId ?? record.agentWorkflowId) ??
+			agentWorkflowId;
+		runs.push({
+			id: `derived:${options.executionId}:${nodeKey}`,
+			nodeId: nodeKey,
+			mode: toOptionalString(record.mode) ?? "execute_direct",
+			status,
+			agentWorkflowId,
+			daprInstanceId,
+			parentExecutionId: options.parentExecutionId,
+			workspaceRef:
+				toOptionalString(record.workspaceRef ?? record.workspace_ref) ?? null,
+			artifactRef: toOptionalString(record.artifactRef) ?? null,
+			createdAt,
+			completedAt: status === "running" ? null : completedAt || createdAt,
+			eventPublishedAt: null,
+			lastReconciledAt:
+				status === "running" ? createdAt : completedAt || createdAt,
+			error: toOptionalString(record.error) ?? null,
+			result: record,
+		});
+	}
+
+	return runs;
 }
 
 export function parseExecutionOutcomeSummary(
