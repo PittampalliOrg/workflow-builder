@@ -2867,7 +2867,9 @@ def process_agent_child_workflow(
                 "approval": approval_result,
                 **execute_start_result,
             }
-        use_native_child_workflow = native_child_workflow_enabled
+        # OpenShell planned runs must continue on the direct runtime path after
+        # approval so granular sandbox/tool telemetry is emitted durably.
+        use_native_child_workflow = False
         run_mode = "execute_plan"
 
         if not use_native_child_workflow:
