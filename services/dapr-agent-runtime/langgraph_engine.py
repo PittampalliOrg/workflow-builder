@@ -1138,6 +1138,7 @@ def run_langgraph_task(
     api_key: str | None = None,
     progress_callback: ProgressCallback | None = None,
     openshell_config: dict[str, Any] | None = None,
+    sandbox_name_hint: str | None = None,
 ) -> LangGraphRunResult:
     if not is_langgraph_available():
         raise RuntimeError("LangGraph Deep Agents engine is not installed")
@@ -1253,7 +1254,10 @@ def run_langgraph_task(
             "threadId": thread_id,
             "executionThreadId": thread_id,
             "toolBackend": "openshell" if openshell_context is not None else "local",
-            "sandboxName": openshell_context.sandbox_name if openshell_context is not None else None,
+            "sandboxName": (
+                openshell_context.sandbox_name if openshell_context is not None
+                else sandbox_name_hint
+            ),
             "provider": openshell_context.provider if openshell_context is not None else None,
             "sessionPersistence": "dapr-checkpointer" if checkpointer is not None else None,
             "checkpointStoreName": LANGGRAPH_CHECKPOINT_STORE_NAME if checkpointer is not None else None,

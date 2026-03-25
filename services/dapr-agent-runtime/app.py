@@ -5488,6 +5488,7 @@ def _run_langgraph_phase(
             if run_context.tool_backend == "openshell"
             else None
         ),
+        sandbox_name_hint=run_context.sandbox_name,
     )
     if result.tool_summary.get("changeSummary") or result.tool_summary.get("patch"):
         _persist_workspace_mutation(instance_id, result.tool_summary)

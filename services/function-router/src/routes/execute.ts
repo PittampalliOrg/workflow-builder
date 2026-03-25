@@ -1795,6 +1795,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 													? ((resolvedMastra as Record<string, unknown>)
 															.backend as string)
 													: undefined,
+											sandboxName:
+												typeof (resolvedMastra as Record<string, unknown>)
+													.sandboxName === "string"
+													? ((resolvedMastra as Record<string, unknown>)
+															.sandboxName as string)
+													: undefined,
 											cleanedWorkspaceRefs: Array.isArray(
 												(resolvedMastra as Record<string, unknown>)
 													.cleanedWorkspaceRefs,
