@@ -5183,7 +5183,7 @@ def _build_run_context(
     )
     tool_backend = _resolve_tool_backend(request)
     sandbox_name = str(request.sandboxName or "").strip() or None
-    if tool_backend == "openshell" and not sandbox_name:
+    if not sandbox_name:
         sandbox_name = f"openshell-lg-{instance_id}".lower().replace("_", "-")[:63]
     sandbox_repo_path = str(request.sandboxRepoPath or "").strip() or None
     if tool_backend == "openshell" and not sandbox_repo_path:
