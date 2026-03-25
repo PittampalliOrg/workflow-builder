@@ -52,6 +52,7 @@ from tools import (
 )
 from langgraph_engine import (
     LANGGRAPH_ENGINE_NAME,
+    OpenShellToolContext,
     build_langgraph_capabilities,
     is_langgraph_available,
     run_langgraph_task,
@@ -584,6 +585,21 @@ class BrowserCaptureFlowRequest(BaseModel):
     steps: list[BrowserCaptureStepRequest]
     timeoutMs: int | None = None
     metadata: dict[str, Any] | None = None
+
+
+class BrowserValidateRequest(BaseModel):
+    executionId: str = Field(min_length=1)
+    dbExecutionId: str | None = None
+    sandboxName: str = Field(min_length=1)
+    repoPath: str = "/sandbox/repo"
+    installCommand: str = Field(min_length=1)
+    devServerCommand: str = Field(min_length=1)
+    baseUrl: str = Field(min_length=1, default="http://127.0.0.1:3009")
+    steps: list[BrowserCaptureStepRequest] | str = Field(default_factory=list)
+    timeoutMs: int | None = None
+    workflowId: str | None = None
+    nodeId: str | None = None
+    nodeName: str | None = None
 
 
 class WorkspaceCapabilityValidationRequest(BaseModel):
@@ -1537,13 +1553,13 @@ DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, Any]] = {
     "node-pnpm": {
         "id": "node-pnpm",
         "backend": "openshell",
-        "declaredCapabilities": ["bash", "git", "node", "pnpm"],
+        "declaredCapabilities": ["bash", "git", "node", "pnpm", "npm"],
         "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
     },
     "node-npm": {
         "id": "node-npm",
         "backend": "openshell",
-        "declaredCapabilities": ["bash", "git", "node", "npm"],
+        "declaredCapabilities": ["bash", "git", "node", "npm", "pnpm"],
         "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
     },
     "python": {
@@ -1562,8 +1578,8 @@ DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, Any]] = {
 
 EXECUTION_PROFILE_CAPABILITIES = {
     "base": ["git", "bash"],
-    "node-pnpm": ["git", "bash", "node", "pnpm"],
-    "node-npm": ["git", "bash", "node", "npm"],
+    "node-pnpm": ["git", "bash", "node", "pnpm", "npm"],
+    "node-npm": ["git", "bash", "node", "npm", "pnpm"],
     "python": ["git", "bash", "python"],
     "python-uv": ["git", "bash", "python", "uv"],
 }
@@ -2838,9 +2854,15 @@ def _http_json(
         payload = json.dumps(body).encode("utf-8")
     else:
         payload = None
-    with urllib.request.urlopen(request, data=payload, timeout=timeout_seconds) as response:
-        raw = response.read().decode("utf-8")
-        return json.loads(raw) if raw else {}
+    try:
+        with urllib.request.urlopen(request, data=payload, timeout=timeout_seconds) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"HTTP {exc.code} from {method.upper()} {url}: {error_body[:500]}"
+        ) from exc
 
 
 def _wait_for_browser_http_ready(session: WorkspaceSession, *, timeout_ms: int) -> None:
@@ -2863,6 +2885,35 @@ def _wait_for_browser_http_ready(session: WorkspaceSession, *, timeout_ms: int) 
             last_error = exc
             time.sleep(0.5)
     raise RuntimeError(f"Sandbox HTTP server not ready: {last_error}")
+
+
+def _wait_for_shell_ready(
+    pod_ip: str,
+    port: int,
+    execute_path: str,
+    *,
+    timeout_seconds: int = 30,
+) -> None:
+    """Verify the shell executor is functional, not just the HTTP server."""
+    url = f"http://{pod_ip}:{port}/{execute_path}"
+    deadline = time.time() + timeout_seconds
+    last_error: Exception | None = None
+    while time.time() < deadline:
+        try:
+            result = _http_json(
+                "POST",
+                url,
+                body={"command": "true", "timeout": 5},
+                timeout_seconds=10,
+            )
+            data = result.get("data") if isinstance(result.get("data"), dict) else result
+            if data.get("exit_code", data.get("exitCode", -1)) == 0:
+                logger.info("Shell executor ready at %s", url)
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(1)
+    raise RuntimeError(f"Shell executor not ready after {timeout_seconds}s: {last_error}")
 
 
 def _create_browser_sandbox_session(
@@ -2936,6 +2987,14 @@ def _create_browser_sandbox_session(
         repository_signals={},
     )
     _wait_for_browser_http_ready(session, timeout_ms=30_000)
+    # Verify shell executor is functional (not just HTTP server)
+    shell_details = session.sandbox_details or {}
+    _wait_for_shell_ready(
+        pod_ip=str(shell_details.get("podIp") or ""),
+        port=int(shell_details.get("port") or 0),
+        execute_path=str(shell_details.get("executePath") or "").strip().lstrip("/"),
+        timeout_seconds=30,
+    )
     if SANDBOX_USE_DAPR_INVOCATION and ready.get("daprAppId"):
         # Wait for Dapr sidecar to be ready
         pod_ip = ready["podIp"]
@@ -2953,16 +3012,34 @@ def _create_browser_sandbox_session(
             time.sleep(1)
         else:
             logger.warning("Dapr sidecar not ready after 60s, falling back to direct HTTP")
-    bootstrap_result = _run_k8s_workspace_command(
-        session,
-        command=f"mkdir -p {_shell_escape(str(root_path))}",
-        cwd=sandbox_working_directory,
-        timeout_ms=30_000,
-    )
-    if not bootstrap_result["success"]:
+    # Bootstrap workspace directory with retry (shell may not be fully stable yet)
+    bootstrap_last_error: Exception | None = None
+    for bootstrap_attempt in range(3):
+        try:
+            bootstrap_result = _run_k8s_workspace_command(
+                session,
+                command=f"mkdir -p {_shell_escape(str(root_path))}",
+                cwd=sandbox_working_directory,
+                timeout_ms=30_000,
+            )
+            if bootstrap_result["success"]:
+                break
+            bootstrap_last_error = RuntimeError(
+                bootstrap_result["stderr"] or bootstrap_result["stdout"] or "mkdir failed"
+            )
+        except Exception as exc:
+            bootstrap_last_error = exc
+        if bootstrap_attempt < 2:
+            logger.warning(
+                "Browser sandbox bootstrap attempt %d failed: %s, retrying in 5s...",
+                bootstrap_attempt + 1,
+                bootstrap_last_error,
+            )
+            time.sleep(5)
+    else:
         raise HTTPException(
             status_code=400,
-            detail=bootstrap_result["stderr"] or bootstrap_result["stdout"] or "Failed to prepare browser workspace root",
+            detail=f"Failed to prepare browser workspace root after 3 attempts: {bootstrap_last_error}",
         )
     session.working_directory = root_path
     return session
@@ -6385,6 +6462,252 @@ def browser_capture_flow(request: BrowserCaptureFlowRequest) -> dict[str, Any]:
             "details": dict(session.sandbox_details or {}),
         },
     }
+
+
+@app.post("/api/browser/validate")
+def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
+    """Composite endpoint: install, start dev server, and capture screenshots in the coding sandbox."""
+    timeout_ms = request.timeoutMs or 2_700_000
+    timeout_seconds = max(timeout_ms // 1000, 60)
+    execution_id = str(request.dbExecutionId or request.executionId).strip()
+    logger.info(
+        "browser_validate sandbox=%s repo=%s timeout=%ds execution=%s",
+        request.sandboxName, request.repoPath, timeout_seconds, execution_id,
+    )
+
+    context = OpenShellToolContext(
+        sandbox_name=request.sandboxName[:63],
+        repo_path=request.repoPath,
+    )
+
+    # --- Step 1: Install dependencies ---
+    try:
+        logger.info("browser_validate install: sandbox=%s command=%s", request.sandboxName, request.installCommand[:120])
+        install_result = context.run_command(
+            request.installCommand,
+            timeout_seconds=min(timeout_seconds, 900),
+        )
+        install_exit_code = install_result.get("exitCode", install_result.get("exit_code", -1))
+        if install_exit_code != 0:
+            error_msg = f"Install failed with exit code {install_exit_code}: {str(install_result.get('stderr') or install_result.get('stdout', ''))[:500]}"
+            logger.warning("browser_validate install failed: %s", error_msg)
+            return {"success": False, "error": error_msg, "phase": "install"}
+    except Exception as exc:
+        logger.exception("browser_validate install crashed: sandbox=%s", request.sandboxName)
+        return {"success": False, "error": f"Install error: {str(exc)[:500]}", "phase": "install"}
+
+    # --- Step 2: Start dev server in background ---
+    try:
+        logger.info("browser_validate devserver: sandbox=%s command=%s", request.sandboxName, request.devServerCommand[:120])
+        context.run_command(
+            request.devServerCommand,
+            timeout_seconds=min(timeout_seconds, 60),
+        )
+    except Exception as exc:
+        logger.warning("browser_validate devserver launch returned error (may be expected for background): %s", str(exc)[:200])
+
+    # --- Step 3: Wait for dev server to be ready ---
+    ready_poll_command = f"for i in $(seq 1 60); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 3; done; echo timeout; exit 1"
+    try:
+        poll_result = context.run_command(ready_poll_command, timeout_seconds=200)
+        stdout = str(poll_result.get("stdout") or "").strip()
+        if "ready" not in stdout:
+            logger.warning("browser_validate devserver not ready: %s", stdout[:200])
+            return {"success": False, "error": f"Dev server did not become ready: {stdout[:200]}", "phase": "devserver-poll"}
+    except Exception as exc:
+        logger.warning("browser_validate devserver poll failed: %s", str(exc)[:200])
+        return {"success": False, "error": f"Dev server poll error: {str(exc)[:300]}", "phase": "devserver-poll"}
+
+    # --- Step 4: Run in-sandbox Playwright capture ---
+    steps = request.steps
+    if isinstance(steps, str):
+        try:
+            steps = json.loads(steps)
+        except json.JSONDecodeError:
+            return {"success": False, "error": "Invalid JSON in steps field", "phase": "capture"}
+    steps_json = json.dumps([
+        {
+            "url": step.url or step.path or "/",
+            "waitForSelector": step.waitForSelector,
+            "waitForText": step.waitForText,
+            "delayMs": step.delayMs,
+        }
+        if isinstance(step, BrowserCaptureStepRequest)
+        else step
+        for step in (steps or [{"url": "/", "waitForSelector": "body", "delayMs": 2500}])
+    ])
+
+    output_dir = "/tmp/wf-screenshots"
+    capture_command = (
+        f"python3 /sandbox/capture_screenshots.py "
+        f"--base-url {shlex.quote(request.baseUrl)} "
+        f"--steps {shlex.quote(steps_json)} "
+        f"--output-dir {output_dir}"
+    )
+
+    # First, upload the capture script to the sandbox
+    capture_script_path = Path(__file__).parent / "capture_screenshots_sandbox.py"
+    if capture_script_path.exists():
+        script_content = capture_script_path.read_text()
+    else:
+        # Inline fallback: use Xvfb + Playwright
+        script_content = _INLINE_CAPTURE_SCRIPT
+
+    upload_command = f"cat > /sandbox/capture_screenshots.py << 'CAPTURE_SCRIPT_EOF'\n{script_content}\nCAPTURE_SCRIPT_EOF\nchmod +x /sandbox/capture_screenshots.py"
+    try:
+        context.run_command(upload_command, timeout_seconds=30)
+    except Exception as exc:
+        logger.warning("browser_validate upload capture script failed: %s", str(exc)[:200])
+
+    # Install playwright in the sandbox if not already present
+    try:
+        context.run_command(
+            "pip install playwright 2>/dev/null; python3 -m playwright install chromium 2>/dev/null || true",
+            timeout_seconds=120,
+        )
+    except Exception as exc:
+        logger.warning("browser_validate playwright install: %s", str(exc)[:200])
+
+    # Run the capture via Xvfb
+    xvfb_capture = f"xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' {capture_command}"
+    screenshots: list[bytes] = []
+    step_records: list[WorkflowBrowserCaptureStep] = []
+    overall_status = "completed"
+    try:
+        capture_result = context.run_command(xvfb_capture, timeout_seconds=min(timeout_seconds, 300))
+        capture_stdout = str(capture_result.get("stdout") or "").strip()
+        capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
+
+        if capture_exit != 0:
+            # Fallback: try without xvfb
+            logger.info("browser_validate xvfb capture failed, trying headless directly")
+            capture_result = context.run_command(capture_command, timeout_seconds=min(timeout_seconds, 300))
+            capture_stdout = str(capture_result.get("stdout") or "").strip()
+            capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
+
+        if capture_exit == 0 and capture_stdout:
+            # Try to parse JSON result
+            try:
+                result_data = json.loads(capture_stdout.split("\n")[-1])
+                if result_data.get("success"):
+                    for ss in result_data.get("screenshots", []):
+                        step_index = ss.get("step", 1) - 1
+                        png_path = ss.get("path", "")
+                        # Read the PNG from sandbox
+                        try:
+                            read_result = context.run_command(
+                                f"base64 -w0 {shlex.quote(png_path)}",
+                                timeout_seconds=30,
+                            )
+                            b64_data = str(read_result.get("stdout") or "").strip()
+                            if b64_data:
+                                screenshots.append(base64.b64decode(b64_data))
+                                step_label = f"Step {step_index + 1}"
+                                if isinstance(steps, list) and step_index < len(steps):
+                                    s = steps[step_index]
+                                    if isinstance(s, BrowserCaptureStepRequest):
+                                        step_label = s.label or step_label
+                                    elif isinstance(s, dict):
+                                        step_label = s.get("label", step_label)
+                                step_records.append(WorkflowBrowserCaptureStep(
+                                    id=f"step-{step_index + 1}",
+                                    label=step_label,
+                                    url=ss.get("url", ""),
+                                    captured_at=_utc_now_iso(),
+                                    status="completed",
+                                ))
+                        except Exception as read_exc:
+                            logger.warning("browser_validate read screenshot failed: %s", str(read_exc)[:200])
+            except json.JSONDecodeError:
+                logger.warning("browser_validate could not parse capture output: %s", capture_stdout[:200])
+                overall_status = "failed"
+        else:
+            overall_status = "failed"
+            logger.warning("browser_validate capture failed exit=%s stdout=%s", capture_exit, capture_stdout[:300])
+    except Exception as exc:
+        logger.exception("browser_validate capture crashed: sandbox=%s", request.sandboxName)
+        overall_status = "failed"
+
+    # --- Step 5: Persist screenshots as browser artifacts ---
+    artifact: dict[str, Any] | None = None
+    if screenshots and request.workflowId and request.nodeId:
+        try:
+            artifact = _save_workflow_browser_artifact(
+                workflow_execution_id=execution_id,
+                workflow_id=request.workflowId,
+                node_id=request.nodeId,
+                workspace_ref=None,
+                base_url=request.baseUrl,
+                metadata={"source": "browser-validate-in-sandbox", "sandboxName": request.sandboxName},
+                steps=step_records,
+                screenshots=screenshots,
+                status=overall_status,
+            )
+        except Exception as exc:
+            logger.exception("browser_validate artifact save failed: %s", str(exc)[:200])
+
+    logger.info(
+        "browser_validate completed sandbox=%s status=%s screenshots=%d artifact=%s",
+        request.sandboxName, overall_status, len(screenshots),
+        artifact["id"] if artifact else None,
+    )
+    return {
+        "success": overall_status in ("completed", "partial"),
+        "artifactId": artifact["id"] if artifact else None,
+        "screenshots": len(screenshots),
+        "status": overall_status,
+        "error": None if overall_status == "completed" else f"Capture status: {overall_status}",
+        "sandbox": {"sandboxName": request.sandboxName, "repoPath": request.repoPath},
+    }
+
+
+# Inline capture script for uploading to sandbox when the external file isn't available
+_INLINE_CAPTURE_SCRIPT = r'''#!/usr/bin/env python3
+"""In-sandbox screenshot capture."""
+import argparse, base64, json, os, sys
+from playwright.sync_api import sync_playwright
+
+def capture(base_url, steps, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    results = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            executable_path=os.environ.get("CHROME_PATH", "chromium"),
+            args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+            headless=True,
+        )
+        page = browser.new_page(viewport={"width": 1280, "height": 720})
+        for i, step in enumerate(steps):
+            url = step.get("url") or step.get("path") or "/"
+            if not url.startswith("http"):
+                url = f"{base_url.rstrip('/')}/{url.lstrip('/')}"
+            page.goto(url, wait_until="networkidle", timeout=30000)
+            if step.get("waitForSelector"):
+                page.wait_for_selector(step["waitForSelector"], timeout=15000)
+            if step.get("waitForText"):
+                page.get_by_text(step["waitForText"]).wait_for(timeout=15000)
+            if step.get("delayMs"):
+                page.wait_for_timeout(step["delayMs"])
+            path = os.path.join(output_dir, f"step-{i + 1}.png")
+            page.screenshot(path=path, full_page=True)
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode()
+            results.append({"step": i + 1, "url": url, "path": path, "base64Length": len(b64)})
+        browser.close()
+    print(json.dumps({"success": True, "screenshots": results}))
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--base-url", required=True)
+    parser.add_argument("--steps", required=True)
+    parser.add_argument("--output-dir", default="/tmp/screenshots")
+    args = parser.parse_args()
+    try:
+        capture(args.base_url, json.loads(args.steps), args.output_dir)
+    except Exception as exc:
+        print(json.dumps({"success": False, "error": str(exc)}), file=sys.stderr)
+        sys.exit(1)
+'''
 
 
 @app.get("/api/workspaces/executions/{execution_id}/changes")

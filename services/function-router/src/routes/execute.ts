@@ -17,7 +17,12 @@
 
 import { DaprClient, HttpMethod } from "@dapr/dapr";
 import type { FastifyInstance } from "fastify";
+import { fetch as undiciFetch, Agent as UndiciAgent, Pool } from "undici";
 import { z } from "zod";
+
+const longRunningAgent = new UndiciAgent({
+	factory: (origin, opts) => new Pool(origin, { ...opts, bodyTimeout: 0, headersTimeout: 0 })
+});
 import {
 	fetchCredentialsWithAudit,
 	fetchRawConnectionValue,
@@ -52,8 +57,9 @@ const MAX_AGENT_HTTP_TIMEOUT_MS = 7_200_000;
 const DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS = 30_000;
 const DEFAULT_WORKSPACE_COMMAND_TIMEOUT_MS = 120_000;
 const DEFAULT_WORKSPACE_CLONE_TIMEOUT_MS = 300_000;
-const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = 120_000;
-const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 900_000;
+const MAX_WORKSPACE_PROFILE_TIMEOUT_MS = 300_000;
+const MAX_WORKSPACE_UTILITY_TIMEOUT_MS = 3_600_000;
+const BROWSER_CAPTURE_OVERHEAD_MS = 15_000;
 
 // Cold start detection: if response time is > 3x average, likely a cold start
 const COLD_START_MULTIPLIER = 3;
@@ -197,7 +203,7 @@ function resolveWorkspaceUtilityTimeoutMs(input: {
 
 	if (input.toolId === "profile") {
 		return clampTimeoutMs(
-			explicitCommandTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+			explicitTimeoutMs ?? explicitCommandTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
 			{ min: 10_000, max: MAX_WORKSPACE_PROFILE_TIMEOUT_MS },
 		);
 	}
@@ -287,7 +293,9 @@ function getMastraNestedFailure(
 			? nested.error
 			: typeof nested.stderr === "string" && nested.stderr.trim()
 				? nested.stderr
-				: undefined;
+				: typeof nested.stdout === "string" && nested.stdout.trim()
+					? nested.stdout
+					: undefined;
 
 	if (nestedSuccess === false) {
 		return nestedError || `Tool "${toolId}" failed`;
@@ -911,15 +919,19 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				const functionUrl = await resolveOpenFunctionUrl(target.appId);
 				timing.routingMs = Date.now() - routingStartTime;
 
-				const isAgentRuntime = target.appId === "dapr-agent-runtime";
+				const isBuiltinRuntime =
+					target.appId === "dapr-agent-runtime" ||
+					target.appId === "durable-agent";
 
-				if (isAgentRuntime) {
+				if (isBuiltinRuntime) {
 					console.log(
 						`[Execute Route] Invoking ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
 					let requestTimeoutMs = HTTP_TIMEOUT_MS;
 					let timeoutId: ReturnType<typeof setTimeout> | undefined;
 					let executionStartTime = Date.now();
+					let targetUrl = functionUrl;
+					let requestBody = "";
 
 					try {
 						const { toolId, args } = parseMastraToolInput(
@@ -986,6 +998,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							pluginId === "workspace" && toolId === "cleanup";
 						const isWorkspaceCreatePullRequest =
 							pluginId === "workspace" && toolId === "create-pull-request";
+						const isBrowserProfile =
+							pluginId === "browser" && toolId === "profile";
+						const isBrowserClone = pluginId === "browser" && toolId === "clone";
+						const isBrowserCommand =
+							pluginId === "browser" && toolId === "command";
+						const isBrowserCleanup =
+							pluginId === "browser" && toolId === "cleanup";
+						const isBrowserMaterializeChangeArtifact =
+							pluginId === "browser" &&
+							toolId === "materialize-change-artifact";
+						const isBrowserCaptureFlow =
+							pluginId === "browser" && toolId === "capture-flow";
+						const isBrowserValidate =
+							pluginId === "browser" && toolId === "validate";
 						const isWorkspaceUtility =
 							isWorkspaceProfile ||
 							isWorkspaceClone ||
@@ -993,16 +1019,26 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							isWorkspaceFile ||
 							isWorkspaceCleanup ||
 							isWorkspaceCreatePullRequest;
-						requestTimeoutMs =
-							target.appId === "dapr-agent-runtime"
-								? isWorkspaceUtility
-									? resolveWorkspaceUtilityTimeoutMs({
-											toolId,
-											timeoutMs: args.timeoutMs,
-											commandTimeoutMs: args.commandTimeoutMs,
-										})
-									: resolveAgentHttpTimeoutMs(args.timeoutMinutes)
-								: HTTP_TIMEOUT_MS;
+						const isBrowserUtility =
+							isBrowserProfile ||
+							isBrowserClone ||
+							isBrowserCommand ||
+							isBrowserCleanup ||
+							isBrowserMaterializeChangeArtifact ||
+							isBrowserCaptureFlow ||
+							isBrowserValidate;
+						requestTimeoutMs = isBuiltinRuntime
+							? isWorkspaceUtility || isBrowserUtility
+								? resolveWorkspaceUtilityTimeoutMs({
+										toolId,
+										timeoutMs: args.timeoutMs,
+										commandTimeoutMs: args.commandTimeoutMs,
+									}) +
+									(isBrowserCaptureFlow || isBrowserValidate
+										? BROWSER_CAPTURE_OVERHEAD_MS
+										: 0)
+								: resolveAgentHttpTimeoutMs(args.timeoutMinutes)
+							: HTTP_TIMEOUT_MS;
 						const controller = new AbortController();
 						timeoutId = setTimeout(() => controller.abort(), requestTimeoutMs);
 						executionStartTime = Date.now();
@@ -1020,8 +1056,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									})
 								: undefined;
 
-						let targetUrl: string;
-						let requestBody: string;
+						targetUrl = functionUrl;
+						requestBody = "";
 						const loopPolicy = buildLoopPolicyInput(args);
 						const model = parseDurableModelInput(args);
 						const agentConfig = parseDurableAgentConfig(args);
@@ -1273,7 +1309,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								nodeId: body.node_id,
 								nodeName: body.node_name,
 							});
-						} else if (isWorkspaceClone) {
+						} else if (isWorkspaceClone || isBrowserClone) {
 							const repositoryUrl =
 								typeof args.repositoryUrl === "string"
 									? args.repositoryUrl.trim()
@@ -1342,7 +1378,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								nodeId: body.node_id,
 								nodeName: body.node_name,
 							});
-						} else if (isWorkspaceCommand) {
+						} else if (isWorkspaceCommand || isBrowserCommand) {
 							targetUrl = `${functionUrl}/api/workspaces/command`;
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
@@ -1369,12 +1405,96 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								nodeId: body.node_id,
 								nodeName: body.node_name,
 							});
-						} else if (isWorkspaceCleanup) {
+						} else if (isWorkspaceCleanup || isBrowserCleanup) {
 							targetUrl = `${functionUrl}/api/workspaces/cleanup`;
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
 								dbExecutionId: body.db_execution_id ?? undefined,
 								workspaceRef: args.workspaceRef,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isBrowserProfile) {
+							targetUrl = `${functionUrl}/api/workspaces/profile`;
+							requestBody = JSON.stringify({
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								name: args.name,
+								rootPath: args.rootPath,
+								enabledTools: args.enabledTools,
+								requireReadBeforeWrite: args.requireReadBeforeWrite,
+								commandTimeoutMs: args.commandTimeoutMs,
+								sandboxTemplate: args.sandboxTemplate,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isBrowserMaterializeChangeArtifact) {
+							targetUrl = `${functionUrl}/api/browser/materialize-change-artifact`;
+							requestBody = JSON.stringify({
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								workspaceRef: args.workspaceRef,
+								sourceExecutionId: args.sourceExecutionId,
+								durableInstanceId: args.durableInstanceId,
+								preferredOperation: args.preferredOperation,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isBrowserCaptureFlow) {
+							targetUrl = `${functionUrl}/api/browser/capture-flow`;
+							let steps = args.steps;
+							if (typeof steps === "string") {
+								try {
+									steps = JSON.parse(steps);
+								} catch {
+									/* keep string for downstream validation */
+								}
+							}
+							targetUrl = `${functionUrl}/api/browser/capture-flow`;
+							requestBody = JSON.stringify({
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								workspaceRef: args.workspaceRef,
+								baseUrl: args.baseUrl,
+								steps,
+								timeoutMs: args.timeoutMs,
+								metadata:
+									typeof args.metadata === "string"
+										? (() => {
+												try {
+													return JSON.parse(args.metadata);
+												} catch {
+													return undefined;
+												}
+											})()
+										: args.metadata,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+							});
+						} else if (isBrowserValidate) {
+							targetUrl = `${functionUrl}/api/browser/validate`;
+							let validateSteps = args.steps;
+							if (typeof validateSteps === "string") {
+								try {
+									validateSteps = JSON.parse(validateSteps);
+								} catch {
+									/* keep string for downstream validation */
+								}
+							}
+							requestBody = JSON.stringify({
+								executionId: workspaceExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								sandboxName: args.sandboxName,
+								repoPath: args.repoPath,
+								installCommand: args.installCommand,
+								devServerCommand: args.devServerCommand,
+								baseUrl: args.baseUrl,
+								steps: validateSteps,
+								timeoutMs: args.timeoutMs,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
 								nodeName: body.node_name,
@@ -1439,7 +1559,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								`[Execute Route] Dispatching ${functionSlug} to ${targetUrl} with timeout=${requestTimeoutMs}ms`,
 							);
 							const requestDispatchStartedAt = Date.now();
-							httpResponse = await fetch(targetUrl, {
+							httpResponse = await undiciFetch(targetUrl, {
 								method: "POST",
 								headers: {
 									"Content-Type": "application/json",
@@ -1447,6 +1567,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								},
 								body: requestBody,
 								signal: controller.signal,
+								dispatcher: longRunningAgent,
 							});
 							console.log(
 								`[Execute Route] ${functionSlug} received response headers from ${targetUrl} in ${Date.now() - requestDispatchStartedAt}ms`,
@@ -1486,7 +1607,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								isWorkspaceClone ||
 								isWorkspaceCommand ||
 								isWorkspaceFile ||
-								isWorkspaceCleanup)
+								isWorkspaceCleanup ||
+								isBrowserProfile ||
+								isBrowserClone ||
+								isBrowserCommand ||
+								isBrowserCleanup ||
+								isBrowserMaterializeChangeArtifact ||
+								isBrowserCaptureFlow ||
+								isBrowserValidate)
 						) {
 							resolvedMastra = {
 								success: true,
@@ -1573,6 +1701,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								} else {
 									response = {
 										success: false,
+										data: {
+											toolId:
+												typeof resolvedMastra.toolId === "string"
+													? resolvedMastra.toolId
+													: toolId,
+											result:
+												resolvedMastra.result !== undefined
+													? resolvedMastra.result
+													: resolvedMastra,
+											...(resolvedMastra.result &&
+											typeof resolvedMastra.result === "object"
+												? (resolvedMastra.result as Record<string, unknown>)
+												: {}),
+										},
 										error:
 											typeof resolvedMastra.error === "string"
 												? resolvedMastra.error
@@ -1589,6 +1731,20 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								if (nestedFailure) {
 									response = {
 										success: false,
+										data: {
+											toolId:
+												typeof resolvedMastra.toolId === "string"
+													? resolvedMastra.toolId
+													: toolId,
+											result:
+												resolvedMastra.result !== undefined
+													? resolvedMastra.result
+													: resolvedMastra,
+											...(resolvedMastra.result &&
+											typeof resolvedMastra.result === "object"
+												? (resolvedMastra.result as Record<string, unknown>)
+												: {}),
+										},
 										error: nestedFailure,
 										duration_ms: 0,
 									};
@@ -1838,14 +1994,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
 					const executionStartTime = Date.now();
 					try {
-						const httpResponse = await fetch(`${functionUrl}/execute`, {
+						const httpResponse = await undiciFetch(`${functionUrl}/execute`, {
 							method: "POST",
 							headers: {
 								"Content-Type": "application/json",
 								...forwardedTraceHeaders,
 							},
-							body: JSON.stringify(knativeRequest),
+							body: requestBody,
 							signal: controller.signal,
+							dispatcher: longRunningAgent,
 						});
 
 						clearTimeout(timeoutId);
@@ -1937,7 +2094,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				try {
 					await logExecutionComplete(logId, {
 						success: response.success,
-						output: response.data,
+						output: response.data ?? response,
 						error: response.error,
 						durationMs: duration_ms,
 						timing,

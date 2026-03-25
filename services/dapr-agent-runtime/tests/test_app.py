@@ -11,12 +11,17 @@ import tools
 from app import (
     AgentRunContext,
     ApproveRequest,
+    BrowserCaptureFlowRequest,
+    BrowserCaptureStepRequest,
+    BrowserMaterializeChangeArtifactRequest,
+    BrowserValidateRequest,
     DaprAgentRunRequest,
     ExecuteRequest,
     PROFILE_TOOL_GROUPS,
     TerminateRequest,
     WorkspaceCapabilityValidationRequest,
     WorkspaceCleanupRequest,
+    WorkspaceCommandRequest,
     WorkspaceProfileRequest,
     WorkspaceSession,
     _detect_repository_signals,
@@ -46,6 +51,9 @@ from app import (
     workspace_execution_file_snapshot,
     workspace_execution_patch,
     workspace_profile,
+    _capture_browser_step_with_retry,
+    BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS,
+    PlaywrightTimeoutError,
 )
 from tools import (
     build_workspace_patch,
@@ -1093,6 +1101,147 @@ def test_build_result_payload_marks_pending_plan_as_awaiting_approval(
     assert payload["runSummary"]["engine"] == app.LANGGRAPH_ENGINE_NAME
 
 
+def test_wait_for_sandbox_ready_supports_status_sandbox_name(monkeypatch) -> None:
+    responses = iter(
+        [
+            {"status": {"sandbox": {"Name": "browser-claim"}}},
+            {
+                "status": {
+                    "podName": "aio-browser-pool-123",
+                    "podIp": "10.0.0.8",
+                }
+            },
+        ]
+    )
+
+    monkeypatch.setattr(app, "_k8s_request", lambda *_args, **_kwargs: next(responses))
+
+    ready = app._wait_for_sandbox_ready("browser-claim", timeout_ms=1000)
+
+    assert ready == {
+        "sandboxName": "browser-claim",
+        "podName": "aio-browser-pool-123",
+        "podIp": "10.0.0.8",
+    }
+
+
+def test_wait_for_sandbox_ready_supports_service_fqdn_and_pod_annotation(monkeypatch) -> None:
+    responses = iter(
+        [
+            {"status": {"sandbox": {"Name": "browser-claim"}}},
+            {
+                "metadata": {
+                    "annotations": {
+                        "agents.x-k8s.io/pod-name": "aio-browser-pool-456",
+                    }
+                },
+                "status": {
+                    "serviceFQDN": "browser-claim.agent-sandbox.svc.cluster.local",
+                },
+            },
+        ]
+    )
+
+    monkeypatch.setattr(app, "_k8s_request", lambda *_args, **_kwargs: next(responses))
+
+    ready = app._wait_for_sandbox_ready("browser-claim", timeout_ms=1000)
+
+    assert ready == {
+        "sandboxName": "browser-claim",
+        "podName": "aio-browser-pool-456",
+        "podIp": "browser-claim.agent-sandbox.svc.cluster.local",
+    }
+
+
+def test_workspace_clone_k8s_uses_authenticated_clone_url(tmp_path: Path, monkeypatch) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-clone",
+        execution_id="exec-browser-clone",
+        root_path=tmp_path / "workspace",
+        working_directory=tmp_path / "workspace",
+        enabled_tools=[],
+        backend="k8s",
+        sandbox_details={
+            "podIp": "browser-claim.agent-sandbox.svc.cluster.local",
+            "port": 8080,
+            "executePath": "v1/shell/exec",
+        },
+    )
+    session.root_path.mkdir(parents=True)
+
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
+
+    recorded_commands: list[str] = []
+
+    def fake_run_k8s_workspace_command(*_args, **kwargs):
+        recorded_commands.append(kwargs["command"])
+        command = kwargs["command"]
+        if "git rev-parse HEAD" in command:
+            return {"success": True, "stdout": "deadbeef\n", "stderr": "", "exitCode": 0}
+        if "find . -type f | wc -l" in command:
+            return {"success": True, "stdout": "42\n", "stderr": "", "exitCode": 0}
+        return {"success": True, "stdout": "", "stderr": "", "exitCode": 0}
+
+    monkeypatch.setattr(app, "_run_k8s_workspace_command", fake_run_k8s_workspace_command)
+
+    result = app.workspace_clone(
+        app.WorkspaceCloneRequest(
+            executionId="exec-browser-clone",
+            workspaceRef="workspace-browser-clone",
+            repositoryUrl="http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/ai-chatbot.git",
+            repositoryOwner="giteaadmin",
+            repositoryRepo="ai-chatbot",
+            repositoryBranch="main",
+            repositoryUsername="gitea-user",
+            repositoryToken="token:with/slash",
+            targetDir="ai-chatbot",
+        )
+    )
+
+    assert "gitea-user:token%3Awith%2Fslash@gitea-http.gitea.svc.cluster.local:3000" in recorded_commands[0]
+    assert recorded_commands[0].startswith("export GIT_TERMINAL_PROMPT=0 && rm -rf ")
+    assert result["commitHash"] == "deadbeef"
+    assert result["fileCount"] == 42
+
+
+def test_create_browser_sandbox_session_bootstraps_workspace_root(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(app, "_k8s_request", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        app,
+        "_wait_for_sandbox_ready",
+        lambda *_args, **_kwargs: {
+            "sandboxName": "browser-claim",
+            "podName": "aio-browser-pool-789",
+            "podIp": "browser-claim.agent-sandbox.svc.cluster.local",
+        },
+    )
+    monkeypatch.setattr(app, "_wait_for_browser_http_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "_wait_for_shell_ready", lambda *_args, **_kwargs: None)
+
+    recorded_commands: list[tuple[str, str]] = []
+
+    def fake_run_k8s_workspace_command(session, *, command, cwd=None, timeout_ms=None):
+        recorded_commands.append((command, str(cwd)))
+        return {"success": True, "stdout": "", "stderr": "", "exitCode": 0}
+
+    monkeypatch.setattr(app, "_run_k8s_workspace_command", fake_run_k8s_workspace_command)
+
+    session = app._create_browser_sandbox_session(
+        execution_id="exec-browser-bootstrap",
+        name="Debug Browser Bootstrap",
+        root_path=tmp_path / "workspace-root",
+        enabled_tools=["bash", "git"],
+        command_timeout_ms=120_000,
+        sandbox_template="aio-browser",
+    )
+
+    assert session.working_directory == tmp_path / "workspace-root"
+    assert session.sandbox_details["workingDirectory"] == "/home/gem"
+    assert recorded_commands == [
+        (f"mkdir -p '{tmp_path / 'workspace-root'}'", "/home/gem")
+    ]
+
+
 def test_workspace_execution_artifact_endpoints_use_persisted_run_artifacts(
     tmp_path: Path,
     monkeypatch,
@@ -1718,6 +1867,797 @@ def test_workspace_profile_returns_capability_metadata(tmp_path: Path, monkeypat
     assert profile["repositorySignals"]["runtimeFamily"] == "generic"
 
 
+def test_browser_workspace_profile_uses_k8s_session(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    def fake_create_browser_sandbox_session(**kwargs) -> WorkspaceSession:
+        return WorkspaceSession(
+            workspace_ref="workspace-browser",
+            execution_id=str(kwargs["execution_id"]),
+            root_path=Path(str(kwargs["root_path"])),
+            working_directory=Path(str(kwargs["root_path"])),
+            enabled_tools=list(kwargs["enabled_tools"]),
+            backend="k8s",
+            command_timeout_ms=int(kwargs["command_timeout_ms"] or 360000),
+            sandbox_template="aio-browser",
+            sandbox_details={
+                "claimName": "browser-claim",
+                "podIp": "10.0.0.12",
+                "port": 8080,
+                "healthPath": "v1/docs",
+                "executePath": "v1/shell/exec",
+            },
+            available_capabilities=["bash", "git", "browser", "screenshot"],
+        )
+
+    monkeypatch.setattr(app, "_create_browser_sandbox_session", fake_create_browser_sandbox_session)
+
+    profile = workspace_profile(
+        WorkspaceProfileRequest(
+            executionId="exec-browser",
+            enabledTools=["bash"],
+            sandboxTemplate="aio-browser",
+        )
+    )
+
+    assert profile["backend"] == "k8s"
+    assert profile["rootPath"] == "/home/gem/workspaces/exec-browser"
+    restored = _load_workspace_session("workspace-browser")
+    assert restored is not None
+    assert restored.backend == "k8s"
+    assert restored.sandbox_template == "aio-browser"
+
+
+def test_workspace_command_routes_k8s_session_through_remote_exec(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-cmd",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={
+            "podIp": "10.0.0.13",
+            "port": 8080,
+            "executePath": "v1/shell/exec",
+        },
+    )
+    _persist_workspace_session(session)
+
+    captured: dict[str, object] = {}
+
+    def fake_run_k8s_workspace_command(session_arg, *, command, cwd=None, timeout_ms=None):
+        captured["workspaceRef"] = session_arg.workspace_ref
+        captured["command"] = command
+        captured["cwd"] = str(cwd)
+        captured["timeoutMs"] = timeout_ms
+        return {
+            "stdout": "ok\n",
+            "stderr": "",
+            "exitCode": 0,
+            "success": True,
+            "executionTimeMs": 25,
+            "timedOut": False,
+        }
+
+    monkeypatch.setattr(app, "_run_k8s_workspace_command", fake_run_k8s_workspace_command)
+
+    response = app.workspace_command(
+        WorkspaceCommandRequest(
+            executionId="exec-browser",
+            workspaceRef="workspace-browser-cmd",
+            command="npm install",
+            timeoutMs=60000,
+        )
+    )
+
+    assert response["success"] is True
+    assert captured["workspaceRef"] == "workspace-browser-cmd"
+    assert captured["command"] == "npm install"
+    assert captured["cwd"] == "/home/gem/workspaces/exec-browser/repo"
+
+
+def test_run_k8s_workspace_command_preserves_zero_exit_code(monkeypatch) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-zero-exit",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={
+            "podIp": "10.0.0.13",
+            "port": 8080,
+            "executePath": "v1/shell/exec",
+        },
+    )
+
+    monkeypatch.setattr(
+        app,
+        "_http_json",
+        lambda *_args, **_kwargs: {
+            "data": {
+                "exit_code": 0,
+                "output": "install-complete\n",
+                "stderr": "",
+            }
+        },
+    )
+
+    result = app._run_k8s_workspace_command(
+        session,
+        command="python3 -c 'print(\"ok\")'",
+        cwd=session.working_directory,
+        timeout_ms=60_000,
+    )
+
+    assert result["exitCode"] == 0
+    assert result["success"] is True
+    assert result["stdout"] == "install-complete\n"
+
+
+def test_run_k8s_workspace_command_waits_for_async_shell_completion(monkeypatch) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-async-exit",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={
+            "podIp": "10.0.0.13",
+            "port": 8080,
+            "executePath": "v1/shell/exec",
+        },
+    )
+
+    responses = iter(
+        [
+            {
+                "success": True,
+                "message": "Command still running (timeout 20s reached)",
+                "data": {
+                    "session_id": "shell-session-1",
+                    "command": "npm ci",
+                    "status": "running",
+                    "output": None,
+                    "exit_code": None,
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "status": "completed",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "session_id": "shell-session-1",
+                    "command": "npm ci",
+                    "status": "completed",
+                    "output": "added 42 packages\n",
+                    "exit_code": 0,
+                },
+            },
+        ]
+    )
+
+    monkeypatch.setattr(app, "_http_json", lambda *_args, **_kwargs: next(responses))
+
+    result = app._run_k8s_workspace_command(
+        session,
+        command="npm ci",
+        cwd=session.working_directory,
+        timeout_ms=60_000,
+    )
+
+    assert result["exitCode"] == 0
+    assert result["success"] is True
+    assert result["stdout"] == "added 42 packages\n"
+    assert result["timedOut"] is False
+
+
+def test_run_k8s_workspace_command_marks_async_timeout(monkeypatch) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-async-timeout",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={
+            "podIp": "10.0.0.13",
+            "port": 8080,
+            "executePath": "v1/shell/exec",
+        },
+    )
+
+    responses = iter(
+        [
+            {
+                "success": True,
+                "message": "Command still running (timeout 20s reached)",
+                "data": {
+                    "session_id": "shell-session-timeout",
+                    "command": "npm run dev",
+                    "status": "running",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "status": "running",
+                },
+            },
+            {
+                "success": True,
+                "data": {
+                    "session_id": "shell-session-timeout",
+                    "command": "npm run dev",
+                    "status": "running",
+                    "output": "still booting\n",
+                    "exit_code": None,
+                },
+            },
+        ]
+    )
+
+    monotonic_values = iter([0.0, 0.0, 2.0, 2.0])
+    monkeypatch.setattr(app, "_http_json", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(app.time, "monotonic", lambda: next(monotonic_values))
+
+    result = app._run_k8s_workspace_command(
+        session,
+        command="npm run dev",
+        cwd=session.working_directory,
+        timeout_ms=1_000,
+    )
+
+    assert result["exitCode"] == 124
+    assert result["success"] is False
+    assert result["stdout"] == "still booting\n"
+    assert result["timedOut"] is True
+    assert "timed out" in result["stderr"].lower()
+
+
+def test_browser_connection_info_rewrites_loopback_cdp_host(monkeypatch) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-cdp",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["browser"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={"podIp": "10.0.0.99", "port": 8080},
+    )
+
+    monkeypatch.setattr(
+        app,
+        "_http_json",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "data": {
+                "cdp_url": "ws://127.0.0.1:8080/cdp/devtools/browser/browser-id",
+            },
+        },
+    )
+
+    assert (
+        app._browser_connection_info(session)
+        == "ws://10.0.0.99:8080/cdp/devtools/browser/browser-id"
+    )
+
+
+def test_browser_materialize_change_artifact_restores_snapshots(monkeypatch) -> None:
+    fake_workspace_store = FakeStateStore()
+    fake_run_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_workspace_store)
+    monkeypatch.setattr(app, "run_state_store", fake_run_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-materialize",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={"podIp": "10.0.0.14", "port": 8080, "executePath": "v1/shell/exec"},
+    )
+    _persist_workspace_session(session)
+    fake_run_store.save(
+        key=app._run_artifact_key("run-browser"),
+        value={
+            "changeSetId": "run-browser-patch",
+            "executionId": "exec-browser",
+            "fileSnapshots": [
+                {"path": "app/page.tsx", "status": "M", "newContent": "updated"},
+                {"path": "old.txt", "status": "D"},
+            ],
+        },
+    )
+    fake_run_store.save(
+        key=app._execution_runs_key("exec-browser"),
+        value={"executionId": "exec-browser", "runIds": ["run-browser"]},
+    )
+
+    written: list[tuple[str, str]] = []
+    deleted: list[str] = []
+    monkeypatch.setattr(
+        app,
+        "_write_remote_file",
+        lambda _session, target_path, content: written.append((str(target_path), content)),
+    )
+    monkeypatch.setattr(
+        app,
+        "_delete_remote_path",
+        lambda _session, target_path: deleted.append(str(target_path)),
+    )
+
+    response = app.browser_materialize_change_artifact(
+        BrowserMaterializeChangeArtifactRequest(
+            executionId="exec-browser",
+            workspaceRef="workspace-browser-materialize",
+        )
+    )
+
+    assert response["changeSetId"] == "run-browser-patch"
+    assert written == [("/home/gem/workspaces/exec-browser/repo/app/page.tsx", "updated")]
+    assert deleted == ["/home/gem/workspaces/exec-browser/repo/old.txt"]
+
+
+def test_browser_capture_flow_persists_artifact(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-capture",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={"podIp": "10.0.0.15", "port": 8080},
+    )
+    _persist_workspace_session(session)
+    monkeypatch.setattr(app, "_browser_connection_info", lambda _session: "ws://browser.test/devtools")
+
+    captured_save: dict[str, object] = {}
+
+    def fake_save_workflow_browser_artifact(**kwargs):
+        captured_save.update(kwargs)
+        return {
+            "id": "artifact-browser-1",
+            "workflowExecutionId": kwargs["workflow_execution_id"],
+            "workflowId": kwargs["workflow_id"],
+            "nodeId": kwargs["node_id"],
+            "workspaceRef": kwargs["workspace_ref"],
+            "artifactType": "capture_flow_v1",
+            "artifactVersion": 1,
+            "status": kwargs["status"],
+            "manifestJson": {"steps": []},
+        }
+
+    monkeypatch.setattr(app, "_save_workflow_browser_artifact", fake_save_workflow_browser_artifact)
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.url = "http://127.0.0.1:3009/"
+
+        def goto(self, url, wait_until=None, timeout=None):
+            self.url = url
+
+        def wait_for_selector(self, selector, timeout=None):
+            return None
+
+        def wait_for_function(self, expression, *, arg=None, timeout=None):
+            return None
+
+        def wait_for_timeout(self, timeout):
+            return None
+
+        def screenshot(self, full_page=True, type="png"):
+            return b"png-bytes"
+
+        def title(self):
+            return "Browser Smoke"
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+
+        def new_page(self):
+            page = FakePage()
+            self.pages.append(page)
+            return page
+
+    class FakeBrowser:
+        def __init__(self) -> None:
+            self.contexts = [FakeContext()]
+
+        def new_context(self):
+            context = FakeContext()
+            self.contexts.append(context)
+            return context
+
+        def close(self):
+            return None
+
+    class FakeChromium:
+        def connect_over_cdp(self, cdp_url, timeout=None):
+            assert cdp_url == "ws://browser.test/devtools"
+            return FakeBrowser()
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return type("FakePlaywright", (), {"chromium": FakeChromium()})()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app, "sync_playwright", lambda: FakePlaywrightManager())
+
+    response = app.browser_capture_flow(
+        BrowserCaptureFlowRequest(
+            executionId="exec-browser",
+            dbExecutionId="db-exec-browser",
+            workspaceRef="workspace-browser-capture",
+            workflowId="wf-browser",
+            nodeId="node-browser",
+            baseUrl="http://127.0.0.1:3009",
+            steps=[
+                BrowserCaptureStepRequest(
+                    label="Home",
+                    path="/",
+                    waitForText="Welcome",
+                )
+            ],
+        )
+    )
+
+    assert response["artifactId"] == "artifact-browser-1"
+    assert response["stepCount"] == 1
+    assert captured_save["workflow_execution_id"] == "db-exec-browser"
+    assert len(captured_save["screenshots"]) == 1
+    assert captured_save["status"] == "completed"
+
+
+def test_browser_capture_flow_retries_until_page_is_ready(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-capture-retry",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={"podIp": "10.0.0.15", "port": 8080},
+    )
+    _persist_workspace_session(session)
+    monkeypatch.setattr(app, "_browser_connection_info", lambda _session: "ws://browser.test/devtools")
+
+    captured_save: dict[str, object] = {}
+
+    def fake_save_workflow_browser_artifact(**kwargs):
+        captured_save.update(kwargs)
+        return {
+            "id": "artifact-browser-retry",
+            "workflowExecutionId": kwargs["workflow_execution_id"],
+            "workflowId": kwargs["workflow_id"],
+            "nodeId": kwargs["node_id"],
+            "workspaceRef": kwargs["workspace_ref"],
+            "artifactType": "capture_flow_v1",
+            "artifactVersion": 1,
+            "status": kwargs["status"],
+            "manifestJson": {"steps": []},
+        }
+
+    monkeypatch.setattr(app, "_save_workflow_browser_artifact", fake_save_workflow_browser_artifact)
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+            self.goto_attempts = 0
+
+        def goto(self, url, wait_until=None, timeout=None):
+            self.goto_attempts += 1
+            if self.goto_attempts == 1:
+                raise RuntimeError("connection refused")
+            self.url = url
+
+        def wait_for_selector(self, selector, timeout=None):
+            return None
+
+        def wait_for_function(self, expression, *, arg=None, timeout=None):
+            return None
+
+        def wait_for_timeout(self, timeout):
+            return None
+
+        def screenshot(self, full_page=True, type="png"):
+            return b"png-bytes"
+
+        def title(self):
+            return "Browser Smoke"
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+
+        def new_page(self):
+            page = FakePage()
+            self.pages.append(page)
+            return page
+
+    class FakeBrowser:
+        def __init__(self) -> None:
+            self.contexts = [FakeContext()]
+
+        def new_context(self):
+            context = FakeContext()
+            self.contexts.append(context)
+            return context
+
+        def close(self):
+            return None
+
+    class FakeChromium:
+        def connect_over_cdp(self, cdp_url, timeout=None):
+            assert cdp_url == "ws://browser.test/devtools"
+            return FakeBrowser()
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return type("FakePlaywright", (), {"chromium": FakeChromium()})()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app, "sync_playwright", lambda: FakePlaywrightManager())
+
+    response = app.browser_capture_flow(
+        BrowserCaptureFlowRequest(
+            executionId="exec-browser",
+            dbExecutionId="db-exec-browser",
+            workspaceRef="workspace-browser-capture-retry",
+            workflowId="wf-browser",
+            nodeId="node-browser",
+            baseUrl="http://127.0.0.1:3009",
+            steps=[
+                BrowserCaptureStepRequest(
+                    label="Home",
+                    path="/",
+                    waitForText="Welcome",
+                )
+            ],
+            timeoutMs=5_000,
+        )
+    )
+
+    assert response["artifactId"] == "artifact-browser-retry"
+    assert response["stepCount"] == 1
+    assert captured_save["status"] == "completed"
+
+
+def test_browser_capture_flow_uses_larger_per_attempt_timeout(monkeypatch) -> None:
+    fake_store = FakeStateStore()
+    monkeypatch.setattr(app, "workspace_state_store", fake_store)
+    monkeypatch.setattr(app, "workspace_sessions", {})
+    monkeypatch.setattr(app, "sessions_by_execution", {})
+
+    session = WorkspaceSession(
+        workspace_ref="workspace-browser-capture-timeout",
+        execution_id="exec-browser",
+        root_path=Path("/home/gem/workspaces/exec-browser"),
+        working_directory=Path("/home/gem/workspaces/exec-browser/repo"),
+        enabled_tools=["bash"],
+        backend="k8s",
+        sandbox_template="aio-browser",
+        sandbox_details={"podIp": "10.0.0.15", "port": 8080},
+    )
+    _persist_workspace_session(session)
+    monkeypatch.setattr(app, "_browser_connection_info", lambda _session: "ws://browser.test/devtools")
+    monkeypatch.setattr(
+        app,
+        "_save_workflow_browser_artifact",
+        lambda **kwargs: {
+            "id": "artifact-browser-timeout",
+            "workflowExecutionId": kwargs["workflow_execution_id"],
+            "workflowId": kwargs["workflow_id"],
+            "nodeId": kwargs["node_id"],
+            "workspaceRef": kwargs["workspace_ref"],
+            "artifactType": "capture_flow_v1",
+            "artifactVersion": 1,
+            "status": kwargs["status"],
+            "manifestJson": {"steps": []},
+        },
+    )
+
+    seen_timeouts: list[int | None] = []
+
+    class FakePage:
+        def __init__(self) -> None:
+            self.url = "about:blank"
+
+        def goto(self, url, wait_until=None, timeout=None):
+            seen_timeouts.append(timeout)
+            self.url = url
+
+        def wait_for_selector(self, selector, timeout=None):
+            return None
+
+        def wait_for_function(self, expression, *, arg=None, timeout=None):
+            return None
+
+        def wait_for_timeout(self, timeout):
+            return None
+
+        def screenshot(self, full_page=True, type="png"):
+            return b"png-bytes"
+
+        def title(self):
+            return "Browser Smoke"
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self.pages = [FakePage()]
+
+        def new_page(self):
+            page = FakePage()
+            self.pages.append(page)
+            return page
+
+    class FakeBrowser:
+        def __init__(self) -> None:
+            self.contexts = [FakeContext()]
+
+        def new_context(self):
+            context = FakeContext()
+            self.contexts.append(context)
+            return context
+
+        def close(self):
+            return None
+
+    class FakeChromium:
+        def connect_over_cdp(self, cdp_url, timeout=None):
+            assert cdp_url == "ws://browser.test/devtools"
+            return FakeBrowser()
+
+    class FakePlaywrightManager:
+        def __enter__(self):
+            return type("FakePlaywright", (), {"chromium": FakeChromium()})()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(app, "sync_playwright", lambda: FakePlaywrightManager())
+
+    response = app.browser_capture_flow(
+        BrowserCaptureFlowRequest(
+            executionId="exec-browser",
+            dbExecutionId="db-exec-browser",
+            workspaceRef="workspace-browser-capture-timeout",
+            workflowId="wf-browser",
+            nodeId="node-browser",
+            baseUrl="http://127.0.0.1:3009",
+            steps=[BrowserCaptureStepRequest(label="Home", path="/")],
+            timeoutMs=180_000,
+        )
+    )
+
+    assert response["artifactId"] == "artifact-browser-timeout"
+    assert seen_timeouts == [8_000]
+
+
+def test_browser_capture_retry_respects_min_viable_floor() -> None:
+    """Every attempt gets at least min_viable timeout; loop exits cleanly."""
+    recorded_timeouts: list[int] = []
+    attempts_before_success = 4
+
+    class TimingPage:
+        def __init__(self):
+            self.url = "about:blank"
+            self._attempt = 0
+
+        def goto(self, url, wait_until=None, timeout=None):
+            self._attempt += 1
+            recorded_timeouts.append(timeout)
+            if self._attempt < attempts_before_success:
+                raise PlaywrightTimeoutError(f"Timeout {timeout}ms exceeded")
+            self.url = url
+
+        def wait_for_selector(self, selector, timeout=None):
+            pass
+
+        def wait_for_function(self, expression, *, arg=None, timeout=None):
+            pass
+
+        def wait_for_timeout(self, timeout):
+            pass
+
+        def screenshot(self, full_page=True, type="png"):
+            return b"png-bytes"
+
+    page = TimingPage()
+    budget_ms = 60_000
+    result = _capture_browser_step_with_retry(
+        page,
+        target_url="http://127.0.0.1:3009/",
+        wait_for_selector=None,
+        wait_for_text=None,
+        delay_ms=None,
+        full_page=True,
+        timeout_ms=budget_ms,
+    )
+
+    assert result == b"png-bytes"
+    assert len(recorded_timeouts) == attempts_before_success
+    attempt_cap = min(budget_ms, BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS)
+    min_viable = max(2_000, attempt_cap // 2)
+    for t in recorded_timeouts:
+        assert t >= min_viable, f"Attempt got {t}ms, expected >= {min_viable}ms"
+    for t in recorded_timeouts:
+        assert t <= BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS
+
+
+def test_browser_capture_retry_exits_before_tiny_attempt() -> None:
+    """Loop stops instead of issuing a pathologically small final attempt."""
+    recorded_timeouts: list[int] = []
+
+    class AlwaysFailPage:
+        url = "about:blank"
+
+        def goto(self, url, wait_until=None, timeout=None):
+            recorded_timeouts.append(timeout)
+            raise PlaywrightTimeoutError(f"Timeout {timeout}ms exceeded")
+
+        def wait_for_timeout(self, timeout):
+            pass
+
+    page = AlwaysFailPage()
+    budget_ms = 20_000
+    with pytest.raises(RuntimeError, match="Browser capture timed out"):
+        _capture_browser_step_with_retry(
+            page,
+            target_url="http://127.0.0.1:3009/",
+            wait_for_selector=None,
+            wait_for_text=None,
+            delay_ms=None,
+            full_page=True,
+            timeout_ms=budget_ms,
+        )
+
+    attempt_cap = min(budget_ms, BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS)
+    min_viable = max(2_000, attempt_cap // 2)
+    for t in recorded_timeouts:
+        assert t >= min_viable, f"Issued attempt with only {t}ms (< {min_viable}ms floor)"
+
+
 def test_detect_repository_signals_prefers_pnpm_repo(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
@@ -2009,3 +2949,48 @@ def test_api_run_status_reconstructs_running_progress_from_context_when_state_lo
     assert status["phase"] == "planning"
     assert status["agentProgress"]["currentIteration"] == 0
     assert status["traceId"] == "trace-running"
+
+
+def test_browser_validate_request_model_defaults() -> None:
+    """BrowserValidateRequest should accept minimal fields and apply defaults."""
+    req = BrowserValidateRequest(
+        executionId="exec-1",
+        sandboxName="test-sandbox",
+        installCommand="npm ci",
+        devServerCommand="npm run dev",
+    )
+    assert req.repoPath == "/sandbox/repo"
+    assert req.baseUrl == "http://127.0.0.1:3009"
+    assert req.timeoutMs is None
+    assert req.workflowId is None
+
+
+def test_browser_validate_install_failure_returns_error(monkeypatch) -> None:
+    """browser_validate should return success=False when install command fails."""
+    call_log: list[dict] = []
+
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, timeout_seconds=300):
+            call_log.append({"command": command, "timeout": timeout_seconds})
+            if "install" in command.lower() or "npm ci" in command.lower():
+                return {"exitCode": 1, "stdout": "", "stderr": "install failed"}
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            installCommand="npm ci",
+            devServerCommand="npm run dev",
+            workflowId="wf-1",
+            nodeId="node-1",
+        )
+    )
+    assert result["success"] is False
+    assert result["phase"] == "install"
+    assert len(call_log) == 1

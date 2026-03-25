@@ -1944,9 +1944,377 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 	],
 };
 
+const BROWSER_PIECE: IntegrationDefinition = {
+	type: "browser",
+	label: "Browser",
+	pieceName: "browser",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "profile",
+			label: "Browser Workspace Profile",
+			description:
+				"Create a browser-capable execution workspace backed by the aio-browser sandbox",
+			category: "Browser",
+			configFields: [
+				{
+					key: "name",
+					label: "Profile Name",
+					type: "template-input",
+					placeholder: "browser-validation",
+					required: false,
+				},
+				{
+					key: "rootPath",
+					label: "Root Path (optional)",
+					type: "template-input",
+					placeholder: "workspaces/browser",
+					required: false,
+				},
+				{
+					key: "enabledTools",
+					label: "Enabled Tools",
+					type: "dynamic-multi-select",
+					placeholder: "Select workspace tools",
+					defaultValue:
+						'["read_file","write_file","edit_file","list_files","delete_file","mkdir","file_stat","execute_command","clone"]',
+					required: false,
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "browser",
+						actionName: "browser/profile",
+						propName: "enabledTools",
+						refreshers: [],
+					},
+				},
+				{
+					key: "commandTimeoutMs",
+					label: "Command Timeout (ms)",
+					type: "number",
+					required: false,
+					defaultValue: "360000",
+					min: 1000,
+				},
+				{
+					key: "sandboxTemplate",
+					label: "Sandbox Template",
+					type: "select",
+					required: false,
+					defaultValue: "aio-browser",
+					options: [{ label: "AIO Browser", value: "aio-browser" }],
+				},
+			],
+			outputFields: [
+				{ field: "workspaceRef", description: "Workspace reference ID" },
+				{ field: "executionId", description: "Workflow execution ID" },
+				{ field: "rootPath", description: "Workspace root path" },
+				{ field: "backend", description: "Workspace backend (k8s/local)" },
+			],
+		},
+		{
+			slug: "clone",
+			label: "Browser Clone Repository",
+			description: "Clone a repository into the browser validation workspace",
+			category: "Browser",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Browser Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "repositoryOwner",
+					label: "GitHub Owner",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select owner",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "browser",
+						actionName: "browser/clone",
+						propName: "repositoryOwner",
+						refreshers: [],
+					},
+				},
+				{
+					key: "repositoryRepo",
+					label: "GitHub Repository",
+					type: "dynamic-select",
+					required: false,
+					placeholder: "Select repository",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "browser",
+						actionName: "browser/clone",
+						propName: "repositoryRepo",
+						refreshers: ["repositoryOwner"],
+					},
+				},
+				{
+					key: "repositoryBranch",
+					label: "Branch",
+					type: "dynamic-select",
+					required: true,
+					placeholder: "Select branch",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "browser",
+						actionName: "browser/clone",
+						propName: "repositoryBranch",
+						refreshers: ["repositoryOwner", "repositoryRepo"],
+					},
+				},
+				{
+					key: "targetDir",
+					label: "Target Directory (optional)",
+					type: "template-input",
+					placeholder: "repo",
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "clonePath", description: "Cloned directory path" },
+				{ field: "repository", description: "Repository owner/name" },
+				{ field: "branch", description: "Checked out branch" },
+				{ field: "commitHash", description: "Resolved commit hash" },
+			],
+		},
+		{
+			slug: "materialize-change-artifact",
+			label: "Browser Materialize Changes",
+			description:
+				"Restore the latest durable execute changes into the browser validation workspace",
+			category: "Browser",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Browser Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "sourceExecutionId",
+					label: "Source Execution ID (optional)",
+					type: "template-input",
+					placeholder: "{{Trigger.__execution.id}}",
+					required: false,
+				},
+				{
+					key: "preferredOperation",
+					label: "Preferred Operation",
+					type: "template-input",
+					placeholder: "agent-execute",
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "changeSetId", description: "Restored durable change set ID" },
+				{
+					field: "restoredPaths",
+					description: "Paths restored into the workspace",
+				},
+				{ field: "deletedPaths", description: "Paths deleted during restore" },
+			],
+		},
+		{
+			slug: "command",
+			label: "Browser Command",
+			description:
+				"Execute a shell command in the browser validation workspace",
+			category: "Browser",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Browser Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "command",
+					label: "Command",
+					type: "template-textarea",
+					placeholder: "pnpm install",
+					rows: 4,
+					required: true,
+				},
+				{
+					key: "timeoutMs",
+					label: "Timeout (ms)",
+					type: "number",
+					defaultValue: "300000",
+					min: 1000,
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "stdout", description: "Command stdout" },
+				{ field: "stderr", description: "Command stderr" },
+				{ field: "exitCode", description: "Process exit code" },
+				{ field: "success", description: "Whether command succeeded" },
+			],
+		},
+		{
+			slug: "capture-flow",
+			label: "Browser Capture Flow",
+			description:
+				"Navigate a browser flow and persist screenshots as durable run artifacts",
+			category: "Browser",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Browser Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "baseUrl",
+					label: "Base URL",
+					type: "template-input",
+					placeholder: "http://127.0.0.1:3000",
+					required: true,
+				},
+				{
+					key: "steps",
+					label: "Steps (JSON)",
+					type: "template-textarea",
+					required: true,
+					rows: 10,
+					placeholder:
+						'[\n  {\n    "label": "Home page",\n    "path": "/",\n    "waitForText": "Welcome"\n  }\n]',
+				},
+				{
+					key: "timeoutMs",
+					label: "Timeout (ms)",
+					type: "number",
+					defaultValue: "120000",
+					min: 1000,
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "artifactId", description: "Durable browser artifact ID" },
+				{ field: "status", description: "Browser artifact status" },
+				{
+					field: "stepCount",
+					description: "Number of attempted capture steps",
+				},
+			],
+		},
+		{
+			slug: "validate",
+			label: "Browser Validate (In-Sandbox)",
+			description:
+				"Install, run dev server, and capture screenshots inside the coding sandbox — no second sandbox needed",
+			category: "Browser",
+			configFields: [
+				{
+					key: "sandboxName",
+					label: "Sandbox Name",
+					type: "template-input",
+					placeholder:
+						"{{@nodeId:OpenShell LangGraph Execute.sandboxName}}",
+					required: true,
+				},
+				{
+					key: "repoPath",
+					label: "Repo Path",
+					type: "template-input",
+					placeholder: "/sandbox/repo",
+					required: false,
+					defaultValue: "/sandbox/repo",
+				},
+				{
+					key: "installCommand",
+					label: "Install Command",
+					type: "template-textarea",
+					placeholder: "npm ci --no-audit --no-fund",
+					rows: 4,
+					required: true,
+				},
+				{
+					key: "devServerCommand",
+					label: "Dev Server Command",
+					type: "template-textarea",
+					placeholder:
+						"npm run dev -- --hostname 0.0.0.0",
+					rows: 4,
+					required: true,
+				},
+				{
+					key: "baseUrl",
+					label: "Base URL",
+					type: "template-input",
+					placeholder: "http://127.0.0.1:3009",
+					required: true,
+				},
+				{
+					key: "steps",
+					label: "Capture Steps (JSON)",
+					type: "template-textarea",
+					required: true,
+					rows: 10,
+					placeholder:
+						'[\n  {\n    "label": "Home page",\n    "path": "/",\n    "waitForSelector": "body",\n    "delayMs": 2500\n  }\n]',
+				},
+				{
+					key: "timeoutMs",
+					label: "Timeout (ms)",
+					type: "number",
+					defaultValue: "2700000",
+					min: 60000,
+					required: false,
+				},
+			],
+			outputFields: [
+				{ field: "success", description: "Whether the validation completed" },
+				{ field: "artifactId", description: "Durable browser artifact ID" },
+				{
+					field: "screenshots",
+					description: "Number of screenshots captured",
+				},
+				{ field: "error", description: "Error message if failed" },
+			],
+		},
+		{
+			slug: "cleanup",
+			label: "Browser Cleanup",
+			description: "Cleanup browser validation workspace session(s)",
+			category: "Browser",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref (optional)",
+					type: "template-input",
+					placeholder: "{{@nodeId:Browser Workspace Profile.workspaceRef}}",
+					required: false,
+				},
+				{
+					key: "executionId",
+					label: "Execution ID (optional)",
+					type: "template-input",
+					placeholder: "{{Trigger.__execution.id}}",
+					required: false,
+				},
+			],
+			outputFields: [
+				{
+					field: "cleanedWorkspaceRefs",
+					description: "Workspace refs that were cleaned",
+				},
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
 	return [
 		MCP_PIECE,
+		BROWSER_PIECE,
 		WORKSPACE_PIECE,
 		OPENSHELL_AGENT_PIECE,
 		OPENSHELL_LANGGRAPH_AGENT_PIECE,

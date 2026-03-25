@@ -35,12 +35,11 @@ import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 const DATABASE_URL = process.env.DATABASE_URL;
 const DEFAULT_NAME = "OpenShell LangGraph Feature Delivery";
 const DEFAULT_REPO_OWNER = "PittampalliOrg";
-const DEFAULT_REPO_NAME = "workflow-builder";
+const DEFAULT_REPO_NAME = "ai-chatbot";
 const DEFAULT_REPO_BRANCH = "main";
-const DEFAULT_TARGET_DIR = "workflow-builder";
+const DEFAULT_TARGET_DIR = "ai-chatbot";
 const DEFAULT_MODEL = "gpt-5.4";
-const DEFAULT_VERIFY_COMMANDS = `pnpm type-check
-pnpm fix`;
+const DEFAULT_VERIFY_COMMANDS = `npm run build`;
 
 function buildPlanPrompt(triggerId: string): string {
 	return `You are planning a repository feature delivery task for this specific codebase.
@@ -335,6 +334,46 @@ ${field("patch")}
 __WF_OPEN_SHELL_REVIEW__`;
 }
 
+function buildValidationInstallCommand(previewAppDir: string): string {
+	const installCommand =
+		"(while true; do echo install-heartbeat; sleep 25; done &) ; attempt=1; until [ $attempt -gt 3 ]; do npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline && exit 0; if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
+	if (previewAppDir === "." || previewAppDir === "") {
+		return installCommand;
+	}
+	return `cd ${previewAppDir} && ${installCommand}`;
+}
+
+function buildValidationDevServerCommand(previewAppDir: string): string {
+	const logPath =
+		previewAppDir === "." || previewAppDir === ""
+			? ".wf-preview/dev-server.log"
+			: "../.wf-preview/dev-server.log";
+	const pidPath =
+		previewAppDir === "." || previewAppDir === ""
+			? ".wf-preview/dev-server.pid"
+			: "../.wf-preview/dev-server.pid";
+	if (previewAppDir === "." || previewAppDir === "") {
+		return `mkdir -p .wf-preview && rm -f ${logPath} ${pidPath} && setsid sh -c 'npm run dev -- --hostname 0.0.0.0 > ${logPath} 2>&1 < /dev/null' >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
+	}
+	return `mkdir -p .wf-preview && cd ${previewAppDir} && rm -f ${logPath} ${pidPath} && setsid sh -c 'npm run dev -- --hostname 0.0.0.0 > ${logPath} 2>&1 < /dev/null' >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
+}
+
+function buildValidationCaptureSteps(): string {
+	return JSON.stringify(
+		[
+			{
+				id: "chat-home",
+				label: "Chat Home",
+				path: "/",
+				waitForSelector: "body",
+				delayMs: 2500,
+			},
+		],
+		null,
+		2,
+	);
+}
+
 function buildWorkflowGraph(input: {
 	verifyCommands: string;
 	agentProfileTemplateId?: string;
@@ -351,6 +390,7 @@ function buildWorkflowGraph(input: {
 	const planId = nanoid();
 	const executeId = nanoid();
 	const reviewId = nanoid();
+	const browserValidateId = nanoid();
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
@@ -360,6 +400,10 @@ function buildWorkflowGraph(input: {
 	const executionThreadTemplate = `lg:exec:${executionIdTemplate}`;
 	const planPrompt = buildPlanPrompt(triggerId);
 	const executePrompt = buildExecutePrompt(triggerId);
+	const previewAppDir =
+		input.repositoryRepo === "ai-chatbot"
+			? "."
+			: input.targetDir || input.repositoryRepo;
 	const enabledTools = JSON.stringify([
 		"read",
 		"write",
@@ -529,6 +573,29 @@ function buildWorkflowGraph(input: {
 				status: "idle",
 			},
 		},
+		{
+			id: browserValidateId,
+			type: "action",
+			position: { x: 1280, y: -20 },
+			data: {
+				label: "Browser Validation",
+				description:
+					"Install, run, and screenshot the feature in the coding sandbox.",
+				type: "action",
+				config: {
+					actionType: "browser/validate",
+					sandboxName: `{{@${executeId}:OpenShell LangGraph Execute.sandboxName}}`,
+					repoPath: "/sandbox/repo",
+					installCommand: buildValidationInstallCommand(previewAppDir),
+					devServerCommand: buildValidationDevServerCommand(previewAppDir),
+					baseUrl: "http://127.0.0.1:3009",
+					steps: buildValidationCaptureSteps(),
+					timeoutMs: "2700000",
+					continueOnError: "true",
+				},
+				status: "idle",
+			},
+		},
 	]);
 
 	const edges = [
@@ -569,6 +636,14 @@ function buildWorkflowGraph(input: {
 			type: "animated",
 			source: executeId,
 			target: reviewId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: reviewId,
+			target: browserValidateId,
 			sourceHandle: null,
 			targetHandle: null,
 		},
