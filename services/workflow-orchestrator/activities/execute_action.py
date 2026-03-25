@@ -1,17 +1,18 @@
 """
 Execute Action Activity
 
-This activity invokes the function-router service via Dapr service invocation
-to route function execution to OpenFunctions (Knative serverless).
+This activity invokes the function-router service to route function execution
+to backend services (fn-system, fn-activepieces, durable-agent, etc.).
 
 The function-router supports:
-- OpenFunctions: Scale-to-zero Knative services (fn-openai, fn-slack, etc.)
 - Registry-based routing with wildcard and default fallback support
+- Dapr service invocation for all routing
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -24,7 +25,6 @@ from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
-# Function router dispatches to OpenFunctions (Knative serverless)
 FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
@@ -145,13 +145,39 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     try:
         with start_activity_span("activity.execute_action", otel, attrs):
-            # Invoke function-router via Dapr service invocation
             url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{FUNCTION_ROUTER_APP_ID}/method/execute"
+
+            # Use per-node timeoutMs if available, otherwise default to 5 min.
+            # Add 30s overhead for routing / serialization.
+            node_timeout_ms = None
+            for src in (resolved_config, config):
+                val = src.get("timeoutMs") if isinstance(src, dict) else None
+                if val is not None:
+                    try:
+                        node_timeout_ms = int(val)
+                    except (ValueError, TypeError):
+                        pass
+                    break
+            default_http_timeout = int(os.environ.get("EXECUTE_ACTION_TIMEOUT_SECONDS", "300"))
+            http_timeout = (node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
+            logger.info(
+                f"[Execute Action] http_timeout={http_timeout}s node_timeout_ms={node_timeout_ms} "
+                f"url={url} "
+                f"config_timeoutMs={config.get('timeoutMs') if isinstance(config, dict) else 'N/A'}"
+            )
+
+            # Propagate OTEL trace headers as belt-and-suspenders (Dapr handles this automatically)
+            headers = {"Content-Type": "application/json"}
+            if otel:
+                for key in ("traceparent", "tracestate"):
+                    if otel.get(key):
+                        headers[key] = otel[key]
 
             response = requests.post(
                 url,
                 json=request_payload,
-                timeout=300,  # 5 minute timeout for long-running functions
+                headers=headers,
+                timeout=http_timeout,
             )
             response.raise_for_status()
 
@@ -178,7 +204,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     except requests.Timeout:
         duration_ms = int((time.time() - start_time) * 1000)
-        error_msg = f"Function execution timed out after 300 seconds"
+        error_msg = f"Function execution timed out after {int(http_timeout)} seconds"
         logger.error(f"[Execute Action] {error_msg}")
         return {
             "success": False,

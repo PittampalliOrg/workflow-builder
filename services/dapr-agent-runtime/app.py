@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import base64
 import asyncio
 import json
 import logging
 import os
 import shlex
 import shutil
+import ssl
 import subprocess
 import threading
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
@@ -52,6 +56,19 @@ from langgraph_engine import (
     is_langgraph_available,
     run_langgraph_task,
 )
+try:
+    import psycopg
+except ImportError:  # pragma: no cover
+    psycopg = None
+
+try:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+    from playwright.sync_api import sync_playwright
+except ImportError:  # pragma: no cover
+    PlaywrightError = Exception
+    PlaywrightTimeoutError = TimeoutError
+    sync_playwright = None
 
 try:
     import dapr.ext.workflow as wf
@@ -434,6 +451,39 @@ EXECUTE_MODE = "execute_direct"
 FEATURE_DELIVERY_PLAN_MODE = "feature_delivery_plan"
 FEATURE_DELIVERY_EXECUTE_MODE = "feature_delivery_execute"
 PLAN_ARTIFACT_TYPE = "claude_task_graph_v1"
+DEFAULT_BROWSER_WORKSPACE_ROOT = Path("/home/gem/workspaces")
+K8S_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+K8S_PORT = int(os.environ.get("KUBERNETES_SERVICE_PORT", "443"))
+K8S_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+K8S_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+K8S_CLAIM_API_GROUP = "extensions.agents.x-k8s.io"
+K8S_CLAIM_API_VERSION = "v1alpha1"
+K8S_CLAIM_PLURAL = "sandboxclaims"
+SANDBOX_NAMESPACE = os.environ.get("SANDBOX_NAMESPACE", "agent-sandbox")
+SANDBOX_USE_DAPR_INVOCATION = os.environ.get("SANDBOX_USE_DAPR_INVOCATION", "false").lower() == "true"
+BROWSER_ARTIFACT_BLOB_PREFIX = (
+    os.environ.get("WORKFLOW_BROWSER_ARTIFACT_BLOB_PREFIX", "workflow-browser-artifacts")
+    .rstrip("/")
+)
+BROWSER_ARTIFACT_DATABASE_URL = (
+    os.environ.get("WORKSPACE_RECON_DATABASE_URL", "").strip()
+    or os.environ.get("DATABASE_URL", "").strip()
+)
+DEFAULT_BROWSER_CAPTURE_TIMEOUT_MS = 120_000
+BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS = 8_000
+DEFAULT_BROWSER_COMMAND_TIMEOUT_MS = 3_600_000
+DEFAULT_BROWSER_PROVISION_TIMEOUT_MS = int(
+    os.environ.get("SANDBOX_PROVISION_TIMEOUT_MS", "180000")
+)
+
+BROWSER_SANDBOX_TEMPLATES: dict[str, dict[str, Any]] = {
+    "aio-browser": {
+        "port": 8080,
+        "healthPath": "v1/docs",
+        "executePath": "v1/shell/exec",
+        "workingDirectory": "/home/gem",
+    },
+}
 
 
 class WorkspaceProfileRequest(BaseModel):
@@ -498,6 +548,42 @@ class WorkspaceFileRequest(BaseModel):
 class WorkspaceCleanupRequest(BaseModel):
     executionId: str | None = None
     workspaceRef: str | None = None
+
+
+class BrowserMaterializeChangeArtifactRequest(BaseModel):
+    executionId: str = Field(min_length=1)
+    dbExecutionId: str | None = None
+    workspaceRef: str = Field(min_length=1)
+    sourceExecutionId: str | None = None
+    durableInstanceId: str | None = None
+    preferredOperation: str | None = None
+    workflowId: str | None = None
+    nodeId: str | None = None
+    nodeName: str | None = None
+
+
+class BrowserCaptureStepRequest(BaseModel):
+    id: str | None = None
+    label: str | None = None
+    path: str | None = None
+    url: str | None = None
+    waitForSelector: str | None = None
+    waitForText: str | None = None
+    delayMs: int | None = None
+    fullPage: bool | None = None
+
+
+class BrowserCaptureFlowRequest(BaseModel):
+    executionId: str = Field(min_length=1)
+    dbExecutionId: str | None = None
+    workspaceRef: str = Field(min_length=1)
+    workflowId: str = Field(min_length=1)
+    nodeId: str = Field(min_length=1)
+    nodeName: str | None = None
+    baseUrl: str = Field(min_length=1)
+    steps: list[BrowserCaptureStepRequest]
+    timeoutMs: int | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class WorkspaceCapabilityValidationRequest(BaseModel):
@@ -594,6 +680,10 @@ class WorkspaceSession:
     root_path: Path
     working_directory: Path | None
     enabled_tools: list[str]
+    backend: str = "local"
+    command_timeout_ms: int | None = None
+    sandbox_template: str | None = None
+    sandbox_details: dict[str, Any] | None = None
     repository_url: str | None = None
     repository_owner: str | None = None
     repository_repo: str | None = None
@@ -610,6 +700,10 @@ class WorkspaceSession:
             "rootPath": str(self.root_path),
             "workingDirectory": str(self.working_directory or self.root_path),
             "enabledTools": list(self.enabled_tools),
+            "backend": self.backend,
+            "commandTimeoutMs": self.command_timeout_ms,
+            "sandboxTemplate": self.sandbox_template,
+            "sandboxDetails": dict(self.sandbox_details or {}),
             "repositoryUrl": self.repository_url,
             "repositoryOwner": self.repository_owner,
             "repositoryRepo": self.repository_repo,
@@ -630,6 +724,18 @@ class WorkspaceSession:
                 str(record.get("workingDirectory") or record.get("rootPath") or WORKSPACE_ROOT)
             ).expanduser().resolve(),
             enabled_tools=[str(item) for item in record.get("enabledTools") or []],
+            backend=str(record.get("backend") or "local").strip() or "local",
+            command_timeout_ms=(
+                int(record.get("commandTimeoutMs"))
+                if record.get("commandTimeoutMs") is not None
+                else None
+            ),
+            sandbox_template=str(record.get("sandboxTemplate") or "").strip() or None,
+            sandbox_details=(
+                dict(record.get("sandboxDetails"))
+                if isinstance(record.get("sandboxDetails"), dict)
+                else None
+            ),
             repository_url=str(record.get("repositoryUrl") or "").strip() or None,
             repository_owner=str(record.get("repositoryOwner") or "").strip() or None,
             repository_repo=str(record.get("repositoryRepo") or "").strip() or None,
@@ -655,6 +761,21 @@ class WorkspaceSession:
         )
 
 
+@dataclass
+class WorkflowBrowserCaptureStep:
+    id: str
+    label: str
+    url: str
+    title: str | None = None
+    wait_for_selector: str | None = None
+    wait_for_text: str | None = None
+    delay_ms: int | None = None
+    captured_at: str | None = None
+    status: str = "completed"
+    screenshot_storage_ref: str | None = None
+    error: str | None = None
+
+
 def _build_workspace_profile(
     session: WorkspaceSession,
     *,
@@ -671,7 +792,7 @@ def _build_workspace_profile(
         "executionId": session.execution_id,
         "rootPath": str(session.root_path),
         "workingDirectory": str(session.working_directory or session.root_path),
-        "backend": str(backend or "local").strip() or "local",
+        "backend": str(backend or session.backend or "local").strip() or "local",
         "availableCapabilities": list(session.available_capabilities),
         "requiredCapabilities": list(session.required_capabilities),
         "preferredExecutionProfile": session.preferred_execution_profile,
@@ -1319,7 +1440,10 @@ def _delete_workspace_session(workspace_ref: str) -> None:
             sessions_by_execution.pop(session.execution_id, None)
     except StateStoreError as exc:
         logger.warning("Failed to delete workspace session %s: %s", workspace_ref, exc)
-    shutil.rmtree(session.root_path, ignore_errors=True)
+    if session.backend == "k8s":
+        _destroy_k8s_workspace(session)
+    else:
+        shutil.rmtree(session.root_path, ignore_errors=True)
 
 
 def _ensure_workspace_root() -> None:
@@ -1395,9 +1519,13 @@ OPENSHELL_DECLARED_CAPABILITIES = [
     "corepack",
     "python",
 ]
-SANDBOX_PROFILE_CATALOG_PATH = (
-    Path(__file__).resolve().parents[2] / "config" / "sandbox-profiles.json"
+_APP_FILE_PATH = Path(__file__).resolve()
+_REPO_ROOT_CANDIDATE = (
+    _APP_FILE_PATH.parents[2]
+    if len(_APP_FILE_PATH.parents) > 2
+    else _APP_FILE_PATH.parent
 )
+SANDBOX_PROFILE_CATALOG_PATH = _REPO_ROOT_CANDIDATE / "config" / "sandbox-profiles.json"
 _sandbox_profile_catalog_cache: dict[str, dict[str, Any]] | None = None
 DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, Any]] = {
     "base": {
@@ -2516,6 +2644,813 @@ def _default_workspace_root(execution_id: str, requested_root: str | None) -> Pa
     else:
         candidate = WORKSPACE_ROOT / execution_id
     return candidate.expanduser().resolve()
+
+
+def _browser_workspace_root(
+    execution_id: str,
+    requested_root: str | None,
+    sandbox_template: str | None,
+) -> Path:
+    template = str(sandbox_template or "").strip()
+    if template != "aio-browser":
+        return _default_workspace_root(execution_id, requested_root)
+    if requested_root:
+        candidate = Path(requested_root)
+        if not candidate.is_absolute():
+            candidate = DEFAULT_BROWSER_WORKSPACE_ROOT / requested_root
+    else:
+        candidate = DEFAULT_BROWSER_WORKSPACE_ROOT / execution_id
+    return candidate.expanduser().resolve()
+
+
+def _shell_escape(value: str) -> str:
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _build_authenticated_git_url(
+    repository_url: str,
+    username: str | None,
+    token: str | None,
+) -> str:
+    trimmed_url = repository_url.strip()
+    if not trimmed_url:
+        return trimmed_url
+    trimmed_username = str(username or "").strip()
+    trimmed_token = str(token or "").strip()
+    if not trimmed_username or not trimmed_token:
+        return trimmed_url
+    try:
+        parsed = urllib.parse.urlsplit(trimmed_url)
+    except ValueError:
+        return trimmed_url
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return trimmed_url
+    if parsed.username or parsed.password:
+        return trimmed_url
+    quoted_username = urllib.parse.quote(trimmed_username, safe="")
+    quoted_token = urllib.parse.quote(trimmed_token, safe="")
+    host = parsed.hostname
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    netloc = f"{quoted_username}:{quoted_token}@{host}"
+    return urllib.parse.urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+
+
+def _read_k8s_token() -> str:
+    return Path(K8S_TOKEN_PATH).read_text(encoding="utf-8").strip()
+
+
+def _read_k8s_ca() -> str | None:
+    path = Path(K8S_CA_PATH)
+    if not path.exists():
+        return None
+    return str(path)
+
+
+def _k8s_request(
+    method: str,
+    path: str,
+    body: dict[str, Any] | None = None,
+    *,
+    content_type: str = "application/json",
+) -> dict[str, Any]:
+    url = f"https://{K8S_HOST}:{K8S_PORT}{path}"
+    request = urllib.request.Request(url=url, method=method.upper())
+    request.add_header("Authorization", f"Bearer {_read_k8s_token()}")
+    request.add_header("Accept", "application/json")
+    if body is not None:
+        payload = json.dumps(body).encode("utf-8")
+        request.add_header("Content-Type", content_type)
+    else:
+        payload = None
+    context = ssl.create_default_context(cafile=_read_k8s_ca())
+    try:
+        with urllib.request.urlopen(request, data=payload, context=context, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        message = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"K8s API {method.upper()} {path} failed with {exc.code}: {message}"
+        ) from exc
+
+
+def _wait_for_sandbox_ready(claim_name: str, *, timeout_ms: int) -> dict[str, str]:
+    deadline = time.time() + (timeout_ms / 1000)
+    claim_path = (
+        f"/apis/{K8S_CLAIM_API_GROUP}/{K8S_CLAIM_API_VERSION}/namespaces/"
+        f"{SANDBOX_NAMESPACE}/{K8S_CLAIM_PLURAL}/{claim_name}"
+    )
+    while time.time() < deadline:
+        claim = _k8s_request("GET", claim_path)
+        status = claim.get("status") if isinstance(claim.get("status"), dict) else {}
+        binding = status.get("binding") if isinstance(status.get("binding"), dict) else {}
+        sandbox_ref = status.get("sandbox") if isinstance(status.get("sandbox"), dict) else {}
+        sandbox_name = str(
+            binding.get("name")
+            or sandbox_ref.get("name")
+            or sandbox_ref.get("Name")
+            or ""
+        ).strip()
+        if sandbox_name:
+            sandbox_path = (
+                f"/apis/agents.x-k8s.io/v1alpha1/namespaces/{SANDBOX_NAMESPACE}/sandboxes/"
+                f"{sandbox_name}"
+            )
+            sandbox = _k8s_request("GET", sandbox_path)
+            sandbox_metadata = (
+                sandbox.get("metadata") if isinstance(sandbox.get("metadata"), dict) else {}
+            )
+            sandbox_annotations = (
+                sandbox_metadata.get("annotations")
+                if isinstance(sandbox_metadata.get("annotations"), dict)
+                else {}
+            )
+            sandbox_status = (
+                sandbox.get("status") if isinstance(sandbox.get("status"), dict) else {}
+            )
+            ready_conditions = (
+                sandbox_status.get("conditions")
+                if isinstance(sandbox_status.get("conditions"), list)
+                else []
+            )
+            sandbox_ready = any(
+                isinstance(condition, dict)
+                and str(condition.get("type") or "").strip() == "Ready"
+                and str(condition.get("status") or "").strip().lower() == "true"
+                for condition in ready_conditions
+            )
+            pod_name = str(
+                sandbox_status.get("podName")
+                or sandbox_annotations.get("agents.x-k8s.io/pod-name")
+                or ""
+            ).strip()
+            service_host = str(sandbox_status.get("podIp") or "").strip()
+            if pod_name:
+                pod_path = f"/api/v1/namespaces/{SANDBOX_NAMESPACE}/pods/{pod_name}"
+                try:
+                    pod = _k8s_request("GET", pod_path)
+                except Exception:
+                    pod = {}
+                pod_status = pod.get("status") if isinstance(pod.get("status"), dict) else {}
+                pod_phase = str(pod_status.get("phase") or "").strip()
+                pod_ip = str(pod_status.get("podIP") or pod_status.get("podIp") or "").strip()
+                if pod_phase.lower() == "running" and pod_ip:
+                    service_host = pod_ip
+            if not service_host and sandbox_ready:
+                service_host = str(sandbox_status.get("serviceFQDN") or "").strip()
+                if not service_host:
+                    service_name = str(sandbox_status.get("service") or "").strip()
+                    if service_name:
+                        service_host = f"{service_name}.{SANDBOX_NAMESPACE}.svc.cluster.local"
+            if pod_name and service_host:
+                # Read dapr.io/app-id annotation from the pod metadata
+                pod_metadata = pod.get("metadata") if isinstance(pod.get("metadata"), dict) else {}
+                pod_annotations = (
+                    pod_metadata.get("annotations")
+                    if isinstance(pod_metadata.get("annotations"), dict)
+                    else {}
+                )
+                dapr_app_id = str(pod_annotations.get("dapr.io/app-id") or "").strip()
+                return {
+                    "sandboxName": sandbox_name,
+                    "podName": pod_name,
+                    "podIp": service_host,
+                    "daprAppId": dapr_app_id or None,
+                }
+        time.sleep(1)
+    raise RuntimeError(f"Timed out waiting for sandbox claim {claim_name} to bind")
+
+
+def _http_json(
+    method: str,
+    url: str,
+    *,
+    body: dict[str, Any] | None = None,
+    timeout_seconds: float = 30,
+) -> dict[str, Any]:
+    request = urllib.request.Request(url=url, method=method.upper())
+    request.add_header("Accept", "application/json")
+    if body is not None:
+        request.add_header("Content-Type", "application/json")
+        payload = json.dumps(body).encode("utf-8")
+    else:
+        payload = None
+    with urllib.request.urlopen(request, data=payload, timeout=timeout_seconds) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
+
+
+def _wait_for_browser_http_ready(session: WorkspaceSession, *, timeout_ms: int) -> None:
+    details = session.sandbox_details or {}
+    pod_ip = str(details.get("podIp") or "").strip()
+    port = int(details.get("port") or 0)
+    health_path = str(details.get("healthPath") or "").strip().lstrip("/")
+    if not pod_ip or port <= 0 or not health_path:
+        raise RuntimeError("Browser workspace session is missing sandbox connectivity details")
+    deadline = time.time() + (timeout_ms / 1000)
+    last_error: Exception | None = None
+    url = f"http://{pod_ip}:{port}/{health_path}"
+    while time.time() < deadline:
+        try:
+            request = urllib.request.Request(url=url, method="GET")
+            with urllib.request.urlopen(request, timeout=3) as response:
+                if response.status < 400:
+                    return
+        except Exception as exc:  # pragma: no cover - exercised via monkeypatch tests
+            last_error = exc
+            time.sleep(0.5)
+    raise RuntimeError(f"Sandbox HTTP server not ready: {last_error}")
+
+
+def _create_browser_sandbox_session(
+    *,
+    execution_id: str,
+    name: str | None,
+    root_path: Path,
+    enabled_tools: list[str],
+    command_timeout_ms: int | None,
+    sandbox_template: str,
+) -> WorkspaceSession:
+    template = BROWSER_SANDBOX_TEMPLATES.get(sandbox_template)
+    if template is None:
+        raise HTTPException(status_code=400, detail=f"Unsupported sandbox template: {sandbox_template}")
+    sandbox_working_directory = Path(
+        str(template.get("workingDirectory") or "/").strip() or "/"
+    )
+    claim_name = f"browser-{uuid.uuid4().hex[:12]}"
+    claim_path = (
+        f"/apis/{K8S_CLAIM_API_GROUP}/{K8S_CLAIM_API_VERSION}/namespaces/"
+        f"{SANDBOX_NAMESPACE}/{K8S_CLAIM_PLURAL}"
+    )
+    _k8s_request(
+        "POST",
+        claim_path,
+        {
+            "apiVersion": f"{K8S_CLAIM_API_GROUP}/{K8S_CLAIM_API_VERSION}",
+            "kind": "SandboxClaim",
+            "metadata": {
+                "name": claim_name,
+                "namespace": SANDBOX_NAMESPACE,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "dapr-agent-runtime",
+                },
+            },
+            "spec": {
+                "sandboxTemplateRef": {
+                    "name": sandbox_template,
+                },
+            },
+        },
+    )
+    ready = _wait_for_sandbox_ready(
+        claim_name,
+        timeout_ms=DEFAULT_BROWSER_PROVISION_TIMEOUT_MS,
+    )
+    workspace_ref = f"workspace-{uuid.uuid4().hex[:12]}"
+    session = WorkspaceSession(
+        workspace_ref=workspace_ref,
+        execution_id=execution_id,
+        root_path=root_path,
+        working_directory=sandbox_working_directory,
+        enabled_tools=[str(item) for item in enabled_tools],
+        backend="k8s",
+        command_timeout_ms=command_timeout_ms or DEFAULT_BROWSER_COMMAND_TIMEOUT_MS,
+        sandbox_template=sandbox_template,
+        sandbox_details={
+            "claimName": claim_name,
+            "sandboxName": ready["sandboxName"],
+            "podName": ready["podName"],
+            "podIp": ready["podIp"],
+            "daprAppId": ready.get("daprAppId"),
+            "namespace": SANDBOX_NAMESPACE,
+            "templateName": sandbox_template,
+            "port": template["port"],
+            "healthPath": template["healthPath"],
+            "executePath": template["executePath"],
+            "workingDirectory": str(sandbox_working_directory),
+        },
+        available_capabilities=["bash", "git", "browser", "screenshot"],
+        repository_signals={},
+    )
+    _wait_for_browser_http_ready(session, timeout_ms=30_000)
+    if SANDBOX_USE_DAPR_INVOCATION and ready.get("daprAppId"):
+        # Wait for Dapr sidecar to be ready
+        pod_ip = ready["podIp"]
+        dapr_health_url = f"http://{pod_ip}:{3500}/v1.0/healthz"
+        dapr_timeout = time.time() + 60  # 60s timeout for sidecar
+        while time.time() < dapr_timeout:
+            try:
+                req = urllib.request.Request(url=dapr_health_url, method="GET")
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status < 400:
+                        logger.info("Dapr sidecar ready for %s", ready.get("daprAppId"))
+                        break
+            except Exception:
+                pass
+            time.sleep(1)
+        else:
+            logger.warning("Dapr sidecar not ready after 60s, falling back to direct HTTP")
+    bootstrap_result = _run_k8s_workspace_command(
+        session,
+        command=f"mkdir -p {_shell_escape(str(root_path))}",
+        cwd=sandbox_working_directory,
+        timeout_ms=30_000,
+    )
+    if not bootstrap_result["success"]:
+        raise HTTPException(
+            status_code=400,
+            detail=bootstrap_result["stderr"] or bootstrap_result["stdout"] or "Failed to prepare browser workspace root",
+        )
+    session.working_directory = root_path
+    return session
+
+
+def _destroy_k8s_workspace(session: WorkspaceSession) -> None:
+    if session.backend != "k8s":
+        return
+    details = session.sandbox_details or {}
+    claim_name = str(details.get("claimName") or "").strip()
+    namespace = str(details.get("namespace") or SANDBOX_NAMESPACE).strip() or SANDBOX_NAMESPACE
+    if not claim_name:
+        return
+    claim_path = (
+        f"/apis/{K8S_CLAIM_API_GROUP}/{K8S_CLAIM_API_VERSION}/namespaces/"
+        f"{namespace}/{K8S_CLAIM_PLURAL}/{claim_name}"
+    )
+    try:
+        _k8s_request("DELETE", claim_path)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("Failed deleting sandbox claim %s: %s", claim_name, exc)
+
+
+def _resolve_workspace_path(session: WorkspaceSession, relative_path: str) -> Path:
+    candidate = Path(relative_path)
+    if candidate.is_absolute():
+        return candidate
+    base = session.working_directory or session.root_path
+    return (base / relative_path).resolve()
+
+
+def _run_k8s_workspace_command(
+    session: WorkspaceSession,
+    *,
+    command: str,
+    cwd: Path | None = None,
+    timeout_ms: int | None = None,
+) -> dict[str, Any]:
+    details = session.sandbox_details or {}
+    pod_ip = str(details.get("podIp") or "").strip()
+    port = int(details.get("port") or 0)
+    execute_path = str(details.get("executePath") or "").strip().lstrip("/")
+    if not pod_ip or port <= 0 or not execute_path:
+        raise HTTPException(status_code=400, detail="Workspace sandbox session is incomplete")
+    timeout_value = timeout_ms or session.command_timeout_ms or DEFAULT_BROWSER_COMMAND_TIMEOUT_MS
+    logger.info(
+        "k8s_workspace_command timeout_ms=%s session_cmd_timeout=%s resolved=%s",
+        timeout_ms, session.command_timeout_ms, timeout_value,
+    )
+    target_cwd = cwd or session.working_directory or session.root_path
+    wrapped_command = f"cd {_shell_escape(str(target_cwd))} && {command}"
+    payload = {
+        "command": wrapped_command,
+        "timeout": max(int(timeout_value / 1000), 1),
+    }
+    started_at = time.time()
+    dapr_app_id = details.get("daprAppId")
+    if SANDBOX_USE_DAPR_INVOCATION and dapr_app_id:
+        url = f"http://localhost:{DAPR_HTTP_PORT}/v1.0/invoke/{dapr_app_id}.{SANDBOX_NAMESPACE}/method/{execute_path}"
+    else:
+        url = f"http://{pod_ip}:{port}/{execute_path}"
+    response = _http_json(
+        "POST",
+        url,
+        body=payload,
+        timeout_seconds=max(timeout_value / 1000, 1) + 5,
+    )
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    shell_response = _resolve_k8s_shell_command_result(
+        pod_ip=pod_ip,
+        port=port,
+        execute_path=execute_path,
+        response=response,
+        timeout_value=timeout_value,
+    )
+    result = {
+        "stdout": shell_response["stdout"],
+        "stderr": shell_response["stderr"],
+        "exitCode": shell_response["exitCode"],
+        "success": shell_response["success"],
+        "executionTimeMs": int((time.time() - started_at) * 1000),
+        "timedOut": shell_response["timedOut"],
+    }
+    # Publish sandbox command completion event
+    if SANDBOX_USE_DAPR_INVOCATION and DAPR_HTTP_PORT:
+        try:
+            pubsub_url = f"http://localhost:{DAPR_HTTP_PORT}/v1.0/publish/sandbox-pubsub/sandbox.command.completed"
+            event_data = {
+                "sandboxName": details.get("sandboxName"),
+                "podName": details.get("podName"),
+                "daprAppId": details.get("daprAppId"),
+                "exitCode": result.get("exitCode", -1),
+                "executionTimeMs": result.get("executionTimeMs", 0),
+            }
+            _http_json("POST", pubsub_url, body=event_data, timeout_seconds=5)
+        except Exception as e:
+            logger.debug("Failed to publish sandbox event: %s", e)
+    return result
+
+
+def _resolve_k8s_shell_command_result(
+    *,
+    pod_ip: str,
+    port: int,
+    execute_path: str,
+    response: dict[str, Any],
+    timeout_value: int,
+) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    if not isinstance(data, dict):
+        data = {}
+
+    status = str(data.get("status") or "").strip().lower()
+    session_id = str(data.get("session_id") or data.get("sessionId") or "").strip()
+    # Treat "no_change_timeout" as still-running: the sandbox shell executor
+    # kills commands that produce no stdout for ~120s, but the command may
+    # still be alive in the session.  Poll for the real completion status.
+    if status in ("running", "no_change_timeout") and session_id:
+        return _poll_k8s_shell_session(
+            pod_ip=pod_ip,
+            port=port,
+            execute_path=execute_path,
+            session_id=session_id,
+            initial_response=response,
+            timeout_value=timeout_value,
+        )
+
+    return _normalize_k8s_shell_command_response(response)
+
+
+def _normalize_k8s_shell_command_response(
+    response: dict[str, Any],
+    *,
+    fallback_status: str | None = None,
+) -> dict[str, Any]:
+    data = response.get("data") if isinstance(response.get("data"), dict) else response
+    if not isinstance(data, dict):
+        data = {}
+
+    stdout = str(data.get("output") or data.get("stdout") or "")
+    stderr = str(data.get("stderr") or "")
+    status = str(data.get("status") or fallback_status or "").strip().lower()
+
+    exit_code_value = data.get("exit_code")
+    if exit_code_value is None:
+        exit_code_value = data.get("exitCode")
+    if exit_code_value is None and status not in {"running", "no_change_timeout", "hard_timeout", "terminated"}:
+        exit_code_value = 0 if response.get("success") else 1
+
+    exit_code: int | None = None
+    if exit_code_value is not None:
+        exit_code = int(exit_code_value)
+
+    timed_out = status in {"no_change_timeout", "hard_timeout"}
+    if exit_code is None:
+        exit_code = 124 if timed_out else 1
+
+    if timed_out and not stderr:
+        stderr = response.get("message") or "Command timed out"
+    elif status == "terminated" and not stderr and exit_code != 0:
+        stderr = response.get("message") or "Command terminated"
+
+    return {
+        "stdout": stdout,
+        "stderr": stderr,
+        "exitCode": exit_code,
+        "success": exit_code == 0,
+        "timedOut": timed_out,
+    }
+
+
+def _poll_k8s_shell_session(
+    *,
+    pod_ip: str,
+    port: int,
+    execute_path: str,
+    session_id: str,
+    initial_response: dict[str, Any],
+    timeout_value: int,
+) -> dict[str, Any]:
+    base_url = f"http://{pod_ip}:{port}"
+    wait_path = execute_path.rsplit("/", 1)[0] + "/wait"
+    view_path = execute_path.rsplit("/", 1)[0] + "/view"
+    deadline = time.monotonic() + max(timeout_value, 1) / 1000
+    last_status = str(
+        (
+            initial_response.get("data")
+            if isinstance(initial_response.get("data"), dict)
+            else {}
+        ).get("status")
+        or "running"
+    ).strip().lower()
+    view_response: dict[str, Any] = initial_response
+
+    while time.monotonic() < deadline:
+        remaining_seconds = max(int(deadline - time.monotonic()), 1)
+        wait_response = _http_json(
+            "POST",
+            f"{base_url}/{wait_path}",
+            body={"id": session_id, "seconds": min(remaining_seconds, 10)},
+            timeout_seconds=min(remaining_seconds, 10) + 5,
+        )
+        wait_data = wait_response.get("data") if isinstance(wait_response.get("data"), dict) else {}
+        last_status = str(wait_data.get("status") or last_status or "").strip().lower()
+
+        view_response = _http_json(
+            "POST",
+            f"{base_url}/{view_path}",
+            body={"id": session_id},
+            timeout_seconds=10,
+        )
+        view_data = view_response.get("data") if isinstance(view_response.get("data"), dict) else {}
+        view_status = str(view_data.get("status") or "").strip().lower()
+        if view_status:
+            last_status = view_status
+
+        if last_status and last_status not in ("running", "no_change_timeout"):
+            return _normalize_k8s_shell_command_response(view_response, fallback_status=last_status)
+
+        # When status is no_change_timeout, the wait endpoint returns instantly.
+        # Sleep to avoid tight-looping and overwhelming the sandbox.
+        if last_status == "no_change_timeout":
+            time.sleep(5)
+
+    return _normalize_k8s_shell_command_response(
+        {
+            "success": False,
+            "message": f"Command timed out after {max(int(timeout_value / 1000), 1)}s",
+            "data": {
+                **(
+                    view_response.get("data")
+                    if isinstance(view_response.get("data"), dict)
+                    else {}
+                ),
+                "status": "hard_timeout",
+                "session_id": session_id,
+            },
+        },
+        fallback_status="hard_timeout",
+    )
+
+
+def _write_remote_file(session: WorkspaceSession, target_path: Path, content: str) -> None:
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    parent_dir = target_path.parent
+    command = (
+        f"mkdir -p {_shell_escape(str(parent_dir))} && "
+        f"printf %s {_shell_escape(encoded)} | base64 -d > {_shell_escape(str(target_path))}"
+    )
+    result = _run_k8s_workspace_command(session, command=command, cwd=session.root_path)
+    if not result["success"]:
+        raise RuntimeError(result["stderr"] or f"Failed writing {target_path}")
+
+
+def _delete_remote_path(session: WorkspaceSession, target_path: Path) -> None:
+    result = _run_k8s_workspace_command(
+        session,
+        command=f"rm -rf {_shell_escape(str(target_path))}",
+        cwd=session.root_path,
+    )
+    if not result["success"]:
+        raise RuntimeError(result["stderr"] or f"Failed deleting {target_path}")
+
+
+def _resolve_browser_step_url(base_url: str, step: BrowserCaptureStepRequest) -> str:
+    explicit_url = str(step.url or "").strip()
+    if explicit_url:
+        return explicit_url
+    raw_path = str(step.path or "").strip()
+    if not raw_path:
+        return base_url
+    return urllib.parse.urljoin(f"{base_url.rstrip('/')}/", raw_path)
+
+
+def _capture_browser_step_with_retry(
+    page: Any,
+    *,
+    target_url: str,
+    wait_for_selector: str | None,
+    wait_for_text: str | None,
+    delay_ms: int | None,
+    full_page: bool,
+    timeout_ms: int,
+) -> bytes:
+    deadline = time.monotonic() + max(timeout_ms, 1) / 1000
+    # Per-attempt cap: keep retries short so we get many attempts.
+    attempt_timeout_ms = max(
+        1_000,
+        min(timeout_ms, BROWSER_CAPTURE_STEP_ATTEMPT_TIMEOUT_MS),
+    )
+    # Floor: stop retrying when remaining time is below this threshold
+    # rather than issuing a doomed sub-second attempt.
+    min_viable_attempt_ms = max(2_000, attempt_timeout_ms // 2)
+    last_error: Exception | None = None
+    attempt = 0
+    while True:
+        remaining_ms = max(int((deadline - time.monotonic()) * 1000), 0)
+        if remaining_ms < min_viable_attempt_ms:
+            break
+        attempt += 1
+        current_timeout_ms = min(attempt_timeout_ms, remaining_ms)
+        logger.info(
+            "browser_capture attempt=%d target=%s timeout=%dms remaining=%dms",
+            attempt, target_url, current_timeout_ms, remaining_ms,
+        )
+        try:
+            page.goto(
+                target_url,
+                wait_until="domcontentloaded",
+                timeout=current_timeout_ms,
+            )
+            if wait_for_selector:
+                page.wait_for_selector(wait_for_selector, timeout=current_timeout_ms)
+            if wait_for_text:
+                page.wait_for_function(
+                    "(needle) => document.body && document.body.innerText.includes(needle)",
+                    arg=wait_for_text,
+                    timeout=current_timeout_ms,
+                )
+            if delay_ms and delay_ms > 0:
+                page.wait_for_timeout(delay_ms)
+            logger.info("browser_capture attempt=%d succeeded", attempt)
+            return page.screenshot(full_page=full_page, type="png")
+        except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
+            last_error = exc
+            logger.warning(
+                "browser_capture attempt=%d failed: %s (remaining=%dms)",
+                attempt, str(exc)[:200], remaining_ms,
+            )
+            remaining_after = max(int((deadline - time.monotonic()) * 1000), 0)
+            if remaining_after < min_viable_attempt_ms:
+                break
+            page.wait_for_timeout(min(1_000, remaining_after))
+    raise RuntimeError(
+        f"Browser capture timed out after {attempt} attempts "
+        f"(budget={timeout_ms}ms): {last_error or 'deadline exceeded'}"
+    )
+
+
+def _browser_connection_info(session: WorkspaceSession) -> str:
+    details = session.sandbox_details or {}
+    pod_ip = str(details.get("podIp") or "").strip()
+    port = int(details.get("port") or 0)
+    if not pod_ip or port <= 0:
+        raise RuntimeError("Browser workspace session is missing pod connectivity")
+    payload = _http_json("GET", f"http://{pod_ip}:{port}/v1/browser/info", timeout_seconds=10)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    for key in (
+        "debugger_url",
+        "debuggerUrl",
+        "ws_url",
+        "wsUrl",
+        "websocket_url",
+        "websocketUrl",
+        "cdp_url",
+        "cdpUrl",
+    ):
+        value = str(data.get(key) or "").strip()
+        if value:
+            parsed = urllib.parse.urlparse(value)
+            if parsed.hostname in {"127.0.0.1", "localhost", "0.0.0.0"}:
+                return urllib.parse.urlunparse(parsed._replace(netloc=f"{pod_ip}:{parsed.port or port}"))
+            return value
+    raise RuntimeError("Sandbox browser info did not include a CDP endpoint")
+
+
+def _browser_artifact_storage_ref(execution_id: str, artifact_id: str, index: int) -> str:
+    safe_execution_id = re.sub(r"[^a-zA-Z0-9._-]", "-", execution_id)
+    return f"{BROWSER_ARTIFACT_BLOB_PREFIX}/{safe_execution_id}/{artifact_id}/step-{index + 1}.png"
+
+
+def _save_workflow_browser_artifact(
+    *,
+    workflow_execution_id: str,
+    workflow_id: str,
+    node_id: str,
+    workspace_ref: str | None,
+    base_url: str,
+    metadata: dict[str, Any] | None,
+    steps: list[WorkflowBrowserCaptureStep],
+    screenshots: list[bytes],
+    status: str,
+) -> dict[str, Any]:
+    if psycopg is None:
+        raise RuntimeError("psycopg is required for browser artifact persistence")
+    if not BROWSER_ARTIFACT_DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is required for browser artifact persistence")
+    artifact_id = f"bwf_{uuid.uuid4().hex[:12]}"
+    manifest = {
+        "baseUrl": base_url,
+        "startedAt": min(
+            [step.captured_at for step in steps if step.captured_at] or [_utc_now_iso()]
+        ),
+        "completedAt": _utc_now_iso(),
+        "status": status,
+        "steps": [],
+        "metadata": metadata or None,
+    }
+    for index, step in enumerate(steps):
+        screenshot_storage_ref = step.screenshot_storage_ref
+        if step.status == "completed" and screenshot_storage_ref is None and index < len(screenshots):
+            screenshot_storage_ref = _browser_artifact_storage_ref(
+                workflow_execution_id,
+                artifact_id,
+                index,
+            )
+        manifest["steps"].append(
+            {
+                "id": step.id,
+                "label": step.label,
+                "url": step.url,
+                "title": step.title,
+                "waitForSelector": step.wait_for_selector,
+                "waitForText": step.wait_for_text,
+                "delayMs": step.delay_ms,
+                "capturedAt": step.captured_at,
+                "status": step.status,
+                "screenshotStorageRef": screenshot_storage_ref,
+                "error": step.error,
+            }
+        )
+    with psycopg.connect(BROWSER_ARTIFACT_DATABASE_URL) as connection:
+        with connection.cursor() as cursor:
+            screenshot_index = 0
+            for step_record in manifest["steps"]:
+                if step_record.get("status") != "completed":
+                    continue
+                if screenshot_index >= len(screenshots):
+                    break
+                storage_ref = str(step_record.get("screenshotStorageRef") or "").strip()
+                if not storage_ref:
+                    continue
+                cursor.execute(
+                    """
+                    insert into workflow_browser_artifact_blob_payloads (
+                        storage_ref,
+                        payload_text,
+                        content_type
+                    ) values (%s, %s, %s)
+                    on conflict (storage_ref) do update
+                    set payload_text = excluded.payload_text,
+                        content_type = excluded.content_type
+                    """,
+                    (
+                        storage_ref,
+                        base64.b64encode(screenshots[screenshot_index]).decode("ascii"),
+                        "image/png",
+                    ),
+                )
+                screenshot_index += 1
+            cursor.execute(
+                """
+                insert into workflow_browser_artifacts (
+                    id,
+                    workflow_execution_id,
+                    workflow_id,
+                    node_id,
+                    workspace_ref,
+                    artifact_type,
+                    artifact_version,
+                    status,
+                    manifest_json
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    artifact_id,
+                    workflow_execution_id,
+                    workflow_id,
+                    node_id,
+                    workspace_ref,
+                    "capture_flow_v1",
+                    1,
+                    status,
+                    json.dumps(manifest),
+                ),
+            )
+        connection.commit()
+    return {
+        "id": artifact_id,
+        "workflowExecutionId": workflow_execution_id,
+        "workflowId": workflow_id,
+        "nodeId": node_id,
+        "workspaceRef": workspace_ref,
+        "artifactType": "capture_flow_v1",
+        "artifactVersion": 1,
+        "status": status,
+        "manifestJson": manifest,
+    }
 
 
 def _build_agent_name() -> str:
@@ -4962,20 +5897,38 @@ def runtime_introspect() -> dict[str, Any]:
 
 @app.post("/api/workspaces/profile")
 def workspace_profile(request: WorkspaceProfileRequest) -> dict[str, Any]:
-    root_path = _default_workspace_root(request.executionId, request.rootPath)
-    root_path.mkdir(parents=True, exist_ok=True)
-    workspace_ref = f"workspace-{uuid.uuid4().hex[:12]}"
+    sandbox_template = str(request.sandboxTemplate or "").strip() or None
+    root_path = _browser_workspace_root(
+        request.executionId,
+        request.rootPath,
+        sandbox_template,
+    )
     enabled_tools_raw = request.enabledTools
     enabled_tools = enabled_tools_raw if isinstance(enabled_tools_raw, list) else ["read", "write", "edit", "list", "bash"]
-    session = WorkspaceSession(
-        workspace_ref=workspace_ref,
-        execution_id=request.executionId,
-        root_path=root_path,
-        working_directory=root_path,
-        enabled_tools=[str(item) for item in enabled_tools],
-        available_capabilities=_detect_available_capabilities(),
-        repository_signals=_detect_repository_signals(root_path),
-    )
+    if sandbox_template == "aio-browser":
+        session = _create_browser_sandbox_session(
+            execution_id=request.executionId,
+            name=request.name,
+            root_path=root_path,
+            enabled_tools=[str(item) for item in enabled_tools],
+            command_timeout_ms=request.commandTimeoutMs,
+            sandbox_template=sandbox_template,
+        )
+    else:
+        root_path.mkdir(parents=True, exist_ok=True)
+        workspace_ref = f"workspace-{uuid.uuid4().hex[:12]}"
+        session = WorkspaceSession(
+            workspace_ref=workspace_ref,
+            execution_id=request.executionId,
+            root_path=root_path,
+            working_directory=root_path,
+            enabled_tools=[str(item) for item in enabled_tools],
+            backend="local",
+            command_timeout_ms=request.commandTimeoutMs,
+            sandbox_template=sandbox_template,
+            available_capabilities=_detect_available_capabilities(),
+            repository_signals=_detect_repository_signals(root_path),
+        )
     _persist_workspace_session(session)
     return _build_workspace_profile(session)
 
@@ -4985,48 +5938,84 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
     session = _workspace_from_ref(request.workspaceRef)
     target_dir = str(request.targetDir or request.repositoryRepo or "repo").strip() or "repo"
     clone_path = (session.root_path / target_dir).resolve()
-    if clone_path.exists():
-        shutil.rmtree(clone_path)
-    clone_path.parent.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    if request.repositoryToken and request.repositoryUsername:
-        prefix = "https://"
-        if request.repositoryUrl.startswith(prefix):
-            env["GIT_ASKPASS"] = "echo"
-    completed = subprocess.run(
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            request.repositoryBranch,
-            request.repositoryUrl,
-            str(clone_path),
-        ],
-        text=True,
-        capture_output=True,
-        timeout=(request.timeoutMs or 120000) / 1000,
-        check=False,
-        env=env,
+    clone_url = _build_authenticated_git_url(
+        request.repositoryUrl,
+        request.repositoryUsername,
+        request.repositoryToken,
     )
-    if completed.returncode != 0:
-        raise HTTPException(status_code=400, detail=completed.stderr.strip() or "git clone failed")
-    commit_hash = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=clone_path,
-        text=True,
-        capture_output=True,
-        timeout=30,
-        check=False,
-    ).stdout.strip()
-    file_count = len([p for p in clone_path.rglob("*") if p.is_file()])
+    if session.backend == "k8s":
+        completed = _run_k8s_workspace_command(
+            session,
+            command=(
+                "export GIT_TERMINAL_PROMPT=0 && "
+                f"rm -rf {_shell_escape(str(clone_path))} && "
+                f"mkdir -p {_shell_escape(str(clone_path.parent))} && "
+                f"git clone --depth 1 --branch {_shell_escape(request.repositoryBranch)} "
+                f"{_shell_escape(clone_url)} {_shell_escape(str(clone_path))}"
+            ),
+            cwd=session.root_path,
+            timeout_ms=request.timeoutMs or 300_000,
+        )
+        if not completed["success"]:
+            raise HTTPException(status_code=400, detail=completed["stderr"] or "git clone failed")
+        commit_hash_result = _run_k8s_workspace_command(
+            session,
+            command="git rev-parse HEAD",
+            cwd=clone_path,
+            timeout_ms=30_000,
+        )
+        file_count_result = _run_k8s_workspace_command(
+            session,
+            command="find . -type f | wc -l",
+            cwd=clone_path,
+            timeout_ms=30_000,
+        )
+        commit_hash = str(commit_hash_result["stdout"]).strip()
+        try:
+            file_count = int(str(file_count_result["stdout"]).strip() or "0")
+        except ValueError:
+            file_count = 0
+    else:
+        if clone_path.exists():
+            shutil.rmtree(clone_path)
+        clone_path.parent.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["GIT_TERMINAL_PROMPT"] = "0"
+        completed = subprocess.run(
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                request.repositoryBranch,
+                clone_url,
+                str(clone_path),
+            ],
+            text=True,
+            capture_output=True,
+            timeout=(request.timeoutMs or 120000) / 1000,
+            check=False,
+            env=env,
+        )
+        if completed.returncode != 0:
+            raise HTTPException(status_code=400, detail=completed.stderr.strip() or "git clone failed")
+        commit_hash = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=clone_path,
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        ).stdout.strip()
+        file_count = len([p for p in clone_path.rglob("*") if p.is_file()])
     session.repository_url = request.repositoryUrl
     session.repository_owner = request.repositoryOwner
     session.repository_repo = request.repositoryRepo
     session.repository_branch = request.repositoryBranch
     session.working_directory = clone_path.resolve()
-    session.repository_signals = _detect_repository_signals(session.working_directory)
+    if session.backend == "local":
+        session.repository_signals = _detect_repository_signals(session.working_directory)
     _persist_workspace_session(session)
     return {
         "clonePath": str(clone_path),
@@ -5036,7 +6025,7 @@ def workspace_clone(request: WorkspaceCloneRequest) -> dict[str, Any]:
         "fileCount": file_count,
         "workingDirectory": str(session.working_directory),
         "workspaceProfile": _build_workspace_profile(session),
-        **summarize_command_changes(clone_path),
+        **(summarize_command_changes(clone_path) if session.backend == "local" else _empty_change_summary()),
     }
 
 
@@ -5062,6 +6051,27 @@ def workspace_capabilities_validate(
 @app.post("/api/workspaces/command")
 def workspace_command(request: WorkspaceCommandRequest) -> dict[str, Any]:
     session = _workspace_from_ref(request.workspaceRef)
+    if session.backend == "k8s":
+        working_directory = (
+            _resolve_workspace_path(session, request.cwd)
+            if request.cwd
+            else (session.working_directory or session.root_path)
+        )
+        result = _run_k8s_workspace_command(
+            session,
+            command=request.command,
+            cwd=working_directory,
+            timeout_ms=request.timeoutMs,
+        )
+        return {
+            "stdout": result["stdout"],
+            "stderr": result["stderr"],
+            "exitCode": result["exitCode"],
+            "success": result["success"],
+            "executionTimeMs": result["executionTimeMs"],
+            "timedOut": result["timedOut"],
+            "workspaceProfile": _build_workspace_profile(session),
+        }
     context = ToolRuntimeContext.from_workspace_root(
         session.working_directory or session.root_path
     )
@@ -5159,6 +6169,222 @@ def workspace_cleanup(request: WorkspaceCleanupRequest) -> dict[str, Any]:
         _delete_workspace_session(ref)
         cleaned.append(ref)
     return {"cleanedWorkspaceRefs": cleaned}
+
+
+@app.post("/api/browser/materialize-change-artifact")
+def browser_materialize_change_artifact(
+    request: BrowserMaterializeChangeArtifactRequest,
+) -> dict[str, Any]:
+    session = _workspace_from_ref(request.workspaceRef)
+    if session.backend != "k8s":
+        raise HTTPException(
+            status_code=400,
+            detail="Browser materialization requires a k8s-backed browser workspace",
+        )
+    source_execution_id = (
+        str(request.sourceExecutionId or "").strip()
+        or str(request.dbExecutionId or "").strip()
+        or request.executionId
+    )
+    run_ids = (
+        [request.durableInstanceId]
+        if request.durableInstanceId
+        else _load_execution_run_ids(source_execution_id)
+    )
+    selected_run_id: str | None = None
+    selected_artifact: dict[str, Any] | None = None
+    for run_id in run_ids:
+        artifact = _load_run_artifact(run_id)
+        if not isinstance(artifact, dict):
+            continue
+        file_snapshots = artifact.get("fileSnapshots")
+        if isinstance(file_snapshots, list) and file_snapshots:
+            selected_run_id = run_id
+            selected_artifact = artifact
+            break
+    if selected_artifact is None or selected_run_id is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No durable change artifact found for execution {source_execution_id}",
+        )
+
+    restored_paths: list[str] = []
+    deleted_paths: list[str] = []
+    for snapshot in selected_artifact.get("fileSnapshots") or []:
+        if not isinstance(snapshot, dict):
+            continue
+        relative_path = str(snapshot.get("path") or "").strip()
+        if not relative_path:
+            continue
+        target_path = _resolve_workspace_path(session, relative_path)
+        status = str(snapshot.get("status") or "M").strip().upper()
+        if status == "D":
+            _delete_remote_path(session, target_path)
+            deleted_paths.append(str(target_path))
+            continue
+        new_content = snapshot.get("newContent")
+        if not isinstance(new_content, str):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Binary file materialization is not supported for {relative_path}",
+            )
+        _write_remote_file(session, target_path, new_content)
+        restored_paths.append(str(target_path))
+        old_path = str(snapshot.get("oldPath") or "").strip()
+        if old_path and old_path != relative_path:
+            old_target_path = _resolve_workspace_path(session, old_path)
+            _delete_remote_path(session, old_target_path)
+            deleted_paths.append(str(old_target_path))
+
+    return {
+        "workspaceRef": session.workspace_ref,
+        "changeSetId": str(selected_artifact.get("changeSetId") or f"{selected_run_id}-patch"),
+        "operation": "dapr-agent-run",
+        "restoredPaths": restored_paths,
+        "deletedPaths": deleted_paths,
+        "sandbox": {
+            "backend": session.backend,
+            "rootPath": str(session.root_path),
+            "workingDirectory": str(session.working_directory or session.root_path),
+            "details": dict(session.sandbox_details or {}),
+        },
+    }
+
+
+@app.post("/api/browser/capture-flow")
+def browser_capture_flow(request: BrowserCaptureFlowRequest) -> dict[str, Any]:
+    if sync_playwright is None:
+        raise HTTPException(status_code=500, detail="playwright is required for browser capture")
+    session = _workspace_from_ref(request.workspaceRef)
+    if session.backend != "k8s":
+        raise HTTPException(
+            status_code=400,
+            detail="Browser capture requires a k8s-backed browser workspace",
+        )
+    if not request.steps:
+        raise HTTPException(status_code=400, detail="steps must be a non-empty array")
+    cdp_url = _browser_connection_info(session)
+    timeout_ms = request.timeoutMs or DEFAULT_BROWSER_CAPTURE_TIMEOUT_MS
+    logger.info(
+        "browser_capture_flow workspace=%s steps=%d timeout=%dms cdp=%s",
+        request.workspaceRef, len(request.steps), timeout_ms, cdp_url[:60],
+    )
+    screenshots: list[bytes] = []
+    step_records: list[WorkflowBrowserCaptureStep] = []
+    overall_status = "completed"
+    logger.info(
+        "Starting browser capture flow for execution=%s workspace=%s steps=%s timeout_ms=%s",
+        request.dbExecutionId or request.executionId,
+        request.workspaceRef,
+        len(request.steps),
+        timeout_ms,
+    )
+    try:
+        with sync_playwright() as playwright:
+            logger.info("Connecting to browser CDP for workspace=%s", request.workspaceRef)
+            browser = playwright.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
+            try:
+                context = browser.contexts[0] if browser.contexts else browser.new_context()
+                page = context.pages[0] if context.pages else context.new_page()
+                for index, step in enumerate(request.steps):
+                    step_id = str(step.id or f"step-{index + 1}").strip() or f"step-{index + 1}"
+                    label = str(step.label or f"Step {index + 1}").strip() or f"Step {index + 1}"
+                    target_url = _resolve_browser_step_url(request.baseUrl, step)
+                    logger.info(
+                        "Capturing browser step id=%s label=%s url=%s workspace=%s",
+                        step_id,
+                        label,
+                        target_url,
+                        request.workspaceRef,
+                    )
+                    try:
+                        png = _capture_browser_step_with_retry(
+                            page,
+                            target_url=target_url,
+                            wait_for_selector=step.waitForSelector,
+                            wait_for_text=step.waitForText,
+                            delay_ms=step.delayMs,
+                            full_page=(step.fullPage is not False),
+                            timeout_ms=timeout_ms,
+                        )
+                        screenshots.append(png)
+                        step_records.append(
+                            WorkflowBrowserCaptureStep(
+                                id=step_id,
+                                label=label,
+                                url=page.url,
+                                title=page.title(),
+                                wait_for_selector=step.waitForSelector,
+                                wait_for_text=step.waitForText,
+                                delay_ms=step.delayMs,
+                                captured_at=_utc_now_iso(),
+                                status="completed",
+                            )
+                        )
+                    except (PlaywrightTimeoutError, PlaywrightError, Exception) as exc:
+                        logger.warning(
+                            "Browser capture step failed id=%s label=%s workspace=%s error=%s",
+                            step_id,
+                            label,
+                            request.workspaceRef,
+                            exc,
+                        )
+                        overall_status = "partial" if screenshots else "failed"
+                        step_records.append(
+                            WorkflowBrowserCaptureStep(
+                                id=step_id,
+                                label=label,
+                                url=target_url,
+                                wait_for_selector=step.waitForSelector,
+                                wait_for_text=step.waitForText,
+                                delay_ms=step.delayMs,
+                                status="failed",
+                                error=str(exc),
+                            )
+                        )
+                        break
+            finally:
+                logger.info("Closing browser for workspace=%s", request.workspaceRef)
+                browser.close()
+    except Exception as exc:
+        logger.exception(
+            "Browser capture flow crashed for execution=%s workspace=%s",
+            request.dbExecutionId or request.executionId,
+            request.workspaceRef,
+        )
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    artifact = _save_workflow_browser_artifact(
+        workflow_execution_id=str(request.dbExecutionId or request.executionId),
+        workflow_id=request.workflowId,
+        node_id=request.nodeId,
+        workspace_ref=session.workspace_ref,
+        base_url=request.baseUrl,
+        metadata=request.metadata,
+        steps=step_records,
+        screenshots=screenshots,
+        status=overall_status,
+    )
+    logger.info(
+        "Completed browser capture flow for execution=%s workspace=%s status=%s steps=%s artifact_id=%s",
+        request.dbExecutionId or request.executionId,
+        request.workspaceRef,
+        overall_status,
+        len(step_records),
+        artifact["id"],
+    )
+    return {
+        "artifact": artifact,
+        "artifactId": artifact["id"],
+        "stepCount": len(step_records),
+        "status": overall_status,
+        "sandbox": {
+            "backend": session.backend,
+            "rootPath": str(session.root_path),
+            "workingDirectory": str(session.working_directory or session.root_path),
+            "details": dict(session.sandbox_details or {}),
+        },
+    }
 
 
 @app.get("/api/workspaces/executions/{execution_id}/changes")

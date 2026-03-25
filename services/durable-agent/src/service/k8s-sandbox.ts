@@ -23,6 +23,10 @@ const K8S_HOST =
 	process.env.KUBERNETES_SERVICE_HOST || "kubernetes.default.svc";
 const K8S_PORT = process.env.KUBERNETES_SERVICE_PORT || "443";
 
+const SANDBOX_USE_DAPR = process.env.SANDBOX_USE_DAPR_INVOCATION === "true";
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
+const SANDBOX_NAMESPACE = process.env.SANDBOX_NAMESPACE || "agent-sandbox";
+
 // CRD API paths
 const CLAIM_API_GROUP = "extensions.agents.x-k8s.io";
 const CLAIM_API_VERSION = "v1alpha1";
@@ -122,6 +126,7 @@ export interface K8sSandboxPersistedState {
 	podIp: string;
 	namespace: string;
 	templateName: string;
+	daprAppId?: string;  // Dapr app-id for service invocation (set by webhook)
 }
 
 // ── K8s API Helpers ───────────────────────────────────────────
@@ -223,6 +228,7 @@ export class K8sSandbox {
 	private sandboxName: string | null = null;
 	private podName: string | null = null;
 	private podIp: string | null = null;
+	private daprAppId: string | undefined = undefined;
 	private loggedImageWarning = false;
 	private _destroying = false;
 	private _reprovisioning = false;
@@ -291,6 +297,7 @@ export class K8sSandbox {
 			podIp: this.podIp,
 			namespace: this.sandboxNamespace,
 			templateName: this.templateName,
+			daprAppId: this.daprAppId,
 		};
 	}
 
@@ -342,6 +349,7 @@ export class K8sSandbox {
 		sandbox.sandboxName = persisted.sandboxName;
 		sandbox.podName = persisted.podName;
 		sandbox.podIp = persisted.podIp;
+		sandbox.daprAppId = persisted.daprAppId;
 
 		// Verify the pod is still alive and reachable
 		const healthy = await sandbox.waitForHttpReady(15_000);
@@ -393,6 +401,7 @@ export class K8sSandbox {
 		const podEndpoint = await this.getPodEndpoint(sandboxName);
 		this.podName = podEndpoint.podName;
 		this.podIp = podEndpoint.podIp;
+		this.daprAppId = podEndpoint.daprAppId;
 
 		// Verify HTTP server is actually accepting connections before declaring ready
 		const ready = await this.waitForHttpReady(30_000);
@@ -400,6 +409,22 @@ export class K8sSandbox {
 			throw new Error(
 				`Sandbox pod ${this.podName} (${this.podIp}) HTTP server not ready after provisioning`,
 			);
+		}
+
+		// Wait for Dapr sidecar to be ready if using Dapr service invocation
+		if (SANDBOX_USE_DAPR) {
+			const daprHealthUrl = `http://${this.podIp}:3500/v1.0/healthz`;
+			const daprDeadline = Date.now() + 60_000;
+			while (Date.now() < daprDeadline) {
+				try {
+					const resp = await fetch(daprHealthUrl, { signal: AbortSignal.timeout(5000) });
+					if (resp.ok) {
+						console.log(`[k8s-sandbox] Dapr sidecar ready for ${this.daprAppId}`);
+						break;
+					}
+				} catch {}
+				await new Promise(r => setTimeout(r, 1000));
+			}
 		}
 
 		console.log(
@@ -582,7 +607,10 @@ export class K8sSandbox {
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
 
 		try {
-			const res = await fetch(`http://${this.podIp}:${this.config.port}/${this.config.executePath}`, {
+			const url = SANDBOX_USE_DAPR && this.daprAppId
+				? `http://localhost:${DAPR_HTTP_PORT}/v1.0/invoke/${this.daprAppId}.${SANDBOX_NAMESPACE}/method/${this.config.executePath}`
+				: `http://${this.podIp}:${this.config.port}/${this.config.executePath}`;
+			const res = await fetch(url, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(this.config.executeBodyFn(command, timeoutMs, env)),
@@ -671,7 +699,7 @@ export class K8sSandbox {
 
 	private async getPodEndpoint(
 		sandboxName: string,
-	): Promise<{ podName: string; podIp: string }> {
+	): Promise<{ podName: string; podIp: string; daprAppId?: string }> {
 		const start = Date.now();
 		while (Date.now() - start < this._provisionTimeout) {
 			try {
@@ -728,14 +756,15 @@ export class K8sSandbox {
 
 	private async getPodEndpointByName(
 		podName: string,
-	): Promise<{ podName: string; podIp: string } | null> {
+	): Promise<{ podName: string; podIp: string; daprAppId?: string } | null> {
 		try {
 			const podPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods/${podName}`;
 			const pod = await k8sRequest("GET", podPath);
 			const ip = pod.status?.podIP;
 			if (ip && pod.status?.phase === "Running") {
+				const daprAppId = pod?.metadata?.annotations?.["dapr.io/app-id"];
 				console.log(`[k8s-sandbox] Resolved pod: ${podName} → ${ip}`);
-				return { podName, podIp: ip };
+				return { podName, podIp: ip, daprAppId };
 			}
 		} catch {
 			// Pod not found or not ready
@@ -745,7 +774,7 @@ export class K8sSandbox {
 
 	private async getPodEndpointBySelector(
 		selector: string,
-	): Promise<{ podName: string; podIp: string } | null> {
+	): Promise<{ podName: string; podIp: string; daprAppId?: string } | null> {
 		try {
 			const listPath = `/api/v1/namespaces/${this.sandboxNamespace}/pods?labelSelector=${encodeURIComponent(selector)}`;
 			const podList = await k8sRequest("GET", listPath);
@@ -753,10 +782,11 @@ export class K8sSandbox {
 				const ip = pod.status?.podIP;
 				if (ip && pod.status?.phase === "Running") {
 					const name = pod.metadata?.name || "unknown";
+					const daprAppId = pod?.metadata?.annotations?.["dapr.io/app-id"];
 					console.log(
 						`[k8s-sandbox] Resolved pod via selector: ${name} → ${ip}`,
 					);
-					return { podName: name, podIp: ip };
+					return { podName: name, podIp: ip, daprAppId };
 				}
 			}
 		} catch {
