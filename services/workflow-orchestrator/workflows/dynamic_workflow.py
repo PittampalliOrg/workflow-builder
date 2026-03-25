@@ -540,7 +540,7 @@ def _infer_coding_agent_capability_defaults(
         or template_slug == "coding-agent"
         or "coding agent" in agent_name
     ):
-        return (["git", "bash"], "node-pnpm", "node-pnpm")
+        return (["git", "bash"], "node-npm", "node-npm")
     return ([], None, None)
 
 
@@ -825,6 +825,8 @@ def _to_compact_agent_result(
         "verification": payload.get("verification"),
         "traceId": payload.get("traceId"),
         "agentProgress": payload.get("agentProgress"),
+        "sandboxName": payload.get("sandboxName"),
+        "provider": payload.get("provider"),
     }
 
 
