@@ -3267,6 +3267,19 @@ def process_agent_child_workflow(
             )
         if activity_input.get("workspaceProfile") is not None:
             child_input["workspaceProfile"] = activity_input.get("workspaceProfile")
+        if is_dapr_agent:
+            for _field in (
+                "toolBackend", "engine", "sandboxName", "sandboxRepoPath",
+                "provider", "model", "maxTurns", "timeoutMinutes",
+                "stopCondition", "profile", "verifyCommands",
+                "toolPolicy", "writePolicy", "shellPolicy",
+                "expectedOutput", "instructionsOverlay",
+                "contextPolicyPreset", "loopPolicy",
+                "planningThreadId", "executionThreadId",
+                "agentProfileTemplateId",
+            ):
+                if activity_input.get(_field) is not None:
+                    child_input[_field] = activity_input[_field]
         if is_ms_agent:
             child_input["workflowTemplateId"] = (
                 resolved_config.get("workflowTemplateId") or "travel-planner"
