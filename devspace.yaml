@@ -190,7 +190,8 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
   OPENSHELL_DURABLE_AGENT_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
+    # Uses the production image (has private openshell SDK pre-installed)
+    default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
 
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
   ARGO_APPS:
@@ -1153,13 +1154,12 @@ dev:
       - |
         set -e
         echo "=== DevSpace Development Container (OpenShell Durable Agent) ==="
-        echo "Using source tree: ${OPENSHELL_DURABLE_AGENT_SOURCE_PATH}"
+        echo "Using production image with pre-installed deps, syncing source only."
         cd /app
 
-        python -m venv .venv
-        . .venv/bin/activate
-        pip install --upgrade pip
-        pip install -e .
+        # Re-install in editable mode to pick up synced source changes
+        # (openshell + dapr-agents already installed in the image)
+        pip install --no-deps -e . 2>/dev/null || true
 
         exec python -m src.dapr_durable_agent
     sync:
@@ -1176,7 +1176,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+                - "cd /app && pip install --no-deps -e . 2>/dev/null || true"
               failOnError: false
               onChange:
                 - pyproject.toml
