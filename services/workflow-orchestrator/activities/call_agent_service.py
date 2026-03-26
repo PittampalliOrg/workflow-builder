@@ -586,12 +586,16 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
             ).strip()
             if run_id:
                 attrs["agent.workflow_id"] = run_id
-            sandbox_name = str(
+            sandbox_name_raw = str(
                 input_data.get("sandboxName")
                 or input_data.get("workspaceRef")
                 or run_id
                 or "openshell-run"
             ).strip()
+            # OpenShell appends ~30 chars; keep ours <=30 for RFC 1123.
+            sandbox_name = re.sub(
+                r"[^a-z0-9-]", "-", sandbox_name_raw.lower()
+            )[:30].rstrip("-") or "sandbox"
             provider = str(input_data.get("provider") or "").strip() or None
             command = _build_openshell_command(input_data)
             otel_headers = _otel_headers(otel)

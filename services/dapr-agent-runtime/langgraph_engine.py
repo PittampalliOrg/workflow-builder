@@ -15,6 +15,16 @@ import uuid
 
 import msgpack
 
+# OpenShell appends ~30 chars of suffix to sandbox names; keep ours short.
+_MAX_SANDBOX_NAME_LEN = 30
+
+
+def _sanitize_sandbox_name(name: str, *, max_len: int = _MAX_SANDBOX_NAME_LEN) -> str:
+    """Lowercase, replace non-alnum with '-', truncate, strip trailing '-'."""
+    name = re.sub(r"[^a-z0-9-]", "-", name.lower())
+    name = name[:max_len].rstrip("-")
+    return name or "sandbox"
+
 from tools import (
     ToolRuntimeContext,
     _resolve_tool_invocation,
@@ -274,7 +284,7 @@ class OpenShellToolContext:
         sandbox_name = str(config.get("sandboxName") or "").strip() or f"openshell-lg-{uuid.uuid4().hex[:12]}"
         repo_path = str(config.get("repoPath") or "").strip() or "/sandbox/repo"
         return cls(
-            sandbox_name=sandbox_name[:63],
+            sandbox_name=_sanitize_sandbox_name(sandbox_name),
             repo_path=repo_path,
             provider=str(config.get("provider") or "").strip() or None,
             repo_url=str(config.get("repoUrl") or "").strip() or None,

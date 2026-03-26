@@ -320,6 +320,20 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# OpenShell appends a suffix (~30 chars) to sandbox names when creating K8s
+# Sandbox resources.  We must keep our portion short enough that the final
+# name stays within the 63-char RFC 1123 subdomain limit **and** ends with
+# an alphanumeric character.
+_MAX_SANDBOX_NAME_LEN = 30
+
+
+def _sanitize_sandbox_name(name: str, *, max_len: int = _MAX_SANDBOX_NAME_LEN) -> str:
+    """Lowercase, replace non-alnum with '-', truncate, strip trailing '-'."""
+    name = re.sub(r"[^a-z0-9-]", "-", name.lower())
+    name = name[:max_len].rstrip("-")
+    return name or "sandbox"
+
+
 PORT = int(os.environ.get("PORT", "8082"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 DEFAULT_MODEL = os.environ.get("OPENAI_CHAT_MODEL_ID", "gpt-5.4")
@@ -5194,7 +5208,7 @@ def _build_run_context(
     tool_backend = _resolve_tool_backend(request)
     sandbox_name = str(request.sandboxName or "").strip() or None
     if not sandbox_name:
-        sandbox_name = f"openshell-lg-{instance_id}".lower().replace("_", "-")[:63]
+        sandbox_name = _sanitize_sandbox_name(f"openshell-lg-{instance_id}")
     sandbox_repo_path = str(request.sandboxRepoPath or "").strip() or None
     if tool_backend == "openshell" and not sandbox_repo_path:
         sandbox_repo_path = "/sandbox/repo"
@@ -6487,7 +6501,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     )
 
     context = OpenShellToolContext(
-        sandbox_name=request.sandboxName[:63],
+        sandbox_name=_sanitize_sandbox_name(request.sandboxName),
         repo_path=request.repoPath,
     )
 
@@ -6551,7 +6565,37 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
     output_dir = "/tmp/wf-screenshots"
 
-    # Playwright browsers are pre-installed in the sandbox image at /opt/pw-browsers.
+    # --- Step 4: Ensure Playwright is available in the sandbox ---
+    # The coding sandbox may not have Playwright pre-installed (only the openshell-sandbox
+    # image ships with it).  Detect and install if needed so capture can proceed.
+    pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
+    try:
+        pw_check = context.run_command(
+            "python3 -c 'import playwright; print(\"pw-ok\")' 2>&1",
+            timeout_seconds=15,
+        )
+        pw_available = "pw-ok" in str(pw_check.get("stdout") or "")
+    except Exception:
+        pw_available = False
+
+    if not pw_available:
+        logger.info("browser_validate: playwright not found in sandbox, installing...")
+        try:
+            install_pw = context.run_command(
+                "pip install --break-system-packages playwright 2>&1 "
+                "&& PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers playwright install --with-deps chromium 2>&1 "
+                "&& chmod -R a+rX /opt/pw-browsers",
+                timeout_seconds=300,
+            )
+            pw_install_exit = install_pw.get("exitCode", install_pw.get("exit_code", -1))
+            if pw_install_exit != 0:
+                pw_stderr = str(install_pw.get("stdout") or install_pw.get("stderr") or "")[:500]
+                logger.warning("browser_validate playwright install failed exit=%s: %s", pw_install_exit, pw_stderr)
+            else:
+                logger.info("browser_validate: playwright installed successfully")
+        except Exception as exc:
+            logger.warning("browser_validate playwright install error: %s", str(exc)[:200])
+
     # Upload the capture script via base64 encoding to avoid heredoc quoting issues
     # with OpenShell's command API.
     encoded_script = base64.b64encode(_INLINE_CAPTURE_SCRIPT.strip().encode()).decode()
@@ -6561,7 +6605,6 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("browser_validate upload capture script failed: %s", str(exc)[:200])
 
-    pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
     capture_command = (
         f"{pw_env} python3 /sandbox/capture_screenshots.py "
         f"--base-url {shlex.quote(request.baseUrl)} "
@@ -6577,13 +6620,15 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     try:
         capture_result = context.run_command(xvfb_capture, timeout_seconds=min(timeout_seconds, 300))
         capture_stdout = str(capture_result.get("stdout") or "").strip()
+        capture_stderr = str(capture_result.get("stderr") or "").strip()
         capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
 
         if capture_exit != 0:
             # Fallback: try without xvfb
-            logger.info("browser_validate xvfb capture failed, trying headless directly")
+            logger.info("browser_validate xvfb capture failed (exit=%s stderr=%s), trying headless directly", capture_exit, capture_stderr[:200])
             capture_result = context.run_command(capture_command, timeout_seconds=min(timeout_seconds, 300))
             capture_stdout = str(capture_result.get("stdout") or "").strip()
+            capture_stderr = str(capture_result.get("stderr") or "").strip()
             capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
 
         if capture_exit == 0 and "CAPTURE_OK" in capture_stdout:
@@ -6649,7 +6694,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                 overall_status = "failed"
         else:
             overall_status = "failed"
-            logger.warning("browser_validate capture failed exit=%s stdout=%s", capture_exit, capture_stdout[:300])
+            logger.warning("browser_validate capture failed exit=%s stdout=%s stderr=%s", capture_exit, capture_stdout[:300], capture_stderr[:300])
     except Exception as exc:
         logger.exception("browser_validate capture crashed: sandbox=%s", request.sandboxName)
         overall_status = "failed"

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
 	Workflow,
 	Activity,
@@ -17,8 +17,15 @@ import {
 	Library,
 	SlidersHorizontal,
 	Bug,
+	Bell,
+	BellOff,
+	Volume2,
+	VolumeX,
 } from "lucide-react";
+import { useAtom } from "jotai";
 import { SidebarUserNav } from "@/components/sidebar-user-nav";
+import { audioMutedAtom } from "@/lib/notifications/atoms";
+import { requestPermission, isPermissionGranted } from "@/lib/notifications/browser-notification";
 import {
 	Sidebar,
 	SidebarContent,
@@ -63,6 +70,12 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 	const pathname = usePathname();
 	const { setOpenMobile } = useSidebar();
 	const [workflowsOpen, setWorkflowsOpen] = useState(true);
+	const [audioMuted, setAudioMuted] = useAtom(audioMutedAtom);
+	const [notifGranted, setNotifGranted] = useState(false);
+
+	useEffect(() => {
+		setNotifGranted(isPermissionGranted());
+	}, []);
 
 	const isActiveLink = (href: string) => {
 		if (href === "/workflows") {
@@ -123,7 +136,32 @@ export function AppSidebar({ user }: { user: User | undefined }) {
 				</Collapsible>
 			</SidebarContent>
 
-			<SidebarFooter>{user && <SidebarUserNav user={user} />}</SidebarFooter>
+			<SidebarFooter>
+				<div className="flex items-center gap-1 px-2 pb-1">
+					<button
+						type="button"
+						onClick={async () => {
+							if (!isPermissionGranted()) {
+								const granted = await requestPermission();
+								setNotifGranted(granted);
+							}
+						}}
+						className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+						title={notifGranted ? "Notifications enabled" : "Enable notifications"}
+					>
+						{notifGranted ? <Bell className="h-4 w-4" /> : <BellOff className="h-4 w-4" />}
+					</button>
+					<button
+						type="button"
+						onClick={() => setAudioMuted(!audioMuted)}
+						className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+						title={audioMuted ? "Unmute sounds" : "Mute sounds"}
+					>
+						{audioMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+					</button>
+				</div>
+				{user && <SidebarUserNav user={user} />}
+			</SidebarFooter>
 			<SidebarRail />
 		</Sidebar>
 	);

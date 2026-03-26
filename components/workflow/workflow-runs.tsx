@@ -20,6 +20,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AgentStreamInline } from "@/components/workflow-runs/agent-stream-inline";
 import { api } from "@/lib/api-client";
+import { dispatchNotification } from "@/lib/notifications/dispatch";
+import { notifiedSetAtom, audioMutedAtom } from "@/lib/notifications/atoms";
 import {
 	OUTPUT_DISPLAY_CONFIGS,
 	type OutputDisplayConfig,
@@ -831,6 +833,10 @@ export function WorkflowRuns({
 	const setApprovalExecutionId = useSetAtom(approvalExecutionIdAtom);
 	const setDaprPhase = useSetAtom(daprPhaseAtom);
 	const setApprovalResponded = useSetAtom(approvalRespondedAtom);
+	const [notifiedSet, setNotifiedSet] = useAtom(notifiedSetAtom);
+	const audioMuted = useAtomValue(audioMutedAtom);
+	const notifiedSetRef = useRef(notifiedSet);
+	notifiedSetRef.current = notifiedSet;
 	const approvalRespondedRef = useRef(false);
 	const approvalExecutionIdRef = useRef<string | null>(null);
 	const approvalEventNameRef = useRef<string | null>(null);
@@ -1115,6 +1121,16 @@ export function WorkflowRuns({
 								setApprovalExecutionId(incomingExecutionId);
 								approvalExecutionIdRef.current = incomingExecutionId;
 								approvalEventNameRef.current = incomingEventName;
+
+								// Fire browser notifications for approval
+								const notifKey = `${incomingExecutionId}:approval`;
+								if (!notifiedSetRef.current.has(notifKey)) {
+									dispatchNotification("approval", {
+										executionId: incomingExecutionId,
+										workflowId: currentWorkflowId ?? undefined,
+									}, { muted: audioMuted });
+									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+								}
 							}
 						} else if (statusResponse.phase !== "awaiting_approval") {
 							// Only clear on definitive phase transitions, not transient polls
@@ -1139,6 +1155,27 @@ export function WorkflowRuns({
 								approvalExecutionIdRef.current = null;
 								approvalEventNameRef.current = null;
 								approvalRespondedRef.current = false;
+							}
+
+							// Fire browser notifications for completion/error
+							if (statusResponse.status === "completed" || statusResponse.phase === "completed") {
+								const notifKey = `${execution.id}:completed`;
+								if (!notifiedSetRef.current.has(notifKey)) {
+									dispatchNotification("completed", {
+										executionId: execution.id,
+										workflowId: currentWorkflowId ?? undefined,
+									}, { muted: audioMuted });
+									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+								}
+							} else if (statusResponse.status === "error" || statusResponse.phase === "failed") {
+								const notifKey = `${execution.id}:error`;
+								if (!notifiedSetRef.current.has(notifKey)) {
+									dispatchNotification("error", {
+										executionId: execution.id,
+										workflowId: currentWorkflowId ?? undefined,
+									}, { muted: audioMuted });
+									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+								}
 							}
 						}
 

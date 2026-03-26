@@ -13,7 +13,7 @@
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on durable-agent + Next.js UI
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every in-repo workflow service
-#   devspace dev       # Raw DevSpace entrypoint (does not pause ArgoCD)
+#   devspace dev       # Raw DevSpace entrypoint (pauses ArgoCD via pipeline)
 #   devspace enter     # Shell into container
 #   devspace purge     # Clean up devspace resources
 #
@@ -122,9 +122,6 @@ vars:
     default: "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}"
 
   DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_AI_CHATBOT_IMAGE_REPOSITORY:
     command: |
@@ -132,9 +129,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}"
   AI_CHATBOT_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${AI_CHATBOT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_DAPR_AGENT_IMAGE_REPOSITORY:
     command: |
@@ -156,9 +150,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}"
   FUNCTION_ROUTER_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${FUNCTION_ROUTER_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FUNCTION_ROUTER_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_DURABLE_AGENT_IMAGE_REPOSITORY:
     command: |
@@ -166,9 +157,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${DURABLE_AGENT_APP_NAME}"
   DURABLE_AGENT_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${DURABLE_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DURABLE_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_FN_ACTIVEPIECES_IMAGE_REPOSITORY:
     command: |
@@ -176,9 +164,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FN_ACTIVEPIECES_APP_NAME}"
   FN_ACTIVEPIECES_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${FN_ACTIVEPIECES_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FN_ACTIVEPIECES_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_FN_SYSTEM_IMAGE_REPOSITORY:
     command: |
@@ -186,9 +171,6 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${FN_SYSTEM_APP_NAME}"
   FN_SYSTEM_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${FN_SYSTEM_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${FN_SYSTEM_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   CURRENT_MCP_GATEWAY_IMAGE_REPOSITORY:
     command: |
@@ -196,10 +178,14 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${MCP_GATEWAY_APP_NAME}"
   MCP_GATEWAY_DEV_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${MCP_GATEWAY_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${MCP_GATEWAY_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#/[^/]*:[^/:]*$#/nodejs-22-devspace#'
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
+
+  # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
+  ARGO_APPS:
+    default: "workflow-builder workflow-orchestrator function-router"
+  # Production deployments to wait for on cleanup (space-separated, profile-patched)
+  PRODUCTION_DEPLOYMENTS:
+    default: "workflow-builder workflow-orchestrator function-router"
 
 # ============================================================================
 # Development Configuration
@@ -246,7 +232,7 @@ dev:
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
         else
           echo "Dependencies up to date (cached)"
@@ -279,7 +265,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
+                - cd /app && pnpm install --no-frozen-lockfile
               failOnError: true
               onChange:
                 - package.json
@@ -303,6 +289,7 @@ dev:
           - .idea/
           - .vscode/
           - .cursor/
+          - .claude/
           # Test files
           - tests/
           - playwright-report/
@@ -457,7 +444,7 @@ dev:
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
         else
           echo "Dependencies up to date (cached)"
@@ -481,7 +468,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
+                - cd /app && pnpm install --no-frozen-lockfile
               failOnError: true
               onChange:
                 - package.json
@@ -503,6 +490,7 @@ dev:
           - .idea/
           - .vscode/
           - .cursor/
+          - .claude/
           - tests/
           - playwright-report/
           - test-results/
@@ -652,6 +640,7 @@ dev:
           - __pycache__/
           - .pytest_cache/
           - "*.pyc"
+          - .claude/
     patches:
       - op: remove
         path: spec.containers.name=${DAPR_AGENT_APP_NAME}.livenessProbe
@@ -742,6 +731,7 @@ dev:
           - __pycache__/
           - .pytest_cache/
           - "*.pyc"
+          - .claude/
     patches:
       - op: remove
         path: spec.containers.name=${ORCHESTRATOR_APP_NAME}.livenessProbe
@@ -894,7 +884,7 @@ dev:
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
         else
           echo "Dependencies up to date (cached)"
@@ -918,7 +908,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
+                - cd /app && pnpm install --no-frozen-lockfile
               failOnError: true
               onChange:
                 - package.json
@@ -984,7 +974,7 @@ dev:
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
         else
           echo "Dependencies up to date (cached)"
@@ -1008,7 +998,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
+                - cd /app && pnpm install --no-frozen-lockfile
               failOnError: true
               onChange:
                 - package.json
@@ -1072,7 +1062,7 @@ dev:
         if [ ! -d "node_modules" ] || [ ! -f "node_modules/.pnpm-lock-hash" ] || \
            [ "$(cat node_modules/.pnpm-lock-hash 2>/dev/null)" != "$(md5sum pnpm-lock.yaml | cut -d' ' -f1)" ]; then
           echo "Installing dependencies..."
-          pnpm install --frozen-lockfile
+          pnpm install --no-frozen-lockfile
           md5sum pnpm-lock.yaml | cut -d' ' -f1 > node_modules/.pnpm-lock-hash
         else
           echo "Dependencies up to date (cached)"
@@ -1096,7 +1086,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - cd /app && pnpm install --frozen-lockfile
+                - cd /app && pnpm install --no-frozen-lockfile
               failOnError: true
               onChange:
                 - package.json
@@ -1131,12 +1121,110 @@ dev:
       - name: NODE_ENV
         value: development
 
+# ============================================================================
+# Pipelines — override the default `dev` pipeline to manage ArgoCD
+# ============================================================================
+pipelines:
+  dev:
+    run: |
+      ARGO_NS="argocd"
+      WL_NS="workflow-builder"
+      SKIP_ANNOTATION="argocd.argoproj.io/skip-reconcile"
+      REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
+
+      # ── Pause ArgoCD for active apps ──
+      for app in ${ARGO_APPS}; do
+        if kubectl get application "$app" --namespace "$ARGO_NS" >/dev/null 2>&1; then
+          echo "==> Pausing ArgoCD reconciliation for $app"
+          kubectl annotate application "$app" \
+            --namespace "$ARGO_NS" \
+            "${SKIP_ANNOTATION}=true" \
+            --overwrite >/dev/null 2>&1 || true
+        fi
+      done
+      sleep 3
+
+      # ── Cleanup on exit (Ctrl+C, error, or clean exit) ──
+      cleanup() {
+        echo ""
+        echo "==> Resuming ArgoCD reconciliation"
+        for app in ${ARGO_APPS}; do
+          kubectl annotate application "$app" \
+            --namespace "$ARGO_NS" \
+            "${SKIP_ANNOTATION}-" >/dev/null 2>&1 || true
+          kubectl annotate application "$app" \
+            --namespace "$ARGO_NS" \
+            "${REFRESH_ANNOTATION}=hard" \
+            --overwrite >/dev/null 2>&1 || true
+        done
+        echo "==> Waiting for production deployments to recover"
+        for dep in ${PRODUCTION_DEPLOYMENTS}; do
+          kubectl rollout status \
+            --namespace "$WL_NS" \
+            "deployment/${dep}" \
+            --timeout=180s >/dev/null 2>&1 || true
+        done
+      }
+      trap cleanup EXIT
+
+      # ── Standard DevSpace dev pipeline ──
+      run_dependencies --all
+      ensure_pull_secrets --all
+      build_images --all
+      create_deployments --all
+      start_dev --all
+
+# ============================================================================
+# Hooks — safety net for `devspace purge`
+# ============================================================================
+hooks:
+  - name: resume-argocd-after-purge
+    events:
+      - after:purge
+    command: sh
+    args:
+      - -c
+      - |
+        ARGO_NS="argocd"
+        SKIP="argocd.argoproj.io/skip-reconcile"
+        REFRESH="argocd.argoproj.io/refresh"
+        for app in ${ARGO_APPS}; do
+          kubectl annotate application "$app" --namespace "$ARGO_NS" "${SKIP}-" 2>/dev/null || true
+          kubectl annotate application "$app" --namespace "$ARGO_NS" "${REFRESH}=hard" --overwrite 2>/dev/null || true
+        done
+
+# ============================================================================
+# Commands — manual ArgoCD pause/resume
+# ============================================================================
+commands:
+  argocd-pause: |-
+    for app in ${ARGO_APPS}; do
+      kubectl annotate application "$app" --namespace argocd \
+        "argocd.argoproj.io/skip-reconcile=true" --overwrite 2>/dev/null || true
+    done
+  argocd-resume: |-
+    for app in ${ARGO_APPS}; do
+      kubectl annotate application "$app" --namespace argocd \
+        "argocd.argoproj.io/skip-reconcile-" 2>/dev/null || true
+      kubectl annotate application "$app" --namespace argocd \
+        "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
+    done
+
+# ============================================================================
+# Profiles
+# ============================================================================
 profiles:
   - name: ai-chatbot-dev
     description: >
       AI Chatbot + Workflow Builder UI development.
       Starts: workflow-builder, ai-chatbot, workflow-orchestrator, function-router.
     patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router"
       - op: remove
         path: dev.dapr-agent-runtime
       - op: remove
@@ -1168,6 +1256,12 @@ profiles:
       Fastest loop when only the Next.js UI and BFF are changing.
       Starts: workflow-builder only.
     patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1189,6 +1283,12 @@ profiles:
       Starts: workflow-builder, durable-agent.
       Requires durable-agent Deployment in the cluster.
     patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder durable-agent"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder durable-agent"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1208,6 +1308,12 @@ profiles:
       Starts: all deployed services except ai-chatbot and durable-agent
       (durable-agent has no Deployment in cluster yet).
     patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-runtime"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-runtime"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1219,6 +1325,9 @@ profiles:
       Starts: workflow-builder, function-router, fn-activepieces, workflow-orchestrator.
       Knative fn-system is intentionally not part of the DevSpace inner loop.
     patches:
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder workflow-orchestrator function-router fn-activepieces"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1233,5 +1342,11 @@ profiles:
       Every workflow-related service defined in this repo that has a Deployment in the cluster.
       Excludes durable-agent (no Deployment yet).
     patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-runtime"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-runtime"
       - op: remove
         path: dev.durable-agent

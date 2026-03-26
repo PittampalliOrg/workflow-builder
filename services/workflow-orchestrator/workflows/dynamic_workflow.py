@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -2400,10 +2401,16 @@ def process_agent_child_workflow(
             or f"{node_id}-{run_mode}"
         )
         normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
-        activity_input["sandboxName"] = (
+        raw_sandbox_name = (
             str(resolved_config.get("sandboxName") or "").strip()
             or f"openshell-lg-{normalized_suffix}"
-        )[:63]
+        )
+        # OpenShell appends ~30 chars of suffix to sandbox names when
+        # creating K8s Sandbox resources; keep ours <=30 chars so the
+        # final name fits within the 63-char RFC 1123 subdomain limit.
+        activity_input["sandboxName"] = re.sub(
+            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
+        )[:30].rstrip("-") or "sandbox"
 
     workspace_ref = str(resolved_config.get("workspaceRef") or "").strip() or None
     (

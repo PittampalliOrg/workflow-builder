@@ -15,6 +15,7 @@ import { OverlayProvider } from "@/components/overlays/overlay-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { NotificationProvider } from "@/components/notifications/notification-provider";
 import { PersistentCanvas } from "@/components/workflow/persistent-canvas";
 import { getSessionFromCookie } from "@/lib/auth-helpers";
 import { mono, sans } from "@/lib/fonts";
@@ -117,6 +118,7 @@ const RootLayout = async ({ children }: RootLayoutProps) => {
 									</GitHubStarsLoader>
 								</Suspense>
 								<Toaster />
+								<NotificationProvider />
 								<GlobalModals />
 							</OverlayProvider>
 						</AuthProvider>

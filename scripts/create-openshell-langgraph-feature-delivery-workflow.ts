@@ -83,6 +83,8 @@ type Args = {
 	repositoryRepo: string;
 	repositoryBranch: string;
 	targetDir?: string;
+	/** Subdirectory within the repo to install/serve for browser validation (default ".") */
+	previewAppDir?: string;
 	connectionExternalId?: string;
 };
 
@@ -95,6 +97,7 @@ function parseArgs(argv: string[]): Args {
 	let repositoryRepo = DEFAULT_REPO_NAME;
 	let repositoryBranch = DEFAULT_REPO_BRANCH;
 	let targetDir = DEFAULT_TARGET_DIR;
+	let previewAppDir: string | undefined;
 	let connectionExternalId: string | undefined;
 
 	const parseRepoRef = (
@@ -157,6 +160,11 @@ function parseArgs(argv: string[]): Args {
 			i++;
 			continue;
 		}
+		if (arg === "--preview-app-dir") {
+			previewAppDir = argv[i + 1]?.trim() || undefined;
+			i++;
+			continue;
+		}
 		if (arg === "--connection-external-id") {
 			connectionExternalId = argv[i + 1] || connectionExternalId;
 			i++;
@@ -172,6 +180,7 @@ function parseArgs(argv: string[]): Args {
 		repositoryRepo: repositoryRepo.trim(),
 		repositoryBranch: repositoryBranch.trim(),
 		targetDir: targetDir?.trim() || undefined,
+		previewAppDir: previewAppDir?.trim() || undefined,
 		connectionExternalId: connectionExternalId?.trim() || undefined,
 	};
 }
@@ -335,8 +344,18 @@ __WF_OPEN_SHELL_REVIEW__`;
 }
 
 function buildValidationInstallCommand(previewAppDir: string): string {
+	// Detect lock file: pnpm-lock.yaml → pnpm install, package-lock.json → npm ci, else npm install
 	const installCommand =
-		"(while true; do echo install-heartbeat; sleep 25; done &) ; attempt=1; until [ $attempt -gt 3 ]; do npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline && exit 0; if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
+		"(while true; do echo install-heartbeat; sleep 25; done &) ; " +
+		"attempt=1; until [ $attempt -gt 3 ]; do " +
+		"if [ -f pnpm-lock.yaml ]; then " +
+		"corepack enable pnpm 2>/dev/null; pnpm install --no-frozen-lockfile --prefer-offline; " +
+		"elif [ -f package-lock.json ]; then " +
+		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+		"else " +
+		"npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+		"fi && exit 0; " +
+		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
 	if (previewAppDir === "." || previewAppDir === "") {
 		return installCommand;
 	}
@@ -381,6 +400,8 @@ function buildWorkflowGraph(input: {
 	repositoryRepo: string;
 	repositoryBranch: string;
 	targetDir?: string;
+	/** Subdirectory within the repo to install/serve for browser validation (default ".") */
+	previewAppDir?: string;
 	connectionExternalId?: string;
 	connectionId?: string;
 }) {
@@ -400,10 +421,10 @@ function buildWorkflowGraph(input: {
 	const executionThreadTemplate = `lg:exec:${executionIdTemplate}`;
 	const planPrompt = buildPlanPrompt(triggerId);
 	const executePrompt = buildExecutePrompt(triggerId);
-	const previewAppDir =
-		input.repositoryRepo === "ai-chatbot"
-			? "."
-			: input.targetDir || input.repositoryRepo;
+	// browser/validate runs inside the coding sandbox where the repo IS /sandbox/repo.
+	// previewAppDir is a subdirectory *within* the repo (e.g. "dashboard/final-example"),
+	// NOT the clone targetDir.  Default to "." (repo root).
+	const previewAppDir = input.previewAppDir || ".";
 	const enabledTools = JSON.stringify([
 		"read",
 		"write",
@@ -690,6 +711,7 @@ async function main() {
 			repositoryRepo: args.repositoryRepo,
 			repositoryBranch: args.repositoryBranch,
 			targetDir: args.targetDir,
+			previewAppDir: args.previewAppDir,
 			connectionExternalId,
 			connectionId,
 		});

@@ -342,7 +342,16 @@ __WF_OPEN_SHELL_REVIEW__`;
 }
 
 function buildOpenShellValidationInstallCommand() {
-	return "(while true; do echo install-heartbeat; sleep 25; done &) ; cd basics/basics-final && attempt=1; until [ $attempt -gt 3 ]; do npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline && exit 0; if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
+	// Detect lock file to pick the right package manager
+	return "(while true; do echo install-heartbeat; sleep 25; done &) ; cd basics/basics-final && attempt=1; until [ $attempt -gt 3 ]; do " +
+		"if [ -f pnpm-lock.yaml ] || [ -f ../../pnpm-lock.yaml ]; then " +
+		"corepack enable pnpm 2>/dev/null; pnpm install --no-frozen-lockfile --prefer-offline; " +
+		"elif [ -f package-lock.json ]; then " +
+		"npm ci --no-audit --no-fund --loglevel=warn --prefer-offline; " +
+		"else " +
+		"npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+		"fi && exit 0; " +
+		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
 }
 
 function buildOpenShellValidationDevServerCommand() {
