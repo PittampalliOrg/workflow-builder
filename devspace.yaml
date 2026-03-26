@@ -1154,17 +1154,13 @@ dev:
       - |
         set -e
         echo "=== DevSpace Development Container (OpenShell Durable Agent) ==="
-        echo "Using production image with pre-installed deps, syncing source only."
+        echo "Deps pre-installed in image. Syncing source files only."
         cd /app
-
-        # Re-install in editable mode to pick up synced source changes
-        # (openshell + dapr-agents already installed in the image)
-        pip install --no-deps -e . 2>/dev/null || true
 
         exec python -m src.dapr_durable_agent
     sync:
       - path: ${OPENSHELL_DURABLE_AGENT_SOURCE_PATH}/:/app
-        initialSync: mirrorLocal
+        initialSync: preferLocal
         disableDownload: true
         polling: true
         startContainer: true
