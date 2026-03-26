@@ -1858,8 +1858,6 @@ export type NewWorkflowWorkspaceSession =
 	typeof workflowWorkspaceSessions.$inferInsert;
 export type WorkflowAgentRun = typeof workflowAgentRuns.$inferSelect;
 export type NewWorkflowAgentRun = typeof workflowAgentRuns.$inferInsert;
-export type WorkflowAgentEvent = typeof workflowAgentEvents.$inferSelect;
-export type NewWorkflowAgentEvent = typeof workflowAgentEvents.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;
