@@ -6663,7 +6663,6 @@ def capture(base_url, steps, output_dir):
     results = []
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            executable_path=os.environ.get("CHROME_PATH", "chromium"),
             args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
             headless=True,
         )

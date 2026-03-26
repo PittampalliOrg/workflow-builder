@@ -14,7 +14,6 @@ def capture(base_url: str, steps: list[dict], output_dir: str) -> None:
     results: list[dict] = []
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            executable_path=os.environ.get("CHROME_PATH", "chromium"),
             args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
             headless=True,
         )
