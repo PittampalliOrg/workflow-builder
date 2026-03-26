@@ -6596,12 +6596,25 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                         if not png_path:
                             continue
                         b64_file = f"{png_path}.b64"
+                        # Read base64 in chunks to work around OpenShell stdout size limits.
+                        # The API drops leading bytes on large outputs, so we split into 4KB chunks.
                         try:
-                            b64_result = context.run_command(
-                                f"cat {shlex.quote(b64_file)}",
-                                timeout_seconds=60,
+                            size_result = context.run_command(
+                                f"wc -c < {shlex.quote(b64_file)}",
+                                timeout_seconds=10,
                             )
-                            b64_text = str(b64_result.get("stdout") or "").strip()
+                            file_size = int(str(size_result.get("stdout") or "0").strip())
+                            chunk_size = 4000
+                            chunks: list[str] = []
+                            for offset in range(0, file_size, chunk_size):
+                                chunk_result = context.run_command(
+                                    f"dd if={shlex.quote(b64_file)} bs=1 skip={offset} count={chunk_size} 2>/dev/null",
+                                    timeout_seconds=15,
+                                )
+                                chunk = str(chunk_result.get("stdout") or "")
+                                if chunk:
+                                    chunks.append(chunk)
+                            b64_text = "".join(chunks).strip()
                             if b64_text:
                                 screenshots.append(base64.b64decode(b64_text))
                         except Exception as read_exc:
