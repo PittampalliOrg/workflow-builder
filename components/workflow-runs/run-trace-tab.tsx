@@ -1,6 +1,6 @@
 "use client";
 
-import { ExternalLink, Loader2, RefreshCw } from "lucide-react";
+import { Download, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo } from "react";
 import { SpanDetailsPanel } from "@/components/observability/span-details-panel";
@@ -16,13 +16,24 @@ import type {
 } from "@/lib/types/observability";
 import { getRelativeTime } from "@/lib/utils/time";
 import { cn } from "@/lib/utils";
+import { AgentProgressPanel } from "./agent-progress-panel";
 import { RunDetailSheet } from "./run-detail-sheet";
+
+type AgentRunInfo = {
+	daprInstanceId: string;
+	nodeId: string;
+	status: string;
+	mode?: string | null;
+	totalTurns?: number | null;
+	currentTurn?: number | null;
+};
 
 type RunTraceTabProps = {
 	workflowId: string;
 	executionId: string;
 	daprInstanceId?: string | null;
 	traceIds?: string[];
+	agentRuns?: AgentRunInfo[];
 	selectedTraceId: string | null;
 	selectedSpanId: string | null;
 	onSelectedTraceIdChange: (id: string | null) => void;
@@ -44,6 +55,7 @@ export function RunTraceTab({
 	executionId,
 	daprInstanceId,
 	traceIds = [],
+	agentRuns = [],
 	selectedTraceId,
 	selectedSpanId,
 	onSelectedTraceIdChange,
@@ -210,6 +222,12 @@ export function RunTraceTab({
 
 	return (
 		<>
+			{agentRuns.length > 0 && (
+				<AgentProgressPanel
+					agentRuns={agentRuns}
+					executionId={executionId}
+				/>
+			)}
 			<div className="grid gap-3 xl:grid-cols-[280px_1fr]">
 				<div className="overflow-hidden rounded-md border bg-background">
 					<div className="flex items-center justify-between border-b px-3 py-2">
@@ -308,14 +326,27 @@ export function RunTraceTab({
 						</div>
 						<div className="flex items-center gap-2">
 							{activeSummary ? (
-								<Button asChild size="sm" variant="outline">
-									<Link
-										href={`/observability/${activeSummary.traceId}?executionId=${encodeURIComponent(executionId)}`}
+								<>
+									<Button asChild size="sm" variant="outline">
+										<Link
+											href={`/observability/${activeSummary.traceId}?executionId=${encodeURIComponent(executionId)}`}
+										>
+											<ExternalLink className="mr-2 h-3.5 w-3.5" />
+											Open Full Trace
+										</Link>
+									</Button>
+									<Button
+										size="sm"
+										variant="outline"
+										onClick={() => {
+											const url = `/api/observability/traces/${encodeURIComponent(activeSummary.traceId)}/raw?executionId=${encodeURIComponent(executionId)}`;
+											window.open(url, "_blank");
+										}}
 									>
-										<ExternalLink className="mr-2 h-3.5 w-3.5" />
-										Open Full Trace
-									</Link>
-								</Button>
+										<Download className="mr-2 h-3.5 w-3.5" />
+										Raw JSON
+									</Button>
+								</>
 							) : null}
 							<Button
 								disabled={!activeTraceId}

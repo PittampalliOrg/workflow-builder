@@ -56,6 +56,8 @@ class OrchestratorConfig:
     DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
+    OPENSHELL_DURABLE_AGENT_APP_ID: str = "openshell-durable-agent"
+    OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME: str = "dapr.agents.OpenShellDeepAgent.workflow"
     MS_AGENT_APP_ID: str = "ms-agent-workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
@@ -172,6 +174,14 @@ class OrchestratorConfig:
             "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "daprAgentRunWorkflowV1",
+            ),
+            "OPENSHELL_DURABLE_AGENT_APP_ID": (
+                "OPENSHELL_DURABLE_AGENT_APP_ID",
+                "openshell-durable-agent",
+            ),
+            "OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME": (
+                "OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME",
+                "dapr.agents.OpenShellDeepAgent.workflow",
             ),
             "MS_AGENT_APP_ID": ("MS_AGENT_APP_ID", "ms-agent-workflow"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (

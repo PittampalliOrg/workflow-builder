@@ -590,6 +590,12 @@ export default function WorkflowRunDetailPage() {
 
 				<TabsContent className="mt-0 space-y-3" value="trace">
 					<RunTraceTab
+						agentRuns={(details.agentRuns ?? []).map((run) => ({
+							daprInstanceId: run.daprInstanceId,
+							nodeId: run.nodeId,
+							status: run.status,
+							mode: run.mode ?? null,
+						}))}
 						daprInstanceId={details.execution.daprInstanceId}
 						executionId={canonicalExecutionId}
 						onSelectedSpanIdChange={(spanId) =>

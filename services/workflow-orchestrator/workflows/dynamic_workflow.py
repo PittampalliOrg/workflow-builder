@@ -23,6 +23,7 @@ from datetime import timedelta
 from typing import Any
 
 import dapr.ext.workflow as wf
+import httpx
 
 from core.config import config as orchestrator_config
 from core.template_resolver import resolve_templates, NodeOutputs
@@ -1175,6 +1176,8 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 if action_type in (
                     "openshell/run",
                     "openshell-langgraph/run",
+                    "openshell-deepagent/run",
+                    "openshell-durable/run",
                     "dapr-agent/run",
                     "ms-agent/run",
                 ):
@@ -2199,6 +2202,35 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         raise
 
 
+@wfr.activity(name="call_openshell_deepagent")
+def call_openshell_deepagent(ctx, input_data: dict) -> dict:
+    """Invoke openshell-langgraph-dapr service via Dapr service invocation."""
+    prompt = input_data.get("prompt", "")
+    thread_id = input_data.get("threadId") or input_data.get("executionId", "")
+    sandbox_name = input_data.get("sandboxName", "")
+    timeout = input_data.get("timeoutMinutes", 30) * 60
+
+    response = httpx.post(
+        f"http://localhost:{orchestrator_config.DAPR_HTTP_PORT}/v1.0/invoke/openshell-langgraph-dapr/method/invoke",
+        json={
+            "message": prompt,
+            "thread_id": thread_id,
+            "sandbox_name": sandbox_name,
+            "repo_url": input_data.get("repositoryUrl"),
+            "repo_branch": input_data.get("repositoryBranch"),
+        },
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    result = response.json()
+    return {
+        "success": True,
+        "content": result.get("final_message", {}).get("content", ""),
+        "threadId": result.get("thread_id"),
+        "engine": "openshell-deepagent",
+    }
+
+
 def process_agent_child_workflow(
     ctx: wf.DaprWorkflowContext,
     node: dict,
@@ -2226,8 +2258,10 @@ def process_agent_child_workflow(
     is_ms_agent = action_type == "ms-agent/run"
     is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
     is_openshell_agent = action_type == "openshell/run"
+    is_openshell_deepagent = action_type == "openshell-deepagent/run"
+    is_openshell_durable = action_type == "openshell-durable/run"
     is_dapr_agent = action_type == "dapr-agent/run"
-    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent
+    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2408,6 +2442,44 @@ def process_agent_child_workflow(
         # OpenShell appends ~30 chars of suffix to sandbox names when
         # creating K8s Sandbox resources; keep ours <=30 chars so the
         # final name fits within the 63-char RFC 1123 subdomain limit.
+        activity_input["sandboxName"] = re.sub(
+            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
+        )[:30].rstrip("-") or "sandbox"
+
+    if is_openshell_deepagent:
+        activity_input["engine"] = "langgraph"
+        activity_input["toolBackend"] = "openshell"
+        activity_input["sandboxRepoPath"] = (
+            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
+        )
+        sandbox_suffix = (
+            str(tracked_execution_id or ctx.instance_id or "").strip()
+            or f"{node_id}-{run_mode}"
+        )
+        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
+        raw_sandbox_name = (
+            str(resolved_config.get("sandboxName") or "").strip()
+            or f"openshell-da-{normalized_suffix}"
+        )
+        activity_input["sandboxName"] = re.sub(
+            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
+        )[:30].rstrip("-") or "sandbox"
+
+    if is_openshell_durable:
+        activity_input["engine"] = "durable"
+        activity_input["toolBackend"] = "openshell"
+        activity_input["sandboxRepoPath"] = (
+            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
+        )
+        sandbox_suffix = (
+            str(tracked_execution_id or ctx.instance_id or "").strip()
+            or f"{node_id}-{run_mode}"
+        )
+        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
+        raw_sandbox_name = (
+            str(resolved_config.get("sandboxName") or "").strip()
+            or f"openshell-dur-{normalized_suffix}"
+        )
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
         )[:30].rstrip("-") or "sandbox"
@@ -3195,12 +3267,16 @@ def process_agent_child_workflow(
                 orchestrator_config.MS_AGENT_CHILD_WORKFLOW_RUN_NAME
                 if is_ms_agent
                 else (
-                    orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
-                    if uses_dapr_agent_runtime
+                    orchestrator_config.OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME
+                    if is_openshell_durable
                     else (
-                        orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
-                        if run_mode == "execute_plan"
-                        else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                        orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
+                        if uses_dapr_agent_runtime
+                        else (
+                            orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
+                            if run_mode == "execute_plan"
+                            else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                        )
                     )
                 )
             )
@@ -3281,7 +3357,7 @@ def process_agent_child_workflow(
             )
         if activity_input.get("workspaceProfile") is not None:
             child_input["workspaceProfile"] = activity_input.get("workspaceProfile")
-        if is_dapr_agent:
+        if uses_dapr_agent_runtime:
             for _field in (
                 "toolBackend", "engine", "sandboxName", "sandboxRepoPath",
                 "provider", "model", "maxTurns", "timeoutMinutes",
@@ -3291,6 +3367,7 @@ def process_agent_child_workflow(
                 "contextPolicyPreset", "loopPolicy",
                 "planningThreadId", "executionThreadId",
                 "agentProfileTemplateId",
+                "repoUrl", "repoBranch", "repoToken", "keepSandbox",
             ):
                 if activity_input.get(_field) is not None:
                     child_input[_field] = activity_input[_field]
@@ -3417,7 +3494,7 @@ def process_agent_child_workflow(
                 )
 
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID if is_openshell_durable else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
@@ -3426,6 +3503,8 @@ def process_agent_child_workflow(
             app_id=(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
+                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
+                if is_openshell_durable
                 else orchestrator_config.DAPR_AGENT_APP_ID
                 if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID
@@ -3498,6 +3577,8 @@ def process_agent_child_workflow(
                 "childAppId": (
                     orchestrator_config.MS_AGENT_APP_ID
                     if is_ms_agent
+                    else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
+                    if is_openshell_durable
                     else orchestrator_config.DAPR_AGENT_APP_ID
                     if uses_dapr_agent_runtime
                     else orchestrator_config.DURABLE_AGENT_APP_ID
@@ -3932,6 +4013,8 @@ def process_agent_child_workflow(
             child_app_id=(
                 orchestrator_config.MS_AGENT_APP_ID
                 if is_ms_agent
+                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
+                if is_openshell_durable
                 else orchestrator_config.DAPR_AGENT_APP_ID
                 if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID

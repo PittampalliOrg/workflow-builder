@@ -7,6 +7,7 @@ import {
   isDaprAgentOutput,
   parseDaprAgentOutput,
 } from "@/lib/transforms/workflow-ui";
+import { cn } from "@/lib/utils";
 import { JsonPanel } from "./json-panel";
 import { TaskListPanel } from "./task-list-panel";
 import { TraceMetadataPanel } from "./trace-metadata-panel";
@@ -16,11 +17,22 @@ import { UsageMetricsPanel } from "./usage-metrics-panel";
 // Types
 // ============================================================================
 
+export type TimingData = {
+  credentialFetchMs?: number | null;
+  routingMs?: number | null;
+  coldStartMs?: number | null;
+  executionMs?: number | null;
+  routedTo?: string | null;
+  wasColdStart?: boolean | null;
+};
+
 type InputOutputSectionProps = {
   input: unknown;
   output: unknown;
   /** Raw DaprAgentOutput preserved from API */
   daprAgentOutput?: unknown;
+  /** Node-level execution timing breakdown */
+  timing?: TimingData | null;
 };
 
 // ============================================================================
@@ -186,6 +198,72 @@ function DaprAgentOutputSection({ output }: DaprAgentOutputSectionProps) {
 }
 
 // ============================================================================
+// Timing Breakdown
+// ============================================================================
+
+function hasTiming(timing: TimingData): boolean {
+  return (
+    (timing.credentialFetchMs != null && timing.credentialFetchMs > 0) ||
+    (timing.routingMs != null && timing.routingMs > 0) ||
+    (timing.coldStartMs != null && timing.coldStartMs > 0) ||
+    (timing.executionMs != null && timing.executionMs > 0)
+  );
+}
+
+function TimingBreakdown({ timing }: { timing: TimingData }) {
+  const segments = [
+    { label: "Credential", ms: timing.credentialFetchMs ?? 0, color: "bg-purple-500" },
+    { label: "Routing", ms: timing.routingMs ?? 0, color: "bg-blue-500" },
+    { label: "Cold Start", ms: timing.coldStartMs ?? 0, color: "bg-amber-500" },
+    { label: "Execution", ms: timing.executionMs ?? 0, color: "bg-teal-500" },
+  ];
+  const total = segments.reduce((sum, s) => sum + s.ms, 0);
+  if (total === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-gray-700 bg-[#1e2433] p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="font-medium text-gray-300 text-xs">Execution Timing</span>
+        <div className="flex items-center gap-2">
+          {timing.routedTo && (
+            <span className="rounded bg-gray-800 px-1.5 py-0.5 font-mono text-gray-400 text-[10px]">
+              {timing.routedTo}
+            </span>
+          )}
+          {timing.wasColdStart && (
+            <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-400 text-[10px]">
+              cold start
+            </span>
+          )}
+        </div>
+      </div>
+      {/* Stacked bar */}
+      <div className="mb-2 flex h-2 overflow-hidden rounded-full bg-gray-800">
+        {segments.map((seg) =>
+          seg.ms > 0 ? (
+            <div
+              className={cn(seg.color, "transition-all")}
+              key={seg.label}
+              style={{ width: `${(seg.ms / total) * 100}%` }}
+              title={`${seg.label}: ${seg.ms}ms`}
+            />
+          ) : null,
+        )}
+      </div>
+      {/* Legend */}
+      <div className="flex flex-wrap gap-3">
+        {segments.map((seg) => (
+          <span className="flex items-center gap-1 text-[10px] text-gray-500" key={seg.label}>
+            <span className={cn("inline-block h-2 w-2 rounded-full", seg.color)} />
+            {seg.label} {seg.ms}ms
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // Main Component
 // ============================================================================
 
@@ -193,6 +271,7 @@ export function InputOutputSection({
   input,
   output,
   daprAgentOutput,
+  timing,
 }: InputOutputSectionProps) {
   // Use daprAgentOutput if available, otherwise fall back to checking output
   const effectiveOutput = daprAgentOutput ?? output;
@@ -203,18 +282,24 @@ export function InputOutputSection({
 
   if (isDaprAgent) {
     return (
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <JsonPanel data={input} maxHeight="250px" title="Input" />
-        <DaprAgentOutputSection output={effectiveOutput} />
+      <div className="space-y-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <JsonPanel data={input} maxHeight="250px" title="Input" />
+          <DaprAgentOutputSection output={effectiveOutput} />
+        </div>
+        {timing && hasTiming(timing) && <TimingBreakdown timing={timing} />}
       </div>
     );
   }
 
   // Default: Regular JSON panels for non-DaprAgent output
   return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-      <JsonPanel data={input} maxHeight="250px" title="Input" />
-      <JsonPanel data={output} maxHeight="250px" title="Output" />
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <JsonPanel data={input} maxHeight="250px" title="Input" />
+        <JsonPanel data={output} maxHeight="250px" title="Output" />
+      </div>
+      {timing && hasTiming(timing) && <TimingBreakdown timing={timing} />}
     </div>
   );
 }
