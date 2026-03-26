@@ -190,7 +190,11 @@ vars:
       printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
   OPENSHELL_DURABLE_AGENT_DEV_IMAGE_REPOSITORY:
-    # Uses the production image (has private openshell SDK pre-installed)
+    # Uses the production image directly (has private openshell SDK pre-installed).
+    # Resolved via kubectl from the running Deployment.
+    command: |
+      image="$(kubectl get deployment ${OPENSHELL_DURABLE_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}:latest")"
+      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
     default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
 
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
@@ -1139,7 +1143,8 @@ dev:
     labelSelector:
       app: openshell-durable-agent
     container: ${OPENSHELL_DURABLE_AGENT_APP_NAME}
-    devImage: ${OPENSHELL_DURABLE_AGENT_DEV_IMAGE_REPOSITORY}:latest
+    # No devImage — use the production image directly (has private openshell SDK).
+    # Image loaded to kind nodes via: kind load docker-image <image> --name ryzen
     workingDir: /app
     resources:
       requests:
