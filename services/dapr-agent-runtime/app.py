@@ -1073,6 +1073,7 @@ def _next_langgraph_event_sequence(instance_id: str) -> int:
         return next_value
 
 
+
 def _publish_agent_events(
     run_context: AgentRunContext | None,
     events: list[dict[str, Any]],
@@ -1365,6 +1366,7 @@ def _progress_event_output_text(event: dict[str, Any]) -> str:
     tool_result = _progress_tool_result(event)
     output_text, _ = _sandbox_output_text(tool_result)
     return output_text
+
 
 
 def _workspace_session_key(workspace_ref: str) -> str:
@@ -4292,6 +4294,7 @@ def _default_agent_progress(context: AgentRunContext, *, status: str = "schedule
 # ---------------------------------------------------------------------------
 _stream_queues: dict[str, list[asyncio.Queue[dict[str, Any] | None]]] = {}
 _stream_event_counter: dict[str, int] = {}
+_langgraph_event_counter: dict[str, int] = {}
 _stream_lock = threading.Lock()
 _MAX_STREAM_QUEUE_SIZE = 500
 
@@ -4318,6 +4321,13 @@ def _push_stream_event(instance_id: str, event: dict[str, Any]) -> None:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
                     pass
+
+
+def _next_langgraph_event_sequence(instance_id: str) -> int:
+    with _stream_lock:
+        counter = _langgraph_event_counter.get(instance_id, 0) + 1
+        _langgraph_event_counter[instance_id] = counter
+        return counter
 
 
 def _register_stream_queue(instance_id: str) -> asyncio.Queue[dict[str, Any] | None]:

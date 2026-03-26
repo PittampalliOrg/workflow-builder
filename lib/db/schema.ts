@@ -712,6 +712,11 @@ export const workflowAgentEvents = pgTable(
 		createdAt: timestamp("created_at").notNull().defaultNow(),
 	},
 	(table) => ({
+		executionSourceUnique: unique("uq_workflow_agent_events_source").on(
+			table.workflowExecutionId,
+			table.daprInstanceId,
+			table.sourceEventId,
+		),
 		executionSeqIdx: index("idx_workflow_agent_events_execution_seq").on(
 			table.workflowExecutionId,
 			table.eventId,
@@ -723,11 +728,6 @@ export const workflowAgentEvents = pgTable(
 		agentRunSeqIdx: index("idx_workflow_agent_events_agent_run_seq").on(
 			table.workflowAgentRunId,
 			table.eventId,
-		),
-		sourceEventUnique: unique("uq_workflow_agent_events_source").on(
-			table.workflowExecutionId,
-			table.daprInstanceId,
-			table.sourceEventId,
 		),
 	}),
 );
@@ -1757,6 +1757,21 @@ export const workflowExecutionsRelations = relations(
 		}),
 		planArtifacts: many(workflowPlanArtifacts),
 		browserArtifacts: many(workflowBrowserArtifacts),
+		agentEvents: many(workflowAgentEvents),
+	}),
+);
+
+export const workflowAgentEventsRelations = relations(
+	workflowAgentEvents,
+	({ one }) => ({
+		workflowExecution: one(workflowExecutions, {
+			fields: [workflowAgentEvents.workflowExecutionId],
+			references: [workflowExecutions.id],
+		}),
+		agentRun: one(workflowAgentRuns, {
+			fields: [workflowAgentEvents.workflowAgentRunId],
+			references: [workflowAgentRuns.id],
+		}),
 	}),
 );
 
@@ -1843,6 +1858,8 @@ export type NewWorkflowWorkspaceSession =
 	typeof workflowWorkspaceSessions.$inferInsert;
 export type WorkflowAgentRun = typeof workflowAgentRuns.$inferSelect;
 export type NewWorkflowAgentRun = typeof workflowAgentRuns.$inferInsert;
+export type WorkflowAgentEvent = typeof workflowAgentEvents.$inferSelect;
+export type NewWorkflowAgentEvent = typeof workflowAgentEvents.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
 export type PlatformOauthApp = typeof platformOauthApps.$inferSelect;

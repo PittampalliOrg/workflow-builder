@@ -5233,6 +5233,12 @@
 					"primaryKey": false,
 					"notNull": true
 				},
+				"source_event_id": {
+					"name": "source_event_id",
+					"type": "text",
+					"primaryKey": false,
+					"notNull": true
+				},
 				"seq": {
 					"name": "seq",
 					"type": "integer",
@@ -5376,7 +5382,17 @@
 				}
 			},
 			"compositePrimaryKeys": {},
-			"uniqueConstraints": {},
+			"uniqueConstraints": {
+				"uq_workflow_agent_events_source": {
+					"name": "uq_workflow_agent_events_source",
+					"nullsNotDistinct": false,
+					"columns": [
+						"workflow_execution_id",
+						"dapr_instance_id",
+						"source_event_id"
+					]
+				}
+			},
 			"policies": {},
 			"checkConstraints": {},
 			"isRLSEnabled": false

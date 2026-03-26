@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { NextResponse } from "next/server";
 import { resolveConnectionValueForUse } from "@/lib/app-connections/resolve-connection-value";
@@ -61,14 +60,12 @@ async function getRegistryAppIds(): Promise<string[]> {
 		}
 	}
 
-	if (existsSync(REGISTRY_FILE_PATH)) {
-		try {
-			const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
-			const parsed = JSON.parse(content) as FunctionRegistry;
-			ids.push(...getAppIdsFromRegistry(parsed));
-		} catch {
-			// Ignore unreadable/invalid registry file.
-		}
+	try {
+		const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
+		const parsed = JSON.parse(content) as FunctionRegistry;
+		ids.push(...getAppIdsFromRegistry(parsed));
+	} catch {
+		// Ignore missing, unreadable, or invalid registry files.
 	}
 
 	return dedupe(ids);
