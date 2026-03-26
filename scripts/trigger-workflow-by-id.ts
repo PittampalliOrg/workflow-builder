@@ -74,10 +74,16 @@ async function main() {
 
 	const url =
 		process.env.GENERIC_ORCHESTRATOR_URL || "http://127.0.0.1:8080";
+	const triggerData: Record<string, unknown> = {};
+	const featureRequest = process.argv[3];
+	if (featureRequest) {
+		triggerData.feature_request = featureRequest;
+	}
+
 	const result = await genericOrchestratorClient.startWorkflow(
 		url,
 		definition,
-		{},
+		triggerData,
 		{},
 		execution.id,
 		{},

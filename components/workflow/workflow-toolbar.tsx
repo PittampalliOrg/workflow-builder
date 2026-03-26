@@ -72,6 +72,7 @@ import {
 	undoAtom,
 	ungroupNodeAtom,
 	updateNodeDataAtom,
+	workflowAiCreateDraftAtom,
 	workflowSimulationRunningAtom,
 	cancelWorkflowSimulationAtom,
 	type WorkflowEdge,
@@ -723,6 +724,7 @@ function useWorkflowHandlers({
 }: WorkflowHandlerParams) {
 	const { open: openOverlay } = useOverlay();
 	const runWorkflowSimulation = useSetAtom(simulateWorkflowRunAtom);
+	const aiCreateDraft = useAtomValue(workflowAiCreateDraftAtom);
 	const { findActionById, getIntegrationLabels, pieces, loaded } =
 		usePiecesCatalog();
 	const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -754,6 +756,10 @@ function useWorkflowHandlers({
 		if (!currentWorkflowId) {
 			return;
 		}
+		if (aiCreateDraft?.workflowId === currentWorkflowId) {
+			toast.info("Apply or discard the AI draft before saving");
+			return;
+		}
 
 		setIsSaving(true);
 		try {
@@ -782,6 +788,10 @@ function useWorkflowHandlers({
 
 		if (!currentWorkflowId) {
 			toast.error("Please save the workflow before executing");
+			return;
+		}
+		if (aiCreateDraft?.workflowId === currentWorkflowId) {
+			toast.error("Apply or discard the AI draft before running the workflow");
 			return;
 		}
 

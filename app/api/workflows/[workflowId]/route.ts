@@ -259,6 +259,8 @@ export async function PATCH(
 			typeof updateData.description === "string"
 				? updateData.description
 				: (existingWorkflow.description ?? undefined);
+		const graphUpdated =
+			Array.isArray(body.nodes) || Array.isArray(body.edges);
 		const canonicalSpec = resolveCanonicalWorkflowSpec({
 			name: effectiveName,
 			description: effectiveDescription,
@@ -267,14 +269,18 @@ export async function PATCH(
 			spec:
 				body.spec !== undefined
 					? body.spec
-					: (existingWorkflow as Record<string, unknown>).spec,
+					: graphUpdated
+						? undefined
+						: (existingWorkflow as Record<string, unknown>).spec,
 			specVersion:
 				typeof body.specVersion === "string"
 					? body.specVersion
-					: (((existingWorkflow as Record<string, unknown>).specVersion as
-							| string
-							| null
-							| undefined) ?? null),
+					: graphUpdated
+						? null
+						: (((existingWorkflow as Record<string, unknown>).specVersion as
+								| string
+								| null
+								| undefined) ?? null),
 		});
 		updateData.specVersion = canonicalSpec.specVersion;
 		updateData.spec = canonicalSpec.spec;

@@ -500,6 +500,63 @@ export const workflowPlanArtifacts = pgTable(
 	}),
 );
 
+export type WorkflowBrowserArtifactStatus =
+	| "pending"
+	| "completed"
+	| "partial"
+	| "failed";
+export type WorkflowBrowserArtifactType = "capture_flow_v1";
+
+export const workflowBrowserArtifacts = pgTable(
+	"workflow_browser_artifacts",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowId: text("workflow_id")
+			.notNull()
+			.references(() => workflows.id, { onDelete: "cascade" }),
+		nodeId: text("node_id").notNull(),
+		workspaceRef: text("workspace_ref"),
+		artifactType: text("artifact_type")
+			.notNull()
+			.default("capture_flow_v1")
+			.$type<WorkflowBrowserArtifactType>(),
+		artifactVersion: integer("artifact_version").notNull().default(1),
+		status: text("status")
+			.notNull()
+			.default("pending")
+			.$type<WorkflowBrowserArtifactStatus>(),
+		manifestJson: jsonb("manifest_json")
+			.notNull()
+			.$type<Record<string, unknown>>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		executionCreatedIdx: index(
+			"idx_workflow_browser_artifacts_execution_created",
+		).on(table.workflowExecutionId, table.createdAt),
+		workflowNodeCreatedIdx: index(
+			"idx_workflow_browser_artifacts_workflow_node_created",
+		).on(table.workflowId, table.nodeId, table.createdAt),
+		statusIdx: index("idx_workflow_browser_artifacts_status").on(table.status),
+	}),
+);
+
+export const workflowBrowserArtifactBlobPayloads = pgTable(
+	"workflow_browser_artifact_blob_payloads",
+	{
+		storageRef: text("storage_ref").primaryKey(),
+		payloadText: text("payload_text").notNull(),
+		contentType: text("content_type").notNull(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+);
+
 export type WorkflowWorkspaceSessionStatus = "active" | "cleaned" | "error";
 
 /**
@@ -1699,6 +1756,7 @@ export const workflowExecutionsRelations = relations(
 			references: [workflows.id],
 		}),
 		planArtifacts: many(workflowPlanArtifacts),
+		browserArtifacts: many(workflowBrowserArtifacts),
 	}),
 );
 
@@ -1716,6 +1774,20 @@ export const workflowPlanArtifactsRelations = relations(
 		user: one(users, {
 			fields: [workflowPlanArtifacts.userId],
 			references: [users.id],
+		}),
+	}),
+);
+
+export const workflowBrowserArtifactsRelations = relations(
+	workflowBrowserArtifacts,
+	({ one }) => ({
+		workflowExecution: one(workflowExecutions, {
+			fields: [workflowBrowserArtifacts.workflowExecutionId],
+			references: [workflowExecutions.id],
+		}),
+		workflow: one(workflows, {
+			fields: [workflowBrowserArtifacts.workflowId],
+			references: [workflows.id],
 		}),
 	}),
 );
@@ -1757,6 +1829,14 @@ export type WorkflowExecutionLog = typeof workflowExecutionLogs.$inferSelect;
 export type NewWorkflowExecutionLog = typeof workflowExecutionLogs.$inferInsert;
 export type WorkflowPlanArtifact = typeof workflowPlanArtifacts.$inferSelect;
 export type NewWorkflowPlanArtifact = typeof workflowPlanArtifacts.$inferInsert;
+export type WorkflowBrowserArtifact =
+	typeof workflowBrowserArtifacts.$inferSelect;
+export type NewWorkflowBrowserArtifact =
+	typeof workflowBrowserArtifacts.$inferInsert;
+export type WorkflowBrowserArtifactBlobPayload =
+	typeof workflowBrowserArtifactBlobPayloads.$inferSelect;
+export type NewWorkflowBrowserArtifactBlobPayload =
+	typeof workflowBrowserArtifactBlobPayloads.$inferInsert;
 export type WorkflowWorkspaceSession =
 	typeof workflowWorkspaceSessions.$inferSelect;
 export type NewWorkflowWorkspaceSession =

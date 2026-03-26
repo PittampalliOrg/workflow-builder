@@ -91,6 +91,7 @@ pnpm test:e2e         # Run Playwright E2E tests
 | **workflow-mcp-server** | 3200 | Retained MCP server, not part of the current core local runtime |
 | **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
 | **node-sandbox** | 8888 | Sandbox image / helper runtime |
+| **openshell-sandbox** | — | Custom OpenShell sandbox image with Chromium/Playwright for browser validation |
 
 > See `docs/services.md` for full endpoint details and build commands.
 
@@ -142,6 +143,7 @@ services/
   workflow-mcp-server/               # Optional workflow MCP tools
   piece-mcp-server/                  # Optional AP piece MCP tools
   mcp-gateway/                       # Hosted MCP gateway
+  openshell-sandbox/                 # Custom OpenShell sandbox image (Chromium + Playwright)
 
 components/workflow/
   workflow-canvas.tsx                # React Flow canvas
@@ -166,6 +168,9 @@ Actions are routed by `actionType` slug prefix:
 | `mastra/execute` | durable-agent (direct) | Async | Execute a plan (fire-and-forget) |
 | `agent/*` | durable-agent (direct) | Async | Agent run with prompt |
 | `durable/*` | durable-agent (direct) | Async | Durable agent run with prompt |
+| `workspace/*` | dapr-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
+| `browser/*` | dapr-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
+| `openshell-langgraph/*` | dapr-agent-runtime (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
 | `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
 
 ## Node Types
@@ -202,6 +207,7 @@ pnpm seed-functions    # Seeds functions table from plugins
 - **piece_metadata**: `name`, `displayName`, `version`, `auth` (JSONB), `actions` (JSONB)
 - **mcp_servers**, **mcp_runs**: MCP server config and execution tracking
 - **api_keys**: JWT API keys for programmatic access
+- **Browser artifacts**: `workflow_browser_artifacts` (manifest JSONB), `workflow_browser_artifact_blob_payloads` (base64 PNG screenshots)
 - **Observability**: `workflow_execution_logs`, `credential_access_logs`, `workflow_external_events`
 
 ## MCP Integration
@@ -222,6 +228,24 @@ MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in 
 
 > See `docs/activepieces-auth.md` for full auth flow details.
 
+## Browser Validation (In-Sandbox Screenshots)
+
+The `browser/validate` action captures screenshots of a deployed feature inside the coding agent's OpenShell sandbox, eliminating the need for a second browser sandbox.
+
+**Architecture**: coding sandbox (OpenShell) → install deps → start dev server → Playwright screenshot → persist to DB
+
+- **Custom sandbox image**: `services/openshell-sandbox/Dockerfile` — Ubuntu 24.04 base + Chromium via Playwright at `/opt/pw-browsers`
+- **Composite endpoint**: `POST /api/browser/validate` in dapr-agent-runtime — orchestrates install, dev server, readiness poll, and capture
+- **Screenshot transfer**: PNGs converted to base64 files in sandbox, read in 4KB chunks via `dd` (OpenShell stdout truncates large outputs)
+- **Artifact storage**: `workflow_browser_artifacts` + `workflow_browser_artifact_blob_payloads` tables
+- **UI display**: Artifacts tab in run detail page, auto-expands first completed browser artifact
+
+**Key constraints**:
+- OpenShell `run_command()` stdout drops leading bytes on outputs >4KB — use chunked file reads
+- Heredoc syntax doesn't work through OpenShell command API — use base64-encoded script upload
+- Playwright browsers must be at `/opt/pw-browsers` (not `/root/.cache`) for sandbox user access
+- `imagePullPolicy: Always` for sandbox images — Gitea registry is authoritative
+
 ## Troubleshooting
 
 - Missing `actionType` in node config → UI bug, recreate node
@@ -239,5 +263,5 @@ MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in 
 
 ---
 
-**Last Updated**: 2026-02-16
+**Last Updated**: 2026-03-25
 **Status**: Production-ready with OpenTelemetry observability, sandbox execution, MCP Apps, and hosted MCP servers

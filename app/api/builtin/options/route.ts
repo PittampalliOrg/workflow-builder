@@ -646,7 +646,8 @@ export async function POST(request: Request) {
 
 		// Tools multi-select for workspace/profile
 		if (
-			normalizedActionName === "workspace/profile" &&
+			(normalizedActionName === "workspace/profile" ||
+				normalizedActionName === "browser/profile") &&
 			rawBody.propertyName === "enabledTools"
 		) {
 			return NextResponse.json(
@@ -658,7 +659,8 @@ export async function POST(request: Request) {
 		// Keep mastra/clone for backward compatibility and support workspace/clone.
 		if (
 			normalizedActionName !== "mastra/clone" &&
-			normalizedActionName !== "workspace/clone"
+			normalizedActionName !== "workspace/clone" &&
+			normalizedActionName !== "browser/clone"
 		) {
 			return NextResponse.json(
 				{ error: `Unsupported action: ${rawBody.actionName}` },

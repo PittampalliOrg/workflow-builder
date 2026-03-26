@@ -338,6 +338,9 @@ importers:
       nanoid:
         specifier: ^5.0.0
         version: 5.1.6
+      playwright-core:
+        specifier: ^1.57.0
+        version: 1.57.0
       postgres:
         specifier: 3.4.7
         version: 3.4.7
@@ -641,6 +644,9 @@ importers:
       postgres:
         specifier: ^3.4.5
         version: 3.4.7
+      undici:
+        specifier: ^7.24.5
+        version: 7.24.5
       zod:
         specifier: ^4.1.12
         version: 4.1.12
@@ -7945,6 +7951,10 @@ packages:
 
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
+
+  undici@7.24.5:
+    resolution: {integrity: sha512-3IWdCpjgxp15CbJnsi/Y9TCDE7HWVN19j1hmzVhoAkY/+CJx449tVxT5wZc1Gwg8J+P0LWvzlBzxYRnHJ+1i7Q==}
+    engines: {node: '>=20.18.1'}
 
   unfetch@4.2.0:
     resolution: {integrity: sha512-F9p7yYCn6cIW9El1zi0HI6vqpeIvBsr3dSuRO6Xuppb1u5rXpCPmMvLSyECLhybr9isec8Ohl0hPekMVrEinDA==}
@@ -16868,6 +16878,8 @@ snapshots:
   undici-types@6.21.0: {}
 
   undici-types@7.16.0: {}
+
+  undici@7.24.5: {}
 
   unfetch@4.2.0: {}
 

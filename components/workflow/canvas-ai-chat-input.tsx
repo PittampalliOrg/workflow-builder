@@ -13,6 +13,7 @@ import {
 } from "@/components/ai-elements/prompt-input";
 import { useWorkflowAiChat } from "@/hooks/use-workflow-ai-chat";
 import { api } from "@/lib/api-client";
+import { writeWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
 import {
 	currentWorkflowIdAtom,
 	isGeneratingAtom,
@@ -160,15 +161,22 @@ function NewWorkflowCanvasAiChatInput() {
 
 			setIsGenerating(true);
 			try {
-				const created = await api.workflow.createFromPrompt({
+				const draftWorkflow = await api.workflow.create({
+					name: "Untitled Workflow",
+					description: "",
+					nodes: [],
+					edges: [],
+				});
+				writeWorkflowAiCreateSeed({
+					workflowId: draftWorkflow.id,
 					prompt: trimmed,
 				});
 				sessionStorage.setItem("animate-sidebar", "true");
 				setIsTransitioningFromHomepage(true);
-				router.replace(`/workflows/${created.workflow.id}`);
+				router.replace(`/workflows/${draftWorkflow.id}`);
 			} catch (error) {
-				console.error("Failed to create workflow from prompt:", error);
-				toast.error("Failed to create workflow from prompt");
+				console.error("Failed to create draft workflow:", error);
+				toast.error("Failed to start AI workflow creation");
 			} finally {
 				setIsGenerating(false);
 			}
@@ -187,7 +195,7 @@ function NewWorkflowCanvasAiChatInput() {
 			isGenerating={isGenerating}
 			onSubmit={handleSubmit}
 			placeholder="Describe a workflow to create..."
-			submitHint="Creating workflow from prompt..."
+			submitHint="Creating draft workflow..."
 		/>
 	);
 }

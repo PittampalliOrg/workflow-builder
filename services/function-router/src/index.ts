@@ -1,5 +1,14 @@
 import { otelLogMixin } from "./otel.js";
 
+import { setGlobalDispatcher, Agent, Pool } from "undici";
+
+// Configure native fetch to not timeout on long requests (default bodyTimeout is 5 mins / 300s)
+setGlobalDispatcher(
+	new Agent({
+		factory: (origin, opts) => new Pool(origin, { ...opts, bodyTimeout: 0, headersTimeout: 0 }),
+	})
+);
+
 /**
  * Function Router Service
  *
@@ -26,6 +35,10 @@ async function main() {
 			level: process.env.LOG_LEVEL || "info",
 			mixin: otelLogMixin,
 		},
+		bodyLimit: 104857600, // 100MB
+		connectionTimeout: 0,
+		keepAliveTimeout: 0,
+		requestTimeout: 0,
 	});
 
 	// Register CORS

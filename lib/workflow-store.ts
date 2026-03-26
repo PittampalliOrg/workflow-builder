@@ -10,6 +10,7 @@ import { atom } from "jotai";
 import { nanoid } from "nanoid";
 import { api } from "./api-client";
 import type { AgentNodeProgress } from "./types/durable-timeline";
+import type { WorkflowSpec } from "./workflow-spec/types";
 
 export type WorkflowNodeType =
 	| "trigger"
@@ -75,6 +76,27 @@ export type WorkflowAiMessage = {
 	updatedAt: string;
 };
 
+export type WorkflowAiCreateIssueSet = {
+	errors: unknown[];
+	warnings: unknown[];
+};
+
+export type WorkflowAiCreateDraftState = {
+	workflowId: string;
+	prompt: string;
+	status: "generating" | "staged" | "applying" | "error";
+	originalName: string;
+	originalNodes: WorkflowNode[];
+	originalEdges: WorkflowEdge[];
+	name?: string;
+	description?: string;
+	spec?: WorkflowSpec | null;
+	nodes?: WorkflowNode[];
+	edges?: WorkflowEdge[];
+	issues: WorkflowAiCreateIssueSet;
+	error?: string | null;
+};
+
 // Atoms for workflow state (now backed by database)
 export const nodesAtom = atom<WorkflowNode[]>([]);
 export const edgesAtom = atom<WorkflowEdge[]>([]);
@@ -101,6 +123,8 @@ export const isTransitioningFromHomepageAtom = atom<boolean>(false);
 export const workflowAiMessagesWorkflowIdAtom = atom<string | null>(null);
 export const workflowAiMessagesAtom = atom<WorkflowAiMessage[]>([]);
 export const workflowAiMessagesLoadingAtom = atom<boolean>(false);
+export const workflowAiCreateDraftAtom =
+	atom<WorkflowAiCreateDraftState | null>(null);
 export const connectionSitesAtom = atom<Record<string, ConnectionSite>>({});
 export const potentialConnectionAtom = atom<ConnectionSite | null>(null);
 export const activeWhileDropTargetAtom = atom<ActiveWhileDropTarget>(null);
@@ -226,9 +250,16 @@ export const autosaveAtom = atom(
 		const workflowId = get(currentWorkflowIdAtom);
 		const nodes = get(nodesAtom);
 		const edges = get(edgesAtom);
+		const createDraft = get(workflowAiCreateDraftAtom);
 
 		// Only autosave if we have a workflow ID
 		if (!workflowId) {
+			return;
+		}
+
+		// AI-generated draft previews are intentionally staged until the user
+		// explicitly applies them from the sidebar.
+		if (createDraft?.workflowId === workflowId) {
 			return;
 		}
 

@@ -14,6 +14,8 @@
  * - POST /api/workspaces/command — Execute command in workspace
  * - POST /api/workspaces/file    — Execute file operation in workspace
  * - POST /api/workspaces/cleanup — Cleanup workspace session(s)
+ * - POST /api/browser/materialize-change-artifact — Restore durable file changes into a validation workspace
+ * - POST /api/browser/capture-flow — Capture browser screenshots for a validation flow
  * - GET  /api/workspaces/changes/:changeSetId — Fetch stored patch artifact
  * - GET  /api/workspaces/executions/:executionId/changes — List change artifacts
  * - GET  /api/workspaces/executions/:executionId/patch — Export combined patch
@@ -43,7 +45,10 @@ import { posix as pathPosix } from "node:path";
 import { DurableAgent } from "../durable-agent.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
 import { sandbox, filesystem } from "./sandbox-config.js";
-import { workspaceSessions } from "./workspace-sessions.js";
+import {
+	workspaceSessions,
+	type BrowserCaptureStepInput,
+} from "./workspace-sessions.js";
 import {
 	publishCompletionEvent,
 	startDaprPublisher,
@@ -2239,6 +2244,7 @@ app.get("/api/runtime/introspect", async (_req, res) => {
 			"workspace-tools",
 			"plan-execution",
 			"change-artifacts",
+			"browser-artifacts",
 		],
 		registeredWorkflows: listRuntimeWorkflowRegistrations(),
 		registeredActivities: listRuntimeActivityRegistrations(),
@@ -2590,6 +2596,144 @@ app.post("/api/workspaces/cleanup", async (req, res) => {
 			success: true,
 			cleanedWorkspaceRefs: [...new Set(cleanedRefs)],
 		});
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/browser/materialize-change-artifact", async (req, res) => {
+	try {
+		const result = await workspaceSessions.materializeChangeArtifact({
+			workspaceRef:
+				typeof req.body?.workspaceRef === "string"
+					? req.body.workspaceRef
+					: undefined,
+			executionId:
+				typeof req.body?.executionId === "string"
+					? req.body.executionId
+					: typeof req.body?.dbExecutionId === "string"
+						? req.body.dbExecutionId
+						: undefined,
+			sourceExecutionId:
+				typeof req.body?.sourceExecutionId === "string"
+					? req.body.sourceExecutionId
+					: undefined,
+			durableInstanceId:
+				typeof req.body?.durableInstanceId === "string"
+					? req.body.durableInstanceId
+					: typeof req.body?.__durable_instance_id === "string"
+						? req.body.__durable_instance_id
+						: undefined,
+			preferredOperation:
+				typeof req.body?.preferredOperation === "string"
+					? req.body.preferredOperation
+					: undefined,
+		});
+
+		res.json({ success: true, result });
+	} catch (err) {
+		res.status(400).json({
+			success: false,
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+});
+
+app.post("/api/browser/capture-flow", async (req, res) => {
+	try {
+		const baseUrl =
+			typeof req.body?.baseUrl === "string" ? req.body.baseUrl : "";
+		if (!baseUrl.trim()) {
+			res.status(400).json({ success: false, error: "baseUrl is required" });
+			return;
+		}
+
+		const workflowId =
+			typeof req.body?.workflowId === "string" ? req.body.workflowId : "";
+		const nodeId = typeof req.body?.nodeId === "string" ? req.body.nodeId : "";
+		if (!workflowId.trim() || !nodeId.trim()) {
+			res
+				.status(400)
+				.json({ success: false, error: "workflowId and nodeId are required" });
+			return;
+		}
+
+		const rawSteps = Array.isArray(req.body?.steps)
+			? req.body.steps
+			: typeof req.body?.steps === "string" && req.body.steps.trim()
+				? (() => {
+						try {
+							const parsed = JSON.parse(req.body.steps);
+							return Array.isArray(parsed) ? parsed : [];
+						} catch {
+							return [];
+						}
+					})()
+				: [];
+		if (rawSteps.length === 0) {
+			res
+				.status(400)
+				.json({ success: false, error: "steps must be a non-empty array" });
+			return;
+		}
+
+		const steps: BrowserCaptureStepInput[] = rawSteps
+			.filter(
+				(step: unknown): step is Record<string, unknown> =>
+					Boolean(step) && typeof step === "object",
+			)
+			.map((step: Record<string, unknown>) => ({
+				id: typeof step.id === "string" ? step.id : undefined,
+				label: typeof step.label === "string" ? step.label : undefined,
+				path: typeof step.path === "string" ? step.path : undefined,
+				url: typeof step.url === "string" ? step.url : undefined,
+				waitForSelector:
+					typeof step.waitForSelector === "string"
+						? step.waitForSelector
+						: undefined,
+				waitForText:
+					typeof step.waitForText === "string" ? step.waitForText : undefined,
+				delayMs:
+					typeof step.delayMs === "number"
+						? step.delayMs
+						: typeof step.delayMs === "string" && step.delayMs.trim()
+							? parseInt(step.delayMs, 10)
+							: undefined,
+				fullPage:
+					typeof step.fullPage === "boolean" ? step.fullPage : undefined,
+			}));
+
+		const result = await workspaceSessions.captureBrowserFlow({
+			workspaceRef:
+				typeof req.body?.workspaceRef === "string"
+					? req.body.workspaceRef
+					: undefined,
+			executionId:
+				typeof req.body?.executionId === "string"
+					? req.body.executionId
+					: typeof req.body?.dbExecutionId === "string"
+						? req.body.dbExecutionId
+						: undefined,
+			workflowId,
+			nodeId,
+			baseUrl,
+			steps,
+			timeoutMs:
+				typeof req.body?.timeoutMs === "number"
+					? req.body.timeoutMs
+					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+						? parseInt(req.body.timeoutMs, 10)
+						: undefined,
+			metadata:
+				req.body?.metadata && typeof req.body.metadata === "object"
+					? (req.body.metadata as Record<string, unknown>)
+					: undefined,
+		});
+
+		res.json({ success: true, result });
 	} catch (err) {
 		res.status(400).json({
 			success: false,

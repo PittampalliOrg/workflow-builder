@@ -236,7 +236,7 @@ function DesktopOverlayContainer() {
             >
               <LayoutGroup>
                 <motion.div
-                  className="relative overflow-hidden rounded-xl border bg-background shadow-2xl ring-1 ring-black/5"
+                  className="relative max-h-[85vh] overflow-y-auto rounded-xl border bg-background shadow-2xl ring-1 ring-black/5"
                   layout={isOpen}
                   style={{ minHeight: minHeight > 0 ? minHeight : "auto" }}
                   transition={iosSpring}
@@ -393,7 +393,7 @@ function MobileOverlayContainer() {
           {/* Content area with height animation */}
           <LayoutGroup>
             <motion.div
-              className="relative flex-1 overflow-hidden"
+              className="relative flex-1 overflow-y-auto"
               layout={isOpen}
               style={{ minHeight: minHeight > 0 ? minHeight : "auto" }}
               transition={drawerSpring}

@@ -262,6 +262,38 @@ function validateActionConfigWithZod(input: {
 	}
 }
 
+function validateWorkspaceCloneConfig(input: {
+	step: Extract<StepSpec, { kind: "action" }>;
+	result: WorkflowSpecLintResult;
+}): void {
+	const { step, result } = input;
+	const config = (step.config ?? {}) as Record<string, unknown>;
+	const repositoryUrl = String(config.repositoryUrl ?? "").trim();
+	const repositoryOwner = String(config.repositoryOwner ?? "").trim();
+	const repositoryRepo = String(config.repositoryRepo ?? "").trim();
+	const repositoryBranch = String(config.repositoryBranch ?? "").trim();
+
+	if (!repositoryBranch) {
+		addIssue("errors", result, {
+			code: "MISSING_CLONE_BRANCH",
+			message:
+				'workspace/clone requires config.repositoryBranch. Use a fixed branch or a trigger template such as "{{@trigger:Manual.branch}}".',
+			path: `/steps/${step.id}/config/repositoryBranch`,
+			nodeId: step.id,
+		});
+	}
+
+	if (!repositoryUrl && !(repositoryOwner && repositoryRepo)) {
+		addIssue("errors", result, {
+			code: "MISSING_CLONE_SOURCE",
+			message:
+				"workspace/clone requires either config.repositoryUrl or both config.repositoryOwner and config.repositoryRepo.",
+			path: `/steps/${step.id}/config`,
+			nodeId: step.id,
+		});
+	}
+}
+
 const DEFAULT_TRIGGER_OUTPUT_FIELDS = [
 	"triggered",
 	"timestamp",
@@ -594,6 +626,9 @@ export function lintWorkflowSpec(
 			}
 
 			validateActionConfigWithZod({ action, step, result });
+			if (actionType === "workspace/clone") {
+				validateWorkspaceCloneConfig({ step, result });
+			}
 		}
 	}
 

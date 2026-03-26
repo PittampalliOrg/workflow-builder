@@ -131,6 +131,50 @@ export type ExecutionFileSnapshot = {
 	history: ExecutionFileSnapshotHistoryEntry[];
 };
 
+export type WorkflowBrowserArtifactStatus =
+	| "pending"
+	| "completed"
+	| "partial"
+	| "failed";
+
+export type WorkflowBrowserArtifactStep = {
+	id: string;
+	label: string;
+	url: string;
+	title?: string;
+	waitForSelector?: string;
+	waitForText?: string;
+	delayMs?: number;
+	capturedAt?: string;
+	status: "completed" | "failed";
+	screenshotStorageRef?: string;
+	screenshotDataUrl?: string;
+	error?: string;
+};
+
+export type WorkflowBrowserArtifactManifest = {
+	baseUrl: string;
+	startedAt: string;
+	completedAt?: string;
+	status: WorkflowBrowserArtifactStatus;
+	steps: WorkflowBrowserArtifactStep[];
+	metadata?: Record<string, unknown> | null;
+};
+
+export type WorkflowExecutionBrowserArtifact = {
+	id: string;
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	workspaceRef: string | null;
+	artifactType: string;
+	artifactVersion: number;
+	status: WorkflowBrowserArtifactStatus;
+	manifest: WorkflowBrowserArtifactManifest;
+	createdAt: string;
+	updatedAt: string;
+};
+
 // API error class
 export class ApiError extends Error {
 	status: number;
@@ -791,6 +835,22 @@ export const workflowApi = {
 			metadata: ExecutionChangeArtifactMetadata;
 			patch: string;
 		}>(`/api/workflows/executions/${executionId}/changes/${changeSetId}`),
+
+	getExecutionBrowserArtifacts: (executionId: string) =>
+		apiCall<{
+			success: boolean;
+			executionId: string;
+			count: number;
+			artifacts: WorkflowExecutionBrowserArtifact[];
+		}>(`/api/workflows/executions/${executionId}/browser-artifacts`),
+
+	getExecutionBrowserArtifactById: (executionId: string, artifactId: string) =>
+		apiCall<{
+			success: boolean;
+			artifact: WorkflowExecutionBrowserArtifact;
+		}>(
+			`/api/workflows/executions/${executionId}/browser-artifacts/${artifactId}`,
+		),
 
 	// Get execution sandbox pod IP
 	getExecutionSandbox: (workflowId: string, executionId: string) =>

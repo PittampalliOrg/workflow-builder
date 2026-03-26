@@ -48,6 +48,8 @@ const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_NAME =
 	"OpenShell LangGraph Feature Delivery";
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_DESCRIPTION =
 	"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.";
+const OPENSHELL_LANGGRAPH_BROWSER_VALIDATION_REPOSITORY_URL =
+	"https://github.com/PittampalliOrg/next-learn.git";
 const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
 const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
 const MS_AGENT_WORKFLOW_DESCRIPTION =
@@ -115,6 +117,12 @@ const OPENSHELL_FEATURE_IDS = {
 	plan: "UQTpn3KVZ_6Zv7uzA6ril",
 	execute: "084qYyW7OIG9R6ro3v2kR",
 	review: "0uS-4imBYrFvz81G63Lq5",
+	browserProfile: "z5fbA93GEu6nWZDbtS3da",
+	browserClone: "udqANW2lP7cL93Kk6qhTf",
+	browserMaterialize: "mspYoB2o7FhDb1n9kXjLp",
+	browserInstall: "i4yQm3GpR8sLd6Nx1eVcw",
+	browserServer: "s8uRt4KdP2nVm6Xa0bQje",
+	browserCapture: "c1vUy5LgT9qZn3Hr4pWms",
 } as const;
 
 const OPENSHELL_FEATURE_EDGE_IDS = [
@@ -123,6 +131,12 @@ const OPENSHELL_FEATURE_EDGE_IDS = [
 	"1scYFdFp6dscbGiMlWI7g",
 	"qa4XLL54R6_eKdss58ZRF",
 	"YpUGC9sdpzb2dcLzJQQ5f",
+	"Br7NMXDbWg4xT1y2zQ3Cp",
+	"Rk4JHzdPq9mLs2vNc8Twf",
+	"Vx3QbLmRk8sNf1yHp6Dca",
+	"Nq7PwXeLr2tVm5hJc9Bsd",
+	"Hm5QsTnXv4cLp8rZd1Wkb",
+	"Jt8LyPnQr3vHb6xMs2Cde",
 ] as const;
 
 async function resolveGithubUserId(db: ReturnType<typeof drizzle>) {
@@ -327,6 +341,30 @@ Patch:
 __WF_OPEN_SHELL_REVIEW__`;
 }
 
+function buildOpenShellValidationInstallCommand() {
+	return "(while true; do echo install-heartbeat; sleep 25; done &) ; cd basics/basics-final && attempt=1; until [ $attempt -gt 3 ]; do npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline && exit 0; if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
+}
+
+function buildOpenShellValidationDevServerCommand() {
+	return 'cd basics/basics-final && mkdir -p .wf-preview && rm -f .wf-preview/dev-server.log .wf-preview/dev-server.pid && setsid sh -c "npm run dev -- --hostname 0.0.0.0 --port 3000 > .wf-preview/dev-server.log 2>&1 < /dev/null" >/dev/null 2>&1 & pid=$!; echo $pid > .wf-preview/dev-server.pid; echo waiting-for-port-3000; for i in $(seq 1 90); do if curl -sf -o /dev/null http://127.0.0.1:3000/ 2>/dev/null; then echo server-ready-on-port-3000; exit 0; fi; if ! kill -0 $pid 2>/dev/null; then echo server-exited-early; cat .wf-preview/dev-server.log; exit 1; fi; sleep 2; done; echo server-timeout-waiting-for-port; tail -30 .wf-preview/dev-server.log; exit 1';
+}
+
+function buildOpenShellValidationCaptureSteps() {
+	return JSON.stringify(
+		[
+			{
+				id: "dashboard-home",
+				label: "Dashboard Home",
+				path: "/",
+				waitForSelector: "body",
+				delayMs: 3000,
+			},
+		],
+		null,
+		2,
+	);
+}
+
 function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 	connectionId?: string;
 	connectionExternalId?: string;
@@ -338,6 +376,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 	const workspaceRef = `{{@${OPENSHELL_FEATURE_IDS.profile}:Workspace Profile.workspaceRef}}`;
 	const clonePath = `{{@${OPENSHELL_FEATURE_IDS.clone}:Workspace Clone.clonePath}}`;
 	const executionId = `{{@${OPENSHELL_FEATURE_IDS.profile}:Workspace Profile.executionId}}`;
+	const browserWorkspaceRef = `{{@${OPENSHELL_FEATURE_IDS.browserProfile}:Browser Validation Workspace.workspaceRef}}`;
 	const authValue = connectionExternalId
 		? `{{connections['${connectionExternalId}']}}`
 		: "{{connections['github']}}";
@@ -355,8 +394,8 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 		timeoutMinutes: 120,
 		tools: ["glob", "grep", "read", "edit", "write", "bash"],
 		requiredCapabilities: ["git", "bash"],
-		preferredExecutionProfile: "node-pnpm",
-		preferredSandboxProfile: "node-pnpm",
+		preferredExecutionProfile: "node-npm",
+		preferredSandboxProfile: "node-npm",
 		workspaceBackend: "openshell",
 	});
 
@@ -419,11 +458,11 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 				description: "Clone the target repository into the workspace.",
 				config: {
 					auth: authValue,
-					targetDir: "workflow-builder",
+					targetDir: "next-learn",
 					actionType: "workspace/clone",
 					workspaceRef,
 					repositoryOwner: "PittampalliOrg",
-					repositoryRepo: "ai-chatbot",
+					repositoryRepo: "next-learn",
 					repositoryBranch: "main",
 					...(connectionId ? { integrationId: connectionId } : {}),
 				},
@@ -462,15 +501,14 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 					shellPolicy: "workspace-safe",
 					writePolicy: "workspace-only",
 					workspaceRef,
-					repositoryUrl:
-						"https://github.com/PittampalliOrg/workflow-builder.git",
+					repositoryUrl: "https://github.com/PittampalliOrg/next-learn.git",
 					stopCondition:
 						"An implementation plan exists for the user request and is ready for review and approval.",
 					expectedOutput:
 						"An approved implementation plan with impacted files, validation steps, assumptions, and risks.",
-					repositoryRepo: "workflow-builder",
+					repositoryRepo: "next-learn",
 					timeoutMinutes: "60",
-					verifyCommands: "pnpm type-check\npnpm fix",
+					verifyCommands: "npm run build",
 					agentProfileRef,
 					repositoryOwner: "PittampalliOrg",
 					sandboxRepoPath: "/sandbox/repo",
@@ -483,8 +521,8 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 					requiredCapabilities: JSON.stringify(["git", "bash"]),
 					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
 					approvalTimeoutMinutes: "1440",
-					preferredSandboxProfile: "node-pnpm",
-					preferredExecutionProfile: "node-pnpm",
+					preferredSandboxProfile: "node-npm",
+					preferredExecutionProfile: "node-npm",
 					agentProfileTemplateVersion: String(agentProfileVersion),
 				},
 				status: "idle",
@@ -523,15 +561,14 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 					shellPolicy: "workspace-safe",
 					writePolicy: "workspace-only",
 					workspaceRef,
-					repositoryUrl:
-						"https://github.com/PittampalliOrg/workflow-builder.git",
+					repositoryUrl: "https://github.com/PittampalliOrg/next-learn.git",
 					stopCondition:
 						"The requested feature is implemented, relevant verification has been run, and the final response includes changed files, verification results, and residual risks.",
 					expectedOutput:
 						"A concise engineering summary, changed-file list, verification results, and residual risks.",
-					repositoryRepo: "workflow-builder",
+					repositoryRepo: "next-learn",
 					timeoutMinutes: "60",
-					verifyCommands: "pnpm type-check\npnpm fix",
+					verifyCommands: "npm run build",
 					agentProfileRef,
 					repositoryOwner: "PittampalliOrg",
 					sandboxRepoPath: "/sandbox/repo",
@@ -542,8 +579,8 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 					instructionsOverlay: `${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}\n\nAdditional workflow instructions:\n${EXECUTOR_INSTRUCTIONS}`,
 					requiredCapabilities: JSON.stringify(["git", "bash"]),
 					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
-					preferredSandboxProfile: "node-pnpm",
-					preferredExecutionProfile: "node-pnpm",
+					preferredSandboxProfile: "node-npm",
+					preferredExecutionProfile: "node-npm",
 					agentProfileTemplateVersion: String(agentProfileVersion),
 				},
 				status: "idle",
@@ -564,6 +601,116 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 					actionType: "workspace/command",
 					workspaceRef,
 					continueOnError: "true",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserProfile,
+			type: "action",
+			position: { x: 12, y: 1284 },
+			data: {
+				type: "action",
+				label: "Browser Validation Workspace",
+				description:
+					"Provision an aio-browser sandbox for dev-server validation and screenshots.",
+				config: {
+					name: "browser-validation",
+					actionType: "browser/profile",
+					commandTimeoutMs: "360000",
+					sandboxTemplate: "aio-browser",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserClone,
+			type: "action",
+			position: { x: 12, y: 1496 },
+			data: {
+				type: "action",
+				label: "Browser Validation Clone",
+				description:
+					"Clone the target repository into the browser validation workspace.",
+				config: {
+					targetDir: "next-learn",
+					actionType: "browser/clone",
+					workspaceRef: browserWorkspaceRef,
+					repositoryUrl: OPENSHELL_LANGGRAPH_BROWSER_VALIDATION_REPOSITORY_URL,
+					repositoryOwner: "PittampalliOrg",
+					repositoryRepo: "next-learn",
+					repositoryBranch: "main",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserMaterialize,
+			type: "action",
+			position: { x: 12, y: 1708 },
+			data: {
+				type: "action",
+				label: "Browser Materialize Changes",
+				description:
+					"Restore the latest execute-step code changes into the browser validation clone.",
+				config: {
+					actionType: "browser/materialize-change-artifact",
+					workspaceRef: browserWorkspaceRef,
+					preferredOperation: "agent-execute",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserInstall,
+			type: "action",
+			position: { x: 12, y: 1920 },
+			data: {
+				type: "action",
+				label: "Browser Install Dependencies",
+				description: "Install app dependencies inside the validation clone.",
+				config: {
+					actionType: "browser/command",
+					workspaceRef: browserWorkspaceRef,
+					command: buildOpenShellValidationInstallCommand(),
+					timeoutMs: "3600000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserServer,
+			type: "action",
+			position: { x: 12, y: 2132 },
+			data: {
+				type: "action",
+				label: "Browser Start Dev Server",
+				description:
+					"Start the Next.js dev server and wait until the app responds on port 3000.",
+				config: {
+					actionType: "browser/command",
+					workspaceRef: browserWorkspaceRef,
+					command: buildOpenShellValidationDevServerCommand(),
+					timeoutMs: "900000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: OPENSHELL_FEATURE_IDS.browserCapture,
+			type: "action",
+			position: { x: 12, y: 2344 },
+			data: {
+				type: "action",
+				label: "Browser Capture Flow",
+				description:
+					"Navigate the dashboard UI and persist screenshots as durable browser artifacts.",
+				config: {
+					actionType: "browser/capture-flow",
+					workspaceRef: browserWorkspaceRef,
+					baseUrl: "http://127.0.0.1:3000",
+					steps: buildOpenShellValidationCaptureSteps(),
+					timeoutMs: "180000",
 				},
 				status: "idle",
 			},
@@ -610,6 +757,42 @@ function buildOpenShellLangGraphFeatureDeliveryEdges() {
 			type: "animated",
 			source: OPENSHELL_FEATURE_IDS.execute,
 			target: OPENSHELL_FEATURE_IDS.review,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[5],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.review,
+			target: OPENSHELL_FEATURE_IDS.browserProfile,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[6],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.browserProfile,
+			target: OPENSHELL_FEATURE_IDS.browserClone,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[7],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.browserClone,
+			target: OPENSHELL_FEATURE_IDS.browserMaterialize,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[8],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.browserMaterialize,
+			target: OPENSHELL_FEATURE_IDS.browserInstall,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[9],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.browserInstall,
+			target: OPENSHELL_FEATURE_IDS.browserServer,
+		},
+		{
+			id: OPENSHELL_FEATURE_EDGE_IDS[10],
+			type: "animated",
+			source: OPENSHELL_FEATURE_IDS.browserServer,
+			target: OPENSHELL_FEATURE_IDS.browserCapture,
 			sourceHandle: null,
 			targetHandle: null,
 		},

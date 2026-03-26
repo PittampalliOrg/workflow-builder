@@ -164,6 +164,10 @@ Rules:
 - For if-else, next.true and next.false must each be a single step id or a non-empty array of step ids (never []).
 - For action steps, config MUST include actionType and required fields for that action.
 - Template strings are allowed in config values, and must use the canonical format: {{@nodeId:Label.field}}.
+- If the workflow operates on a repository and the prompt does not name one fixed repo, add manual trigger inputs for repo_owner, repo_name, and branch.
+- For workspace/clone, config MUST include repositoryBranch and either repositoryUrl or both repositoryOwner and repositoryRepo.
+- Prefer workspace/clone config that uses trigger templates for repositoryOwner, repositoryRepo, and repositoryBranch when the repository should be user-provided.
+- If the prompt names a fixed repository, set repositoryOwner/repositoryRepo/repositoryBranch directly on workspace/clone instead of inventing extra trigger inputs.
 
 Available actions (actionType + example config):
 ${actionList}

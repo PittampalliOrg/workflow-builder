@@ -1,5 +1,6 @@
 "use client";
 
+import { useAtomValue } from "jotai";
 import { useState, useEffect, useRef } from "react";
 import {
 	Loader2,
@@ -13,9 +14,12 @@ import {
 	Play,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AiChatCreatePanel } from "@/components/workflow/ai-chat-create-panel";
 import { AiChatComposer } from "@/components/workflow/ai-chat-composer";
 import { useWorkflowAiToolsChat } from "@/hooks/use-workflow-ai-tools-chat";
+import { readWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
 import type { CanvasToolResult } from "@/lib/ai/canvas-tools";
+import { workflowAiCreateDraftAtom } from "@/lib/workflow-store";
 import type { WorkflowNode } from "@/lib/workflow-store";
 
 type ContextSnapshot = {
@@ -161,7 +165,7 @@ type AiChatPanelProps = {
 	workflowId: string;
 };
 
-export function AiChatPanel({ workflowId }: AiChatPanelProps) {
+function ExistingAiChatPanel({ workflowId }: AiChatPanelProps) {
 	const {
 		isGenerating,
 		isLoadingMessages,
@@ -373,4 +377,24 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 			</div>
 		</div>
 	);
+}
+
+export function AiChatPanel({ workflowId }: AiChatPanelProps) {
+	const createDraft = useAtomValue(workflowAiCreateDraftAtom);
+	const [hasPendingCreateSeed, setHasPendingCreateSeed] = useState(false);
+
+	useEffect(() => {
+		setHasPendingCreateSeed(
+			readWorkflowAiCreateSeed()?.workflowId === workflowId,
+		);
+	}, [workflowId]);
+
+	const isCreateMode =
+		createDraft?.workflowId === workflowId || hasPendingCreateSeed;
+
+	if (isCreateMode) {
+		return <AiChatCreatePanel workflowId={workflowId} />;
+	}
+
+	return <ExistingAiChatPanel workflowId={workflowId} />;
 }

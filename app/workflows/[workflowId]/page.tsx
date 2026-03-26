@@ -14,6 +14,7 @@ import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
 } from "@/lib/actions/connection-utils";
+import { readWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
 import {
 	connectionsAtom,
 	connectionsLoadedAtom,
@@ -35,12 +36,14 @@ import {
 	isSidebarCollapsedAtom,
 	isWorkflowOwnerAtom,
 	nodesAtom,
+	propertiesPanelActiveTabAtom,
 	rightPanelWidthAtom,
 	selectedExecutionIdAtom,
 	triggerExecuteAtom,
 	updateNodeDataAtom,
 	type WorkflowNode,
 	type WorkflowVisibility,
+	workflowAiCreateDraftAtom,
 	workflowNotFoundAtom,
 } from "@/lib/workflow-store";
 import { LAST_SELECTED_WORKFLOW_ID_KEY } from "@/lib/workflow-navigation";
@@ -141,9 +144,11 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		hasSidebarBeenShownAtom,
 	);
 	const [panelCollapsed, setPanelCollapsed] = useAtom(isSidebarCollapsedAtom);
+	const setActiveTab = useSetAtom(propertiesPanelActiveTabAtom);
 	const setCurrentWorkflowVisibility = useSetAtom(
 		currentWorkflowVisibilityAtom,
 	);
+	const aiCreateDraft = useAtomValue(workflowAiCreateDraftAtom);
 	const [isOwner, setIsWorkflowOwner] = useAtom(isWorkflowOwnerAtom);
 	const setGlobalConnections = useSetAtom(connectionsAtom);
 	const setConnectionsLoaded = useSetAtom(connectionsLoadedAtom);
@@ -152,6 +157,15 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 	useEffect(() => {
 		window.localStorage.setItem(LAST_SELECTED_WORKFLOW_ID_KEY, workflowId);
 	}, [workflowId]);
+
+	useEffect(() => {
+		const seed = readWorkflowAiCreateSeed();
+		if (seed?.workflowId !== workflowId) {
+			return;
+		}
+		setActiveTab("ai");
+		setPanelCollapsed(false);
+	}, [workflowId, setActiveTab, setPanelCollapsed]);
 
 	// Panel width state for resizing
 	const [panelWidth, setPanelWidth] = useState(30); // default percentage
@@ -482,6 +496,10 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		if (!currentWorkflowId || isGenerating) {
 			return;
 		}
+		if (aiCreateDraft?.workflowId === currentWorkflowId) {
+			toast.info("Apply or discard the AI draft before saving");
+			return;
+		}
 		setIsSaving(true);
 		try {
 			await api.workflow.update(currentWorkflowId, { nodes, edges });
@@ -497,6 +515,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		nodes,
 		edges,
 		isGenerating,
+		aiCreateDraft,
 		setIsSaving,
 		setHasUnsavedChanges,
 	]);

@@ -9,6 +9,13 @@
 
 import { posix as pathPosix, resolve as pathResolve } from "node:path";
 import { nanoid } from "nanoid";
+import { chromium } from "playwright-core";
+import {
+	browserArtifacts,
+	type WorkflowBrowserArtifactRecord,
+	type WorkflowBrowserCaptureStep,
+	type WorkflowBrowserArtifactStatus,
+} from "./browser-artifacts.js";
 import {
 	changeArtifacts,
 	type ChangeArtifactFileSnapshotInput,
@@ -181,6 +188,36 @@ export type ExecuteWorkspaceCloneInput = {
 	repositoryToken?: string;
 	githubToken?: string;
 	timeoutMs?: number;
+};
+
+export type MaterializeChangeArtifactInput = {
+	workspaceRef?: string;
+	executionId?: string;
+	sourceExecutionId?: string;
+	durableInstanceId?: string;
+	preferredOperation?: string;
+};
+
+export type BrowserCaptureFlowInput = {
+	workspaceRef?: string;
+	executionId?: string;
+	workflowId: string;
+	nodeId: string;
+	baseUrl: string;
+	steps: BrowserCaptureStepInput[];
+	timeoutMs?: number;
+	metadata?: Record<string, unknown>;
+};
+
+export type BrowserCaptureStepInput = {
+	id?: string;
+	label?: string;
+	path?: string;
+	url?: string;
+	waitForSelector?: string;
+	waitForText?: string;
+	delayMs?: number;
+	fullPage?: boolean;
 };
 
 const SESSION_TTL_MS = parseInt(
@@ -604,6 +641,232 @@ class WorkspaceSessionManager {
 			timedOut: normalized.timedOut,
 			sandbox: this.buildSandboxMetadata(session),
 			...(changeSummary ? { changeSummary } : {}),
+		};
+	}
+
+	async materializeChangeArtifact(
+		input: MaterializeChangeArtifactInput,
+	): Promise<{
+		workspaceRef: string;
+		changeSetId: string;
+		operation: string;
+		restoredPaths: string[];
+		deletedPaths: string[];
+		sandbox: WorkspaceSandboxMetadata;
+	}> {
+		const session = await this.resolveFromInput(
+			input.workspaceRef,
+			input.executionId,
+		);
+		const sourceExecutionId =
+			String(
+				input.sourceExecutionId || input.executionId || session.executionId,
+			).trim() || session.executionId;
+		const preferredOperation = String(input.preferredOperation || "").trim();
+		const changes =
+			await this.listChangeArtifactsByExecutionId(sourceExecutionId);
+		const selected =
+			(preferredOperation
+				? changes.find((change) => change.operation === preferredOperation)
+				: undefined) ||
+			changes.find((change) => change.includeInExecutionPatch) ||
+			changes[0];
+
+		if (!selected) {
+			throw new Error(
+				`No durable change artifact found for execution ${sourceExecutionId}`,
+			);
+		}
+
+		const restoredPaths: string[] = [];
+		const deletedPaths: string[] = [];
+
+		for (const file of selected.files) {
+			if (file.status === "D") {
+				const absolutePath = this.resolveSessionPath(session, file.path);
+				await session.filesystem.deleteFile(absolutePath, {
+					force: true,
+					recursive: true,
+				});
+				deletedPaths.push(absolutePath);
+				continue;
+			}
+
+			const snapshot = await this.getExecutionFileSnapshot(
+				sourceExecutionId,
+				file.path,
+				{
+					durableInstanceId:
+						input.durableInstanceId || selected.durableInstanceId,
+				},
+			);
+			if (!snapshot) {
+				throw new Error(
+					`Unable to resolve snapshot for ${file.path} from ${selected.changeSetId}`,
+				);
+			}
+			if (snapshot.isBinary || snapshot.newContent == null) {
+				throw new Error(
+					`Binary file materialization is not supported for ${file.path}`,
+				);
+			}
+
+			const absolutePath = this.resolveSessionPath(session, file.path);
+			await session.filesystem.writeFile(absolutePath, snapshot.newContent, {
+				recursive: true,
+			});
+			restoredPaths.push(absolutePath);
+
+			if (file.oldPath && file.oldPath !== file.path) {
+				const oldPath = this.resolveSessionPath(session, file.oldPath);
+				await session.filesystem.deleteFile(oldPath, {
+					force: true,
+					recursive: true,
+				});
+				deletedPaths.push(oldPath);
+			}
+		}
+
+		this.touch(session);
+		return {
+			workspaceRef: session.workspaceRef,
+			changeSetId: selected.changeSetId,
+			operation: selected.operation,
+			restoredPaths,
+			deletedPaths,
+			sandbox: this.buildSandboxMetadata(session),
+		};
+	}
+
+	async captureBrowserFlow(input: BrowserCaptureFlowInput): Promise<{
+		artifact: WorkflowBrowserArtifactRecord;
+		artifactId: string;
+		stepCount: number;
+		status: WorkflowBrowserArtifactStatus;
+		sandbox: WorkspaceSandboxMetadata;
+	}> {
+		const session = await this.resolveFromInput(
+			input.workspaceRef,
+			input.executionId,
+		);
+		const baseUrl = String(input.baseUrl || "").trim();
+		if (!baseUrl) {
+			throw new Error("baseUrl is required");
+		}
+		if (!input.workflowId.trim() || !input.nodeId.trim()) {
+			throw new Error("workflowId and nodeId are required");
+		}
+		if (input.steps.length === 0) {
+			throw new Error("At least one browser capture step is required");
+		}
+
+		const browserInfo = await this.getBrowserConnectionInfo(session);
+		const browser = await chromium.connectOverCDP(browserInfo.cdpUrl, {
+			timeout: input.timeoutMs,
+		});
+		const screenshots: Array<{ payload: Buffer; contentType: string }> = [];
+		const steps: WorkflowBrowserCaptureStep[] = [];
+		let overallStatus: WorkflowBrowserArtifactStatus = "completed";
+		const startedAt = new Date().toISOString();
+
+		try {
+			const context = browser.contexts()[0] || (await browser.newContext());
+			const page = context.pages()[0] || (await context.newPage());
+
+			for (let index = 0; index < input.steps.length; index += 1) {
+				const step = input.steps[index]!;
+				const label = step.label?.trim() || `Step ${index + 1}`;
+				const targetUrl = this.resolveBrowserStepUrl(baseUrl, step);
+				try {
+					await page.goto(targetUrl, {
+						waitUntil: "domcontentloaded",
+						timeout: input.timeoutMs,
+					});
+					if (step.waitForSelector?.trim()) {
+						await page.waitForSelector(step.waitForSelector.trim(), {
+							timeout: input.timeoutMs,
+						});
+					}
+					if (step.waitForText?.trim()) {
+						const needle = step.waitForText.trim();
+						await page.waitForFunction(
+							(text) => document.body?.innerText?.includes(text),
+							needle,
+							{ timeout: input.timeoutMs },
+						);
+					}
+					if (
+						typeof step.delayMs === "number" &&
+						Number.isFinite(step.delayMs) &&
+						step.delayMs > 0
+					) {
+						await page.waitForTimeout(step.delayMs);
+					}
+					const png = await page.screenshot({
+						fullPage: step.fullPage !== false,
+						type: "png",
+					});
+					screenshots.push({ payload: png, contentType: "image/png" });
+					steps.push({
+						id: step.id?.trim() || `step-${index + 1}`,
+						label,
+						url: page.url(),
+						title: await page.title(),
+						waitForSelector: step.waitForSelector?.trim() || undefined,
+						waitForText: step.waitForText?.trim() || undefined,
+						delayMs:
+							typeof step.delayMs === "number" && Number.isFinite(step.delayMs)
+								? step.delayMs
+								: undefined,
+						capturedAt: new Date().toISOString(),
+						status: "completed",
+					});
+				} catch (error) {
+					overallStatus = screenshots.length > 0 ? "partial" : "failed";
+					steps.push({
+						id: step.id?.trim() || `step-${index + 1}`,
+						label,
+						url: targetUrl,
+						waitForSelector: step.waitForSelector?.trim() || undefined,
+						waitForText: step.waitForText?.trim() || undefined,
+						delayMs:
+							typeof step.delayMs === "number" && Number.isFinite(step.delayMs)
+								? step.delayMs
+								: undefined,
+						status: "failed",
+						error: error instanceof Error ? error.message : String(error),
+					});
+					break;
+				}
+			}
+		} finally {
+			await browser.close();
+		}
+
+		const artifact = await browserArtifacts.save({
+			workflowExecutionId: session.executionId,
+			workflowId: input.workflowId.trim(),
+			nodeId: input.nodeId.trim(),
+			workspaceRef: session.workspaceRef,
+			status: overallStatus,
+			manifest: {
+				baseUrl,
+				startedAt,
+				completedAt: new Date().toISOString(),
+				status: overallStatus,
+				steps,
+				metadata: input.metadata ?? null,
+			},
+			screenshots,
+		});
+
+		this.touch(session);
+		return {
+			artifact,
+			artifactId: artifact.id,
+			stepCount: steps.length,
+			status: overallStatus,
+			sandbox: this.buildSandboxMetadata(session),
 		};
 	}
 
@@ -2016,6 +2279,63 @@ class WorkspaceSessionManager {
 			workingDirectory,
 			details: session.sandbox.getDebugInfo?.() ?? {},
 		};
+	}
+
+	private resolveBrowserStepUrl(
+		baseUrl: string,
+		step: BrowserCaptureStepInput,
+	): string {
+		const explicitUrl = String(step.url || "").trim();
+		if (explicitUrl) {
+			return explicitUrl;
+		}
+		const path = String(step.path || "").trim();
+		if (!path) {
+			return baseUrl;
+		}
+		return new URL(path, `${baseUrl.replace(/\/+$/, "")}/`).toString();
+	}
+
+	private async getBrowserConnectionInfo(session: WorkspaceSession): Promise<{
+		cdpUrl: string;
+	}> {
+		if (!(session.sandbox instanceof K8sSandbox)) {
+			throw new Error("Browser capture requires a k8s-backed workspace");
+		}
+		const podIp = session.sandbox.getSandboxPodIp();
+		if (!podIp) {
+			throw new Error("Browser sandbox pod is not ready");
+		}
+		const infoUrl = `http://${podIp}:${session.sandbox.getPort()}/v1/browser/info`;
+		const response = await fetch(infoUrl);
+		if (!response.ok) {
+			throw new Error(
+				`Failed to load browser info from sandbox (${response.status})`,
+			);
+		}
+		const payload = (await response.json()) as Record<string, unknown>;
+		const data =
+			payload.data && typeof payload.data === "object"
+				? (payload.data as Record<string, unknown>)
+				: payload;
+		const cdpUrlCandidates = [
+			data.debugger_url,
+			data.debuggerUrl,
+			data.ws_url,
+			data.wsUrl,
+			data.websocket_url,
+			data.websocketUrl,
+			data.cdp_url,
+			data.cdpUrl,
+		];
+		const cdpUrl = cdpUrlCandidates.find(
+			(value): value is string =>
+				typeof value === "string" && value.trim().length > 0,
+		);
+		if (!cdpUrl) {
+			throw new Error("Sandbox browser info did not include a CDP endpoint");
+		}
+		return { cdpUrl: cdpUrl.trim() };
 	}
 
 	private async sweepExpired(): Promise<void> {

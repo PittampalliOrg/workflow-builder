@@ -35,6 +35,26 @@ function buildExampleConfig(action: {
 	id: string;
 	configFields: unknown;
 }): Record<string, string | number> {
+	if (action.id === "workspace/profile") {
+		return {
+			actionType: action.id,
+			name: "Repository Workspace",
+			requireReadBeforeWrite: "true",
+			commandTimeoutMs: 30000,
+		};
+	}
+
+	if (action.id === "workspace/clone") {
+		return {
+			actionType: action.id,
+			workspaceRef: "{{@workspace_profile:Workspace Profile.workspaceRef}}",
+			repositoryOwner: "{{@trigger:Manual.repo_owner}}",
+			repositoryRepo: "{{@trigger:Manual.repo_name}}",
+			repositoryBranch: "{{@trigger:Manual.branch}}",
+			targetDir: "repo",
+		};
+	}
+
 	const example: Record<string, string | number> = { actionType: action.id };
 	const fields = flattenConfigFields(action.configFields as any);
 
