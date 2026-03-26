@@ -6576,34 +6576,51 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
             capture_stdout = str(capture_result.get("stdout") or "").strip()
             capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
 
-        if capture_exit == 0 and capture_stdout:
-            # Parse JSON result — the capture script includes base64 PNG data inline
+        if capture_exit == 0 and "CAPTURE_OK" in capture_stdout:
+            # Read manifest and convert PNGs to base64 files inside the sandbox,
+            # then read the base64 text files (avoids binary data in stdout).
             try:
-                result_data = json.loads(capture_stdout.split("\n")[-1])
+                convert_cmd = (
+                    f"cd {output_dir} && "
+                    f"for f in step-*.png; do "
+                    f"  python3 -c \"import base64,sys; sys.stdout.write(base64.b64encode(open('$f','rb').read()).decode())\" > \"$f.b64\"; "
+                    f"done && cat manifest.json"
+                )
+                manifest_result = context.run_command(convert_cmd, timeout_seconds=60)
+                manifest_text = str(manifest_result.get("stdout") or "").strip()
+                result_data = json.loads(manifest_text)
                 if result_data.get("success"):
                     for ss in result_data.get("screenshots", []):
                         step_index = ss.get("step", 1) - 1
-                        b64_data = ss.get("base64", "")
-                        if b64_data:
-                            try:
-                                screenshots.append(base64.b64decode(b64_data))
-                            except Exception:
-                                logger.warning("browser_validate invalid base64 for step %d", step_index + 1)
-                                continue
-                            step_label = f"Step {step_index + 1}"
-                            if isinstance(steps, list) and step_index < len(steps):
-                                s = steps[step_index]
-                                if isinstance(s, BrowserCaptureStepRequest):
-                                    step_label = s.label or step_label
-                                elif isinstance(s, dict):
-                                    step_label = s.get("label", step_label)
-                            step_records.append(WorkflowBrowserCaptureStep(
-                                id=f"step-{step_index + 1}",
-                                label=step_label,
-                                url=ss.get("url", ""),
-                                captured_at=_utc_now_iso(),
-                                status="completed",
-                            ))
+                        png_path = ss.get("path", "")
+                        if not png_path:
+                            continue
+                        b64_file = f"{png_path}.b64"
+                        try:
+                            b64_result = context.run_command(
+                                f"cat {shlex.quote(b64_file)}",
+                                timeout_seconds=60,
+                            )
+                            b64_text = str(b64_result.get("stdout") or "").strip()
+                            if b64_text:
+                                screenshots.append(base64.b64decode(b64_text))
+                        except Exception as read_exc:
+                            logger.warning("browser_validate read b64 failed step=%d: %s", step_index + 1, str(read_exc)[:200])
+                            continue
+                        step_label = f"Step {step_index + 1}"
+                        if isinstance(steps, list) and step_index < len(steps):
+                            s = steps[step_index]
+                            if isinstance(s, BrowserCaptureStepRequest):
+                                step_label = s.label or step_label
+                            elif isinstance(s, dict):
+                                step_label = s.get("label", step_label)
+                        step_records.append(WorkflowBrowserCaptureStep(
+                            id=f"step-{step_index + 1}",
+                            label=step_label,
+                            url=ss.get("url", ""),
+                            captured_at=_utc_now_iso(),
+                            status="completed",
+                        ))
             except json.JSONDecodeError:
                 logger.warning("browser_validate could not parse capture output: %s", capture_stdout[:200])
                 overall_status = "failed"
@@ -6649,7 +6666,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
 # Inline capture script for uploading to sandbox when the external file isn't available
 _INLINE_CAPTURE_SCRIPT = r'''#!/usr/bin/env python3
-"""In-sandbox screenshot capture. Outputs base64 PNG data in JSON for reliable transfer."""
+"""In-sandbox screenshot capture. Writes manifest to output_dir/manifest.json."""
 import argparse, base64, json, os, sys
 from playwright.sync_api import sync_playwright
 
@@ -6675,11 +6692,13 @@ def capture(base_url, steps, output_dir):
                 page.wait_for_timeout(step["delayMs"])
             path = os.path.join(output_dir, f"step-{i + 1}.png")
             page.screenshot(path=path, full_page=True)
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            results.append({"step": i + 1, "url": url, "path": path, "base64": b64})
+            results.append({"step": i + 1, "url": url, "path": path})
         browser.close()
-    print(json.dumps({"success": True, "screenshots": results}))
+    # Write manifest as a file (not stdout) to avoid large base64 data in command output
+    manifest_path = os.path.join(output_dir, "manifest.json")
+    with open(manifest_path, "w") as f:
+        json.dump({"success": True, "screenshots": results}, f)
+    print(f"CAPTURE_OK {len(results)}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
