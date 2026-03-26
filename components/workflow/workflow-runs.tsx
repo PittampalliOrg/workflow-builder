@@ -1129,7 +1129,7 @@ export function WorkflowRuns({
 										executionId: incomingExecutionId,
 										workflowId: currentWorkflowId ?? undefined,
 									}, { muted: audioMuted });
-									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
 							}
 						} else if (statusResponse.phase !== "awaiting_approval") {
@@ -1165,7 +1165,7 @@ export function WorkflowRuns({
 										executionId: execution.id,
 										workflowId: currentWorkflowId ?? undefined,
 									}, { muted: audioMuted });
-									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
 							} else if (statusResponse.status === "error" || statusResponse.phase === "failed") {
 								const notifKey = `${execution.id}:error`;
@@ -1174,7 +1174,7 @@ export function WorkflowRuns({
 										executionId: execution.id,
 										workflowId: currentWorkflowId ?? undefined,
 									}, { muted: audioMuted });
-									setNotifiedSet((prev: Set<string>) => new Set(prev).add(notifKey));
+									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
 							}
 						}
