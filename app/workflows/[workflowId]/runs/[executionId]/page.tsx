@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, Pause, Play, RefreshCw, Square } from "lucide-react";
 import Link from "next/link";
 import {
 	useParams,
@@ -9,6 +9,7 @@ import {
 	useSearchParams,
 } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { AgentLlmStream } from "@/components/workflow-runs/agent-llm-stream";
 import { ExecutionChangesPanel } from "@/components/workflow-runs/execution-changes-panel";
 import { RunArtifactsTab } from "@/components/workflow-runs/run-artifacts-tab";
@@ -109,6 +110,8 @@ export default function WorkflowRunDetailPage() {
 		useState<ExecutionStatusResponse | null>(null);
 	const [isLoading, setIsLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
+	const [pendingAction, setPendingAction] = useState<string | null>(null);
+	const [browserArtifactCount, setBrowserArtifactCount] = useState(0);
 
 	const { execution: monitorExecution } = useMonitorExecution(
 		executionId ?? null,
@@ -155,6 +158,37 @@ export default function WorkflowRunDetailPage() {
 	const isRunActive = ["running", "pending"].includes(
 		effectiveStatus.toLowerCase(),
 	);
+	const normalizedStatus = effectiveStatus.toUpperCase();
+	const canPause =
+		normalizedStatus === "RUNNING" || normalizedStatus === "PENDING";
+	const canResume = normalizedStatus === "SUSPENDED";
+	const canTerminate =
+		normalizedStatus === "RUNNING" ||
+		normalizedStatus === "PENDING" ||
+		normalizedStatus === "SUSPENDED";
+
+	const runAction = useCallback(
+		async (
+			action: string,
+			runner: () => Promise<unknown>,
+			successMessage: string,
+		) => {
+			if (!canonicalExecutionId) return;
+			setPendingAction(action);
+			try {
+				await runner();
+				toast.success(successMessage);
+				load();
+			} catch (err) {
+				toast.error(
+					`Failed to ${action}: ${err instanceof Error ? err.message : "Unknown error"}`,
+				);
+			} finally {
+				setPendingAction(null);
+			}
+		},
+		[canonicalExecutionId, load],
+	);
 
 	const agentStream = useAgentStream({
 		executionId: executionId ?? null,
@@ -173,6 +207,15 @@ export default function WorkflowRunDetailPage() {
 
 		return () => clearInterval(interval);
 	}, [effectiveStatus, load]);
+
+	useEffect(() => {
+		const eid = details?.execution.id ?? executionId;
+		if (!eid) return;
+		void api.workflow
+			.getExecutionBrowserArtifacts(eid)
+			.then((r) => setBrowserArtifactCount(r.count))
+			.catch(() => {});
+	}, [details?.execution.id, executionId, effectiveStatus]);
 
 	useEffect(() => {
 		if (!workflowId || !executionId || !details?.execution.id) {
@@ -354,6 +397,61 @@ export default function WorkflowRunDetailPage() {
 						</div>
 
 						<div className="flex flex-wrap items-center gap-2">
+							{canPause && (
+								<Button
+									disabled={pendingAction !== null}
+									onClick={() =>
+										runAction(
+											"pause",
+											() => api.dapr.pause(canonicalExecutionId!),
+											"Workflow paused",
+										)
+									}
+									size="sm"
+									variant="outline"
+								>
+									<Pause className="mr-2 h-4 w-4" />
+									Pause
+								</Button>
+							)}
+							{canResume && (
+								<Button
+									disabled={pendingAction !== null}
+									onClick={() =>
+										runAction(
+											"resume",
+											() => api.dapr.resume(canonicalExecutionId!),
+											"Workflow resumed",
+										)
+									}
+									size="sm"
+									variant="outline"
+								>
+									<Play className="mr-2 h-4 w-4" />
+									Resume
+								</Button>
+							)}
+							{canTerminate && (
+								<Button
+									disabled={pendingAction !== null}
+									onClick={() =>
+										runAction(
+											"terminate",
+											() =>
+												api.dapr.terminate(
+													canonicalExecutionId!,
+													"Terminated from run detail page",
+												),
+											"Workflow terminated",
+										)
+									}
+									size="sm"
+									variant="destructive"
+								>
+									<Square className="mr-2 h-4 w-4" />
+									Terminate
+								</Button>
+							)}
 							<Button asChild size="sm" variant="outline">
 								<Link href={`/monitor/${details.execution.id}`}>Monitor</Link>
 							</Button>
@@ -389,8 +487,12 @@ export default function WorkflowRunDetailPage() {
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="artifacts">
 									Artifacts (
 									{(details.planArtifacts?.length ?? 0) +
-										(details.externalEvents?.length ?? 0)}
+										(details.externalEvents?.length ?? 0) +
+										browserArtifactCount}
 									)
+									{browserArtifactCount > 0 && (
+										<span className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
+									)}
 								</TabsTrigger>
 								<TabsTrigger className="h-7 px-2.5 text-xs" value="changes">
 									Changes

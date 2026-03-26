@@ -6577,38 +6577,33 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
             capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
 
         if capture_exit == 0 and capture_stdout:
-            # Try to parse JSON result
+            # Parse JSON result — the capture script includes base64 PNG data inline
             try:
                 result_data = json.loads(capture_stdout.split("\n")[-1])
                 if result_data.get("success"):
                     for ss in result_data.get("screenshots", []):
                         step_index = ss.get("step", 1) - 1
-                        png_path = ss.get("path", "")
-                        # Read the PNG from sandbox
-                        try:
-                            read_result = context.run_command(
-                                f"base64 -w0 {shlex.quote(png_path)}",
-                                timeout_seconds=30,
-                            )
-                            b64_data = str(read_result.get("stdout") or "").strip()
-                            if b64_data:
+                        b64_data = ss.get("base64", "")
+                        if b64_data:
+                            try:
                                 screenshots.append(base64.b64decode(b64_data))
-                                step_label = f"Step {step_index + 1}"
-                                if isinstance(steps, list) and step_index < len(steps):
-                                    s = steps[step_index]
-                                    if isinstance(s, BrowserCaptureStepRequest):
-                                        step_label = s.label or step_label
-                                    elif isinstance(s, dict):
-                                        step_label = s.get("label", step_label)
-                                step_records.append(WorkflowBrowserCaptureStep(
-                                    id=f"step-{step_index + 1}",
-                                    label=step_label,
-                                    url=ss.get("url", ""),
-                                    captured_at=_utc_now_iso(),
-                                    status="completed",
-                                ))
-                        except Exception as read_exc:
-                            logger.warning("browser_validate read screenshot failed: %s", str(read_exc)[:200])
+                            except Exception:
+                                logger.warning("browser_validate invalid base64 for step %d", step_index + 1)
+                                continue
+                            step_label = f"Step {step_index + 1}"
+                            if isinstance(steps, list) and step_index < len(steps):
+                                s = steps[step_index]
+                                if isinstance(s, BrowserCaptureStepRequest):
+                                    step_label = s.label or step_label
+                                elif isinstance(s, dict):
+                                    step_label = s.get("label", step_label)
+                            step_records.append(WorkflowBrowserCaptureStep(
+                                id=f"step-{step_index + 1}",
+                                label=step_label,
+                                url=ss.get("url", ""),
+                                captured_at=_utc_now_iso(),
+                                status="completed",
+                            ))
             except json.JSONDecodeError:
                 logger.warning("browser_validate could not parse capture output: %s", capture_stdout[:200])
                 overall_status = "failed"
@@ -6654,7 +6649,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
 # Inline capture script for uploading to sandbox when the external file isn't available
 _INLINE_CAPTURE_SCRIPT = r'''#!/usr/bin/env python3
-"""In-sandbox screenshot capture."""
+"""In-sandbox screenshot capture. Outputs base64 PNG data in JSON for reliable transfer."""
 import argparse, base64, json, os, sys
 from playwright.sync_api import sync_playwright
 
@@ -6682,7 +6677,7 @@ def capture(base_url, steps, output_dir):
             page.screenshot(path=path, full_page=True)
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
-            results.append({"step": i + 1, "url": url, "path": path, "base64Length": len(b64)})
+            results.append({"step": i + 1, "url": url, "path": path, "base64": b64})
         browser.close()
     print(json.dumps({"success": True, "screenshots": results}))
 
