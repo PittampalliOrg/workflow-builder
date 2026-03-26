@@ -6541,22 +6541,16 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
     output_dir = "/tmp/wf-screenshots"
 
-    # Upload the capture script to the sandbox
-    capture_script_path = Path(__file__).parent / "capture_screenshots_sandbox.py"
-    script_content = (
-        capture_script_path.read_text()
-        if capture_script_path.exists()
-        else _INLINE_CAPTURE_SCRIPT
-    )
-    upload_command = f"cat > /sandbox/capture_screenshots.py << 'CAPTURE_SCRIPT_EOF'\n{script_content}\nCAPTURE_SCRIPT_EOF\nchmod +x /sandbox/capture_screenshots.py"
+    # Playwright browsers are pre-installed in the sandbox image at /opt/pw-browsers.
+    # Upload the capture script via base64 encoding to avoid heredoc quoting issues
+    # with OpenShell's command API.
+    encoded_script = base64.b64encode(_INLINE_CAPTURE_SCRIPT.strip().encode()).decode()
+    upload_command = f"echo '{encoded_script}' | base64 -d > /sandbox/capture_screenshots.py && chmod +x /sandbox/capture_screenshots.py"
     try:
         context.run_command(upload_command, timeout_seconds=30)
     except Exception as exc:
         logger.warning("browser_validate upload capture script failed: %s", str(exc)[:200])
 
-    # Playwright browsers are pre-installed in the sandbox image at /opt/pw-browsers.
-    # Set PLAYWRIGHT_BROWSERS_PATH explicitly so the capture script finds them,
-    # regardless of which user or shell environment runs the command.
     pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
     capture_command = (
         f"{pw_env} python3 /sandbox/capture_screenshots.py "
