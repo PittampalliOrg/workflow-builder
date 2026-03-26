@@ -6508,7 +6508,8 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         logger.warning("browser_validate devserver launch returned error (may be expected for background): %s", str(exc)[:200])
 
     # --- Step 3: Wait for dev server to be ready ---
-    ready_poll_command = f"for i in $(seq 1 60); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 3; done; echo timeout; exit 1"
+    # Dev server binds in the sandbox user's network namespace; poll must also run as sandbox user.
+    ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
     try:
         poll_result = context.run_command(ready_poll_command, timeout_seconds=200)
         stdout = str(poll_result.get("stdout") or "").strip()
@@ -6539,37 +6540,32 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     ])
 
     output_dir = "/tmp/wf-screenshots"
-    capture_command = (
-        f"python3 /sandbox/capture_screenshots.py "
-        f"--base-url {shlex.quote(request.baseUrl)} "
-        f"--steps {shlex.quote(steps_json)} "
-        f"--output-dir {output_dir}"
-    )
 
-    # First, upload the capture script to the sandbox
+    # Upload the capture script to the sandbox
     capture_script_path = Path(__file__).parent / "capture_screenshots_sandbox.py"
-    if capture_script_path.exists():
-        script_content = capture_script_path.read_text()
-    else:
-        # Inline fallback: use Xvfb + Playwright
-        script_content = _INLINE_CAPTURE_SCRIPT
-
+    script_content = (
+        capture_script_path.read_text()
+        if capture_script_path.exists()
+        else _INLINE_CAPTURE_SCRIPT
+    )
     upload_command = f"cat > /sandbox/capture_screenshots.py << 'CAPTURE_SCRIPT_EOF'\n{script_content}\nCAPTURE_SCRIPT_EOF\nchmod +x /sandbox/capture_screenshots.py"
     try:
         context.run_command(upload_command, timeout_seconds=30)
     except Exception as exc:
         logger.warning("browser_validate upload capture script failed: %s", str(exc)[:200])
 
-    # Install playwright in the sandbox if not already present
-    try:
-        context.run_command(
-            "pip install playwright 2>/dev/null; python3 -m playwright install chromium 2>/dev/null || true",
-            timeout_seconds=120,
-        )
-    except Exception as exc:
-        logger.warning("browser_validate playwright install: %s", str(exc)[:200])
+    # Playwright browsers are pre-installed in the sandbox image at /opt/pw-browsers.
+    # Set PLAYWRIGHT_BROWSERS_PATH explicitly so the capture script finds them,
+    # regardless of which user or shell environment runs the command.
+    pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
+    capture_command = (
+        f"{pw_env} python3 /sandbox/capture_screenshots.py "
+        f"--base-url {shlex.quote(request.baseUrl)} "
+        f"--steps {shlex.quote(steps_json)} "
+        f"--output-dir {output_dir}"
+    )
 
-    # Run the capture via Xvfb
+    # Run the capture via Xvfb (provides a virtual display for Chromium)
     xvfb_capture = f"xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' {capture_command}"
     screenshots: list[bytes] = []
     step_records: list[WorkflowBrowserCaptureStep] = []
