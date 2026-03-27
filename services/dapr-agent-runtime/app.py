@@ -57,6 +57,7 @@ from langgraph_engine import (
     is_langgraph_available,
     run_langgraph_task,
 )
+from tracing import setup_tracing, trace_span
 try:
     import psycopg
 except ImportError:  # pragma: no cover
@@ -330,7 +331,7 @@ _MAX_SANDBOX_NAME_LEN = 30
 def _sanitize_sandbox_name(name: str, *, max_len: int = _MAX_SANDBOX_NAME_LEN) -> str:
     """Lowercase, replace non-alnum with '-', truncate, strip trailing '-'."""
     name = re.sub(r"[^a-z0-9-]", "-", name.lower())
-    name = name[:max_len].rstrip("-")
+    name = name[:max_len].strip("-")
     return name or "sandbox"
 
 
@@ -5862,6 +5863,7 @@ def _extract_openai_api_key(credentials: dict[str, str] | None) -> str | None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _ensure_workspace_root()
+    setup_tracing("dapr-agent-runtime", _app)
     if ENABLE_DAPR_AGENTS_INSTRUMENTATION:
         try:
             from dapr_agents.observability import DaprAgentsInstrumentor
@@ -6506,7 +6508,8 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     )
 
     # --- Step 1: Install dependencies ---
-    try:
+    with trace_span("browser_validate.install", {"sandbox": request.sandboxName}):
+      try:
         logger.info("browser_validate install: sandbox=%s command=%s", request.sandboxName, request.installCommand[:120])
         install_result = context.run_command(
             request.installCommand,
@@ -6517,30 +6520,32 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
             error_msg = f"Install failed with exit code {install_exit_code}: {str(install_result.get('stderr') or install_result.get('stdout', ''))[:500]}"
             logger.warning("browser_validate install failed: %s", error_msg)
             return {"success": False, "error": error_msg, "phase": "install"}
-    except Exception as exc:
+      except Exception as exc:
         logger.exception("browser_validate install crashed: sandbox=%s", request.sandboxName)
         return {"success": False, "error": f"Install error: {str(exc)[:500]}", "phase": "install"}
 
     # --- Step 2: Start dev server in background ---
-    try:
+    with trace_span("browser_validate.devserver", {"sandbox": request.sandboxName}):
+      try:
         logger.info("browser_validate devserver: sandbox=%s command=%s", request.sandboxName, request.devServerCommand[:120])
         context.run_command(
             request.devServerCommand,
             timeout_seconds=min(timeout_seconds, 60),
         )
-    except Exception as exc:
+      except Exception as exc:
         logger.warning("browser_validate devserver launch returned error (may be expected for background): %s", str(exc)[:200])
 
     # --- Step 3: Wait for dev server to be ready ---
     # Dev server binds in the sandbox user's network namespace; poll must also run as sandbox user.
-    ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
-    try:
+    with trace_span("browser_validate.poll", {"base_url": request.baseUrl}):
+      ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
+      try:
         poll_result = context.run_command(ready_poll_command, timeout_seconds=200)
         stdout = str(poll_result.get("stdout") or "").strip()
         if "ready" not in stdout:
             logger.warning("browser_validate devserver not ready: %s", stdout[:200])
             return {"success": False, "error": f"Dev server did not become ready: {stdout[:200]}", "phase": "devserver-poll"}
-    except Exception as exc:
+      except Exception as exc:
         logger.warning("browser_validate devserver poll failed: %s", str(exc)[:200])
         return {"success": False, "error": f"Dev server poll error: {str(exc)[:300]}", "phase": "devserver-poll"}
 

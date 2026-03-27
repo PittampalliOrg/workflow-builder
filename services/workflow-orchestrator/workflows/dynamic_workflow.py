@@ -1178,6 +1178,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "openshell-langgraph/run",
                     "openshell-deepagent/run",
                     "openshell-durable/run",
+                    "vanilla-durable/run",
                     "dapr-agent/run",
                     "ms-agent/run",
                 ):
@@ -2260,8 +2261,9 @@ def process_agent_child_workflow(
     is_openshell_agent = action_type == "openshell/run"
     is_openshell_deepagent = action_type == "openshell-deepagent/run"
     is_openshell_durable = action_type == "openshell-durable/run"
+    is_vanilla_durable = action_type == "vanilla-durable/run"
     is_dapr_agent = action_type == "dapr-agent/run"
-    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable
+    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable or is_vanilla_durable
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2444,7 +2446,7 @@ def process_agent_child_workflow(
         # final name fits within the 63-char RFC 1123 subdomain limit.
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].rstrip("-") or "sandbox"
+        )[:30].strip("-") or "sandbox"
 
     if is_openshell_deepagent:
         activity_input["engine"] = "langgraph"
@@ -2463,7 +2465,7 @@ def process_agent_child_workflow(
         )
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].rstrip("-") or "sandbox"
+        )[:30].strip("-") or "sandbox"
 
     if is_openshell_durable:
         activity_input["engine"] = "durable"
@@ -2482,7 +2484,7 @@ def process_agent_child_workflow(
         )
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].rstrip("-") or "sandbox"
+        )[:30].strip("-") or "sandbox"
 
     workspace_ref = str(resolved_config.get("workspaceRef") or "").strip() or None
     (
@@ -3270,12 +3272,16 @@ def process_agent_child_workflow(
                     orchestrator_config.OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME
                     if is_openshell_durable
                     else (
-                        orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
-                        if uses_dapr_agent_runtime
+                        orchestrator_config.VANILLA_DURABLE_CHILD_WORKFLOW_NAME
+                        if is_vanilla_durable
                         else (
-                            orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
-                            if run_mode == "execute_plan"
-                            else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                            orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
+                            if uses_dapr_agent_runtime
+                            else (
+                                orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
+                                if run_mode == "execute_plan"
+                                else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+                            )
                         )
                     )
                 )
@@ -3494,7 +3500,7 @@ def process_agent_child_workflow(
                 )
 
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID if is_openshell_durable else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID if is_openshell_durable else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID if is_vanilla_durable else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
@@ -3505,6 +3511,8 @@ def process_agent_child_workflow(
                 if is_ms_agent
                 else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
                 if is_openshell_durable
+                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
+                if is_vanilla_durable
                 else orchestrator_config.DAPR_AGENT_APP_ID
                 if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID
@@ -3579,6 +3587,8 @@ def process_agent_child_workflow(
                     if is_ms_agent
                     else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
                     if is_openshell_durable
+                    else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
+                    if is_vanilla_durable
                     else orchestrator_config.DAPR_AGENT_APP_ID
                     if uses_dapr_agent_runtime
                     else orchestrator_config.DURABLE_AGENT_APP_ID
@@ -3630,6 +3640,18 @@ def process_agent_child_workflow(
                 or plan_payload.get("content")
                 or ""
             ).strip()
+            # DurableAgent returns free-form text; synthesize plan from content
+            if not isinstance(plan_json, dict) and plan_markdown:
+                logger.info(
+                    "[Agent Workflow] No structured plan JSON from agent; "
+                    "synthesizing plan from text content (%d chars)",
+                    len(plan_markdown),
+                )
+                plan_json = {
+                    "goal": prompt,
+                    "steps": [{"description": plan_markdown}],
+                    "source": "agent-text",
+                }
             if not isinstance(plan_json, dict):
                 return {
                     "success": False,
@@ -4015,6 +4037,8 @@ def process_agent_child_workflow(
                 if is_ms_agent
                 else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
                 if is_openshell_durable
+                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
+                if is_vanilla_durable
                 else orchestrator_config.DAPR_AGENT_APP_ID
                 if uses_dapr_agent_runtime
                 else orchestrator_config.DURABLE_AGENT_APP_ID
