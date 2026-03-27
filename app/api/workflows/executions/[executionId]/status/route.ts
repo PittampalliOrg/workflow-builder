@@ -28,6 +28,9 @@ import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias"
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL =
+	process.env.OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL ||
+	"http://openshell-deepagents-test.workflow-builder.svc.cluster.local:8002";
 const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
 	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
 	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
@@ -46,6 +49,12 @@ function getAgentRuntimeTarget(
 	}
 	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-deepagents-test/run") {
+		return {
+			baseUrl: OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL,
+			path: "/api/run",
+		};
 	}
 	if (actionType === "openshell/run") {
 		return {
@@ -136,9 +145,12 @@ function shouldFetchLiveAgentPayload(
 		return false;
 	}
 	if (
-		!["dapr-agent/run", "openshell/run", "openshell-langgraph/run"].includes(
-			actionType,
-		)
+		![
+			"dapr-agent/run",
+			"openshell/run",
+			"openshell-langgraph/run",
+			"openshell-deepagents-test/run",
+		].includes(actionType)
 	) {
 		return false;
 	}
@@ -297,7 +309,10 @@ export async function GET(
 					actionType === "ms-agent/run"
 						? "ms-agent"
 						: actionType === "openshell/run" ||
-								actionType === "openshell-langgraph/run"
+								actionType === "openshell-langgraph/run" ||
+								actionType === "openshell-deepagent/run" ||
+								actionType === "openshell-deepagents-test/run" ||
+								actionType === "openshell-durable/run"
 							? "openshell"
 							: actionType === "dapr-agent/run"
 								? "dapr-agent"
@@ -324,16 +339,19 @@ export async function GET(
 					entry !== null,
 			),
 		);
+		const workflowTraceId = runtime?.traceId ?? null;
+		const agentTraceId =
+			Object.values(agentProgressByNode).find((value) => value.traceId)
+				?.traceId ??
+			extractExecutionTraceIds(execution.output)[0] ??
+			null;
 
 		return NextResponse.json({
 			status: mapped.status,
 			runtimeStatus: runtime?.runtimeStatus ?? null,
-			traceId:
-				runtime?.traceId ??
-				Object.values(agentProgressByNode).find((value) => value.traceId)
-					?.traceId ??
-				extractExecutionTraceIds(execution.output)[0] ??
-				null,
+			traceId: agentTraceId ?? workflowTraceId,
+			workflowTraceId,
+			agentTraceId,
 			phase: runtime?.phase ?? execution.phase,
 			progress: runtime?.progress ?? execution.progress,
 			message: runtime?.message ?? null,

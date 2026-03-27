@@ -99,7 +99,11 @@ function classifyServiceRole(
 	if (
 		normalized === "dapr-agent-runtime" ||
 		normalized === "ms-agent-workflow" ||
-		normalized === "durable-agent"
+		normalized === "durable-agent" ||
+		normalized === "openshell-durable-agent" ||
+		normalized === "openshell-deepagents-test" ||
+		normalized === "vanilla-durable-agent" ||
+		normalized.endsWith("-durable-agent")
 	) {
 		return "agent-runtime";
 	}
@@ -149,20 +153,50 @@ function classifySpanCategory(args: {
 		"http.request.method",
 	]);
 
+	// --- Agent lifecycle spans (check before LLM — these carry gen_ai attrs but aren't LLM calls) ---
 	if (
-		name.startsWith("activity.") ||
-		hasStringAttribute(attrs, [
-			"workflow.activity_name",
-			"workflow.activityName",
-			"activity.name",
-			"activity.type",
-			"action.type",
-		])
+		name.startsWith("invoke_agent") ||
+		name.includes("record_initial_entry") ||
+		name.includes("finalize_workflow") ||
+		name.includes("get_team_members") ||
+		hasAgentWorkflow ||
+		name.includes("agent_workflow") ||
+		name.includes("dapr-coding-agent") ||
+		name.includes("repo-review") ||
+		name.includes("planner") ||
+		name.includes("reviewer")
 	) {
-		return "activity";
+		return "agent";
 	}
 
+	// --- Tool spans (check before LLM — these carry gen_ai attrs but aren't LLM calls) ---
 	if (
+		name.startsWith("execute_tool") ||
+		name.includes("run_tool") ||
+		name.includes("save_tool_results") ||
+		name.includes("load_tools") ||
+		hasToolName
+	) {
+		return "tool";
+	}
+
+	// --- LLM spans ---
+	if (
+		name.includes("call_llm") ||
+		name.includes("summarize") ||
+		name === "chat" ||
+		name.includes("chat.completions") ||
+		name.includes("model") ||
+		hasAttributePrefix(attrs, "gen_ai.") ||
+		hasAttributePrefix(attrs, "llm.")
+	) {
+		return "llm";
+	}
+
+	// --- Workflow orchestration spans ---
+	if (
+		name.startsWith("orchestration||") ||
+		name.startsWith("create_orchestration||") ||
 		name.includes("child workflow") ||
 		name.includes("call_child_workflow") ||
 		name.includes("call child workflow") ||
@@ -175,29 +209,24 @@ function classifySpanCategory(args: {
 		return "child-workflow";
 	}
 
+	// --- Dapr workflow activities (generic, after specific agent/llm/tool checks) ---
 	if (
-		name.includes("call_llm") ||
-		name.includes("model") ||
-		name.includes("chat.completions") ||
-		hasAttributePrefix(attrs, "gen_ai.") ||
-		hasAttributePrefix(attrs, "llm.")
+		name.startsWith("activity.") ||
+		name.startsWith("activity||") ||
+		name.startsWith("activity: ") ||
+		hasStringAttribute(attrs, [
+			"workflow.activity_name",
+			"workflow.activityName",
+			"activity.name",
+			"activity.type",
+			"action.type",
+		])
 	) {
-		return "llm";
+		return "activity";
 	}
 
-	if (name.includes("tool") || hasToolName) {
-		return "tool";
-	}
-
-	if (
-		serviceRole === "agent-runtime" ||
-		hasAgentWorkflow ||
-		name.includes("agent_workflow") ||
-		name.includes("dapr-coding-agent") ||
-		name.includes("repo-review") ||
-		name.includes("planner") ||
-		name.includes("reviewer")
-	) {
+	// --- Agent-runtime service role fallback ---
+	if (serviceRole === "agent-runtime") {
 		return "agent";
 	}
 

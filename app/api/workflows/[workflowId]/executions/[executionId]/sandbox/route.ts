@@ -79,7 +79,10 @@ function findOpenShellSandbox(
 		const nodeConfig = nodeConfigMap.get(run.nodeId);
 		if (
 			nodeConfig?.actionType !== "openshell/run" &&
-			nodeConfig?.actionType !== "openshell-langgraph/run"
+			nodeConfig?.actionType !== "openshell-langgraph/run" &&
+			nodeConfig?.actionType !== "openshell-deepagent/run" &&
+			nodeConfig?.actionType !== "openshell-deepagents-test/run" &&
+			nodeConfig?.actionType !== "openshell-durable/run"
 		) {
 			continue;
 		}
@@ -109,7 +112,10 @@ function findOpenShellSandbox(
 		const nodeConfig = nodeConfigMap.get(nodeKey);
 		if (
 			nodeConfig?.actionType !== "openshell/run" &&
-			nodeConfig?.actionType !== "openshell-langgraph/run"
+			nodeConfig?.actionType !== "openshell-langgraph/run" &&
+			nodeConfig?.actionType !== "openshell-deepagent/run" &&
+			nodeConfig?.actionType !== "openshell-deepagents-test/run" &&
+			nodeConfig?.actionType !== "openshell-durable/run"
 		) {
 			continue;
 		}

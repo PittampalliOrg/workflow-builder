@@ -31,6 +31,9 @@ import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 const DAPR_AGENT_RUNTIME_API_BASE_URL =
 	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
 	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
+const OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL =
+	process.env.OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL ||
+	"http://openshell-deepagents-test.workflow-builder.svc.cluster.local:8002";
 const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
 	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
 	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
@@ -49,6 +52,12 @@ function getAgentRuntimeTarget(
 	}
 	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-deepagents-test/run") {
+		return {
+			baseUrl: OPENSHELL_DEEPAGENTS_TEST_API_BASE_URL,
+			path: "/api/run",
+		};
 	}
 	if (actionType === "openshell/run") {
 		return {
@@ -138,6 +147,7 @@ function shouldFetchLiveAgentPayload(
 			"ms-agent/run",
 			"openshell/run",
 			"openshell-langgraph/run",
+			"openshell-deepagents-test/run",
 		].includes(actionType)
 	) {
 		return false;
@@ -530,7 +540,8 @@ export async function getInternalWorkflowExecutionDetail(executionId: string) {
 				actionType === "ms-agent/run"
 					? "ms-agent"
 					: actionType === "openshell/run" ||
-							actionType === "openshell-langgraph/run"
+							actionType === "openshell-langgraph/run" ||
+							actionType === "openshell-deepagents-test/run"
 						? "openshell"
 						: actionType === "dapr-agent/run"
 							? "dapr-agent"

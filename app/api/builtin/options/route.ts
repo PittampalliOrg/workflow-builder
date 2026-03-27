@@ -627,7 +627,10 @@ export async function POST(request: Request) {
 		if (
 			(normalizedActionName === "durable/run" ||
 				normalizedActionName === "dapr-agent/run" ||
-				normalizedActionName === "openshell-langgraph/run") &&
+				normalizedActionName === "openshell-langgraph/run" ||
+				normalizedActionName === "openshell-deepagent/run" ||
+				normalizedActionName === "openshell-deepagents-test/run" ||
+				normalizedActionName === "openshell-durable/run") &&
 			rawBody.propertyName === "agentProfileTemplateId"
 		) {
 			const templates = await listAgentProfileTemplates({

@@ -139,6 +139,10 @@ const WORKFLOW_SERVICES = [
 	"dapr-agent-runtime",
 	"ms-agent-workflow",
 	"function-router",
+	"durable-agent",
+	"openshell-durable-agent",
+	"openshell-deepagents-test",
+	"vanilla-durable-agent",
 ];
 
 function resolveJaegerServices(searchParams: URLSearchParams): string[] {

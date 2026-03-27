@@ -158,6 +158,9 @@ const getProviderLogo = (
 	switch (actionType) {
 		case "openshell/run":
 		case "openshell-langgraph/run":
+		case "openshell-deepagent/run":
+		case "openshell-deepagents-test/run":
+		case "openshell-durable/run":
 			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
 		case "dapr-agent/run":
 			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
@@ -263,7 +266,8 @@ function AgentProgressOverlay({
 	const primaryLabel =
 		actionType === "dapr-agent/run" ||
 		actionType === "openshell/run" ||
-		actionType === "openshell-langgraph/run"
+		actionType === "openshell-langgraph/run" ||
+		actionType === "openshell-deepagents-test/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
 				: progress.phase || "Running"
@@ -448,7 +452,10 @@ export const ActionNode = memo(
 		const getAiModel = (): string | null => {
 			if (
 				actionType === "openshell/run" ||
-				actionType === "openshell-langgraph/run"
+				actionType === "openshell-langgraph/run" ||
+				actionType === "openshell-deepagents-test/run" ||
+				actionType === "openshell-deepagent/run" ||
+				actionType === "openshell-durable/run"
 			) {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
@@ -508,7 +515,10 @@ export const ActionNode = memo(
 				{(actionType === "ms-agent/run" ||
 					actionType === "dapr-agent/run" ||
 					actionType === "openshell/run" ||
-					actionType === "openshell-langgraph/run") && (
+					actionType === "openshell-langgraph/run" ||
+					actionType === "openshell-deepagent/run" ||
+					actionType === "openshell-deepagents-test/run" ||
+					actionType === "openshell-durable/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}
 						progress={agentProgress}

@@ -783,6 +783,22 @@ def _to_compact_agent_result(
     child_app_id: str,
 ) -> dict[str, Any]:
     payload = _unwrap_child_result_payload(raw_result)
+    agent_progress = (
+        payload.get("agentProgress")
+        if isinstance(payload.get("agentProgress"), dict)
+        else None
+    )
+    trace_id = (
+        str(payload.get("traceId") or "").strip()
+        or (
+            str(agent_progress.get("traceId") or "").strip()
+            if isinstance(agent_progress, dict)
+            else ""
+        )
+        or None
+    )
+    if isinstance(agent_progress, dict) and trace_id and not agent_progress.get("traceId"):
+        agent_progress = {**agent_progress, "traceId": trace_id}
     text = (
         payload.get("final_answer")
         or payload.get("content")
@@ -825,11 +841,22 @@ def _to_compact_agent_result(
         "planMarkdown": payload.get("planMarkdown"),
         "snapshotRefs": payload.get("snapshotRefs"),
         "verification": payload.get("verification"),
-        "traceId": payload.get("traceId"),
-        "agentProgress": payload.get("agentProgress"),
+        "traceId": trace_id,
+        "agentProgress": agent_progress,
         "sandboxName": payload.get("sandboxName"),
         "provider": payload.get("provider"),
     }
+
+
+def _merge_plan_payload_with_compact_result(
+    plan_payload: dict[str, Any],
+    compact_result: dict[str, Any],
+) -> dict[str, Any]:
+    merged = {**compact_result, **plan_payload}
+    planning = plan_payload.get("planning")
+    if isinstance(planning, dict):
+        merged["planning"] = planning
+    return merged
 
 
 def _build_plan_execution_text(plan: dict[str, Any]) -> str:
@@ -1177,6 +1204,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "openshell/run",
                     "openshell-langgraph/run",
                     "openshell-deepagent/run",
+                    "openshell-deepagents-test/run",
                     "openshell-durable/run",
                     "vanilla-durable/run",
                     "dapr-agent/run",
@@ -2260,10 +2288,14 @@ def process_agent_child_workflow(
     is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
     is_openshell_agent = action_type == "openshell/run"
     is_openshell_deepagent = action_type == "openshell-deepagent/run"
+    is_openshell_deepagents_test = action_type == "openshell-deepagents-test/run"
     is_openshell_durable = action_type == "openshell-durable/run"
+    is_openshell_native_durable = (
+        is_openshell_deepagent or is_openshell_durable
+    )
     is_vanilla_durable = action_type == "vanilla-durable/run"
     is_dapr_agent = action_type == "dapr-agent/run"
-    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable or is_vanilla_durable
+    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_deepagents_test or is_openshell_durable or is_vanilla_durable
     default_mode = "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2462,6 +2494,25 @@ def process_agent_child_workflow(
         raw_sandbox_name = (
             str(resolved_config.get("sandboxName") or "").strip()
             or f"openshell-da-{normalized_suffix}"
+        )
+        activity_input["sandboxName"] = re.sub(
+            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
+        )[:30].strip("-") or "sandbox"
+
+    if is_openshell_deepagents_test:
+        activity_input["engine"] = "langgraph-deepagents"
+        activity_input["toolBackend"] = "openshell"
+        activity_input["sandboxRepoPath"] = (
+            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
+        )
+        sandbox_suffix = (
+            str(tracked_execution_id or ctx.instance_id or "").strip()
+            or f"{node_id}-{run_mode}"
+        )
+        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
+        raw_sandbox_name = (
+            str(resolved_config.get("sandboxName") or "").strip()
+            or f"openshell-dgt-{normalized_suffix}"
         )
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
@@ -2844,6 +2895,20 @@ def process_agent_child_workflow(
                 "openshellRunId": openshell_run_id if is_openshell_agent else None,
             },
         }
+        planned_payload = _merge_plan_payload_with_compact_result(
+            planned_payload,
+            _to_compact_agent_result(
+                raw_result=start_result,
+                workflow_id=str(start_result.get("agentWorkflowId") or ""),
+                dapr_instance_id=str(
+                    start_result.get("daprInstanceId")
+                    or start_result.get("agentWorkflowId")
+                    or ""
+                ),
+                child_workflow_name=child_workflow_name,
+                child_app_id=child_app_id,
+            ),
+        )
 
         if db_execution_id and is_openshell_agent and openshell_run_id:
             try:
@@ -2854,7 +2919,7 @@ def process_agent_child_workflow(
                     input={
                         "id": openshell_run_id,
                         "success": True,
-                        "result": {**planned_payload, **start_result},
+                        "result": planned_payload,
                         "_otel": otel_ctx,
                     },
                 )
@@ -3269,8 +3334,11 @@ def process_agent_child_workflow(
                 orchestrator_config.MS_AGENT_CHILD_WORKFLOW_RUN_NAME
                 if is_ms_agent
                 else (
+                    orchestrator_config.OPENSHELL_DEEPAGENTS_TEST_CHILD_WORKFLOW_NAME
+                    if is_openshell_deepagents_test
+                    else (
                     orchestrator_config.OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME
-                    if is_openshell_durable
+                    if is_openshell_native_durable
                     else (
                         orchestrator_config.VANILLA_DURABLE_CHILD_WORKFLOW_NAME
                         if is_vanilla_durable
@@ -3283,6 +3351,7 @@ def process_agent_child_workflow(
                                 else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
                             )
                         )
+                    )
                     )
                 )
             )
@@ -3499,24 +3568,27 @@ def process_agent_child_workflow(
                     f"[Agent Workflow] Failed to persist native child scheduled row for {child_instance_id}: {track_err}"
                 )
 
+        native_child_app_id = (
+            orchestrator_config.MS_AGENT_APP_ID
+            if is_ms_agent
+            else orchestrator_config.OPENSHELL_DEEPAGENTS_TEST_APP_ID
+            if is_openshell_deepagents_test
+            else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
+            if is_openshell_native_durable
+            else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
+            if is_vanilla_durable
+            else orchestrator_config.DAPR_AGENT_APP_ID
+            if uses_dapr_agent_runtime
+            else orchestrator_config.DURABLE_AGENT_APP_ID
+        )
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID if is_openshell_durable else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID if is_vanilla_durable else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={native_child_app_id} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
             input=child_input,
             instance_id=child_instance_id,
-            app_id=(
-                orchestrator_config.MS_AGENT_APP_ID
-                if is_ms_agent
-                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                if is_openshell_durable
-                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
-                if is_vanilla_durable
-                else orchestrator_config.DAPR_AGENT_APP_ID
-                if uses_dapr_agent_runtime
-                else orchestrator_config.DURABLE_AGENT_APP_ID
-            ),
+            app_id=native_child_app_id,
         )
         if db_execution_id:
             try:
@@ -3585,8 +3657,10 @@ def process_agent_child_workflow(
                 "childAppId": (
                     orchestrator_config.MS_AGENT_APP_ID
                     if is_ms_agent
+                    else orchestrator_config.OPENSHELL_DEEPAGENTS_TEST_APP_ID
+                    if is_openshell_deepagents_test
                     else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                    if is_openshell_durable
+                    if is_openshell_native_durable
                     else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
                     if is_vanilla_durable
                     else orchestrator_config.DAPR_AGENT_APP_ID
@@ -3689,6 +3763,13 @@ def process_agent_child_workflow(
                         else "Failed to persist Dapr agent plan artifact"
                     ),
                 }
+            compact_plan_result = _to_compact_agent_result(
+                raw_result=raw_result,
+                workflow_id=child_instance_id,
+                dapr_instance_id=child_instance_id,
+                child_workflow_name=child_workflow_name,
+                child_app_id=native_child_app_id,
+            )
             planned_payload = {
                 "artifactRef": persisted_plan.get("artifactRef"),
                 "plan": plan_json,
@@ -3700,6 +3781,10 @@ def process_agent_child_workflow(
                     "daprPlanningInstanceId": child_instance_id,
                 },
             }
+            planned_payload = _merge_plan_payload_with_compact_result(
+                planned_payload,
+                compact_plan_result,
+            )
             if db_execution_id:
                 try:
                     from activities.track_agent_run import track_agent_run_completed
@@ -3709,13 +3794,7 @@ def process_agent_child_workflow(
                         input={
                             "id": child_instance_id,
                             "success": True,
-                            "result": {**planned_payload, **_to_compact_agent_result(
-                                raw_result=raw_result,
-                                workflow_id=child_instance_id,
-                                dapr_instance_id=child_instance_id,
-                                child_workflow_name=child_workflow_name,
-                                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
-                            )},
+                            "result": planned_payload,
                             "_otel": otel_ctx,
                         },
                     )
@@ -3992,7 +4071,7 @@ def process_agent_child_workflow(
                 workflow_id=execute_child_instance_id,
                 dapr_instance_id=execute_child_instance_id,
                 child_workflow_name=child_workflow_name,
-                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+                child_app_id=native_child_app_id,
             )
             if not execute_result_payload.get("sandboxName") and activity_input.get("sandboxName"):
                 execute_result_payload["sandboxName"] = activity_input["sandboxName"]
@@ -4035,11 +4114,13 @@ def process_agent_child_workflow(
             dapr_instance_id=child_instance_id,
             child_workflow_name=child_workflow_name,
             child_app_id=(
-                orchestrator_config.MS_AGENT_APP_ID
-                if is_ms_agent
-                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                if is_openshell_durable
-                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
+                    orchestrator_config.MS_AGENT_APP_ID
+                    if is_ms_agent
+                    else orchestrator_config.OPENSHELL_DEEPAGENTS_TEST_APP_ID
+                    if is_openshell_deepagents_test
+                    else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
+                    if is_openshell_native_durable
+                    else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
                 if is_vanilla_durable
                 else orchestrator_config.DAPR_AGENT_APP_ID
                 if uses_dapr_agent_runtime

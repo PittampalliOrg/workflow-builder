@@ -10,6 +10,7 @@ const SUPPORTED_WHILE_BODY_ACTION_TYPES = new Set<string>([
 	"dapr-agent/run",
 	"openshell/run",
 	"openshell-langgraph/run",
+	"openshell-deepagents-test/run",
 ]);
 
 export function isWhileNode(node: Pick<WorkflowNode, "type">): boolean {

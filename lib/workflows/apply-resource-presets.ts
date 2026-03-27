@@ -143,7 +143,8 @@ export async function applyResourcePresetsToNodes(input: {
 		if (
 			actionType !== "durable/run" &&
 			actionType !== "dapr-agent/run" &&
-			actionType !== "openshell-langgraph/run"
+			actionType !== "openshell-langgraph/run" &&
+			actionType !== "openshell-deepagents-test/run"
 		) {
 			continue;
 		}
@@ -192,7 +193,8 @@ export async function applyResourcePresetsToNodes(input: {
 		};
 		if (
 			actionType === "dapr-agent/run" ||
-			actionType === "openshell-langgraph/run"
+			actionType === "openshell-langgraph/run" ||
+			actionType === "openshell-deepagents-test/run"
 		) {
 			const mode = asNonEmptyString(config.mode) ?? "plan_mode";
 			const existingInstructions = asNonEmptyString(config.instructionsOverlay);
@@ -277,7 +279,8 @@ export async function applyResourcePresetsToNodes(input: {
 		delete config.instructions;
 		if (
 			actionType !== "dapr-agent/run" &&
-			actionType !== "openshell-langgraph/run"
+			actionType !== "openshell-langgraph/run" &&
+			actionType !== "openshell-deepagents-test/run"
 		) {
 			delete config.tools;
 		}

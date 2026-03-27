@@ -994,6 +994,7 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
         "dapr-agent/run",
         "openshell/run",
         "openshell-langgraph/run",
+        "openshell-deepagents-test/run",
     }
 
 
@@ -2231,7 +2232,7 @@ def resume_workflow(instance_id: str):
 # --- Pub/Sub Subscription Routes ---
 
 @app.post("/subscriptions/agent-events")
-def agent_events_subscription(event: CloudEvent):
+async def agent_events_subscription(request: Request):
     """
     Handle agent completion events from pub/sub.
 
@@ -2239,13 +2240,30 @@ def agent_events_subscription(event: CloudEvent):
     Dapr pub/sub. Native ms-agent and dapr-agent child workflows complete
     through child-workflow results rather than this callback path.
     """
-    logger.info(f"[Subscription] Received agent event: {event.type}")
+    try:
+        raw_event = await request.json()
+    except Exception:
+        raw_event = {}
+    if not isinstance(raw_event, dict):
+        return {
+            "status": "SUCCESS",
+            "result": {"status": "ignored", "reason": "invalid_payload"},
+        }
+
+    event_type = str(raw_event.get("type") or "").strip() or "unknown"
+    logger.info(f"[Subscription] Received agent event: {event_type}")
 
     # Forward agent completion events to parent workflows
     from dapr.ext.workflow import DaprWorkflowClient
 
-    event_data = event.data
-    actual_event_type = event_data.get("type", event.type)
+    event_data = raw_event.get("data")
+    if not isinstance(event_data, dict):
+        return {
+            "status": "SUCCESS",
+            "result": {"status": "ignored", "reason": "missing_data"},
+        }
+
+    actual_event_type = event_data.get("type", event_type)
 
     completion_event_types = {"agent_completed", "execution_completed"}
     if actual_event_type not in completion_event_types:

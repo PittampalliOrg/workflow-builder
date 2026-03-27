@@ -1313,6 +1313,51 @@ function cloneOpenShellLangGraphConfigField(
 	return field;
 }
 
+function cloneOpenShellDurableConfigField(
+	field: ActionConfigField,
+	overrides?: {
+		actionName?: string;
+		pieceName?: string;
+	},
+): ActionConfigField {
+	if (!isActionConfigFieldBase(field)) {
+		return field;
+	}
+	if (field.key === "engine" && field.type === "select") {
+		return {
+			...field,
+			defaultValue: "dapr-agent",
+			options: [{ label: "Dapr DurableAgent Runtime", value: "dapr-agent" }],
+		};
+	}
+	if (
+		field.key === "agentProfileTemplateId" &&
+		field.type === "dynamic-select"
+	) {
+		return {
+			...field,
+			dynamicOptions: {
+				provider: field.dynamicOptions?.provider ?? "builtin",
+				pieceName:
+					overrides?.pieceName ??
+					field.dynamicOptions?.pieceName ??
+					"openshell-durable",
+				actionName: overrides?.actionName ?? "openshell-durable/run",
+				propName: field.dynamicOptions?.propName ?? "agentProfileTemplateId",
+				refreshers: field.dynamicOptions?.refreshers ?? [],
+			},
+		};
+	}
+	if (field.key === "cwd" && field.type === "template-input") {
+		return {
+			...field,
+			label: "Sandbox Working Directory (optional)",
+			placeholder: "/sandbox/repo",
+		};
+	}
+	return field;
+}
+
 function buildOpenShellLangGraphOutputFields(): OutputField[] {
 	const baseOutputFields = DAPR_AGENT_PIECE.actions[0].outputFields ?? [];
 	return [
@@ -1342,6 +1387,121 @@ const OPENSHELL_LANGGRAPH_AGENT_PIECE: IntegrationDefinition = {
 			category: "OpenShell Agent",
 			configFields: DAPR_AGENT_PIECE.actions[0].configFields
 				.map(cloneOpenShellLangGraphConfigField)
+				.concat([
+					{
+						key: "sandboxRepoPath",
+						label: "Sandbox Repo Path (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "/sandbox/repo",
+					},
+					{
+						key: "provider",
+						label: "OpenShell Provider (optional)",
+						type: "text",
+						required: false,
+						placeholder: "claude",
+					},
+				]),
+			outputFields: buildOpenShellLangGraphOutputFields(),
+		},
+	],
+};
+
+const OPENSHELL_DEEPAGENT_PIECE: IntegrationDefinition = {
+	type: "openshell-deepagent",
+	label: "OpenShell DeepAgent",
+	pieceName: "openshell-deepagent",
+	logoUrl: "",
+	actions: [
+		{
+			...DAPR_AGENT_PIECE.actions[0],
+			label: "Run OpenShell DeepAgent",
+			description:
+				"Run the OpenShell DeepAgent profile on the native DurableAgent runtime inside OpenShell sandboxes",
+			category: "OpenShell Agent",
+			configFields: DAPR_AGENT_PIECE.actions[0].configFields
+				.map((field) =>
+					cloneOpenShellDurableConfigField(field, {
+						actionName: "openshell-deepagent/run",
+						pieceName: "openshell-deepagent",
+					}),
+				)
+				.concat([
+					{
+						key: "sandboxRepoPath",
+						label: "Sandbox Repo Path (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "/sandbox/repo",
+					},
+					{
+						key: "provider",
+						label: "OpenShell Provider (optional)",
+						type: "text",
+						required: false,
+						placeholder: "claude",
+					},
+				]),
+			outputFields: buildOpenShellLangGraphOutputFields(),
+		},
+	],
+};
+
+const OPENSHELL_DURABLE_AGENT_PIECE: IntegrationDefinition = {
+	type: "openshell-durable",
+	label: "OpenShell DurableAgent",
+	pieceName: "openshell-durable",
+	logoUrl: "",
+	actions: [
+		{
+			...DAPR_AGENT_PIECE.actions[0],
+			label: "Run OpenShell DurableAgent",
+			description:
+				"Run a native Dapr DurableAgent with JSON-safe file operations inside OpenShell sandboxes",
+			category: "OpenShell Agent",
+			configFields: DAPR_AGENT_PIECE.actions[0].configFields
+				.map((field) => cloneOpenShellDurableConfigField(field))
+				.concat([
+					{
+						key: "sandboxRepoPath",
+						label: "Sandbox Repo Path (optional)",
+						type: "template-input",
+						required: false,
+						placeholder: "/sandbox/repo",
+					},
+					{
+						key: "provider",
+						label: "OpenShell Provider (optional)",
+						type: "text",
+						required: false,
+						placeholder: "claude",
+					},
+				]),
+			outputFields: buildOpenShellLangGraphOutputFields(),
+		},
+	],
+};
+
+const OPENSHELL_DEEPAGENTS_TEST_PIECE: IntegrationDefinition = {
+	type: "openshell-deepagents-test",
+	label: "OpenShell DeepAgents Test",
+	pieceName: "openshell-deepagents-test",
+	logoUrl: "",
+	actions: [
+		{
+			...DAPR_AGENT_PIECE.actions[0],
+			label: "Run OpenShell DeepAgents Test",
+			description:
+				"Run the Diagrid DeepAgents baseline on OpenShell sandboxes to validate durable tracing and observability",
+			category: "OpenShell Agent",
+			configFields: DAPR_AGENT_PIECE.actions[0].configFields
+				.map((field) =>
+					cloneOpenShellDurableConfigField(field, {
+						actionName: "openshell-deepagents-test/run",
+						pieceName: "openshell-deepagents-test",
+					}),
+				)
 				.concat([
 					{
 						key: "sandboxRepoPath",
@@ -2216,8 +2376,7 @@ const BROWSER_PIECE: IntegrationDefinition = {
 					key: "sandboxName",
 					label: "Sandbox Name",
 					type: "template-input",
-					placeholder:
-						"{{@nodeId:OpenShell LangGraph Execute.sandboxName}}",
+					placeholder: "{{@nodeId:OpenShell LangGraph Execute.sandboxName}}",
 					required: true,
 				},
 				{
@@ -2240,8 +2399,7 @@ const BROWSER_PIECE: IntegrationDefinition = {
 					key: "devServerCommand",
 					label: "Dev Server Command",
 					type: "template-textarea",
-					placeholder:
-						"npm run dev -- --hostname 0.0.0.0",
+					placeholder: "npm run dev -- --hostname 0.0.0.0",
 					rows: 4,
 					required: true,
 				},
@@ -2318,6 +2476,9 @@ export function getBuiltinPieces(): IntegrationDefinition[] {
 		WORKSPACE_PIECE,
 		OPENSHELL_AGENT_PIECE,
 		OPENSHELL_LANGGRAPH_AGENT_PIECE,
+		OPENSHELL_DEEPAGENT_PIECE,
+		OPENSHELL_DEEPAGENTS_TEST_PIECE,
+		OPENSHELL_DURABLE_AGENT_PIECE,
 		MS_AGENT_PIECE,
 		DAPR_AGENT_PIECE,
 	];

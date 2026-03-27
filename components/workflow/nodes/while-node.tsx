@@ -68,7 +68,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 				description: "",
 				type: "action",
 				config: {
-					actionType: "openshell-langgraph/run",
+					actionType: "openshell-deepagents-test/run",
 				},
 				status: "idle",
 			},
@@ -106,7 +106,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 							? dropHintText
 							: expression
 								? expression
-								: "Drop an OpenShell LangGraph or OpenShell Agent node here"}
+								: "Drop an OpenShell, DeepAgents, or Dapr agent node here"}
 					</p>
 				</div>
 				<Button
