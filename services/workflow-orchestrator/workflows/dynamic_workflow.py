@@ -3994,6 +3994,8 @@ def process_agent_child_workflow(
                 child_workflow_name=child_workflow_name,
                 child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
             )
+            if not execute_result_payload.get("sandboxName") and activity_input.get("sandboxName"):
+                execute_result_payload["sandboxName"] = activity_input["sandboxName"]
             execute_success = bool(execute_result_payload.get("success", True))
             yield ctx.call_activity(
                 update_plan_artifact_status,
@@ -4044,6 +4046,11 @@ def process_agent_child_workflow(
                 else orchestrator_config.DURABLE_AGENT_APP_ID
             ),
         )
+        # Ensure sandboxName propagates even if the child workflow didn't
+        # echo it back — downstream nodes (e.g. browser/validate) reference
+        # it via template variables like {{@nodeId:Label.sandboxName}}.
+        if not result_payload.get("sandboxName") and activity_input.get("sandboxName"):
+            result_payload["sandboxName"] = activity_input["sandboxName"]
         if require_file_changes and not _has_mutating_tool_calls(
             result_payload.get("toolCalls", [])
         ):
