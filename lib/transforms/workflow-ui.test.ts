@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	deriveAgentRunsFromExecutionOutput,
 	parseExecutionFileChangeData,
 	parseExecutionOutcomeSummary,
 } from "./workflow-ui";
@@ -189,5 +190,67 @@ describe("parseExecutionFileChangeData", () => {
 
 	it("returns null when no file change fields exist", () => {
 		expect(parseExecutionFileChangeData({ success: true })).toBeNull();
+	});
+});
+
+describe("deriveAgentRunsFromExecutionOutput", () => {
+	it("prefers agent progress status over parent execution failure", () => {
+		const runs = deriveAgentRunsFromExecutionOutput(
+			{
+				outputs: {
+					executeNode: {
+						data: {
+							agentWorkflowId: "agent-wf-1",
+							daprInstanceId: "agent-inst-1",
+							traceId: "trace-1",
+							agentProgress: {
+								status: "completed",
+								traceId: "trace-1",
+							},
+						},
+					},
+				},
+			},
+			{
+				executionId: "exec-1",
+				parentExecutionId: "parent-1",
+				startedAt: "2026-03-28T19:37:00.000Z",
+				completedAt: "2026-03-28T19:40:00.000Z",
+				executionStatus: "error",
+			},
+		);
+
+		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			nodeId: "executeNode",
+			status: "completed",
+			agentWorkflowId: "agent-wf-1",
+			daprInstanceId: "agent-inst-1",
+		});
+	});
+
+	it("falls back to boolean success when explicit status is absent", () => {
+		const runs = deriveAgentRunsFromExecutionOutput(
+			{
+				outputs: {
+					planNode: {
+						data: {
+							agentWorkflowId: "agent-wf-2",
+							daprInstanceId: "agent-inst-2",
+							traceId: "trace-2",
+							success: true,
+						},
+					},
+				},
+			},
+			{
+				executionId: "exec-2",
+				parentExecutionId: "parent-2",
+				executionStatus: "error",
+			},
+		);
+
+		expect(runs).toHaveLength(1);
+		expect(runs[0]?.status).toBe("completed");
 	});
 });

@@ -2216,23 +2216,23 @@ const BROWSER_PIECE: IntegrationDefinition = {
 					key: "sandboxName",
 					label: "Sandbox Name",
 					type: "template-input",
-					placeholder:
-						"{{@nodeId:OpenShell LangGraph Execute.sandboxName}}",
+					placeholder: "{{@nodeId:LangGraph Observable Execute.sandboxName}}",
 					required: true,
 				},
 				{
 					key: "repoPath",
 					label: "Repo Path",
 					type: "template-input",
-					placeholder: "/sandbox/repo",
+					placeholder:
+						"{{@nodeId:LangGraph Observable Execute.sandboxRepoPath}}",
 					required: false,
-					defaultValue: "/sandbox/repo",
 				},
 				{
 					key: "installCommand",
 					label: "Install Command",
 					type: "template-textarea",
-					placeholder: "npm ci --no-audit --no-fund",
+					placeholder:
+						"(corepack enable pnpm >/dev/null 2>&1 || true) && pnpm install --frozen-lockfile",
 					rows: 4,
 					required: true,
 				},
@@ -2240,8 +2240,7 @@ const BROWSER_PIECE: IntegrationDefinition = {
 					key: "devServerCommand",
 					label: "Dev Server Command",
 					type: "template-textarea",
-					placeholder:
-						"npm run dev -- --hostname 0.0.0.0",
+					placeholder: "pnpm run dev -- --hostname 0.0.0.0 --port 3009",
 					rows: 4,
 					required: true,
 				},

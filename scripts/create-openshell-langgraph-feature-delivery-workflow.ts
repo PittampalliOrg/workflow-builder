@@ -1,7 +1,7 @@
 /**
- * Create or update a reusable OpenShell LangGraph feature-delivery workflow:
- * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph/run (plan)
- * -> openshell-langgraph/run (execute) -> workspace/command (review persisted execute output)
+ * Create or update a reusable observable OpenShell feature-delivery workflow:
+ * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
+ * -> openshell-langgraph-observable/run (execute) -> workspace/command (review) -> browser/validate
  *
  * The manual trigger input is treated as the user feature request.
  *
@@ -39,13 +39,20 @@ const DEFAULT_REPO_NAME = "ai-chatbot";
 const DEFAULT_REPO_BRANCH = "main";
 const DEFAULT_TARGET_DIR = "ai-chatbot";
 const DEFAULT_MODEL = "gpt-5.4";
-const DEFAULT_VERIFY_COMMANDS = `npm run build`;
-
-function buildPlanPrompt(triggerId: string): string {
+function buildPlanPrompt(triggerId: string, previewAppDir: string): string {
 	return `You are planning a repository feature delivery task for this specific codebase.
 
 User feature request:
 {{@${triggerId}:Manual Trigger.feature_request}}
+
+Target application for implementation and screenshot validation:
+- \`${previewAppDir}\`
+
+Scope constraints:
+- You MUST treat \`${previewAppDir}\` as the homepage/app target for this workflow.
+- Do not choose a different demo/example app just because it also has a homepage.
+- A plan that primarily targets files outside \`${previewAppDir}\` is invalid unless a shared root-level change is strictly required.
+- If the repository contains multiple candidate apps, ignore them and plan against \`${previewAppDir}\`.
 
 Planning requirements:
 - Inspect the repository first and stay read-only during this step.
@@ -57,17 +64,26 @@ Planning requirements:
 Return only the final implementation plan for approval.`;
 }
 
-function buildExecutePrompt(triggerId: string): string {
+function buildExecutePrompt(triggerId: string, previewAppDir: string): string {
 	return `Implement the approved feature plan for this repository.
 
 Original user feature request:
 {{@${triggerId}:Manual Trigger.feature_request}}
 
+Target application for implementation and screenshot validation:
+- \`${previewAppDir}\`
+
 Execution requirements:
 - Follow the approved plan artifact as the primary source of truth.
+- You MUST implement the feature in \`${previewAppDir}\`.
+- Treat the homepage for this workflow as the homepage inside \`${previewAppDir}\`, not any other app in the monorepo.
+- Do not modify files outside \`${previewAppDir}\` unless a small shared root-level change is strictly required.
 - Match existing repository patterns and architecture.
 - Keep the change set cohesive and avoid unrelated edits.
 - Add or update tests when behavior changes.
+- Do not modify dependency manifests or lockfiles unless the feature explicitly requires dependency changes.
+- If validation tooling or app dependencies are missing, install them from the existing lockfile in frozen/immutable mode before running the verification commands.
+- Treat unrelated package-lock or pnpm-lock changes as regressions and revert them before finishing.
 - Run the provided validation commands and any targeted checks needed for the changed code.
 - If the approved plan needs a small adaptation based on repository realities, make the smallest justified adjustment and explain it clearly in the final summary.
 
@@ -77,7 +93,7 @@ Return a concise engineering summary that includes changed files, verification r
 type Args = {
 	userEmail?: string;
 	name: string;
-	verifyCommands: string;
+	verifyCommands?: string;
 	agentProfileTemplateId?: string;
 	repositoryOwner: string;
 	repositoryRepo: string;
@@ -91,7 +107,7 @@ type Args = {
 function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
 	let name = DEFAULT_NAME;
-	let verifyCommands = DEFAULT_VERIFY_COMMANDS;
+	let verifyCommands: string | undefined;
 	let agentProfileTemplateId: string | undefined;
 	let repositoryOwner = DEFAULT_REPO_OWNER;
 	let repositoryRepo = DEFAULT_REPO_NAME;
@@ -183,6 +199,52 @@ function parseArgs(argv: string[]): Args {
 		previewAppDir: previewAppDir?.trim() || undefined,
 		connectionExternalId: connectionExternalId?.trim() || undefined,
 	};
+}
+
+function normalizeSubdirectory(path: string | undefined): string {
+	const trimmed = path?.trim();
+	if (!trimmed || trimmed === "." || trimmed === "./") return ".";
+	return trimmed.replace(/^\.?\//, "").replace(/\/+$/, "");
+}
+
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+function buildScopedShellPrefix(path: string | undefined): string {
+	const normalized = normalizeSubdirectory(path);
+	return normalized === "." ? "" : `cd ${shellQuote(normalized)} && `;
+}
+
+function buildImmutableInstallCommand(
+	path: string | undefined,
+	options?: { heartbeat?: boolean },
+): string {
+	const prefix = buildScopedShellPrefix(path);
+	const heartbeat = options?.heartbeat
+		? 'hb_pid=\'\'; cleanup(){ if [ -n "$hb_pid" ]; then kill "$hb_pid" 2>/dev/null || true; fi; }; trap cleanup EXIT; (while true; do echo install-heartbeat; sleep 25; done) & hb_pid=$!; '
+		: "";
+	return (
+		heartbeat +
+		prefix +
+		"attempt=1; while [ $attempt -le 3 ]; do " +
+		"if [ -f pnpm-lock.yaml ]; then " +
+		"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+		"elif [ -f package-lock.json ]; then " +
+		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+		"elif [ -f yarn.lock ]; then " +
+		"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
+		"else " +
+		"echo no-supported-lockfile; exit 1; " +
+		"fi && exit 0; " +
+		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
+		"done"
+	);
+}
+
+function buildDefaultVerifyCommands(previewAppDir: string | undefined): string {
+	const prefix = buildScopedShellPrefix(previewAppDir);
+	return `${buildImmutableInstallCommand(previewAppDir)} && ${prefix}if [ -f pnpm-lock.yaml ]; then (corepack enable pnpm >/dev/null 2>&1 || true); pnpm build; elif [ -f package-lock.json ]; then npm run build; elif [ -f yarn.lock ]; then (corepack enable yarn >/dev/null 2>&1 || true); yarn build; else echo no-supported-lockfile; exit 1; fi`;
 }
 
 async function resolveUser(
@@ -319,12 +381,15 @@ async function resolveAgentProfileTemplateId(
 
 function buildReviewCommand(executeId: string) {
 	const field = (name: string) =>
-		`{{@${executeId}:OpenShell LangGraph Execute.${name}}}`;
+		`{{@${executeId}:LangGraph Observable Execute.${name}}}`;
 	return `cat <<'__WF_OPEN_SHELL_REVIEW__'
-OpenShell LangGraph execution review
-===================================
+LangGraph observable execution review
+=====================================
 Sandbox name:
 ${field("sandboxName")}
+
+Sandbox repo path:
+${field("sandboxRepoPath")}
 
 Provider:
 ${field("provider")}
@@ -344,25 +409,84 @@ __WF_OPEN_SHELL_REVIEW__`;
 }
 
 function buildValidationInstallCommand(previewAppDir: string): string {
-	// Detect lock file: pnpm-lock.yaml → pnpm install, package-lock.json → npm ci, else npm install
-	const installCommand =
-		"(while true; do echo install-heartbeat; sleep 25; done &) ; " +
-		"attempt=1; until [ $attempt -gt 3 ]; do " +
-		"if [ -f pnpm-lock.yaml ]; then " +
-		"corepack enable pnpm 2>/dev/null; pnpm install --no-frozen-lockfile --prefer-offline; " +
-		"elif [ -f package-lock.json ]; then " +
-		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-		"else " +
-		"npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-		"fi && exit 0; " +
-		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
-	if (previewAppDir === "." || previewAppDir === "") {
-		return installCommand;
-	}
-	return `cd ${previewAppDir} && ${installCommand}`;
+	const appDir = normalizeSubdirectory(previewAppDir);
+	const hasSubdir = appDir !== ".";
+	const appDirQuoted = shellQuote(appDir);
+	const immutableInstallBranch = hasSubdir
+		? "if [ -d " +
+			appDirQuoted +
+			" ]; then " +
+			"cd " +
+			appDirQuoted +
+			"; " +
+			"if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
+			"attempt=1; while [ $attempt -le 2 ]; do " +
+			"if [ -f pnpm-lock.yaml ]; then " +
+			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+			"elif [ -f package-lock.json ]; then " +
+			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"elif [ -f yarn.lock ]; then " +
+			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
+			"else " +
+			"echo no-supported-lockfile; exit 1; " +
+			"fi && exit 0; " +
+			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
+			"done; " +
+			"echo immutable-install-failed-falling-back-to-npm; " +
+			"if [ -f package.json ]; then " +
+			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"else " +
+			"echo no-package-json-for-npm-fallback; exit 1; " +
+			"fi; " +
+			"else " +
+			"if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
+			"attempt=1; while [ $attempt -le 2 ]; do " +
+			"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
+			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+			"elif [ -f package-lock.json ]; then " +
+			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"elif [ -f yarn.lock ]; then " +
+			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
+			"else " +
+			"echo no-supported-lockfile; exit 1; " +
+			"fi && exit 0; " +
+			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
+			"done; " +
+			"echo immutable-install-failed-falling-back-to-npm; " +
+			"if [ -f package.json ]; then " +
+			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"else " +
+			"echo no-package-json-for-npm-fallback; exit 1; " +
+			"fi; " +
+			"fi"
+		: "if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
+			"attempt=1; while [ $attempt -le 2 ]; do " +
+			"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
+			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+			"elif [ -f package-lock.json ]; then " +
+			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"elif [ -f yarn.lock ]; then " +
+			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
+			"else " +
+			"echo no-supported-lockfile; exit 1; " +
+			"fi && exit 0; " +
+			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
+			"done; " +
+			"echo immutable-install-failed-falling-back-to-npm; " +
+			"if [ -f package.json ]; then " +
+			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+			"else " +
+			"echo no-package-json-for-npm-fallback; exit 1; " +
+			"fi";
+	return immutableInstallBranch;
 }
 
 function buildValidationDevServerCommand(previewAppDir: string): string {
+	const prefix = buildScopedShellPrefix(previewAppDir);
+	const previewStateDir =
+		previewAppDir === "." || previewAppDir === ""
+			? ".wf-preview"
+			: "../.wf-preview";
 	const logPath =
 		previewAppDir === "." || previewAppDir === ""
 			? ".wf-preview/dev-server.log"
@@ -371,10 +495,7 @@ function buildValidationDevServerCommand(previewAppDir: string): string {
 		previewAppDir === "." || previewAppDir === ""
 			? ".wf-preview/dev-server.pid"
 			: "../.wf-preview/dev-server.pid";
-	if (previewAppDir === "." || previewAppDir === "") {
-		return `mkdir -p .wf-preview && rm -f ${logPath} ${pidPath} && setsid sh -c 'npm run dev -- --hostname 0.0.0.0 > ${logPath} 2>&1 < /dev/null' >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
-	}
-	return `mkdir -p .wf-preview && cd ${previewAppDir} && rm -f ${logPath} ${pidPath} && setsid sh -c 'npm run dev -- --hostname 0.0.0.0 > ${logPath} 2>&1 < /dev/null' >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
+	return `${prefix}mkdir -p ${previewStateDir} && rm -f ${logPath} ${pidPath} && if [ -f pnpm-lock.yaml ] && pnpm --version >/dev/null 2>&1; then runner='pnpm run dev -- --hostname 0.0.0.0 --port 3009'; elif [ -f yarn.lock ] && yarn --version >/dev/null 2>&1; then runner='yarn dev --hostname 0.0.0.0 --port 3009'; elif [ -f package-lock.json ] || [ -f package.json ]; then runner='npm run dev -- --hostname 0.0.0.0 --port 3009'; else echo no-supported-package-runner; exit 1; fi; setsid sh -c \"$runner > ${logPath} 2>&1 < /dev/null\" >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
 }
 
 function buildValidationCaptureSteps(): string {
@@ -415,16 +536,17 @@ function buildWorkflowGraph(input: {
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
-	const artifactRefTemplate = `{{@${planId}:OpenShell LangGraph Plan.artifactRef}}`;
+	const cloneRepositoryTemplate = `{{@${cloneId}:Workspace Clone.repository}}`;
+	const artifactRefTemplate = `{{@${planId}:LangGraph Observable Plan.artifactRef}}`;
 	const executionIdTemplate = `{{@${profileId}:Workspace Profile.executionId}}`;
 	const planningThreadTemplate = `lg:plan:${executionIdTemplate}`;
 	const executionThreadTemplate = `lg:exec:${executionIdTemplate}`;
-	const planPrompt = buildPlanPrompt(triggerId);
-	const executePrompt = buildExecutePrompt(triggerId);
+	const previewAppDir = input.previewAppDir || ".";
+	const planPrompt = buildPlanPrompt(triggerId, previewAppDir);
+	const executePrompt = buildExecutePrompt(triggerId, previewAppDir);
 	// browser/validate runs inside the coding sandbox where the repo IS /sandbox/repo.
 	// previewAppDir is a subdirectory *within* the repo (e.g. "dashboard/final-example"),
 	// NOT the clone targetDir.  Default to "." (repo root).
-	const previewAppDir = input.previewAppDir || ".";
 	const enabledTools = JSON.stringify([
 		"read",
 		"write",
@@ -449,13 +571,13 @@ function buildWorkflowGraph(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "openshell-langgraph/run",
-		engine: "langgraph",
+		actionType: "openshell-langgraph-observable/run",
+		engine: "langgraph-observable",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,
 		cwd: clonePathTemplate,
 		sandboxRepoPath: "/sandbox/repo",
-		repositoryUrl: `https://github.com/${input.repositoryOwner}/${input.repositoryRepo}.git`,
+		repositoryUrl: `http://gitea-http.gitea.svc.cluster.local:3000/${cloneRepositoryTemplate}.git`,
 		repositoryOwner: input.repositoryOwner,
 		repositoryRepo: input.repositoryRepo,
 		repositoryBranch: input.repositoryBranch,
@@ -536,9 +658,9 @@ function buildWorkflowGraph(input: {
 			type: "action",
 			position: { x: 300, y: -20 },
 			data: {
-				label: "OpenShell LangGraph Plan",
+				label: "LangGraph Observable Plan",
 				description:
-					"Inspect the repository inside OpenShell, build a concrete implementation plan, and wait for approval.",
+					"Inspect the repository inside the observable LangGraph agent, build a concrete implementation plan, and wait for approval.",
 				type: "action",
 				config: {
 					...commonAgentConfig,
@@ -561,9 +683,9 @@ function buildWorkflowGraph(input: {
 			type: "action",
 			position: { x: 640, y: -20 },
 			data: {
-				label: "OpenShell LangGraph Execute",
+				label: "LangGraph Observable Execute",
 				description:
-					"Implement the approved plan inside OpenShell, validate the changes, and summarize the result.",
+					"Implement the approved plan inside the observable LangGraph agent, validate the changes, and summarize the result.",
 				type: "action",
 				config: {
 					...commonAgentConfig,
@@ -605,14 +727,13 @@ function buildWorkflowGraph(input: {
 				type: "action",
 				config: {
 					actionType: "browser/validate",
-					sandboxName: `{{@${executeId}:OpenShell LangGraph Execute.sandboxName}}`,
-					repoPath: "/sandbox/repo",
+					sandboxName: `{{@${executeId}:LangGraph Observable Execute.sandboxName}}`,
+					repoPath: `{{@${executeId}:LangGraph Observable Execute.sandboxRepoPath}}`,
 					installCommand: buildValidationInstallCommand(previewAppDir),
 					devServerCommand: buildValidationDevServerCommand(previewAppDir),
 					baseUrl: "http://127.0.0.1:3009",
 					steps: buildValidationCaptureSteps(),
 					timeoutMs: "2700000",
-					continueOnError: "true",
 				},
 				status: "idle",
 			},
@@ -679,6 +800,9 @@ async function main() {
 	}
 
 	const args = parseArgs(process.argv.slice(2));
+	const verifyCommands =
+		args.verifyCommands?.trim() ||
+		buildDefaultVerifyCommands(args.previewAppDir);
 	const client = postgres(DATABASE_URL, { max: 1 });
 	const db = drizzle(client, {
 		schema: {
@@ -705,7 +829,7 @@ async function main() {
 		);
 
 		const built = buildWorkflowGraph({
-			verifyCommands: args.verifyCommands,
+			verifyCommands,
 			agentProfileTemplateId,
 			repositoryOwner: args.repositoryOwner,
 			repositoryRepo: args.repositoryRepo,

@@ -12,6 +12,8 @@ const baseContext = {
 	executionId: "exec-1",
 	daprInstanceId: "dapr-1",
 	phase: "running",
+	agentRunId: null,
+	agentWorkflowId: null,
 };
 
 describe("normalizeJaegerSpans", () => {
@@ -169,6 +171,30 @@ describe("normalizeJaegerTraceSummary", () => {
 
 		const summary = normalizeJaegerTraceSummary(trace, baseContext);
 		expect(summary).toBeNull();
+	});
+
+	it("falls back to correlated agent identifiers when spans do not include them", () => {
+		const trace: JaegerTrace = {
+			traceID: "trace-agent",
+			spans: [
+				{
+					traceID: "trace-agent",
+					spanID: "root",
+					operationName: "invoke_agent observable",
+					startTime: 8_000_000,
+					duration: 2_000,
+				},
+			],
+		};
+
+		const summary = normalizeJaegerTraceSummary(trace, {
+			...baseContext,
+			agentRunId: "agent-run-1",
+			agentWorkflowId: "agent-workflow-1",
+		});
+
+		expect(summary?.agentRunId).toBe("agent-run-1");
+		expect(summary?.agentWorkflowId).toBe("agent-workflow-1");
 	});
 });
 

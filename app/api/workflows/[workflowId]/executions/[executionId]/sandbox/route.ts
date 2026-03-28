@@ -74,13 +74,16 @@ function findOpenShellSandbox(
 	}>,
 ) {
 	const nodeConfigMap = buildNodeConfigMap(nodes);
+	const isOpenShellAction = (actionType: string | undefined) =>
+		actionType === "openshell/run" ||
+		actionType === "openshell-langgraph/run" ||
+		actionType === "openshell-langgraph-observable/run" ||
+		actionType === "openshell-deepagent/run" ||
+		actionType === "openshell-durable/run";
 
 	for (const run of agentRuns) {
 		const nodeConfig = nodeConfigMap.get(run.nodeId);
-		if (
-			nodeConfig?.actionType !== "openshell/run" &&
-			nodeConfig?.actionType !== "openshell-langgraph/run"
-		) {
+		if (!isOpenShellAction(nodeConfig?.actionType)) {
 			continue;
 		}
 		const sandboxName =
@@ -107,10 +110,7 @@ function findOpenShellSandbox(
 
 	for (const [nodeKey, value] of Object.entries(outputs)) {
 		const nodeConfig = nodeConfigMap.get(nodeKey);
-		if (
-			nodeConfig?.actionType !== "openshell/run" &&
-			nodeConfig?.actionType !== "openshell-langgraph/run"
-		) {
+		if (!isOpenShellAction(nodeConfig?.actionType)) {
 			continue;
 		}
 		const record = asRecord(value);

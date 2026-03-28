@@ -32,6 +32,9 @@ const DAPR_AGENT_RUNTIME_API_BASE_URL =
 const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
 	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
 	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
+const OPENSHELL_LANGGRAPH_OBSERVABLE_API_BASE_URL =
+	process.env.OPENSHELL_LANGGRAPH_OBSERVABLE_API_BASE_URL ||
+	"http://openshell-langgraph-observable.workflow-builder.svc.cluster.local";
 
 function getAgentRuntimeTarget(
 	actionType: string | undefined,
@@ -41,6 +44,12 @@ function getAgentRuntimeTarget(
 	}
 	if (actionType === "openshell-langgraph/run") {
 		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+	}
+	if (actionType === "openshell-langgraph-observable/run") {
+		return {
+			baseUrl: OPENSHELL_LANGGRAPH_OBSERVABLE_API_BASE_URL,
+			path: "/api/run",
+		};
 	}
 	if (actionType === "openshell/run") {
 		return {
@@ -120,9 +129,12 @@ function shouldFetchLiveAgentPayload(
 	status: string,
 ): boolean {
 	if (
-		!["dapr-agent/run", "openshell/run", "openshell-langgraph/run"].includes(
-			actionType || "",
-		)
+		![
+			"dapr-agent/run",
+			"openshell/run",
+			"openshell-langgraph/run",
+			"openshell-langgraph-observable/run",
+		].includes(actionType || "")
 	) {
 		return false;
 	}
@@ -272,7 +284,8 @@ export async function GET(
 				actionType === "ms-agent/run"
 					? "ms-agent"
 					: actionType === "openshell/run" ||
-							actionType === "openshell-langgraph/run"
+							actionType === "openshell-langgraph/run" ||
+							actionType === "openshell-langgraph-observable/run"
 						? "openshell"
 						: actionType === "dapr-agent/run"
 							? "dapr-agent"

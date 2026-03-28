@@ -12,7 +12,12 @@ import {
 	type SQL,
 } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { workflowExecutions, workflows } from "@/lib/db/schema";
+import {
+	workflowAgentRuns,
+	workflowExecutions,
+	workflows,
+} from "@/lib/db/schema";
+import { deriveAgentRunsFromExecutionOutput } from "@/lib/transforms/workflow-ui";
 import type { JaegerTag, JaegerTrace } from "./jaeger-types";
 import type { JaegerTraceContext } from "./normalization";
 
@@ -25,6 +30,12 @@ type CorrelatedExecution = {
 	phase: string | null;
 	progress: number | null;
 	startedAt: Date;
+};
+
+type CorrelatedAgentRun = CorrelatedExecution & {
+	agentRunId: string;
+	agentWorkflowId: string;
+	agentDaprInstanceId: string;
 };
 
 type CorrelationIds = {
@@ -217,6 +228,10 @@ function executionToContext(
 		| "instance"
 		| "workflow"
 		| "unknown" = "unknown",
+	extras?: {
+		agentRunId?: string | null;
+		agentWorkflowId?: string | null;
+	},
 ): JaegerTraceContext {
 	if (!execution) {
 		return {
@@ -225,6 +240,8 @@ function executionToContext(
 			executionId: null,
 			daprInstanceId: null,
 			phase: null,
+			agentRunId: null,
+			agentWorkflowId: null,
 			correlationConfidence,
 		};
 	}
@@ -235,8 +252,252 @@ function executionToContext(
 		executionId: execution.executionId,
 		daprInstanceId: execution.daprInstanceId,
 		phase: execution.phase,
+		agentRunId: extras?.agentRunId ?? null,
+		agentWorkflowId: extras?.agentWorkflowId ?? null,
 		correlationConfidence,
 	};
+}
+
+async function findAgentRunContextForProject(
+	scope: ProjectScopeParams,
+	correlation: CorrelationIds,
+): Promise<JaegerTraceContext | null> {
+	if (correlation.instanceIds.size === 0) {
+		return null;
+	}
+
+	const instanceIds = Array.from(correlation.instanceIds);
+	const rows = await db
+		.select({
+			agentRunId: workflowAgentRuns.id,
+			agentWorkflowId: workflowAgentRuns.agentWorkflowId,
+			agentDaprInstanceId: workflowAgentRuns.daprInstanceId,
+			executionId: workflowExecutions.id,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			status: workflowExecutions.status,
+			phase: workflowExecutions.phase,
+			progress: workflowExecutions.progress,
+			startedAt: workflowExecutions.startedAt,
+		})
+		.from(workflowAgentRuns)
+		.innerJoin(
+			workflowExecutions,
+			eq(workflowAgentRuns.workflowExecutionId, workflowExecutions.id),
+		)
+		.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+		.where(
+			and(
+				projectWorkflowScope(scope),
+				or(
+					inArray(workflowAgentRuns.daprInstanceId, instanceIds),
+					inArray(workflowAgentRuns.agentWorkflowId, instanceIds),
+				),
+			),
+		)
+		.orderBy(desc(workflowExecutions.startedAt))
+		.limit(50);
+
+	if (rows.length === 0) {
+		return null;
+	}
+
+	const sorted = rows
+		.map(
+			(row): CorrelatedAgentRun => ({
+				executionId: row.executionId,
+				workflowId: row.workflowId,
+				workflowName: row.workflowName,
+				daprInstanceId: row.daprInstanceId,
+				status: row.status,
+				phase: row.phase,
+				progress: row.progress,
+				startedAt: row.startedAt,
+				agentRunId: row.agentRunId,
+				agentWorkflowId: row.agentWorkflowId,
+				agentDaprInstanceId: row.agentDaprInstanceId,
+			}),
+		)
+		.sort((a, b) => {
+			const scoreA =
+				(correlation.instanceIds.has(a.agentDaprInstanceId) ? 100 : 0) +
+				(correlation.instanceIds.has(a.agentWorkflowId) ? 100 : 0) +
+				(correlation.executionIds.has(a.executionId) ? 10 : 0) +
+				(correlation.workflowIds.has(a.workflowId) ? 1 : 0);
+			const scoreB =
+				(correlation.instanceIds.has(b.agentDaprInstanceId) ? 100 : 0) +
+				(correlation.instanceIds.has(b.agentWorkflowId) ? 100 : 0) +
+				(correlation.executionIds.has(b.executionId) ? 10 : 0) +
+				(correlation.workflowIds.has(b.workflowId) ? 1 : 0);
+
+			if (scoreA !== scoreB) {
+				return scoreB - scoreA;
+			}
+
+			return b.startedAt.getTime() - a.startedAt.getTime();
+		});
+
+	const best = sorted[0] ?? null;
+	if (!best) {
+		return null;
+	}
+
+	const confidence = correlation.instanceIds.has(best.agentDaprInstanceId)
+		? "instance"
+		: correlation.instanceIds.has(best.agentWorkflowId)
+			? "instance"
+			: correlation.executionIds.has(best.executionId)
+				? "execution"
+				: correlation.workflowIds.has(best.workflowId)
+					? "workflow"
+					: "unknown";
+
+	return executionToContext(best, confidence, {
+		agentRunId: best.agentRunId,
+		agentWorkflowId: best.agentWorkflowId,
+	});
+}
+
+async function findDerivedAgentRunContextForProject(
+	scope: ProjectScopeParams,
+	correlation: CorrelationIds,
+): Promise<JaegerTraceContext | null> {
+	if (
+		correlation.instanceIds.size === 0 &&
+		correlation.executionIds.size === 0 &&
+		correlation.workflowIds.size === 0
+	) {
+		return null;
+	}
+
+	const filters: SQL[] = [projectWorkflowScope(scope)];
+	const predicates: SQL[] = [];
+
+	if (correlation.executionIds.size > 0) {
+		predicates.push(
+			inArray(workflowExecutions.id, Array.from(correlation.executionIds)),
+		);
+	}
+
+	if (correlation.workflowIds.size > 0) {
+		predicates.push(
+			inArray(
+				workflowExecutions.workflowId,
+				Array.from(correlation.workflowIds),
+			),
+		);
+	}
+
+	if (predicates.length > 0) {
+		filters.push(or(...predicates) as SQL);
+	}
+
+	const rows = await db
+		.select({
+			executionId: workflowExecutions.id,
+			workflowId: workflowExecutions.workflowId,
+			workflowName: workflows.name,
+			daprInstanceId: workflowExecutions.daprInstanceId,
+			status: workflowExecutions.status,
+			phase: workflowExecutions.phase,
+			progress: workflowExecutions.progress,
+			startedAt: workflowExecutions.startedAt,
+			completedAt: workflowExecutions.completedAt,
+			output: workflowExecutions.output,
+		})
+		.from(workflowExecutions)
+		.innerJoin(workflows, eq(workflowExecutions.workflowId, workflows.id))
+		.where(and(...filters))
+		.orderBy(desc(workflowExecutions.startedAt))
+		.limit(100);
+
+	const candidates: Array<
+		CorrelatedExecution & {
+			agentRunId: string;
+			agentWorkflowId: string;
+			agentDaprInstanceId: string;
+		}
+	> = [];
+
+	for (const row of rows) {
+		const derivedRuns = deriveAgentRunsFromExecutionOutput(row.output, {
+			executionId: row.executionId,
+			parentExecutionId: row.executionId,
+			startedAt: row.startedAt,
+			completedAt: row.completedAt,
+			executionStatus: row.status,
+		});
+
+		for (const run of derivedRuns) {
+			const matchesInstance =
+				correlation.instanceIds.has(run.daprInstanceId) ||
+				correlation.instanceIds.has(run.agentWorkflowId);
+			const matchesExecution = correlation.executionIds.has(row.executionId);
+			const matchesWorkflow = correlation.workflowIds.has(row.workflowId);
+
+			if (!matchesInstance && !matchesExecution && !matchesWorkflow) {
+				continue;
+			}
+
+			candidates.push({
+				executionId: row.executionId,
+				workflowId: row.workflowId,
+				workflowName: row.workflowName,
+				daprInstanceId: row.daprInstanceId,
+				status: row.status,
+				phase: row.phase,
+				progress: row.progress,
+				startedAt: row.startedAt,
+				agentRunId: run.id,
+				agentWorkflowId: run.agentWorkflowId,
+				agentDaprInstanceId: run.daprInstanceId,
+			});
+		}
+	}
+
+	if (candidates.length === 0) {
+		return null;
+	}
+
+	const sorted = candidates.sort((a, b) => {
+		const scoreA =
+			(correlation.instanceIds.has(a.agentDaprInstanceId) ? 100 : 0) +
+			(correlation.instanceIds.has(a.agentWorkflowId) ? 100 : 0) +
+			(correlation.executionIds.has(a.executionId) ? 10 : 0) +
+			(correlation.workflowIds.has(a.workflowId) ? 1 : 0);
+		const scoreB =
+			(correlation.instanceIds.has(b.agentDaprInstanceId) ? 100 : 0) +
+			(correlation.instanceIds.has(b.agentWorkflowId) ? 100 : 0) +
+			(correlation.executionIds.has(b.executionId) ? 10 : 0) +
+			(correlation.workflowIds.has(b.workflowId) ? 1 : 0);
+
+		if (scoreA !== scoreB) {
+			return scoreB - scoreA;
+		}
+
+		return b.startedAt.getTime() - a.startedAt.getTime();
+	});
+
+	const best = sorted[0] ?? null;
+	if (!best) {
+		return null;
+	}
+
+	const confidence = correlation.instanceIds.has(best.agentDaprInstanceId)
+		? "instance"
+		: correlation.instanceIds.has(best.agentWorkflowId)
+			? "instance"
+			: correlation.executionIds.has(best.executionId)
+				? "execution"
+				: correlation.workflowIds.has(best.workflowId)
+					? "workflow"
+					: "unknown";
+
+	return executionToContext(best, confidence, {
+		agentRunId: best.agentRunId,
+		agentWorkflowId: best.agentWorkflowId,
+	});
 }
 
 export function resolveTraceContextFromIndex(
@@ -272,6 +533,22 @@ export async function findTraceContextForProject(
 	scope: ProjectScopeParams,
 	correlation: CorrelationIds,
 ): Promise<JaegerTraceContext> {
+	const agentRunContext = await findAgentRunContextForProject(
+		scope,
+		correlation,
+	);
+	if (agentRunContext) {
+		return agentRunContext;
+	}
+
+	const derivedAgentRunContext = await findDerivedAgentRunContextForProject(
+		scope,
+		correlation,
+	);
+	if (derivedAgentRunContext) {
+		return derivedAgentRunContext;
+	}
+
 	const predicates: SQL[] = [];
 
 	if (correlation.executionIds.size > 0) {

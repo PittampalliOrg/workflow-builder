@@ -21,7 +21,8 @@ import { fetch as undiciFetch, Agent as UndiciAgent, Pool } from "undici";
 import { z } from "zod";
 
 const longRunningAgent = new UndiciAgent({
-	factory: (origin, opts) => new Pool(origin, { ...opts, bodyTimeout: 0, headersTimeout: 0 })
+	factory: (origin, opts) =>
+		new Pool(origin, { ...opts, bodyTimeout: 0, headersTimeout: 0 }),
 });
 import {
 	fetchCredentialsWithAudit,
@@ -164,6 +165,23 @@ function resolveAgentHttpTimeoutMs(timeoutMinutes: unknown): number {
 	);
 }
 
+function resolveObservableAgentHttpTimeoutMs(input: {
+	appId: string;
+	mode: unknown;
+	timeoutMinutes: unknown;
+}): number {
+	if (input.appId !== "openshell-langgraph-observable") {
+		return resolveAgentHttpTimeoutMs(input.timeoutMinutes);
+	}
+
+	const mode =
+		typeof input.mode === "string" ? input.mode.trim().toLowerCase() : "";
+	const defaultTimeoutMinutes = mode === "execute_direct" ? 10 : 5;
+	return resolveAgentHttpTimeoutMs(
+		input.timeoutMinutes ?? defaultTimeoutMinutes,
+	);
+}
+
 function clampTimeoutMs(
 	value: number,
 	{
@@ -203,7 +221,9 @@ function resolveWorkspaceUtilityTimeoutMs(input: {
 
 	if (input.toolId === "profile") {
 		return clampTimeoutMs(
-			explicitTimeoutMs ?? explicitCommandTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
+			explicitTimeoutMs ??
+				explicitCommandTimeoutMs ??
+				DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
 			{ min: 10_000, max: MAX_WORKSPACE_PROFILE_TIMEOUT_MS },
 		);
 	}
@@ -396,6 +416,49 @@ async function waitForDurableRunResult(input: {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeKnativeExecuteResponse(
+	parsed: Record<string, unknown>,
+): ExecuteResponse | null {
+	const success = parsed.success;
+	if (typeof success !== "boolean") {
+		return null;
+	}
+
+	const explicitData = Object.hasOwn(parsed, "data") ? parsed.data : undefined;
+	const fallbackData =
+		explicitData !== undefined
+			? explicitData
+			: Object.fromEntries(
+					Object.entries(parsed).filter(
+						([key]) =>
+							key !== "success" &&
+							key !== "error" &&
+							key !== "duration_ms" &&
+							key !== "routed_to" &&
+							key !== "pause",
+					),
+				);
+	const durationMs =
+		typeof parsed.duration_ms === "number" ? parsed.duration_ms : 0;
+	const error =
+		typeof parsed.error === "string" && parsed.error.trim().length > 0
+			? parsed.error
+			: undefined;
+	const pause =
+		isPlainObject(parsed.pause) &&
+		(parsed.pause.type === "DELAY" || parsed.pause.type === "WEBHOOK")
+			? (parsed.pause as ExecuteResponse["pause"])
+			: undefined;
+
+	return {
+		success,
+		data: fallbackData,
+		error,
+		duration_ms: durationMs,
+		pause,
+	};
 }
 
 function normalizeSystemHttpRequestInput(input: Record<string, unknown>): {
@@ -1986,30 +2049,90 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							metadata: { pieceName: pluginId, actionName: stepName },
 						}),
 					};
+					const isObservableAgentRuntime =
+						target.appId === "openshell-langgraph-observable" ||
+						target.appId === "openshell-deepagents-test";
+					const observableArgs = isPlainObject(normalizedInput)
+						? (normalizedInput as Record<string, unknown>)
+						: {};
+					const observableExecutionId =
+						typeof body.db_execution_id === "string" &&
+						body.db_execution_id.trim().length > 0
+							? body.db_execution_id.trim()
+							: body.execution_id;
+					const requestBody = isObservableAgentRuntime
+						? JSON.stringify({
+								...observableArgs,
+								task:
+									typeof observableArgs.task === "string" &&
+									observableArgs.task.trim().length > 0
+										? observableArgs.task
+										: typeof observableArgs.prompt === "string" &&
+												observableArgs.prompt.trim().length > 0
+											? observableArgs.prompt
+											: typeof observableArgs.goal === "string"
+												? observableArgs.goal
+												: "",
+								prompt:
+									typeof observableArgs.prompt === "string" &&
+									observableArgs.prompt.trim().length > 0
+										? observableArgs.prompt
+										: typeof observableArgs.task === "string"
+											? observableArgs.task
+											: typeof observableArgs.goal === "string"
+												? observableArgs.goal
+												: "",
+								parentExecutionId: body.execution_id,
+								executionId: observableExecutionId,
+								dbExecutionId: body.db_execution_id ?? undefined,
+								workflowId: body.workflow_id,
+								nodeId: body.node_id,
+								nodeName: body.node_name,
+								credentials: credentialResult.credentials,
+							})
+						: JSON.stringify(knativeRequest);
 
 					console.log(
 						`[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
+					const requestPath =
+						target.appId === "openshell-langgraph-observable" ||
+						target.appId === "openshell-deepagents-test"
+							? "/api/run"
+							: "/execute";
+					const requestTimeoutMs = isObservableAgentRuntime
+						? resolveObservableAgentHttpTimeoutMs({
+								appId: target.appId,
+								mode: observableArgs.mode,
+								timeoutMinutes: observableArgs.timeoutMinutes,
+							})
+						: HTTP_TIMEOUT_MS;
 
 					// Make direct HTTP call to the Knative service
 					const controller = new AbortController();
 					const timeoutId = setTimeout(
 						() => controller.abort(),
-						HTTP_TIMEOUT_MS,
+						requestTimeoutMs,
 					);
 
 					const executionStartTime = Date.now();
+					console.log(
+						`[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms (mode=${typeof observableArgs.mode === "string" ? observableArgs.mode : "n/a"})`,
+					);
 					try {
-						const httpResponse = await undiciFetch(`${functionUrl}/execute`, {
-							method: "POST",
-							headers: {
-								"Content-Type": "application/json",
-								...forwardedTraceHeaders,
+						const httpResponse = await undiciFetch(
+							`${functionUrl}${requestPath}`,
+							{
+								method: "POST",
+								headers: {
+									"Content-Type": "application/json",
+									...forwardedTraceHeaders,
+								},
+								body: requestBody,
+								signal: controller.signal,
+								dispatcher: longRunningAgent,
 							},
-							body: requestBody,
-							signal: controller.signal,
-							dispatcher: longRunningAgent,
-						});
+						);
 
 						clearTimeout(timeoutId);
 						timing.executionMs = Date.now() - executionStartTime;
@@ -2023,13 +2146,18 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const responseText = await httpResponse.text();
 						const parsed = parseJsonResponse(responseText);
 
-						if (
-							parsed &&
-							typeof parsed === "object" &&
-							"success" in parsed &&
-							typeof (parsed as { success?: unknown }).success === "boolean"
-						) {
-							response = parsed as ExecuteResponse;
+						if (isPlainObject(parsed)) {
+							const normalizedResponse =
+								normalizeKnativeExecuteResponse(parsed);
+							if (normalizedResponse) {
+								response = normalizedResponse;
+							} else if (httpResponse.ok) {
+								throw new Error(
+									`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
+								);
+							} else {
+								throw new Error(`HTTP ${httpResponse.status}: ${responseText}`);
+							}
 						} else if (httpResponse.ok) {
 							throw new Error(
 								`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
@@ -2042,7 +2170,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						timing.executionMs = Date.now() - executionStartTime;
 						if (httpError instanceof Error && httpError.name === "AbortError") {
 							throw new Error(
-								`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
+								`Request to ${target.appId} timed out after ${requestTimeoutMs}ms`,
 							);
 						}
 						throw httpError;

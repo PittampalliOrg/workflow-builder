@@ -16,6 +16,8 @@ type TraceContext = {
 	executionId: string | null;
 	daprInstanceId: string | null;
 	phase: string | null;
+	agentRunId?: string | null;
+	agentWorkflowId?: string | null;
 	correlationConfidence?: "execution" | "instance" | "workflow" | "unknown";
 };
 
@@ -464,14 +466,20 @@ export function normalizeJaegerTraceSummary(
 		"action.type",
 		"actionType",
 	]);
-	const agentRunId = getFirstStringTagAcrossSpans(spans, [
-		"workflow.agent_run_id",
-		"workflow.agentRunId",
-	]);
-	const agentWorkflowId = getFirstStringTagAcrossSpans(spans, [
-		"workflow.agent_workflow_id",
-		"workflow.agentWorkflowId",
-	]);
+	const agentRunId =
+		getFirstStringTagAcrossSpans(spans, [
+			"workflow.agent_run_id",
+			"workflow.agentRunId",
+		]) ??
+		context.agentRunId ??
+		null;
+	const agentWorkflowId =
+		getFirstStringTagAcrossSpans(spans, [
+			"workflow.agent_workflow_id",
+			"workflow.agentWorkflowId",
+		]) ??
+		context.agentWorkflowId ??
+		null;
 	const parentExecutionId = getFirstStringTagAcrossSpans(spans, [
 		"workflow.parent_execution_id",
 		"workflow.parentExecutionId",

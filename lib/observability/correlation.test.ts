@@ -189,6 +189,8 @@ describe("resolveTraceContextFromIndex", () => {
 			executionId: null,
 			daprInstanceId: null,
 			phase: null,
+			agentRunId: null,
+			agentWorkflowId: null,
 			correlationConfidence: "unknown",
 		});
 	});

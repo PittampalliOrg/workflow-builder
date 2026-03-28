@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
@@ -6507,47 +6507,283 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         repo_path=request.repoPath,
     )
 
-    # --- Step 1: Install dependencies ---
-    with trace_span("browser_validate.install", {"sandbox": request.sandboxName}):
-      try:
-        logger.info("browser_validate install: sandbox=%s command=%s", request.sandboxName, request.installCommand[:120])
-        install_result = context.run_command(
-            request.installCommand,
-            timeout_seconds=min(timeout_seconds, 900),
+    def _strip_shell_startup_noise(value: str | None) -> str:
+        text = str(value or "")
+        filtered_lines = [
+            line
+            for line in text.splitlines()
+            if "/bin/bash: /home/node/.profile: Permission denied" not in line
+        ]
+        return "\n".join(filtered_lines).strip()
+
+    def _extract_leading_cd(command: str) -> str | None:
+        match = re.match(r"^\s*cd\s+(['\"]?)([^;&\n]+?)\1\s*&&", command or "")
+        if not match:
+            return None
+        candidate = str(match.group(2) or "").strip()
+        return candidate or None
+
+    def _normalize_install_command(command: str) -> str:
+        heartbeat_prefix = (
+            'hb_pid=\'\'; cleanup(){ if [ -n "$hb_pid" ]; then kill "$hb_pid" 2>/dev/null || true; fi; }; '
+            "trap cleanup EXIT; "
+            "(while true; do echo install-heartbeat; sleep 25; done) & hb_pid=$!; "
         )
-        install_exit_code = install_result.get("exitCode", install_result.get("exit_code", -1))
-        if install_exit_code != 0:
-            error_msg = f"Install failed with exit code {install_exit_code}: {str(install_result.get('stderr') or install_result.get('stdout', ''))[:500]}"
-            logger.warning("browser_validate install failed: %s", error_msg)
-            return {"success": False, "error": error_msg, "phase": "install"}
-      except Exception as exc:
-        logger.exception("browser_validate install crashed: sandbox=%s", request.sandboxName)
-        return {"success": False, "error": f"Install error: {str(exc)[:500]}", "phase": "install"}
+        normalized = str(command or "")
+        return normalized.removeprefix(heartbeat_prefix).strip()
+
+    def _is_transient_registry_failure(output: str) -> bool:
+        failure_markers = [
+            "EAI_AGAIN",
+            "ENOTFOUND",
+            "ECONNRESET",
+            "ETIMEDOUT",
+            "fetch failed",
+            "request to https://registry.npmjs.org/",
+        ]
+        text = str(output or "")
+        return any(marker in text for marker in failure_markers)
+
+    def _deps_present(cwd: str | None) -> bool:
+        if not cwd:
+            return False
+        try:
+            ready = context.run_command(
+                (
+                    "if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then "
+                    "if [ -x node_modules/.bin/next ]; then echo deps-present; else echo deps-missing; fi; "
+                    "elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ]; then "
+                    "echo deps-present; "
+                    "elif [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then "
+                    "echo deps-present; "
+                    "else echo deps-missing; fi"
+                ),
+                cwd=cwd,
+                timeout_seconds=15,
+            )
+        except Exception:
+            return False
+        return "deps-present" in str(ready.get("stdout") or "")
+
+    def _preferred_dev_runner(cwd: str | None) -> str | None:
+        if not cwd:
+            return None
+        try:
+            detected = context.run_command(
+                (
+                    "if [ -f pnpm-lock.yaml ]; then echo pnpm; "
+                    "elif [ -f yarn.lock ]; then echo yarn; "
+                    "elif [ -f package-lock.json ] || [ -f package.json ]; then echo npm; "
+                    "else echo unknown; fi"
+                ),
+                cwd=cwd,
+                timeout_seconds=15,
+            )
+        except Exception:
+            return None
+        package_manager = str(detected.get("stdout") or "").strip().splitlines()
+        selected = package_manager[-1] if package_manager else ""
+        if selected == "pnpm":
+            return "pnpm run dev -- --hostname 0.0.0.0 --port 3009"
+        if selected == "yarn":
+            return "yarn dev --hostname 0.0.0.0 --port 3009"
+        if selected == "npm":
+            return "npm run dev -- --hostname 0.0.0.0 --port 3009"
+        return None
+
+    def _normalize_devserver_command(command: str, cwd: str | None) -> str:
+        normalized = str(command or "").strip()
+        if not normalized:
+            return normalized
+        if "npx next dev --hostname 0.0.0.0 --port 3009" not in normalized:
+            return normalized
+        preferred_runner = _preferred_dev_runner(cwd)
+        if not preferred_runner:
+            return normalized
+        return normalized.replace(
+            "npx next dev --hostname 0.0.0.0 --port 3009",
+            preferred_runner,
+        )
+
+    def _tail_devserver_log(cwd: str | None) -> str:
+        candidate_paths = [".wf-preview/dev-server.log", "../.wf-preview/dev-server.log"]
+        for candidate in candidate_paths:
+            try:
+                log_result = context.run_command(
+                    f"if [ -f {shlex.quote(candidate)} ]; then tail -n 80 {shlex.quote(candidate)}; fi",
+                    cwd=cwd,
+                    timeout_seconds=15,
+                )
+            except Exception:
+                continue
+            preview = str(log_result.get("stdout") or "").strip()
+            if preview:
+                return preview
+        return ""
+
+    app_cwd = (
+        _extract_leading_cd(request.devServerCommand)
+        or _extract_leading_cd(request.installCommand)
+        or request.repoPath
+    )
+    skip_install = _deps_present(app_cwd)
+    if skip_install:
+        logger.info(
+            "browser_validate install skipped: dependencies already present in %s",
+            app_cwd,
+        )
+
+    # --- Step 1: Install dependencies ---
+    if not skip_install:
+        with trace_span("browser_validate.install", {"sandbox": request.sandboxName}):
+            try:
+                install_started_at = time.monotonic()
+                install_command = _normalize_install_command(request.installCommand)
+                logger.info(
+                    "browser_validate install: sandbox=%s command=%s",
+                    request.sandboxName,
+                    install_command[:120],
+                )
+                install_result = context.run_command(
+                    install_command,
+                    timeout_seconds=min(timeout_seconds, 900),
+                )
+                install_exit_code = install_result.get(
+                    "exitCode",
+                    install_result.get("exit_code", -1),
+                )
+                logger.info(
+                    "browser_validate install completed: sandbox=%s exit=%s duration_ms=%s stdout=%s stderr=%s",
+                    request.sandboxName,
+                    install_exit_code,
+                    int((time.monotonic() - install_started_at) * 1000),
+                    str(install_result.get("stdout") or "")[:200],
+                    str(install_result.get("stderr") or "")[:200],
+                )
+                if install_exit_code != 0:
+                    cleaned_stderr = _strip_shell_startup_noise(
+                        install_result.get("stderr")
+                    )
+                    cleaned_stdout = str(install_result.get("stdout") or "").strip()
+                    combined_output = "\n".join(
+                        part for part in [cleaned_stdout, cleaned_stderr] if part
+                    )
+                    if _is_transient_registry_failure(combined_output):
+                        deps_available = _deps_present(app_cwd) or _deps_present(
+                            request.repoPath
+                        )
+                        if deps_available:
+                            logger.warning(
+                                "browser_validate install hit transient registry failure but dependencies look usable; continuing sandbox=%s cwd=%s",
+                                request.sandboxName,
+                                app_cwd or request.repoPath,
+                            )
+                        else:
+                            preferred_output = cleaned_stderr or cleaned_stdout
+                            error_msg = (
+                                f"Install failed with exit code {install_exit_code}: "
+                                f"{preferred_output[:500]}"
+                            )
+                            logger.warning(
+                                "browser_validate install failed after transient registry failure with no usable dependencies: %s",
+                                error_msg,
+                            )
+                            return {
+                                "success": False,
+                                "error": error_msg,
+                                "phase": "install",
+                            }
+                    else:
+                        preferred_output = cleaned_stderr or cleaned_stdout
+                        error_msg = (
+                            f"Install failed with exit code {install_exit_code}: "
+                            f"{preferred_output[:500]}"
+                        )
+                        logger.warning("browser_validate install failed: %s", error_msg)
+                        return {"success": False, "error": error_msg, "phase": "install"}
+            except Exception as exc:
+                logger.exception(
+                    "browser_validate install crashed: sandbox=%s",
+                    request.sandboxName,
+                )
+                return {
+                    "success": False,
+                    "error": f"Install error: {str(exc)[:500]}",
+                    "phase": "install",
+                }
 
     # --- Step 2: Start dev server in background ---
     with trace_span("browser_validate.devserver", {"sandbox": request.sandboxName}):
       try:
-        logger.info("browser_validate devserver: sandbox=%s command=%s", request.sandboxName, request.devServerCommand[:120])
-        context.run_command(
+        normalized_devserver_command = _normalize_devserver_command(
             request.devServerCommand,
+            app_cwd,
+        )
+        logger.info(
+            "browser_validate devserver: sandbox=%s command=%s",
+            request.sandboxName,
+            normalized_devserver_command[:120],
+        )
+        launch_result = context.run_command(
+            normalized_devserver_command,
             timeout_seconds=min(timeout_seconds, 60),
         )
+        launch_exit = launch_result.get("exitCode", launch_result.get("exit_code", -1))
+        launch_stdout = str(launch_result.get("stdout") or "").strip()
+        launch_stderr = str(launch_result.get("stderr") or "").strip()
+        if launch_exit != 0 or "server-started" not in launch_stdout:
+            log_tail = _tail_devserver_log(app_cwd)
+            details = " | ".join(
+                part
+                for part in (
+                    launch_stdout[:300],
+                    launch_stderr[:300],
+                    log_tail[:500],
+                )
+                if part
+            )
+            if not details:
+                details = f"exit={launch_exit}"
+            logger.warning(
+                "browser_validate devserver launch failed: sandbox=%s exit=%s details=%s",
+                request.sandboxName,
+                launch_exit,
+                details[:400],
+            )
+            return {
+                "success": False,
+                "error": f"Dev server failed to launch: {details[:500]}",
+                "phase": "devserver-launch",
+            }
       except Exception as exc:
         logger.warning("browser_validate devserver launch returned error (may be expected for background): %s", str(exc)[:200])
+        return {
+            "success": False,
+            "error": f"Dev server launch error: {str(exc)[:500]}",
+            "phase": "devserver-launch",
+        }
 
     # --- Step 3: Wait for dev server to be ready ---
     # Dev server binds in the sandbox user's network namespace; poll must also run as sandbox user.
     with trace_span("browser_validate.poll", {"base_url": request.baseUrl}):
-      ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(200|304)'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
+      ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(2|3)[0-9][0-9]$'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
       try:
         poll_result = context.run_command(ready_poll_command, timeout_seconds=200)
         stdout = str(poll_result.get("stdout") or "").strip()
         if "ready" not in stdout:
+            log_tail = _tail_devserver_log(app_cwd)
             logger.warning("browser_validate devserver not ready: %s", stdout[:200])
-            return {"success": False, "error": f"Dev server did not become ready: {stdout[:200]}", "phase": "devserver-poll"}
+            detail = stdout[:200]
+            if log_tail:
+                detail = f"{detail} | {log_tail[:500]}"
+            return {"success": False, "error": f"Dev server did not become ready: {detail}", "phase": "devserver-poll"}
       except Exception as exc:
+        log_tail = _tail_devserver_log(app_cwd)
         logger.warning("browser_validate devserver poll failed: %s", str(exc)[:200])
-        return {"success": False, "error": f"Dev server poll error: {str(exc)[:300]}", "phase": "devserver-poll"}
+        detail = str(exc)[:300]
+        if log_tail:
+            detail = f"{detail} | {log_tail[:500]}"
+        return {"success": False, "error": f"Dev server poll error: {detail}", "phase": "devserver-poll"}
 
     # --- Step 4: Run in-sandbox Playwright capture ---
     steps = request.steps

@@ -273,9 +273,6 @@ class OpenShellToolContext:
             "else echo 'pnpm not available' >&2; return 127; fi; "
             "}; "
             "fi; "
-            "if [ -f package.json ] && [ ! -d node_modules ]; then "
-            "pnpm install --frozen-lockfile || pnpm install; "
-            "fi; "
         )
         return f"{bootstrap}{normalized_command}"
 
@@ -303,7 +300,22 @@ class OpenShellToolContext:
         normalized_command = self._ensure_pnpm_available(
             self._rewrite_legacy_workspace_aliases(command)
         )
-        return f"set -eu; cd {shlex.quote(target_dir)}; {normalized_command}"
+        return (
+            "set -eu; "
+            "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; "
+            "export HOME=/tmp; "
+            f"cd {shlex.quote(target_dir)}; "
+            f"{normalized_command}"
+        )
+
+    def _compose_argv(self, command: str, cwd: str | None = None) -> list[str]:
+        return [
+            "bash",
+            "--noprofile",
+            "--norc",
+            "-lc",
+            self._compose_command(command, cwd),
+        ]
 
     def _request(
         self,
@@ -357,7 +369,7 @@ class OpenShellToolContext:
             "keep": self.keep,
             "timeoutSeconds": timeout_seconds,
             "sandboxRepoPath": self.repo_path,
-            "command": self._compose_command(command, cwd),
+            "command": self._compose_argv(command, cwd),
         }
         if self.repo_url:
             payload["repoUrl"] = self.repo_url

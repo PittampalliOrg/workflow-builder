@@ -1,6 +1,7 @@
 "use client";
 
 import { useReactFlow } from "@xyflow/react";
+import { formatDistanceToNow } from "date-fns";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
 	Check,
@@ -82,6 +83,7 @@ import {
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ActionDefinition, IntegrationType } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
+import { getNavigableWorkflows } from "@/lib/workflow-navigation";
 import type { ContractIssue } from "@/lib/workflow-validation/types";
 import { Panel } from "../ai-elements/panel";
 import { DeployButton } from "../deploy-button";
@@ -171,6 +173,15 @@ function getManualTriggerNode(nodes: WorkflowNode[]): WorkflowNode | undefined {
 		const config = (node.data.config ?? {}) as Record<string, unknown>;
 		return config.triggerType === "Manual";
 	});
+}
+
+function formatWorkflowUpdatedAt(updatedAt: string): string {
+	const parsedDate = new Date(updatedAt);
+	if (Number.isNaN(parsedDate.getTime())) {
+		return "Updated recently";
+	}
+
+	return `Updated ${formatDistanceToNow(parsedDate, { addSuffix: true })}`;
 }
 
 // Built-in actions that require integrations but aren't in the plugin registry
@@ -1779,26 +1790,42 @@ function WorkflowMenuComponent({
 	actions: ReturnType<typeof useWorkflowActions>;
 }) {
 	const { open: openOverlay } = useOverlay();
+	const visibleWorkflows = useMemo(
+		() =>
+			[...getNavigableWorkflows(state.allWorkflows)].sort(
+				(a, b) =>
+					new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+			),
+		[state.allWorkflows],
+	);
 
 	return (
 		<div className="flex flex-col gap-1">
-			<div className="flex h-9 max-w-[160px] items-center overflow-hidden rounded-md border bg-secondary text-secondary-foreground sm:max-w-none">
+			<div className="flex h-9 w-full max-w-[calc(100vw-7rem)] min-w-0 items-center overflow-hidden rounded-md border bg-secondary text-secondary-foreground sm:max-w-[20rem] xl:max-w-[24rem]">
 				<DropdownMenu onOpenChange={(open) => open && actions.loadWorkflows()}>
-					<DropdownMenuTrigger className="flex h-full cursor-pointer items-center gap-2 px-3 font-medium text-sm transition-all hover:bg-black/5 dark:hover:bg-white/5">
+					<DropdownMenuTrigger className="flex h-full w-full cursor-pointer items-center gap-2 px-3 font-medium text-sm transition-all hover:bg-black/5 dark:hover:bg-white/5">
 						<WorkflowIcon className="size-4 shrink-0" />
-						<p className="truncate font-medium text-sm">
-							{workflowId ? (
-								state.workflowName
-							) : (
-								<>
-									<span className="sm:hidden">New</span>
-									<span className="hidden sm:inline">New Workflow</span>
-								</>
-							)}
-						</p>
+						<div className="min-w-0 flex-1 text-left">
+							<p
+								className="truncate font-medium text-sm"
+								title={workflowId ? state.workflowName : "New Workflow"}
+							>
+								{workflowId ? (
+									state.workflowName
+								) : (
+									<>
+										<span className="sm:hidden">New</span>
+										<span className="hidden sm:inline">New Workflow</span>
+									</>
+								)}
+							</p>
+						</div>
 						<ChevronDown className="size-3 shrink-0 opacity-50" />
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="w-64">
+					<DropdownMenuContent
+						align="start"
+						className="w-[calc(100vw-1rem)] max-w-[30rem] sm:w-[28rem]"
+					>
 						<DropdownMenuItem
 							asChild
 							className="flex items-center justify-between"
@@ -1847,25 +1874,39 @@ function WorkflowMenuComponent({
 							</DropdownMenuItem>
 						)}
 						<DropdownMenuSeparator />
-						{state.allWorkflows.length === 0 ? (
+						{visibleWorkflows.length === 0 ? (
 							<DropdownMenuItem disabled>No workflows found</DropdownMenuItem>
 						) : (
-							state.allWorkflows
-								.filter((w) => w.name !== "__current__")
-								.map((workflow) => (
-									<DropdownMenuItem
-										className="flex items-center justify-between"
-										key={workflow.id}
-										onClick={() =>
-											state.router.push(`/workflows/${workflow.id}`)
-										}
-									>
-										<span className="truncate">{workflow.name}</span>
-										{workflow.id === state.currentWorkflowId && (
-											<Check className="size-4 shrink-0" />
-										)}
-									</DropdownMenuItem>
-								))
+							visibleWorkflows.map((workflow) => (
+								<DropdownMenuItem
+									className="flex items-start gap-3 py-2"
+									key={workflow.id}
+									onClick={() => state.router.push(`/workflows/${workflow.id}`)}
+								>
+									<div className="min-w-0 flex-1">
+										<div
+											className="line-clamp-2 font-medium leading-snug"
+											title={workflow.name}
+										>
+											{workflow.name}
+										</div>
+										<div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground text-xs">
+											<span>{formatWorkflowUpdatedAt(workflow.updatedAt)}</span>
+											<span className="font-mono">
+												{workflow.id.slice(0, 8)}
+											</span>
+											{workflow.id === state.currentWorkflowId && (
+												<span className="rounded-full bg-accent px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide text-accent-foreground">
+													Current
+												</span>
+											)}
+										</div>
+									</div>
+									{workflow.id === state.currentWorkflowId && (
+										<Check className="mt-0.5 size-4 shrink-0" />
+									)}
+								</DropdownMenuItem>
+							))
 						)}
 					</DropdownMenuContent>
 				</DropdownMenu>

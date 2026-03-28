@@ -638,6 +638,34 @@ function fallbackDerivedRunStatus(
 	return "running";
 }
 
+function resolveDerivedRunStatus(
+	record: Record<string, unknown>,
+	executionStatus: string | null | undefined,
+): string {
+	const directStatus = toOptionalString(record.status);
+	if (directStatus) {
+		return directStatus;
+	}
+
+	const progress = asRecord(record.agentProgress);
+	const progressStatus = progress
+		? toOptionalString(progress.status)
+		: undefined;
+	if (progressStatus) {
+		return progressStatus;
+	}
+
+	if (typeof record.success === "boolean") {
+		return record.success ? "completed" : "failed";
+	}
+
+	if (toOptionalString(record.error)) {
+		return "failed";
+	}
+
+	return fallbackDerivedRunStatus(executionStatus);
+}
+
 function readTraceIdFromRecord(
 	record: Record<string, unknown>,
 ): string | undefined {
@@ -811,9 +839,7 @@ export function deriveAgentRunsFromExecutionOutput(
 		if (!looksLikeDerivedAgentRunRecord(record)) {
 			continue;
 		}
-		const status =
-			toOptionalString(record.status) ??
-			fallbackDerivedRunStatus(options.executionStatus);
+		const status = resolveDerivedRunStatus(record, options.executionStatus);
 		const agentWorkflowId =
 			toOptionalString(record.agentWorkflowId ?? record.daprInstanceId) ??
 			`derived:${options.executionId}:${nodeKey}`;

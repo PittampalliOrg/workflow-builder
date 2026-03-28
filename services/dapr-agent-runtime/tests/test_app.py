@@ -547,13 +547,27 @@ def test_openshell_compose_command_bootstraps_pnpm_when_missing() -> None:
     assert command.endswith("pnpm vitest run app/api/mcp-chat/route.test.ts")
 
 
-def test_openshell_run_command_returns_structured_nonzero_results(monkeypatch) -> None:
+def test_openshell_compose_argv_uses_non_login_bash() -> None:
     context = langgraph_engine.OpenShellToolContext(
         sandbox_name="openshell-test",
         repo_path="/sandbox/repo",
     )
 
-    def fake_request(**_kwargs):
+    argv = context._compose_argv("pnpm build", "basics/learn-starter")
+
+    assert argv[:4] == ["bash", "--noprofile", "--norc", "-lc"]
+    assert "cd /sandbox/repo/basics/learn-starter;" in argv[4]
+
+
+def test_openshell_run_command_returns_structured_nonzero_results(monkeypatch) -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+    )
+    requests: list[dict[str, object]] = []
+
+    def fake_request(**kwargs):
+        requests.append(kwargs)
         raise RuntimeError(
             json.dumps(
                 {
@@ -573,6 +587,12 @@ def test_openshell_run_command_returns_structured_nonzero_results(monkeypatch) -
 
     result = context.run_command("find . -type f | grep plan")
 
+    assert requests[0]["payload"]["command"][:4] == [
+        "bash",
+        "--noprofile",
+        "--norc",
+        "-lc",
+    ]
     assert result["exitCode"] == 1
     assert result["stderr"] == ""
     assert result["sandboxName"] == "openshell-test"
@@ -3087,3 +3107,136 @@ def test_browser_validate_install_failure_returns_error(monkeypatch) -> None:
     assert result["success"] is False
     assert result["phase"] == "install"
     assert len(call_log) == 1
+
+
+def test_browser_validate_install_failure_prefers_cleaned_stdout(monkeypatch) -> None:
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, timeout_seconds=300):
+            if "install" in command.lower() or "npm ci" in command.lower():
+                return {
+                    "exitCode": 1,
+                    "stdout": "ERR_PNPM_FETCH_403 real failure",
+                    "stderr": "/bin/bash: /home/node/.profile: Permission denied\n",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            installCommand="npm ci",
+            devServerCommand="npm run dev",
+        )
+    )
+
+    assert result["success"] is False
+    assert "ERR_PNPM_FETCH_403 real failure" in result["error"]
+
+
+def test_browser_validate_skips_install_when_dependencies_present(monkeypatch) -> None:
+    """browser_validate should skip install when the app already has dependencies."""
+    call_log: list[dict[str, object]] = []
+
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            call_log.append(
+                {
+                    "command": command,
+                    "cwd": cwd,
+                    "timeout": timeout_seconds,
+                }
+            )
+            if "deps-present" in command:
+                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
+            if "npm run dev" in command:
+                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
+            if "curl -s -o /dev/null" in command:
+                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
+            if "capture_screenshots.py" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "CAPTURE_OK",
+                    "stderr": "",
+                }
+            if "manifest.json" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "{\"success\": true, \"screenshots\": []}",
+                    "stderr": "",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && npm ci",
+            devServerCommand="cd 'basics/learn-starter' && npm run dev",
+            workflowId="wf-1",
+            nodeId="node-1",
+        )
+    )
+
+    assert result["success"] is True
+    assert not any("npm ci" in str(entry["command"]) for entry in call_log)
+
+
+def test_browser_validate_returns_launch_error_with_log_tail(monkeypatch) -> None:
+    call_log: list[dict[str, object]] = []
+
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            call_log.append(
+                {
+                    "command": command,
+                    "cwd": cwd,
+                    "timeout": timeout_seconds,
+                }
+            )
+            if "deps-present" in command:
+                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
+            if "tail -n 80" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "next: command not found",
+                    "stderr": "",
+                }
+            if "npx next dev" in command or "npm run dev" in command:
+                return {
+                    "exitCode": 1,
+                    "stdout": "server-exited",
+                    "stderr": "",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && npm ci",
+            devServerCommand="cd 'basics/learn-starter' && npx next dev --hostname 0.0.0.0 --port 3009",
+            workflowId="wf-1",
+            nodeId="node-1",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["phase"] == "devserver-launch"
+    assert "next: command not found" in result["error"]
