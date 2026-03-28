@@ -52,19 +52,23 @@ RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
 # Claude Code CLI for headless planning mode in sandbox runs
 RUN npm install -g @anthropic-ai/claude-code@2.1.50 && claude --version
 
-# node image provides user "node" with UID/GID 1000.
-RUN mkdir -p /app /home/node/workspace && \
+# OpenShell requires a "sandbox" user/group in every sandbox image.
+# Reuse UID/GID 1000 so the existing writable paths still work.
+RUN groupadd -o -g 1000 sandbox && \
+    useradd -o -u 1000 -g 1000 -d /home/node -s /bin/bash sandbox && \
+    mkdir -p /app /home/node/workspace && \
     ln -sfn /app /workspace && \
     ln -sfn /home/node /home/user && \
-    chown -R node:node /app /home/node
+    ln -sfn /home/node /home/sandbox && \
+    chown -R sandbox:sandbox /app /home/node
 
 WORKDIR /app
-COPY --chown=node:node server.js /app/server.js
+COPY --chown=sandbox:sandbox server.js /app/server.js
 
 RUN git config --system user.email "agent@mastra" && \
     git config --system user.name "mastra-agent"
 
-USER node
+USER sandbox
 
 ENV PORT=8888 \
     WORKSPACE_DIR=/app \
