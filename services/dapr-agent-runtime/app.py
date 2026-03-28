@@ -6833,8 +6833,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     try:
         pw_check = context.run_command(
             (
-                "command -v xvfb-run >/dev/null 2>&1 "
-                "&& PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\n"
+                "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\n"
                 "from playwright.sync_api import sync_playwright\n"
                 "with sync_playwright() as p:\n"
                 "    print(p.chromium.executable_path)\n"
@@ -6851,7 +6850,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     if not pw_available:
         error_msg = (
             "Sandbox image is missing browser validation prerequisites. "
-            "Expected xvfb-run plus Playwright Chromium under /opt/pw-browsers."
+            "Expected Playwright Chromium under /opt/pw-browsers."
         )
         logger.warning("browser_validate missing sandbox browser tooling: %s", error_msg)
         return {
