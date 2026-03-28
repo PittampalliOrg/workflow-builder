@@ -1,5 +1,7 @@
 FROM node:20-bookworm-slim
 
+ARG PNPM_VERSION=9.15.9
+
 # Align sandbox capabilities with E2B's base image expectations:
 # shell + build tooling + python + common CLI tools used by coding agents.
 RUN apt-get update && \
@@ -44,6 +46,8 @@ RUN curl -fsSLO --compressed "https://yarnpkg.com/downloads/${YARN_VERSION}/yarn
     ln -sfn "/opt/yarn-v${YARN_VERSION}/bin/yarn" /usr/local/bin/yarn && \
     ln -sfn "/opt/yarn-v${YARN_VERSION}/bin/yarnpkg" /usr/local/bin/yarnpkg && \
     rm "yarn-v${YARN_VERSION}.tar.gz"
+
+RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
 
 # Claude Code CLI for headless planning mode in sandbox runs
 RUN npm install -g @anthropic-ai/claude-code@2.1.50 && claude --version
