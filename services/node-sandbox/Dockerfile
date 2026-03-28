@@ -34,6 +34,7 @@ RUN apt-get update && \
       util-linux \
       uuid-dev \
       x11-utils \
+      xvfb \
       zip \
       gh && \
     rm -rf /var/lib/apt/lists/*
@@ -49,6 +50,11 @@ RUN curl -fsSLO --compressed "https://yarnpkg.com/downloads/${YARN_VERSION}/yarn
     rm "yarn-v${YARN_VERSION}.tar.gz"
 
 RUN npm install -g "pnpm@${PNPM_VERSION}" && pnpm --version
+
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN python3 -m pip install --break-system-packages "playwright==1.58.0" && \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 -m playwright install --with-deps chromium && \
+    chmod -R a+rX /opt/pw-browsers
 
 # Claude Code CLI for headless planning mode in sandbox runs
 RUN npm install -g @anthropic-ai/claude-code@2.1.50 && claude --version

@@ -625,7 +625,7 @@ dev:
       app: dapr-agent-runtime
     container: ${DAPR_AGENT_APP_NAME}
     devImage: ${DAPR_AGENT_DEV_IMAGE_REPOSITORY}:latest
-    workingDir: /app
+    workingDir: /workspace/dapr-agent-runtime
     resources:
       requests:
         cpu: 250m
@@ -639,7 +639,8 @@ dev:
       - |
         set -e
         echo "=== DevSpace Development Container (Dapr Agent Runtime) ==="
-        cd /app
+        mkdir -p /workspace/dapr-agent-runtime
+        cd /workspace/dapr-agent-runtime
 
         python -m venv .venv
         . .venv/bin/activate
@@ -648,7 +649,7 @@ dev:
 
         exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT} --reload
     sync:
-      - path: ./services/dapr-agent-runtime/:/app
+      - path: ./services/dapr-agent-runtime/:/workspace/dapr-agent-runtime
         initialSync: mirrorLocal
         disableDownload: true
         polling: true
@@ -661,7 +662,7 @@ dev:
               command: sh
               args:
                 - -lc
-                - "cd /app && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
+                - "cd /workspace/dapr-agent-runtime && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
               failOnError: false
               onChange:
                 - pyproject.toml
@@ -1491,18 +1492,16 @@ profiles:
   - name: openshell-inner-loop
     description: >
       Default short inner loop for the observable OpenShell authoring path.
-      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
+      Starts: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, openshell-langgraph-observable.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
       - op: remove
         path: dev.durable-agent
       - op: remove
@@ -1518,18 +1517,16 @@ profiles:
     description: >
       Explicit observable OpenShell loop. Use this for current LangGraph tracing
       and feature-delivery work.
-      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
+      Starts: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, openshell-langgraph-observable.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
       - op: remove
         path: dev.durable-agent
       - op: remove

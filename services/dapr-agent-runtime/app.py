@@ -6530,7 +6530,12 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
             "(while true; do echo install-heartbeat; sleep 25; done) & hb_pid=$!; "
         )
         normalized = str(command or "")
-        return normalized.removeprefix(heartbeat_prefix).strip()
+        normalized = normalized.removeprefix(heartbeat_prefix).strip()
+        normalized = normalized.replace(
+            "pnpm install --frozen-lockfile --prefer-offline",
+            "CI=1 pnpm install --frozen-lockfile --prefer-offline --force",
+        )
+        return normalized
 
     def _is_transient_registry_failure(output: str) -> bool:
         failure_markers = [
@@ -6586,7 +6591,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         package_manager = str(detected.get("stdout") or "").strip().splitlines()
         selected = package_manager[-1] if package_manager else ""
         if selected == "pnpm":
-            return "pnpm run dev -- --hostname 0.0.0.0 --port 3009"
+            return "pnpm dev --hostname 0.0.0.0 --port 3009"
         if selected == "yarn":
             return "yarn dev --hostname 0.0.0.0 --port 3009"
         if selected == "npm":
@@ -6597,15 +6602,17 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         normalized = str(command or "").strip()
         if not normalized:
             return normalized
-        if "npx next dev --hostname 0.0.0.0 --port 3009" not in normalized:
-            return normalized
         preferred_runner = _preferred_dev_runner(cwd)
-        if not preferred_runner:
-            return normalized
-        return normalized.replace(
-            "npx next dev --hostname 0.0.0.0 --port 3009",
-            preferred_runner,
-        )
+        if preferred_runner:
+            normalized = normalized.replace(
+                "npx next dev --hostname 0.0.0.0 --port 3009",
+                preferred_runner,
+            )
+            normalized = normalized.replace(
+                "pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+                preferred_runner,
+            )
+        return normalized
 
     def _tail_devserver_log(cwd: str | None) -> str:
         candidate_paths = [".wf-preview/dev-server.log", "../.wf-preview/dev-server.log"]
@@ -6818,36 +6825,40 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
     output_dir = "/tmp/wf-screenshots"
 
-    # --- Step 4: Ensure Playwright is available in the sandbox ---
-    # The coding sandbox may not have Playwright pre-installed (only the openshell-sandbox
-    # image ships with it).  Detect and install if needed so capture can proceed.
+    # --- Step 4: Validate browser tooling baseline in the sandbox ---
+    # Browser validation is expected to run against the node-sandbox image, which should
+    # already include Playwright, Chromium, and xvfb-run. Runtime bootstrap is too slow
+    # and flaky under sandbox network policy, so fail fast if the image is stale.
     pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
     try:
         pw_check = context.run_command(
-            "python3 -c 'import playwright; print(\"pw-ok\")' 2>&1",
+            (
+                "command -v xvfb-run >/dev/null 2>&1 "
+                "&& PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\n"
+                "from playwright.sync_api import sync_playwright\n"
+                "with sync_playwright() as p:\n"
+                "    print(p.chromium.executable_path)\n"
+                "PY"
+            ),
             timeout_seconds=15,
         )
-        pw_available = "pw-ok" in str(pw_check.get("stdout") or "")
+        pw_exit = pw_check.get("exitCode", pw_check.get("exit_code", -1))
+        pw_stdout = str(pw_check.get("stdout") or "").strip()
+        pw_available = pw_exit == 0 and "/opt/pw-browsers/" in pw_stdout
     except Exception:
         pw_available = False
 
     if not pw_available:
-        logger.info("browser_validate: playwright not found in sandbox, installing...")
-        try:
-            install_pw = context.run_command(
-                "pip install --break-system-packages playwright 2>&1 "
-                "&& PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers playwright install --with-deps chromium 2>&1 "
-                "&& chmod -R a+rX /opt/pw-browsers",
-                timeout_seconds=300,
-            )
-            pw_install_exit = install_pw.get("exitCode", install_pw.get("exit_code", -1))
-            if pw_install_exit != 0:
-                pw_stderr = str(install_pw.get("stdout") or install_pw.get("stderr") or "")[:500]
-                logger.warning("browser_validate playwright install failed exit=%s: %s", pw_install_exit, pw_stderr)
-            else:
-                logger.info("browser_validate: playwright installed successfully")
-        except Exception as exc:
-            logger.warning("browser_validate playwright install error: %s", str(exc)[:200])
+        error_msg = (
+            "Sandbox image is missing browser validation prerequisites. "
+            "Expected xvfb-run plus Playwright Chromium under /opt/pw-browsers."
+        )
+        logger.warning("browser_validate missing sandbox browser tooling: %s", error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+            "phase": "capture-prerequisites",
+        }
 
     # Upload the capture script via base64 encoding to avoid heredoc quoting issues
     # with OpenShell's command API.

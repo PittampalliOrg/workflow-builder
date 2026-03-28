@@ -426,7 +426,7 @@ function buildValidationInstallCommand(previewAppDir: string): string {
 		"echo deps-missing; ";
 	const installFromLockfile =
 		"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
-		"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+		"(corepack enable pnpm >/dev/null 2>&1 || true); CI=1 pnpm install --frozen-lockfile --prefer-offline --force; " +
 		"elif [ -f package-lock.json ]; then " +
 		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
 		"elif [ -f yarn.lock ]; then " +
@@ -462,7 +462,7 @@ function buildValidationDevServerCommand(previewAppDir: string): string {
 		previewAppDir === "." || previewAppDir === ""
 			? ".wf-preview/dev-server.pid"
 			: "../.wf-preview/dev-server.pid";
-	return `${prefix}mkdir -p ${previewStateDir} && rm -f ${logPath} ${pidPath} && if [ -f pnpm-lock.yaml ] && pnpm --version >/dev/null 2>&1; then runner='pnpm run dev -- --hostname 0.0.0.0 --port 3009'; elif [ -f yarn.lock ] && yarn --version >/dev/null 2>&1; then runner='yarn dev --hostname 0.0.0.0 --port 3009'; elif [ -f package-lock.json ] || [ -f package.json ]; then runner='npm run dev -- --hostname 0.0.0.0 --port 3009'; else echo no-supported-package-runner; exit 1; fi; setsid sh -c "$runner > ${logPath} 2>&1 < /dev/null" >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
+	return `${prefix}mkdir -p ${previewStateDir} && rm -f ${logPath} ${pidPath} && if [ -f pnpm-lock.yaml ] && pnpm --version >/dev/null 2>&1; then runner='pnpm dev --hostname 0.0.0.0 --port 3009'; elif [ -f yarn.lock ] && yarn --version >/dev/null 2>&1; then runner='yarn dev --hostname 0.0.0.0 --port 3009'; elif [ -f package-lock.json ] || [ -f package.json ]; then runner='npm run dev -- --hostname 0.0.0.0 --port 3009'; else echo no-supported-package-runner; exit 1; fi; setsid sh -c "$runner > ${logPath} 2>&1 < /dev/null" >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
 }
 
 function buildValidationCaptureSteps(): string {
