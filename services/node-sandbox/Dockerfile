@@ -17,6 +17,7 @@ RUN apt-get update && \
       git \
       grep \
       jq \
+      iproute2 \
       libbluetooth-dev \
       make \
       python3 \
