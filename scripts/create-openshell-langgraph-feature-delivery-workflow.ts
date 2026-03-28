@@ -412,73 +412,40 @@ function buildValidationInstallCommand(previewAppDir: string): string {
 	const appDir = normalizeSubdirectory(previewAppDir);
 	const hasSubdir = appDir !== ".";
 	const appDirQuoted = shellQuote(appDir);
-	const immutableInstallBranch = hasSubdir
-		? "if [ -d " +
-			appDirQuoted +
-			" ]; then " +
-			"cd " +
-			appDirQuoted +
-			"; " +
-			"if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
-			"attempt=1; while [ $attempt -le 2 ]; do " +
-			"if [ -f pnpm-lock.yaml ]; then " +
-			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
-			"elif [ -f package-lock.json ]; then " +
-			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"elif [ -f yarn.lock ]; then " +
-			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
-			"else " +
-			"echo no-supported-lockfile; exit 1; " +
-			"fi && exit 0; " +
-			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
-			"done; " +
-			"echo immutable-install-failed-falling-back-to-npm; " +
-			"if [ -f package.json ]; then " +
-			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"else " +
-			"echo no-package-json-for-npm-fallback; exit 1; " +
-			"fi; " +
-			"else " +
-			"if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
-			"attempt=1; while [ $attempt -le 2 ]; do " +
-			"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
-			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
-			"elif [ -f package-lock.json ]; then " +
-			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"elif [ -f yarn.lock ]; then " +
-			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
-			"else " +
-			"echo no-supported-lockfile; exit 1; " +
-			"fi && exit 0; " +
-			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
-			"done; " +
-			"echo immutable-install-failed-falling-back-to-npm; " +
-			"if [ -f package.json ]; then " +
-			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"else " +
-			"echo no-package-json-for-npm-fallback; exit 1; " +
-			"fi; " +
-			"fi"
-		: "if [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then echo deps-present; exit 0; fi; " +
-			"attempt=1; while [ $attempt -le 2 ]; do " +
-			"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
-			"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
-			"elif [ -f package-lock.json ]; then " +
-			"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"elif [ -f yarn.lock ]; then " +
-			"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
-			"else " +
-			"echo no-supported-lockfile; exit 1; " +
-			"fi && exit 0; " +
-			"if [ $attempt -eq 2 ]; then break; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
-			"done; " +
-			"echo immutable-install-failed-falling-back-to-npm; " +
-			"if [ -f package.json ]; then " +
-			"npm install --no-package-lock --no-save --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
-			"else " +
-			"echo no-package-json-for-npm-fallback; exit 1; " +
-			"fi";
-	return immutableInstallBranch;
+	const changeDirectory = hasSubdir
+		? `if [ -d ${appDirQuoted} ]; then cd ${appDirQuoted}; else echo missing-preview-app-dir; exit 1; fi; `
+		: "";
+	const depsReadyCheck =
+		"if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then " +
+		"if [ -x node_modules/.bin/next ]; then echo deps-present; exit 0; fi; " +
+		"elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ] || [ -x node_modules/.bin/astro ]; then " +
+		"echo deps-present; exit 0; " +
+		"elif [ -d node_modules/.bin ] && find node_modules/.bin -maxdepth 1 \\( -type f -o -type l \\) | grep -q .; then " +
+		"echo deps-present; exit 0; " +
+		"elif [ -d .next ]; then echo deps-present; exit 0; fi; " +
+		"echo deps-missing; ";
+	const installFromLockfile =
+		"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
+		"(corepack enable pnpm >/dev/null 2>&1 || true); pnpm install --frozen-lockfile --prefer-offline; " +
+		"elif [ -f package-lock.json ]; then " +
+		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
+		"elif [ -f yarn.lock ]; then " +
+		"(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable; " +
+		"else " +
+		"echo no-supported-lockfile; exit 1; " +
+		"fi";
+	return (
+		changeDirectory +
+		depsReadyCheck +
+		"attempt=1; while [ $attempt -le 2 ]; do " +
+		installFromLockfile +
+		" && " +
+		depsReadyCheck +
+		"if [ $attempt -eq 2 ]; then break; fi; " +
+		"echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; " +
+		"done; " +
+		"echo immutable-install-failed; exit 1;"
+	);
 }
 
 function buildValidationDevServerCommand(previewAppDir: string): string {
@@ -495,7 +462,7 @@ function buildValidationDevServerCommand(previewAppDir: string): string {
 		previewAppDir === "." || previewAppDir === ""
 			? ".wf-preview/dev-server.pid"
 			: "../.wf-preview/dev-server.pid";
-	return `${prefix}mkdir -p ${previewStateDir} && rm -f ${logPath} ${pidPath} && if [ -f pnpm-lock.yaml ] && pnpm --version >/dev/null 2>&1; then runner='pnpm run dev -- --hostname 0.0.0.0 --port 3009'; elif [ -f yarn.lock ] && yarn --version >/dev/null 2>&1; then runner='yarn dev --hostname 0.0.0.0 --port 3009'; elif [ -f package-lock.json ] || [ -f package.json ]; then runner='npm run dev -- --hostname 0.0.0.0 --port 3009'; else echo no-supported-package-runner; exit 1; fi; setsid sh -c \"$runner > ${logPath} 2>&1 < /dev/null\" >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
+	return `${prefix}mkdir -p ${previewStateDir} && rm -f ${logPath} ${pidPath} && if [ -f pnpm-lock.yaml ] && pnpm --version >/dev/null 2>&1; then runner='pnpm run dev -- --hostname 0.0.0.0 --port 3009'; elif [ -f yarn.lock ] && yarn --version >/dev/null 2>&1; then runner='yarn dev --hostname 0.0.0.0 --port 3009'; elif [ -f package-lock.json ] || [ -f package.json ]; then runner='npm run dev -- --hostname 0.0.0.0 --port 3009'; else echo no-supported-package-runner; exit 1; fi; setsid sh -c "$runner > ${logPath} 2>&1 < /dev/null" >/dev/null 2>&1 & pid=$!; echo $pid > ${pidPath}; sleep 2; if ! kill -0 $pid 2>/dev/null; then echo server-exited; cat ${logPath}; exit 1; fi; echo server-started`;
 }
 
 function buildValidationCaptureSteps(): string {

@@ -6552,9 +6552,11 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                 (
                     "if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then "
                     "if [ -x node_modules/.bin/next ]; then echo deps-present; else echo deps-missing; fi; "
-                    "elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ]; then "
+                    "elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ] || [ -x node_modules/.bin/astro ]; then "
                     "echo deps-present; "
-                    "elif [ -d node_modules ] || [ -d .next ] || { [ -f pnpm-lock.yaml ] && [ -d node_modules/.pnpm ]; }; then "
+                    "elif [ -d node_modules/.bin ] && find node_modules/.bin -maxdepth 1 \\( -type f -o -type l \\) | grep -q .; then "
+                    "echo deps-present; "
+                    "elif [ -d .next ]; then "
                     "echo deps-present; "
                     "else echo deps-missing; fi"
                 ),
@@ -6669,9 +6671,7 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                         part for part in [cleaned_stdout, cleaned_stderr] if part
                     )
                     if _is_transient_registry_failure(combined_output):
-                        deps_available = _deps_present(app_cwd) or _deps_present(
-                            request.repoPath
-                        )
+                        deps_available = _deps_present(app_cwd)
                         if deps_available:
                             logger.warning(
                                 "browser_validate install hit transient registry failure but dependencies look usable; continuing sandbox=%s cwd=%s",
@@ -6711,6 +6711,18 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                     "error": f"Install error: {str(exc)[:500]}",
                     "phase": "install",
                 }
+
+    if not _deps_present(app_cwd):
+        error_msg = (
+            "Install completed but local app runtime is still unavailable. "
+            f"Expected runnable dependencies in {app_cwd or request.repoPath}."
+        )
+        logger.warning("browser_validate dependency verification failed: %s", error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+            "phase": "install",
+        }
 
     # --- Step 2: Start dev server in background ---
     with trace_span("browser_validate.devserver", {"sandbox": request.sandboxName}):

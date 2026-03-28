@@ -3192,6 +3192,130 @@ def test_browser_validate_skips_install_when_dependencies_present(monkeypatch) -
     assert not any("npm ci" in str(entry["command"]) for entry in call_log)
 
 
+def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) -> None:
+    call_log: list[dict[str, object]] = []
+    deps_checks = 0
+
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            nonlocal deps_checks
+            call_log.append(
+                {
+                    "command": command,
+                    "cwd": cwd,
+                    "timeout": timeout_seconds,
+                }
+            )
+            if '"next"' in command and "deps-present" in command:
+                deps_checks += 1
+                if deps_checks == 1:
+                    return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
+                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
+            if "pnpm install --frozen-lockfile --prefer-offline" in command:
+                return {"exitCode": 0, "stdout": "installed", "stderr": ""}
+            if "pnpm run dev" in command:
+                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
+            if "curl -s -o /dev/null" in command:
+                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
+            if "capture_screenshots.py" in command:
+                return {"exitCode": 0, "stdout": "CAPTURE_OK", "stderr": ""}
+            if "manifest.json" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "{\"success\": true, \"screenshots\": []}",
+                    "stderr": "",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
+            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+            workflowId="wf-1",
+            nodeId="node-1",
+        )
+    )
+
+    assert result["success"] is True
+    assert any(
+        "pnpm install --frozen-lockfile --prefer-offline" in str(entry["command"])
+        for entry in call_log
+    )
+
+
+def test_browser_validate_install_requires_runnable_local_runtime(monkeypatch) -> None:
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            if '"next"' in command and "deps-present" in command:
+                return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
+            if "pnpm install --frozen-lockfile --prefer-offline" in command:
+                return {"exitCode": 0, "stdout": "installed", "stderr": ""}
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
+            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["phase"] == "install"
+    assert "local app runtime is still unavailable" in result["error"]
+
+
+def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monkeypatch) -> None:
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            if '"next"' in command and "deps-present" in command:
+                if cwd == "basics/learn-starter":
+                    return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
+                if cwd == "/sandbox/repo":
+                    return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
+            if "pnpm install --frozen-lockfile --prefer-offline" in command:
+                return {
+                    "exitCode": 1,
+                    "stdout": "request to https://registry.npmjs.org/ failed",
+                    "stderr": "",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
+            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+        )
+    )
+
+    assert result["success"] is False
+    assert result["phase"] == "install"
+    assert "registry.npmjs.org" in result["error"]
+
+
 def test_browser_validate_returns_launch_error_with_log_tail(monkeypatch) -> None:
     call_log: list[dict[str, object]] = []
 
