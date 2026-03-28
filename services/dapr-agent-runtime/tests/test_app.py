@@ -3156,11 +3156,17 @@ def test_browser_validate_skips_install_when_dependencies_present(monkeypatch) -
             )
             if "deps-present" in command:
                 return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
+            if "sync_playwright" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
+                    "stderr": "",
+                }
             if "npm run dev" in command:
                 return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
             if "curl -s -o /dev/null" in command:
                 return {"exitCode": 0, "stdout": "ready", "stderr": ""}
-            if "capture_screenshots.py" in command:
+            if "/sandbox/capture_screenshots.py" in command:
                 return {
                     "exitCode": 0,
                     "stdout": "CAPTURE_OK",
@@ -3195,6 +3201,7 @@ def test_browser_validate_skips_install_when_dependencies_present(monkeypatch) -
 def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) -> None:
     call_log: list[dict[str, object]] = []
     deps_checks = 0
+    policy_calls: list[str] = []
 
     class FakeContext:
         def __init__(self, **_kwargs):
@@ -3214,13 +3221,19 @@ def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) 
                 if deps_checks == 1:
                     return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
                 return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "pnpm install --frozen-lockfile --prefer-offline" in command:
+            if "sync_playwright" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
+                    "stderr": "",
+                }
+            if "pnpm install" in command and "--prefer-offline" in command:
                 return {"exitCode": 0, "stdout": "installed", "stderr": ""}
             if "pnpm run dev" in command:
                 return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
             if "curl -s -o /dev/null" in command:
                 return {"exitCode": 0, "stdout": "ready", "stderr": ""}
-            if "capture_screenshots.py" in command:
+            if "/sandbox/capture_screenshots.py" in command:
                 return {"exitCode": 0, "stdout": "CAPTURE_OK", "stderr": ""}
             if "manifest.json" in command:
                 return {
@@ -3231,6 +3244,11 @@ def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) 
             return {"exitCode": 0, "stdout": "ok", "stderr": ""}
 
     monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+    monkeypatch.setattr(
+        app,
+        "_ensure_browser_validate_npm_policy",
+        lambda sandbox_name: policy_calls.append(sandbox_name) or {"ok": True},
+    )
 
     result = app.browser_validate(
         BrowserValidateRequest(
@@ -3245,8 +3263,13 @@ def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) 
     )
 
     assert result["success"] is True
+    assert policy_calls == ["sandbox-test"]
     assert any(
-        "pnpm install --frozen-lockfile --prefer-offline" in str(entry["command"])
+        "pnpm install" in str(entry["command"]) and "--prefer-offline" in str(entry["command"])
+        for entry in call_log
+    )
+    assert not any(
+        "CI=1 CI=1" in str(entry["command"]) or "--force --force" in str(entry["command"])
         for entry in call_log
     )
 
@@ -3291,7 +3314,7 @@ def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monk
                     return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
                 if cwd == "/sandbox/repo":
                     return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "pnpm install --frozen-lockfile --prefer-offline" in command:
+            if "pnpm install" in command and "--prefer-offline" in command:
                 return {
                     "exitCode": 1,
                     "stdout": "request to https://registry.npmjs.org/ failed",
@@ -3313,7 +3336,7 @@ def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monk
 
     assert result["success"] is False
     assert result["phase"] == "install"
-    assert "registry.npmjs.org" in result["error"]
+    assert "registry.npmjs.org" in result["error"] or "local app runtime is still unavailable" in result["error"]
 
 
 def test_browser_validate_returns_launch_error_with_log_tail(monkeypatch) -> None:

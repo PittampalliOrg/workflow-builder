@@ -7,6 +7,7 @@ import logging
 import os
 import shlex
 import shutil
+import socket
 import ssl
 import subprocess
 import threading
@@ -58,6 +59,15 @@ from langgraph_engine import (
     run_langgraph_task,
 )
 from tracing import setup_tracing, trace_span
+
+try:
+    from openshell import SandboxClient
+    from openshell._proto import openshell_pb2, sandbox_pb2
+except ImportError:  # pragma: no cover
+    SandboxClient = None
+    openshell_pb2 = None
+    sandbox_pb2 = None
+
 try:
     import psycopg
 except ImportError:  # pragma: no cover
@@ -2020,6 +2030,101 @@ def _otel_context_from_headers(request: Request) -> dict[str, str]:
     if not carrier.get("traceparent"):
         carrier.update(_generate_trace_context())
     return carrier
+
+
+def _resolve_host_ips(host: str) -> list[str]:
+    try:
+        _, _, addresses = socket.gethostbyname_ex(host)
+    except OSError:
+        return []
+    return [address for address in addresses if address]
+
+
+def _ensure_browser_validate_npm_policy(sandbox_name: str) -> dict[str, Any]:
+    if SandboxClient is None or openshell_pb2 is None or sandbox_pb2 is None:
+        return {"ok": False, "reason": "openshell-unavailable"}
+
+    npm_registry_host = os.getenv("NPM_REGISTRY_HOST", "registry.npmjs.org")
+    npm_registry_port = int(os.getenv("NPM_REGISTRY_PORT", "443"))
+    npm_registry_ips = _resolve_host_ips(npm_registry_host)
+
+    try:
+        client = SandboxClient.from_active_cluster()
+        ref = client.get(sandbox_name)
+        config = client._stub.GetSandboxConfig(
+            sandbox_pb2.GetSandboxConfigRequest(sandbox_id=ref.id),
+            timeout=30,
+        )
+        policy = sandbox_pb2.SandboxPolicy()
+        policy.CopyFrom(config.policy)
+        policy.network_policies["npm_registry"].CopyFrom(
+            sandbox_pb2.NetworkPolicyRule(
+                name="npm-registry",
+                endpoints=[
+                    sandbox_pb2.NetworkEndpoint(
+                        host=npm_registry_host,
+                        port=npm_registry_port,
+                        protocol="rest",
+                        enforcement="enforce",
+                        rules=[
+                            sandbox_pb2.L7Rule(
+                                allow=sandbox_pb2.L7Allow(method="GET", path="/**")
+                            ),
+                            sandbox_pb2.L7Rule(
+                                allow=sandbox_pb2.L7Allow(method="HEAD", path="/**")
+                            ),
+                        ],
+                        allowed_ips=npm_registry_ips,
+                        ports=[npm_registry_port],
+                    )
+                ],
+                binaries=[
+                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/node"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/node"),
+                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/npm"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/npm"),
+                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/npx"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/npx"),
+                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/corepack"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/corepack"),
+                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/pnpm"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/pnpm"),
+                    sandbox_pb2.NetworkBinary(path="/usr/bin/curl"),
+                    sandbox_pb2.NetworkBinary(path="/bin/bash"),
+                    sandbox_pb2.NetworkBinary(path="/bin/sh"),
+                ],
+            )
+        )
+        response = client._stub.UpdateConfig(
+            openshell_pb2.UpdateConfigRequest(name=sandbox_name, policy=policy),
+            timeout=30,
+        )
+        logger.info(
+            "browser_validate applied npm policy to sandbox=%s version=%s host=%s ips=%s",
+            sandbox_name,
+            getattr(response, "version", None),
+            npm_registry_host,
+            npm_registry_ips,
+        )
+        return {
+            "ok": True,
+            "host": npm_registry_host,
+            "port": npm_registry_port,
+            "resolved_ips": npm_registry_ips,
+        }
+    except Exception as exc:
+        logger.warning(
+            "browser_validate failed to apply npm policy to sandbox=%s: %s",
+            sandbox_name,
+            exc,
+        )
+        return {
+            "ok": False,
+            "host": npm_registry_host,
+            "port": npm_registry_port,
+            "resolved_ips": npm_registry_ips,
+            "error": str(exc),
+        }
 
 
 def _resolve_tool_group(policy: str | None) -> str:
@@ -6531,10 +6636,12 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         )
         normalized = str(command or "")
         normalized = normalized.removeprefix(heartbeat_prefix).strip()
-        normalized = normalized.replace(
-            "pnpm install --frozen-lockfile --prefer-offline",
-            "CI=1 pnpm install --frozen-lockfile --prefer-offline --force",
-        )
+        normalized = re.sub(r"^(?:CI=1\s+)+", "CI=1 ", normalized)
+        normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
+        if "pnpm install" in normalized and "CI=1" not in normalized.split():
+            normalized = f"CI=1 {normalized}"
+        if "pnpm install" in normalized and "--force" not in normalized:
+            normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
         return normalized
 
     def _is_transient_registry_failure(output: str) -> bool:
@@ -6630,6 +6737,56 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                 return preview
         return ""
 
+    def _is_base_url_ready() -> bool:
+        try:
+            ready = context.run_command(
+                (
+                    f"if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null "
+                    "| grep -qE '^(2|3)[0-9][0-9]$'; then echo ready; else echo not-ready; fi"
+                ),
+                timeout_seconds=15,
+            )
+        except Exception:
+            return False
+        return "ready" in str(ready.get("stdout") or "")
+
+    def _cleanup_preview_server(cwd: str | None) -> None:
+        candidate_dirs = [".wf-preview", "../.wf-preview"]
+        for candidate_dir in candidate_dirs:
+            try:
+                context.run_command(
+                    (
+                        f"if [ -f {shlex.quote(candidate_dir)}/dev-server.pid ]; then "
+                        f"pid=$(cat {shlex.quote(candidate_dir)}/dev-server.pid 2>/dev/null || true); "
+                        "if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then kill \"$pid\" 2>/dev/null || true; sleep 1; fi; "
+                        f"rm -f {shlex.quote(candidate_dir)}/dev-server.pid; "
+                        "fi"
+                    ),
+                    cwd=cwd,
+                    timeout_seconds=15,
+                )
+            except Exception:
+                continue
+
+        try:
+            context.run_command(
+                (
+                    "for pid in $(ps -eo pid,args | awk "
+                    "'/([n]ext|[v]ite|react-scripts|astro).*--port 3009/ {print $1}'); do "
+                    "kill \"$pid\" 2>/dev/null || true; "
+                    "done"
+                ),
+                cwd=cwd,
+                timeout_seconds=15,
+            )
+        except Exception:
+            pass
+
+        try:
+            context.run_command("sleep 2", cwd=cwd, timeout_seconds=5)
+        except Exception:
+            pass
+
     app_cwd = (
         _extract_leading_cd(request.devServerCommand)
         or _extract_leading_cd(request.installCommand)
@@ -6646,6 +6803,19 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     if not skip_install:
         with trace_span("browser_validate.install", {"sandbox": request.sandboxName}):
             try:
+                if any(
+                    token in str(request.installCommand or "")
+                    for token in ("pnpm install", "npm install", "npm ci", "yarn install")
+                ):
+                    policy_result = _ensure_browser_validate_npm_policy(
+                        _sanitize_sandbox_name(request.sandboxName)
+                    )
+                    if not policy_result.get("ok"):
+                        logger.warning(
+                            "browser_validate proceeding without npm policy update sandbox=%s details=%s",
+                            request.sandboxName,
+                            policy_result,
+                        )
                 install_started_at = time.monotonic()
                 install_command = _normalize_install_command(request.installCommand)
                 logger.info(
@@ -6733,54 +6903,68 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
 
     # --- Step 2: Start dev server in background ---
     with trace_span("browser_validate.devserver", {"sandbox": request.sandboxName}):
-      try:
-        normalized_devserver_command = _normalize_devserver_command(
-            request.devServerCommand,
-            app_cwd,
-        )
-        logger.info(
-            "browser_validate devserver: sandbox=%s command=%s",
-            request.sandboxName,
-            normalized_devserver_command[:120],
-        )
-        launch_result = context.run_command(
-            normalized_devserver_command,
-            timeout_seconds=min(timeout_seconds, 60),
-        )
-        launch_exit = launch_result.get("exitCode", launch_result.get("exit_code", -1))
-        launch_stdout = str(launch_result.get("stdout") or "").strip()
-        launch_stderr = str(launch_result.get("stderr") or "").strip()
-        if launch_exit != 0 or "server-started" not in launch_stdout:
-            log_tail = _tail_devserver_log(app_cwd)
-            details = " | ".join(
-                part
-                for part in (
-                    launch_stdout[:300],
-                    launch_stderr[:300],
-                    log_tail[:500],
+        try:
+            if _is_base_url_ready():
+                logger.info(
+                    "browser_validate reusing existing devserver for sandbox=%s base_url=%s",
+                    request.sandboxName,
+                    request.baseUrl,
                 )
-                if part
-            )
-            if not details:
-                details = f"exit={launch_exit}"
+            else:
+                _cleanup_preview_server(app_cwd)
+                normalized_devserver_command = _normalize_devserver_command(
+                    request.devServerCommand,
+                    app_cwd,
+                )
+                logger.info(
+                    "browser_validate devserver: sandbox=%s command=%s",
+                    request.sandboxName,
+                    normalized_devserver_command[:120],
+                )
+                launch_result = context.run_command(
+                    normalized_devserver_command,
+                    timeout_seconds=min(timeout_seconds, 60),
+                )
+                launch_exit = launch_result.get(
+                    "exitCode",
+                    launch_result.get("exit_code", -1),
+                )
+                launch_stdout = str(launch_result.get("stdout") or "").strip()
+                launch_stderr = str(launch_result.get("stderr") or "").strip()
+                if launch_exit != 0 or "server-started" not in launch_stdout:
+                    log_tail = _tail_devserver_log(app_cwd)
+                    details = " | ".join(
+                        part
+                        for part in (
+                            launch_stdout[:300],
+                            launch_stderr[:300],
+                            log_tail[:500],
+                        )
+                        if part
+                    )
+                    if not details:
+                        details = f"exit={launch_exit}"
+                    logger.warning(
+                        "browser_validate devserver launch failed: sandbox=%s exit=%s details=%s",
+                        request.sandboxName,
+                        launch_exit,
+                        details[:400],
+                    )
+                    return {
+                        "success": False,
+                        "error": f"Dev server failed to launch: {details[:500]}",
+                        "phase": "devserver-launch",
+                    }
+        except Exception as exc:
             logger.warning(
-                "browser_validate devserver launch failed: sandbox=%s exit=%s details=%s",
-                request.sandboxName,
-                launch_exit,
-                details[:400],
+                "browser_validate devserver launch returned error (may be expected for background): %s",
+                str(exc)[:200],
             )
             return {
                 "success": False,
-                "error": f"Dev server failed to launch: {details[:500]}",
+                "error": f"Dev server launch error: {str(exc)[:500]}",
                 "phase": "devserver-launch",
             }
-      except Exception as exc:
-        logger.warning("browser_validate devserver launch returned error (may be expected for background): %s", str(exc)[:200])
-        return {
-            "success": False,
-            "error": f"Dev server launch error: {str(exc)[:500]}",
-            "phase": "devserver-launch",
-        }
 
     # --- Step 3: Wait for dev server to be ready ---
     # Dev server binds in the sandbox user's network namespace; poll must also run as sandbox user.
@@ -6830,21 +7014,19 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     # already include Playwright, Chromium, and xvfb-run. Runtime bootstrap is too slow
     # and flaky under sandbox network policy, so fail fast if the image is stale.
     pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
+    pw_probe_command = (
+        f'{pw_env} python3 -c "from playwright.sync_api import sync_playwright; '
+        'p = sync_playwright().start(); '
+        'print(p.chromium.executable_path); '
+        'p.stop()"'
+    )
     try:
-        pw_check = context.run_command(
-            (
-                "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers python3 - <<'PY'\n"
-                "from playwright.sync_api import sync_playwright\n"
-                "with sync_playwright() as p:\n"
-                "    print(p.chromium.executable_path)\n"
-                "PY"
-            ),
-            timeout_seconds=15,
-        )
+        pw_check = context.run_command(pw_probe_command, timeout_seconds=15)
         pw_exit = pw_check.get("exitCode", pw_check.get("exit_code", -1))
         pw_stdout = str(pw_check.get("stdout") or "").strip()
         pw_available = pw_exit == 0 and "/opt/pw-browsers/" in pw_stdout
-    except Exception:
+    except Exception as exc:
+        logger.warning("browser_validate sandbox browser probe crashed: %s", str(exc)[:200])
         pw_available = False
 
     if not pw_available:
@@ -7005,7 +7187,9 @@ def capture(base_url, steps, output_dir):
     os.makedirs(output_dir, exist_ok=True)
     results = []
     with sync_playwright() as p:
+        chromium_path = p.chromium.executable_path
         browser = p.chromium.launch(
+            executable_path=chromium_path,
             args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
             headless=True,
         )
