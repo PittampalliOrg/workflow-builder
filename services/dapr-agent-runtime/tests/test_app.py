@@ -335,7 +335,11 @@ def test_openshell_tool_context_maps_legacy_workspace_cwd() -> None:
 
     command = context._compose_command("git status --short", "/workspace")
 
-    assert command == "set -eu; cd /sandbox/repo; git status --short"
+    assert (
+        command
+        == "set -eu; unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; "
+        "export HOME=/tmp; cd /sandbox/repo; git status --short"
+    )
 
 
 def test_openshell_tool_context_rewrites_legacy_workspace_cd_commands() -> None:
@@ -346,7 +350,25 @@ def test_openshell_tool_context_rewrites_legacy_workspace_cd_commands() -> None:
 
     command = context._compose_command("cd /workspace; git status --short", ".")
 
-    assert command == "set -eu; cd /sandbox/repo; cd /sandbox/repo; git status --short"
+    assert (
+        command
+        == "set -eu; unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; "
+        "export HOME=/tmp; cd /sandbox/repo; cd /sandbox/repo; git status --short"
+    )
+
+
+def test_openshell_tool_context_can_preserve_proxy_environment() -> None:
+    context = langgraph_engine.OpenShellToolContext(
+        sandbox_name="openshell-test",
+        repo_path="/sandbox/repo",
+        preserve_proxy_env=True,
+    )
+
+    command = context._compose_command("pnpm install --frozen-lockfile", "basics/learn-starter")
+
+    assert "unset HTTP_PROXY" not in command
+    assert command.startswith("set -eu; export HOME=/tmp;")
+    assert "cd /sandbox/repo/basics/learn-starter;" in command
 
 
 def test_safe_dapr_checkpointer_disables_corrupting_put_writes(monkeypatch) -> None:
@@ -542,8 +564,6 @@ def test_openshell_compose_command_bootstraps_pnpm_when_missing() -> None:
     assert "if ! command -v pnpm >/dev/null 2>&1; then" in command
     assert 'corepack pnpm "$@"' in command
     assert "npx -y pnpm" in command
-    assert "if [ -f package.json ] && [ ! -d node_modules ]; then" in command
-    assert "pnpm install --frozen-lockfile || pnpm install;" in command
     assert command.endswith("pnpm vitest run app/api/mcp-chat/route.test.ts")
 
 
@@ -3076,6 +3096,53 @@ def test_browser_validate_request_model_defaults() -> None:
     assert req.baseUrl == "http://127.0.0.1:3009"
     assert req.timeoutMs is None
     assert req.workflowId is None
+    assert req.workspaceRef is None
+
+
+def test_browser_validate_prefers_local_workspace_when_available(monkeypatch, tmp_path: Path) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-local",
+        execution_id="exec-1",
+        root_path=tmp_path,
+        working_directory=tmp_path / "repo",
+        enabled_tools=["bash"],
+        backend="local",
+    )
+    session.working_directory.mkdir(parents=True)
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda workspace_ref: session)
+
+    def fake_local_browser_validate(request, local_session, *, execution_id, timeout_seconds):
+        called["workspace_ref"] = local_session.workspace_ref
+        called["execution_id"] = execution_id
+        called["timeout_seconds"] = timeout_seconds
+        return {"success": True, "status": "completed", "artifactId": "bwf_test"}
+
+    monkeypatch.setattr(app, "_browser_validate_local_workspace", fake_local_browser_validate)
+
+    class ShouldNotInstantiate:
+        def __init__(self, **_kwargs):
+            raise AssertionError("OpenShellToolContext should not be used for local workspace validation")
+
+    monkeypatch.setattr(app, "OpenShellToolContext", ShouldNotInstantiate)
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-1",
+            workspaceRef="workspace-local",
+            sandboxName="sandbox-test",
+            installCommand="cd basics/learn-starter && pnpm install --frozen-lockfile --prefer-offline",
+            devServerCommand="cd basics/learn-starter && pnpm dev --hostname 0.0.0.0 --port 3009",
+        )
+    )
+
+    assert result["success"] is True
+    assert called == {
+        "workspace_ref": "workspace-local",
+        "execution_id": "exec-1",
+        "timeout_seconds": 2700,
+    }
 
 
 def test_browser_validate_install_failure_returns_error(monkeypatch) -> None:
@@ -3214,8 +3281,10 @@ def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) 
                     "command": command,
                     "cwd": cwd,
                     "timeout": timeout_seconds,
-                }
-            )
+                    }
+                )
+            if "find node_modules/.pnpm" in command:
+                return {"exitCode": 0, "stdout": "", "stderr": ""}
             if '"next"' in command and "deps-present" in command:
                 deps_checks += 1
                 if deps_checks == 1:
@@ -3280,6 +3349,8 @@ def test_browser_validate_install_requires_runnable_local_runtime(monkeypatch) -
             pass
 
         def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            if "find node_modules/.pnpm" in command:
+                return {"exitCode": 0, "stdout": "", "stderr": ""}
             if '"next"' in command and "deps-present" in command:
                 return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
             if "pnpm install --frozen-lockfile --prefer-offline" in command:
@@ -3309,6 +3380,8 @@ def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monk
             pass
 
         def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            if "find node_modules/.pnpm" in command:
+                return {"exitCode": 0, "stdout": "", "stderr": ""}
             if '"next"' in command and "deps-present" in command:
                 if cwd == "basics/learn-starter":
                     return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
@@ -3337,6 +3410,68 @@ def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monk
     assert result["success"] is False
     assert result["phase"] == "install"
     assert "registry.npmjs.org" in result["error"] or "local app runtime is still unavailable" in result["error"]
+
+
+def test_browser_validate_transient_registry_failure_continues_when_next_binary_is_runnable(monkeypatch) -> None:
+    class FakeContext:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_command(self, command, *, cwd=None, timeout_seconds=300):
+            if "printf '%s' node_modules/.bin/next" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "node_modules/.pnpm/next@16.0.10/node_modules/next/dist/bin/next",
+                    "stderr": "",
+                }
+            if "node node_modules/.pnpm/next@16.0.10/node_modules/next/dist/bin/next --version" in command:
+                return {"exitCode": 0, "stdout": "Next.js v16.0.10", "stderr": ""}
+            if "pnpm install" in command and "--prefer-offline" in command:
+                return {
+                    "exitCode": 1,
+                    "stdout": "request to https://registry.npmjs.org/react-dom/-/react-dom-19.2.1.tgz failed",
+                    "stderr": "EAI_AGAIN",
+                }
+            if "sync_playwright" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
+                    "stderr": "",
+                }
+            if "dev --hostname 0.0.0.0 --port 3009" in command:
+                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
+            if "curl -s -o /dev/null" in command:
+                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
+            if "/sandbox/capture_screenshots.py" in command:
+                return {"exitCode": 0, "stdout": "CAPTURE_OK", "stderr": ""}
+            if "manifest.json" in command:
+                return {
+                    "exitCode": 0,
+                    "stdout": "{\"success\": true, \"screenshots\": []}",
+                    "stderr": "",
+                }
+            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+
+    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+    monkeypatch.setattr(
+        app,
+        "_ensure_browser_validate_npm_policy",
+        lambda _sandbox_name: {"ok": True},
+    )
+
+    result = app.browser_validate(
+        BrowserValidateRequest(
+            executionId="exec-test",
+            sandboxName="sandbox-test",
+            repoPath="/sandbox/repo",
+            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
+            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+            workflowId="wf-1",
+            nodeId="node-1",
+        )
+    )
+
+    assert result["success"] is True
 
 
 def test_browser_validate_returns_launch_error_with_log_tail(monkeypatch) -> None:

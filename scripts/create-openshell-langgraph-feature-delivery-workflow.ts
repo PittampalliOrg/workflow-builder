@@ -417,7 +417,7 @@ function buildValidationInstallCommand(previewAppDir: string): string {
 		: "";
 	const depsReadyCheck =
 		"if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then " +
-		"if [ -x node_modules/.bin/next ]; then echo deps-present; exit 0; fi; " +
+		"if [ -x node_modules/.bin/next ] || (command -v pnpm >/dev/null 2>&1 && pnpm exec next --version >/dev/null 2>&1); then echo deps-present; exit 0; fi; " +
 		"elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ] || [ -x node_modules/.bin/astro ]; then " +
 		"echo deps-present; exit 0; " +
 		"elif [ -d node_modules/.bin ] && find node_modules/.bin -maxdepth 1 \\( -type f -o -type l \\) | grep -q .; then " +
@@ -426,7 +426,9 @@ function buildValidationInstallCommand(previewAppDir: string): string {
 		"echo deps-missing; ";
 	const installFromLockfile =
 		"if [ -f pnpm-workspace.yaml ] || [ -f pnpm-lock.yaml ]; then " +
-		"(corepack enable pnpm >/dev/null 2>&1 || true); CI=1 pnpm install --frozen-lockfile --prefer-offline --force; " +
+		"(corepack enable pnpm >/dev/null 2>&1 || true); " +
+		"CI=1 npm_config_fetch_retries=1 npm_config_fetch_retry_factor=1 npm_config_fetch_retry_mintimeout=3000 npm_config_fetch_retry_maxtimeout=10000 " +
+		"pnpm install --reporter=append-only --no-optional --frozen-lockfile --prefer-offline --force; " +
 		"elif [ -f package-lock.json ]; then " +
 		"npm ci --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
 		"elif [ -f yarn.lock ]; then " +
@@ -694,6 +696,7 @@ function buildWorkflowGraph(input: {
 				type: "action",
 				config: {
 					actionType: "browser/validate",
+					workspaceRef: workspaceRefTemplate,
 					sandboxName: `{{@${executeId}:LangGraph Observable Execute.sandboxName}}`,
 					repoPath: `{{@${executeId}:LangGraph Observable Execute.sandboxRepoPath}}`,
 					installCommand: buildValidationInstallCommand(previewAppDir),

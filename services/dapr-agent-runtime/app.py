@@ -5,6 +5,8 @@ import asyncio
 import json
 import logging
 import os
+import re
+import signal
 import shlex
 import shutil
 import socket
@@ -21,7 +23,6 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
-import re
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -615,6 +616,7 @@ class BrowserCaptureFlowRequest(BaseModel):
 class BrowserValidateRequest(BaseModel):
     executionId: str = Field(min_length=1)
     dbExecutionId: str | None = None
+    workspaceRef: str | None = None
     sandboxName: str = Field(min_length=1)
     repoPath: str = "/sandbox/repo"
     installCommand: str = Field(min_length=1)
@@ -2041,81 +2043,115 @@ def _resolve_host_ips(host: str) -> list[str]:
 
 
 def _ensure_browser_validate_npm_policy(sandbox_name: str) -> dict[str, Any]:
-    if SandboxClient is None or openshell_pb2 is None or sandbox_pb2 is None:
-        return {"ok": False, "reason": "openshell-unavailable"}
-
     npm_registry_host = os.getenv("NPM_REGISTRY_HOST", "registry.npmjs.org")
     npm_registry_port = int(os.getenv("NPM_REGISTRY_PORT", "443"))
     npm_registry_ips = _resolve_host_ips(npm_registry_host)
-
-    try:
-        client = SandboxClient.from_active_cluster()
-        ref = client.get(sandbox_name)
-        config = client._stub.GetSandboxConfig(
-            sandbox_pb2.GetSandboxConfigRequest(sandbox_id=ref.id),
-            timeout=30,
-        )
-        policy = sandbox_pb2.SandboxPolicy()
-        policy.CopyFrom(config.policy)
-        policy.network_policies["npm_registry"].CopyFrom(
-            sandbox_pb2.NetworkPolicyRule(
-                name="npm-registry",
-                endpoints=[
-                    sandbox_pb2.NetworkEndpoint(
-                        host=npm_registry_host,
-                        port=npm_registry_port,
-                        protocol="rest",
-                        enforcement="enforce",
-                        rules=[
-                            sandbox_pb2.L7Rule(
-                                allow=sandbox_pb2.L7Allow(method="GET", path="/**")
-                            ),
-                            sandbox_pb2.L7Rule(
-                                allow=sandbox_pb2.L7Allow(method="HEAD", path="/**")
-                            ),
-                        ],
-                        allowed_ips=npm_registry_ips,
-                        ports=[npm_registry_port],
-                    )
-                ],
-                binaries=[
-                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/node"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/node"),
-                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/npm"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/npm"),
-                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/npx"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/npx"),
-                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/corepack"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/corepack"),
-                    sandbox_pb2.NetworkBinary(path="/usr/local/bin/pnpm"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/pnpm"),
-                    sandbox_pb2.NetworkBinary(path="/usr/bin/curl"),
-                    sandbox_pb2.NetworkBinary(path="/bin/bash"),
-                    sandbox_pb2.NetworkBinary(path="/bin/sh"),
-                ],
+    if SandboxClient is not None and openshell_pb2 is not None and sandbox_pb2 is not None:
+        gateway_name = (os.getenv("OPENSHELL_GATEWAY_NAME") or "").strip() or None
+        try:
+            client = SandboxClient.from_active_cluster(cluster=gateway_name)
+            ref = client.get(sandbox_name)
+            config = client._stub.GetSandboxConfig(
+                sandbox_pb2.GetSandboxConfigRequest(sandbox_id=ref.id),
+                timeout=30,
             )
-        )
-        response = client._stub.UpdateConfig(
-            openshell_pb2.UpdateConfigRequest(name=sandbox_name, policy=policy),
-            timeout=30,
-        )
+            policy = sandbox_pb2.SandboxPolicy()
+            policy.CopyFrom(config.policy)
+            policy.network_policies["npm_registry"].CopyFrom(
+                sandbox_pb2.NetworkPolicyRule(
+                    name="npm-registry",
+                    endpoints=[
+                        sandbox_pb2.NetworkEndpoint(
+                            host=npm_registry_host,
+                            port=npm_registry_port,
+                            protocol="rest",
+                            enforcement="enforce",
+                            rules=[
+                                sandbox_pb2.L7Rule(
+                                    allow=sandbox_pb2.L7Allow(method="GET", path="/**")
+                                ),
+                                sandbox_pb2.L7Rule(
+                                    allow=sandbox_pb2.L7Allow(method="HEAD", path="/**")
+                                ),
+                            ],
+                            allowed_ips=npm_registry_ips,
+                            ports=[npm_registry_port],
+                        )
+                    ],
+                    binaries=[
+                        sandbox_pb2.NetworkBinary(path="/usr/local/bin/node"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/node"),
+                        sandbox_pb2.NetworkBinary(path="/usr/local/bin/npm"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/npm"),
+                        sandbox_pb2.NetworkBinary(path="/usr/local/bin/npx"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/npx"),
+                        sandbox_pb2.NetworkBinary(path="/usr/local/bin/corepack"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/corepack"),
+                        sandbox_pb2.NetworkBinary(path="/usr/local/bin/pnpm"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/pnpm"),
+                        sandbox_pb2.NetworkBinary(path="/usr/bin/curl"),
+                        sandbox_pb2.NetworkBinary(path="/bin/bash"),
+                        sandbox_pb2.NetworkBinary(path="/bin/sh"),
+                    ],
+                )
+            )
+            response = client._stub.UpdateConfig(
+                openshell_pb2.UpdateConfigRequest(name=sandbox_name, policy=policy),
+                timeout=30,
+            )
+            logger.info(
+                "browser_validate applied npm policy directly to sandbox=%s version=%s host=%s ips=%s",
+                sandbox_name,
+                getattr(response, "version", None),
+                npm_registry_host,
+                npm_registry_ips,
+            )
+            return {
+                "ok": True,
+                "host": npm_registry_host,
+                "port": npm_registry_port,
+                "resolved_ips": npm_registry_ips,
+                "gateway": gateway_name,
+            }
+        except Exception as exc:
+            logger.warning(
+                "browser_validate direct npm policy update failed for sandbox=%s: %s",
+                sandbox_name,
+                exc,
+            )
+
+    helper_url = (
+        os.getenv("BROWSER_VALIDATE_POLICY_SERVICE_URL") or ""
+    ).strip() or "http://openshell-langgraph-observable.workflow-builder.svc.cluster.local/api/sandboxes/browser-policy"
+    payload = json.dumps({"sandboxName": sandbox_name}).encode("utf-8")
+    helper_request = urllib.request.Request(
+        url=helper_url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(helper_request, timeout=30) as response:
+            body = response.read().decode("utf-8", errors="replace")
+        parsed = json.loads(body) if body else {}
         logger.info(
-            "browser_validate applied npm policy to sandbox=%s version=%s host=%s ips=%s",
+            "browser_validate applied npm policy via helper to sandbox=%s host=%s ips=%s",
             sandbox_name,
-            getattr(response, "version", None),
             npm_registry_host,
             npm_registry_ips,
         )
-        return {
-            "ok": True,
-            "host": npm_registry_host,
-            "port": npm_registry_port,
-            "resolved_ips": npm_registry_ips,
-        }
+        result = parsed if isinstance(parsed, dict) else {}
+        result.setdefault("ok", True)
+        result.setdefault("host", npm_registry_host)
+        result.setdefault("port", npm_registry_port)
+        result.setdefault("resolved_ips", npm_registry_ips)
+        result.setdefault("helperUrl", helper_url)
+        return result
     except Exception as exc:
         logger.warning(
-            "browser_validate failed to apply npm policy to sandbox=%s: %s",
+            "browser_validate failed to apply npm policy to sandbox=%s via helper=%s: %s",
             sandbox_name,
+            helper_url,
             exc,
         )
         return {
@@ -2123,6 +2159,7 @@ def _ensure_browser_validate_npm_policy(sandbox_name: str) -> dict[str, Any]:
             "host": npm_registry_host,
             "port": npm_registry_port,
             "resolved_ips": npm_registry_ips,
+            "helperUrl": helper_url,
             "error": str(exc),
         }
 
@@ -2772,6 +2809,376 @@ def _workspace_from_ref(workspace_ref: str) -> WorkspaceSession:
     if session is None:
         raise HTTPException(status_code=404, detail=f"Unknown workspaceRef: {workspace_ref}")
     return session
+
+
+def _browser_validate_local_workspace(
+    request: BrowserValidateRequest,
+    session: WorkspaceSession,
+    *,
+    execution_id: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    if sync_playwright is None:
+        return {
+            "success": False,
+            "error": "playwright is required for local browser validation",
+            "phase": "capture-prerequisites",
+        }
+
+    repo_root = (session.working_directory or session.root_path).resolve()
+    preview_root = repo_root / ".wf-preview"
+    preview_root.mkdir(parents=True, exist_ok=True)
+
+    def _strip_shell_startup_noise(value: str | None) -> str:
+        text = str(value or "")
+        filtered_lines = [
+            line
+            for line in text.splitlines()
+            if "/bin/bash: /home/node/.profile: Permission denied" not in line
+        ]
+        return "\n".join(filtered_lines).strip()
+
+    def _extract_leading_cd(command: str) -> str | None:
+        match = re.match(r"^\s*cd\s+(['\"]?)([^;&\n]+?)\1\s*&&", command or "")
+        if not match:
+            return None
+        candidate = str(match.group(2) or "").strip()
+        return candidate or None
+
+    def _normalize_install_command(command: str) -> str:
+        normalized = str(command or "").strip()
+        normalized = re.sub(r"^(?:CI=1\s+)+", "CI=1 ", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retries=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_factor=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_mintimeout=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_maxtimeout=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
+        if "pnpm install" in normalized and "CI=1" not in normalized.split():
+            normalized = f"CI=1 {normalized}"
+        if "pnpm install" in normalized:
+            pnpm_env = (
+                "npm_config_fetch_retries=1 "
+                "npm_config_fetch_retry_factor=1 "
+                "npm_config_fetch_retry_mintimeout=3000 "
+                "npm_config_fetch_retry_maxtimeout=10000 "
+            )
+            normalized = normalized.replace("CI=1 ", f"CI=1 {pnpm_env}", 1)
+        if "pnpm install" in normalized and "--force" not in normalized:
+            normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
+        if "pnpm install" in normalized and "--no-optional" not in normalized:
+            normalized = normalized.replace("pnpm install", "pnpm install --no-optional", 1)
+        if "pnpm install" in normalized and "--reporter=" not in normalized:
+            normalized = normalized.replace(
+                "pnpm install",
+                "pnpm install --reporter=append-only",
+                1,
+            )
+        return normalized
+
+    def _resolve_local_app_cwd(raw_cwd: str | None) -> Path:
+        candidate = str(raw_cwd or "").strip()
+        if not candidate:
+            return repo_root
+        repo_path = str(request.repoPath or "").rstrip("/")
+        if repo_path and (candidate == repo_path or candidate.startswith(f"{repo_path}/")):
+            suffix = candidate[len(repo_path):].lstrip("/")
+            return (repo_root / suffix).resolve()
+        path = Path(candidate)
+        if path.is_absolute():
+            return path.resolve()
+        return (repo_root / path).resolve()
+
+    def _run_local_command(
+        command: str,
+        *,
+        cwd: Path,
+        timeout_seconds_value: int,
+    ) -> dict[str, Any]:
+        env = os.environ.copy()
+        env["HOME"] = str(session.root_path)
+        completed = subprocess.run(
+            ["bash", "-lc", command],
+            cwd=cwd,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds_value,
+            check=False,
+            env=env,
+        )
+        return {
+            "exitCode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        }
+
+    def _is_transient_registry_failure(output: str) -> bool:
+        failure_markers = [
+            "EAI_AGAIN",
+            "ENOTFOUND",
+            "ECONNRESET",
+            "ETIMEDOUT",
+            "fetch failed",
+            "request to https://registry.npmjs.org/",
+        ]
+        text = str(output or "")
+        return any(marker in text for marker in failure_markers)
+
+    def _deps_present(cwd: Path) -> bool:
+        package_json = cwd / "package.json"
+        if not package_json.exists():
+            return False
+        package_text = package_json.read_text(encoding="utf-8", errors="ignore")
+        next_binary = cwd / "node_modules/.bin/next"
+        if '"next"' in package_text:
+            if next_binary.exists():
+                ready = _run_local_command(
+                    "./node_modules/.bin/next --version",
+                    cwd=cwd,
+                    timeout_seconds_value=15,
+                )
+                if ready["exitCode"] == 0:
+                    return True
+            ready = _run_local_command(
+                "(corepack enable pnpm >/dev/null 2>&1 || true); pnpm exec next --version >/dev/null 2>&1",
+                cwd=cwd,
+                timeout_seconds_value=15,
+            )
+            return ready["exitCode"] == 0
+        if any(
+            (cwd / f"node_modules/.bin/{tool}").exists()
+            for tool in ("vite", "react-scripts", "astro")
+        ):
+            return True
+        bin_dir = cwd / "node_modules/.bin"
+        return bin_dir.exists() and any(bin_dir.iterdir())
+
+    def _tail_devserver_log(cwd: Path) -> str:
+        for candidate in (cwd / ".wf-preview/dev-server.log", cwd.parent / ".wf-preview/dev-server.log"):
+            if candidate.exists():
+                try:
+                    return "\n".join(candidate.read_text(encoding="utf-8", errors="ignore").splitlines()[-80:]).strip()
+                except OSError:
+                    continue
+        return ""
+
+    def _cleanup_preview_server(cwd: Path) -> None:
+        for candidate in (cwd / ".wf-preview/dev-server.pid", cwd.parent / ".wf-preview/dev-server.pid"):
+            if not candidate.exists():
+                continue
+            try:
+                pid_text = candidate.read_text(encoding="utf-8", errors="ignore").strip()
+                if pid_text:
+                    os.kill(int(pid_text), signal.SIGTERM)
+            except (OSError, ValueError):
+                pass
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+        time.sleep(1)
+
+    def _is_base_url_ready() -> bool:
+        try:
+            with urllib.request.urlopen(request.baseUrl, timeout=5) as response:
+                return 200 <= getattr(response, "status", 500) < 400
+        except Exception:
+            return False
+
+    def _normalize_steps(
+        raw_steps: list[BrowserCaptureStepRequest] | str,
+    ) -> list[BrowserCaptureStepRequest | dict[str, Any]]:
+        steps_value = raw_steps
+        if isinstance(steps_value, str):
+            steps_value = json.loads(steps_value)
+        return list(steps_value or [{"url": "/", "waitForSelector": "body", "delayMs": 2500}])
+
+    app_cwd = _resolve_local_app_cwd(
+        _extract_leading_cd(request.devServerCommand)
+        or _extract_leading_cd(request.installCommand)
+        or "."
+    )
+    skip_install = _deps_present(app_cwd)
+    if not skip_install:
+        install_command = _normalize_install_command(request.installCommand)
+        install_log_path = preview_root / "browser-validate-install.log"
+        wrapped_install_command = install_command.rstrip(" ;")
+        install_exec_command = (
+            f"rm -f {shlex.quote(str(install_log_path))}; "
+            f"{{ {wrapped_install_command}; }} >{shlex.quote(str(install_log_path))} 2>&1; "
+            "status=$?; "
+            f"tail -n 80 {shlex.quote(str(install_log_path))} 2>/dev/null || true; "
+            "exit $status"
+        )
+        install_result = _run_local_command(
+            install_exec_command,
+            cwd=repo_root,
+            timeout_seconds_value=min(timeout_seconds, 240),
+        )
+        install_exit_code = int(install_result.get("exitCode", -1))
+        if install_exit_code != 0:
+            cleaned_stderr = _strip_shell_startup_noise(install_result.get("stderr"))
+            cleaned_stdout = str(install_result.get("stdout") or "").strip()
+            combined_output = "\n".join(part for part in (cleaned_stdout, cleaned_stderr) if part)
+            preferred_output = cleaned_stderr or cleaned_stdout
+            if not (_is_transient_registry_failure(combined_output) and _deps_present(app_cwd)):
+                return {
+                    "success": False,
+                    "error": f"Install failed with exit code {install_exit_code}: {preferred_output[:500]}",
+                    "phase": "install",
+                }
+    if not _deps_present(app_cwd):
+        return {
+            "success": False,
+            "error": (
+                "Install completed but local app runtime is still unavailable. "
+                f"Expected runnable dependencies in {app_cwd}."
+            ),
+            "phase": "install",
+        }
+
+    if not _is_base_url_ready():
+        _cleanup_preview_server(app_cwd)
+        launch_result = _run_local_command(
+            request.devServerCommand,
+            cwd=repo_root,
+            timeout_seconds_value=min(timeout_seconds, 60),
+        )
+        launch_exit = int(launch_result.get("exitCode", -1))
+        launch_stdout = str(launch_result.get("stdout") or "").strip()
+        launch_stderr = str(launch_result.get("stderr") or "").strip()
+        if launch_exit != 0 or "server-started" not in launch_stdout:
+            details = " | ".join(
+                part for part in (launch_stdout[:300], launch_stderr[:300], _tail_devserver_log(app_cwd)[:500]) if part
+            )
+            if not details:
+                details = f"exit={launch_exit}"
+            return {
+                "success": False,
+                "error": f"Dev server failed to launch: {details[:500]}",
+                "phase": "devserver-launch",
+            }
+
+    ready = False
+    deadline = time.monotonic() + min(timeout_seconds, 200)
+    while time.monotonic() < deadline:
+        if _is_base_url_ready():
+            ready = True
+            break
+        time.sleep(2)
+    if not ready:
+        detail = _tail_devserver_log(app_cwd)[:500]
+        return {
+            "success": False,
+            "error": f"Dev server did not become ready: {detail or 'timeout'}",
+            "phase": "devserver-poll",
+        }
+
+    try:
+        steps = _normalize_steps(request.steps)
+    except json.JSONDecodeError:
+        return {"success": False, "error": "Invalid JSON in steps field", "phase": "capture"}
+
+    step_records: list[WorkflowBrowserCaptureStep] = []
+    screenshots: list[bytes] = []
+    overall_status = "completed"
+    try:
+        with sync_playwright() as playwright:
+            chromium_path = playwright.chromium.executable_path
+            browser = playwright.chromium.launch(
+                executable_path=chromium_path,
+                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+                headless=True,
+            )
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 720})
+                page = context.new_page()
+                for index, step in enumerate(steps):
+                    step_id = f"step-{index + 1}"
+                    label = f"Step {index + 1}"
+                    if isinstance(step, BrowserCaptureStepRequest):
+                        step_id = str(step.id or step_id).strip() or step_id
+                        label = str(step.label or label).strip() or label
+                        target_url = _resolve_browser_step_url(request.baseUrl, step)
+                        wait_for_selector = step.waitForSelector
+                        wait_for_text = step.waitForText
+                        delay_ms = step.delayMs
+                        full_page = step.fullPage is not False
+                    else:
+                        step_id = str(step.get("id") or step_id).strip() or step_id
+                        label = str(step.get("label") or label).strip() or label
+                        target_url = _resolve_browser_step_url(
+                            request.baseUrl,
+                            BrowserCaptureStepRequest.model_validate(step),
+                        )
+                        wait_for_selector = step.get("waitForSelector")
+                        wait_for_text = step.get("waitForText")
+                        delay_ms = step.get("delayMs")
+                        full_page = step.get("fullPage") is not False
+                    png = _capture_browser_step_with_retry(
+                        page,
+                        target_url=target_url,
+                        wait_for_selector=wait_for_selector,
+                        wait_for_text=wait_for_text,
+                        delay_ms=delay_ms,
+                        full_page=full_page,
+                        timeout_ms=request.timeoutMs or DEFAULT_BROWSER_CAPTURE_TIMEOUT_MS,
+                    )
+                    screenshots.append(png)
+                    step_records.append(
+                        WorkflowBrowserCaptureStep(
+                            id=step_id,
+                            label=label,
+                            url=page.url,
+                            title=page.title(),
+                            wait_for_selector=wait_for_selector,
+                            wait_for_text=wait_for_text,
+                            delay_ms=delay_ms,
+                            captured_at=_utc_now_iso(),
+                            status="completed",
+                        )
+                    )
+            finally:
+                browser.close()
+    except Exception as exc:
+        logger.warning("browser_validate local capture failed workspace=%s: %s", session.workspace_ref, str(exc)[:300])
+        overall_status = "failed"
+        if not step_records:
+            step_records.append(
+                WorkflowBrowserCaptureStep(
+                    id="step-1",
+                    label="Step 1",
+                    url=request.baseUrl,
+                    status="failed",
+                    error=str(exc),
+                )
+            )
+
+    artifact: dict[str, Any] | None = None
+    if request.workflowId and request.nodeId:
+        artifact = _save_workflow_browser_artifact(
+            workflow_execution_id=execution_id,
+            workflow_id=request.workflowId,
+            node_id=request.nodeId,
+            workspace_ref=session.workspace_ref,
+            base_url=request.baseUrl,
+            metadata={"source": "browser-validate-local-workspace"},
+            steps=step_records,
+            screenshots=screenshots,
+            status=overall_status,
+        )
+    return {
+        "success": overall_status in ("completed", "partial"),
+        "artifactId": artifact["id"] if artifact else None,
+        "screenshots": len(screenshots),
+        "status": overall_status,
+        "error": None if overall_status == "completed" else f"Capture status: {overall_status}",
+        "workspace": {
+            "workspaceRef": session.workspace_ref,
+            "rootPath": str(session.root_path),
+            "workingDirectory": str(repo_root),
+        },
+        "sandbox": {"sandboxName": request.sandboxName, "repoPath": request.repoPath},
+    }
 
 
 def _default_workspace_root(execution_id: str, requested_root: str | None) -> Path:
@@ -6602,14 +7009,37 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     timeout_ms = request.timeoutMs or 2_700_000
     timeout_seconds = max(timeout_ms // 1000, 60)
     execution_id = str(request.dbExecutionId or request.executionId).strip()
-    logger.info(
-        "browser_validate sandbox=%s repo=%s timeout=%ds execution=%s",
-        request.sandboxName, request.repoPath, timeout_seconds, execution_id,
+    workspace_session = (
+        _workspace_from_ref(request.workspaceRef)
+        if str(request.workspaceRef or "").strip()
+        else None
     )
+    logger.info(
+        "browser_validate sandbox=%s repo=%s workspace=%s timeout=%ds execution=%s",
+        request.sandboxName,
+        request.repoPath,
+        workspace_session.workspace_ref if workspace_session is not None else None,
+        timeout_seconds,
+        execution_id,
+    )
+
+    if workspace_session is not None and workspace_session.backend == "local":
+        logger.info(
+            "browser_validate using local workspace fallback workspace=%s root=%s",
+            workspace_session.workspace_ref,
+            workspace_session.working_directory or workspace_session.root_path,
+        )
+        return _browser_validate_local_workspace(
+            request,
+            workspace_session,
+            execution_id=execution_id,
+            timeout_seconds=timeout_seconds,
+        )
 
     context = OpenShellToolContext(
         sandbox_name=_sanitize_sandbox_name(request.sandboxName),
         repo_path=request.repoPath,
+        preserve_proxy_env=True,
     )
 
     def _strip_shell_startup_noise(value: str | None) -> str:
@@ -6637,11 +7067,31 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         normalized = str(command or "")
         normalized = normalized.removeprefix(heartbeat_prefix).strip()
         normalized = re.sub(r"^(?:CI=1\s+)+", "CI=1 ", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retries=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_factor=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_mintimeout=\S+\s+)+", "", normalized)
+        normalized = re.sub(r"(?:npm_config_fetch_retry_maxtimeout=\S+\s+)+", "", normalized)
         normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
         if "pnpm install" in normalized and "CI=1" not in normalized.split():
             normalized = f"CI=1 {normalized}"
+        if "pnpm install" in normalized:
+            pnpm_env = (
+                "npm_config_fetch_retries=1 "
+                "npm_config_fetch_retry_factor=1 "
+                "npm_config_fetch_retry_mintimeout=3000 "
+                "npm_config_fetch_retry_maxtimeout=10000 "
+            )
+            normalized = normalized.replace("CI=1 ", f"CI=1 {pnpm_env}", 1)
         if "pnpm install" in normalized and "--force" not in normalized:
             normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
+        if "pnpm install" in normalized and "--no-optional" not in normalized:
+            normalized = normalized.replace("pnpm install", "pnpm install --no-optional", 1)
+        if "pnpm install" in normalized and "--reporter=" not in normalized:
+            normalized = normalized.replace(
+                "pnpm install",
+                "pnpm install --reporter=append-only",
+                1,
+            )
         return normalized
 
     def _is_transient_registry_failure(output: str) -> bool:
@@ -6656,14 +7106,53 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
         text = str(output or "")
         return any(marker in text for marker in failure_markers)
 
+    def _resolve_next_binary(cwd: str | None) -> str | None:
+        if not cwd:
+            return None
+        try:
+            resolved = context.run_command(
+                (
+                    "if [ -x node_modules/.bin/next ]; then printf '%s' node_modules/.bin/next; "
+                    "else "
+                    "next_bin=$(find node_modules/.pnpm -path '*/node_modules/next/dist/bin/next' -print -quit 2>/dev/null || true); "
+                    "if [ -n \"$next_bin\" ]; then printf '%s' \"$next_bin\"; fi; "
+                    "fi"
+                ),
+                cwd=cwd,
+                timeout_seconds=15,
+            )
+        except Exception:
+            return None
+        candidate = str(resolved.get("stdout") or "").strip()
+        return candidate or None
+
     def _deps_present(cwd: str | None) -> bool:
         if not cwd:
             return False
+        next_binary = _resolve_next_binary(cwd)
+        if next_binary:
+            try:
+                probe = (
+                    f"{shlex.quote(next_binary)} --version"
+                    if next_binary == "node_modules/.bin/next"
+                    else f"node {shlex.quote(next_binary)} --version"
+                )
+                ready = context.run_command(
+                    probe,
+                    cwd=cwd,
+                    timeout_seconds=15,
+                )
+                if ready.get("exitCode", ready.get("exit_code", -1)) == 0:
+                    return True
+            except Exception:
+                pass
         try:
             ready = context.run_command(
                 (
                     "if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then "
-                    "if [ -x node_modules/.bin/next ]; then echo deps-present; else echo deps-missing; fi; "
+                    "if [ -x node_modules/.bin/next ] || "
+                    "(command -v pnpm >/dev/null 2>&1 && pnpm exec next --version >/dev/null 2>&1); "
+                    "then echo deps-present; else echo deps-missing; fi; "
                     "elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ] || [ -x node_modules/.bin/astro ]; then "
                     "echo deps-present; "
                     "elif [ -d node_modules/.bin ] && find node_modules/.bin -maxdepth 1 \\( -type f -o -type l \\) | grep -q .; then "
@@ -6682,6 +7171,11 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
     def _preferred_dev_runner(cwd: str | None) -> str | None:
         if not cwd:
             return None
+        next_binary = _resolve_next_binary(cwd)
+        if next_binary:
+            if next_binary == "node_modules/.bin/next":
+                return f"{shlex.quote(next_binary)} dev --hostname 0.0.0.0 --port 3009"
+            return f"node {shlex.quote(next_binary)} dev --hostname 0.0.0.0 --port 3009"
         try:
             detected = context.run_command(
                 (
@@ -6818,14 +7312,23 @@ def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
                         )
                 install_started_at = time.monotonic()
                 install_command = _normalize_install_command(request.installCommand)
+                wrapped_install_command = install_command.rstrip(" ;")
+                install_log_path = "/tmp/browser-validate-install.log"
+                install_exec_command = (
+                    f"rm -f {shlex.quote(install_log_path)}; "
+                    f"{{ {wrapped_install_command}; }} >{shlex.quote(install_log_path)} 2>&1; "
+                    "status=$?; "
+                    f"tail -n 80 {shlex.quote(install_log_path)} 2>/dev/null || true; "
+                    "exit $status"
+                )
                 logger.info(
                     "browser_validate install: sandbox=%s command=%s",
                     request.sandboxName,
                     install_command[:120],
                 )
                 install_result = context.run_command(
-                    install_command,
-                    timeout_seconds=min(timeout_seconds, 900),
+                    install_exec_command,
+                    timeout_seconds=min(timeout_seconds, 240),
                 )
                 install_exit_code = install_result.get(
                     "exitCode",
