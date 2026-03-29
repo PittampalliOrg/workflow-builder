@@ -76,7 +76,7 @@ describe("deriveDurableAgentRuns", () => {
 		});
 	});
 
-	it("derives run identifiers from ms-agent action logs", () => {
+	it("derives run identifiers from openshell action logs", () => {
 		const runs = deriveDurableAgentRuns({
 			executionId: "exec-db-3",
 			parentExecutionId: "inst-3",
@@ -84,14 +84,14 @@ describe("deriveDurableAgentRuns", () => {
 				{
 					id: "log-2",
 					nodeId: "ms-node",
-					nodeName: "Microsoft Agent Node",
-					activityName: "ms-agent/run",
+					nodeName: "OpenShell Agent Node",
+					activityName: "openshell/run",
 					status: "success",
 					input: null,
 					output: {
 						result: {
-							agentWorkflowId: "ms-agent-run-log-1",
-							daprInstanceId: "ms-inst-log-1",
+							agentWorkflowId: "openshell-run-log-1",
+							daprInstanceId: "openshell-inst-log-1",
 						},
 					},
 					error: null,
@@ -106,9 +106,9 @@ describe("deriveDurableAgentRuns", () => {
 
 		expect(runs).toHaveLength(1);
 		expect(runs[0]).toMatchObject({
-			id: "ms-agent-run-log-1",
-			agentWorkflowId: "ms-agent-run-log-1",
-			daprInstanceId: "ms-inst-log-1",
+			id: "openshell-run-log-1",
+			agentWorkflowId: "openshell-run-log-1",
+			daprInstanceId: "openshell-inst-log-1",
 			mode: "run",
 			status: "completed",
 			error: null,

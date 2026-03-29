@@ -302,8 +302,8 @@ def test_to_compact_agent_result_preserves_engine_metadata():
         },
         workflow_id="child-1",
         dapr_instance_id="instance-1",
-        child_workflow_name="dapr-agent/run",
-        child_app_id="dapr-agent-runtime",
+        child_workflow_name="openshell-langgraph-observable/run",
+        child_app_id="openshell-langgraph-observable",
     )
 
     assert result["engine"] == "langgraph-deepagents"

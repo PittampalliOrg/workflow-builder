@@ -40,9 +40,7 @@ export function requiresConnectionForIntegration(
 		integrationType === "mcp" ||
 		integrationType === "workspace" ||
 		integrationType === "mastra" ||
-		integrationType === "openshell-langgraph" ||
-		integrationType === "dapr-agent" ||
-		integrationType === "ms-agent"
+		integrationType === "openshell-langgraph"
 	) {
 		return false;
 	}

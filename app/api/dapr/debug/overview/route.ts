@@ -14,13 +14,6 @@ import type {
 	DaprRuntimeIntrospection,
 } from "@/lib/types/dapr-debug";
 
-const DAPR_AGENT_RUNTIME_API_BASE_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
-const MS_AGENT_WORKFLOW_API_BASE_URL =
-	process.env.MS_AGENT_WORKFLOW_API_BASE_URL ||
-	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
-
 function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -170,11 +163,6 @@ export async function GET(request: Request) {
 				ok: false,
 				error: "Workflow orchestrator not queried",
 			},
-			daprAgentRuntime: {
-				ok: false,
-				error: "Dapr agent runtime not queried",
-			},
-			msAgentWorkflow: { ok: false, error: "MS agent workflow not queried" },
 			applicationAgents: { ok: false, error: "Application agents not queried" },
 		},
 		dashboard: {
@@ -187,8 +175,6 @@ export async function GET(request: Request) {
 		configurations: [],
 		workflowRuntime: {
 			orchestrator: null,
-			daprAgentRuntime: null,
-			msAgentWorkflow: null,
 			recentRuns: [],
 		},
 		agents: {
@@ -318,40 +304,6 @@ export async function GET(request: Request) {
 		};
 	}
 
-	try {
-		const introspection = await fetchServiceIntrospection(
-			`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
-		);
-		response.workflowRuntime.daprAgentRuntime = introspection;
-		response.sources.daprAgentRuntime = { ok: true };
-		runtimeRegistryInputs.push({
-			appId: "dapr-agent-runtime",
-			data: introspection,
-		});
-	} catch (error) {
-		response.sources.daprAgentRuntime = {
-			ok: false,
-			error: buildErrorMessage(error),
-		};
-	}
-
-	try {
-		const introspection = await fetchServiceIntrospection(
-			`${MS_AGENT_WORKFLOW_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
-		);
-		response.workflowRuntime.msAgentWorkflow = introspection;
-		response.sources.msAgentWorkflow = { ok: true };
-		runtimeRegistryInputs.push({
-			appId: "ms-agent-workflow",
-			data: introspection,
-		});
-	} catch (error) {
-		response.sources.msAgentWorkflow = {
-			ok: false,
-			error: buildErrorMessage(error),
-		};
-	}
-
 	response.agents.runtimeRegistry = uniqueRuntimeRegistryAgents(
 		runtimeRegistryInputs,
 	);
@@ -360,12 +312,7 @@ export async function GET(request: Request) {
 	);
 
 	if (instances.length > 0) {
-		const allowed = new Set([
-			"workflow-builder",
-			"workflow-orchestrator",
-			"dapr-agent-runtime",
-			"ms-agent-workflow",
-		]);
+		const allowed = new Set(["workflow-builder", "workflow-orchestrator"]);
 		response.instances = instances.filter((instance) =>
 			allowed.has(instance.appId),
 		);

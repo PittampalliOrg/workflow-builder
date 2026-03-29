@@ -1176,12 +1176,6 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 if action_type in (
                     "openshell/run",
                     "openshell/session-start",
-                    "openshell-langgraph/run",
-                    "openshell-deepagent/run",
-                    "openshell-durable/run",
-                    "vanilla-durable/run",
-                    "dapr-agent/run",
-                    "ms-agent/run",
                 ):
                     # Agent nodes publish completion via pub/sub (external events)
                     log_id = None
@@ -2247,37 +2241,50 @@ def process_agent_child_workflow(
     otel_ctx: dict | None = None,
 ):
     """
-    Invoke durable/* or mastra/execute actions through durable-agent.
+    Invoke the supported OpenShell-backed agent actions.
 
-    For execute_direct and approved execute_plan paths, this uses a native Dapr
-    child workflow call to the durable-agent app. Plan artifact generation
-    (plan_mode) still uses durable-agent plan APIs because it returns artifact
-    metadata and approval-specific payloads.
+    Standard OpenShell runs execute through openshell-agent-runtime. The
+    OpenShell LangGraph workflow uses a native Dapr child workflow call to the
+    openshell-langgraph-observable app.
     """
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
-    is_ms_agent = action_type == "ms-agent/run"
-    is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
+    retired_action_types = {
+        "dapr-agent/run",
+        "durable/claude-plan",
+        "durable/execute-plan-dag",
+        "durable/run",
+        "mastra/execute",
+        "ms-agent/run",
+        "openshell-deepagent/run",
+        "openshell-durable/run",
+        "vanilla-durable/run",
+    }
+    if action_type in retired_action_types:
+        return {
+            "success": False,
+            "error": (
+                f"{action_type} has been retired as part of the OpenShell-only cutover. "
+                "Use openshell/run, openshell/session-start, or "
+                "openshell-langgraph-observable/run instead."
+            ),
+            "retired": True,
+            "actionType": action_type,
+        }
+    is_openshell_langgraph_agent = action_type in {
+        "openshell-langgraph/run",
+        "openshell-langgraph-observable/run",
+    }
     is_openshell_session_start = action_type == "openshell/session-start"
     is_openshell_plan_agent = action_type == "openshell/run"
     is_openshell_agent = is_openshell_plan_agent or is_openshell_session_start
-    is_openshell_deepagent = action_type == "openshell-deepagent/run"
-    is_openshell_durable = action_type == "openshell-durable/run"
-    is_vanilla_durable = action_type == "vanilla-durable/run"
-    is_dapr_agent = action_type == "dapr-agent/run"
-    uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable or is_vanilla_durable
+    uses_observable_agent_runtime = is_openshell_langgraph_agent
     default_mode = "execute_direct" if is_openshell_session_start else "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
         mode = "execute_direct"
     if is_openshell_session_start:
-        mode = "execute_direct"
-    if action_type == "durable/claude-plan":
-        mode = "plan_mode"
-    if action_type == "durable/execute-plan-dag":
-        mode = "execute_direct"
-    if is_ms_agent:
         mode = "execute_direct"
 
     configured_artifact_ref = resolved_config.get("artifactRef")
@@ -2289,16 +2296,12 @@ def process_agent_child_workflow(
     prompt = str(resolved_config.get("prompt", "") or "").strip()
     if (
         not prompt
-        and (uses_dapr_agent_runtime or is_openshell_agent)
+        and (uses_observable_agent_runtime or is_openshell_agent)
         and artifact_ref
         and mode == "execute_direct"
     ):
         prompt = "Implement the approved feature plan"
-    if not prompt and action_type == "mastra/execute":
-        prompt = "Execute the provided plan"
-    if not prompt and action_type == "durable/execute-plan-dag":
-        prompt = "Execute the plan as a DAG workflow"
-    if not prompt and (is_ms_agent or (uses_dapr_agent_runtime and mode == "plan_mode")):
+    if not prompt and uses_observable_agent_runtime and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
     if not prompt and mode == "plan_mode":
         return {"success": False, "error": "Agent prompt is required (config.prompt)"}
@@ -2333,39 +2336,24 @@ def process_agent_child_workflow(
     except (TypeError, ValueError):
         max_turns = None
 
-    if is_ms_agent:
-        run_mode = "execute_direct"
-        call_activity_fn = None
-    elif is_openshell_agent:
+    if is_openshell_agent:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         from activities.call_agent_service import call_openshell_agent_run
 
         call_activity_fn = call_openshell_agent_run
-    elif uses_dapr_agent_runtime:
+    elif uses_observable_agent_runtime:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         call_activity_fn = None
-    elif action_type == "durable/execute-plan-dag":
-        run_mode = "execute_plan_dag"
-        from activities.call_agent_service import call_durable_execute_plan_dag
-        call_activity_fn = call_durable_execute_plan_dag
-    elif action_type == "mastra/execute" or (mode == "execute_direct" and artifact_ref):
-        run_mode = "execute_plan"
-        from activities.call_agent_service import call_durable_execute_plan
-        call_activity_fn = call_durable_execute_plan
-    elif mode == "plan_mode":
-        run_mode = "plan_mode"
-        from activities.call_agent_service import call_durable_plan
-        call_activity_fn = call_durable_plan
     else:
-        run_mode = "execute_direct"
-        from activities.call_agent_service import call_durable_agent_run
-        call_activity_fn = call_durable_agent_run
+        return {
+            "success": False,
+            "error": f"Unsupported agent action type: {action_type}",
+            "actionType": action_type,
+        }
     native_child_workflow_enabled = _is_native_child_workflow_enabled(resolved_config)
     use_native_child_workflow = (
         True
-        if is_ms_agent
-        else True
-        if uses_dapr_agent_runtime
+        if uses_observable_agent_runtime
         else False
         if is_openshell_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
@@ -2418,7 +2406,7 @@ def process_agent_child_workflow(
         "sandboxRepoPath": resolved_config.get("sandboxRepoPath"),
         "provider": resolved_config.get("provider"),
         "keepSandbox": resolved_config.get("keepSandbox"),
-        "planningBackend": "claude_code_v1" if action_type == "durable/claude-plan" else resolved_config.get("planningBackend"),
+        "planningBackend": resolved_config.get("planningBackend"),
         "integrations": integrations,
         "dbExecutionId": db_execution_id,
         "connectionExternalId": connection_external_id,
@@ -2449,44 +2437,6 @@ def process_agent_child_workflow(
         # OpenShell appends ~30 chars of suffix to sandbox names when
         # creating K8s Sandbox resources; keep ours <=30 chars so the
         # final name fits within the 63-char RFC 1123 subdomain limit.
-        activity_input["sandboxName"] = re.sub(
-            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].strip("-") or "sandbox"
-
-    if is_openshell_deepagent:
-        activity_input["engine"] = "langgraph"
-        activity_input["toolBackend"] = "openshell"
-        activity_input["sandboxRepoPath"] = (
-            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
-        )
-        sandbox_suffix = (
-            str(tracked_execution_id or ctx.instance_id or "").strip()
-            or f"{node_id}-{run_mode}"
-        )
-        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
-        raw_sandbox_name = (
-            str(resolved_config.get("sandboxName") or "").strip()
-            or f"openshell-da-{normalized_suffix}"
-        )
-        activity_input["sandboxName"] = re.sub(
-            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].strip("-") or "sandbox"
-
-    if is_openshell_durable:
-        activity_input["engine"] = "durable"
-        activity_input["toolBackend"] = "openshell"
-        activity_input["sandboxRepoPath"] = (
-            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
-        )
-        sandbox_suffix = (
-            str(tracked_execution_id or ctx.instance_id or "").strip()
-            or f"{node_id}-{run_mode}"
-        )
-        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
-        raw_sandbox_name = (
-            str(resolved_config.get("sandboxName") or "").strip()
-            or f"openshell-dur-{normalized_suffix}"
-        )
         activity_input["sandboxName"] = re.sub(
             r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
         )[:30].strip("-") or "sandbox"
@@ -2586,7 +2536,7 @@ def process_agent_child_workflow(
         )
 
     fetched_plan_artifact: dict[str, Any] | None = None
-    if (uses_dapr_agent_runtime or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
+    if (uses_observable_agent_runtime or is_openshell_agent) and artifact_ref and run_mode == "execute_direct":
         from activities.persist_plan_artifact import fetch_plan_artifact
 
         fetched = yield ctx.call_activity(
@@ -2633,47 +2583,6 @@ def process_agent_child_workflow(
                 cwd=resolved_config.get("cwd"),
                 require_file_changes=require_file_changes,
             )
-
-    if run_mode == "execute_plan_dag":
-        activity_input["artifactRef"] = artifact_ref
-        activity_input["cwd"] = resolved_config.get("cwd", "")
-        activity_input["maxTaskRetries"] = resolved_config.get("maxTaskRetries")
-        activity_input["taskTimeoutMinutes"] = resolved_config.get("taskTimeoutMinutes")
-        activity_input["overallTimeoutMinutes"] = resolved_config.get("overallTimeoutMinutes")
-        plan_input = resolved_config.get("planJson") or resolved_config.get("plan")
-        if plan_input:
-            activity_input["plan"] = plan_input
-
-    if action_type == "mastra/execute" or run_mode == "execute_plan":
-        activity_input["planJson"] = resolved_config.get("planJson")
-        activity_input["artifactRef"] = artifact_ref
-        activity_input["cwd"] = resolved_config.get("cwd", "")
-
-    if run_mode == "execute_plan" and action_type == "mastra/execute":
-        parsed_plan = _try_parse_json(activity_input.get("planJson"))
-        if isinstance(parsed_plan, dict):
-            stop_condition_raw = resolved_config.get("stopCondition")
-            stop_condition = (
-                str(stop_condition_raw).strip()
-                if isinstance(stop_condition_raw, str)
-                else ""
-            )
-            explicit_require_file_changes = _parse_optional_bool(
-                resolved_config.get("requireFileChanges")
-            )
-            require_file_changes = (
-                explicit_require_file_changes
-                if explicit_require_file_changes is not None
-                else bool(stop_condition)
-                and _stop_condition_implies_file_changes(stop_condition)
-            )
-            native_child_task_override = _build_execute_plan_prompt(
-                plan=parsed_plan,
-                task_prompt=prompt,
-                cwd=resolved_config.get("cwd"),
-                require_file_changes=require_file_changes,
-            )
-            use_native_child_workflow = native_child_workflow_enabled
 
     openshell_run_id: str | None = None
     if use_native_child_workflow:
@@ -2755,26 +2664,6 @@ def process_agent_child_workflow(
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode" and not use_native_child_workflow:
-        if action_type == "durable/claude-plan":
-            schema_version = str(start_result.get("schemaVersion") or "").strip()
-            storage_backend = str(start_result.get("storageBackend") or "").strip()
-            if STRICT_DURABLE_PLAN_CONTRACT and (
-                schema_version != "claude_task_graph_v1"
-                or storage_backend != "workflow_plan_artifacts"
-            ):
-                return {
-                    "success": False,
-                    "error": (
-                        "durable/claude-plan contract mismatch: expected "
-                        "schemaVersion=claude_task_graph_v1 and "
-                        "storageBackend=workflow_plan_artifacts; got "
-                        f"schemaVersion={schema_version or '<missing>'} "
-                        f"storageBackend={storage_backend or '<missing>'}. "
-                        "Deploy a durable-agent image that supports persisted plan artifacts."
-                    ),
-                    "result": start_result,
-                }
-
         plan_artifact_ref = start_result.get("artifactRef")
         if (
             is_openshell_plan_agent
@@ -3270,43 +3159,15 @@ def process_agent_child_workflow(
     if use_native_child_workflow:
         node_id = str(node.get("id") or "unknown")
         child_workflow_name = (
-            (
-                orchestrator_config.MS_AGENT_CHILD_WORKFLOW_RUN_NAME
-                if is_ms_agent
-                else (
-                    orchestrator_config.OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME
-                    if is_openshell_durable
-                    else (
-                        orchestrator_config.VANILLA_DURABLE_CHILD_WORKFLOW_NAME
-                        if is_vanilla_durable
-                        else (
-                            orchestrator_config.DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME
-                            if uses_dapr_agent_runtime
-                            else (
-                                orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME
-                                if run_mode == "execute_plan"
-                                else orchestrator_config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
-                            )
-                        )
-                    )
-                )
-            )
-            or "durableRunWorkflow"
+            orchestrator_config.OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME
+            or "openshellLanggraphRunWorkflow"
         )
         mode_suffix = (
             "plan"
-            if uses_dapr_agent_runtime and run_mode == "plan_mode"
-            else "execute-plan"
-            if run_mode == "execute_plan"
+            if uses_observable_agent_runtime and run_mode == "plan_mode"
             else "run"
         )
-        child_prefix = (
-            "msagent"
-            if is_ms_agent
-            else "dapr"
-            if uses_dapr_agent_runtime
-            else "durable"
-        )
+        child_prefix = "openshell-langgraph"
         child_execution_index = _next_node_execution_count(
             node_execution_counts,
             node_id,
@@ -3337,7 +3198,7 @@ def process_agent_child_workflow(
                 verify_commands=resolved_config.get("verifyCommands"),
                 stop_condition=stop_condition,
             )
-            if uses_dapr_agent_runtime and run_mode == "plan_mode"
+            if uses_observable_agent_runtime and run_mode == "plan_mode"
             else _build_run_prompt(
                 prompt,
                 stop_condition,
@@ -3368,7 +3229,7 @@ def process_agent_child_workflow(
             )
         if activity_input.get("workspaceProfile") is not None:
             child_input["workspaceProfile"] = activity_input.get("workspaceProfile")
-        if uses_dapr_agent_runtime:
+        if uses_observable_agent_runtime:
             for _field in (
                 "toolBackend", "engine", "sandboxName", "sandboxRepoPath",
                 "provider", "model", "maxTurns", "timeoutMinutes",
@@ -3382,34 +3243,7 @@ def process_agent_child_workflow(
             ):
                 if activity_input.get(_field) is not None:
                     child_input[_field] = activity_input[_field]
-        if is_ms_agent:
-            child_input["workflowTemplateId"] = (
-                resolved_config.get("workflowTemplateId") or "travel-planner"
-            )
-            if resolved_config.get("model"):
-                child_input["model"] = resolved_config.get("model")
-            if resolved_config.get("reviewFocusAreas") is not None:
-                child_input["reviewFocusAreas"] = resolved_config.get("reviewFocusAreas")
-            if resolved_config.get("applyFixes") is not None:
-                child_input["applyFixes"] = resolved_config.get("applyFixes")
-            if resolved_config.get("instructionsOverlay") is not None:
-                child_input["instructionsOverlay"] = resolved_config.get(
-                    "instructionsOverlay"
-                )
-            if resolved_config.get("configStoreName") is not None:
-                child_input["configStoreName"] = resolved_config.get("configStoreName")
-            if resolved_config.get("configKeys") is not None:
-                child_input["configKeys"] = resolved_config.get("configKeys")
-            if resolved_config.get("configMetadata") is not None:
-                child_input["configMetadata"] = resolved_config.get("configMetadata")
-            max_iterations_raw = resolved_config.get("maxIterations", max_turns)
-            try:
-                max_iterations = int(max_iterations_raw) if max_iterations_raw is not None else None
-            except (TypeError, ValueError):
-                max_iterations = None
-            if max_iterations is not None and max_iterations > 0:
-                child_input["maxIterations"] = max_iterations
-        elif uses_dapr_agent_runtime:
+        if uses_observable_agent_runtime:
             child_input["mode"] = (
                 "feature_delivery_plan"
                 if run_mode == "plan_mode"
@@ -3470,8 +3304,6 @@ def process_agent_child_workflow(
                 effective_max_turns = None
             if effective_max_turns is not None and effective_max_turns > 0:
                 child_input["maxTurns"] = effective_max_turns
-        elif max_turns is not None and max_turns > 0:
-            child_input["maxIterations"] = max_turns
         if activity_input.get("loopPolicy") is not None:
             child_input["loopPolicy"] = activity_input.get("loopPolicy")
 
@@ -3505,23 +3337,13 @@ def process_agent_child_workflow(
                 )
 
         logger.info(
-            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={(orchestrator_config.MS_AGENT_APP_ID if is_ms_agent else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID if is_openshell_durable else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID if is_vanilla_durable else orchestrator_config.DAPR_AGENT_APP_ID if uses_dapr_agent_runtime else orchestrator_config.DURABLE_AGENT_APP_ID)} instance={child_instance_id}"
+            f"[Agent Workflow] Starting native child: workflow={child_workflow_name} app_id={orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID} instance={child_instance_id}"
         )
         child_task = ctx.call_child_workflow(
             child_workflow_name,
             input=child_input,
             instance_id=child_instance_id,
-            app_id=(
-                orchestrator_config.MS_AGENT_APP_ID
-                if is_ms_agent
-                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                if is_openshell_durable
-                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
-                if is_vanilla_durable
-                else orchestrator_config.DAPR_AGENT_APP_ID
-                if uses_dapr_agent_runtime
-                else orchestrator_config.DURABLE_AGENT_APP_ID
-            ),
+            app_id=orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
         )
         if db_execution_id:
             try:
@@ -3552,18 +3374,10 @@ def process_agent_child_workflow(
             )
             terminate_result: dict[str, Any] = {"success": False}
             try:
-                from activities.call_agent_service import (
-                    terminate_dapr_agent_run,
-                    terminate_durable_agent_run,
-                    terminate_ms_agent_run,
-                )
+                from activities.call_agent_service import terminate_openshell_langgraph_run
 
                 terminate_result = yield ctx.call_activity(
-                    terminate_ms_agent_run
-                    if is_ms_agent
-                    else terminate_dapr_agent_run
-                    if uses_dapr_agent_runtime
-                    else terminate_durable_agent_run,
+                    terminate_openshell_langgraph_run,
                     input={
                         "agentWorkflowId": child_instance_id,
                         "daprInstanceId": child_instance_id,
@@ -3587,17 +3401,7 @@ def process_agent_child_workflow(
                 "agentWorkflowId": child_instance_id,
                 "daprInstanceId": child_instance_id,
                 "childWorkflowName": child_workflow_name,
-                "childAppId": (
-                    orchestrator_config.MS_AGENT_APP_ID
-                    if is_ms_agent
-                    else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                    if is_openshell_durable
-                    else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
-                    if is_vanilla_durable
-                    else orchestrator_config.DAPR_AGENT_APP_ID
-                    if uses_dapr_agent_runtime
-                    else orchestrator_config.DURABLE_AGENT_APP_ID
-                ),
+                "childAppId": orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
                 "error": f"Agent timed out after {timeout_minutes} minutes",
                 "termination": terminate_result,
                 **(planned_payload or {}),
@@ -3627,7 +3431,7 @@ def process_agent_child_workflow(
         raw_result = child_task.get_result()
         if not isinstance(raw_result, dict):
             raw_result = {"content": str(raw_result)}
-        if uses_dapr_agent_runtime and run_mode == "plan_mode":
+        if uses_observable_agent_runtime and run_mode == "plan_mode":
             from activities.persist_plan_artifact import (
                 persist_plan_artifact,
                 update_plan_artifact_status,
@@ -3660,7 +3464,7 @@ def process_agent_child_workflow(
             if not isinstance(plan_json, dict):
                 return {
                     "success": False,
-                    "error": "Dapr agent planning result did not return plan JSON",
+                    "error": "OpenShell LangGraph planning result did not return plan JSON",
                 }
             persisted_plan = yield ctx.call_activity(
                 persist_plan_artifact,
@@ -3680,7 +3484,7 @@ def process_agent_child_workflow(
                     if isinstance(plan_payload.get("planMetadata"), dict)
                     else {
                         "promptProfile": plan_payload.get("profile") or resolved_config.get("profile") or "feature-delivery",
-                        "sourceRuntime": "dapr-agent-runtime",
+                        "sourceRuntime": "openshell-langgraph-observable",
                     },
                     "_otel": otel_ctx,
                 },
@@ -3691,7 +3495,7 @@ def process_agent_child_workflow(
                     "error": (
                         persisted_plan.get("error")
                         if isinstance(persisted_plan, dict)
-                        else "Failed to persist Dapr agent plan artifact"
+                        else "Failed to persist OpenShell LangGraph plan artifact"
                     ),
                 }
             planned_payload = {
@@ -3719,7 +3523,7 @@ def process_agent_child_workflow(
                                 workflow_id=child_instance_id,
                                 dapr_instance_id=child_instance_id,
                                 child_workflow_name=child_workflow_name,
-                                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+                                child_app_id=orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
                             )},
                             "_otel": otel_ctx,
                         },
@@ -3883,7 +3687,7 @@ def process_agent_child_workflow(
             })
             execute_child_index = _next_node_execution_count(node_execution_counts, node_id)
             execute_child_instance_id = (
-                f"{ctx.instance_id}__dapr__{node_id}__run__{execute_child_index}"
+                f"{ctx.instance_id}__openshell-langgraph__{node_id}__run__{execute_child_index}"
             )
             execute_child_input = {
                 **child_input,
@@ -3925,7 +3729,7 @@ def process_agent_child_workflow(
                 child_workflow_name,
                 input=execute_child_input,
                 instance_id=execute_child_instance_id,
-                app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+                app_id=orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
             )
             if db_execution_id:
                 try:
@@ -3953,10 +3757,12 @@ def process_agent_child_workflow(
             if execute_completed_task == execute_timeout:
                 terminate_result: dict[str, Any] = {"success": False}
                 try:
-                    from activities.call_agent_service import terminate_dapr_agent_run
+                    from activities.call_agent_service import (
+                        terminate_openshell_langgraph_run,
+                    )
 
                     terminate_result = yield ctx.call_activity(
-                        terminate_dapr_agent_run,
+                        terminate_openshell_langgraph_run,
                         input={
                             "agentWorkflowId": execute_child_instance_id,
                             "daprInstanceId": execute_child_instance_id,
@@ -3997,7 +3803,7 @@ def process_agent_child_workflow(
                 workflow_id=execute_child_instance_id,
                 dapr_instance_id=execute_child_instance_id,
                 child_workflow_name=child_workflow_name,
-                child_app_id=orchestrator_config.DAPR_AGENT_APP_ID,
+                child_app_id=orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
             )
             if not execute_result_payload.get("sandboxName") and activity_input.get("sandboxName"):
                 execute_result_payload["sandboxName"] = activity_input["sandboxName"]
@@ -4039,17 +3845,7 @@ def process_agent_child_workflow(
             workflow_id=child_instance_id,
             dapr_instance_id=child_instance_id,
             child_workflow_name=child_workflow_name,
-            child_app_id=(
-                orchestrator_config.MS_AGENT_APP_ID
-                if is_ms_agent
-                else orchestrator_config.OPENSHELL_DURABLE_AGENT_APP_ID
-                if is_openshell_durable
-                else orchestrator_config.VANILLA_DURABLE_AGENT_APP_ID
-                if is_vanilla_durable
-                else orchestrator_config.DAPR_AGENT_APP_ID
-                if uses_dapr_agent_runtime
-                else orchestrator_config.DURABLE_AGENT_APP_ID
-            ),
+            child_app_id=orchestrator_config.OPENSHELL_LANGGRAPH_APP_ID,
         )
         # Ensure sandboxName propagates even if the child workflow didn't
         # echo it back — downstream nodes (e.g. browser/validate) reference
@@ -4066,10 +3862,10 @@ def process_agent_child_workflow(
                 result_payload["error"] = (
                     "Stop condition requires file changes, but child result explicitly reports no file changes."
                 )
-            elif uses_dapr_agent_runtime:
+            elif uses_observable_agent_runtime:
                 result_payload["success"] = False
                 result_payload["error"] = (
-                    "Stop condition requires file changes, but the Dapr agent result did not provide verifiable file-change evidence."
+                    "Stop condition requires file changes, but the OpenShell LangGraph result did not provide verifiable file-change evidence."
                 )
             else:
                 result_payload["fileChangeVerification"] = "unknown"

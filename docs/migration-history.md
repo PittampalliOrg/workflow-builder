@@ -24,7 +24,7 @@ The `plugins/openai/` plugin (generate-text, generate-image actions) was removed
 
 ## Planner → Mastra Agent → Durable Agent
 
-`planner-dapr-agent` (OpenAI Agents SDK, Python) was replaced by `mastra-agent-tanstack` (Mastra SDK), which was then superseded by `durable-agent` (Dapr Workflow + AI SDK 6) as the primary agent service. The planner service, its API routes, and all `planner/*` action types have been removed.
+The original planner agent (OpenAI Agents SDK, Python) was replaced by `mastra-agent-tanstack` (Mastra SDK), which was then superseded by `durable-agent` (Dapr Workflow + AI SDK 6) as the primary agent service. The planner service, its API routes, and all `planner/*` action types have been removed.
 
 ## Workflow Orchestrator TS → Python
 

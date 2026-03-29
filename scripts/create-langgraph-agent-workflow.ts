@@ -1,7 +1,7 @@
 /**
  * Create or update a workflow that exercises the LangGraph-backed Dapr agent path:
- * trigger -> workspace/profile -> workspace/clone -> dapr-agent/run (plan)
- * -> dapr-agent/run (execute)
+ * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
+ * -> openshell-langgraph-observable/run (execute)
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-langgraph-agent-workflow.ts
@@ -266,7 +266,7 @@ function buildWorkflowNodes(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "dapr-agent/run",
+		actionType: "openshell-langgraph-observable/run",
 		engine: "langgraph",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,
@@ -309,7 +309,7 @@ function buildWorkflowNodes(input: {
 				type: "action",
 				config: {
 					actionType: "workspace/profile",
-					name: "langgraph-dapr-agent-smoke",
+					name: "openshell-langgraph-smoke",
 					enabledTools,
 					requireReadBeforeWrite: "true",
 					commandTimeoutMs: "120000",

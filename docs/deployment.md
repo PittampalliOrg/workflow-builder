@@ -9,9 +9,9 @@ Current `workflow-builder` namespace runtime:
 - `workflow-builder`
 - `workflow-orchestrator`
 - `function-router`
-- `dapr-agent-runtime`
+- `openshell-agent-runtime`
+- `openshell-langgraph-observable`
 - `durable-agent`
-- `ms-agent-workflow`
 - `fn-activepieces`
 - `postgresql`
 - Dapr sidecars and backing Redis / pub-sub infrastructure
@@ -54,11 +54,10 @@ For the validated coding path, a rollout usually involves:
 - `workflow-builder`
 - `workflow-orchestrator`
 - `function-router`
-- `dapr-agent-runtime`
+- `openshell-agent-runtime`
+- `openshell-langgraph-observable`
 - `durable-agent`
 - sometimes `ai-chatbot` in its own repo and app
-
-Compatibility services such as `ms-agent-workflow` should only be rebuilt when those code paths change.
 
 ## Current Desired Runtime Behavior
 
@@ -66,8 +65,8 @@ The live coding path should be:
 
 1. `workflow-builder` starts a run
 2. `workflow-orchestrator` owns the durable parent workflow
-3. `function-router` routes `openshell-langgraph/run` to `dapr-agent-runtime`
-4. `dapr-agent-runtime` performs planning/execution child work
+3. `function-router` routes standard OpenShell work to `openshell-agent-runtime`
+4. `workflow-orchestrator` starts native child workflows for `openshell-langgraph-observable/run`
 5. `durable-agent` persists change sets, patches, and file snapshots
 6. review APIs serve persisted artifacts back to the UI
 
@@ -85,9 +84,13 @@ docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-builder:git-<sha> .
 docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-orchestrator:git-<sha> \
   -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
 
-# LangGraph coding backend
-docker build -t gitea.cnoe.localtest.me/giteaadmin/dapr-agent-runtime:git-<sha> \
-  -f services/dapr-agent-runtime/Dockerfile .
+# OpenShell workspace/browser runtime
+docker build -t gitea.cnoe.localtest.me/giteaadmin/openshell-agent-runtime:git-<sha> \
+  -f ../openshell-deepagent/Dockerfile ../openshell-deepagent/
+
+# OpenShell LangGraph coding backend
+docker build -t gitea.cnoe.localtest.me/giteaadmin/openshell-langgraph-observable:git-<sha> \
+  -f ../openshell-deepagent/Dockerfile ../openshell-deepagent/
 
 # Shared artifact service
 docker build -t gitea.cnoe.localtest.me/giteaadmin/opencode-durable-agent:git-<sha> \

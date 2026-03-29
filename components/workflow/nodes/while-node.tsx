@@ -48,7 +48,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 			? "Release to bind coding agent"
 			: dropState === "occupied"
 				? "Only one coding agent can be enclosed"
-				: "Only OpenShell, OpenShell LangGraph, or Dapr agents can be enclosed";
+				: "Only OpenShell agent nodes can be enclosed";
 	const handleBodyAction = useCallback(() => {
 		if (enclosedBodyNode) {
 			setSelectedNode(enclosedBodyNode.id);
@@ -68,7 +68,7 @@ export const WhileNode = memo(({ data, selected, id }: WhileNodeProps) => {
 				description: "",
 				type: "action",
 				config: {
-					actionType: "openshell-langgraph/run",
+					actionType: "openshell-langgraph-observable/run",
 				},
 				status: "idle",
 			},

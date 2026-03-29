@@ -159,11 +159,8 @@ const getProviderLogo = (
 		case "openshell/run":
 		case "openshell/session-start":
 		case "openshell-langgraph/run":
+		case "openshell-langgraph-observable/run":
 			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
-		case "dapr-agent/run":
-			return <Bot className="size-12 text-teal-300" strokeWidth={1.5} />;
-		case "ms-agent/run":
-			return <Bot className="size-12 text-cyan-300" strokeWidth={1.5} />;
 		case "system/http-request":
 			return <Zap className="size-12 text-amber-300" strokeWidth={1.5} />;
 		case "system/database-query":
@@ -262,10 +259,10 @@ function AgentProgressOverlay({
 	const isRunning =
 		progress.status === "running" || progress.status === "scheduled";
 	const primaryLabel =
-		actionType === "dapr-agent/run" ||
 		actionType === "openshell/run" ||
 		actionType === "openshell/session-start" ||
-		actionType === "openshell-langgraph/run"
+		actionType === "openshell-langgraph/run" ||
+		actionType === "openshell-langgraph-observable/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
 				: progress.phase || "Running"
@@ -451,19 +448,12 @@ export const ActionNode = memo(
 			if (
 				actionType === "openshell/run" ||
 				actionType === "openshell/session-start" ||
-				actionType === "openshell-langgraph/run"
+				actionType === "openshell-langgraph/run" ||
+				actionType === "openshell-langgraph-observable/run"
 			) {
 				return typeof data.config?.model === "string"
 					? (data.config.model as string)
 					: "anthropic/claude-sonnet-4-6";
-			}
-			if (actionType === "dapr-agent/run") {
-				return typeof data.config?.model === "string"
-					? (data.config.model as string)
-					: "dapr-agents/openai";
-			}
-			if (actionType === "ms-agent/run") {
-				return "agent-framework/openai";
 			}
 			if (actionType === "Generate Text") {
 				return (data.config?.aiModel as string) || "meta/llama-4-scout";
@@ -508,11 +498,10 @@ export const ActionNode = memo(
 
 				{/* Status indicator badge in top right */}
 				<StatusBadge status={status} />
-				{(actionType === "ms-agent/run" ||
-					actionType === "dapr-agent/run" ||
-					actionType === "openshell/run" ||
+				{(actionType === "openshell/run" ||
 					actionType === "openshell/session-start" ||
-					actionType === "openshell-langgraph/run") && (
+					actionType === "openshell-langgraph/run" ||
+					actionType === "openshell-langgraph-observable/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}
 						progress={agentProgress}

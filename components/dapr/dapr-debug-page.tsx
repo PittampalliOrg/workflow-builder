@@ -433,14 +433,6 @@ export function DaprDebugPage() {
 					ok={overview.sources.workflowOrchestrator.ok}
 				/>
 				<SourceBadge
-					label="dapr-agent-runtime"
-					ok={overview.sources.daprAgentRuntime.ok}
-				/>
-				<SourceBadge
-					label="ms-agent-workflow"
-					ok={overview.sources.msAgentWorkflow?.ok ?? false}
-				/>
-				<SourceBadge
 					label="application agents"
 					ok={overview.sources.applicationAgents.ok}
 				/>
@@ -608,17 +600,7 @@ export function DaprDebugPage() {
 							sourceOk={overview.sources.workflowOrchestrator.ok}
 							title="Workflow Orchestrator"
 						/>
-						<IntrospectionCard
-							introspection={overview.workflowRuntime.daprAgentRuntime}
-							sourceOk={overview.sources.daprAgentRuntime.ok}
-							title="Dapr Agent Runtime"
-						/>
 					</div>
-					<IntrospectionCard
-						introspection={overview.workflowRuntime.msAgentWorkflow ?? null}
-						sourceOk={overview.sources.msAgentWorkflow?.ok ?? false}
-						title="MS Agent Workflow"
-					/>
 
 					<Card>
 						<CardHeader>

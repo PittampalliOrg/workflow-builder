@@ -4,7 +4,6 @@
  * Current scope:
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
  * - Upsert workflow aicodingagent001 (AI Coding Agent)
- * - Upsert Microsoft Agent reference workflows for travel planning and code review
  * - Upsert GitHub sandbox clone proof workflow
  * - Reconcile workflow_resource_refs for durable plan/execute nodes
  *
@@ -50,14 +49,6 @@ const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_DESCRIPTION =
 	"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.";
 const OPENSHELL_LANGGRAPH_BROWSER_VALIDATION_REPOSITORY_URL =
 	"https://github.com/PittampalliOrg/next-learn.git";
-const MS_AGENT_WORKFLOW_ID = "msagtwf0travelplnr001";
-const MS_AGENT_WORKFLOW_NAME = "Microsoft Agent Travel Planner";
-const MS_AGENT_WORKFLOW_DESCRIPTION =
-	"Reference workflow that runs the Python Dapr + Microsoft Agent Framework travel planner.";
-const MS_AGENT_CODE_REVIEW_WORKFLOW_ID = "msagtwf0codereview01";
-const MS_AGENT_CODE_REVIEW_WORKFLOW_NAME = "Microsoft Agent Code Review";
-const MS_AGENT_CODE_REVIEW_WORKFLOW_DESCRIPTION =
-	"Reference workflow that provisions a workspace, clones a repo, and runs the Microsoft Agent code-review template.";
 const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_ID = "ghsbxcloneproof001";
 const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_NAME = "GitHub Sandbox Clone Proof";
 const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_DESCRIPTION =
@@ -66,11 +57,6 @@ const GITHUB_SANDBOX_REVIEW_WORKFLOW_ID = "ghsbxreviewproof001";
 const GITHUB_SANDBOX_REVIEW_WORKFLOW_NAME = "GitHub Sandbox Project Review";
 const GITHUB_SANDBOX_REVIEW_WORKFLOW_DESCRIPTION =
 	"Reference workflow that clones PittampalliOrg/workflow-builder into a Kubernetes sandbox, prints a directory tree, and asks the durable coding agent to review and summarize the project.";
-const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_ID = "ghstacksdualagent001";
-const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME =
-	"GitHub Stacks Dual Agent Analysis";
-const GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION =
-	"Reference workflow that clones PittampalliOrg/stacks and asks both the Microsoft Agent workflow and the Dapr coding agent to summarize the codebase independently.";
 const AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
 const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "OpenShell Feature Delivery Demo";
 const AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION =
@@ -343,7 +329,8 @@ __WF_OPEN_SHELL_REVIEW__`;
 
 function buildOpenShellValidationInstallCommand() {
 	// Detect lock file to pick the right package manager
-	return "(while true; do echo install-heartbeat; sleep 25; done &) ; cd basics/basics-final && attempt=1; until [ $attempt -gt 3 ]; do " +
+	return (
+		"(while true; do echo install-heartbeat; sleep 25; done &) ; cd basics/basics-final && attempt=1; until [ $attempt -gt 3 ]; do " +
 		"if [ -f pnpm-lock.yaml ] || [ -f ../../pnpm-lock.yaml ]; then " +
 		"corepack enable pnpm 2>/dev/null; pnpm install --no-frozen-lockfile --prefer-offline; " +
 		"elif [ -f package-lock.json ]; then " +
@@ -351,7 +338,8 @@ function buildOpenShellValidationInstallCommand() {
 		"else " +
 		"npm install --no-audit --no-fund --loglevel=warn --fetch-retries=5 --fetch-retry-factor=2 --fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 --prefer-offline; " +
 		"fi && exit 0; " +
-		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done";
+		"if [ $attempt -eq 3 ]; then exit 1; fi; echo retrying-install-attempt-$attempt; attempt=$((attempt + 1)); sleep 5; done"
+	);
 }
 
 function buildOpenShellValidationDevServerCommand() {
@@ -622,12 +610,12 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 				type: "action",
 				label: "Browser Validation Workspace",
 				description:
-					"Provision an aio-browser sandbox for dev-server validation and screenshots.",
+					"Provision an OpenShell browser validation workspace for dev-server validation and screenshots.",
 				config: {
 					name: "browser-validation",
 					actionType: "browser/profile",
 					commandTimeoutMs: "360000",
-					sandboxTemplate: "aio-browser",
+					sandboxTemplate: "openshell-browser",
 				},
 				status: "idle",
 			},
@@ -1152,168 +1140,6 @@ function buildEdges() {
 	];
 }
 
-function buildMsAgentNodes() {
-	return normalizeWorkflowNodes([
-		{
-			id: "tr_msagent_1",
-			type: "trigger",
-			position: { x: -220, y: 0 },
-			data: {
-				label: "Manual Trigger",
-				description: "",
-				type: "trigger",
-				config: { triggerType: "Manual" },
-				status: "idle",
-			},
-		},
-		{
-			id: "ac_msagent_1",
-			type: "action",
-			position: { x: 60, y: 0 },
-			data: {
-				label: "Travel Planner",
-				description:
-					"Run the Python Dapr workflow backed by Microsoft Agent Framework agents.",
-				type: "action",
-				config: {
-					actionType: "ms-agent/run",
-					workflowTemplateId: "travel-planner",
-					prompt:
-						"Plan a 3-day trip to Kyoto with temples, local food, and one relaxed evening.",
-					timeoutMinutes: "10",
-				},
-				status: "idle",
-			},
-		},
-	]);
-}
-
-function buildMsAgentEdges() {
-	return [
-		{
-			id: "e_msagent_1",
-			type: "animated",
-			source: "tr_msagent_1",
-			target: "ac_msagent_1",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-	];
-}
-
-function buildMsAgentCodeReviewNodes() {
-	return normalizeWorkflowNodes([
-		{
-			id: "tr_msagent_code_review",
-			type: "trigger",
-			position: { x: -520, y: 0 },
-			data: {
-				label: "Manual Trigger",
-				description: "",
-				type: "trigger",
-				config: { triggerType: "Manual" },
-				status: "idle",
-			},
-		},
-		{
-			id: "pf_msagent_code_review",
-			type: "action",
-			position: { x: -240, y: 0 },
-			data: {
-				label: "Workspace Profile",
-				description: "Create an execution-scoped workspace session.",
-				type: "action",
-				config: {
-					actionType: "workspace/profile",
-					name: "ms-agent-code-review",
-					enabledTools: '["read","write","edit","list","bash"]',
-					requireReadBeforeWrite: "true",
-					commandTimeoutMs: "120000",
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: "cl_msagent_code_review",
-			type: "action",
-			position: { x: 40, y: 0 },
-			data: {
-				label: "Workspace Clone",
-				description:
-					"Clone a repository into the execution-scoped workspace before review.",
-				type: "action",
-				config: {
-					actionType: "workspace/clone",
-					workspaceRef:
-						"{{@pf_msagent_code_review:Workspace Profile.workspaceRef}}",
-					repositoryUrl:
-						"http://gitea-http.gitea.svc.cluster.local:3000/giteaadmin/workflow-smoke.git",
-					repositoryOwner: "giteaadmin",
-					repositoryRepo: "workflow-smoke",
-					repositoryBranch: "main",
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: "cr_msagent_code_review",
-			type: "action",
-			position: { x: 360, y: 0 },
-			data: {
-				label: "Code Review",
-				description:
-					"Run the Microsoft Agent Framework code-review template against the cloned repo.",
-				type: "action",
-				config: {
-					actionType: "ms-agent/run",
-					workflowTemplateId: "code-review",
-					prompt:
-						"Review this repository for correctness, maintainability, and the highest-priority risks. Return concrete findings first.",
-					reviewFocusAreas: "bugs, maintainability, testing",
-					workspaceRef:
-						"{{@pf_msagent_code_review:Workspace Profile.workspaceRef}}",
-					cwd: "{{@cl_msagent_code_review:Workspace Clone.clonePath}}",
-					applyFixes: "false",
-					maxIterations: "25",
-					instructionsOverlay:
-						"Prioritize actionable findings with file paths and line references. Keep fixes disabled unless this workflow is customized for editing.",
-					timeoutMinutes: "20",
-				},
-				status: "idle",
-			},
-		},
-	]);
-}
-
-function buildMsAgentCodeReviewEdges() {
-	return [
-		{
-			id: "e_msagent_code_review_1",
-			type: "animated",
-			source: "tr_msagent_code_review",
-			target: "pf_msagent_code_review",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: "e_msagent_code_review_2",
-			type: "animated",
-			source: "pf_msagent_code_review",
-			target: "cl_msagent_code_review",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: "e_msagent_code_review_3",
-			type: "animated",
-			source: "cl_msagent_code_review",
-			target: "cr_msagent_code_review",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-	];
-}
-
 function buildGithubSandboxCloneProofNodes(input?: {
 	connectionId?: string;
 	connectionExternalId?: string;
@@ -1602,166 +1428,6 @@ function buildGithubSandboxReviewEdges() {
 	];
 }
 
-function buildGithubStacksDualAgentNodes(input?: {
-	connectionId?: string;
-	connectionExternalId?: string;
-}) {
-	const workspaceRef =
-		"{{@pf_github_stacks_dual:Workspace Profile.workspaceRef}}";
-	const clonePath = "{{@cl_github_stacks_dual:Workspace Clone.clonePath}}";
-	const cloneConfig: Record<string, string> = {
-		actionType: "workspace/clone",
-		workspaceRef,
-		repositoryOwner: "PittampalliOrg",
-		repositoryRepo: "stacks",
-		repositoryBranch: "main",
-	};
-	if (input?.connectionExternalId) {
-		cloneConfig.auth = `{{connections['${input.connectionExternalId}']}}`;
-	}
-	if (input?.connectionId) {
-		cloneConfig.integrationId = input.connectionId;
-	}
-
-	const sharedPrompt =
-		"Analyze this repository for an engineer onboarding to the project. Summarize the project purpose, the main subsystems and directories, the deployment or operations model, the key docs to read first, and the highest-priority technical or operational risks. Keep the response concise and reference concrete files or directories when relevant.";
-
-	return normalizeWorkflowNodes([
-		{
-			id: "tr_github_stacks_dual",
-			type: "trigger",
-			position: { x: -760, y: 0 },
-			data: {
-				label: "Manual Trigger",
-				description: "",
-				type: "trigger",
-				config: { triggerType: "Manual" },
-				status: "idle",
-			},
-		},
-		{
-			id: "pf_github_stacks_dual",
-			type: "action",
-			position: { x: -480, y: 0 },
-			data: {
-				label: "Workspace Profile",
-				description:
-					"Create an execution-scoped sandbox for the repo analysis.",
-				type: "action",
-				config: {
-					actionType: "workspace/profile",
-					name: "github-stacks-dual-agent-analysis",
-					enabledTools: '["read","list","bash"]',
-					requireReadBeforeWrite: "true",
-					commandTimeoutMs: "120000",
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: "cl_github_stacks_dual",
-			type: "action",
-			position: { x: -180, y: 0 },
-			data: {
-				label: "Workspace Clone",
-				description: "Clone PittampalliOrg/stacks into the sandbox.",
-				type: "action",
-				config: cloneConfig,
-				status: "idle",
-			},
-		},
-		{
-			id: "ms_github_stacks_dual",
-			type: "action",
-			position: { x: 140, y: -120 },
-			data: {
-				label: "MS Agent Summary",
-				description:
-					"Use the Microsoft Agent workflow to produce a structured codebase summary.",
-				type: "action",
-				config: {
-					actionType: "ms-agent/run",
-					workflowTemplateId: "repo-review",
-					prompt: sharedPrompt,
-					reviewFocusAreas: "architecture, deployment, onboarding, risks",
-					workspaceRef,
-					cwd: clonePath,
-					maxIterations: "24",
-					instructionsOverlay:
-						"Focus on high-signal engineer onboarding context. Use the repository tools directly and keep the summary concise.",
-					timeoutMinutes: "20",
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: "da_github_stacks_dual",
-			type: "action",
-			position: { x: 140, y: 120 },
-			data: {
-				label: "Dapr Agent Summary",
-				description:
-					"Use the durable Dapr coding agent to produce an independent codebase summary.",
-				type: "action",
-				config: {
-					actionType: "dapr-agent/run",
-					profile: "review",
-					prompt: sharedPrompt,
-					expectedOutput:
-						"A concise onboarding summary with concrete directories, docs, and risks.",
-					toolPolicy: "read_only",
-					writePolicy: "read-only",
-					shellPolicy: "tests-only",
-					workspaceRef,
-					cwd: clonePath,
-					maxTurns: "24",
-					timeoutMinutes: "20",
-					stopCondition:
-						"An onboarding-focused codebase summary has been produced with no repository modifications.",
-				},
-				status: "idle",
-			},
-		},
-	]);
-}
-
-function buildGithubStacksDualAgentEdges() {
-	return [
-		{
-			id: "e_github_stacks_dual_1",
-			type: "animated",
-			source: "tr_github_stacks_dual",
-			target: "pf_github_stacks_dual",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: "e_github_stacks_dual_2",
-			type: "animated",
-			source: "pf_github_stacks_dual",
-			target: "cl_github_stacks_dual",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: "e_github_stacks_dual_3",
-			type: "animated",
-			source: "cl_github_stacks_dual",
-			target: "ms_github_stacks_dual",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: "e_github_stacks_dual_4",
-			type: "animated",
-			source: "cl_github_stacks_dual",
-			target: "da_github_stacks_dual",
-			sourceHandle: null,
-			targetHandle: null,
-		},
-	];
-}
-
 function buildAiCodingAgentNodes() {
 	const workspaceRef = "{{@pf_ai_coding_agent:Workspace Profile.workspaceRef}}";
 	const clonePath = "{{@cl_ai_coding_agent:Workspace Clone.clonePath}}";
@@ -1952,7 +1618,7 @@ function buildAgentSystemDemoNodes(input?: {
 	const featureDeliveryPrompt = `Repository root: ${sandboxRepoPath}
 Always operate relative to this repository root for file and directory paths.
 
-Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/manifests for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, or ms-agent-workflow. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
+Plan and implement a small developer utility in this repository. Create a new Python script at scripts/workflow_builder_demo_report.py. The script should recursively scan packages/components/active-development/manifests for YAML files whose filename contains any of: workflow-builder, workflow-orchestrator, function-router, openshell-agent-runtime, or openshell-langgraph-dapr. Print a JSON object with a sorted list of matching relative file paths and a count. Use only the Python standard library, add a clear main entrypoint, and avoid modifying unrelated files.
 
 ## Stop Condition
 The new Python utility exists, verification commands pass, and the final response includes changed files and a concise implementation summary.
@@ -2313,28 +1979,6 @@ async function seedWorkflow() {
 
 		await upsertWorkflow({
 			db,
-			workflowId: MS_AGENT_WORKFLOW_ID,
-			name: MS_AGENT_WORKFLOW_NAME,
-			description: MS_AGENT_WORKFLOW_DESCRIPTION,
-			userId,
-			projectId,
-			nodes: buildMsAgentNodes(),
-			edges: buildMsAgentEdges(),
-		});
-
-		await upsertWorkflow({
-			db,
-			workflowId: MS_AGENT_CODE_REVIEW_WORKFLOW_ID,
-			name: MS_AGENT_CODE_REVIEW_WORKFLOW_NAME,
-			description: MS_AGENT_CODE_REVIEW_WORKFLOW_DESCRIPTION,
-			userId,
-			projectId,
-			nodes: buildMsAgentCodeReviewNodes(),
-			edges: buildMsAgentCodeReviewEdges(),
-		});
-
-		await upsertWorkflow({
-			db,
 			workflowId: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_ID,
 			name: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_NAME,
 			description: GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_DESCRIPTION,
@@ -2353,17 +1997,6 @@ async function seedWorkflow() {
 			projectId,
 			nodes: buildGithubSandboxReviewNodes(githubConnection),
 			edges: buildGithubSandboxReviewEdges(),
-		});
-
-		await upsertWorkflow({
-			db,
-			workflowId: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_ID,
-			name: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_NAME,
-			description: GITHUB_STACKS_DUAL_AGENT_WORKFLOW_DESCRIPTION,
-			userId,
-			projectId,
-			nodes: buildGithubStacksDualAgentNodes(githubConnection),
-			edges: buildGithubStacksDualAgentEdges(),
 		});
 
 		await upsertWorkflow({

@@ -63,7 +63,7 @@ from activities.call_agent_service import (
     call_durable_execute_plan,
     call_durable_execute_plan_dag,
     validate_workspace_capabilities,
-    terminate_ms_agent_run,
+    terminate_openshell_langgraph_run,
     terminate_durable_agent_run,
     terminate_durable_runs_by_parent_execution,
     cleanup_execution_workspaces,
@@ -658,7 +658,7 @@ async def lifespan(app: FastAPI):
     wfr.register_activity(call_durable_execute_plan)
     wfr.register_activity(call_durable_execute_plan_dag)
     wfr.register_activity(validate_workspace_capabilities)
-    wfr.register_activity(terminate_ms_agent_run)
+    wfr.register_activity(terminate_openshell_langgraph_run)
     wfr.register_activity(terminate_durable_agent_run)
     wfr.register_activity(cleanup_execution_workspaces)
     wfr.register_activity(track_agent_run_scheduled)
@@ -953,7 +953,7 @@ def _registered_activity_names() -> list[str]:
         call_durable_execute_plan.__name__,
         call_durable_execute_plan_dag.__name__,
         validate_workspace_capabilities.__name__,
-        terminate_ms_agent_run.__name__,
+        terminate_openshell_langgraph_run.__name__,
         terminate_durable_agent_run.__name__,
         cleanup_execution_workspaces.__name__,
         track_agent_run_running.__name__,
@@ -1263,9 +1263,9 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
     data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
     return str(config.get("actionType") or "").strip() in {
-        "dapr-agent/run",
         "openshell/run",
         "openshell-langgraph/run",
+        "openshell-langgraph-observable/run",
     }
 
 
@@ -2472,8 +2472,8 @@ def agent_events_subscription(event: CloudEvent):
     Handle agent completion events from pub/sub.
 
     This endpoint handles legacy or external completion events forwarded over
-    Dapr pub/sub. Native ms-agent and dapr-agent child workflows complete
-    through child-workflow results rather than this callback path.
+    Dapr pub/sub. Native OpenShell child workflows complete through
+    child-workflow results rather than this callback path.
     """
     logger.info(f"[Subscription] Received agent event: {event.type}")
 

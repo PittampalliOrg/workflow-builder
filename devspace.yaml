@@ -10,9 +10,7 @@
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default observable OpenShell inner loop
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
-#   bash scripts/devspace-dev-ryzen.sh --profile openshell-durable-dev  # Durable compatibility loop
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-deepagents-test-dev  # Baseline comparison agent
-#   bash scripts/devspace-dev-ryzen.sh --profile compatibility-runtimes  # Add dapr-agent-runtime
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on durable-agent + Next.js UI
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every in-repo workflow service
@@ -22,9 +20,8 @@
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     durable-agent, fn-activepieces, mcp-gateway, dapr-agent-runtime,
-#     openshell-durable-agent, openshell-deepagents-test, and
-#     openshell-langgraph-observable.
+#     durable-agent, fn-activepieces, mcp-gateway, openshell-deepagents-test,
+#     and openshell-langgraph-observable.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 #   - Use one profile at a time. If a session is already active, use `devspace enter`,
@@ -48,9 +45,6 @@ vars:
   AI_CHATBOT_SOURCE_PATH: "../../ai/main"
   AI_CHATBOT_PUBLIC_URL:
     default: "https://ai-chatbot-ryzen.tail286401.ts.net"
-  DAPR_AGENT_APP_NAME: dapr-agent-runtime
-  DAPR_AGENT_LOCAL_PORT: "3012"
-  DAPR_AGENT_CONTAINER_PORT: "8082"
   ORCHESTRATOR_APP_NAME: workflow-orchestrator
   ORCHESTRATOR_LOCAL_PORT: "3013"
   ORCHESTRATOR_CONTAINER_PORT: "8080"
@@ -69,10 +63,6 @@ vars:
   MCP_GATEWAY_APP_NAME: mcp-gateway
   MCP_GATEWAY_LOCAL_PORT: "3018"
   MCP_GATEWAY_CONTAINER_PORT: "8080"
-  OPENSHELL_DURABLE_AGENT_APP_NAME: openshell-durable-agent
-  OPENSHELL_DURABLE_AGENT_LOCAL_PORT: "3019"
-  OPENSHELL_DURABLE_AGENT_CONTAINER_PORT: "8000"
-  OPENSHELL_DURABLE_AGENT_SOURCE_PATH: "../../openshell-deepagent/main"
   OPENSHELL_DEEPAGENTS_TEST_APP_NAME: openshell-deepagents-test
   OPENSHELL_DEEPAGENTS_TEST_LOCAL_PORT: "3021"
   OPENSHELL_DEEPAGENTS_TEST_CONTAINER_PORT: "8002"
@@ -148,13 +138,6 @@ vars:
     default: "${GITEA_HOST}/${GITEA_USER}/${AI_CHATBOT_APP_NAME}"
   AI_CHATBOT_DEV_IMAGE_REPOSITORY:
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
-  CURRENT_DAPR_AGENT_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${DAPR_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${DAPR_AGENT_APP_NAME}"
-  DAPR_AGENT_DEV_IMAGE_REPOSITORY:
-    default: "${GITEA_HOST}/${GITEA_USER}/python-312-devspace"
   CURRENT_ORCHESTRATOR_IMAGE_REPOSITORY:
     command: |
       image="$(kubectl get deployment ${ORCHESTRATOR_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${ORCHESTRATOR_APP_NAME}:latest")"
@@ -197,19 +180,6 @@ vars:
     default: "${GITEA_HOST}/${GITEA_USER}/${MCP_GATEWAY_APP_NAME}"
   MCP_GATEWAY_DEV_IMAGE_REPOSITORY:
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
-  CURRENT_OPENSHELL_DURABLE_AGENT_IMAGE_REPOSITORY:
-    command: |
-      image="$(kubectl get deployment ${OPENSHELL_DURABLE_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
-  OPENSHELL_DURABLE_AGENT_DEV_IMAGE_REPOSITORY:
-    # Uses the production image directly (has private openshell SDK pre-installed).
-    # Resolved via kubectl from the running Deployment.
-    command: |
-      image="$(kubectl get deployment ${OPENSHELL_DURABLE_AGENT_APP_NAME} -n ${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}:latest")"
-      printf '%s\n' "${image}" | sed 's#:[^/:]*$##'
-    default: "${GITEA_HOST}/${GITEA_USER}/${OPENSHELL_DURABLE_AGENT_APP_NAME}"
-
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
   ARGO_APPS:
     default: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
@@ -619,123 +589,6 @@ dev:
         value: "true"
       - name: INTERNAL_API_TOKEN
         value: ${INTERNAL_API_TOKEN}
-  dapr-agent-runtime:
-    namespace: ${APP_NAME}
-    labelSelector:
-      app: dapr-agent-runtime
-    container: ${DAPR_AGENT_APP_NAME}
-    devImage: ${DAPR_AGENT_DEV_IMAGE_REPOSITORY}:latest
-    workingDir: /workspace/dapr-agent-runtime
-    resources:
-      requests:
-        cpu: 500m
-        memory: 1Gi
-      limits:
-        cpu: "2"
-        memory: 4Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (Dapr Agent Runtime) ==="
-        mkdir -p /workspace/dapr-agent-runtime
-        cd /workspace/dapr-agent-runtime
-
-        apt-get update
-        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          fonts-liberation \
-          libasound2 \
-          libatk-bridge2.0-0 \
-          libatspi2.0-0 \
-          libcups2 \
-          libdrm2 \
-          libgbm1 \
-          libgtk-3-0 \
-          libnspr4 \
-          libnss3 \
-          libpangocairo-1.0-0 \
-          libx11-xcb1 \
-          libxcomposite1 \
-          libxdamage1 \
-          libxfixes3 \
-          libxkbcommon0 \
-          libxrandr2 \
-          xvfb
-        rm -rf /var/lib/apt/lists/*
-
-        python -m venv .venv
-        . .venv/bin/activate
-        pip install --upgrade pip
-        pip install -e .
-        export PLAYWRIGHT_BROWSERS_PATH=/workspace/dapr-agent-runtime/.cache/ms-playwright
-        mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
-        python -m playwright install --with-deps chromium
-
-        exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT} --reload
-    sync:
-      - path: ./services/dapr-agent-runtime/:/workspace/dapr-agent-runtime
-        initialSync: mirrorLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-dapr-agent-deps
-              command: sh
-              args:
-                - -lc
-                - "cd /workspace/dapr-agent-runtime && test -f .venv/bin/activate && . .venv/bin/activate && pip install -e . || echo 'Skipping: .venv not ready yet'"
-              failOnError: false
-              onChange:
-                - pyproject.toml
-        excludePaths:
-          - .venv/
-          - __pycache__/
-          - .pytest_cache/
-          - "*.pyc"
-          - .claude/
-    patches:
-      - op: remove
-        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.livenessProbe
-      - op: remove
-        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.readinessProbe
-      - op: replace
-        path: spec.containers.name=${DAPR_AGENT_APP_NAME}.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
-    ports:
-      - port: "${DAPR_AGENT_LOCAL_PORT}:${DAPR_AGENT_CONTAINER_PORT}"
-    env:
-      - name: PYTHONUNBUFFERED
-        value: "1"
-      - name: PYTHONDONTWRITEBYTECODE
-        value: "1"
-      - name: WORKFLOW_BUILDER_BASE_URL
-        value: "http://workflow-builder.workflow-builder.svc.cluster.local:3000"
-      - name: WORKFLOW_BUILDER_INTERNAL_API_TOKEN
-        value: ${INTERNAL_API_TOKEN}
-      - name: OTEL_SERVICE_NAME
-        value: "${DAPR_AGENT_APP_NAME}"
-      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-        value: "http://otel-collector.observability.svc.cluster.local:4318"
-      - name: OTEL_RESOURCE_ATTRIBUTES
-        value: "deployment.environment=${OTEL_ENVIRONMENT},service.namespace=${APP_NAME},service.version=dev"
-      - name: DAPR_HTTP_PORT
-        value: "3500"
-      - name: DAPR_GRPC_PORT
-        value: "50001"
-
   workflow-orchestrator:
     namespace: ${APP_NAME}
     labelSelector:
@@ -1177,72 +1030,6 @@ dev:
       - name: NODE_ENV
         value: development
 
-  openshell-durable-agent:
-    namespace: ${APP_NAME}
-    labelSelector:
-      app: openshell-durable-agent
-    container: ${OPENSHELL_DURABLE_AGENT_APP_NAME}
-    # No devImage — use the production image directly (has private openshell SDK).
-    # Image loaded to kind nodes via: kind load docker-image <image> --name ryzen
-    workingDir: /app
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "2"
-        memory: 2Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (OpenShell Durable Agent) ==="
-        echo "Deps pre-installed in image. Syncing source files only."
-        cd /app
-
-        exec python -m src.dapr_durable_agent
-    sync:
-      - path: ${OPENSHELL_DURABLE_AGENT_SOURCE_PATH}/:/app
-        initialSync: preferLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-openshell-durable-deps
-              command: sh
-              args:
-                - -lc
-                - "cd /app && pip install --no-deps -e . 2>/dev/null || true"
-              failOnError: false
-              onChange:
-                - pyproject.toml
-        excludePaths:
-          - .venv/
-          - __pycache__/
-          - .pytest_cache/
-          - "*.pyc"
-          - .claude/
-    patches:
-      - op: remove
-        path: spec.containers.name=${OPENSHELL_DURABLE_AGENT_APP_NAME}.livenessProbe
-      - op: remove
-        path: spec.containers.name=${OPENSHELL_DURABLE_AGENT_APP_NAME}.readinessProbe
-      - op: replace
-        path: spec.containers.name=${OPENSHELL_DURABLE_AGENT_APP_NAME}.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
     ports:
       - port: "${OPENSHELL_DURABLE_AGENT_LOCAL_PORT}:${OPENSHELL_DURABLE_AGENT_CONTAINER_PORT}"
     env:
@@ -1446,93 +1233,6 @@ pipelines:
       ensure_pull_secrets --all
       build_images --all
       create_deployments --all
-      if kubectl get deployment dapr-agent-runtime-devspace --namespace "$WL_NS" >/dev/null 2>&1; then
-        echo "==> Seeding OpenShell gateway config into dapr-agent-runtime-devspace"
-        kubectl patch deployment dapr-agent-runtime-devspace \
-          --namespace "$WL_NS" \
-          --type strategic \
-          --patch "$(cat <<'EOF'
-      spec:
-        template:
-          spec:
-            initContainers:
-              - name: seed-openshell-config
-                image: ghcr.io/astral-sh/uv:python3.12-trixie-slim
-                imagePullPolicy: IfNotPresent
-                command:
-                  - sh
-                  - -lc
-                args:
-                  - |
-                    set -eu
-                    CONFIG_ROOT="${XDG_CONFIG_HOME}/openshell"
-                    GATEWAY_DIR="${CONFIG_ROOT}/gateways/${OPENSHELL_GATEWAY_NAME}"
-                    MTLS_DIR="${GATEWAY_DIR}/mtls"
-                    install -d -m 700 "${MTLS_DIR}"
-                    cat >"${GATEWAY_DIR}/metadata.json" <<JSON
-                    {
-                      "name": "${OPENSHELL_GATEWAY_NAME}",
-                      "gateway_endpoint": "${OPENSHELL_GATEWAY_URL}",
-                      "is_remote": false,
-                      "gateway_port": ${OPENSHELL_GATEWAY_PORT},
-                      "auth_mode": "mtls"
-                    }
-                    JSON
-                    printf '%s\n' "${OPENSHELL_GATEWAY_NAME}" > "${CONFIG_ROOT}/active_gateway"
-                    cp /etc/openshell-tls/client/tls.crt "${MTLS_DIR}/tls.crt"
-                    cp /etc/openshell-tls/client/tls.key "${MTLS_DIR}/tls.key"
-                    if [ -f /etc/openshell-tls/client/ca.crt ]; then
-                      cp /etc/openshell-tls/client/ca.crt "${MTLS_DIR}/ca.crt"
-                    else
-                      cp /etc/openshell-tls/client-ca/tls.crt "${MTLS_DIR}/ca.crt"
-                    fi
-                    chmod 644 "${MTLS_DIR}/ca.crt" "${MTLS_DIR}/tls.crt"
-                    chmod 600 "${MTLS_DIR}/tls.key"
-                env:
-                  - name: HOME
-                    value: /workspace
-                  - name: XDG_CONFIG_HOME
-                    value: /workspace/.config
-                  - name: OPENSHELL_GATEWAY_NAME
-                    value: ryzen-internal
-                  - name: OPENSHELL_GATEWAY_URL
-                    value: https://openshell.openshell.svc.cluster.local:8080
-                  - name: OPENSHELL_GATEWAY_PORT
-                    value: "8080"
-                volumeMounts:
-                  - name: workspace
-                    mountPath: /workspace
-                  - name: openshell-client-tls
-                    mountPath: /etc/openshell-tls/client
-                    readOnly: true
-                  - name: openshell-client-ca
-                    mountPath: /etc/openshell-tls/client-ca
-                    readOnly: true
-            containers:
-              - name: dapr-agent-runtime
-                env:
-                  - name: HOME
-                    value: /workspace
-                  - name: XDG_CONFIG_HOME
-                    value: /workspace/.config
-                  - name: OPENSHELL_GATEWAY_NAME
-                    value: ryzen-internal
-                  - name: OPENSHELL_GATEWAY_URL
-                    value: https://openshell.openshell.svc.cluster.local:8080
-                  - name: OPENSHELL_GATEWAY_PORT
-                    value: "8080"
-            volumes:
-              - name: openshell-client-tls
-                secret:
-                  defaultMode: 256
-                  secretName: openshell-client-tls
-              - name: openshell-client-ca
-                secret:
-                  defaultMode: 292
-                  secretName: openshell-server-client-ca
-      EOF
-        )" >/dev/null
-      fi
       start_dev --all
 
 # ============================================================================
@@ -1587,15 +1287,11 @@ profiles:
         path: vars.PRODUCTION_DEPLOYMENTS.default
         value: "workflow-builder ai-chatbot workflow-orchestrator function-router"
       - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
         path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
       - op: remove
@@ -1604,14 +1300,14 @@ profiles:
   - name: openshell-inner-loop
     description: >
       Default short inner loop for the observable OpenShell authoring path.
-      Starts: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, openshell-langgraph-observable.
+      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1620,8 +1316,6 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
 
@@ -1629,14 +1323,14 @@ profiles:
     description: >
       Explicit observable OpenShell loop. Use this for current LangGraph tracing
       and feature-delivery work.
-      Starts: workflow-builder, workflow-orchestrator, function-router, dapr-agent-runtime, openshell-langgraph-observable.
+      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router dapr-agent-runtime openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1645,8 +1339,6 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
 
@@ -1663,9 +1355,6 @@ profiles:
         value: "workflow-builder"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
         path: dev.workflow-orchestrator
       - op: remove
         path: dev.function-router
@@ -1675,8 +1364,6 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
       - op: remove
@@ -1696,9 +1383,6 @@ profiles:
         value: "workflow-builder durable-agent"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
         path: dev.workflow-orchestrator
       - op: remove
         path: dev.function-router
@@ -1706,30 +1390,6 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
-      - op: remove
-        path: dev.openshell-deepagents-test
-      - op: remove
-        path: dev.openshell-langgraph-observable
-
-  - name: compatibility-runtimes
-    description: >
-      Core OpenShell durable path plus the legacy compatibility backends.
-      Starts: all deployed services except ai-chatbot, durable-agent, and openshell-durable-agent.
-    patches:
-      - op: replace
-        path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-runtime"
-      - op: replace
-        path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-runtime"
-      - op: remove
-        path: dev.ai-chatbot
-      - op: remove
-        path: dev.durable-agent
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
       - op: remove
@@ -1746,14 +1406,9 @@ profiles:
         value: "workflow-builder workflow-orchestrator function-router fn-activepieces"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
         path: dev.durable-agent
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-deepagents-test
       - op: remove
@@ -1762,44 +1417,17 @@ profiles:
   - name: full-agent-stack
     description: >
       Every workflow-related service defined in this repo that has a Deployment in the cluster.
-      Includes openshell-durable-agent, openshell-deepagents-test, and openshell-langgraph-observable.
+      Includes openshell-deepagents-test and openshell-langgraph-observable.
       Excludes durable-agent (no stable deployment in the current loop).
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway dapr-agent-runtime openshell-durable-agent openshell-deepagents-test openshell-langgraph-observable"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway openshell-deepagents-test openshell-langgraph-observable"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway dapr-agent-runtime openshell-durable-agent openshell-deepagents-test openshell-langgraph-observable"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway openshell-deepagents-test openshell-langgraph-observable"
       - op: remove
         path: dev.durable-agent
-
-  - name: openshell-durable-dev
-    description: >
-      Iterate on the openshell-durable-agent service with the Next.js UI and orchestrator.
-      Syncs from the openshell-deepagent repo (../../openshell-deepagent/main).
-      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-durable-agent.
-    patches:
-      - op: replace
-        path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-durable-agent"
-      - op: replace
-        path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-durable-agent"
-      - op: remove
-        path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
-        path: dev.durable-agent
-      - op: remove
-        path: dev.fn-activepieces
-      - op: remove
-        path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-deepagents-test
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: openshell-deepagents-test-dev
     description: >
@@ -1814,15 +1442,10 @@ profiles:
         value: "workflow-builder workflow-orchestrator function-router openshell-deepagents-test"
       - op: remove
         path: dev.ai-chatbot
-      - op: remove
-        path: dev.dapr-agent-runtime
-      - op: remove
         path: dev.durable-agent
       - op: remove
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-durable-agent
       - op: remove
         path: dev.openshell-langgraph-observable

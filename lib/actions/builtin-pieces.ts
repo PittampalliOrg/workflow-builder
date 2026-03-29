@@ -1062,18 +1062,18 @@ const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
-const DAPR_AGENT_PIECE: IntegrationDefinition = {
-	type: "dapr-agent",
-	label: "Dapr Agent",
-	pieceName: "dapr-agent",
+const OPENSHELL_LANGGRAPH_BASE_PIECE: IntegrationDefinition = {
+	type: "openshell-langgraph-base",
+	label: "OpenShell LangGraph Base",
+	pieceName: "openshell-langgraph-base",
 	logoUrl: "",
 	actions: [
 		{
 			slug: "run",
-			label: "Run Dapr Agent",
+			label: "Run OpenShell LangGraph Base",
 			description:
-				"Run a Dapr-backed coding workflow through LangGraph or the legacy Dapr Agents runtime",
-			category: "Dapr Agent",
+				"Base OpenShell LangGraph coding workflow configuration shared by the visible OpenShell action",
+			category: "OpenShell Agent",
 			configFields: [
 				{
 					key: "mode",
@@ -1092,11 +1092,7 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					type: "select",
 					required: false,
 					defaultValue: "langgraph",
-					options: [
-						{ label: "LangGraph Deep Agent", value: "langgraph" },
-						{ label: "Dapr Agents Runtime", value: "dapr-agent" },
-						{ label: "Auto Detect", value: "auto" },
-					],
+					options: [{ label: "LangGraph Deep Agent", value: "langgraph" }],
 				},
 				{
 					key: "agentProfileTemplateId",
@@ -1106,8 +1102,8 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					placeholder: "Select a reusable agent profile template",
 					dynamicOptions: {
 						provider: "builtin",
-						pieceName: "dapr-agent",
-						actionName: "dapr-agent/run",
+						pieceName: "openshell-langgraph",
+						actionName: "openshell-langgraph-observable/run",
 						propName: "agentProfileTemplateId",
 						refreshers: [],
 					},
@@ -1140,7 +1136,7 @@ const DAPR_AGENT_PIECE: IntegrationDefinition = {
 					label: "Existing Plan Artifact (optional)",
 					type: "template-input",
 					required: false,
-					placeholder: "{{@nodeId:Legacy Dapr Plan.artifactRef}}",
+					placeholder: "{{@nodeId:LangGraph Plan.artifactRef}}",
 				},
 				{
 					key: "planningThreadId",
@@ -1410,7 +1406,7 @@ function cloneOpenShellLangGraphConfigField(
 			dynamicOptions: {
 				provider: field.dynamicOptions?.provider ?? "builtin",
 				pieceName: field.dynamicOptions?.pieceName ?? "openshell-langgraph",
-				actionName: "openshell-langgraph/run",
+				actionName: "openshell-langgraph-observable/run",
 				propName: field.dynamicOptions?.propName ?? "agentProfileTemplateId",
 				refreshers: field.dynamicOptions?.refreshers ?? [],
 			},
@@ -1427,7 +1423,8 @@ function cloneOpenShellLangGraphConfigField(
 }
 
 function buildOpenShellLangGraphOutputFields(): OutputField[] {
-	const baseOutputFields = DAPR_AGENT_PIECE.actions[0].outputFields ?? [];
+	const baseOutputFields =
+		OPENSHELL_LANGGRAPH_BASE_PIECE.actions[0].outputFields ?? [];
 	return [
 		...baseOutputFields,
 		{
@@ -1448,12 +1445,12 @@ const OPENSHELL_LANGGRAPH_AGENT_PIECE: IntegrationDefinition = {
 	logoUrl: "",
 	actions: [
 		{
-			...DAPR_AGENT_PIECE.actions[0],
+			...OPENSHELL_LANGGRAPH_BASE_PIECE.actions[0],
 			label: "Run OpenShell LangGraph Agent",
 			description:
 				"Run a LangGraph-backed coding workflow inside OpenShell sandboxes with workflow-managed approval",
 			category: "OpenShell Agent",
-			configFields: DAPR_AGENT_PIECE.actions[0].configFields
+			configFields: OPENSHELL_LANGGRAPH_BASE_PIECE.actions[0].configFields
 				.map(cloneOpenShellLangGraphConfigField)
 				.concat([
 					{
@@ -1476,18 +1473,18 @@ const OPENSHELL_LANGGRAPH_AGENT_PIECE: IntegrationDefinition = {
 	],
 };
 
-const MS_AGENT_PIECE: IntegrationDefinition = {
-	type: "ms-agent",
-	label: "Microsoft Agent Framework",
-	pieceName: "ms-agent",
+const LEGACY_DISABLED_AGENT_PIECE: IntegrationDefinition = {
+	type: "legacy-disabled",
+	label: "Legacy Disabled Agent",
+	pieceName: "legacy-disabled",
 	logoUrl: "",
 	actions: [
 		{
 			slug: "run",
-			label: "Run Microsoft Coding Workflow",
+			label: "Run Disabled Legacy Workflow",
 			description:
-				"Run a structured coding workflow with Microsoft Agent Framework specialists inside a durable Dapr child workflow",
-			category: "Microsoft Agent Framework",
+				"Retained only as an internal placeholder while legacy workflow rows are migrated away from retired runtimes.",
+			category: "Legacy",
 			configFields: [
 				{
 					key: "workflowTemplateId",
@@ -2066,8 +2063,7 @@ const BROWSER_PIECE: IntegrationDefinition = {
 		{
 			slug: "profile",
 			label: "Browser Workspace Profile",
-			description:
-				"Create a browser-capable execution workspace backed by the aio-browser sandbox",
+			description: "Create an OpenShell-backed browser validation workspace",
 			category: "Browser",
 			configFields: [
 				{
@@ -2113,8 +2109,8 @@ const BROWSER_PIECE: IntegrationDefinition = {
 					label: "Sandbox Template",
 					type: "select",
 					required: false,
-					defaultValue: "aio-browser",
-					options: [{ label: "AIO Browser", value: "aio-browser" }],
+					defaultValue: "openshell-browser",
+					options: [{ label: "OpenShell Browser", value: "openshell-browser" }],
 				},
 			],
 			outputFields: [
@@ -2430,11 +2426,9 @@ export function getBuiltinPieces(): IntegrationDefinition[] {
 		WORKSPACE_PIECE,
 		OPENSHELL_AGENT_PIECE,
 		OPENSHELL_LANGGRAPH_AGENT_PIECE,
-		MS_AGENT_PIECE,
-		DAPR_AGENT_PIECE,
 	];
 }
 
 export function getLegacyBuiltinPieces(): IntegrationDefinition[] {
-	return [DURABLE_AGENT_PIECE];
+	return [DURABLE_AGENT_PIECE, LEGACY_DISABLED_AGENT_PIECE].filter(() => false);
 }

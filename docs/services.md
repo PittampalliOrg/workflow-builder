@@ -9,10 +9,10 @@ The primary runtime to reason about today is:
 - `workflow-builder`
 - `workflow-orchestrator`
 - `function-router`
-- `dapr-agent-runtime`
+- `openshell-agent-runtime`
+- `openshell-langgraph-observable`
 - `durable-agent`
 - `fn-activepieces`
-- `ms-agent-workflow`
 - `postgresql`
 
 Retained but not on the core path:
@@ -65,30 +65,32 @@ Repo-aware action router.
 - Key endpoint:
   - `POST /execute`
 - Responsibilities:
-  - route `system/*` and `workspace/*`
+  - route `system/*`, `workspace/*`, and `browser/*`
   - route agent actions to the correct backend
   - default unknown action slugs to `fn-activepieces`
 - Important current routes:
-  - `openshell-langgraph/*` -> `dapr-agent-runtime`
-  - `dapr-agent/*` -> `dapr-agent-runtime`
-  - `ms-agent/*` -> `ms-agent-workflow`
+  - `workspace/*` -> `openshell-agent-runtime`
+  - `browser/*` -> `openshell-agent-runtime`
+  - `openshell/run` -> `openshell-agent-runtime`
+  - `openshell/session-start` -> `openshell-agent-runtime`
+  - `openshell-langgraph-observable/run` -> `openshell-langgraph-observable`
   - `_default` -> `fn-activepieces`
 
-## dapr-agent-runtime (Python)
+## openshell-agent-runtime (Python)
 
-Current coding backend for the validated LangGraph/OpenShell path.
+Canonical OpenShell workspace, browser, and standard agent runtime.
 
 - Port: `8080`
-- Dapr app-id: `dapr-agent-runtime`
+- Dapr app-id: `openshell-agent-runtime`
 - Responsibilities:
-  - planning and execution child runs
-  - LangGraph / DeepAgents-compatible tool execution
-  - durable progress events for tool calls and sandbox output
-  - final execution artifact publication
+  - workspace profile/clone/cleanup
+  - standard `openshell/run` execution
+  - retained `openshell/session-start` execution
+  - browser materialization, dev-server startup, and capture
 - Important behavior:
-  - used for `openshell-langgraph/run`
-  - returns child-run identity quickly instead of blocking parent orchestration on a long HTTP request
-  - emits rich tool details used by the review UI
+  - owns the canonical OpenShell sandbox/session registry for active workspace-backed flows
+  - browser validation runs against materialized change artifacts, not stale clones
+  - emits sandbox metadata and browser artifacts used by the review UI
 
 ## durable-agent (TypeScript / Express)
 
@@ -105,15 +107,16 @@ Shared durable workspace and review-artifact service.
   - not the primary LangGraph execution backend on `ryzen`
   - is the shared durable service for repo/session/review persistence
 
-## ms-agent-workflow (Python)
+## openshell-langgraph-observable (Python)
 
-Compatibility backend for Microsoft-agent style workflows.
+Specialized OpenShell LangGraph coding backend.
 
-- Port: `8081`
-- Dapr app-id: `ms-agent-workflow`
+- Port: `8003`
+- Dapr app-id: `openshell-langgraph-observable`
 - Responsibilities:
-  - template-driven agent execution
-  - compatibility child workflows under the same parent orchestrator contract
+  - planning/execute child workflows for complex coding runs
+  - repo-aware coding execution in OpenShell sandboxes
+  - durable progress events and review artifact publication
 
 ## fn-activepieces (TypeScript)
 

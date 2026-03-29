@@ -168,9 +168,11 @@ Actions are routed by `actionType` slug prefix:
 | `mastra/execute` | durable-agent (direct) | Async | Execute a plan (fire-and-forget) |
 | `agent/*` | durable-agent (direct) | Async | Agent run with prompt |
 | `durable/*` | durable-agent (direct) | Async | Durable agent run with prompt |
-| `workspace/*` | dapr-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
-| `browser/*` | dapr-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
-| `openshell-langgraph/*` | dapr-agent-runtime (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
+| `workspace/*` | openshell-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
+| `browser/*` | openshell-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
+| `openshell/run` | openshell-agent-runtime (via function-router) | Async | Standard OpenShell coding run |
+| `openshell/session-start` | openshell-agent-runtime (via function-router) | Async | Start a retained Claude session in an OpenShell sandbox |
+| `openshell-langgraph-observable/run` | openshell-langgraph-observable (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
 | `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
 
 ## Node Types
@@ -235,7 +237,7 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 **Architecture**: coding sandbox (OpenShell) → install deps → start dev server → Playwright screenshot → persist to DB
 
 - **Custom sandbox image**: `services/openshell-sandbox/Dockerfile` — Ubuntu 24.04 base + Chromium via Playwright at `/opt/pw-browsers`
-- **Composite endpoint**: `POST /api/browser/validate` in dapr-agent-runtime — orchestrates install, dev server, readiness poll, and capture
+- **Composite endpoint**: `POST /api/browser/validate` in openshell-agent-runtime — orchestrates install, dev server, readiness poll, and capture
 - **Screenshot transfer**: PNGs converted to base64 files in sandbox, read in 4KB chunks via `dd` (OpenShell stdout truncates large outputs)
 - **Artifact storage**: `workflow_browser_artifacts` + `workflow_browser_artifact_blob_payloads` tables
 - **UI display**: Artifacts tab in run detail page, auto-expands first completed browser artifact

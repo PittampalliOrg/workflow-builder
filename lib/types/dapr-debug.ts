@@ -184,7 +184,7 @@ export type DaprDebugOverviewResponse = {
 	sources: {
 		dashboard: DaprDebugSourceStatus;
 		workflowOrchestrator: DaprDebugSourceStatus;
-		daprAgentRuntime: DaprDebugSourceStatus;
+		daprAgentRuntime?: DaprDebugSourceStatus;
 		msAgentWorkflow?: DaprDebugSourceStatus;
 		applicationAgents: DaprDebugSourceStatus;
 	};
@@ -199,7 +199,7 @@ export type DaprDebugOverviewResponse = {
 	configurations: DaprDashboardConfiguration[];
 	workflowRuntime: {
 		orchestrator: DaprRuntimeIntrospection | null;
-		daprAgentRuntime: DaprRuntimeIntrospection | null;
+		daprAgentRuntime?: DaprRuntimeIntrospection | null;
 		msAgentWorkflow?: DaprRuntimeIntrospection | null;
 		recentRuns: DaprDebugRecentRun[];
 	};

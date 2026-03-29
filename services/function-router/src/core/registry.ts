@@ -16,15 +16,17 @@ const REGISTRY_FILE_PATH =
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
-	"dapr-agent/*": { appId: "dapr-agent-runtime", type: "knative" },
-	"openshell-langgraph/*": {
-		appId: "dapr-agent-runtime",
+	"openshell-langgraph-observable/*": {
+		appId: "openshell-langgraph-observable",
 		type: "knative",
 	},
-	"browser/*": { appId: "dapr-agent-runtime", type: "knative" },
+	"openshell-langgraph/*": {
+		appId: "openshell-langgraph-observable",
+		type: "knative",
+	},
+	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-	"workspace/*": { appId: "dapr-agent-runtime", type: "knative" },
-	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
+	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -34,15 +36,17 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  * only defines a broad "_default" mapping.
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
-	"dapr-agent/*": { appId: "dapr-agent-runtime", type: "knative" },
-	"openshell-langgraph/*": {
-		appId: "dapr-agent-runtime",
+	"openshell-langgraph-observable/*": {
+		appId: "openshell-langgraph-observable",
 		type: "knative",
 	},
-	"browser/*": { appId: "dapr-agent-runtime", type: "knative" },
+	"openshell-langgraph/*": {
+		appId: "openshell-langgraph-observable",
+		type: "knative",
+	},
+	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-	"workspace/*": { appId: "dapr-agent-runtime", type: "knative" },
-	"ms-agent/*": { appId: "ms-agent-workflow", type: "knative" },
+	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

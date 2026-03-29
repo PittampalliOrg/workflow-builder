@@ -11,12 +11,6 @@ import type {
 const DURABLE_AGENT_API_BASE_URL =
 	process.env.DURABLE_AGENT_API_BASE_URL ||
 	"http://durable-agent.workflow-builder.svc.cluster.local:8001";
-const DAPR_AGENT_RUNTIME_API_BASE_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
-const MS_AGENT_WORKFLOW_API_BASE_URL =
-	process.env.MS_AGENT_WORKFLOW_API_BASE_URL ||
-	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
 
 type ServiceDef = {
 	appId: string;
@@ -31,16 +25,6 @@ const SERVICES: ServiceDef[] = [
 		baseUrl: DURABLE_AGENT_API_BASE_URL,
 		introspectPath: "/api/runtime/introspect",
 		toolsPath: "/api/tools",
-	},
-	{
-		appId: "dapr-agent-runtime",
-		baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL,
-		introspectPath: "/api/runtime/introspect",
-	},
-	{
-		appId: "ms-agent-workflow",
-		baseUrl: MS_AGENT_WORKFLOW_API_BASE_URL,
-		introspectPath: "/api/runtime/introspect",
 	},
 ];
 

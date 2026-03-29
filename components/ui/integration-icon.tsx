@@ -40,8 +40,6 @@ const SPECIAL_ICONS: Record<
 > = {
   database: Database,
   durable: Bot,
-  "dapr-agent": Bot,
-  "ms-agent": Bot,
   openshell: SquareTerminal,
   workspace: FolderOpen,
   mcp: Blocks,

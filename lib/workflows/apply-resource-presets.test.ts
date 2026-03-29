@@ -14,7 +14,7 @@ describe("applyResourcePresetsToNodes", () => {
 		getResolvedAgentProfileTemplate.mockReset();
 	});
 
-	it("applies agent profile templates to dapr-agent nodes", async () => {
+	it("applies agent profile templates to OpenShell LangGraph nodes", async () => {
 		getResolvedAgentProfileTemplate.mockResolvedValue({
 			template: {
 				id: "profile_123",
@@ -48,7 +48,7 @@ describe("applyResourcePresetsToNodes", () => {
 					id: "node-1",
 					data: {
 						config: {
-							actionType: "dapr-agent/run",
+							actionType: "openshell-langgraph-observable/run",
 							mode: "plan_mode",
 							agentProfileTemplateId: "profile_123",
 							instructionsOverlay: "Keep the summary concise.",
@@ -104,7 +104,7 @@ describe("applyResourcePresetsToNodes", () => {
 		]);
 	});
 
-	it("preserves an explicit LangGraph model on the resolved agent config", async () => {
+	it("preserves an explicit LangGraph model on the resolved OpenShell config", async () => {
 		getResolvedAgentProfileTemplate.mockResolvedValue({
 			template: {
 				id: "profile_123",
@@ -133,7 +133,7 @@ describe("applyResourcePresetsToNodes", () => {
 					id: "node-1",
 					data: {
 						config: {
-							actionType: "dapr-agent/run",
+							actionType: "openshell-langgraph-observable/run",
 							mode: "plan_mode",
 							agentProfileTemplateId: "profile_123",
 							model: "gpt-5.4",
@@ -164,13 +164,13 @@ describe("applyResourcePresetsToNodes", () => {
 		});
 	});
 
-	it("leaves dapr-agent nodes without a template untouched", async () => {
+	it("leaves OpenShell LangGraph nodes without a template untouched", async () => {
 		const originalNodes = [
 			{
 				id: "node-2",
 				data: {
 					config: {
-						actionType: "dapr-agent/run",
+						actionType: "openshell-langgraph-observable/run",
 						mode: "plan_mode",
 						prompt: "Plan a fix",
 					},

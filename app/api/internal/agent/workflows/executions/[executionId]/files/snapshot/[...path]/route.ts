@@ -4,7 +4,6 @@ import { isValidInternalToken } from "@/lib/internal-api";
 
 const DURABLE_AGENT_APP_ID =
 	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
-const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 type ExecutionFileSnapshotResponse = {
 	success?: boolean;
@@ -95,20 +94,7 @@ export async function GET(
 			);
 		}
 
-		let responseData = response.data;
-		if (response.ok && responseData && responseData.snapshot == null) {
-			const fallback = await loadSnapshotFromApp(
-				DAPR_AGENT_APP_ID,
-				executionId,
-				filePath,
-				durableInstanceId || undefined,
-			);
-			if (fallback.ok && fallback.data) {
-				responseData = fallback.data;
-			}
-		}
-
-		if (!response.ok || !responseData) {
+		if (!response.ok || !response.data) {
 			return NextResponse.json(
 				{
 					error: errorMessage(
@@ -126,7 +112,7 @@ export async function GET(
 				executionId,
 				path: filePath,
 				durableInstanceId,
-				snapshot: responseData.snapshot,
+				snapshot: response.data.snapshot,
 			},
 			{
 				headers: {

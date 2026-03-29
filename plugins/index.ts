@@ -16,13 +16,11 @@
 
 import "./blob";
 import "./clerk";
-import "./dapr-agent";
 import "./fal";
 import "./firecrawl";
 import "./github";
 import "./linear";
 import "./mcp";
-import "./ms-agent";
 import "./perplexity";
 import "./resend";
 import "./slack";

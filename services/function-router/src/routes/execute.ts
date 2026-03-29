@@ -885,6 +885,15 @@ function buildLoopPolicyInput(
 }
 
 export async function executeRoutes(app: FastifyInstance): Promise<void> {
+	const retiredAgentPrefixes = new Set([
+		"durable",
+		"dapr-agent",
+		"mastra",
+		"ms-agent",
+		"openshell-deepagent",
+		"openshell-durable",
+		"vanilla-durable",
+	]);
 	/**
 	 * POST /execute - Route function execution to appropriate service
 	 */
@@ -908,6 +917,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 			return reply.status(400).send({
 				success: false,
 				error: "Either function_id or function_slug is required",
+				duration_ms: 0,
+			} as ExecuteResponse);
+		}
+
+		const pluginId = functionSlug.split("/")[0];
+		if (retiredAgentPrefixes.has(pluginId)) {
+			return reply.status(410).send({
+				success: false,
+				error: `The ${pluginId} runtime has been retired. Use openshell/* or openshell-langgraph-observable/* actions instead.`,
 				duration_ms: 0,
 			} as ExecuteResponse);
 		}
@@ -975,7 +993,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				// Route to Knative service via direct HTTP
 				// Extract the step name from the slug (e.g., "openai/generate-text" -> "generate-text")
 				const stepName = functionSlug.split("/")[1] || functionSlug;
-				const pluginId = functionSlug.split("/")[0];
 
 				// Resolve the function URL (Knative Service DNS in Knative-only mode)
 				const routingStartTime = Date.now();
@@ -983,8 +1000,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 				timing.routingMs = Date.now() - routingStartTime;
 
 				const isBuiltinRuntime =
-					target.appId === "dapr-agent-runtime" ||
-					target.appId === "durable-agent";
+					target.appId === "durable-agent" ||
+					target.appId === "openshell-agent-runtime";
 
 				if (isBuiltinRuntime) {
 					console.log(
@@ -1038,13 +1055,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 						}
 
-						// Route to the appropriate dapr-agent-runtime endpoint
 						const isAgentRun = toolId === "run";
-						const isDaprAgentRun =
-							target.appId === "dapr-agent-runtime" &&
-							(pluginId === "dapr-agent" ||
-								pluginId === "openshell-langgraph") &&
-							toolId === "run";
 						const isPlan = toolId === "plan";
 						const isClaudePlan = toolId === "claude-plan";
 						const isMaterializePlan = toolId === "materialize-plan";
@@ -1150,71 +1161,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						const hasWorkspaceRef =
 							typeof args.workspaceRef === "string" &&
 							args.workspaceRef.trim().length > 0;
-						const usesUnifiedAgentRunEndpoint =
-							target.appId === "dapr-agent-runtime";
-						const shouldWaitForUnifiedAgentCompletion =
-							isAgentRun &&
-							runMode === "execute_direct" &&
-							!usesUnifiedAgentRunEndpoint;
+						const shouldWaitForAgentCompletion =
+							isAgentRun && runMode === "execute_direct";
 
-						if (isDaprAgentRun) {
-							targetUrl = `${functionUrl}/api/run`;
-							requestBody = JSON.stringify({
-								prompt: args.prompt ?? args.goal ?? "",
-								actionType: body.action_name ?? `${pluginId}/run`,
-								mode: args.mode,
-								engine: args.engine,
-								profile: args.profile ?? args.mode ?? "implement",
-								model,
-								maxTurns: args.maxTurns,
-								timeoutMinutes: args.timeoutMinutes,
-								cwd: args.cwd ?? "",
-								workspaceRef:
-									typeof args.workspaceRef === "string"
-										? args.workspaceRef
-										: undefined,
-								toolBackend:
-									pluginId === "openshell-langgraph"
-										? "openshell"
-										: args.toolBackend,
-								sandboxName:
-									pluginId === "openshell-langgraph"
-										? openshellLanggraphSandboxName
-										: args.sandboxName,
-								provider: args.provider,
-								sandboxRepoPath: args.sandboxRepoPath,
-								repositoryUrl: args.repositoryUrl,
-								repositoryOwner: args.repositoryOwner,
-								repositoryRepo: args.repositoryRepo,
-								repositoryBranch: args.repositoryBranch,
-								repositoryToken: args.repositoryToken,
-								stopCondition: args.stopCondition,
-								instructionsOverlay: args.instructionsOverlay,
-								expectedOutput: args.expectedOutput,
-								verifyCommands: args.verifyCommands,
-								approvalMode: args.approvalMode,
-								approvalTimeoutMinutes: args.approvalTimeoutMinutes,
-								executeAfterApproval:
-									args.executeAfterApproval === undefined
-										? true
-										: args.executeAfterApproval === true ||
-											args.executeAfterApproval === "true",
-								toolPolicy: args.toolPolicy,
-								tools: args.tools,
-								requiredCapabilities,
-								preferredExecutionProfile,
-								preferredSandboxProfile,
-								writePolicy: args.writePolicy,
-								shellPolicy: args.shellPolicy,
-								artifactRef: args.artifactRef,
-								planJson: args.planJson,
-								waitForCompletion: false,
-							});
-						} else if (isAgentRun) {
+						if (isAgentRun) {
 							if (runMode === "plan_mode") {
-								targetUrl = usesUnifiedAgentRunEndpoint
-									? `${functionUrl}/api/run`
-									: `${functionUrl}/api/plan`;
+								targetUrl = `${functionUrl}/api/plan`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									mode: "plan_mode",
@@ -1241,13 +1193,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									workflowId: body.workflow_id,
 									nodeId: body.node_id,
 									nodeName: body.node_name,
-									waitForCompletion: usesUnifiedAgentRunEndpoint ? false : true,
+									waitForCompletion: true,
 								});
 							} else {
-								targetUrl =
-									hasWorkspaceRef && !usesUnifiedAgentRunEndpoint
-										? `${functionUrl}/api/run-sandboxed`
-										: `${functionUrl}/api/run`;
+								targetUrl = hasWorkspaceRef
+									? `${functionUrl}/api/run-sandboxed`
+									: `${functionUrl}/api/run`;
 								requestBody = JSON.stringify({
 									prompt: args.prompt ?? "",
 									mode: runMode || "execute_direct",
@@ -1266,7 +1217,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 									loopPolicy,
 									stopCondition: args.stopCondition,
 									requireFileChanges: args.requireFileChanges,
-									waitForCompletion: shouldWaitForUnifiedAgentCompletion,
+									waitForCompletion: shouldWaitForAgentCompletion,
 									cleanupWorkspace: args.cleanupWorkspace,
 									workspaceRef:
 										typeof args.workspaceRef === "string"
@@ -2051,8 +2002,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						}),
 					};
 					const isObservableAgentRuntime =
-						target.appId === "openshell-langgraph-observable" ||
-						target.appId === "openshell-deepagents-test";
+						target.appId === "openshell-langgraph-observable";
 					const observableArgs = isPlainObject(normalizedInput)
 						? (normalizedInput as Record<string, unknown>)
 						: {};
@@ -2097,8 +2047,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						`[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
 					);
 					const requestPath =
-						target.appId === "openshell-langgraph-observable" ||
-						target.appId === "openshell-deepagents-test"
+						target.appId === "openshell-langgraph-observable"
 							? "/api/run"
 							: "/execute";
 					const requestTimeoutMs = isObservableAgentRuntime

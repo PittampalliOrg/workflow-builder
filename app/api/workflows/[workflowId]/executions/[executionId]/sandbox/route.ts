@@ -1,12 +1,8 @@
-import { and, desc, eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
-import {
-	workflowAgentRuns,
-	workflowExecutions,
-	workflowWorkspaceSessions,
-} from "@/lib/db/schema";
+import { workflowAgentRuns, workflowExecutions } from "@/lib/db/schema";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === "object"
@@ -78,9 +74,7 @@ function findOpenShellSandbox(
 		actionType === "openshell/run" ||
 		actionType === "openshell/session-start" ||
 		actionType === "openshell-langgraph/run" ||
-		actionType === "openshell-langgraph-observable/run" ||
-		actionType === "openshell-deepagent/run" ||
-		actionType === "openshell-durable/run";
+		actionType === "openshell-langgraph-observable/run";
 
 	for (const run of agentRuns) {
 		const nodeConfig = nodeConfigMap.get(run.nodeId);
@@ -185,58 +179,28 @@ export async function GET(
 			return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 		}
 
-		const workspaceSession = await db.query.workflowWorkspaceSessions.findFirst(
-			{
-				where: and(
-					eq(workflowWorkspaceSessions.workflowExecutionId, executionId),
-					eq(workflowWorkspaceSessions.status, "active"),
-				),
-				orderBy: [desc(workflowWorkspaceSessions.updatedAt)],
-			},
+		const agentRuns = await db
+			.select({
+				nodeId: workflowAgentRuns.nodeId,
+				daprInstanceId: workflowAgentRuns.daprInstanceId,
+				status: workflowAgentRuns.status,
+				result: workflowAgentRuns.result,
+			})
+			.from(workflowAgentRuns)
+			.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
+			.orderBy(desc(workflowAgentRuns.createdAt));
+		const openShellSandbox = findOpenShellSandbox(
+			execution.workflow.nodes,
+			execution.output,
+			agentRuns,
 		);
-
-		if (!workspaceSession) {
-			const agentRuns = await db
-				.select({
-					nodeId: workflowAgentRuns.nodeId,
-					daprInstanceId: workflowAgentRuns.daprInstanceId,
-					status: workflowAgentRuns.status,
-					result: workflowAgentRuns.result,
-				})
-				.from(workflowAgentRuns)
-				.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
-				.orderBy(desc(workflowAgentRuns.createdAt));
-			const openShellSandbox = findOpenShellSandbox(
-				execution.workflow.nodes,
-				execution.output,
-				agentRuns,
-			);
-			if (openShellSandbox) {
-				return NextResponse.json(openShellSandbox);
-			}
-			return NextResponse.json(
-				{ error: "No active sandbox found" },
-				{ status: 404 },
-			);
+		if (openShellSandbox) {
+			return NextResponse.json(openShellSandbox);
 		}
-
-		const sandboxState = workspaceSession.sandboxState as Record<
-			string,
-			any
-		> | null;
-		const podIp = sandboxState?.podIp;
-
-		if (!podIp) {
-			return NextResponse.json(
-				{ error: "Sandbox IP not assigned yet" },
-				{ status: 404 },
-			);
-		}
-
-		return NextResponse.json({
-			podIp,
-			templateName: sandboxState?.templateName || "dapr-agent",
-		});
+		return NextResponse.json(
+			{ error: "No active OpenShell sandbox found" },
+			{ status: 404 },
+		);
 	} catch (error) {
 		console.error("Failed to get sandbox status:", error);
 		return NextResponse.json(

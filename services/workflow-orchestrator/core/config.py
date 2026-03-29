@@ -53,17 +53,13 @@ class OrchestratorConfig:
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     PRIMARY_AGENT_RUNTIME: str = "openshell"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
-    DAPR_AGENT_APP_ID: str = "dapr-agent-runtime"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
-    DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
-    OPENSHELL_DURABLE_AGENT_APP_ID: str = "openshell-durable-agent"
-    OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME: str = "dapr.agents.OpenShellDeepAgent.workflow"
-    MS_AGENT_APP_ID: str = "ms-agent-workflow"
+    OPENSHELL_LANGGRAPH_APP_ID: str = "openshell-langgraph-observable"
+    OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
-    MS_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "msAgentWorkflowV1"
 
     # Workflow versioning and runtime controls (Dapr 1.17+)
     DYNAMIC_WORKFLOW_VERSION: str = "v1"
@@ -104,15 +100,13 @@ class OrchestratorConfig:
                 "FUNCTION_ROUTER_APP_ID",
                 "PRIMARY_AGENT_RUNTIME",
                 "DURABLE_AGENT_APP_ID",
-                "DAPR_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
-                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "OPENSHELL_LANGGRAPH_APP_ID",
+                "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
-                "MS_AGENT_APP_ID",
-                "MS_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -166,24 +160,18 @@ class OrchestratorConfig:
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "PRIMARY_AGENT_RUNTIME": ("PRIMARY_AGENT_RUNTIME", "openshell"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
-            "DAPR_AGENT_APP_ID": ("DAPR_AGENT_APP_ID", "dapr-agent-runtime"),
             "OPENSHELL_AGENT_APP_ID": (
                 "OPENSHELL_AGENT_APP_ID",
                 "openshell-agent-runtime.openshell",
             ),
-            "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME": (
-                "DAPR_AGENT_CHILD_WORKFLOW_RUN_NAME",
+            "OPENSHELL_LANGGRAPH_APP_ID": (
+                "OPENSHELL_LANGGRAPH_APP_ID",
+                "openshell-langgraph-observable",
+            ),
+            "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME": (
+                "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME",
                 "daprAgentRunWorkflowV1",
             ),
-            "OPENSHELL_DURABLE_AGENT_APP_ID": (
-                "OPENSHELL_DURABLE_AGENT_APP_ID",
-                "openshell-durable-agent",
-            ),
-            "OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME": (
-                "OPENSHELL_DURABLE_CHILD_WORKFLOW_NAME",
-                "dapr.agents.OpenShellDeepAgent.workflow",
-            ),
-            "MS_AGENT_APP_ID": ("MS_AGENT_APP_ID", "ms-agent-workflow"),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "true",
@@ -199,10 +187,6 @@ class OrchestratorConfig:
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "durableRunWorkflowV1",
-            ),
-            "MS_AGENT_CHILD_WORKFLOW_RUN_NAME": (
-                "MS_AGENT_CHILD_WORKFLOW_RUN_NAME",
-                "msAgentWorkflowV1",
             ),
             "DYNAMIC_WORKFLOW_VERSION": (
                 "DYNAMIC_WORKFLOW_VERSION",

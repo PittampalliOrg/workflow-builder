@@ -74,11 +74,10 @@ export async function GET(
 								and(
 									inArray(workflowExecutionLogs.executionId, executionIds),
 									inArray(workflowExecutionLogs.activityName, [
-										"dapr-agent/run",
 										"openshell/run",
 										"openshell/session-start",
 										"openshell-langgraph/run",
-										"ms-agent/run",
+										"openshell-langgraph-observable/run",
 									]),
 								),
 							),

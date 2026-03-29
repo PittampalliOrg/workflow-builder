@@ -73,7 +73,7 @@ function parseArgs(argv: string[]): Args {
 	let taskTimeoutMinutes = "15";
 	let overallTimeoutMinutes = "120";
 	let maxTaskRetries = "1";
-	let sandboxTemplate = "dapr-agent";
+	let sandboxTemplate = "openshell";
 
 	const parseRepoRef = (
 		repoRef: string,
@@ -343,7 +343,7 @@ function buildWorkflowGraph(input: {
 					enabledTools: '["read","write","edit","list","bash"]',
 					requireReadBeforeWrite: "true",
 					commandTimeoutMs: "120000",
-					...(input.sandboxTemplate !== "dapr-agent"
+					...(input.sandboxTemplate !== "openshell"
 						? { sandboxTemplate: input.sandboxTemplate }
 						: {}),
 				},

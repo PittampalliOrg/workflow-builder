@@ -142,8 +142,8 @@ export async function applyResourcePresetsToNodes(input: {
 		const actionType = asNonEmptyString(config.actionType);
 		if (
 			actionType !== "durable/run" &&
-			actionType !== "dapr-agent/run" &&
-			actionType !== "openshell-langgraph/run"
+			actionType !== "openshell-langgraph/run" &&
+			actionType !== "openshell-langgraph-observable/run"
 		) {
 			continue;
 		}
@@ -191,8 +191,8 @@ export async function applyResourcePresetsToNodes(input: {
 			version: resolvedProfile.templateVersion.version,
 		};
 		if (
-			actionType === "dapr-agent/run" ||
-			actionType === "openshell-langgraph/run"
+			actionType === "openshell-langgraph/run" ||
+			actionType === "openshell-langgraph-observable/run"
 		) {
 			const mode = asNonEmptyString(config.mode) ?? "plan_mode";
 			const existingInstructions = asNonEmptyString(config.instructionsOverlay);
@@ -276,8 +276,8 @@ export async function applyResourcePresetsToNodes(input: {
 		delete config.modelProfileRef;
 		delete config.instructions;
 		if (
-			actionType !== "dapr-agent/run" &&
-			actionType !== "openshell-langgraph/run"
+			actionType !== "openshell-langgraph/run" &&
+			actionType !== "openshell-langgraph-observable/run"
 		) {
 			delete config.tools;
 		}

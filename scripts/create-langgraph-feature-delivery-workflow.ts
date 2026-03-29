@@ -1,7 +1,7 @@
 /**
  * Create or update a reusable LangGraph feature-delivery workflow:
- * trigger -> workspace/profile -> workspace/clone -> dapr-agent/run (plan)
- * -> dapr-agent/run (execute) -> workspace/command (review)
+ * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
+ * -> openshell-langgraph-observable/run (execute) -> workspace/command (review)
  *
  * The manual trigger input is treated as the user feature request.
  *
@@ -370,7 +370,7 @@ function buildWorkflowGraph(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "dapr-agent/run",
+		actionType: "openshell-langgraph-observable/run",
 		engine: "langgraph",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,

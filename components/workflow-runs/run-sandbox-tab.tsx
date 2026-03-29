@@ -5,9 +5,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { BrowserScreenshotView } from "./browser-screenshot-view";
 
 export function RunSandboxTab({
 	workflowId,
@@ -16,8 +14,7 @@ export function RunSandboxTab({
 	workflowId: string;
 	executionId: string;
 }) {
-	const [podIp, setPodIp] = useState<string | null>(null);
-	const [templateName, setTemplateName] = useState<string>("dapr-agent");
+	const [templateName, setTemplateName] = useState<string>("openshell");
 	const [actionType, setActionType] = useState<string | null>(null);
 	const [sandboxName, setSandboxName] = useState<string | null>(null);
 	const [repoPath, setRepoPath] = useState<string | null>(null);
@@ -63,11 +60,8 @@ export function RunSandboxTab({
 					setSessionId(response.sessionId ?? null);
 					setResumeCommand(response.resumeCommand ?? null);
 					setInitialPrompt(response.initialPrompt ?? null);
-				} else if (response.podIp) {
-					setPodIp(response.podIp);
-					if (response.templateName) {
-						setTemplateName(response.templateName);
-					}
+				} else if (response.templateName) {
+					setTemplateName(response.templateName);
 				}
 			} catch (err: any) {
 				setError(err.message || "Failed to load sandbox");
@@ -215,55 +209,14 @@ export function RunSandboxTab({
 		);
 	}
 
-	if (!podIp) {
-		return (
-			<div className="p-4 text-sm text-muted-foreground">
-				Waiting for sandbox allocation...
-			</div>
-		);
-	}
-
-	if (templateName === "aio-browser") {
-		const vncUrl = `/api/sandbox-aio/${podIp}/vnc/index.html?autoconnect=true&resize=remote&path=api/sandbox-aio/${podIp}/websockify`;
-
-		return (
-			<Tabs
-				defaultValue="vnc"
-				className="h-[calc(100vh-12rem)] min-h-[600px] flex flex-col"
-			>
-				<TabsList className="mx-4 mt-2 w-fit">
-					<TabsTrigger value="vnc">VNC Desktop</TabsTrigger>
-					<TabsTrigger value="screenshot">Browser Screenshot</TabsTrigger>
-				</TabsList>
-				<TabsContent value="vnc" className="flex-1 overflow-hidden m-0">
-					<Card className="h-full overflow-hidden border-0 rounded-none">
-						<CardContent className="h-full p-0">
-							<iframe
-								src={vncUrl}
-								className="h-full w-full border-0"
-								title="AIO Sandbox VNC"
-							/>
-						</CardContent>
-					</Card>
-				</TabsContent>
-				<TabsContent value="screenshot" className="flex-1 overflow-hidden m-0">
-					<BrowserScreenshotView podIp={podIp} />
-				</TabsContent>
-			</Tabs>
-		);
-	}
-
-	// Default: dapr-agent template (existing behavior)
-	const vncUrl = `/api/sandbox-vnc/${podIp}/vnc.html?autoconnect=true&resize=remote&path=api/sandbox-vnc/${podIp}/websockify`;
-
 	return (
-		<Card className="h-[calc(100vh-12rem)] min-h-[600px] overflow-hidden">
-			<CardContent className="h-full p-0">
-				<iframe
-					src={vncUrl}
-					className="h-full w-full border-0"
-					title="Sandbox VNC"
-				/>
+		<Card>
+			<CardContent className="p-4 text-muted-foreground text-sm">
+				This execution did not expose a live OpenShell sandbox handoff. Review
+				the <span className="font-medium">Activities</span>,{" "}
+				<span className="font-medium">Artifacts</span>, and{" "}
+				<span className="font-medium">Changes</span> tabs for the recorded
+				result.
 			</CardContent>
 		</Card>
 	);

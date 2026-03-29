@@ -14,13 +14,6 @@ const GITHUB_TIMEOUT_MS = Number.parseInt(
 	10,
 );
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
-const DAPR_AGENT_RUNTIME_API_BASE_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
-const DAPR_AGENT_OPTIONS_TIMEOUT_MS = Number.parseInt(
-	process.env.DAPR_AGENT_OPTIONS_TIMEOUT_MS || "5000",
-	10,
-);
 const GITEA_API_BASE_URL =
 	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
 const GITEA_REPO_OWNER = (process.env.GITEA_REPO_OWNER || "giteaadmin").trim();
@@ -173,89 +166,27 @@ type GiteaRepo = {
 	original_url?: string;
 };
 
-type DaprAgentToolsResponse = {
-	success?: boolean;
-	tools?: Array<{
-		id?: unknown;
-		description?: unknown;
-	}>;
-	workspaceEnabledTools?: Array<{
-		label?: unknown;
-		value?: unknown;
-	}>;
-	toolGroups?: Record<string, unknown>;
-};
+const OPENSHELL_WORKSPACE_TOOLS = [
+	"bash",
+	"git",
+	"read",
+	"write",
+	"edit",
+	"list",
+];
 
-const DAPR_AGENT_FALLBACK_TOOLS = ["read", "write", "edit", "list", "bash"];
-
-async function getDaprAgentToolOptions(
+function getOpenShellWorkspaceToolOptions(
 	searchValue?: string,
-): Promise<OptionsResponse> {
-	try {
-		const response = await fetch(
-			`${DAPR_AGENT_RUNTIME_API_BASE_URL}/api/tools`,
-			{
-				signal: AbortSignal.timeout(DAPR_AGENT_OPTIONS_TIMEOUT_MS),
-			},
-		);
-
-		if (!response.ok) {
-			throw new Error(
-				`Dapr agent tools request failed with HTTP ${response.status}`,
-			);
-		}
-
-		const payload = (await response.json()) as DaprAgentToolsResponse;
-		const workspaceTools = Array.isArray(payload.workspaceEnabledTools)
-			? payload.workspaceEnabledTools
-					.map((tool) => {
-						const value =
-							typeof tool.value === "string" ? tool.value.trim() : undefined;
-						if (!value) return undefined;
-						const label =
-							typeof tool.label === "string" && tool.label.trim().length > 0
-								? tool.label.trim()
-								: value;
-						return { label, value } satisfies DropdownOption;
-					})
-					.filter((option): option is DropdownOption => Boolean(option))
-			: [];
-
-		const toolEntries = Array.isArray(payload.tools)
-			? payload.tools
-					.map((tool) => {
-						const id = typeof tool.id === "string" ? tool.id.trim() : undefined;
-						if (!id) return undefined;
-						const description =
-							typeof tool.description === "string"
-								? tool.description.trim()
-								: "";
-						return {
-							label: description ? `${id} - ${description}` : id,
-							value: id,
-						} satisfies DropdownOption;
-					})
-					.filter((option): option is DropdownOption => Boolean(option))
-			: [];
-		const options = workspaceTools.length > 0 ? workspaceTools : toolEntries;
-
-		if (options.length === 0) {
-			return buildDisabledResponse(
-				"No tools available from dapr-agent-runtime",
-			);
-		}
-
-		return { options: filterOptions(options, searchValue) };
-	} catch (error) {
-		console.warn("[builtin/options] Dapr agent tool lookup failed:", error);
-		return {
-			options: filterOptions(
-				DAPR_AGENT_FALLBACK_TOOLS.map((t) => ({ label: t, value: t })),
-				searchValue,
-			),
-			placeholder: "Dapr agent runtime unavailable; showing default tools",
-		};
-	}
+): OptionsResponse {
+	return {
+		options: filterOptions(
+			OPENSHELL_WORKSPACE_TOOLS.map((tool) => ({
+				label: tool,
+				value: tool,
+			})),
+			searchValue,
+		),
+	};
 }
 
 async function getOwnerOptions(token: string): Promise<DropdownOption[]> {
@@ -626,8 +557,8 @@ export async function POST(request: Request) {
 
 		if (
 			(normalizedActionName === "durable/run" ||
-				normalizedActionName === "dapr-agent/run" ||
-				normalizedActionName === "openshell-langgraph/run") &&
+				normalizedActionName === "openshell-langgraph/run" ||
+				normalizedActionName === "openshell-langgraph-observable/run") &&
 			rawBody.propertyName === "agentProfileTemplateId"
 		) {
 			const templates = await listAgentProfileTemplates({
@@ -646,12 +577,20 @@ export async function POST(request: Request) {
 
 		// Tools multi-select for workspace/profile
 		if (
-			(normalizedActionName === "workspace/profile" ||
-				normalizedActionName === "browser/profile") &&
+			normalizedActionName === "workspace/profile" &&
 			rawBody.propertyName === "enabledTools"
 		) {
 			return NextResponse.json(
-				await getDaprAgentToolOptions(rawBody.searchValue),
+				getOpenShellWorkspaceToolOptions(rawBody.searchValue),
+			);
+		}
+
+		if (
+			normalizedActionName === "browser/profile" &&
+			rawBody.propertyName === "enabledTools"
+		) {
+			return NextResponse.json(
+				getOpenShellWorkspaceToolOptions(rawBody.searchValue),
 			);
 		}
 

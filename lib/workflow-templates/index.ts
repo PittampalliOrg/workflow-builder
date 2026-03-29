@@ -18,23 +18,13 @@ export type TemplateInfo = {
 export const workflowTemplates: TemplateInfo[] = [
 	{
 		id: "async-coding-deepagent",
-		name: "Async Coding (DeepAgent)",
+		name: "Async Coding (OpenShell LangGraph)",
 		description:
-			"7-node coding workflow: sandbox provisioning, agent plan/execute with approval, review, and browser validation. Uses the OpenShell DeepAgent backend.",
+			"7-node coding workflow: OpenShell workspace provisioning, LangGraph plan/execute, review, and browser validation on the supported OpenShell runtime.",
 		category: "AI Coding",
 		nodeCount: 7,
 		tags: ["coding", "agent", "sandbox", "browser-validation"],
-		build: () => buildCodingWorkflow({ backend: "openshell-deepagent" }),
-	},
-	{
-		id: "async-coding-durable",
-		name: "Async Coding (Durable Agent)",
-		description:
-			"7-node coding workflow: sandbox provisioning, durable agent plan/execute with Dapr workflow orchestration, review, and browser validation.",
-		category: "AI Coding",
-		nodeCount: 7,
-		tags: ["coding", "agent", "durable", "sandbox", "browser-validation"],
-		build: () => buildCodingWorkflow({ backend: "openshell-durable" }),
+		build: () => buildCodingWorkflow({ backend: "openshell-langgraph" }),
 	},
 	{
 		id: "openshell-claude-session",

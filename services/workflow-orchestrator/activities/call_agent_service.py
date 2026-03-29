@@ -26,9 +26,8 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
-DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
-MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
+OPENSHELL_LANGGRAPH_APP_ID = config.OPENSHELL_LANGGRAPH_APP_ID
 OPENSHELL_AGENT_RUNTIME_BASE_URL = (
     str(os.environ.get("OPENSHELL_AGENT_RUNTIME_BASE_URL") or "").strip().rstrip("/")
 )
@@ -508,89 +507,6 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
-def call_dapr_agent_run(ctx, input_data: dict) -> dict:
-    """
-    Run a Python Dapr Agents coding workflow synchronously.
-    """
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DAPR_AGENT_APP_ID}/method/api/run"
-    )
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": str(input_data.get("actionType") or "dapr-agent/run"),
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-        "workflow.id": input_data.get("workflowId") or "",
-        "node.id": input_data.get("nodeId") or "",
-        "node.name": input_data.get("nodeName") or "",
-    }
-
-    with start_activity_span("activity.call_dapr_agent_run", otel, attrs):
-        try:
-            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
-            try:
-                timeout_minutes = int(timeout_minutes_raw or 30)
-            except (TypeError, ValueError):
-                timeout_minutes = 30
-            if timeout_minutes <= 0:
-                timeout_minutes = 30
-            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
-            with httpx.Client(timeout=request_timeout_seconds) as client:
-                payload = {
-                    "prompt": input_data.get("prompt", ""),
-                    "actionType": input_data.get("actionType"),
-                    "profile": input_data.get("profile")
-                    or input_data.get("mode")
-                    or "implement",
-                    "engine": input_data.get("engine"),
-                    "threadId": input_data.get("threadId"),
-                    "planningThreadId": input_data.get("planningThreadId"),
-                    "executionThreadId": input_data.get("executionThreadId"),
-                    "plannerResume": input_data.get("plannerResume"),
-                    "model": input_data.get("model"),
-                    "maxTurns": input_data.get("maxTurns"),
-                    "timeoutMinutes": input_data.get("timeoutMinutes", 30),
-                    "workspaceRef": input_data.get("workspaceRef"),
-                    "cwd": input_data.get("cwd"),
-                    "stopCondition": input_data.get("stopCondition"),
-                    "instructionsOverlay": input_data.get("instructionsOverlay")
-                    or input_data.get("instructions"),
-                    "expectedOutput": input_data.get("expectedOutput"),
-                    "verifyCommands": input_data.get("verifyCommands"),
-                    "approvalMode": input_data.get("approvalMode"),
-                    "approvalTimeoutMinutes": input_data.get("approvalTimeoutMinutes"),
-                    "executeAfterApproval": input_data.get("executeAfterApproval"),
-                    "toolPolicy": input_data.get("toolPolicy"),
-                    "toolBackend": input_data.get("toolBackend"),
-                    "tools": input_data.get("tools"),
-                    "writePolicy": input_data.get("writePolicy"),
-                    "shellPolicy": input_data.get("shellPolicy"),
-                    "sandboxName": input_data.get("sandboxName"),
-                    "provider": input_data.get("provider"),
-                    "sandboxRepoPath": input_data.get("sandboxRepoPath"),
-                    "repositoryUrl": input_data.get("repositoryUrl"),
-                    "repositoryOwner": input_data.get("repositoryOwner"),
-                    "repositoryRepo": input_data.get("repositoryRepo"),
-                    "repositoryBranch": input_data.get("repositoryBranch"),
-                    "repositoryToken": input_data.get("repositoryToken"),
-                    "artifactRef": input_data.get("artifactRef"),
-                    "planJson": input_data.get("planJson"),
-                    "executionId": input_data.get("executionId"),
-                    "dbExecutionId": input_data.get("dbExecutionId"),
-                    "parentExecutionId": input_data.get("parentExecutionId"),
-                    "waitForCompletion": True,
-                }
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="Dapr agent run",
-                )
-        except Exception as e:
-            logger.error(f"[Call Dapr Agent Run] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
 def call_openshell_agent_run(ctx, input_data: dict) -> dict:
     """
     Run an OpenShell sandboxed Claude-style coding task synchronously.
@@ -788,44 +704,6 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
             return compact_result
         except Exception as e:
             logger.error(f"[Call OpenShell Agent Run] Failed: {e}")
-            return {"success": False, "error": str(e)}
-
-
-def terminate_ms_agent_run(ctx, input_data: dict) -> dict:
-    """
-    Terminate a Microsoft Agent child workflow run.
-    """
-    agent_workflow_id = str(
-        input_data.get("agentWorkflowId") or input_data.get("daprInstanceId") or ""
-    ).strip()
-    if not agent_workflow_id:
-        return {"success": False, "error": "agentWorkflowId is required"}
-
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{MS_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id, safe='')}/terminate"
-    )
-    otel = input_data.get("_otel") or {}
-    attrs = {
-        "action.type": "ms-agent/run-terminate",
-        "agent.workflow_id": agent_workflow_id,
-        "workflow.instance_id": input_data.get("parentExecutionId") or "",
-    }
-
-    with start_activity_span("activity.terminate_ms_agent_run", otel, attrs):
-        try:
-            with httpx.Client(timeout=20.0) as client:
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload={
-                        "reason": input_data.get("reason")
-                        or "terminated by workflow-orchestrator",
-                    },
-                    service_label="MS agent run termination",
-                )
-        except Exception as e:
-            logger.error(f"[Terminate MS Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 
@@ -1053,7 +931,7 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
 
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DAPR_AGENT_APP_ID}/method/api/workspaces/capabilities/validate"
+        f"{OPENSHELL_AGENT_APP_ID}/method/api/workspaces/capabilities/validate"
     )
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -1157,9 +1035,9 @@ def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
-def terminate_dapr_agent_run(ctx, input_data: dict) -> dict:
+def terminate_openshell_langgraph_run(ctx, input_data: dict) -> dict:
     """
-    Terminate a specific dapr-agent-runtime run.
+    Terminate a specific OpenShell LangGraph observable run.
     """
     agent_workflow_id = str(
         input_data.get("agentWorkflowId") or input_data.get("daprInstanceId") or ""
@@ -1169,7 +1047,7 @@ def terminate_dapr_agent_run(ctx, input_data: dict) -> dict:
 
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DAPR_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
+        f"{OPENSHELL_LANGGRAPH_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
     )
     payload = {
         "daprInstanceId": input_data.get("daprInstanceId"),
@@ -1181,23 +1059,23 @@ def terminate_dapr_agent_run(ctx, input_data: dict) -> dict:
     }
     otel = input_data.get("_otel") or {}
     attrs = {
-        "action.type": "dapr-agent/run-terminate",
+        "action.type": "openshell-langgraph-observable/run-terminate",
         "workflow.instance_id": input_data.get("parentExecutionId") or "",
         "agent.workflow_id": agent_workflow_id,
         "agent.dapr_instance_id": input_data.get("daprInstanceId") or "",
     }
 
-    with start_activity_span("activity.terminate_dapr_agent_run", otel, attrs):
+    with start_activity_span("activity.terminate_openshell_langgraph_run", otel, attrs):
         try:
             with httpx.Client(timeout=20.0) as client:
                 return _post_json_with_details(
                     client=client,
                     url=url,
                     payload=payload,
-                    service_label="Dapr agent run termination",
+                    service_label="OpenShell LangGraph run termination",
                 )
         except Exception as e:
-            logger.error(f"[Terminate Dapr Agent Run] Failed: {e}")
+            logger.error(f"[Terminate OpenShell LangGraph Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 
@@ -1219,7 +1097,7 @@ def cleanup_execution_workspaces(ctx, input_data: dict) -> dict:
 
     url = (
         f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DAPR_AGENT_APP_ID}/method/api/workspaces/cleanup"
+        f"{OPENSHELL_AGENT_APP_ID}/method/api/workspaces/cleanup"
     )
     otel = input_data.get("_otel") or {}
     attrs = {

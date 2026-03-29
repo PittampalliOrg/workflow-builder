@@ -9,14 +9,14 @@ The validated `kind-ryzen` / active-development runtime is:
 - `workflow-builder`: Next.js UI and BFF
 - `workflow-orchestrator`: Python Dapr durable workflow owner
 - `function-router`: repo-aware action router
-- `dapr-agent-runtime`: LangGraph / DeepAgents-compatible coding backend for `openshell-langgraph/run`
+- `openshell-agent-runtime`: canonical OpenShell workspace, browser, and standard agent runtime
+- `openshell-langgraph-observable`: specialized OpenShell LangGraph coding backend for complex plan/execute flows
 - `durable-agent`: shared workspace session and durable change-artifact service
-- `ms-agent-workflow`: compatibility backend under the same durable parent model
 - `fn-activepieces`: default SaaS action backend
 - `postgresql`: workflow definitions, execution state, approvals, child-run metadata, and durable review artifacts
 - `redis` + Dapr sidecars: workflow state, pub/sub, invocation, actors
 
-Historical docs and older manifests may still mention `openshell-agent-runtime`, `function-runner`, or older `durable-agent` execution ownership. Those are not the current primary execution path on `ryzen`.
+The active runtime model is OpenShell-only for agent execution, with OpenShell LangGraph retained as the specialized coding backend.
 
 ## Design Principles
 
@@ -63,12 +63,12 @@ browser
   -> workflow-builder (Next.js UI + BFF)
   -> workflow-orchestrator (Dapr durable parent workflow)
      -> function-router
-        -> system/* and workspace/* handlers
+        -> system/*, workspace/*, and browser/* handlers
         -> fn-activepieces for SaaS actions
-        -> dapr-agent-runtime for openshell-langgraph/run and dapr-agent/run
-        -> ms-agent-workflow for ms-agent/run
+        -> openshell-agent-runtime for openshell/run and openshell/session-start
+        -> openshell-langgraph-observable for openshell-langgraph-observable/run
 
-dapr-agent-runtime
+openshell-agent-runtime / openshell-langgraph-observable
   -> shared workspace/session contract
   -> durable-agent change-artifact service
   -> persisted review artifacts in PostgreSQL
@@ -86,23 +86,23 @@ dapr-agent-runtime
 
 ### Durable coding execution
 
-1. A workflow node selects `openshell-langgraph/run`.
+1. A workflow node selects either `openshell/run`, `openshell/session-start`, or `openshell-langgraph-observable/run`.
 2. `workflow-orchestrator` starts a durable child-run sequence for that node.
-3. `function-router` routes the action to `dapr-agent-runtime`.
-4. `dapr-agent-runtime` starts the planning child run and returns child identity immediately.
+3. `function-router` routes standard OpenShell work to `openshell-agent-runtime`.
+4. Observable LangGraph work is started as a native child workflow against `openshell-langgraph-observable`.
 5. The parent workflow persists approval context and waits durably for approval.
 6. After approval, the orchestrator starts the execute child run.
 7. The backend performs repo-aware coding work through the shared workspace/session contract.
 8. `durable-agent` persists the final change set, patch, and file snapshots.
 9. The parent workflow records normalized child output and completes.
 
-### Compatibility backends
+### Supported agent backends
 
-Compatibility runtimes still exist, but they run under the same parent workflow contract:
+The supported OpenShell runtimes now run under the same parent workflow contract:
 
-- `openshell-langgraph/run` -> `dapr-agent-runtime`
-- `dapr-agent/run` -> `dapr-agent-runtime`
-- `ms-agent/run` -> `ms-agent-workflow`
+- `openshell/run` -> `openshell-agent-runtime`
+- `openshell/session-start` -> `openshell-agent-runtime`
+- `openshell-langgraph-observable/run` -> `openshell-langgraph-observable`
 
 ## Component Responsibilities
 
@@ -136,28 +136,30 @@ Key files:
 
 Provides:
 
-- routing for `system/*` and `workspace/*`
-- routing for agent backends
+- routing for `system/*`, `workspace/*`, and `browser/*`
+- routing for the supported OpenShell agent backends
 - default routing to `fn-activepieces`
 - runtime contract normalization between the parent workflow and child services
 
 Important current routes:
 
-- `openshell-langgraph/*` -> `dapr-agent-runtime`
-- `dapr-agent/*` -> `dapr-agent-runtime`
-- `ms-agent/*` -> `ms-agent-workflow`
+- `workspace/*` -> `openshell-agent-runtime`
+- `browser/*` -> `openshell-agent-runtime`
+- `openshell/run` -> `openshell-agent-runtime`
+- `openshell/session-start` -> `openshell-agent-runtime`
+- `openshell-langgraph-observable/run` -> `openshell-langgraph-observable`
 - `_default` -> `fn-activepieces`
 
-### dapr-agent-runtime
+### openshell-agent-runtime
 
 Provides:
 
-- LangGraph / DeepAgents-compatible coding execution
-- planning and execute child runs
-- durable progress events for tool calls and sandbox output
-- final execution review artifact publication
+- OpenShell-backed workspace sessions and repo cloning
+- OpenShell standard coding runs and retained `session-start` handoff sessions
+- OpenShell browser validation against materialized change artifacts
+- durable progress events for sandbox output and browser artifacts
 
-It is an execution backend, not the orchestration owner.
+It is a runtime backend, not the orchestration owner.
 
 ### durable-agent
 
@@ -170,9 +172,9 @@ Provides shared durable services around coding runs:
 
 This is where backend-independent review data should live.
 
-### ms-agent-workflow
+### openshell-langgraph-observable
 
-Provides template-driven Microsoft-agent execution under the same durable parent workflow model. It is a compatibility backend, not the core coding path on `ryzen`.
+Provides the specialized LangGraph plan/execute backend used by the feature-delivery style coding workflows. It remains under the same parent workflow contract, but uses a native child workflow for long-running execution.
 
 ## Persisted Data Model
 

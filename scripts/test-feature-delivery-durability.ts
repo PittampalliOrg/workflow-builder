@@ -1,5 +1,5 @@
 /**
- * Live durability drill for the Dapr Feature Delivery Demo workflow.
+ * Live durability drill for the OpenShell feature delivery workflow.
  *
  * Usage:
  *   DATABASE_URL=... GENERIC_ORCHESTRATOR_URL=http://127.0.0.1:3013 \
@@ -28,8 +28,9 @@ const ORCHESTRATOR_URL =
 	process.env.GENERIC_ORCHESTRATOR_URL || "http://127.0.0.1:3013";
 const WORKFLOW_ID = process.env.WORKFLOW_ID || "agentsysdemo001";
 const NAMESPACE = process.env.NAMESPACE || "workflow-builder";
-const DAPR_AGENT_DEPLOYMENT =
-	process.env.DAPR_AGENT_DEPLOYMENT || "dapr-agent-runtime";
+const OPENSHELL_LANGGRAPH_DEPLOYMENT =
+	process.env.OPENSHELL_LANGGRAPH_DEPLOYMENT ||
+	"openshell-langgraph-observable";
 const ORCHESTRATOR_DEPLOYMENT =
 	process.env.ORCHESTRATOR_DEPLOYMENT || "workflow-orchestrator";
 const POLL_INTERVAL_MS = Number.parseInt(
@@ -306,7 +307,7 @@ async function main() {
 	const { executionId, instanceId } = await startExecution();
 
 	await pollAgentRun(executionId, "plan");
-	restartDeployment(DAPR_AGENT_DEPLOYMENT);
+	restartDeployment(OPENSHELL_LANGGRAPH_DEPLOYMENT);
 
 	const awaitingApproval = await pollStatus(
 		instanceId,
@@ -341,7 +342,7 @@ async function main() {
 		"execution start",
 	);
 
-	restartDeployment(DAPR_AGENT_DEPLOYMENT);
+	restartDeployment(OPENSHELL_LANGGRAPH_DEPLOYMENT);
 
 	await pollStatus(
 		instanceId,

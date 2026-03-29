@@ -7,7 +7,6 @@ import { workflowExecutions } from "@/lib/db/schema";
 
 const DURABLE_AGENT_APP_ID =
 	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
-const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 function shouldMarkPending(status: string): boolean {
 	return status === "pending" || status === "running";
@@ -114,24 +113,7 @@ export async function GET(
 			});
 		}
 
-		let responseData = response.data;
-		if (
-			response.ok &&
-			responseData &&
-			typeof responseData.patch === "string" &&
-			responseData.patch.trim().length === 0
-		) {
-			const fallback = await loadPatchFromApp(
-				DAPR_AGENT_APP_ID,
-				executionId,
-				durableInstanceId || undefined,
-			);
-			if (fallback.ok && fallback.data) {
-				responseData = fallback.data;
-			}
-		}
-
-		if (!response.ok || !responseData) {
+		if (!response.ok || !response.data) {
 			return NextResponse.json(
 				{
 					error: errorMessage(response.data, "Failed to fetch execution patch"),
@@ -144,8 +126,8 @@ export async function GET(
 			success: true,
 			executionId,
 			durableInstanceId,
-			patch: responseData.patch ?? "",
-			changeSets: responseData.changeSets ?? [],
+			patch: response.data.patch ?? "",
+			changeSets: response.data.changeSets ?? [],
 		};
 
 		if (format === "raw") {

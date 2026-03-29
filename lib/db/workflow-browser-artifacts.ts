@@ -1,6 +1,7 @@
 import "server-only";
 
 import { desc, eq } from "drizzle-orm";
+import { nanoid } from "nanoid";
 import { db } from "./index";
 import {
 	workflowBrowserArtifactBlobPayloads,
@@ -49,6 +50,22 @@ export type WorkflowExecutionBrowserArtifact = {
 	manifest: WorkflowBrowserArtifactManifest;
 	createdAt: Date;
 	updatedAt: Date;
+};
+
+type CreateWorkflowBrowserArtifactInput = {
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	workspaceRef?: string | null;
+	status: WorkflowBrowserArtifactStatus;
+	baseUrl: string;
+	metadata?: Record<string, unknown> | null;
+	steps: WorkflowBrowserArtifactStep[];
+	screenshots?: Array<{
+		contentType?: string;
+		payloadBase64: string;
+		storageRef?: string;
+	}>;
 };
 
 function parseManifest(
@@ -146,6 +163,15 @@ function parseManifest(
 
 function toDataUrl(contentType: string, payloadBase64: string): string {
 	return `data:${contentType};base64,${payloadBase64}`;
+}
+
+function buildStorageRef(
+	workflowExecutionId: string,
+	artifactId: string,
+	index: number,
+): string {
+	const safeExecution = workflowExecutionId.replace(/[^a-zA-Z0-9._-]/g, "-");
+	return `workflow-browser-artifacts/${safeExecution}/${artifactId}/step-${index + 1}.png`;
 }
 
 async function loadScreenshotMap(
@@ -255,4 +281,62 @@ export async function getWorkflowBrowserArtifactById(input: {
 		row,
 		parseManifest(row.manifestJson, input.includeScreenshots, screenshotMap),
 	);
+}
+
+export async function createWorkflowBrowserArtifact(
+	input: CreateWorkflowBrowserArtifactInput,
+): Promise<WorkflowExecutionBrowserArtifact> {
+	const artifactId = `bwf_${nanoid(12)}`;
+	const startedAt = new Date().toISOString();
+	const completedAt = new Date().toISOString();
+	const steps = input.steps.map((step) => ({ ...step }));
+	const screenshots = input.screenshots ?? [];
+
+	for (const [index, screenshot] of screenshots.entries()) {
+		const storageRef =
+			screenshot.storageRef ||
+			buildStorageRef(input.workflowExecutionId, artifactId, index);
+		const matchingStep = steps[index];
+		if (matchingStep && !matchingStep.screenshotStorageRef) {
+			matchingStep.screenshotStorageRef = storageRef;
+		}
+		await db
+			.insert(workflowBrowserArtifactBlobPayloads)
+			.values({
+				storageRef,
+				payloadText: screenshot.payloadBase64,
+				contentType: screenshot.contentType || "image/png",
+			})
+			.onConflictDoUpdate({
+				target: workflowBrowserArtifactBlobPayloads.storageRef,
+				set: {
+					payloadText: screenshot.payloadBase64,
+					contentType: screenshot.contentType || "image/png",
+				},
+			});
+	}
+
+	const [row] = await db
+		.insert(workflowBrowserArtifacts)
+		.values({
+			id: artifactId,
+			workflowExecutionId: input.workflowExecutionId.trim(),
+			workflowId: input.workflowId.trim(),
+			nodeId: input.nodeId.trim(),
+			workspaceRef: input.workspaceRef?.trim() || null,
+			artifactType: "capture_flow_v1",
+			artifactVersion: 1,
+			status: input.status,
+			manifestJson: {
+				baseUrl: input.baseUrl,
+				startedAt,
+				completedAt,
+				status: input.status,
+				steps,
+				metadata: input.metadata ?? null,
+			},
+		})
+		.returning();
+
+	return mapArtifactRow(row, parseManifest(row.manifestJson));
 }

@@ -60,22 +60,7 @@ function proxyWebSocket(req, socket, head, targetUrl) {
 	socket.on("error", () => proxySocket.end());
 }
 
-function matchSandboxRoute(url) {
-	const vncMatch = url.match(/^\/api\/sandbox-vnc\/([0-9.]+)\/(.*)$/);
-	if (vncMatch) return `http://${vncMatch[1]}:6080/${vncMatch[2]}`;
-
-	const aioMatch = url.match(/^\/api\/sandbox-aio\/([0-9.]+)\/(.*)$/);
-	if (aioMatch) return `http://${aioMatch[1]}:8080/${aioMatch[2]}`;
-
-	return null;
-}
-
 const server = http.createServer((req, res) => {
-	const sandboxTarget = matchSandboxRoute(req.url);
-	if (sandboxTarget) {
-		proxyRequest(req, res, sandboxTarget);
-		return;
-	}
 	proxyRequest(req, res, `http://127.0.0.1:3001${req.url}`);
 });
 

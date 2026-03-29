@@ -4,7 +4,6 @@ import { isValidInternalToken } from "@/lib/internal-api";
 
 const DURABLE_AGENT_APP_ID =
 	process.env.DURABLE_AGENT_APP_ID || "durable-agent";
-const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
 
 function errorMessage(data: unknown, fallback: string): string {
 	if (!data || typeof data !== "object") {
@@ -87,24 +86,7 @@ export async function GET(
 			);
 		}
 
-		let responseData = response.data;
-		if (
-			response.ok &&
-			responseData &&
-			typeof responseData.patch === "string" &&
-			responseData.patch.trim().length === 0
-		) {
-			const fallback = await loadPatchFromApp(
-				DAPR_AGENT_APP_ID,
-				executionId,
-				durableInstanceId || undefined,
-			);
-			if (fallback.ok && fallback.data) {
-				responseData = fallback.data;
-			}
-		}
-
-		if (!response.ok || !responseData) {
+		if (!response.ok || !response.data) {
 			return NextResponse.json(
 				{
 					error: errorMessage(response.data, "Failed to fetch execution patch"),
@@ -113,7 +95,7 @@ export async function GET(
 			);
 		}
 
-		return NextResponse.json(responseData, {
+		return NextResponse.json(response.data, {
 			headers: {
 				"Cache-Control": "no-store",
 			},

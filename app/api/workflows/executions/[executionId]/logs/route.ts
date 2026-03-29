@@ -26,9 +26,6 @@ import { deriveAgentRunsFromExecutionOutput } from "@/lib/transforms/workflow-ui
 import { redactSensitiveData } from "@/lib/utils/redact";
 import { resolveWorkflowExecutionIdAlias } from "@/lib/workflow-execution-alias";
 
-const DAPR_AGENT_RUNTIME_API_BASE_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
 const OPENSHELL_AGENT_RUNTIME_API_BASE_URL =
 	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL ||
 	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
@@ -39,11 +36,11 @@ const OPENSHELL_LANGGRAPH_OBSERVABLE_API_BASE_URL =
 function getAgentRuntimeTarget(
 	actionType: string | undefined,
 ): { baseUrl: string; path: string } | null {
-	if (actionType === "dapr-agent/run") {
-		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
-	}
 	if (actionType === "openshell-langgraph/run") {
-		return { baseUrl: DAPR_AGENT_RUNTIME_API_BASE_URL, path: "/api/run" };
+		return {
+			baseUrl: OPENSHELL_LANGGRAPH_OBSERVABLE_API_BASE_URL,
+			path: "/api/run",
+		};
 	}
 	if (actionType === "openshell-langgraph-observable/run") {
 		return {
@@ -136,7 +133,6 @@ function shouldFetchLiveAgentPayload(
 ): boolean {
 	if (
 		![
-			"dapr-agent/run",
 			"openshell/run",
 			"openshell/session-start",
 			"openshell-langgraph/run",
@@ -288,16 +284,12 @@ export async function GET(
 		const agentProgressEntries = effectiveAgentRunsWithLive.map((run) => {
 			const actionType = nodeActionTypeMap.get(run.nodeId);
 			const framework =
-				actionType === "ms-agent/run"
-					? "ms-agent"
-					: actionType === "openshell/run" ||
-							actionType === "openshell/session-start" ||
-							actionType === "openshell-langgraph/run" ||
-							actionType === "openshell-langgraph-observable/run"
-						? "openshell"
-						: actionType === "dapr-agent/run"
-							? "dapr-agent"
-							: null;
+				actionType === "openshell/run" ||
+				actionType === "openshell/session-start" ||
+				actionType === "openshell-langgraph/run" ||
+				actionType === "openshell-langgraph-observable/run"
+					? "openshell"
+					: null;
 			if (!framework) {
 				return null;
 			}

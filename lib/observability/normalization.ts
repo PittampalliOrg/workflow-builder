@@ -99,8 +99,8 @@ function classifyServiceRole(
 		return "orchestrator";
 	}
 	if (
-		normalized === "dapr-agent-runtime" ||
-		normalized === "ms-agent-workflow" ||
+		normalized === "openshell-agent-runtime" ||
+		normalized === "openshell-langgraph-observable" ||
 		normalized === "durable-agent"
 	) {
 		return "agent-runtime";

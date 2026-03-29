@@ -1,33 +1,9 @@
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
-import { invokeService } from "@/lib/dapr/client";
 import { db } from "@/lib/db";
 import { workflowExecutions } from "@/lib/db/schema";
 import { parseExecutionFileChangeData } from "@/lib/transforms/workflow-ui";
-
-const DAPR_AGENT_APP_ID = process.env.DAPR_AGENT_APP_ID || "dapr-agent-runtime";
-
-type ChangeArtifactResponse = {
-	success?: boolean;
-	metadata?: {
-		changeSetId: string;
-		executionId: string;
-		[key: string]: unknown;
-	};
-	patch?: string;
-	error?: string;
-};
-
-function errorMessage(data: unknown, fallback: string): string {
-	if (!data || typeof data !== "object") {
-		return fallback;
-	}
-	const candidate = (data as Record<string, unknown>).error;
-	return typeof candidate === "string" && candidate.length > 0
-		? candidate
-		: fallback;
-}
 
 function extractWorkspaceRef(output: unknown): string {
 	if (!output || typeof output !== "object") {
@@ -142,46 +118,9 @@ export async function GET(
 				},
 			});
 		}
-
-		const response = await invokeService<ChangeArtifactResponse>({
-			appId: DAPR_AGENT_APP_ID,
-			method: "GET",
-			path: `/v1.0/invoke/${encodeURIComponent(DAPR_AGENT_APP_ID)}/method/api/workspaces/changes/${encodeURIComponent(changeSetId)}`,
-			timeout: 15_000,
-		});
-
-		if (!response.ok || !response.data) {
-			return NextResponse.json(
-				{
-					error: errorMessage(
-						response.data,
-						"Failed to fetch execution change artifact",
-					),
-				},
-				{ status: response.status || 502 },
-			);
-		}
-
-		const metadataExecutionId = response.data.metadata?.executionId;
-		if (!metadataExecutionId || metadataExecutionId !== executionId) {
-			return NextResponse.json(
-				{ error: "Change artifact not found for execution" },
-				{ status: 404 },
-			);
-		}
-
 		return NextResponse.json(
-			{
-				success: true,
-				executionId,
-				metadata: response.data.metadata,
-				patch: response.data.patch ?? "",
-			},
-			{
-				headers: {
-					"Cache-Control": "no-store",
-				},
-			},
+			{ error: "Change artifact not found for execution" },
+			{ status: 404 },
 		);
 	} catch (error) {
 		console.error("Failed to load execution change artifact:", error);

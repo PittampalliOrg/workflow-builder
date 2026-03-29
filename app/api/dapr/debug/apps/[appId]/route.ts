@@ -8,13 +8,6 @@ import type {
 	DaprRuntimeIntrospection,
 } from "@/lib/types/dapr-debug";
 
-const DAPR_AGENT_RUNTIME_API_BASE_URL =
-	process.env.DAPR_AGENT_RUNTIME_API_BASE_URL ||
-	"http://dapr-agent-runtime.workflow-builder.svc.cluster.local:8082";
-const MS_AGENT_WORKFLOW_API_BASE_URL =
-	process.env.MS_AGENT_WORKFLOW_API_BASE_URL ||
-	"http://ms-agent-workflow.workflow-builder.svc.cluster.local:8081";
-
 function buildErrorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -87,16 +80,6 @@ export async function GET(
 			const orchestratorUrl = await getWorkflowOrchestratorUrl();
 			response.introspection = await fetchServiceIntrospection(
 				`${orchestratorUrl.replace(/\/+$/, "")}/api/v2/runtime/introspect`,
-			);
-			response.sourceStatus.introspection = { ok: true };
-		} else if (appId === "dapr-agent-runtime") {
-			response.introspection = await fetchServiceIntrospection(
-				`${DAPR_AGENT_RUNTIME_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
-			);
-			response.sourceStatus.introspection = { ok: true };
-		} else if (appId === "ms-agent-workflow") {
-			response.introspection = await fetchServiceIntrospection(
-				`${MS_AGENT_WORKFLOW_API_BASE_URL.replace(/\/+$/, "")}/api/runtime/introspect`,
 			);
 			response.sourceStatus.introspection = { ok: true };
 		} else {
