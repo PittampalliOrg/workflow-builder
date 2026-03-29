@@ -56,6 +56,12 @@ function getAgentRuntimeTarget(
 			path: "/api/v1/agent-runs",
 		};
 	}
+	if (actionType === "openshell/session-start") {
+		return {
+			baseUrl: OPENSHELL_AGENT_RUNTIME_API_BASE_URL,
+			path: "/api/v1/agent-runs",
+		};
+	}
 	return null;
 }
 
@@ -137,6 +143,7 @@ function shouldFetchLiveAgentPayload(
 			"dapr-agent/run",
 			"ms-agent/run",
 			"openshell/run",
+			"openshell/session-start",
 			"openshell-langgraph/run",
 		].includes(actionType)
 	) {
@@ -530,6 +537,7 @@ export async function getInternalWorkflowExecutionDetail(executionId: string) {
 				actionType === "ms-agent/run"
 					? "ms-agent"
 					: actionType === "openshell/run" ||
+							actionType === "openshell/session-start" ||
 							actionType === "openshell-langgraph/run"
 						? "openshell"
 						: actionType === "dapr-agent/run"

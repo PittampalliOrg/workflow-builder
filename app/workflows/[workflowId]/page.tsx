@@ -26,6 +26,7 @@ import {
 	currentRunningNodeIdAtom,
 	currentWorkflowIdAtom,
 	currentWorkflowNameAtom,
+	currentWorkflowPublishedRuntimeAtom,
 	currentWorkflowVisibilityAtom,
 	edgesAtom,
 	hasSidebarBeenShownAtom,
@@ -131,6 +132,9 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 	const setEdges = useSetAtom(edgesAtom);
 	const setCurrentWorkflowId = useSetAtom(currentWorkflowIdAtom);
 	const setCurrentWorkflowName = useSetAtom(currentWorkflowNameAtom);
+	const setCurrentWorkflowPublishedRuntime = useSetAtom(
+		currentWorkflowPublishedRuntimeAtom,
+	);
 	const updateNodeData = useSetAtom(updateNodeDataAtom);
 	const batchSetNodeStatuses = useSetAtom(batchSetNodeStatusesAtom);
 	const setAgentProgressByNode = useSetAtom(agentProgressByNodeAtom);
@@ -334,6 +338,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				setEdges([]);
 				setCurrentWorkflowId(null);
 				setCurrentWorkflowName("");
+				setCurrentWorkflowPublishedRuntime(null);
 				setCurrentWorkflowVisibility("private");
 				setHasUnsavedChanges(false);
 				setIsWorkflowOwner(false);
@@ -356,6 +361,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 			setEdges(workflow.edges);
 			setCurrentWorkflowId(workflow.id);
 			setCurrentWorkflowName(workflow.name);
+			setCurrentWorkflowPublishedRuntime(workflow.publishedRuntime ?? null);
 			setCurrentWorkflowVisibility(
 				(workflow.visibility as WorkflowVisibility) ?? "private",
 			);
@@ -368,6 +374,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 				setEdges([]);
 				setCurrentWorkflowId(null);
 				setCurrentWorkflowName("");
+				setCurrentWorkflowPublishedRuntime(null);
 				setCurrentWorkflowVisibility("private");
 				setHasUnsavedChanges(false);
 				setIsWorkflowOwner(false);
@@ -383,6 +390,7 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		setEdges,
 		setCurrentWorkflowId,
 		setCurrentWorkflowName,
+		setCurrentWorkflowPublishedRuntime,
 		setCurrentWorkflowVisibility,
 		setIsWorkflowOwner,
 		setHasUnsavedChanges,

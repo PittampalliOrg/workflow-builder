@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shlex
+import uuid
 from pathlib import Path
 from urllib.parse import quote
 
@@ -27,6 +29,9 @@ DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
 DAPR_AGENT_APP_ID = config.DAPR_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 MS_AGENT_APP_ID = config.MS_AGENT_APP_ID
+OPENSHELL_AGENT_RUNTIME_BASE_URL = (
+    str(os.environ.get("OPENSHELL_AGENT_RUNTIME_BASE_URL") or "").strip().rstrip("/")
+)
 
 _OPEN_TAG = "<proposed_plan>"
 _CLOSE_TAG = "</proposed_plan>"
@@ -394,6 +399,42 @@ def _build_openshell_command(input_data: dict) -> str:
     return command
 
 
+def _build_openshell_session_start_command(
+    input_data: dict,
+    *,
+    session_id: str,
+) -> str:
+    prompt = str(input_data.get("prompt") or "").strip()
+    provider = str(input_data.get("provider") or "").strip().lower()
+    model = str(input_data.get("model") or "").strip()
+    session_name = str(input_data.get("sessionName") or "").strip()
+    model_provider = ""
+    if "/" in model:
+        model_provider, model = [part.strip() for part in model.split("/", 1)]
+        model_provider = model_provider.lower()
+    cwd = str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
+    args = [
+        "claude",
+        "-p",
+        prompt,
+        "--permission-mode",
+        "bypassPermissions",
+        "--session-id",
+        session_id,
+    ]
+    normalized_provider = provider or model_provider
+    should_forward_model = bool(model) and (
+        model.startswith("claude")
+        or normalized_provider in {"anthropic", "claude"}
+    )
+    if should_forward_model:
+        args.extend(["--model", model])
+    command = " ".join(shlex.quote(part) for part in args)
+    if cwd:
+        return f"cd {shlex.quote(cwd)} && {command}"
+    return command
+
+
 def terminate_durable_runs_by_parent_execution(
     parent_execution_id: str,
     reason: str | None = None,
@@ -555,8 +596,12 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
     Run an OpenShell sandboxed Claude-style coding task synchronously.
     """
     url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{OPENSHELL_AGENT_APP_ID}/method/api/v1/agent-runs"
+        f"{OPENSHELL_AGENT_RUNTIME_BASE_URL}/api/v1/agent-runs"
+        if OPENSHELL_AGENT_RUNTIME_BASE_URL
+        else (
+            f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
+            f"{OPENSHELL_AGENT_APP_ID}/method/api/v1/agent-runs"
+        )
     )
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -570,6 +615,8 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.call_openshell_agent_run", otel, attrs):
         try:
+            action_type = str(input_data.get("actionType") or "openshell/run").strip()
+            is_session_start = action_type == "openshell/session-start"
             timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
             try:
                 timeout_minutes = int(timeout_minutes_raw or 30)
@@ -597,7 +644,25 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 r"[^a-z0-9-]", "-", sandbox_name_raw.lower()
             )[:30].rstrip("-") or "sandbox"
             provider = str(input_data.get("provider") or "").strip() or None
-            command = _build_openshell_command(input_data)
+            session_id = (
+                str(input_data.get("sessionId") or "").strip()
+                if is_session_start
+                else ""
+            ) or str(uuid.uuid4())
+            session_name = (
+                str(input_data.get("sessionName") or input_data.get("nodeName") or "").strip()
+                if is_session_start
+                else ""
+            )
+            resume_command = f"claude -r {session_id}" if is_session_start else None
+            command = (
+                _build_openshell_session_start_command(
+                    {**input_data, "sessionName": session_name},
+                    session_id=session_id,
+                )
+                if is_session_start
+                else _build_openshell_command(input_data)
+            )
             otel_headers = _otel_headers(otel)
             trace_id = _trace_id_from_otel(otel)
             payload = {
@@ -633,6 +698,10 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "planningThreadId": input_data.get("planningThreadId"),
                 "executionThreadId": input_data.get("executionThreadId"),
                 "agentConfig": input_data.get("agentConfig"),
+                "actionType": action_type,
+                "sessionId": session_id if is_session_start else None,
+                "sessionName": session_name if is_session_start else None,
+                "resumeCommand": resume_command if is_session_start else None,
                 "traceId": trace_id,
                 "_otel": otel if isinstance(otel, dict) else {},
             }
@@ -669,7 +738,7 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "success": bool(data.get("status") == "completed" and result.get("ok", True)),
                 "agentWorkflowId": data.get("agentWorkflowId") or run_id,
                 "daprInstanceId": data.get("daprInstanceId") or run_id,
-                "childWorkflowName": "openshell-run",
+                "childWorkflowName": "openshell-session-start" if is_session_start else "openshell-run",
                 "childAppId": OPENSHELL_AGENT_APP_ID,
                 "sandboxName": data.get("sandboxName") or sandbox_name,
                 "provider": data.get("provider") or provider,
@@ -680,6 +749,20 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "agentProgress": agent_progress,
                 "result": result,
             }
+            if is_session_start:
+                compact_result["prompt"] = str(input_data.get("prompt") or "").strip()
+                compact_result["sessionId"] = session_id
+                compact_result["resumeCommand"] = (
+                    str(data.get("resumeCommand") or "").strip()
+                    or str(result.get("resumeCommand") or "").strip()
+                    or resume_command
+                )
+                compact_result["repoPath"] = (
+                    str(data.get("repoPath") or "").strip()
+                    or str(result.get("repoPath") or "").strip()
+                    or str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
+                )
+                compact_result["sessionName"] = session_name or None
             for field_name in (
                 "fileChanges",
                 "snapshotRefs",

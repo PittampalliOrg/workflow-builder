@@ -206,6 +206,29 @@ export const StepSpecSchema = z.discriminatedUnion("kind", [
 
 export type StepSpec = z.infer<typeof StepSpecSchema>;
 
+export const PublishedWorkflowRevisionSchema = z.object({
+	version: z.string().min(1),
+	publishedAt: z.string().min(1),
+	specVersion: z.string().min(1).nullable().optional(),
+	definition: z.object({}).catchall(JsonValueSchema),
+});
+
+export type PublishedWorkflowRevision = z.infer<
+	typeof PublishedWorkflowRevisionSchema
+>;
+
+export const PublishedRuntimeMetadataSchema = z.object({
+	status: z.enum(["published"]),
+	workflowName: z.string().min(1),
+	latestVersion: z.string().min(1),
+	publishedAt: z.string().min(1),
+	revisions: z.array(PublishedWorkflowRevisionSchema).min(1),
+});
+
+export type PublishedRuntimeMetadata = z.infer<
+	typeof PublishedRuntimeMetadataSchema
+>;
+
 export const WorkflowSpecSchema = z.object({
 	apiVersion: z.literal(WORKFLOW_SPEC_API_VERSION),
 	name: z.string().min(1),
@@ -214,6 +237,7 @@ export const WorkflowSpecSchema = z.object({
 		.object({
 			tags: z.array(z.string().min(1)).optional(),
 			author: z.string().min(1).optional(),
+			publishedRuntime: PublishedRuntimeMetadataSchema.optional(),
 		})
 		.optional(),
 	trigger: TriggerSpecSchema,

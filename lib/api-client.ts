@@ -30,7 +30,10 @@ import type {
 	DaprDebugAppDetailResponse,
 	DaprDebugOverviewResponse,
 } from "./types/dapr-debug";
-import type { WorkflowSpec } from "./workflow-spec/types";
+import type {
+	PublishedRuntimeMetadata,
+	WorkflowSpec,
+} from "./workflow-spec/types";
 import type {
 	AgentNodeProgress,
 	DurableAgentRunSummary,
@@ -63,6 +66,30 @@ export type SavedWorkflow = WorkflowData & {
 	createdAt: string;
 	updatedAt: string;
 	isOwner?: boolean;
+	publishedRuntime?: PublishedRuntimeMetadata | null;
+};
+
+export type PublishedWorkflow = SavedWorkflow & {
+	publishedRuntime: PublishedRuntimeMetadata;
+};
+
+export type PublishedWorkflowRevisionDetail = {
+	workflowId: string;
+	workflowName: string;
+	daprWorkflowName: string;
+	latestVersion: string;
+	requestedVersion: string;
+	revision: {
+		version: string;
+		publishedAt: string;
+		specVersion?: string | null;
+		definition: Record<string, unknown>;
+	};
+	revisions: Array<{
+		version: string;
+		publishedAt: string;
+		specVersion?: string | null;
+	}>;
 };
 
 export type ExecutionChangeFileStatus = "A" | "M" | "D" | "R";
@@ -668,6 +695,17 @@ export const workflowApi = {
 			method: "POST",
 		}),
 
+	// Publish a workflow as a registered Dapr workflow version
+	publish: (id: string) =>
+		apiCall<PublishedWorkflow>(`/api/workflows/${id}/publish`, {
+			method: "POST",
+		}),
+
+	getPublishedRevision: (id: string, version = "latest") =>
+		apiCall<PublishedWorkflowRevisionDetail>(
+			`/api/workflows/${id}/published/${encodeURIComponent(version)}`,
+		),
+
 	// Get current workflow state
 	getCurrent: () => apiCall<WorkflowData>("/api/workflows/current"),
 
@@ -857,10 +895,14 @@ export const workflowApi = {
 		apiCall<{
 			podIp?: string;
 			templateName?: string;
+			actionType?: string;
 			sandboxName?: string;
 			repoPath?: string;
 			agentRunId?: string;
 			status?: string;
+			sessionId?: string;
+			resumeCommand?: string;
+			initialPrompt?: string;
 			error?: string;
 		}>(`/api/workflows/${workflowId}/executions/${executionId}/sandbox`),
 

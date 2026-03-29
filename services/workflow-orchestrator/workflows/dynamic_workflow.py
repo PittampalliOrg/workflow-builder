@@ -1175,6 +1175,7 @@ def dynamic_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 # Long-running native child workflows (bypass function-router).
                 if action_type in (
                     "openshell/run",
+                    "openshell/session-start",
                     "openshell-langgraph/run",
                     "openshell-deepagent/run",
                     "openshell-durable/run",
@@ -2258,15 +2259,19 @@ def process_agent_child_workflow(
     resolved_config = resolve_templates(config, node_outputs)
     is_ms_agent = action_type == "ms-agent/run"
     is_openshell_langgraph_agent = action_type == "openshell-langgraph/run"
-    is_openshell_agent = action_type == "openshell/run"
+    is_openshell_session_start = action_type == "openshell/session-start"
+    is_openshell_plan_agent = action_type == "openshell/run"
+    is_openshell_agent = is_openshell_plan_agent or is_openshell_session_start
     is_openshell_deepagent = action_type == "openshell-deepagent/run"
     is_openshell_durable = action_type == "openshell-durable/run"
     is_vanilla_durable = action_type == "vanilla-durable/run"
     is_dapr_agent = action_type == "dapr-agent/run"
     uses_dapr_agent_runtime = is_dapr_agent or is_openshell_langgraph_agent or is_openshell_deepagent or is_openshell_durable or is_vanilla_durable
-    default_mode = "plan_mode"
+    default_mode = "execute_direct" if is_openshell_session_start else "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
+        mode = "execute_direct"
+    if is_openshell_session_start:
         mode = "execute_direct"
     if action_type == "durable/claude-plan":
         mode = "plan_mode"
@@ -2772,7 +2777,7 @@ def process_agent_child_workflow(
 
         plan_artifact_ref = start_result.get("artifactRef")
         if (
-            is_openshell_agent
+            is_openshell_plan_agent
             and (not isinstance(plan_artifact_ref, str) or not plan_artifact_ref.strip())
         ):
             from activities.persist_plan_artifact import persist_plan_artifact

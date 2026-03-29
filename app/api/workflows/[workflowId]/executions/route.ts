@@ -76,6 +76,7 @@ export async function GET(
 									inArray(workflowExecutionLogs.activityName, [
 										"dapr-agent/run",
 										"openshell/run",
+										"openshell/session-start",
 										"openshell-langgraph/run",
 										"ms-agent/run",
 									]),

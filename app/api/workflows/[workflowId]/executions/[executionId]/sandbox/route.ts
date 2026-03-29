@@ -76,6 +76,7 @@ function findOpenShellSandbox(
 	const nodeConfigMap = buildNodeConfigMap(nodes);
 	const isOpenShellAction = (actionType: string | undefined) =>
 		actionType === "openshell/run" ||
+		actionType === "openshell/session-start" ||
 		actionType === "openshell-langgraph/run" ||
 		actionType === "openshell-langgraph-observable/run" ||
 		actionType === "openshell-deepagent/run" ||
@@ -95,10 +96,21 @@ function findOpenShellSandbox(
 		}
 		return {
 			templateName: "openshell",
+			actionType: nodeConfig?.actionType,
 			sandboxName,
 			repoPath: nodeConfig.sandboxRepoPath ?? nodeConfig.cwd,
 			agentRunId: run.daprInstanceId,
 			status: run.status,
+			sessionId:
+				readNestedString(run.result, ["sessionId"]) ??
+				readNestedString(run.result, ["result", "sessionId"]),
+			resumeCommand:
+				readNestedString(run.result, ["resumeCommand"]) ??
+				readNestedString(run.result, ["result", "resumeCommand"]),
+			initialPrompt:
+				readNestedString(run.result, ["prompt"]) ??
+				readNestedString(run.result, ["result", "prompt"]) ??
+				readNestedString(run.result, ["text"]),
 		};
 	}
 
@@ -123,6 +135,7 @@ function findOpenShellSandbox(
 		}
 		return {
 			templateName: "openshell",
+			actionType: nodeConfig?.actionType,
 			sandboxName,
 			repoPath: nodeConfig.sandboxRepoPath ?? nodeConfig.cwd,
 			agentRunId:
@@ -131,6 +144,11 @@ function findOpenShellSandbox(
 			status:
 				readNestedString(record, ["agentProgress", "status"]) ??
 				readNestedString(record, ["phase"]),
+			sessionId: readNestedString(record, ["sessionId"]),
+			resumeCommand: readNestedString(record, ["resumeCommand"]),
+			initialPrompt:
+				readNestedString(record, ["prompt"]) ??
+				readNestedString(record, ["text"]),
 		};
 	}
 

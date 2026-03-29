@@ -157,6 +157,7 @@ const getProviderLogo = (
 	// Check for system actions first (non-plugin)
 	switch (actionType) {
 		case "openshell/run":
+		case "openshell/session-start":
 		case "openshell-langgraph/run":
 			return <Bot className="size-12 text-orange-300" strokeWidth={1.5} />;
 		case "dapr-agent/run":
@@ -263,6 +264,7 @@ function AgentProgressOverlay({
 	const primaryLabel =
 		actionType === "dapr-agent/run" ||
 		actionType === "openshell/run" ||
+		actionType === "openshell/session-start" ||
 		actionType === "openshell-langgraph/run"
 			? progress.currentIteration != null && progress.maxIterations != null
 				? `Loop ${progress.currentIteration}/${progress.maxIterations}`
@@ -448,6 +450,7 @@ export const ActionNode = memo(
 		const getAiModel = (): string | null => {
 			if (
 				actionType === "openshell/run" ||
+				actionType === "openshell/session-start" ||
 				actionType === "openshell-langgraph/run"
 			) {
 				return typeof data.config?.model === "string"
@@ -508,6 +511,7 @@ export const ActionNode = memo(
 				{(actionType === "ms-agent/run" ||
 					actionType === "dapr-agent/run" ||
 					actionType === "openshell/run" ||
+					actionType === "openshell/session-start" ||
 					actionType === "openshell-langgraph/run") && (
 					<AgentProgressOverlay
 						actionType={actionType}

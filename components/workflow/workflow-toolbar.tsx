@@ -19,6 +19,7 @@ import {
 	Square,
 	Trash2,
 	Undo2,
+	Upload,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
@@ -33,7 +34,7 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { api } from "@/lib/api-client";
+import { api, type SavedWorkflow } from "@/lib/api-client";
 import { useSession } from "@/lib/auth-client";
 import { connectionsAtom } from "@/lib/connections-store";
 import type { McpInputProperty } from "@/lib/mcp/types";
@@ -51,6 +52,7 @@ import {
 	currentWorkflowEngineTypeAtom,
 	currentWorkflowIdAtom,
 	currentWorkflowNameAtom,
+	currentWorkflowPublishedRuntimeAtom,
 	currentWorkflowVisibilityAtom,
 	deleteEdgeAtom,
 	deleteNodeAtom,
@@ -104,6 +106,10 @@ import { SidebarToggle } from "../sidebar-toggle";
 import { WorkflowIcon } from "../ui/workflow-icon";
 import { UserMenu } from "../workflows/user-menu";
 import { Switch } from "@/components/ui/switch";
+import {
+	WorkflowPublicationBadge,
+	WorkflowPublicationStatus,
+} from "./workflow-publication";
 
 type WorkflowToolbarProps = {
 	workflowId?: string;
@@ -936,6 +942,8 @@ function useWorkflowState() {
 	const [workflowName, setCurrentWorkflowName] = useAtom(
 		currentWorkflowNameAtom,
 	);
+	const [currentWorkflowPublishedRuntime, setCurrentWorkflowPublishedRuntime] =
+		useAtom(currentWorkflowPublishedRuntimeAtom);
 	const [workflowVisibility, setWorkflowVisibility] = useAtom(
 		currentWorkflowVisibilityAtom,
 	);
@@ -959,16 +967,12 @@ function useWorkflowState() {
 	const [triggerExecute, setTriggerExecute] = useAtom(triggerExecuteAtom);
 	const [simulationMode, setSimulationMode] = useAtom(simulationModeAtom);
 	const workflowSimulationRunning = useAtomValue(workflowSimulationRunningAtom);
+	const aiCreateDraft = useAtomValue(workflowAiCreateDraftAtom);
 
 	const [isDownloading, setIsDownloading] = useState(false);
 	const [isDuplicating, setIsDuplicating] = useState(false);
-	const [allWorkflows, setAllWorkflows] = useState<
-		Array<{
-			id: string;
-			name: string;
-			updatedAt: string;
-		}>
-	>([]);
+	const [isPublishing, setIsPublishing] = useState(false);
+	const [allWorkflows, setAllWorkflows] = useState<SavedWorkflow[]>([]);
 
 	// Load all workflows on mount
 	useEffect(() => {
@@ -994,6 +998,8 @@ function useWorkflowState() {
 		currentWorkflowId,
 		workflowName,
 		setCurrentWorkflowName,
+		currentWorkflowPublishedRuntime,
+		setCurrentWorkflowPublishedRuntime,
 		workflowVisibility,
 		setWorkflowVisibility,
 		engineType,
@@ -1013,6 +1019,8 @@ function useWorkflowState() {
 		setIsDownloading,
 		isDuplicating,
 		setIsDuplicating,
+		isPublishing,
+		setIsPublishing,
 		allWorkflows,
 		setAllWorkflows,
 		setActiveTab,
@@ -1026,6 +1034,7 @@ function useWorkflowState() {
 		simulationMode,
 		setSimulationMode,
 		workflowSimulationRunning,
+		aiCreateDraft,
 	};
 }
 
@@ -1043,11 +1052,14 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setIsExecuting,
 		setIsSaving,
 		setHasUnsavedChanges,
+		currentWorkflowPublishedRuntime,
+		setCurrentWorkflowPublishedRuntime,
 		clearWorkflow,
 		setWorkflowVisibility,
 		setAllWorkflows,
 		setIsDownloading,
 		setIsDuplicating,
+		setIsPublishing,
 		setActiveTab,
 		setNodes,
 		setEdges,
@@ -1060,6 +1072,7 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setTriggerExecute,
 		router,
 		session,
+		aiCreateDraft,
 	} = state;
 
 	const { handleSave, handleExecute } = useWorkflowHandlers({
@@ -1254,8 +1267,53 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setIsExecuting(false);
 	};
 
+	const handlePublish = async () => {
+		if (!currentWorkflowId) {
+			toast.error("Please save the workflow before publishing");
+			return;
+		}
+		if (aiCreateDraft?.workflowId === currentWorkflowId) {
+			toast.error("Apply or discard the AI draft before publishing");
+			return;
+		}
+		if (!session?.user) {
+			toast.error("Please sign in to publish workflows");
+			return;
+		}
+
+		setIsPublishing(true);
+		try {
+			if (state.hasUnsavedChanges) {
+				setIsSaving(true);
+				await api.workflow.update(currentWorkflowId, { nodes, edges });
+				setHasUnsavedChanges(false);
+			}
+
+			const publishedWorkflow = await api.workflow.publish(currentWorkflowId);
+			setCurrentWorkflowPublishedRuntime(
+				publishedWorkflow.publishedRuntime ?? currentWorkflowPublishedRuntime,
+			);
+
+			const workflows = await api.workflow.getAll();
+			setAllWorkflows(workflows);
+
+			toast.success(
+				publishedWorkflow.publishedRuntime
+					? `Published ${publishedWorkflow.publishedRuntime.latestVersion}`
+					: "Workflow published",
+			);
+		} catch (error) {
+			console.error("Failed to publish workflow:", error);
+			toast.error("Failed to publish workflow. Please try again.");
+		} finally {
+			setIsSaving(false);
+			setIsPublishing(false);
+		}
+	};
+
 	return {
 		handleSave,
+		handlePublish,
 		handleExecute,
 		handleCancelSimulation,
 		handleClearWorkflow,
@@ -1560,12 +1618,52 @@ function ToolbarActions({
 				<DownloadButton actions={actions} state={state} />
 			</ButtonGroup>
 
+			<PublishButton actions={actions} state={state} />
+
 			{/* Visibility Toggle */}
 			<VisibilityButton actions={actions} state={state} />
 			<SimulationModeToggle state={state} />
 
 			<RunButtonGroup actions={actions} state={state} />
 		</>
+	);
+}
+
+function PublishButton({
+	state,
+	actions,
+}: {
+	state: ReturnType<typeof useWorkflowState>;
+	actions: ReturnType<typeof useWorkflowActions>;
+}) {
+	const isPublished = Boolean(state.currentWorkflowPublishedRuntime);
+
+	return (
+		<Button
+			className="h-9 border hover:bg-black/5 dark:hover:bg-white/5"
+			disabled={
+				!state.currentWorkflowId ||
+				!state.isOwner ||
+				state.isGenerating ||
+				state.isSaving ||
+				state.isExecuting ||
+				state.isPublishing
+			}
+			onClick={() => void actions.handlePublish()}
+			size="sm"
+			title={isPublished ? "Publish a new version" : "Publish workflow"}
+			variant="secondary"
+		>
+			{state.isPublishing ? (
+				<Loader2 className="mr-2 size-4 animate-spin" />
+			) : (
+				<Upload className="mr-2 size-4" />
+			)}
+			<span className="hidden sm:inline">
+				{isPublished ? "Publish update" : "Publish"}
+			</span>
+			<span className="sm:hidden">{isPublished ? "Update" : "Publish"}</span>
+		</Button>
 	);
 }
 
@@ -1820,6 +1918,12 @@ function WorkflowMenuComponent({
 								)}
 							</p>
 						</div>
+						{workflowId && (
+							<WorkflowPublicationBadge
+								compact
+								publishedRuntime={state.currentWorkflowPublishedRuntime}
+							/>
+						)}
 						<ChevronDown className="size-3 shrink-0 opacity-50" />
 					</DropdownMenuTrigger>
 					<DropdownMenuContent
@@ -1895,6 +1999,10 @@ function WorkflowMenuComponent({
 											<span className="font-mono">
 												{workflow.id.slice(0, 8)}
 											</span>
+											<WorkflowPublicationBadge
+												compact
+												publishedRuntime={workflow.publishedRuntime}
+											/>
 											{workflow.id === state.currentWorkflowId && (
 												<span className="rounded-full bg-accent px-1.5 py-0.5 font-medium text-[10px] uppercase tracking-wide text-accent-foreground">
 													Current
@@ -1937,6 +2045,13 @@ export const WorkflowToolbar = ({ workflowId }: WorkflowToolbarProps) => {
 						state={state}
 						workflowId={workflowId}
 					/>
+					{workflowId && (
+						<WorkflowPublicationStatus
+							publishedRuntime={state.currentWorkflowPublishedRuntime}
+							workflowId={workflowId}
+							workflowName={state.workflowName}
+						/>
+					)}
 					{workflowId && !state.isOwner && (
 						<span className="hidden text-muted-foreground text-xs uppercase lg:inline">
 							Read-only

@@ -946,6 +946,119 @@ const OPENSHELL_AGENT_PIECE: IntegrationDefinition = {
 				{ field: "sandboxName", description: "OpenShell sandbox name" },
 			],
 		},
+		{
+			slug: "session-start",
+			label: "Start OpenShell Claude Session",
+			description:
+				"Provision an OpenShell sandbox, bootstrap the repository, and seed a resumable Claude session for user handoff",
+			category: "OpenShell Agent",
+			configFields: [
+				{
+					key: "workspaceRef",
+					label: "Workspace Ref",
+					type: "template-input",
+					placeholder: "{{@nodeId:Workspace Profile.workspaceRef}}",
+					required: true,
+				},
+				{
+					key: "prompt",
+					label: "Initial Prompt",
+					type: "template-textarea",
+					placeholder:
+						"Describe how Claude should initialize this repository session for the user.",
+					required: true,
+					rows: 6,
+				},
+				{
+					key: "repositoryUrl",
+					label: "Repository URL",
+					type: "template-input",
+					required: true,
+					placeholder:
+						"http://gitea-http.gitea.svc.cluster.local:3000/owner/repo.git",
+				},
+				{
+					key: "repositoryBranch",
+					label: "Repository Branch",
+					type: "template-input",
+					required: true,
+					placeholder: "main",
+				},
+				{
+					key: "sandboxRepoPath",
+					label: "Sandbox Repo Path",
+					type: "template-input",
+					required: false,
+					placeholder: "/sandbox/repo",
+				},
+				{
+					key: "provider",
+					label: "OpenShell Provider",
+					type: "template-input",
+					required: false,
+					defaultValue: "claude",
+					placeholder: "claude",
+				},
+				{
+					key: "model",
+					label: "Claude Model (optional)",
+					type: "template-input",
+					required: false,
+					defaultValue: "anthropic/claude-sonnet-4-6",
+					placeholder: "anthropic/claude-sonnet-4-6",
+				},
+				{
+					key: "sessionName",
+					label: "Session Name (optional)",
+					type: "template-input",
+					required: false,
+					placeholder: "workflow-builder-session",
+				},
+				{
+					key: "keepSandbox",
+					label: "Keep Sandbox",
+					type: "select",
+					required: false,
+					defaultValue: "true",
+					options: [
+						{ label: "Enabled", value: "true" },
+						{ label: "Disabled", value: "false" },
+					],
+				},
+				{
+					key: "timeoutMinutes",
+					label: "Timeout (minutes)",
+					type: "number",
+					required: false,
+					defaultValue: "15",
+					min: 1,
+				},
+			],
+			outputFields: [
+				{ field: "text", description: "Claude initialization output" },
+				{
+					field: "agentWorkflowId",
+					description: "OpenShell run identifier",
+				},
+				{
+					field: "daprInstanceId",
+					description: "OpenShell runtime instance ID",
+				},
+				{ field: "provider", description: "OpenShell provider used" },
+				{ field: "model", description: "Claude model used" },
+				{ field: "sandboxName", description: "OpenShell sandbox name" },
+				{ field: "repoPath", description: "Repository path in the sandbox" },
+				{
+					field: "sessionId",
+					description: "Persistent Claude session identifier",
+				},
+				{
+					field: "resumeCommand",
+					description: "CLI command to resume the Claude session",
+				},
+				{ field: "traceId", description: "OpenTelemetry trace identifier" },
+			],
+		},
 	],
 };
 

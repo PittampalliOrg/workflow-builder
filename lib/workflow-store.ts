@@ -10,7 +10,10 @@ import { atom } from "jotai";
 import { nanoid } from "nanoid";
 import { api } from "./api-client";
 import type { AgentNodeProgress } from "./types/durable-timeline";
-import type { WorkflowSpec } from "./workflow-spec/types";
+import type {
+	PublishedRuntimeMetadata,
+	WorkflowSpec,
+} from "./workflow-spec/types";
 
 export type WorkflowNodeType =
 	| "trigger"
@@ -109,6 +112,8 @@ export const currentWorkflowIdAtom = atom<string | null>(null);
 export const currentWorkflowNameAtom = atom<string>("");
 export const currentWorkflowVisibilityAtom =
 	atom<WorkflowVisibility>("private");
+export const currentWorkflowPublishedRuntimeAtom =
+	atom<PublishedRuntimeMetadata | null>(null);
 export const isWorkflowOwnerAtom = atom<boolean>(true); // Whether current user owns this workflow
 
 // UI state atoms

@@ -5,6 +5,7 @@ import { nanoid } from "nanoid";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef } from "react";
 import { toast } from "sonner";
+import { TemplateGallery } from "@/components/workflow/template-gallery";
 import { api } from "@/lib/api-client";
 import {
 	currentWorkflowIdAtom,
@@ -129,7 +130,13 @@ const Home = () => {
 	}, [nodes, edges, router, setIsTransitioningFromHomepage]);
 
 	// Canvas and toolbar are rendered by PersistentCanvas in the layout
-	return null;
+	return (
+		<div className="pointer-events-auto mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-6xl items-start justify-center px-6 py-10">
+			<div className="w-full rounded-2xl border border-white/10 bg-[#111827]/80 p-6 shadow-2xl backdrop-blur">
+				<TemplateGallery />
+			</div>
+		</div>
+	);
 };
 
 export default Home;

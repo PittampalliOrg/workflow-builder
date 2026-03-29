@@ -7,6 +7,7 @@ import { workflows } from "@/lib/db/schema";
 import type { WorkflowResourceRefInput } from "@/lib/db/resources";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
+import { extractPublishedRuntime } from "@/lib/workflow-publishing";
 import {
 	applyResourcePresetsToNodes,
 	persistWorkflowResourceRefs,
@@ -93,6 +94,31 @@ function sanitizeSpecForPublicView(spec: unknown): unknown {
 	};
 }
 
+function extractSpecMetadata(
+	spec: unknown,
+): Record<string, unknown> | undefined {
+	if (!spec || typeof spec !== "object") {
+		return undefined;
+	}
+	const metadata = (spec as Record<string, unknown>).metadata;
+	return metadata && typeof metadata === "object"
+		? ({ ...metadata } as Record<string, unknown>)
+		: undefined;
+}
+
+function applyPreservedSpecMetadata(input: {
+	spec: unknown;
+	metadata: Record<string, unknown> | undefined;
+}): unknown {
+	if (!input.metadata || !input.spec || typeof input.spec !== "object") {
+		return input.spec;
+	}
+	return {
+		...(input.spec as Record<string, unknown>),
+		metadata: input.metadata,
+	};
+}
+
 export async function GET(
 	request: Request,
 	context: { params: Promise<{ workflowId: string }> },
@@ -137,6 +163,9 @@ export async function GET(
 			createdAt: workflow.createdAt.toISOString(),
 			updatedAt: workflow.updatedAt.toISOString(),
 			isOwner,
+			publishedRuntime: extractPublishedRuntime(
+				(workflow as Record<string, unknown>).spec,
+			),
 		};
 
 		return NextResponse.json(responseData);
@@ -259,8 +288,7 @@ export async function PATCH(
 			typeof updateData.description === "string"
 				? updateData.description
 				: (existingWorkflow.description ?? undefined);
-		const graphUpdated =
-			Array.isArray(body.nodes) || Array.isArray(body.edges);
+		const graphUpdated = Array.isArray(body.nodes) || Array.isArray(body.edges);
 		const canonicalSpec = resolveCanonicalWorkflowSpec({
 			name: effectiveName,
 			description: effectiveDescription,
@@ -282,8 +310,14 @@ export async function PATCH(
 								| null
 								| undefined) ?? null),
 		});
+		const preservedMetadata =
+			extractSpecMetadata(body.spec) ??
+			extractSpecMetadata((existingWorkflow as Record<string, unknown>).spec);
 		updateData.specVersion = canonicalSpec.specVersion;
-		updateData.spec = canonicalSpec.spec;
+		updateData.spec = applyPreservedSpecMetadata({
+			spec: canonicalSpec.spec,
+			metadata: preservedMetadata,
+		});
 
 		const [updatedWorkflow] = await db
 			.update(workflows)

@@ -342,6 +342,8 @@ _taskhub_channel: grpc.Channel | None = None
 _taskhub_stub: pb_grpc.TaskHubSidecarServiceStub | None = None
 DYNAMIC_WORKFLOW_NAME = "dynamic_workflow"
 AP_WORKFLOW_NAME = "ap_workflow"
+_published_workflow_descriptors: list[dict[str, Any]] = []
+_published_workflow_handlers: list[Any] = []
 
 
 def _taskhub_metadata() -> list[tuple[str, str]] | None:
@@ -393,6 +395,221 @@ def _schedule_new_workflow_instance(
     if not result_id:
         raise RuntimeError("workflow runtime returned an empty instance ID")
     return result_id
+
+
+def _clone_json_value(value: Any) -> Any:
+    return json.loads(json.dumps(value))
+
+
+def _build_definition_from_workflow_record(workflow_row: dict[str, Any]) -> dict[str, Any]:
+    raw_nodes = workflow_row["nodes"]
+    raw_edges = workflow_row["edges"]
+    lowered_nodes, lowered_edges = _lower_while_nodes(raw_nodes, raw_edges)
+
+    exec_nodes = [
+        n
+        for n in lowered_nodes
+        if n.get("type") != "add" and n.get("data", {}).get("type") != "add"
+    ]
+    serialized_nodes = [_serialize_node(n) for n in exec_nodes]
+    node_ids = {n["id"] for n in exec_nodes}
+    serialized_edges = [
+        {
+            "id": e["id"],
+            "source": e["source"],
+            "target": e["target"],
+            "sourceHandle": e.get("sourceHandle"),
+            "targetHandle": e.get("targetHandle"),
+        }
+        for e in lowered_edges
+        if e["source"] in node_ids and e["target"] in node_ids
+    ]
+    execution_order = _topological_sort(
+        [{"id": n["id"], "type": n["type"]} for n in serialized_nodes],
+        serialized_edges,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "id": workflow_row["id"],
+        "name": workflow_row["name"],
+        "version": "1.0.0",
+        "nodes": serialized_nodes,
+        "edges": serialized_edges,
+        "executionOrder": execution_order,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def _extract_published_runtime(spec: Any) -> dict[str, Any] | None:
+    if not isinstance(spec, dict):
+        return None
+    metadata = spec.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    published_runtime = metadata.get("publishedRuntime")
+    if not isinstance(published_runtime, dict):
+        return None
+    if str(published_runtime.get("status") or "").strip().lower() != "published":
+        return None
+    return published_runtime
+
+
+def _extract_published_revisions(
+    workflow_row: dict[str, Any],
+) -> tuple[str | None, str | None, list[dict[str, Any]]]:
+    published_runtime = _extract_published_runtime(workflow_row.get("spec"))
+    workflow_name = str(
+        workflow_row.get("daprWorkflowName")
+        or (published_runtime or {}).get("workflowName")
+        or ""
+    ).strip() or None
+    latest_version = str(
+        (published_runtime or {}).get("latestVersion") or ""
+    ).strip() or None
+    revisions_raw = (
+        published_runtime.get("revisions")
+        if isinstance(published_runtime, dict)
+        else None
+    )
+    revisions: list[dict[str, Any]] = []
+    if isinstance(revisions_raw, list):
+        for revision in revisions_raw:
+            if not isinstance(revision, dict):
+                continue
+            version = str(revision.get("version") or "").strip()
+            definition = revision.get("definition")
+            if not version or not isinstance(definition, dict):
+                continue
+            revisions.append(
+                {
+                    "version": version,
+                    "publishedAt": str(revision.get("publishedAt") or "").strip() or None,
+                    "definition": _clone_json_value(definition),
+                    "specVersion": str(revision.get("specVersion") or "").strip() or None,
+                }
+            )
+    if workflow_name and latest_version and not revisions:
+        revisions.append(
+            {
+                "version": latest_version,
+                "publishedAt": None,
+                "definition": _build_definition_from_workflow_record(workflow_row),
+                "specVersion": (
+                    str(workflow_row.get("specVersion") or "").strip() or None
+                ),
+            }
+        )
+    return workflow_name, latest_version, revisions
+
+
+def _make_published_workflow_handler(
+    workflow_name: str,
+    workflow_version: str,
+    frozen_definition: dict[str, Any],
+):
+    safe_name = workflow_name.replace("-", "_").replace(".", "_")
+    safe_version = workflow_version.replace("-", "_").replace(".", "_")
+
+    def _published_workflow(ctx: Any, input_data: dict) -> dict:
+        merged_input = dict(input_data or {})
+        merged_input["definition"] = _clone_json_value(frozen_definition)
+        merged_input.setdefault("_workflowVersion", workflow_version)
+        return (yield from dynamic_workflow(ctx, merged_input))
+
+    _published_workflow.__name__ = f"published_{safe_name}_{safe_version}"
+    return _published_workflow
+
+
+def _fetch_published_workflows_from_db() -> list[dict[str, Any]]:
+    import psycopg2
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, name, description, user_id, nodes, edges, spec, spec_version, dapr_workflow_name
+            FROM workflows
+            WHERE dapr_workflow_name IS NOT NULL
+            """
+        )
+        rows = cur.fetchall()
+        published: list[dict[str, Any]] = []
+        for row in rows:
+            (
+                wf_id,
+                wf_name,
+                wf_description,
+                user_id,
+                nodes_json,
+                edges_json,
+                spec_json,
+                spec_version,
+                dapr_workflow_name,
+            ) = row
+            nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
+            edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
+            spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
+            workflow_row = {
+                "id": wf_id,
+                "name": wf_name,
+                "description": wf_description,
+                "userId": user_id,
+                "nodes": nodes,
+                "edges": edges,
+                "spec": spec,
+                "specVersion": spec_version,
+                "daprWorkflowName": dapr_workflow_name,
+            }
+            workflow_name, latest_version, revisions = _extract_published_revisions(
+                workflow_row
+            )
+            if not workflow_name or not revisions:
+                continue
+            for revision in revisions:
+                published.append(
+                    {
+                        "workflowId": wf_id,
+                        "name": workflow_name,
+                        "version": revision["version"],
+                        "aliases": [],
+                        "definition": revision["definition"],
+                        "publishedAt": revision.get("publishedAt"),
+                        "isLatest": revision["version"] == latest_version,
+                        "source": "db-published-workflow",
+                    }
+                )
+        return published
+    finally:
+        conn.close()
+
+
+def _register_published_workflows() -> list[dict[str, Any]]:
+    global _published_workflow_descriptors, _published_workflow_handlers
+
+    descriptors = _fetch_published_workflows_from_db()
+    handlers: list[Any] = []
+    for descriptor in descriptors:
+        handler = _make_published_workflow_handler(
+            descriptor["name"],
+            descriptor["version"],
+            descriptor["definition"],
+        )
+        wfr.register_versioned_workflow(
+            handler,
+            name=descriptor["name"],
+            version_name=descriptor["version"],
+            is_latest=bool(descriptor.get("isLatest")),
+        )
+        handlers.append(handler)
+    _published_workflow_handlers = handlers
+    _published_workflow_descriptors = [
+        {key: value for key, value in descriptor.items() if key != "definition"}
+        for descriptor in descriptors
+    ]
+    return _published_workflow_descriptors
 
 
 # --- Lifecycle ---
@@ -468,12 +685,14 @@ async def lifespan(app: FastAPI):
         version_name=config.AP_WORKFLOW_VERSION,
         is_latest=True,
     )
+    published_workflows = _register_published_workflows()
     logger.info(
-        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s",
+        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s (+ %s published revisions)",
         DYNAMIC_WORKFLOW_NAME,
         config.DYNAMIC_WORKFLOW_VERSION,
         AP_WORKFLOW_NAME,
         config.AP_WORKFLOW_VERSION,
+        len(published_workflows),
     )
 
     # Start the workflow runtime
@@ -763,6 +982,7 @@ def _registered_workflow_descriptors() -> list[dict[str, Any]]:
             "isLatest": True,
             "source": "service-introspection",
         },
+        *_published_workflow_descriptors,
     ]
 
 
@@ -805,24 +1025,43 @@ def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, name, user_id, nodes, edges FROM workflows WHERE id = %s",
+            """
+            SELECT id, name, description, user_id, nodes, edges, spec, spec_version, dapr_workflow_name
+            FROM workflows
+            WHERE id = %s
+            """,
             (workflow_id,),
         )
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
 
-        wf_id, wf_name, user_id, nodes_json, edges_json = row
+        (
+            wf_id,
+            wf_name,
+            wf_description,
+            user_id,
+            nodes_json,
+            edges_json,
+            spec_json,
+            spec_version,
+            dapr_workflow_name,
+        ) = row
         # JSONB columns may already be dicts/lists, or may need parsing
         nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
         edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
+        spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
 
         return {
             "id": wf_id,
             "name": wf_name,
+            "description": wf_description,
             "userId": user_id,
             "nodes": nodes,
             "edges": edges,
+            "spec": spec,
+            "specVersion": spec_version,
+            "daprWorkflowName": dapr_workflow_name,
         }
     finally:
         conn.close()
@@ -833,6 +1072,39 @@ def _generate_execution_id() -> str:
     import secrets
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
     return "".join(secrets.choice(alphabet) for _ in range(21))
+
+
+def _resolve_execution_target(
+    workflow_row: dict[str, Any],
+    requested_version: str | None,
+) -> dict[str, Any]:
+    workflow_name, latest_version, revisions = _extract_published_revisions(workflow_row)
+    revisions_by_version = {revision["version"]: revision for revision in revisions}
+
+    if workflow_name and revisions:
+        selected_version = requested_version or latest_version or revisions[-1]["version"]
+        selected_revision = revisions_by_version.get(selected_version)
+        if selected_revision is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Published workflow version '{selected_version}' is not registered "
+                    f"for workflow {workflow_row['id']}"
+                ),
+            )
+        return {
+            "workflowName": workflow_name,
+            "workflowVersion": selected_revision["version"],
+            "definition": _clone_json_value(selected_revision["definition"]),
+            "mode": "published",
+        }
+
+    return {
+        "workflowName": DYNAMIC_WORKFLOW_NAME,
+        "workflowVersion": requested_version or config.DYNAMIC_WORKFLOW_VERSION,
+        "definition": _build_definition_from_workflow_record(workflow_row),
+        "mode": "draft",
+    }
 
 
 def _create_workflow_execution(
@@ -1650,48 +1922,8 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
     try:
         # 1. Fetch workflow from DB
         wf = _fetch_workflow_from_db(request.workflowId)
-        raw_nodes = wf["nodes"]
-        raw_edges = wf["edges"]
-        lowered_nodes, lowered_edges = _lower_while_nodes(raw_nodes, raw_edges)
-
-        # 2. Filter out 'add' placeholder nodes
-        exec_nodes = [
-            n
-            for n in lowered_nodes
-            if n.get("type") != "add" and n.get("data", {}).get("type") != "add"
-        ]
-
-        # 3. Serialize nodes
-        serialized_nodes = [_serialize_node(n) for n in exec_nodes]
-
-        # 4. Filter edges to only reference existing nodes
-        node_ids = {n["id"] for n in exec_nodes}
-        serialized_edges = [
-            {"id": e["id"], "source": e["source"], "target": e["target"],
-             "sourceHandle": e.get("sourceHandle"), "targetHandle": e.get("targetHandle")}
-            for e in lowered_edges
-            if e["source"] in node_ids and e["target"] in node_ids
-        ]
-
-        # 5. Compute execution order
-        execution_order = _topological_sort(
-            [{"id": n["id"], "type": n["type"]} for n in serialized_nodes],
-            serialized_edges,
-        )
-
-        # 6. Build definition
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        definition = {
-            "id": wf["id"],
-            "name": wf["name"],
-            "version": "1.0.0",
-            "nodes": serialized_nodes,
-            "edges": serialized_edges,
-            "executionOrder": execution_order,
-            "createdAt": now,
-            "updatedAt": now,
-        }
+        execution_target = _resolve_execution_target(wf, request.workflowVersion)
+        definition = execution_target["definition"]
 
         # 6.5 Create DB execution row so child-run tracking and workspace
         # artifacts always have a valid workflow_executions foreign key.
@@ -1702,10 +1934,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
         )
 
         # 7. Schedule via the existing start_workflow logic
-        selected_workflow_version = (
-            request.workflowVersion
-            or config.DYNAMIC_WORKFLOW_VERSION
-        )
+        selected_workflow_version = execution_target["workflowVersion"]
         workflow_input = {
             "definition": definition,
             "triggerData": request.triggerData,
@@ -1719,10 +1948,17 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
         random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
         instance_id = f"{wf['id']}-{int(time.time() * 1000)}-{random_suffix}"
 
-        logger.info(f"[Execute-By-Id] Starting workflow: {wf['name']} ({instance_id})")
+        logger.info(
+            "[Execute-By-Id] Starting workflow: %s (%s) via %s@%s [%s]",
+            wf["name"],
+            instance_id,
+            execution_target["workflowName"],
+            selected_workflow_version,
+            execution_target["mode"],
+        )
 
         result_id = _schedule_new_workflow_instance(
-            workflow_name=DYNAMIC_WORKFLOW_NAME,
+            workflow_name=execution_target["workflowName"],
             instance_id=instance_id,
             workflow_input=workflow_input,
             workflow_version=selected_workflow_version,
