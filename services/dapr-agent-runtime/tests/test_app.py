@@ -2351,7 +2351,9 @@ def test_browser_materialize_change_artifact_restores_snapshots(monkeypatch) -> 
     )
 
     assert response["changeSetId"] == "run-browser-patch"
-    assert written == [("/home/gem/workspaces/exec-browser/repo/app/page.tsx", "updated")]
+    assert written[0] == ("/home/gem/workspaces/exec-browser/repo/app/page.tsx", "updated")
+    assert written[1][0] == "/home/gem/workspaces/exec-browser/repo/.wf-preview/materialized-change-set.json"
+    assert '"changeSetId": "run-browser-patch"' in written[1][1]
     assert deleted == ["/home/gem/workspaces/exec-browser/repo/old.txt"]
 
 
@@ -3085,21 +3087,24 @@ def test_api_run_status_reconstructs_running_progress_from_context_when_state_lo
 
 
 def test_browser_validate_request_model_defaults() -> None:
-    """BrowserValidateRequest should accept minimal fields and apply defaults."""
+    """BrowserValidateRequest should require deterministic workspace inputs and apply defaults."""
     req = BrowserValidateRequest(
         executionId="exec-1",
-        sandboxName="test-sandbox",
+        workspaceRef="workspace-1",
         installCommand="npm ci",
         devServerCommand="npm run dev",
+        workflowId="wf-1",
+        nodeId="node-1",
     )
     assert req.repoPath == "/sandbox/repo"
     assert req.baseUrl == "http://127.0.0.1:3009"
     assert req.timeoutMs is None
-    assert req.workflowId is None
-    assert req.workspaceRef is None
+    assert req.workflowId == "wf-1"
+    assert req.workspaceRef == "workspace-1"
+    assert req.sandboxName is None
 
 
-def test_browser_validate_prefers_local_workspace_when_available(monkeypatch, tmp_path: Path) -> None:
+def test_browser_validate_uses_materialized_local_workspace(monkeypatch, tmp_path: Path) -> None:
     session = WorkspaceSession(
         workspace_ref="workspace-local",
         execution_id="exec-1",
@@ -3112,6 +3117,19 @@ def test_browser_validate_prefers_local_workspace_when_available(monkeypatch, tm
     called: dict[str, object] = {}
 
     monkeypatch.setattr(app, "_workspace_from_ref", lambda workspace_ref: session)
+    marker_path = app._browser_materialization_marker_path(session.working_directory)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "changeSetId": "cs-1",
+                "sourceExecutionId": "exec-1",
+                "selectedRunId": "run-1",
+                "materializedAt": "2026-03-29T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
 
     def fake_local_browser_validate(request, local_session, *, execution_id, timeout_seconds):
         called["workspace_ref"] = local_session.workspace_ref
@@ -3123,17 +3141,16 @@ def test_browser_validate_prefers_local_workspace_when_available(monkeypatch, tm
 
     class ShouldNotInstantiate:
         def __init__(self, **_kwargs):
-            raise AssertionError("OpenShellToolContext should not be used for local workspace validation")
-
-    monkeypatch.setattr(app, "OpenShellToolContext", ShouldNotInstantiate)
+            raise AssertionError("OpenShellToolContext should not be used for deterministic browser validation")
 
     result = app.browser_validate(
         BrowserValidateRequest(
             executionId="exec-1",
             workspaceRef="workspace-local",
-            sandboxName="sandbox-test",
             installCommand="cd basics/learn-starter && pnpm install --frozen-lockfile --prefer-offline",
             devServerCommand="cd basics/learn-starter && pnpm dev --hostname 0.0.0.0 --port 3009",
+            workflowId="wf-1",
+            nodeId="node-1",
         )
     )
 
@@ -3145,380 +3162,383 @@ def test_browser_validate_prefers_local_workspace_when_available(monkeypatch, tm
     }
 
 
-def test_browser_validate_install_failure_returns_error(monkeypatch) -> None:
-    """browser_validate should return success=False when install command fails."""
-    call_log: list[dict] = []
-
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, timeout_seconds=300):
-            call_log.append({"command": command, "timeout": timeout_seconds})
-            if "install" in command.lower() or "npm ci" in command.lower():
-                return {"exitCode": 1, "stdout": "", "stderr": "install failed"}
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+def test_browser_validate_requires_local_workspace_backend(monkeypatch, tmp_path: Path) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-k8s",
+        execution_id="exec-1",
+        root_path=tmp_path,
+        working_directory=tmp_path / "repo",
+        enabled_tools=["bash"],
+        backend="k8s",
+    )
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
 
     result = app.browser_validate(
         BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
+            executionId="exec-1",
+            workspaceRef="workspace-k8s",
             installCommand="npm ci",
             devServerCommand="npm run dev",
             workflowId="wf-1",
             nodeId="node-1",
         )
     )
+
     assert result["success"] is False
-    assert result["phase"] == "install"
-    assert len(call_log) == 1
+    assert result["phase"] == "workspace"
+    assert "local materialized browser workspace" in result["error"]
 
 
-def test_browser_validate_install_failure_prefers_cleaned_stdout(monkeypatch) -> None:
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, timeout_seconds=300):
-            if "install" in command.lower() or "npm ci" in command.lower():
-                return {
-                    "exitCode": 1,
-                    "stdout": "ERR_PNPM_FETCH_403 real failure",
-                    "stderr": "/bin/bash: /home/node/.profile: Permission denied\n",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+def test_browser_validate_requires_materialized_workspace(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    session = WorkspaceSession(
+        workspace_ref="workspace-local",
+        execution_id="exec-1",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["bash"],
+        backend="local",
+    )
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
 
     result = app.browser_validate(
         BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
+            executionId="exec-1",
+            workspaceRef="workspace-local",
             installCommand="npm ci",
             devServerCommand="npm run dev",
-        )
-    )
-
-    assert result["success"] is False
-    assert "ERR_PNPM_FETCH_403 real failure" in result["error"]
-
-
-def test_browser_validate_skips_install_when_dependencies_present(monkeypatch) -> None:
-    """browser_validate should skip install when the app already has dependencies."""
-    call_log: list[dict[str, object]] = []
-
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            call_log.append(
-                {
-                    "command": command,
-                    "cwd": cwd,
-                    "timeout": timeout_seconds,
-                }
-            )
-            if "deps-present" in command:
-                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "sync_playwright" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
-                    "stderr": "",
-                }
-            if "npm run dev" in command:
-                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
-            if "curl -s -o /dev/null" in command:
-                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
-            if "/sandbox/capture_screenshots.py" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "CAPTURE_OK",
-                    "stderr": "",
-                }
-            if "manifest.json" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "{\"success\": true, \"screenshots\": []}",
-                    "stderr": "",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
-
-    result = app.browser_validate(
-        BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && npm ci",
-            devServerCommand="cd 'basics/learn-starter' && npm run dev",
             workflowId="wf-1",
             nodeId="node-1",
         )
     )
 
-    assert result["success"] is True
-    assert not any("npm ci" in str(entry["command"]) for entry in call_log)
+    assert result["success"] is False
+    assert result["phase"] == "materialize"
+    assert "has not been materialized" in result["error"]
 
 
-def test_browser_validate_next_partial_store_does_not_skip_install(monkeypatch) -> None:
-    call_log: list[dict[str, object]] = []
-    deps_checks = 0
-    policy_calls: list[str] = []
+def test_browser_validate_propagates_capture_error(monkeypatch, tmp_path: Path) -> None:
+    session = WorkspaceSession(
+        workspace_ref="workspace-local",
+        execution_id="exec-1",
+        root_path=tmp_path,
+        working_directory=tmp_path / "repo",
+        enabled_tools=["bash"],
+        backend="local",
+    )
+    session.working_directory.mkdir(parents=True)
+    marker_path = app._browser_materialization_marker_path(session.working_directory)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(
+            {
+                "changeSetId": "cs-1",
+                "sourceExecutionId": "exec-1",
+                "selectedRunId": "run-1",
+                "materializedAt": "2026-03-29T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
 
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            nonlocal deps_checks
-            call_log.append(
-                {
-                    "command": command,
-                    "cwd": cwd,
-                    "timeout": timeout_seconds,
-                    }
-                )
-            if "find node_modules/.pnpm" in command:
-                return {"exitCode": 0, "stdout": "", "stderr": ""}
-            if '"next"' in command and "deps-present" in command:
-                deps_checks += 1
-                if deps_checks == 1:
-                    return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
-                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "sync_playwright" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
-                    "stderr": "",
-                }
-            if "pnpm install" in command and "--prefer-offline" in command:
-                return {"exitCode": 0, "stdout": "installed", "stderr": ""}
-            if "pnpm run dev" in command:
-                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
-            if "curl -s -o /dev/null" in command:
-                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
-            if "/sandbox/capture_screenshots.py" in command:
-                return {"exitCode": 0, "stdout": "CAPTURE_OK", "stderr": ""}
-            if "manifest.json" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "{\"success\": true, \"screenshots\": []}",
-                    "stderr": "",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
     monkeypatch.setattr(
         app,
-        "_ensure_browser_validate_npm_policy",
-        lambda sandbox_name: policy_calls.append(sandbox_name) or {"ok": True},
+        "_browser_validate_local_workspace",
+        lambda *_args, **_kwargs: {
+            "success": False,
+            "phase": "capture",
+            "error": "TargetClosedError: BrowserType.launch: missing libnspr4.so",
+        },
     )
 
     result = app.browser_validate(
         BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
-            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+            executionId="exec-1",
+            workspaceRef="workspace-local",
+            installCommand="npm ci",
+            devServerCommand="npm run dev",
             workflowId="wf-1",
             nodeId="node-1",
         )
     )
 
-    assert result["success"] is True
-    assert policy_calls == ["sandbox-test"]
-    assert any(
-        "pnpm install" in str(entry["command"]) and "--prefer-offline" in str(entry["command"])
-        for entry in call_log
+    assert result["success"] is False
+    assert result["phase"] == "capture"
+    assert result["error"] == "TargetClosedError: BrowserType.launch: missing libnspr4.so"
+
+
+def test_capture_browser_step_skips_redundant_body_wait() -> None:
+    calls: list[tuple[str, str | int]] = []
+
+    class FakePage:
+        url = "http://127.0.0.1:3009/"
+
+        def goto(self, target_url: str, *, wait_until: str, timeout: int) -> None:
+            calls.append(("goto", target_url))
+
+        def wait_for_selector(self, selector: str, timeout: int) -> None:
+            calls.append(("wait_for_selector", selector))
+            raise AssertionError("body wait should be skipped")
+
+        def wait_for_function(self, *args, **kwargs) -> None:
+            calls.append(("wait_for_function", "called"))
+
+        def wait_for_timeout(self, delay_ms: int) -> None:
+            calls.append(("wait_for_timeout", delay_ms))
+
+        def screenshot(self, *, full_page: bool, type: str) -> bytes:
+            calls.append(("screenshot", type))
+            return b"png"
+
+    png = app._capture_browser_step_with_retry(
+        FakePage(),
+        target_url="http://127.0.0.1:3009/",
+        wait_for_selector="body",
+        wait_for_text=None,
+        delay_ms=None,
+        full_page=True,
+        timeout_ms=5_000,
     )
-    assert not any(
-        "CI=1 CI=1" in str(entry["command"]) or "--force --force" in str(entry["command"])
-        for entry in call_log
+
+    assert png == b"png"
+    assert ("goto", "http://127.0.0.1:3009/") in calls
+    assert ("screenshot", "png") in calls
+    assert not any(name == "wait_for_selector" for name, _value in calls)
+
+
+def test_browser_materialize_change_artifact_supports_local_workspace(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir(parents=True)
+    session = WorkspaceSession(
+        workspace_ref="workspace-local",
+        execution_id="exec-1",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["bash"],
+        backend="local",
     )
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
+    monkeypatch.setattr(app, "_load_run_artifact", lambda _run_id: {
+        "changeSetId": "changeset-1",
+        "fileSnapshots": [
+            {
+                "path": "basics/learn-starter/pages/index.js",
+                "status": "M",
+                "newContent": "export default function Page(){return 'The workflow worked!'}\n",
+            }
+        ],
+    })
 
-
-def test_browser_validate_install_requires_runnable_local_runtime(monkeypatch) -> None:
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            if "find node_modules/.pnpm" in command:
-                return {"exitCode": 0, "stdout": "", "stderr": ""}
-            if '"next"' in command and "deps-present" in command:
-                return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
-            if "pnpm install --frozen-lockfile --prefer-offline" in command:
-                return {"exitCode": 0, "stdout": "installed", "stderr": ""}
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
-
-    result = app.browser_validate(
-        BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
-            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
+    result = app.browser_materialize_change_artifact(
+        BrowserMaterializeChangeArtifactRequest(
+            executionId="exec-1",
+            workspaceRef="workspace-local",
+            sourceExecutionId="exec-1",
+            durableInstanceId="run-1",
         )
     )
 
-    assert result["success"] is False
-    assert result["phase"] == "install"
-    assert "local app runtime is still unavailable" in result["error"]
+    target_file = repo_root / "basics/learn-starter/pages/index.js"
+    marker_path = app._browser_materialization_marker_path(repo_root)
+    marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    assert result["changeSetId"] == "changeset-1"
+    assert result["selectedRunId"] == "run-1"
+    assert target_file.read_text(encoding="utf-8") == "export default function Page(){return 'The workflow worked!'}\n"
+    assert marker_payload["changeSetId"] == "changeset-1"
+    assert marker_payload["sourceExecutionId"] == "exec-1"
+    assert marker_payload["selectedRunId"] == "run-1"
 
 
-def test_browser_validate_transient_registry_failure_does_not_use_repo_root(monkeypatch) -> None:
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            if "find node_modules/.pnpm" in command:
-                return {"exitCode": 0, "stdout": "", "stderr": ""}
-            if '"next"' in command and "deps-present" in command:
-                if cwd == "basics/learn-starter":
-                    return {"exitCode": 0, "stdout": "deps-missing", "stderr": ""}
-                if cwd == "/sandbox/repo":
-                    return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "pnpm install" in command and "--prefer-offline" in command:
-                return {
-                    "exitCode": 1,
-                    "stdout": "request to https://registry.npmjs.org/ failed",
-                    "stderr": "",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
-
-    result = app.browser_validate(
-        BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
-            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
-        )
+def test_browser_materialize_change_artifact_applies_patch_when_snapshots_are_absent(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    target_file = repo_root / "basics/learn-starter/pages/index.js"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("export default function Page(){return 'Welcome to Next.JS'}\n", encoding="utf-8")
+    session = WorkspaceSession(
+        workspace_ref="workspace-local-patch",
+        execution_id="exec-2",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["bash"],
+        backend="local",
     )
-
-    assert result["success"] is False
-    assert result["phase"] == "install"
-    assert "registry.npmjs.org" in result["error"] or "local app runtime is still unavailable" in result["error"]
-
-
-def test_browser_validate_transient_registry_failure_continues_when_next_binary_is_runnable(monkeypatch) -> None:
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
-
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            if "printf '%s' node_modules/.bin/next" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "node_modules/.pnpm/next@16.0.10/node_modules/next/dist/bin/next",
-                    "stderr": "",
-                }
-            if "node node_modules/.pnpm/next@16.0.10/node_modules/next/dist/bin/next --version" in command:
-                return {"exitCode": 0, "stdout": "Next.js v16.0.10", "stderr": ""}
-            if "pnpm install" in command and "--prefer-offline" in command:
-                return {
-                    "exitCode": 1,
-                    "stdout": "request to https://registry.npmjs.org/react-dom/-/react-dom-19.2.1.tgz failed",
-                    "stderr": "EAI_AGAIN",
-                }
-            if "sync_playwright" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "/opt/pw-browsers/chromium/chrome-linux/chrome",
-                    "stderr": "",
-                }
-            if "dev --hostname 0.0.0.0 --port 3009" in command:
-                return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
-            if "curl -s -o /dev/null" in command:
-                return {"exitCode": 0, "stdout": "ready", "stderr": ""}
-            if "/sandbox/capture_screenshots.py" in command:
-                return {"exitCode": 0, "stdout": "CAPTURE_OK", "stderr": ""}
-            if "manifest.json" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "{\"success\": true, \"screenshots\": []}",
-                    "stderr": "",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
-
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
     monkeypatch.setattr(
         app,
-        "_ensure_browser_validate_npm_policy",
-        lambda _sandbox_name: {"ok": True},
+        "_load_run_artifact",
+        lambda _run_id: {
+            "changeSetId": "changeset-2",
+            "patch": "\n".join(
+                [
+                    "diff --git a/basics/learn-starter/pages/index.js b/basics/learn-starter/pages/index.js",
+                    "--- a/basics/learn-starter/pages/index.js",
+                    "+++ b/basics/learn-starter/pages/index.js",
+                    "@@ -1 +1 @@",
+                    "-export default function Page(){return 'Welcome to Next.JS'}",
+                    "+export default function Page(){return 'The workflow worked!'}",
+                ]
+            ),
+        },
     )
 
-    result = app.browser_validate(
-        BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && pnpm install --frozen-lockfile --prefer-offline",
-            devServerCommand="cd 'basics/learn-starter' && pnpm run dev -- --hostname 0.0.0.0 --port 3009",
-            workflowId="wf-1",
-            nodeId="node-1",
+    def fake_apply_workspace_patch(repo_root: Path, patch: str) -> None:
+        assert repo_root == session.working_directory
+        assert "The workflow worked!" in patch
+        target_file.write_text(
+            "export default function Page(){return 'The workflow worked!'}\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(app, "_apply_workspace_patch", fake_apply_workspace_patch)
+
+    result = app.browser_materialize_change_artifact(
+        BrowserMaterializeChangeArtifactRequest(
+            executionId="exec-2",
+            workspaceRef="workspace-local-patch",
+            sourceExecutionId="exec-2",
+            durableInstanceId="run-2",
         )
     )
 
-    assert result["success"] is True
+    marker_payload = json.loads(
+        app._browser_materialization_marker_path(repo_root).read_text(encoding="utf-8")
+    )
+
+    assert result["changeSetId"] == "changeset-2"
+    assert result["selectedRunId"] == "run-2"
+    assert target_file.read_text(encoding="utf-8") == "export default function Page(){return 'The workflow worked!'}\n"
+    assert str(target_file) in result["restoredPaths"]
+    assert marker_payload["changeSetId"] == "changeset-2"
+    assert marker_payload["sourceExecutionId"] == "exec-2"
+    assert marker_payload["selectedRunId"] == "run-2"
 
 
-def test_browser_validate_returns_launch_error_with_log_tail(monkeypatch) -> None:
-    call_log: list[dict[str, object]] = []
+def test_browser_materialize_change_artifact_uses_execution_log_artifact_when_run_store_is_empty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    repo_root = tmp_path / "repo"
+    target_file = repo_root / "app/layout.tsx"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("export default function Layout(){return 'before'}\n", encoding="utf-8")
+    session = WorkspaceSession(
+        workspace_ref="workspace-local-log",
+        execution_id="exec-log",
+        root_path=tmp_path,
+        working_directory=repo_root,
+        enabled_tools=["bash"],
+        backend="local",
+    )
+    monkeypatch.setattr(app, "_workspace_from_ref", lambda _workspace_ref: session)
+    monkeypatch.setattr(app, "_load_run_artifact", lambda _run_id: None)
+    monkeypatch.setattr(
+        app,
+        "_load_execution_log_change_artifact",
+        lambda execution_id, durable_instance_id=None: {
+            "changeSetId": "changeset-log",
+            "daprInstanceId": durable_instance_id or "run-log",
+            "patch": "\n".join(
+                [
+                    "diff --git a/app/layout.tsx b/app/layout.tsx",
+                    "--- a/app/layout.tsx",
+                    "+++ b/app/layout.tsx",
+                    "@@ -1 +1 @@",
+                    "-export default function Layout(){return 'before'}",
+                    "+export default function Layout(){return 'after'}",
+                ]
+            ),
+        }
+        if execution_id == "exec-log"
+        else None,
+    )
 
-    class FakeContext:
-        def __init__(self, **_kwargs):
-            pass
+    def fake_apply_workspace_patch(repo_root: Path, patch: str) -> None:
+        assert repo_root == session.working_directory
+        assert "export default function Layout(){return 'after'}" in patch
+        target_file.write_text(
+            "export default function Layout(){return 'after'}\n",
+            encoding="utf-8",
+        )
 
-        def run_command(self, command, *, cwd=None, timeout_seconds=300):
-            call_log.append(
-                {
-                    "command": command,
-                    "cwd": cwd,
-                    "timeout": timeout_seconds,
-                }
-            )
-            if "deps-present" in command:
-                return {"exitCode": 0, "stdout": "deps-present", "stderr": ""}
-            if "tail -n 80" in command:
-                return {
-                    "exitCode": 0,
-                    "stdout": "next: command not found",
-                    "stderr": "",
-                }
-            if "npx next dev" in command or "npm run dev" in command:
-                return {
-                    "exitCode": 1,
-                    "stdout": "server-exited",
-                    "stderr": "",
-                }
-            return {"exitCode": 0, "stdout": "ok", "stderr": ""}
+    monkeypatch.setattr(app, "_apply_workspace_patch", fake_apply_workspace_patch)
 
-    monkeypatch.setattr("app.OpenShellToolContext", FakeContext)
-
-    result = app.browser_validate(
-        BrowserValidateRequest(
-            executionId="exec-test",
-            sandboxName="sandbox-test",
-            repoPath="/sandbox/repo",
-            installCommand="cd 'basics/learn-starter' && npm ci",
-            devServerCommand="cd 'basics/learn-starter' && npx next dev --hostname 0.0.0.0 --port 3009",
-            workflowId="wf-1",
-            nodeId="node-1",
+    result = app.browser_materialize_change_artifact(
+        BrowserMaterializeChangeArtifactRequest(
+            executionId="exec-log",
+            workspaceRef="workspace-local-log",
+            sourceExecutionId="exec-log",
+            durableInstanceId="run-log",
         )
     )
 
-    assert result["success"] is False
-    assert result["phase"] == "devserver-launch"
-    assert "next: command not found" in result["error"]
+    marker_payload = json.loads(
+        app._browser_materialization_marker_path(repo_root).read_text(encoding="utf-8")
+    )
+
+    assert result["changeSetId"] == "changeset-log"
+    assert result["selectedRunId"] == "run-log"
+    assert target_file.read_text(encoding="utf-8") == "export default function Layout(){return 'after'}\n"
+    assert str(target_file) in result["restoredPaths"]
+    assert marker_payload["changeSetId"] == "changeset-log"
+    assert marker_payload["sourceExecutionId"] == "exec-log"
+    assert marker_payload["selectedRunId"] == "run-log"
+
+
+def test_apply_workspace_patch_falls_back_for_truncated_unified_diff(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    target_file = repo_root / "app/layout.tsx"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text(
+        "\n".join(
+            [
+                "line-1",
+                "line-2",
+                "line-3",
+                "line-4",
+                "line-5",
+                "line-6",
+                "line-7",
+                "line-8",
+                "line-9",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    patch = "\n".join(
+        [
+            "diff --git a/app/layout.tsx b/app/layout.tsx",
+            "--- a/app/layout.tsx",
+            "+++ b/app/layout.tsx",
+            "@@ -4,4 +4,4 @@",
+            " line-4",
+            " line-5",
+            "-line-6",
+            "-line-7",
+            "+line-six",
+            "+line-seven",
+            " line-8",
+            " line-9",
+        ]
+    )
+
+    app._apply_workspace_patch(repo_root, patch)
+
+    assert target_file.read_text(encoding="utf-8").splitlines() == [
+        "line-1",
+        "line-2",
+        "line-3",
+        "line-4",
+        "line-5",
+        "line-six",
+        "line-seven",
+        "line-8",
+        "line-9",
+    ]

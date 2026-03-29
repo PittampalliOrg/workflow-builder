@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -619,16 +620,16 @@ class BrowserCaptureFlowRequest(BaseModel):
 class BrowserValidateRequest(BaseModel):
     executionId: str = Field(min_length=1)
     dbExecutionId: str | None = None
-    workspaceRef: str | None = None
-    sandboxName: str = Field(min_length=1)
+    workspaceRef: str = Field(min_length=1)
+    sandboxName: str | None = None
     repoPath: str = "/sandbox/repo"
     installCommand: str = Field(min_length=1)
     devServerCommand: str = Field(min_length=1)
     baseUrl: str = Field(min_length=1, default="http://127.0.0.1:3009")
     steps: list[BrowserCaptureStepRequest] | str = Field(default_factory=list)
     timeoutMs: int | None = None
-    workflowId: str | None = None
-    nodeId: str | None = None
+    workflowId: str = Field(min_length=1)
+    nodeId: str = Field(min_length=1)
     nodeName: str | None = None
 
 
@@ -2814,6 +2815,84 @@ def _workspace_from_ref(workspace_ref: str) -> WorkspaceSession:
     return session
 
 
+def _browser_materialization_marker_path(repo_root: Path) -> Path:
+    return repo_root / ".wf-preview" / "materialized-change-set.json"
+
+
+def _write_browser_materialization_marker(
+    session: WorkspaceSession,
+    *,
+    repo_root: Path,
+    payload: dict[str, Any],
+) -> None:
+    marker_path = _browser_materialization_marker_path(repo_root)
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    session.repository_signals = {
+        **dict(session.repository_signals or {}),
+        "materializedChangeSetId": payload.get("changeSetId"),
+        "materializedSourceExecutionId": payload.get("sourceExecutionId"),
+        "materializedDurableInstanceId": payload.get("durableInstanceId"),
+        "materializedAt": payload.get("materializedAt"),
+        "materializedRunId": payload.get("selectedRunId"),
+    }
+    _persist_workspace_session(session)
+
+
+def _load_browser_materialization_marker(repo_root: Path) -> dict[str, Any] | None:
+    marker_path = _browser_materialization_marker_path(repo_root)
+    if not marker_path.exists():
+        return None
+    try:
+        payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _apply_workspace_patch(repo_root: Path, patch: str) -> None:
+    completed = subprocess.run(
+        ["git", "apply", "--whitespace=nowarn", "-"],
+        cwd=repo_root,
+        input=patch,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    if completed.returncode == 0:
+        return
+
+    sections = _parse_patch_sections(patch)
+    if not sections:
+        raise RuntimeError((completed.stderr or completed.stdout).strip() or "git apply failed")
+    for section in sections:
+        old_path = str(section.get("oldPath") or "").strip() or None
+        new_path = str(section.get("newPath") or "").strip() or None
+        hunks = section.get("hunks") or []
+        if new_path is None and old_path:
+            target_path = (repo_root / old_path).resolve()
+            if target_path.exists():
+                target_path.unlink()
+            continue
+        target_relative_path = new_path or old_path
+        if not target_relative_path:
+            continue
+        source_path = (repo_root / (old_path or target_relative_path)).resolve()
+        target_path = (repo_root / target_relative_path).resolve()
+        original_text = _read_text_file(source_path) if source_path.exists() else ""
+        updated_text = _apply_unified_patch_to_text(original_text, hunks)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(updated_text, encoding="utf-8")
+        if old_path and new_path and old_path != new_path:
+            old_target_path = (repo_root / old_path).resolve()
+            if old_target_path.exists():
+                old_target_path.unlink()
+
+
 def _browser_validate_local_workspace(
     request: BrowserValidateRequest,
     session: WorkspaceSession,
@@ -2821,16 +2900,33 @@ def _browser_validate_local_workspace(
     execution_id: str,
     timeout_seconds: int,
 ) -> dict[str, Any]:
+    repo_root = (session.working_directory or session.root_path).resolve()
+    materialization = _load_browser_materialization_marker(repo_root)
+    if materialization is None:
+        return {
+            "success": False,
+            "error": (
+                "Browser validation workspace has not been materialized from the execute artifact. "
+                f"Expected {_browser_materialization_marker_path(repo_root)}."
+            ),
+            "phase": "materialize",
+        }
+    source_execution_id = str(materialization.get("sourceExecutionId") or "").strip()
+    if source_execution_id and source_execution_id != execution_id:
+        return {
+            "success": False,
+            "error": (
+                "Browser validation workspace was materialized for a different execution. "
+                f"Expected {execution_id}, found {source_execution_id}."
+            ),
+            "phase": "materialize",
+        }
     if sync_playwright is None:
         return {
             "success": False,
             "error": "playwright is required for local browser validation",
             "phase": "capture-prerequisites",
         }
-
-    repo_root = (session.working_directory or session.root_path).resolve()
-    preview_root = repo_root / ".wf-preview"
-    preview_root.mkdir(parents=True, exist_ok=True)
 
     def _strip_shell_startup_noise(value: str | None) -> str:
         text = str(value or "")
@@ -2847,35 +2943,6 @@ def _browser_validate_local_workspace(
             return None
         candidate = str(match.group(2) or "").strip()
         return candidate or None
-
-    def _normalize_install_command(command: str) -> str:
-        normalized = str(command or "").strip()
-        normalized = re.sub(r"^(?:CI=1\s+)+", "CI=1 ", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retries=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_factor=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_mintimeout=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_maxtimeout=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
-        normalized = normalized.replace(" --no-optional", "")
-        if "pnpm install" in normalized and "CI=1" not in normalized.split():
-            normalized = f"CI=1 {normalized}"
-        if "pnpm install" in normalized:
-            pnpm_env = (
-                "npm_config_fetch_retries=1 "
-                "npm_config_fetch_retry_factor=1 "
-                "npm_config_fetch_retry_mintimeout=3000 "
-                "npm_config_fetch_retry_maxtimeout=10000 "
-            )
-            normalized = normalized.replace("CI=1 ", f"CI=1 {pnpm_env}", 1)
-        if "pnpm install" in normalized and "--force" not in normalized:
-            normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
-        if "pnpm install" in normalized and "--reporter=" not in normalized:
-            normalized = normalized.replace(
-                "pnpm install",
-                "pnpm install --reporter=append-only",
-                1,
-            )
-        return normalized
 
     def _local_install_command(cwd: Path) -> str:
         if (cwd / "pnpm-lock.yaml").exists() or (cwd / "pnpm-workspace.yaml").exists():
@@ -2905,32 +2972,57 @@ def _browser_validate_local_workspace(
             return f"npx -y node@22.22.2 {shlex.quote(str(next_cli))}"
         return None
 
-    def _local_devserver_runner(cwd: Path) -> str:
-        preview_dir = cwd.parent / ".wf-preview"
+    def _replace_base_url_port(base_url: str, port: int) -> str:
+        parsed = urllib.parse.urlparse(base_url)
+        hostname = parsed.hostname or "127.0.0.1"
+        netloc = f"{hostname}:{port}"
+        return urllib.parse.urlunparse(
+            (
+                parsed.scheme or "http",
+                netloc,
+                parsed.path or "",
+                parsed.params or "",
+                parsed.query or "",
+                parsed.fragment or "",
+            )
+        )
+
+    def _allocate_local_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return int(sock.getsockname()[1])
+
+    def _local_devserver_runner(cwd: Path, port: int) -> str:
         next_runner = _local_next_runner(cwd)
         if next_runner:
-            return f"{next_runner} dev --hostname 0.0.0.0 --port 3009"
-        elif (cwd / "pnpm-lock.yaml").exists() or (cwd / "pnpm-workspace.yaml").exists():
-            return "npx -y pnpm@9.15.9 dev --hostname 0.0.0.0 --port 3009"
-        elif (cwd / "yarn.lock").exists():
-            return "yarn dev --hostname 0.0.0.0 --port 3009"
-        return "npm run dev -- --hostname 0.0.0.0 --port 3009"
+            return f"{next_runner} dev --hostname 0.0.0.0 --port {port}"
+        if (cwd / "pnpm-lock.yaml").exists() or (cwd / "pnpm-workspace.yaml").exists():
+            return f"npx -y pnpm@9.15.9 dev --hostname 0.0.0.0 --port {port}"
+        if (cwd / "yarn.lock").exists():
+            return f"yarn dev --hostname 0.0.0.0 --port {port}"
+        return f"npm run dev -- --hostname 0.0.0.0 --port {port}"
 
-    def _resolve_local_app_cwd(raw_cwd: str | None) -> Path:
+    def _resolve_local_app_cwd(
+        raw_cwd: str | None,
+        *,
+        repo_root_value: Path,
+        repo_path_value: str | None,
+    ) -> Path:
         candidate = str(raw_cwd or "").strip()
         if not candidate:
-            return repo_root
-        repo_path = str(request.repoPath or "").rstrip("/")
+            return repo_root_value
+        repo_path = str(repo_path_value or "").rstrip("/")
         if repo_path and (candidate == repo_path or candidate.startswith(f"{repo_path}/")):
             suffix = candidate[len(repo_path):].lstrip("/")
-            return (repo_root / suffix).resolve()
+            return (repo_root_value / suffix).resolve()
         path = Path(candidate)
         if path.is_absolute():
             return path.resolve()
-        return (repo_root / path).resolve()
+        return (repo_root_value / path).resolve()
 
-    def _local_tool_bin_dir() -> Path:
-        tool_bin_dir = preview_root / "bin"
+    def _local_tool_bin_dir(preview_root_value: Path) -> Path:
+        tool_bin_dir = preview_root_value / "bin"
         tool_bin_dir.mkdir(parents=True, exist_ok=True)
         pnpm_shim = tool_bin_dir / "pnpm"
         pnpm_shim.write_text(
@@ -2940,10 +3032,23 @@ def _browser_validate_local_workspace(
         pnpm_shim.chmod(0o755)
         return tool_bin_dir
 
-    def _local_command_env() -> dict[str, str]:
+    def _local_command_env(
+        preview_root_value: Path,
+        capture_session: WorkspaceSession,
+        *,
+        base_url: str | None = None,
+    ) -> dict[str, str]:
         env = os.environ.copy()
-        env["HOME"] = str(session.root_path)
-        env["PATH"] = f"{_local_tool_bin_dir()}:{env.get('PATH', '')}"
+        env["HOME"] = str(capture_session.root_path)
+        env["PATH"] = f"{_local_tool_bin_dir(preview_root_value)}:{env.get('PATH', '')}"
+        preview_base_url = str(base_url or "").strip()
+        if preview_base_url:
+            env.setdefault("NEXTAUTH_URL", preview_base_url)
+            env.setdefault("AUTH_URL", preview_base_url)
+        env.setdefault("AUTH_SECRET", "workflow-builder-browser-preview-secret")
+        env.setdefault("NEXTAUTH_SECRET", env["AUTH_SECRET"])
+        env.setdefault("AUTH_TRUST_HOST", "true")
+        env.setdefault("NEXTAUTH_TRUST_HOST", "true")
         return env
 
     def _run_local_command(
@@ -2951,6 +3056,9 @@ def _browser_validate_local_workspace(
         *,
         cwd: Path,
         timeout_seconds_value: int,
+        preview_root_value: Path,
+        capture_session: WorkspaceSession,
+        base_url: str | None = None,
     ) -> dict[str, Any]:
         completed = subprocess.run(
             ["bash", "-lc", command],
@@ -2959,7 +3067,7 @@ def _browser_validate_local_workspace(
             capture_output=True,
             timeout=timeout_seconds_value,
             check=False,
-            env=_local_command_env(),
+            env=_local_command_env(preview_root_value, capture_session, base_url=base_url),
         )
         return {
             "exitCode": completed.returncode,
@@ -2967,17 +3075,23 @@ def _browser_validate_local_workspace(
             "stderr": completed.stderr,
         }
 
-    def _launch_local_devserver(cwd: Path) -> dict[str, Any]:
-        preview_dir = cwd.parent / ".wf-preview"
-        log_path = preview_dir / "dev-server.log"
-        pid_path = preview_dir / "dev-server.pid"
-        preview_dir.mkdir(parents=True, exist_ok=True)
+    def _launch_local_devserver(
+        cwd: Path,
+        *,
+        preview_root_value: Path,
+        capture_session: WorkspaceSession,
+        port: int,
+        base_url: str | None = None,
+    ) -> dict[str, Any]:
+        log_path = preview_root_value / "dev-server.log"
+        pid_path = preview_root_value / "dev-server.pid"
+        preview_root_value.mkdir(parents=True, exist_ok=True)
         for candidate in (log_path, pid_path):
             try:
                 candidate.unlink()
             except FileNotFoundError:
                 pass
-        runner = _local_devserver_runner(cwd)
+        runner = _local_devserver_runner(cwd, port)
         with log_path.open("w", encoding="utf-8") as log_file, open(os.devnull, "r", encoding="utf-8") as devnull:
             process = subprocess.Popen(  # noqa: S603
                 ["bash", "-lc", runner],
@@ -2985,7 +3099,7 @@ def _browser_validate_local_workspace(
                 stdin=devnull,
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
-                env=_local_command_env(),
+                env=_local_command_env(preview_root_value, capture_session, base_url=base_url),
                 start_new_session=True,
                 text=True,
             )
@@ -2995,18 +3109,23 @@ def _browser_validate_local_workspace(
             return {
                 "exitCode": int(process.returncode or 0),
                 "stdout": "server-exited",
-                "stderr": _tail_devserver_log(cwd),
+                "stderr": _tail_devserver_log(cwd, preview_root_value),
             }
-        return {
-            "exitCode": 0,
-            "stdout": "server-started",
-            "stderr": "",
-        }
+        return {"exitCode": 0, "stdout": "server-started", "stderr": ""}
 
     def _local_runtime_python() -> str:
         virtual_env = str(os.getenv("VIRTUAL_ENV") or "").strip()
         if virtual_env:
             candidate = Path(virtual_env) / "bin/python"
+            if candidate.exists():
+                return str(candidate)
+        runtime_root = Path("/workspace/dapr-agent-runtime")
+        for candidate in (
+            runtime_root / ".venv/bin/python",
+            runtime_root / ".venv/bin/python3",
+            Path("/app/.venv/bin/python"),
+            Path("/app/.venv/bin/python3"),
+        ):
             if candidate.exists():
                 return str(candidate)
         return shutil.which("python3") or "python3"
@@ -3023,7 +3142,7 @@ def _browser_validate_local_workspace(
         except Exception as exc:
             return False, str(exc)
 
-    def _ensure_local_playwright_browser() -> tuple[bool, str]:
+    def _ensure_local_playwright_browser(preview_root_value: Path) -> tuple[bool, str]:
         ready, detail = _playwright_browser_status()
         if ready:
             return True, detail
@@ -3031,14 +3150,8 @@ def _browser_validate_local_workspace(
             f"{shlex.quote(_local_runtime_python())} -m playwright install chromium",
             cwd=repo_root,
             timeout_seconds_value=min(timeout_seconds, 300),
-        )
-        install_exit_code = int(install_result.get("exitCode", -1))
-        logger.info(
-            "browser_validate local playwright install completed workspace=%s exit=%s stdout=%s stderr=%s",
-            session.workspace_ref,
-            install_exit_code,
-            str(install_result.get("stdout") or "")[:300],
-            str(install_result.get("stderr") or "")[:300],
+            preview_root_value=preview_root_value,
+            capture_session=session,
         )
         ready, detail = _playwright_browser_status()
         if ready:
@@ -3055,7 +3168,7 @@ def _browser_validate_local_workspace(
         return False, combined_output[:500]
 
     def _is_transient_registry_failure(output: str) -> bool:
-        failure_markers = [
+        markers = [
             "EAI_AGAIN",
             "ENOTFOUND",
             "ECONNRESET",
@@ -3064,9 +3177,9 @@ def _browser_validate_local_workspace(
             "request to https://registry.npmjs.org/",
         ]
         text = str(output or "")
-        return any(marker in text for marker in failure_markers)
+        return any(marker in text for marker in markers)
 
-    def _deps_present(cwd: Path) -> bool:
+    def _deps_present(cwd: Path, *, preview_root_value: Path, capture_session: WorkspaceSession) -> bool:
         package_json = cwd / "package.json"
         if not package_json.exists():
             return False
@@ -3079,6 +3192,8 @@ def _browser_validate_local_workspace(
                     f"{next_runner} --version >/dev/null 2>&1",
                     cwd=cwd,
                     timeout_seconds_value=30,
+                    preview_root_value=preview_root_value,
+                    capture_session=capture_session,
                 )
                 if ready["exitCode"] == 0:
                     return True
@@ -3087,6 +3202,8 @@ def _browser_validate_local_workspace(
                     "./node_modules/.bin/next --version",
                     cwd=cwd,
                     timeout_seconds_value=15,
+                    preview_root_value=preview_root_value,
+                    capture_session=capture_session,
                 )
                 if ready["exitCode"] == 0:
                     return True
@@ -3094,27 +3211,28 @@ def _browser_validate_local_workspace(
                 "npx -y pnpm@9.15.9 exec next --version >/dev/null 2>&1",
                 cwd=cwd,
                 timeout_seconds_value=15,
+                preview_root_value=preview_root_value,
+                capture_session=capture_session,
             )
             return ready["exitCode"] == 0
-        if any(
-            (cwd / f"node_modules/.bin/{tool}").exists()
-            for tool in ("vite", "react-scripts", "astro")
-        ):
+        if any((cwd / f"node_modules/.bin/{tool}").exists() for tool in ("vite", "react-scripts", "astro")):
             return True
         bin_dir = cwd / "node_modules/.bin"
         return bin_dir.exists() and any(bin_dir.iterdir())
 
-    def _tail_devserver_log(cwd: Path) -> str:
-        for candidate in (cwd / ".wf-preview/dev-server.log", cwd.parent / ".wf-preview/dev-server.log"):
+    def _tail_devserver_log(cwd: Path, preview_root_value: Path) -> str:
+        for candidate in (preview_root_value / "dev-server.log", cwd / ".wf-preview/dev-server.log", cwd.parent / ".wf-preview/dev-server.log"):
             if candidate.exists():
                 try:
-                    return "\n".join(candidate.read_text(encoding="utf-8", errors="ignore").splitlines()[-80:]).strip()
+                    return "\n".join(
+                        candidate.read_text(encoding="utf-8", errors="ignore").splitlines()[-80:]
+                    ).strip()
                 except OSError:
                     continue
         return ""
 
-    def _cleanup_preview_server(cwd: Path) -> None:
-        for candidate in (cwd / ".wf-preview/dev-server.pid", cwd.parent / ".wf-preview/dev-server.pid"):
+    def _cleanup_preview_server(cwd: Path, preview_root_value: Path) -> None:
+        for candidate in (preview_root_value / "dev-server.pid", cwd / ".wf-preview/dev-server.pid", cwd.parent / ".wf-preview/dev-server.pid"):
             if not candidate.exists():
                 continue
             try:
@@ -3129,9 +3247,9 @@ def _browser_validate_local_workspace(
                 pass
         time.sleep(1)
 
-    def _is_base_url_ready() -> bool:
+    def _is_base_url_ready(base_url: str) -> bool:
         try:
-            with urllib.request.urlopen(request.baseUrl, timeout=5) as response:
+            with urllib.request.urlopen(base_url, timeout=5) as response:
                 return 200 <= getattr(response, "status", 500) < 400
         except Exception:
             return False
@@ -3144,204 +3262,271 @@ def _browser_validate_local_workspace(
             steps_value = json.loads(steps_value)
         return list(steps_value or [{"url": "/", "waitForSelector": "body", "delayMs": 2500}])
 
-    app_cwd = _resolve_local_app_cwd(
-        _extract_leading_cd(request.devServerCommand)
-        or _extract_leading_cd(request.installCommand)
-        or "."
-    )
-    skip_install = _deps_present(app_cwd)
-    if not skip_install:
-        install_command = _local_install_command(app_cwd)
-        if not install_command:
-            return {
-                "success": False,
-                "error": f"No supported lockfile found in {app_cwd}.",
-                "phase": "install",
-            }
-        install_log_path = preview_root / "browser-validate-install.log"
-        wrapped_install_command = install_command.rstrip(" ;")
-        install_exec_command = (
-            f"rm -f {shlex.quote(str(install_log_path))}; "
-            f"{{ {wrapped_install_command}; }} >{shlex.quote(str(install_log_path))} 2>&1; "
-            "status=$?; "
-            f"tail -n 80 {shlex.quote(str(install_log_path))} 2>/dev/null || true; "
-            "exit $status"
-        )
-        install_result = _run_local_command(
-            install_exec_command,
-            cwd=app_cwd,
-            timeout_seconds_value=min(timeout_seconds, 240),
-        )
-        install_exit_code = int(install_result.get("exitCode", -1))
-        logger.info(
-            "browser_validate local install completed workspace=%s cwd=%s exit=%s stdout=%s stderr=%s",
-            session.workspace_ref,
-            app_cwd,
-            install_exit_code,
-            str(install_result.get("stdout") or "")[:200],
-            str(install_result.get("stderr") or "")[:200],
-        )
-        if install_exit_code != 0:
-            cleaned_stderr = _strip_shell_startup_noise(install_result.get("stderr"))
-            cleaned_stdout = str(install_result.get("stdout") or "").strip()
-            combined_output = "\n".join(part for part in (cleaned_stdout, cleaned_stderr) if part)
-            preferred_output = cleaned_stderr or cleaned_stdout
-            if not (_is_transient_registry_failure(combined_output) and _deps_present(app_cwd)):
-                return {
-                    "success": False,
-                    "error": f"Install failed with exit code {install_exit_code}: {preferred_output[:500]}",
-                    "phase": "install",
-                }
-    if not _deps_present(app_cwd):
-        return {
-            "success": False,
-            "error": (
-                "Install completed but local app runtime is still unavailable. "
-                f"Expected runnable dependencies in {app_cwd}."
-            ),
-            "phase": "install",
-        }
-
-    if not _is_base_url_ready():
-        _cleanup_preview_server(app_cwd)
-        launch_result = _launch_local_devserver(app_cwd)
-        launch_exit = int(launch_result.get("exitCode", -1))
-        launch_stdout = str(launch_result.get("stdout") or "").strip()
-        launch_stderr = str(launch_result.get("stderr") or "").strip()
-        if launch_exit != 0 or "server-started" not in launch_stdout:
-            details = " | ".join(
-                part for part in (launch_stdout[:300], launch_stderr[:300], _tail_devserver_log(app_cwd)[:500]) if part
-            )
-            if not details:
-                details = f"exit={launch_exit}"
-            return {
-                "success": False,
-                "error": f"Dev server failed to launch: {details[:500]}",
-                "phase": "devserver-launch",
-            }
-
-    ready = False
-    deadline = time.monotonic() + min(timeout_seconds, 200)
-    while time.monotonic() < deadline:
-        if _is_base_url_ready():
-            ready = True
-            break
-        time.sleep(2)
-    if not ready:
-        detail = _tail_devserver_log(app_cwd)[:500]
-        return {
-            "success": False,
-            "error": f"Dev server did not become ready: {detail or 'timeout'}",
-            "phase": "devserver-poll",
-        }
-
-    browser_ready, browser_detail = _ensure_local_playwright_browser()
-    if not browser_ready:
-        return {
-            "success": False,
-            "error": f"Playwright browser runtime is unavailable: {browser_detail}",
-            "phase": "capture-prerequisites",
-        }
-
     try:
         steps = _normalize_steps(request.steps)
     except json.JSONDecodeError:
         return {"success": False, "error": "Invalid JSON in steps field", "phase": "capture"}
 
-    step_records: list[WorkflowBrowserCaptureStep] = []
-    screenshots: list[bytes] = []
-    overall_status = "completed"
-    try:
-        with sync_playwright() as playwright:
-            chromium_path = playwright.chromium.executable_path
-            browser = playwright.chromium.launch(
-                executable_path=chromium_path,
-                args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
-                headless=True,
+    def _capture_workspace(
+        capture_session: WorkspaceSession,
+        *,
+        capture_repo_path: str | None,
+        require_materialization: bool,
+    ) -> dict[str, Any]:
+        capture_repo_root = (capture_session.working_directory or capture_session.root_path).resolve()
+        if require_materialization:
+            marker = _load_browser_materialization_marker(capture_repo_root)
+            if marker is None:
+                return {
+                    "success": False,
+                    "error": (
+                        "Browser validation workspace has not been materialized from the execute artifact. "
+                        f"Expected {_browser_materialization_marker_path(capture_repo_root)}."
+                    ),
+                    "phase": "materialize",
+                }
+        capture_preview_root = capture_repo_root / ".wf-preview"
+        capture_preview_root.mkdir(parents=True, exist_ok=True)
+        capture_port = _allocate_local_port()
+        capture_base_url = _replace_base_url_port(request.baseUrl, capture_port)
+        app_cwd = _resolve_local_app_cwd(
+            _extract_leading_cd(request.devServerCommand)
+            or _extract_leading_cd(request.installCommand)
+            or ".",
+            repo_root_value=capture_repo_root,
+            repo_path_value=capture_repo_path,
+        )
+        if not _deps_present(app_cwd, preview_root_value=capture_preview_root, capture_session=capture_session):
+            install_command = _local_install_command(app_cwd)
+            if not install_command:
+                return {
+                    "success": False,
+                    "error": f"No supported lockfile found in {app_cwd}.",
+                    "phase": "install",
+                }
+            install_log_path = capture_preview_root / "browser-validate-install.log"
+            install_exec_command = (
+                f"rm -f {shlex.quote(str(install_log_path))}; "
+                f"{{ {install_command.rstrip(' ;')}; }} >{shlex.quote(str(install_log_path))} 2>&1; "
+                "status=$?; "
+                f"tail -n 80 {shlex.quote(str(install_log_path))} 2>/dev/null || true; "
+                "exit $status"
             )
-            try:
-                context = browser.new_context(viewport={"width": 1280, "height": 720})
-                page = context.new_page()
-                for index, step in enumerate(steps):
-                    step_id = f"step-{index + 1}"
-                    label = f"Step {index + 1}"
-                    if isinstance(step, BrowserCaptureStepRequest):
-                        step_id = str(step.id or step_id).strip() or step_id
-                        label = str(step.label or label).strip() or label
-                        target_url = _resolve_browser_step_url(request.baseUrl, step)
-                        wait_for_selector = step.waitForSelector
-                        wait_for_text = step.waitForText
-                        delay_ms = step.delayMs
-                        full_page = step.fullPage is not False
-                    else:
-                        step_id = str(step.get("id") or step_id).strip() or step_id
-                        label = str(step.get("label") or label).strip() or label
-                        target_url = _resolve_browser_step_url(
-                            request.baseUrl,
-                            BrowserCaptureStepRequest.model_validate(step),
-                        )
-                        wait_for_selector = step.get("waitForSelector")
-                        wait_for_text = step.get("waitForText")
-                        delay_ms = step.get("delayMs")
-                        full_page = step.get("fullPage") is not False
-                    png = _capture_browser_step_with_retry(
-                        page,
-                        target_url=target_url,
-                        wait_for_selector=wait_for_selector,
-                        wait_for_text=wait_for_text,
-                        delay_ms=delay_ms,
-                        full_page=full_page,
-                        timeout_ms=request.timeoutMs or DEFAULT_BROWSER_CAPTURE_TIMEOUT_MS,
-                    )
-                    screenshots.append(png)
-                    step_records.append(
-                        WorkflowBrowserCaptureStep(
-                            id=step_id,
-                            label=label,
-                            url=page.url,
-                            title=page.title(),
+            install_result = _run_local_command(
+                install_exec_command,
+                cwd=app_cwd,
+                timeout_seconds_value=min(timeout_seconds, 240),
+                preview_root_value=capture_preview_root,
+                capture_session=capture_session,
+            )
+            install_exit_code = int(install_result.get("exitCode", -1))
+            if install_exit_code != 0:
+                cleaned_stderr = _strip_shell_startup_noise(install_result.get("stderr"))
+                cleaned_stdout = str(install_result.get("stdout") or "").strip()
+                combined_output = "\n".join(part for part in (cleaned_stdout, cleaned_stderr) if part)
+                preferred_output = cleaned_stderr or cleaned_stdout
+                if not _is_transient_registry_failure(combined_output) or not _deps_present(
+                    app_cwd,
+                    preview_root_value=capture_preview_root,
+                    capture_session=capture_session,
+                ):
+                    return {
+                        "success": False,
+                        "error": f"Install failed with exit code {install_exit_code}: {preferred_output[:500]}",
+                        "phase": "install",
+                    }
+        if not _deps_present(app_cwd, preview_root_value=capture_preview_root, capture_session=capture_session):
+            return {
+                "success": False,
+                "error": (
+                    "Install completed but local app runtime is still unavailable. "
+                    f"Expected runnable dependencies in {app_cwd}."
+                ),
+                "phase": "install",
+            }
+
+        _cleanup_preview_server(app_cwd, capture_preview_root)
+        launch_result = _launch_local_devserver(
+            app_cwd,
+            preview_root_value=capture_preview_root,
+            capture_session=capture_session,
+            port=capture_port,
+            base_url=capture_base_url,
+        )
+        launch_exit = int(launch_result.get("exitCode", -1))
+        launch_stdout = str(launch_result.get("stdout") or "").strip()
+        launch_stderr = str(launch_result.get("stderr") or "").strip()
+        if launch_exit != 0 or "server-started" not in launch_stdout:
+            details = " | ".join(
+                part
+                for part in (
+                    launch_stdout[:300],
+                    launch_stderr[:300],
+                    _tail_devserver_log(app_cwd, capture_preview_root)[:500],
+                )
+                if part
+            )
+            return {
+                "success": False,
+                "error": f"Dev server failed to launch: {details[:500] or f'exit={launch_exit}'}",
+                "phase": "devserver-launch",
+            }
+
+        ready = False
+        deadline = time.monotonic() + min(timeout_seconds, 200)
+        while time.monotonic() < deadline:
+            if _is_base_url_ready(capture_base_url):
+                ready = True
+                break
+            time.sleep(2)
+        if not ready:
+            return {
+                "success": False,
+                "error": f"Dev server did not become ready: {_tail_devserver_log(app_cwd, capture_preview_root)[:500] or 'timeout'}",
+                "phase": "devserver-poll",
+            }
+
+        browser_ready, browser_detail = _ensure_local_playwright_browser(capture_preview_root)
+        if not browser_ready:
+            return {
+                "success": False,
+                "error": f"Playwright browser runtime is unavailable: {browser_detail}",
+                "phase": "capture-prerequisites",
+            }
+        browser_executable = str(browser_detail or "").strip()
+
+        step_records: list[WorkflowBrowserCaptureStep] = []
+        screenshots: list[bytes] = []
+        overall_status = "completed"
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(
+                    executable_path=browser_executable or playwright.chromium.executable_path,
+                    args=["--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage"],
+                    headless=True,
+                )
+                try:
+                    context = browser.new_context(viewport={"width": 1280, "height": 720})
+                    page = context.new_page()
+                    for index, step in enumerate(steps):
+                        step_id = f"step-{index + 1}"
+                        label = f"Step {index + 1}"
+                        if isinstance(step, BrowserCaptureStepRequest):
+                            step_id = str(step.id or step_id).strip() or step_id
+                            label = str(step.label or label).strip() or label
+                            target_url = _resolve_browser_step_url(capture_base_url, step)
+                            wait_for_selector = step.waitForSelector
+                            wait_for_text = step.waitForText
+                            delay_ms = step.delayMs
+                            full_page = step.fullPage is not False
+                        else:
+                            step_id = str(step.get("id") or step_id).strip() or step_id
+                            label = str(step.get("label") or label).strip() or label
+                            target_url = _resolve_browser_step_url(capture_base_url, BrowserCaptureStepRequest.model_validate(step))
+                            wait_for_selector = step.get("waitForSelector")
+                            wait_for_text = step.get("waitForText")
+                            delay_ms = step.get("delayMs")
+                            full_page = step.get("fullPage") is not False
+                        png = _capture_browser_step_with_retry(
+                            page,
+                            target_url=target_url,
                             wait_for_selector=wait_for_selector,
                             wait_for_text=wait_for_text,
                             delay_ms=delay_ms,
-                            captured_at=_utc_now_iso(),
-                            status="completed",
+                            full_page=full_page,
+                            timeout_ms=request.timeoutMs or DEFAULT_BROWSER_CAPTURE_TIMEOUT_MS,
                         )
-                    )
-            finally:
-                browser.close()
-    except Exception as exc:
-        logger.warning("browser_validate local capture failed workspace=%s: %s", session.workspace_ref, str(exc)[:300])
-        overall_status = "failed"
-        if not step_records:
-            step_records.append(
-                WorkflowBrowserCaptureStep(
-                    id="step-1",
-                    label="Step 1",
-                    url=request.baseUrl,
-                    status="failed",
-                    error=str(exc),
-                )
+                        screenshots.append(png)
+                        step_records.append(
+                            WorkflowBrowserCaptureStep(
+                                id=step_id,
+                                label=label,
+                                url=page.url,
+                                title=page.title(),
+                                wait_for_selector=wait_for_selector,
+                                wait_for_text=wait_for_text,
+                                delay_ms=delay_ms,
+                                captured_at=_utc_now_iso(),
+                                status="completed",
+                            )
+                        )
+                finally:
+                    browser.close()
+        except Exception as exc:
+            overall_status = "failed"
+            capture_error = f"{type(exc).__name__}: {exc}"
+            logger.exception(
+                "browser_validate capture failed execution=%s workspace=%s repo=%s",
+                execution_id,
+                capture_session.workspace_ref,
+                capture_repo_root,
             )
-
-    artifact: dict[str, Any] | None = None
-    if request.workflowId and request.nodeId:
-        artifact = _save_workflow_browser_artifact(
-            workflow_execution_id=execution_id,
-            workflow_id=request.workflowId,
-            node_id=request.nodeId,
-            workspace_ref=session.workspace_ref,
-            base_url=request.baseUrl,
-            metadata={"source": "browser-validate-local-workspace"},
-            steps=step_records,
-            screenshots=screenshots,
-            status=overall_status,
+            if not step_records:
+                step_records.append(
+                    WorkflowBrowserCaptureStep(
+                        id="step-1",
+                        label="Step 1",
+                        url=request.baseUrl,
+                        status="failed",
+                        error=capture_error,
+                    )
+                )
+        finally:
+            _cleanup_preview_server(app_cwd, capture_preview_root)
+        error_message = None if overall_status == "completed" else (
+            step_records[-1].error
+            if step_records and step_records[-1].error
+            else f"Capture status: {overall_status}"
         )
+        return {
+            "success": overall_status in {"completed", "partial"},
+            "phase": "capture",
+            "error": error_message,
+            "status": overall_status,
+            "stepRecords": step_records,
+            "screenshots": screenshots,
+        }
+
+    final_capture = _capture_workspace(
+        session,
+        capture_repo_path=request.repoPath,
+        require_materialization=True,
+    )
+    if not final_capture["success"]:
+        return {
+            "success": False,
+            "error": final_capture["error"],
+            "phase": final_capture["phase"],
+        }
+
+    step_records = final_capture["stepRecords"]
+    screenshots = final_capture["screenshots"]
+    overall_status = str(final_capture["status"] or "completed")
+    final_hashes = [hashlib.sha256(png).hexdigest() for png in screenshots]
+    artifact = _save_workflow_browser_artifact(
+        workflow_execution_id=execution_id,
+        workflow_id=request.workflowId,
+        node_id=request.nodeId,
+        workspace_ref=session.workspace_ref,
+        base_url=request.baseUrl,
+        metadata={
+            "source": "browser-validate-materialized-workspace",
+            "changeSetId": materialization.get("changeSetId"),
+            "sourceExecutionId": materialization.get("sourceExecutionId"),
+            "selectedRunId": materialization.get("selectedRunId"),
+            "durableInstanceId": materialization.get("durableInstanceId"),
+            "finalScreenshotHashes": final_hashes,
+        },
+        steps=step_records,
+        screenshots=screenshots,
+        status=overall_status,
+    )
     return {
-        "success": overall_status in ("completed", "partial"),
+        "success": overall_status in {"completed", "partial"},
         "artifactId": artifact["id"] if artifact else None,
         "screenshots": len(screenshots),
         "status": overall_status,
-        "error": None if overall_status == "completed" else f"Capture status: {overall_status}",
+        "error": final_capture["error"],
         "workspace": {
             "workspaceRef": session.workspace_ref,
             "rootPath": str(session.root_path),
@@ -3762,12 +3947,23 @@ def _destroy_k8s_workspace(session: WorkspaceSession) -> None:
         logger.warning("Failed deleting sandbox claim %s: %s", claim_name, exc)
 
 
+def _normalize_workspace_relative_path(relative_path: str) -> str:
+    normalized = str(relative_path or "").strip().replace("\\", "/")
+    for prefix in ("/sandbox/repo/", "sandbox/repo/"):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):]
+    if normalized in {"/sandbox/repo", "sandbox/repo"}:
+        return ""
+    return normalized
+
+
 def _resolve_workspace_path(session: WorkspaceSession, relative_path: str) -> Path:
-    candidate = Path(relative_path)
+    normalized = _normalize_workspace_relative_path(relative_path)
+    candidate = Path(normalized)
     if candidate.is_absolute():
         return candidate
     base = session.working_directory or session.root_path
-    return (base / relative_path).resolve()
+    return (base / normalized).resolve()
 
 
 def _run_k8s_workspace_command(
@@ -4023,6 +4219,14 @@ def _capture_browser_step_with_retry(
     full_page: bool,
     timeout_ms: int,
 ) -> bytes:
+    normalized_wait_for_selector = str(wait_for_selector or "").strip().lower()
+    should_wait_for_selector = normalized_wait_for_selector not in {
+        "",
+        "body",
+        "html",
+        "document.body",
+        "document.documentelement",
+    }
     deadline = time.monotonic() + max(timeout_ms, 1) / 1000
     # Per-attempt cap: keep retries short so we get many attempts.
     attempt_timeout_ms = max(
@@ -4050,7 +4254,7 @@ def _capture_browser_step_with_retry(
                 wait_until="domcontentloaded",
                 timeout=current_timeout_ms,
             )
-            if wait_for_selector:
+            if should_wait_for_selector and wait_for_selector:
                 page.wait_for_selector(wait_for_selector, timeout=current_timeout_ms)
             if wait_for_text:
                 page.wait_for_function(
@@ -4696,6 +4900,119 @@ def _load_run_artifact(instance_id: str) -> dict[str, Any] | None:
     return artifact if artifact else None
 
 
+def _artifact_instance_id(artifact: dict[str, Any]) -> str | None:
+    if not isinstance(artifact, dict):
+        return None
+    for candidate in (
+        artifact.get("daprInstanceId"),
+        artifact.get("agentWorkflowId"),
+        (artifact.get("agentProgress") or {}).get("daprInstanceId")
+        if isinstance(artifact.get("agentProgress"), dict)
+        else None,
+        (artifact.get("agentProgress") or {}).get("agentWorkflowId")
+        if isinstance(artifact.get("agentProgress"), dict)
+        else None,
+    ):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    return None
+
+
+def _artifact_contains_materialized_changes(artifact: dict[str, Any]) -> bool:
+    file_snapshots = artifact.get("fileSnapshots")
+    if isinstance(file_snapshots, list) and file_snapshots:
+        return True
+    return bool(str(artifact.get("patch") or "").strip())
+
+
+def _coerce_json_mapping(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _load_execution_log_change_artifact(
+    execution_id: str,
+    *,
+    durable_instance_id: str | None = None,
+) -> dict[str, Any] | None:
+    if psycopg is None or not BROWSER_ARTIFACT_DATABASE_URL:
+        return None
+    try:
+        with psycopg.connect(BROWSER_ARTIFACT_DATABASE_URL) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    select output, started_at
+                    from workflow_execution_logs
+                    where execution_id = %s
+                      and status = 'success'
+                      and output is not null
+                    order by started_at desc
+                    """,
+                    (execution_id,),
+                )
+                for output, started_at in cursor.fetchall():
+                    payload = _coerce_json_mapping(output)
+                    if payload is None:
+                        continue
+                    resolved_instance_id = _artifact_instance_id(payload)
+                    if durable_instance_id and resolved_instance_id != durable_instance_id:
+                        continue
+                    if not _artifact_contains_materialized_changes(payload):
+                        continue
+                    artifact = {
+                        "changeSetId": str(
+                            payload.get("changeSetId")
+                            or _change_set_id_for_instance(
+                                resolved_instance_id or durable_instance_id or execution_id
+                            )
+                        ),
+                        "executionId": execution_id,
+                        "agentWorkflowId": payload.get("agentWorkflowId")
+                        or (
+                            (payload.get("agentProgress") or {}).get("agentWorkflowId")
+                            if isinstance(payload.get("agentProgress"), dict)
+                            else None
+                        ),
+                        "daprInstanceId": resolved_instance_id or durable_instance_id,
+                        "patch": str(payload.get("patch") or ""),
+                        "changeSummary": (
+                            payload.get("changeSummary")
+                            if isinstance(payload.get("changeSummary"), dict)
+                            else _empty_change_summary()
+                        ),
+                        "fileChanges": payload.get("fileChanges") or [],
+                        "fileSnapshots": payload.get("fileSnapshots") or [],
+                        "createdAt": (
+                            started_at.isoformat()
+                            if hasattr(started_at, "isoformat")
+                            else _utc_now_iso()
+                        ),
+                    }
+                    cache_key = _artifact_instance_id(artifact)
+                    if cache_key:
+                        try:
+                            run_state_store.save(key=_run_artifact_key(cache_key), value=artifact)
+                        except StateStoreError as exc:
+                            logger.warning("Failed to cache execution log artifact %s: %s", cache_key, exc)
+                    return artifact
+    except Exception as exc:
+        logger.warning(
+            "Failed to load durable change artifact from execution logs for %s: %s",
+            execution_id,
+            exc,
+        )
+    return None
+
+
 def _status_from_persisted_state(
     instance_id: str,
     *,
@@ -4834,6 +5151,96 @@ def _parse_patch_file_entries(patch: str) -> list[dict[str, Any]]:
 
     flush()
     return entries
+
+
+def _parse_patch_sections(patch: str) -> list[dict[str, Any]]:
+    sections: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    current_hunk: dict[str, Any] | None = None
+
+    def flush_hunk() -> None:
+        nonlocal current_hunk
+        if current is not None and current_hunk is not None:
+            current.setdefault("hunks", []).append(current_hunk)
+        current_hunk = None
+
+    def flush_section() -> None:
+        nonlocal current
+        flush_hunk()
+        if current is not None:
+            sections.append(current)
+        current = None
+
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            flush_section()
+            parts = line.split()
+            old_path = parts[2][2:] if len(parts) > 2 and parts[2].startswith("a/") else None
+            new_path = parts[3][2:] if len(parts) > 3 and parts[3].startswith("b/") else None
+            current = {"oldPath": old_path, "newPath": new_path, "hunks": []}
+            continue
+        if current is None:
+            continue
+        if line.startswith("--- "):
+            value = line[4:].strip()
+            current["oldPath"] = None if value == "/dev/null" else re.sub(r"^a/", "", value)
+            continue
+        if line.startswith("+++ "):
+            value = line[4:].strip()
+            current["newPath"] = None if value == "/dev/null" else re.sub(r"^b/", "", value)
+            continue
+        if line.startswith("@@ "):
+            flush_hunk()
+            match = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if match is None:
+                raise RuntimeError(f"Unsupported patch hunk header: {line}")
+            current_hunk = {
+                "oldStart": int(match.group(1)),
+                "newStart": int(match.group(3)),
+                "lines": [],
+            }
+            continue
+        if current_hunk is not None and line[:1] in {" ", "+", "-", "\\"}:
+            current_hunk["lines"].append(line)
+
+    flush_section()
+    return sections
+
+
+def _apply_unified_patch_to_text(original_text: str | None, hunks: list[dict[str, Any]]) -> str:
+    source_text = original_text or ""
+    original_lines = source_text.splitlines()
+    result: list[str] = []
+    cursor = 0
+
+    for hunk in hunks:
+        old_start = max(int(hunk.get("oldStart") or 1) - 1, 0)
+        if old_start < cursor:
+            raise RuntimeError("Overlapping patch hunks are not supported")
+        result.extend(original_lines[cursor:old_start])
+        cursor = old_start
+        for line in hunk.get("lines") or []:
+            tag = line[:1]
+            value = line[1:]
+            if tag == " ":
+                if cursor >= len(original_lines) or original_lines[cursor] != value:
+                    raise RuntimeError("Patch context does not match workspace file")
+                result.append(original_lines[cursor])
+                cursor += 1
+            elif tag == "-":
+                if cursor >= len(original_lines) or original_lines[cursor] != value:
+                    raise RuntimeError("Patch deletion does not match workspace file")
+                cursor += 1
+            elif tag == "+":
+                result.append(value)
+            elif tag == "\\":
+                continue
+
+    result.extend(original_lines[cursor:])
+    final_text = "\n".join(result)
+    if source_text.endswith("\n") or final_text:
+        final_text += "\n"
+    return final_text
 
 
 def _read_text_file(path: Path) -> str | None:
@@ -6962,11 +7369,6 @@ def browser_materialize_change_artifact(
     request: BrowserMaterializeChangeArtifactRequest,
 ) -> dict[str, Any]:
     session = _workspace_from_ref(request.workspaceRef)
-    if session.backend != "k8s":
-        raise HTTPException(
-            status_code=400,
-            detail="Browser materialization requires a k8s-backed browser workspace",
-        )
     source_execution_id = (
         str(request.sourceExecutionId or "").strip()
         or str(request.dbExecutionId or "").strip()
@@ -6977,16 +7379,22 @@ def browser_materialize_change_artifact(
         if request.durableInstanceId
         else _load_execution_run_ids(source_execution_id)
     )
+    candidate_run_ids = run_ids or [None]
     selected_run_id: str | None = None
     selected_artifact: dict[str, Any] | None = None
-    for run_id in run_ids:
-        artifact = _load_run_artifact(run_id)
-        if not isinstance(artifact, dict):
+    for run_id in candidate_run_ids:
+        artifact = _load_run_artifact(run_id) if run_id else None
+        if artifact is None:
+            artifact = _load_execution_log_change_artifact(
+                source_execution_id,
+                durable_instance_id=run_id,
+            )
+        if not isinstance(artifact, dict) or not _artifact_contains_materialized_changes(artifact):
             continue
+        selected_run_id = run_id or _artifact_instance_id(artifact)
+        selected_artifact = artifact
         file_snapshots = artifact.get("fileSnapshots")
         if isinstance(file_snapshots, list) and file_snapshots:
-            selected_run_id = run_id
-            selected_artifact = artifact
             break
     if selected_artifact is None or selected_run_id is None:
         raise HTTPException(
@@ -6994,40 +7402,131 @@ def browser_materialize_change_artifact(
             detail=f"No durable change artifact found for execution {source_execution_id}",
         )
 
+    repo_root = (session.working_directory or session.root_path).resolve()
     restored_paths: list[str] = []
     deleted_paths: list[str] = []
-    for snapshot in selected_artifact.get("fileSnapshots") or []:
-        if not isinstance(snapshot, dict):
-            continue
-        relative_path = str(snapshot.get("path") or "").strip()
-        if not relative_path:
-            continue
-        target_path = _resolve_workspace_path(session, relative_path)
-        status = str(snapshot.get("status") or "M").strip().upper()
-        if status == "D":
-            _delete_remote_path(session, target_path)
-            deleted_paths.append(str(target_path))
-            continue
-        new_content = snapshot.get("newContent")
-        if not isinstance(new_content, str):
+    file_snapshots = selected_artifact.get("fileSnapshots") or []
+    if isinstance(file_snapshots, list) and file_snapshots:
+        for snapshot in file_snapshots:
+            if not isinstance(snapshot, dict):
+                continue
+            relative_path = str(snapshot.get("path") or "").strip()
+            if not relative_path:
+                continue
+            target_path = _resolve_workspace_path(session, relative_path)
+            status = str(snapshot.get("status") or "M").strip().upper()
+            if status == "D":
+                if session.backend == "k8s":
+                    _delete_remote_path(session, target_path)
+                elif target_path.exists():
+                    if target_path.is_dir():
+                        shutil.rmtree(target_path)
+                    else:
+                        target_path.unlink()
+                deleted_paths.append(str(target_path))
+                continue
+            new_content = snapshot.get("newContent")
+            if not isinstance(new_content, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Binary file materialization is not supported for {relative_path}",
+                )
+            if session.backend == "k8s":
+                _write_remote_file(session, target_path, new_content)
+            else:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_text(new_content, encoding="utf-8")
+            restored_paths.append(str(target_path))
+            old_path = str(snapshot.get("oldPath") or "").strip()
+            if old_path and old_path != relative_path:
+                old_target_path = _resolve_workspace_path(session, old_path)
+                if session.backend == "k8s":
+                    _delete_remote_path(session, old_target_path)
+                elif old_target_path.exists():
+                    if old_target_path.is_dir():
+                        shutil.rmtree(old_target_path)
+                    else:
+                        old_target_path.unlink()
+                deleted_paths.append(str(old_target_path))
+    else:
+        patch = str(selected_artifact.get("patch") or "").strip()
+        if not patch:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No durable change artifact found for execution {source_execution_id}",
+            )
+        if session.backend != "local":
             raise HTTPException(
                 status_code=400,
-                detail=f"Binary file materialization is not supported for {relative_path}",
+                detail="Patch-based browser materialization requires a local browser workspace",
             )
-        _write_remote_file(session, target_path, new_content)
-        restored_paths.append(str(target_path))
-        old_path = str(snapshot.get("oldPath") or "").strip()
-        if old_path and old_path != relative_path:
-            old_target_path = _resolve_workspace_path(session, old_path)
-            _delete_remote_path(session, old_target_path)
-            deleted_paths.append(str(old_target_path))
+        tool_context = ToolRuntimeContext.from_workspace_root(repo_root)
+        token = push_tool_context(tool_context)
+        try:
+            _apply_workspace_patch(repo_root, patch)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to materialize change artifact patch: {exc}",
+            ) from exc
+        finally:
+            pop_tool_context(token)
+        for entry in _parse_patch_file_entries(patch):
+            if not isinstance(entry, dict):
+                continue
+            relative_path = str(entry.get("path") or "").strip()
+            old_path = str(entry.get("oldPath") or "").strip()
+            new_path = str(entry.get("newPath") or "").strip()
+            status = str(entry.get("status") or "M").strip().upper()
+            materialized_path = new_path or relative_path or old_path
+            if status != "D" and materialized_path:
+                restored_paths.append(str(_resolve_workspace_path(session, materialized_path)))
+            deleted_path = old_path if status in {"D", "R"} else ""
+            if deleted_path and deleted_path != materialized_path:
+                deleted_paths.append(str(_resolve_workspace_path(session, deleted_path)))
+
+    restored_paths = list(dict.fromkeys(restored_paths))
+    deleted_paths = list(dict.fromkeys(deleted_paths))
+    change_set_id = str(selected_artifact.get("changeSetId") or f"{selected_run_id}-patch")
+    marker_payload = {
+        "changeSetId": change_set_id,
+        "sourceExecutionId": source_execution_id,
+        "durableInstanceId": str(request.durableInstanceId or "").strip() or None,
+        "selectedRunId": selected_run_id,
+        "materializedAt": _utc_now_iso(),
+        "restoredPaths": restored_paths,
+        "deletedPaths": deleted_paths,
+    }
+    if session.backend == "k8s":
+        _write_remote_file(
+            session,
+            _browser_materialization_marker_path(repo_root),
+            json.dumps(marker_payload, indent=2, sort_keys=True),
+        )
+        session.repository_signals = {
+            **dict(session.repository_signals or {}),
+            "materializedChangeSetId": change_set_id,
+            "materializedSourceExecutionId": source_execution_id,
+            "materializedDurableInstanceId": marker_payload.get("durableInstanceId"),
+            "materializedAt": marker_payload["materializedAt"],
+            "materializedRunId": selected_run_id,
+        }
+        _persist_workspace_session(session)
+    else:
+        _write_browser_materialization_marker(
+            session,
+            repo_root=repo_root,
+            payload=marker_payload,
+        )
 
     return {
         "workspaceRef": session.workspace_ref,
-        "changeSetId": str(selected_artifact.get("changeSetId") or f"{selected_run_id}-patch"),
+        "changeSetId": change_set_id,
         "operation": "dapr-agent-run",
         "restoredPaths": restored_paths,
         "deletedPaths": deleted_paths,
+        "sourceExecutionId": source_execution_id,
+        "selectedRunId": selected_run_id,
         "sandbox": {
             "backend": session.backend,
             "rootPath": str(session.root_path),
@@ -7175,679 +7674,38 @@ def browser_capture_flow(request: BrowserCaptureFlowRequest) -> dict[str, Any]:
 
 @app.post("/api/browser/validate")
 def browser_validate(request: BrowserValidateRequest) -> dict[str, Any]:
-    """Composite endpoint: install, start dev server, and capture screenshots in the coding sandbox."""
+    """Validate a single materialized browser workspace with no alternate execution path."""
     timeout_ms = request.timeoutMs or 2_700_000
     timeout_seconds = max(timeout_ms // 1000, 60)
     execution_id = str(request.dbExecutionId or request.executionId).strip()
-    workspace_session = (
-        _workspace_from_ref(request.workspaceRef)
-        if str(request.workspaceRef or "").strip()
-        else None
-    )
+    workspace_session = _workspace_from_ref(request.workspaceRef)
     logger.info(
-        "browser_validate sandbox=%s repo=%s workspace=%s timeout=%ds execution=%s",
-        request.sandboxName,
+        "browser_validate workspace=%s repo=%s timeout=%ds execution=%s",
+        workspace_session.workspace_ref,
         request.repoPath,
-        workspace_session.workspace_ref if workspace_session is not None else None,
         timeout_seconds,
         execution_id,
     )
-
-    if workspace_session is not None and workspace_session.backend == "local":
-        logger.info(
-            "browser_validate using local workspace fallback workspace=%s root=%s",
-            workspace_session.workspace_ref,
-            workspace_session.working_directory or workspace_session.root_path,
-        )
-        return _browser_validate_local_workspace(
-            request,
-            workspace_session,
-            execution_id=execution_id,
-            timeout_seconds=timeout_seconds,
-        )
-
-    context = OpenShellToolContext(
-        sandbox_name=_sanitize_sandbox_name(request.sandboxName),
-        repo_path=request.repoPath,
-        preserve_proxy_env=True,
-    )
-
-    def _strip_shell_startup_noise(value: str | None) -> str:
-        text = str(value or "")
-        filtered_lines = [
-            line
-            for line in text.splitlines()
-            if "/bin/bash: /home/node/.profile: Permission denied" not in line
-        ]
-        return "\n".join(filtered_lines).strip()
-
-    def _extract_leading_cd(command: str) -> str | None:
-        match = re.match(r"^\s*cd\s+(['\"]?)([^;&\n]+?)\1\s*&&", command or "")
-        if not match:
-            return None
-        candidate = str(match.group(2) or "").strip()
-        return candidate or None
-
-    def _normalize_install_command(command: str) -> str:
-        heartbeat_prefix = (
-            'hb_pid=\'\'; cleanup(){ if [ -n "$hb_pid" ]; then kill "$hb_pid" 2>/dev/null || true; fi; }; '
-            "trap cleanup EXIT; "
-            "(while true; do echo install-heartbeat; sleep 25; done) & hb_pid=$!; "
-        )
-        normalized = str(command or "")
-        normalized = normalized.removeprefix(heartbeat_prefix).strip()
-        normalized = re.sub(r"^(?:CI=1\s+)+", "CI=1 ", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retries=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_factor=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_mintimeout=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(?:npm_config_fetch_retry_maxtimeout=\S+\s+)+", "", normalized)
-        normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
-        if "pnpm install" in normalized and "CI=1" not in normalized.split():
-            normalized = f"CI=1 {normalized}"
-        if "pnpm install" in normalized:
-            pnpm_env = (
-                "npm_config_fetch_retries=1 "
-                "npm_config_fetch_retry_factor=1 "
-                "npm_config_fetch_retry_mintimeout=3000 "
-                "npm_config_fetch_retry_maxtimeout=10000 "
-            )
-            normalized = normalized.replace("CI=1 ", f"CI=1 {pnpm_env}", 1)
-        if "pnpm install" in normalized and "--force" not in normalized:
-            normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
-        if "pnpm install" in normalized and "--no-optional" not in normalized:
-            normalized = normalized.replace("pnpm install", "pnpm install --no-optional", 1)
-        if "pnpm install" in normalized and "--reporter=" not in normalized:
-            normalized = normalized.replace(
-                "pnpm install",
-                "pnpm install --reporter=append-only",
-                1,
-            )
-        return normalized
-
-    def _is_transient_registry_failure(output: str) -> bool:
-        failure_markers = [
-            "EAI_AGAIN",
-            "ENOTFOUND",
-            "ECONNRESET",
-            "ETIMEDOUT",
-            "fetch failed",
-            "request to https://registry.npmjs.org/",
-        ]
-        text = str(output or "")
-        return any(marker in text for marker in failure_markers)
-
-    def _resolve_next_binary(cwd: str | None) -> str | None:
-        if not cwd:
-            return None
-        try:
-            resolved = context.run_command(
-                (
-                    "if [ -x node_modules/.bin/next ]; then printf '%s' node_modules/.bin/next; "
-                    "else "
-                    "next_bin=$(find node_modules/.pnpm -path '*/node_modules/next/dist/bin/next' -print -quit 2>/dev/null || true); "
-                    "if [ -n \"$next_bin\" ]; then printf '%s' \"$next_bin\"; fi; "
-                    "fi"
-                ),
-                cwd=cwd,
-                timeout_seconds=15,
-            )
-        except Exception:
-            return None
-        candidate = str(resolved.get("stdout") or "").strip()
-        return candidate or None
-
-    def _deps_present(cwd: str | None) -> bool:
-        if not cwd:
-            return False
-        next_binary = _resolve_next_binary(cwd)
-        if next_binary:
-            try:
-                probe = (
-                    f"{shlex.quote(next_binary)} --version"
-                    if next_binary == "node_modules/.bin/next"
-                    else f"node {shlex.quote(next_binary)} --version"
-                )
-                ready = context.run_command(
-                    probe,
-                    cwd=cwd,
-                    timeout_seconds=15,
-                )
-                if ready.get("exitCode", ready.get("exit_code", -1)) == 0:
-                    return True
-            except Exception:
-                pass
-        try:
-            ready = context.run_command(
-                (
-                    "if [ -f package.json ] && grep -q '\"next\"[[:space:]]*:' package.json; then "
-                    "if [ -x node_modules/.bin/next ] || "
-                    "(command -v pnpm >/dev/null 2>&1 && pnpm exec next --version >/dev/null 2>&1); "
-                    "then echo deps-present; else echo deps-missing; fi; "
-                    "elif [ -x node_modules/.bin/vite ] || [ -x node_modules/.bin/react-scripts ] || [ -x node_modules/.bin/astro ]; then "
-                    "echo deps-present; "
-                    "elif [ -d node_modules/.bin ] && find node_modules/.bin -maxdepth 1 \\( -type f -o -type l \\) | grep -q .; then "
-                    "echo deps-present; "
-                    "elif [ -d .next ]; then "
-                    "echo deps-present; "
-                    "else echo deps-missing; fi"
-                ),
-                cwd=cwd,
-                timeout_seconds=15,
-            )
-        except Exception:
-            return False
-        return "deps-present" in str(ready.get("stdout") or "")
-
-    def _preferred_dev_runner(cwd: str | None) -> str | None:
-        if not cwd:
-            return None
-        next_binary = _resolve_next_binary(cwd)
-        if next_binary:
-            if next_binary == "node_modules/.bin/next":
-                return f"{shlex.quote(next_binary)} dev --hostname 0.0.0.0 --port 3009"
-            return f"node {shlex.quote(next_binary)} dev --hostname 0.0.0.0 --port 3009"
-        try:
-            detected = context.run_command(
-                (
-                    "if [ -f pnpm-lock.yaml ]; then echo pnpm; "
-                    "elif [ -f yarn.lock ]; then echo yarn; "
-                    "elif [ -f package-lock.json ] || [ -f package.json ]; then echo npm; "
-                    "else echo unknown; fi"
-                ),
-                cwd=cwd,
-                timeout_seconds=15,
-            )
-        except Exception:
-            return None
-        package_manager = str(detected.get("stdout") or "").strip().splitlines()
-        selected = package_manager[-1] if package_manager else ""
-        if selected == "pnpm":
-            return "pnpm dev --hostname 0.0.0.0 --port 3009"
-        if selected == "yarn":
-            return "yarn dev --hostname 0.0.0.0 --port 3009"
-        if selected == "npm":
-            return "npm run dev -- --hostname 0.0.0.0 --port 3009"
-        return None
-
-    def _normalize_devserver_command(command: str, cwd: str | None) -> str:
-        normalized = str(command or "").strip()
-        if not normalized:
-            return normalized
-        preferred_runner = _preferred_dev_runner(cwd)
-        if preferred_runner:
-            normalized = normalized.replace(
-                "npx next dev --hostname 0.0.0.0 --port 3009",
-                preferred_runner,
-            )
-            normalized = normalized.replace(
-                "pnpm run dev -- --hostname 0.0.0.0 --port 3009",
-                preferred_runner,
-            )
-        return normalized
-
-    def _tail_devserver_log(cwd: str | None) -> str:
-        candidate_paths = [".wf-preview/dev-server.log", "../.wf-preview/dev-server.log"]
-        for candidate in candidate_paths:
-            try:
-                log_result = context.run_command(
-                    f"if [ -f {shlex.quote(candidate)} ]; then tail -n 80 {shlex.quote(candidate)}; fi",
-                    cwd=cwd,
-                    timeout_seconds=15,
-                )
-            except Exception:
-                continue
-            preview = str(log_result.get("stdout") or "").strip()
-            if preview:
-                return preview
-        return ""
-
-    def _is_base_url_ready() -> bool:
-        try:
-            ready = context.run_command(
-                (
-                    f"if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null "
-                    "| grep -qE '^(2|3)[0-9][0-9]$'; then echo ready; else echo not-ready; fi"
-                ),
-                timeout_seconds=15,
-            )
-        except Exception:
-            return False
-        return "ready" in str(ready.get("stdout") or "")
-
-    def _cleanup_preview_server(cwd: str | None) -> None:
-        candidate_dirs = [".wf-preview", "../.wf-preview"]
-        for candidate_dir in candidate_dirs:
-            try:
-                context.run_command(
-                    (
-                        f"if [ -f {shlex.quote(candidate_dir)}/dev-server.pid ]; then "
-                        f"pid=$(cat {shlex.quote(candidate_dir)}/dev-server.pid 2>/dev/null || true); "
-                        "if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then kill \"$pid\" 2>/dev/null || true; sleep 1; fi; "
-                        f"rm -f {shlex.quote(candidate_dir)}/dev-server.pid; "
-                        "fi"
-                    ),
-                    cwd=cwd,
-                    timeout_seconds=15,
-                )
-            except Exception:
-                continue
-
-        try:
-            context.run_command(
-                (
-                    "for pid in $(ps -eo pid,args | awk "
-                    "'/([n]ext|[v]ite|react-scripts|astro).*--port 3009/ {print $1}'); do "
-                    "kill \"$pid\" 2>/dev/null || true; "
-                    "done"
-                ),
-                cwd=cwd,
-                timeout_seconds=15,
-            )
-        except Exception:
-            pass
-
-        try:
-            context.run_command("sleep 2", cwd=cwd, timeout_seconds=5)
-        except Exception:
-            pass
-
-    app_cwd = (
-        _extract_leading_cd(request.devServerCommand)
-        or _extract_leading_cd(request.installCommand)
-        or request.repoPath
-    )
-    skip_install = _deps_present(app_cwd)
-    if skip_install:
-        logger.info(
-            "browser_validate install skipped: dependencies already present in %s",
-            app_cwd,
-        )
-
-    # --- Step 1: Install dependencies ---
-    if not skip_install:
-        with trace_span("browser_validate.install", {"sandbox": request.sandboxName}):
-            try:
-                if any(
-                    token in str(request.installCommand or "")
-                    for token in ("pnpm install", "npm install", "npm ci", "yarn install")
-                ):
-                    policy_result = _ensure_browser_validate_npm_policy(
-                        _sanitize_sandbox_name(request.sandboxName)
-                    )
-                    if not policy_result.get("ok"):
-                        logger.warning(
-                            "browser_validate proceeding without npm policy update sandbox=%s details=%s",
-                            request.sandboxName,
-                            policy_result,
-                        )
-                install_started_at = time.monotonic()
-                install_command = _normalize_install_command(request.installCommand)
-                wrapped_install_command = install_command.rstrip(" ;")
-                install_log_path = "/tmp/browser-validate-install.log"
-                install_exec_command = (
-                    f"rm -f {shlex.quote(install_log_path)}; "
-                    f"{{ {wrapped_install_command}; }} >{shlex.quote(install_log_path)} 2>&1; "
-                    "status=$?; "
-                    f"tail -n 80 {shlex.quote(install_log_path)} 2>/dev/null || true; "
-                    "exit $status"
-                )
-                logger.info(
-                    "browser_validate install: sandbox=%s command=%s",
-                    request.sandboxName,
-                    install_command[:120],
-                )
-                install_result = context.run_command(
-                    install_exec_command,
-                    timeout_seconds=min(timeout_seconds, 240),
-                )
-                install_exit_code = install_result.get(
-                    "exitCode",
-                    install_result.get("exit_code", -1),
-                )
-                logger.info(
-                    "browser_validate install completed: sandbox=%s exit=%s duration_ms=%s stdout=%s stderr=%s",
-                    request.sandboxName,
-                    install_exit_code,
-                    int((time.monotonic() - install_started_at) * 1000),
-                    str(install_result.get("stdout") or "")[:200],
-                    str(install_result.get("stderr") or "")[:200],
-                )
-                if install_exit_code != 0:
-                    cleaned_stderr = _strip_shell_startup_noise(
-                        install_result.get("stderr")
-                    )
-                    cleaned_stdout = str(install_result.get("stdout") or "").strip()
-                    combined_output = "\n".join(
-                        part for part in [cleaned_stdout, cleaned_stderr] if part
-                    )
-                    if _is_transient_registry_failure(combined_output):
-                        deps_available = _deps_present(app_cwd)
-                        if deps_available:
-                            logger.warning(
-                                "browser_validate install hit transient registry failure but dependencies look usable; continuing sandbox=%s cwd=%s",
-                                request.sandboxName,
-                                app_cwd or request.repoPath,
-                            )
-                        else:
-                            preferred_output = cleaned_stderr or cleaned_stdout
-                            error_msg = (
-                                f"Install failed with exit code {install_exit_code}: "
-                                f"{preferred_output[:500]}"
-                            )
-                            logger.warning(
-                                "browser_validate install failed after transient registry failure with no usable dependencies: %s",
-                                error_msg,
-                            )
-                            return {
-                                "success": False,
-                                "error": error_msg,
-                                "phase": "install",
-                            }
-                    else:
-                        preferred_output = cleaned_stderr or cleaned_stdout
-                        error_msg = (
-                            f"Install failed with exit code {install_exit_code}: "
-                            f"{preferred_output[:500]}"
-                        )
-                        logger.warning("browser_validate install failed: %s", error_msg)
-                        return {"success": False, "error": error_msg, "phase": "install"}
-            except Exception as exc:
-                logger.exception(
-                    "browser_validate install crashed: sandbox=%s",
-                    request.sandboxName,
-                )
-                return {
-                    "success": False,
-                    "error": f"Install error: {str(exc)[:500]}",
-                    "phase": "install",
-                }
-
-    if not _deps_present(app_cwd):
-        error_msg = (
-            "Install completed but local app runtime is still unavailable. "
-            f"Expected runnable dependencies in {app_cwd or request.repoPath}."
-        )
-        logger.warning("browser_validate dependency verification failed: %s", error_msg)
+    if workspace_session.backend != "local":
         return {
             "success": False,
-            "error": error_msg,
-            "phase": "install",
+            "error": (
+                "Browser validation requires a local materialized browser workspace. "
+                f"Received backend={workspace_session.backend}."
+            ),
+            "phase": "workspace",
         }
-
-    # --- Step 2: Start dev server in background ---
-    with trace_span("browser_validate.devserver", {"sandbox": request.sandboxName}):
-        try:
-            if _is_base_url_ready():
-                logger.info(
-                    "browser_validate reusing existing devserver for sandbox=%s base_url=%s",
-                    request.sandboxName,
-                    request.baseUrl,
-                )
-            else:
-                _cleanup_preview_server(app_cwd)
-                normalized_devserver_command = _normalize_devserver_command(
-                    request.devServerCommand,
-                    app_cwd,
-                )
-                logger.info(
-                    "browser_validate devserver: sandbox=%s command=%s",
-                    request.sandboxName,
-                    normalized_devserver_command[:120],
-                )
-                launch_result = context.run_command(
-                    normalized_devserver_command,
-                    timeout_seconds=min(timeout_seconds, 60),
-                )
-                launch_exit = launch_result.get(
-                    "exitCode",
-                    launch_result.get("exit_code", -1),
-                )
-                launch_stdout = str(launch_result.get("stdout") or "").strip()
-                launch_stderr = str(launch_result.get("stderr") or "").strip()
-                if launch_exit != 0 or "server-started" not in launch_stdout:
-                    log_tail = _tail_devserver_log(app_cwd)
-                    details = " | ".join(
-                        part
-                        for part in (
-                            launch_stdout[:300],
-                            launch_stderr[:300],
-                            log_tail[:500],
-                        )
-                        if part
-                    )
-                    if not details:
-                        details = f"exit={launch_exit}"
-                    logger.warning(
-                        "browser_validate devserver launch failed: sandbox=%s exit=%s details=%s",
-                        request.sandboxName,
-                        launch_exit,
-                        details[:400],
-                    )
-                    return {
-                        "success": False,
-                        "error": f"Dev server failed to launch: {details[:500]}",
-                        "phase": "devserver-launch",
-                    }
-        except Exception as exc:
-            logger.warning(
-                "browser_validate devserver launch returned error (may be expected for background): %s",
-                str(exc)[:200],
-            )
-            return {
-                "success": False,
-                "error": f"Dev server launch error: {str(exc)[:500]}",
-                "phase": "devserver-launch",
-            }
-
-    # --- Step 3: Wait for dev server to be ready ---
-    # Dev server binds in the sandbox user's network namespace; poll must also run as sandbox user.
-    with trace_span("browser_validate.poll", {"base_url": request.baseUrl}):
-      ready_poll_command = f"for i in $(seq 1 90); do if curl -s -o /dev/null -w '%{{http_code}}' {request.baseUrl} 2>/dev/null | grep -qE '^(2|3)[0-9][0-9]$'; then echo ready; exit 0; fi; sleep 2; done; echo timeout; exit 1"
-      try:
-        poll_result = context.run_command(ready_poll_command, timeout_seconds=200)
-        stdout = str(poll_result.get("stdout") or "").strip()
-        if "ready" not in stdout:
-            log_tail = _tail_devserver_log(app_cwd)
-            logger.warning("browser_validate devserver not ready: %s", stdout[:200])
-            detail = stdout[:200]
-            if log_tail:
-                detail = f"{detail} | {log_tail[:500]}"
-            return {"success": False, "error": f"Dev server did not become ready: {detail}", "phase": "devserver-poll"}
-      except Exception as exc:
-        log_tail = _tail_devserver_log(app_cwd)
-        logger.warning("browser_validate devserver poll failed: %s", str(exc)[:200])
-        detail = str(exc)[:300]
-        if log_tail:
-            detail = f"{detail} | {log_tail[:500]}"
-        return {"success": False, "error": f"Dev server poll error: {detail}", "phase": "devserver-poll"}
-
-    # --- Step 4: Run in-sandbox Playwright capture ---
-    steps = request.steps
-    if isinstance(steps, str):
-        try:
-            steps = json.loads(steps)
-        except json.JSONDecodeError:
-            return {"success": False, "error": "Invalid JSON in steps field", "phase": "capture"}
-    steps_json = json.dumps([
-        {
-            "url": step.url or step.path or "/",
-            "waitForSelector": step.waitForSelector,
-            "waitForText": step.waitForText,
-            "delayMs": step.delayMs,
-        }
-        if isinstance(step, BrowserCaptureStepRequest)
-        else step
-        for step in (steps or [{"url": "/", "waitForSelector": "body", "delayMs": 2500}])
-    ])
-
-    output_dir = "/tmp/wf-screenshots"
-
-    # --- Step 4: Validate browser tooling baseline in the sandbox ---
-    # Browser validation is expected to run against the node-sandbox image, which should
-    # already include Playwright, Chromium, and xvfb-run. Runtime bootstrap is too slow
-    # and flaky under sandbox network policy, so fail fast if the image is stale.
-    pw_env = "PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers"
-    pw_probe_command = (
-        f'{pw_env} python3 -c "from playwright.sync_api import sync_playwright; '
-        'p = sync_playwright().start(); '
-        'print(p.chromium.executable_path); '
-        'p.stop()"'
-    )
-    try:
-        pw_check = context.run_command(pw_probe_command, timeout_seconds=15)
-        pw_exit = pw_check.get("exitCode", pw_check.get("exit_code", -1))
-        pw_stdout = str(pw_check.get("stdout") or "").strip()
-        pw_available = pw_exit == 0 and "/opt/pw-browsers/" in pw_stdout
-    except Exception as exc:
-        logger.warning("browser_validate sandbox browser probe crashed: %s", str(exc)[:200])
-        pw_available = False
-
-    if not pw_available:
-        error_msg = (
-            "Sandbox image is missing browser validation prerequisites. "
-            "Expected Playwright Chromium under /opt/pw-browsers."
-        )
-        logger.warning("browser_validate missing sandbox browser tooling: %s", error_msg)
-        return {
-            "success": False,
-            "error": error_msg,
-            "phase": "capture-prerequisites",
-        }
-
-    # Upload the capture script via base64 encoding to avoid heredoc quoting issues
-    # with OpenShell's command API.
-    encoded_script = base64.b64encode(_INLINE_CAPTURE_SCRIPT.strip().encode()).decode()
-    upload_command = f"echo '{encoded_script}' | base64 -d > /sandbox/capture_screenshots.py && chmod +x /sandbox/capture_screenshots.py"
-    try:
-        context.run_command(upload_command, timeout_seconds=30)
-    except Exception as exc:
-        logger.warning("browser_validate upload capture script failed: %s", str(exc)[:200])
-
-    capture_command = (
-        f"{pw_env} python3 /sandbox/capture_screenshots.py "
-        f"--base-url {shlex.quote(request.baseUrl)} "
-        f"--steps {shlex.quote(steps_json)} "
-        f"--output-dir {output_dir}"
-    )
-
-    # Run the capture via Xvfb (provides a virtual display for Chromium)
-    xvfb_capture = f"xvfb-run --auto-servernum --server-args='-screen 0 1280x720x24' {capture_command}"
-    screenshots: list[bytes] = []
-    step_records: list[WorkflowBrowserCaptureStep] = []
-    overall_status = "completed"
-    try:
-        capture_result = context.run_command(xvfb_capture, timeout_seconds=min(timeout_seconds, 300))
-        capture_stdout = str(capture_result.get("stdout") or "").strip()
-        capture_stderr = str(capture_result.get("stderr") or "").strip()
-        capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
-
-        if capture_exit != 0:
-            # Fallback: try without xvfb
-            logger.info("browser_validate xvfb capture failed (exit=%s stderr=%s), trying headless directly", capture_exit, capture_stderr[:200])
-            capture_result = context.run_command(capture_command, timeout_seconds=min(timeout_seconds, 300))
-            capture_stdout = str(capture_result.get("stdout") or "").strip()
-            capture_stderr = str(capture_result.get("stderr") or "").strip()
-            capture_exit = capture_result.get("exitCode", capture_result.get("exit_code", -1))
-
-        if capture_exit == 0 and "CAPTURE_OK" in capture_stdout:
-            # Read manifest and convert PNGs to base64 files inside the sandbox,
-            # then read the base64 text files (avoids binary data in stdout).
-            try:
-                convert_cmd = (
-                    f"cd {output_dir} && "
-                    f"for f in step-*.png; do "
-                    f"  python3 -c \"import base64,sys; sys.stdout.write(base64.b64encode(open('$f','rb').read()).decode())\" > \"$f.b64\"; "
-                    f"done && cat manifest.json"
-                )
-                manifest_result = context.run_command(convert_cmd, timeout_seconds=60)
-                manifest_text = str(manifest_result.get("stdout") or "").strip()
-                result_data = json.loads(manifest_text)
-                if result_data.get("success"):
-                    for ss in result_data.get("screenshots", []):
-                        step_index = ss.get("step", 1) - 1
-                        png_path = ss.get("path", "")
-                        if not png_path:
-                            continue
-                        b64_file = f"{png_path}.b64"
-                        # Read base64 in chunks to work around OpenShell stdout size limits.
-                        # The API drops leading bytes on large outputs, so we split into 4KB chunks.
-                        try:
-                            size_result = context.run_command(
-                                f"wc -c < {shlex.quote(b64_file)}",
-                                timeout_seconds=10,
-                            )
-                            file_size = int(str(size_result.get("stdout") or "0").strip())
-                            chunk_size = 4000
-                            chunks: list[str] = []
-                            for offset in range(0, file_size, chunk_size):
-                                chunk_result = context.run_command(
-                                    f"dd if={shlex.quote(b64_file)} bs=1 skip={offset} count={chunk_size} 2>/dev/null",
-                                    timeout_seconds=15,
-                                )
-                                chunk = str(chunk_result.get("stdout") or "")
-                                if chunk:
-                                    chunks.append(chunk)
-                            b64_text = "".join(chunks).strip()
-                            if b64_text:
-                                screenshots.append(base64.b64decode(b64_text))
-                        except Exception as read_exc:
-                            logger.warning("browser_validate read b64 failed step=%d: %s", step_index + 1, str(read_exc)[:200])
-                            continue
-                        step_label = f"Step {step_index + 1}"
-                        if isinstance(steps, list) and step_index < len(steps):
-                            s = steps[step_index]
-                            if isinstance(s, BrowserCaptureStepRequest):
-                                step_label = s.label or step_label
-                            elif isinstance(s, dict):
-                                step_label = s.get("label", step_label)
-                        step_records.append(WorkflowBrowserCaptureStep(
-                            id=f"step-{step_index + 1}",
-                            label=step_label,
-                            url=ss.get("url", ""),
-                            captured_at=_utc_now_iso(),
-                            status="completed",
-                        ))
-            except json.JSONDecodeError:
-                logger.warning("browser_validate could not parse capture output: %s", capture_stdout[:200])
-                overall_status = "failed"
-        else:
-            overall_status = "failed"
-            logger.warning("browser_validate capture failed exit=%s stdout=%s stderr=%s", capture_exit, capture_stdout[:300], capture_stderr[:300])
-    except Exception as exc:
-        logger.exception("browser_validate capture crashed: sandbox=%s", request.sandboxName)
-        overall_status = "failed"
-
-    # --- Step 5: Persist screenshots as browser artifacts ---
-    artifact: dict[str, Any] | None = None
-    if screenshots and request.workflowId and request.nodeId:
-        try:
-            artifact = _save_workflow_browser_artifact(
-                workflow_execution_id=execution_id,
-                workflow_id=request.workflowId,
-                node_id=request.nodeId,
-                workspace_ref=None,
-                base_url=request.baseUrl,
-                metadata={"source": "browser-validate-in-sandbox", "sandboxName": request.sandboxName},
-                steps=step_records,
-                screenshots=screenshots,
-                status=overall_status,
-            )
-        except Exception as exc:
-            logger.exception("browser_validate artifact save failed: %s", str(exc)[:200])
-
     logger.info(
-        "browser_validate completed sandbox=%s status=%s screenshots=%d artifact=%s",
-        request.sandboxName, overall_status, len(screenshots),
-        artifact["id"] if artifact else None,
+        "browser_validate using materialized workspace workspace=%s root=%s",
+        workspace_session.workspace_ref,
+        workspace_session.working_directory or workspace_session.root_path,
     )
-    return {
-        "success": overall_status in ("completed", "partial"),
-        "artifactId": artifact["id"] if artifact else None,
-        "screenshots": len(screenshots),
-        "status": overall_status,
-        "error": None if overall_status == "completed" else f"Capture status: {overall_status}",
-        "sandbox": {"sandboxName": request.sandboxName, "repoPath": request.repoPath},
-    }
+    return _browser_validate_local_workspace(
+        request,
+        workspace_session,
+        execution_id=execution_id,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 # Inline capture script for uploading to sandbox when the external file isn't available

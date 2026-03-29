@@ -1,7 +1,9 @@
 /**
  * Create or update a reusable observable OpenShell feature-delivery workflow:
  * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
- * -> openshell-langgraph-observable/run (execute) -> workspace/command (review) -> browser/validate
+ * -> openshell-langgraph-observable/run (execute) -> workspace/command (review)
+ * -> workspace/profile (browser) -> workspace/clone (browser)
+ * -> browser/materialize-change-artifact -> browser/validate -> workspace/cleanup
  *
  * The manual trigger input is treated as the user feature request.
  *
@@ -501,21 +503,25 @@ function buildWorkflowGraph(input: {
 	const planId = nanoid();
 	const executeId = nanoid();
 	const reviewId = nanoid();
+	const browserProfileId = nanoid();
+	const browserCloneId = nanoid();
+	const browserMaterializeId = nanoid();
 	const browserValidateId = nanoid();
+	const browserCleanupId = nanoid();
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
 	const cloneRepositoryTemplate = `{{@${cloneId}:Workspace Clone.repository}}`;
 	const artifactRefTemplate = `{{@${planId}:LangGraph Observable Plan.artifactRef}}`;
 	const executionIdTemplate = `{{@${profileId}:Workspace Profile.executionId}}`;
+	const browserWorkspaceRefTemplate = `{{@${browserProfileId}:Browser Validation Workspace.workspaceRef}}`;
+	const browserClonePathTemplate = `{{@${browserCloneId}:Browser Validation Clone.clonePath}}`;
+	const executeDurableInstanceTemplate = `{{@${executeId}:LangGraph Observable Execute.daprInstanceId}}`;
 	const planningThreadTemplate = `lg:plan:${executionIdTemplate}`;
 	const executionThreadTemplate = `lg:exec:${executionIdTemplate}`;
 	const previewAppDir = input.previewAppDir || ".";
 	const planPrompt = buildPlanPrompt(triggerId, previewAppDir);
 	const executePrompt = buildExecutePrompt(triggerId, previewAppDir);
-	// browser/validate runs inside the coding sandbox where the repo IS /sandbox/repo.
-	// previewAppDir is a subdirectory *within* the repo (e.g. "dashboard/final-example"),
-	// NOT the clone targetDir.  Default to "." (repo root).
 	const enabledTools = JSON.stringify([
 		"read",
 		"write",
@@ -686,24 +692,94 @@ function buildWorkflowGraph(input: {
 			},
 		},
 		{
+			id: browserProfileId,
+			type: "action",
+			position: { x: 1280, y: -220 },
+			data: {
+				label: "Browser Validation Workspace",
+				description:
+					"Create a dedicated workspace for deterministic browser validation.",
+				type: "action",
+				config: {
+					actionType: "workspace/profile",
+					name: "browser-validation-workspace",
+					enabledTools,
+					requireReadBeforeWrite: "true",
+					commandTimeoutMs: "360000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: browserCloneId,
+			type: "action",
+			position: { x: 1580, y: -220 },
+			data: {
+				label: "Browser Validation Clone",
+				description:
+					"Clone the target repository into the browser validation workspace.",
+				type: "action",
+				config: {
+					...cloneConfig,
+					actionType: "workspace/clone",
+					workspaceRef: browserWorkspaceRefTemplate,
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: browserMaterializeId,
+			type: "action",
+			position: { x: 1880, y: -220 },
+			data: {
+				label: "Browser Materialize Changes",
+				description:
+					"Restore the execute-step file snapshots into the browser validation clone.",
+				type: "action",
+				config: {
+					actionType: "browser/materialize-change-artifact",
+					workspaceRef: browserWorkspaceRefTemplate,
+					sourceExecutionId: executionIdTemplate,
+					durableInstanceId: executeDurableInstanceTemplate,
+					preferredOperation: "agent-execute",
+				},
+				status: "idle",
+			},
+		},
+		{
 			id: browserValidateId,
 			type: "action",
-			position: { x: 1280, y: -20 },
+			position: { x: 2180, y: -20 },
 			data: {
 				label: "Browser Validation",
 				description:
-					"Install, run, and screenshot the feature in the coding sandbox.",
+					"Install, run, and screenshot the materialized execute result in the browser workspace.",
 				type: "action",
 				config: {
 					actionType: "browser/validate",
-					workspaceRef: workspaceRefTemplate,
+					workspaceRef: browserWorkspaceRefTemplate,
 					sandboxName: `{{@${executeId}:LangGraph Observable Execute.sandboxName}}`,
-					repoPath: `{{@${executeId}:LangGraph Observable Execute.sandboxRepoPath}}`,
+					repoPath: browserClonePathTemplate,
 					installCommand: buildValidationInstallCommand(previewAppDir),
 					devServerCommand: buildValidationDevServerCommand(previewAppDir),
 					baseUrl: "http://127.0.0.1:3009",
 					steps: buildValidationCaptureSteps(),
 					timeoutMs: "2700000",
+				},
+				status: "idle",
+			},
+		},
+		{
+			id: browserCleanupId,
+			type: "action",
+			position: { x: 2480, y: -20 },
+			data: {
+				label: "Browser Cleanup",
+				description: "Cleanup the browser validation workspace session.",
+				type: "action",
+				config: {
+					actionType: "workspace/cleanup",
+					workspaceRef: browserWorkspaceRefTemplate,
 				},
 				status: "idle",
 			},
@@ -755,7 +831,39 @@ function buildWorkflowGraph(input: {
 			id: nanoid(),
 			type: "animated",
 			source: reviewId,
+			target: browserProfileId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: browserProfileId,
+			target: browserCloneId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: browserCloneId,
+			target: browserMaterializeId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: browserMaterializeId,
 			target: browserValidateId,
+			sourceHandle: null,
+			targetHandle: null,
+		},
+		{
+			id: nanoid(),
+			type: "animated",
+			source: browserValidateId,
+			target: browserCleanupId,
 			sourceHandle: null,
 			targetHandle: null,
 		},

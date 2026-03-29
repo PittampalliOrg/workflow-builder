@@ -155,6 +155,43 @@ describe("parseExecutionFileChangeData", () => {
 		});
 	});
 
+	it("prefers the execute durable instance over an earlier plan-mode durable instance", () => {
+		const data = parseExecutionFileChangeData({
+			outputs: {
+				planNode: {
+					data: {
+						daprInstanceId: "exec-123__langgraph__plan_mode",
+						snapshotRefs: ["README.md"],
+					},
+				},
+				executeNode: {
+					data: {
+						daprInstanceId: "exec-123__langgraph__execute_direct",
+						fileChanges: [
+							{ path: "app/login/page.tsx", operation: "modified" },
+						],
+						patch:
+							"diff --git a/app/login/page.tsx b/app/login/page.tsx\nindex 123..456 100644\n",
+					},
+				},
+			},
+		});
+
+		expect(data).toEqual({
+			files: [
+				{ path: "app/login/page.tsx", status: "M", oldPath: undefined },
+				{ path: "README.md", status: "M", oldPath: undefined },
+			],
+			patch:
+				"diff --git a/app/login/page.tsx b/app/login/page.tsx\nindex 123..456 100644",
+			patchRef: undefined,
+			snapshotRefs: ["README.md"],
+			stats: undefined,
+			sourceNodeKey: "executeNode",
+			durableInstanceId: "exec-123__langgraph__execute_direct",
+		});
+	});
+
 	it("infers changed files from openshell output text when patch artifacts are absent", () => {
 		const data = parseExecutionFileChangeData({
 			outputs: {

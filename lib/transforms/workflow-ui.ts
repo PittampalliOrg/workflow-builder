@@ -691,7 +691,14 @@ export function parseExecutionFileChangeData(
 	let patchRef: string | undefined;
 	let stats: ExecutionOutputFileChangeSummary | undefined;
 	let sourceNodeKey: string | undefined;
-	let durableInstanceId: string | undefined;
+	let patchSourceNodeKey: string | undefined;
+	let fileSourceNodeKey: string | undefined;
+	let snapshotSourceNodeKey: string | undefined;
+	let textSourceNodeKey: string | undefined;
+	const durableCandidates: Array<{
+		nodeKey?: string;
+		durableInstanceId: string;
+	}> = [];
 
 	for (const candidate of candidates) {
 		const { record } = candidate;
@@ -701,6 +708,7 @@ export function parseExecutionFileChangeData(
 			const summaryEntries = extractEntriesFromList(summary.files);
 			if (summaryEntries.length > 0) {
 				mergeFileChangeEntries(files, summaryEntries);
+				fileSourceNodeKey ??= candidate.nodeKey;
 				sourceNodeKey ??= candidate.nodeKey;
 			}
 			const summaryStats = asRecord(summary.stats);
@@ -716,6 +724,7 @@ export function parseExecutionFileChangeData(
 			);
 			if (!patch && summaryPatch) {
 				patch = summaryPatch;
+				patchSourceNodeKey ??= candidate.nodeKey;
 				sourceNodeKey ??= candidate.nodeKey;
 			}
 			const summaryPatchRef = toOptionalString(
@@ -723,6 +732,7 @@ export function parseExecutionFileChangeData(
 			);
 			if (!patchRef && summaryPatchRef) {
 				patchRef = summaryPatchRef;
+				patchSourceNodeKey ??= candidate.nodeKey;
 				sourceNodeKey ??= candidate.nodeKey;
 			}
 		}
@@ -730,24 +740,28 @@ export function parseExecutionFileChangeData(
 		const fileChanges = extractEntriesFromList(record.fileChanges);
 		if (fileChanges.length > 0) {
 			mergeFileChangeEntries(files, fileChanges);
+			fileSourceNodeKey ??= candidate.nodeKey;
 			sourceNodeKey ??= candidate.nodeKey;
 		}
 
 		for (const entry of extractEntriesFromList(record.snapshotRefs)) {
 			snapshotRefs.add(entry.path);
 			mergeFileChangeEntries(files, [entry]);
+			snapshotSourceNodeKey ??= candidate.nodeKey;
 			sourceNodeKey ??= candidate.nodeKey;
 		}
 
 		const nextPatch = toOptionalString(record.patch);
 		if (!patch && nextPatch) {
 			patch = nextPatch;
+			patchSourceNodeKey ??= candidate.nodeKey;
 			sourceNodeKey ??= candidate.nodeKey;
 		}
 
 		const nextPatchRef = toOptionalString(record.patchRef ?? record.patch_ref);
 		if (!patchRef && nextPatchRef) {
 			patchRef = nextPatchRef;
+			patchSourceNodeKey ??= candidate.nodeKey;
 			sourceNodeKey ??= candidate.nodeKey;
 		}
 
@@ -758,9 +772,11 @@ export function parseExecutionFileChangeData(
 					record.daprInstanceId ??
 					record.dapr_instance_id,
 			) ?? toOptionalQueryStringParam(nextPatchRef, "durableInstanceId");
-		if (!durableInstanceId && nextDurableInstanceId) {
-			durableInstanceId = nextDurableInstanceId;
-			sourceNodeKey ??= candidate.nodeKey;
+		if (nextDurableInstanceId) {
+			durableCandidates.push({
+				nodeKey: candidate.nodeKey,
+				durableInstanceId: nextDurableInstanceId,
+			});
 		}
 
 		for (const textValue of [
@@ -782,6 +798,7 @@ export function parseExecutionFileChangeData(
 					files: parsedTextEntries.length,
 				};
 			}
+			textSourceNodeKey ??= candidate.nodeKey;
 			sourceNodeKey ??= candidate.nodeKey;
 			break;
 		}
@@ -804,13 +821,34 @@ export function parseExecutionFileChangeData(
 		return null;
 	}
 
+	const resolvedSourceNodeKey =
+		patchSourceNodeKey ??
+		fileSourceNodeKey ??
+		snapshotSourceNodeKey ??
+		textSourceNodeKey ??
+		sourceNodeKey;
+
+	const durableInstanceId =
+		durableCandidates.find(
+			(candidate) =>
+				candidate.nodeKey === resolvedSourceNodeKey &&
+				!candidate.durableInstanceId.includes("plan_mode"),
+		)?.durableInstanceId ??
+		durableCandidates.find(
+			(candidate) => candidate.nodeKey === resolvedSourceNodeKey,
+		)?.durableInstanceId ??
+		durableCandidates.find(
+			(candidate) => !candidate.durableInstanceId.includes("plan_mode"),
+		)?.durableInstanceId ??
+		durableCandidates[0]?.durableInstanceId;
+
 	return {
 		files: parsedFiles,
 		patch,
 		patchRef,
 		snapshotRefs: parsedSnapshotRefs,
 		stats,
-		sourceNodeKey,
+		sourceNodeKey: resolvedSourceNodeKey,
 		durableInstanceId,
 	};
 }

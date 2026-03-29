@@ -178,4 +178,57 @@ describe("GET /api/workflows/executions/[executionId]/changes", () => {
 		});
 		expect(json.changes[0].bytes).toBeGreaterThan(0);
 	});
+
+	it("falls back to persisted execution output when the workspace endpoint returns 500", async () => {
+		mockFindFirst.mockResolvedValueOnce({
+			id: "exec-3",
+			status: "success",
+			startedAt: new Date("2026-03-20T03:27:07.459Z"),
+			output: {
+				outputs: {
+					executeNode: {
+						data: {
+							fileChanges: [
+								{
+									path: "app/login/page.tsx",
+									status: "M",
+								},
+							],
+							patch:
+								"diff --git a/app/login/page.tsx b/app/login/page.tsx\nindex 111..222 100644\n",
+							daprInstanceId: "exec-3__langgraph__execute_direct",
+						},
+					},
+				},
+			},
+			workflow: {
+				userId: "user-1",
+			},
+		});
+		mockInvokeService.mockResolvedValueOnce({
+			ok: false,
+			status: 500,
+			data: { error: "upstream snapshot failed" },
+		});
+
+		const response = await GET(
+			new Request("http://localhost/api/workflows/executions/exec-3/changes"),
+			{ params: Promise.resolve({ executionId: "exec-3" }) },
+		);
+		const json = await response.json();
+
+		expect(response.status).toBe(200);
+		expect(json).toMatchObject({
+			success: true,
+			executionId: "exec-3",
+			count: 1,
+			changes: [
+				{
+					changeSetId: "derived:exec-3:executeNode",
+					durableInstanceId: "exec-3__langgraph__execute_direct",
+					operation: "execution-output",
+				},
+			],
+		});
+	});
 });

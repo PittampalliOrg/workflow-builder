@@ -99,6 +99,10 @@ function hasStructuredExecutionArtifacts(output: unknown): boolean {
 				continue;
 			}
 			records.push(value as Record<string, unknown>);
+			const data = (value as Record<string, unknown>).data;
+			if (data && typeof data === "object") {
+				records.push(data as Record<string, unknown>);
+			}
 			const nestedResult = (value as Record<string, unknown>).result;
 			if (nestedResult && typeof nestedResult === "object") {
 				records.push(nestedResult as Record<string, unknown>);
@@ -221,13 +225,14 @@ export async function GET(
 			timeout: 15_000,
 		});
 
+		const fallback = buildFallbackChangesResponse({
+			executionId,
+			status: execution.status,
+			startedAt: execution.startedAt,
+			output: execution.output,
+		});
+
 		if (response.status === 404) {
-			const fallback = buildFallbackChangesResponse({
-				executionId,
-				status: execution.status,
-				startedAt: execution.startedAt,
-				output: execution.output,
-			});
 			return NextResponse.json(
 				fallback ?? {
 					success: true,
@@ -245,6 +250,13 @@ export async function GET(
 		}
 
 		if (!response.ok || !response.data) {
+			if (fallback) {
+				return NextResponse.json(fallback, {
+					headers: {
+						"Cache-Control": "no-store",
+					},
+				});
+			}
 			return NextResponse.json(
 				{
 					error: errorMessage(
