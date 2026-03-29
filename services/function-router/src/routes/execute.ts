@@ -1551,6 +1551,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
 								dbExecutionId: body.db_execution_id ?? undefined,
+								workspaceRef: args.workspaceRef,
 								sandboxName: args.sandboxName,
 								repoPath: args.repoPath,
 								installCommand: args.installCommand,

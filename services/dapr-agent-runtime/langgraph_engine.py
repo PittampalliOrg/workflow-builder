@@ -224,6 +224,7 @@ class OpenShellToolContext:
     repo_token: str | None = None
     api_base_url: str = OPENSHELL_AGENT_RUNTIME_API_BASE_URL
     keep: bool = True
+    preserve_proxy_env: bool = False
     change_summary: dict[str, Any] = field(
         default_factory=lambda: {
             "files": [],
@@ -300,9 +301,14 @@ class OpenShellToolContext:
         normalized_command = self._ensure_pnpm_available(
             self._rewrite_legacy_workspace_aliases(command)
         )
+        proxy_prefix = (
+            ""
+            if self.preserve_proxy_env
+            else "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; "
+        )
         return (
             "set -eu; "
-            "unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; "
+            f"{proxy_prefix}"
             "export HOME=/tmp; "
             f"cd {shlex.quote(target_dir)}; "
             f"{normalized_command}"

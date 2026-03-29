@@ -28,6 +28,9 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "/workspace/dapr-agent-runtime/.cache/ms-playwright"
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", DEFAULT_PLAYWRIGHT_BROWSERS_PATH)
+
 from tools import (
     DEFAULT_WORKSPACE_ROOT,
     _run_git_completed,
@@ -2853,6 +2856,7 @@ def _browser_validate_local_workspace(
         normalized = re.sub(r"(?:npm_config_fetch_retry_mintimeout=\S+\s+)+", "", normalized)
         normalized = re.sub(r"(?:npm_config_fetch_retry_maxtimeout=\S+\s+)+", "", normalized)
         normalized = re.sub(r"(\s--force)(?:\s--force)+", r"\1", normalized)
+        normalized = normalized.replace(" --no-optional", "")
         if "pnpm install" in normalized and "CI=1" not in normalized.split():
             normalized = f"CI=1 {normalized}"
         if "pnpm install" in normalized:
@@ -2865,8 +2869,6 @@ def _browser_validate_local_workspace(
             normalized = normalized.replace("CI=1 ", f"CI=1 {pnpm_env}", 1)
         if "pnpm install" in normalized and "--force" not in normalized:
             normalized = normalized.replace("pnpm install", "pnpm install --force", 1)
-        if "pnpm install" in normalized and "--no-optional" not in normalized:
-            normalized = normalized.replace("pnpm install", "pnpm install --no-optional", 1)
         if "pnpm install" in normalized and "--reporter=" not in normalized:
             normalized = normalized.replace(
                 "pnpm install",
@@ -2874,6 +2876,45 @@ def _browser_validate_local_workspace(
                 1,
             )
         return normalized
+
+    def _local_install_command(cwd: Path) -> str:
+        if (cwd / "pnpm-lock.yaml").exists() or (cwd / "pnpm-workspace.yaml").exists():
+            return (
+                "CI=1 "
+                "npm_config_fetch_retries=1 "
+                "npm_config_fetch_retry_factor=1 "
+                "npm_config_fetch_retry_mintimeout=3000 "
+                "npm_config_fetch_retry_maxtimeout=10000 "
+                "npx -y pnpm@9.15.9 install --reporter=append-only "
+                "--frozen-lockfile --prefer-offline --force"
+            )
+        if (cwd / "package-lock.json").exists():
+            return (
+                "npm ci --no-audit --no-fund --loglevel=warn "
+                "--fetch-retries=5 --fetch-retry-factor=2 "
+                "--fetch-retry-mintimeout=10000 --fetch-retry-maxtimeout=120000 "
+                "--prefer-offline"
+            )
+        if (cwd / "yarn.lock").exists():
+            return "(corepack enable yarn >/dev/null 2>&1 || true); yarn install --immutable"
+        return ""
+
+    def _local_next_runner(cwd: Path) -> str | None:
+        next_cli = cwd / "node_modules/next/dist/bin/next"
+        if next_cli.exists():
+            return f"npx -y node@22.22.2 {shlex.quote(str(next_cli))}"
+        return None
+
+    def _local_devserver_runner(cwd: Path) -> str:
+        preview_dir = cwd.parent / ".wf-preview"
+        next_runner = _local_next_runner(cwd)
+        if next_runner:
+            return f"{next_runner} dev --hostname 0.0.0.0 --port 3009"
+        elif (cwd / "pnpm-lock.yaml").exists() or (cwd / "pnpm-workspace.yaml").exists():
+            return "npx -y pnpm@9.15.9 dev --hostname 0.0.0.0 --port 3009"
+        elif (cwd / "yarn.lock").exists():
+            return "yarn dev --hostname 0.0.0.0 --port 3009"
+        return "npm run dev -- --hostname 0.0.0.0 --port 3009"
 
     def _resolve_local_app_cwd(raw_cwd: str | None) -> Path:
         candidate = str(raw_cwd or "").strip()
@@ -2888,14 +2929,29 @@ def _browser_validate_local_workspace(
             return path.resolve()
         return (repo_root / path).resolve()
 
+    def _local_tool_bin_dir() -> Path:
+        tool_bin_dir = preview_root / "bin"
+        tool_bin_dir.mkdir(parents=True, exist_ok=True)
+        pnpm_shim = tool_bin_dir / "pnpm"
+        pnpm_shim.write_text(
+            "#!/usr/bin/env bash\nexec npx -y pnpm@9.15.9 \"$@\"\n",
+            encoding="utf-8",
+        )
+        pnpm_shim.chmod(0o755)
+        return tool_bin_dir
+
+    def _local_command_env() -> dict[str, str]:
+        env = os.environ.copy()
+        env["HOME"] = str(session.root_path)
+        env["PATH"] = f"{_local_tool_bin_dir()}:{env.get('PATH', '')}"
+        return env
+
     def _run_local_command(
         command: str,
         *,
         cwd: Path,
         timeout_seconds_value: int,
     ) -> dict[str, Any]:
-        env = os.environ.copy()
-        env["HOME"] = str(session.root_path)
         completed = subprocess.run(
             ["bash", "-lc", command],
             cwd=cwd,
@@ -2903,13 +2959,100 @@ def _browser_validate_local_workspace(
             capture_output=True,
             timeout=timeout_seconds_value,
             check=False,
-            env=env,
+            env=_local_command_env(),
         )
         return {
             "exitCode": completed.returncode,
             "stdout": completed.stdout,
             "stderr": completed.stderr,
         }
+
+    def _launch_local_devserver(cwd: Path) -> dict[str, Any]:
+        preview_dir = cwd.parent / ".wf-preview"
+        log_path = preview_dir / "dev-server.log"
+        pid_path = preview_dir / "dev-server.pid"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+        for candidate in (log_path, pid_path):
+            try:
+                candidate.unlink()
+            except FileNotFoundError:
+                pass
+        runner = _local_devserver_runner(cwd)
+        with log_path.open("w", encoding="utf-8") as log_file, open(os.devnull, "r", encoding="utf-8") as devnull:
+            process = subprocess.Popen(  # noqa: S603
+                ["bash", "-lc", runner],
+                cwd=cwd,
+                stdin=devnull,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                env=_local_command_env(),
+                start_new_session=True,
+                text=True,
+            )
+        pid_path.write_text(f"{process.pid}\n", encoding="utf-8")
+        time.sleep(2)
+        if process.poll() is not None:
+            return {
+                "exitCode": int(process.returncode or 0),
+                "stdout": "server-exited",
+                "stderr": _tail_devserver_log(cwd),
+            }
+        return {
+            "exitCode": 0,
+            "stdout": "server-started",
+            "stderr": "",
+        }
+
+    def _local_runtime_python() -> str:
+        virtual_env = str(os.getenv("VIRTUAL_ENV") or "").strip()
+        if virtual_env:
+            candidate = Path(virtual_env) / "bin/python"
+            if candidate.exists():
+                return str(candidate)
+        return shutil.which("python3") or "python3"
+
+    def _playwright_browser_status() -> tuple[bool, str]:
+        try:
+            with sync_playwright() as playwright:
+                chromium_path = str(playwright.chromium.executable_path or "").strip()
+            if chromium_path and Path(chromium_path).exists():
+                return True, chromium_path
+            if chromium_path:
+                return False, f"Chromium executable missing at {chromium_path}"
+            return False, "Chromium executable path is empty"
+        except Exception as exc:
+            return False, str(exc)
+
+    def _ensure_local_playwright_browser() -> tuple[bool, str]:
+        ready, detail = _playwright_browser_status()
+        if ready:
+            return True, detail
+        install_result = _run_local_command(
+            f"{shlex.quote(_local_runtime_python())} -m playwright install chromium",
+            cwd=repo_root,
+            timeout_seconds_value=min(timeout_seconds, 300),
+        )
+        install_exit_code = int(install_result.get("exitCode", -1))
+        logger.info(
+            "browser_validate local playwright install completed workspace=%s exit=%s stdout=%s stderr=%s",
+            session.workspace_ref,
+            install_exit_code,
+            str(install_result.get("stdout") or "")[:300],
+            str(install_result.get("stderr") or "")[:300],
+        )
+        ready, detail = _playwright_browser_status()
+        if ready:
+            return True, detail
+        combined_output = "\n".join(
+            part
+            for part in (
+                str(install_result.get("stdout") or "").strip(),
+                str(install_result.get("stderr") or "").strip(),
+                detail,
+            )
+            if part
+        ).strip()
+        return False, combined_output[:500]
 
     def _is_transient_registry_failure(output: str) -> bool:
         failure_markers = [
@@ -2930,6 +3073,15 @@ def _browser_validate_local_workspace(
         package_text = package_json.read_text(encoding="utf-8", errors="ignore")
         next_binary = cwd / "node_modules/.bin/next"
         if '"next"' in package_text:
+            next_runner = _local_next_runner(cwd)
+            if next_runner:
+                ready = _run_local_command(
+                    f"{next_runner} --version >/dev/null 2>&1",
+                    cwd=cwd,
+                    timeout_seconds_value=30,
+                )
+                if ready["exitCode"] == 0:
+                    return True
             if next_binary.exists():
                 ready = _run_local_command(
                     "./node_modules/.bin/next --version",
@@ -2939,7 +3091,7 @@ def _browser_validate_local_workspace(
                 if ready["exitCode"] == 0:
                     return True
             ready = _run_local_command(
-                "(corepack enable pnpm >/dev/null 2>&1 || true); pnpm exec next --version >/dev/null 2>&1",
+                "npx -y pnpm@9.15.9 exec next --version >/dev/null 2>&1",
                 cwd=cwd,
                 timeout_seconds_value=15,
             )
@@ -2999,7 +3151,13 @@ def _browser_validate_local_workspace(
     )
     skip_install = _deps_present(app_cwd)
     if not skip_install:
-        install_command = _normalize_install_command(request.installCommand)
+        install_command = _local_install_command(app_cwd)
+        if not install_command:
+            return {
+                "success": False,
+                "error": f"No supported lockfile found in {app_cwd}.",
+                "phase": "install",
+            }
         install_log_path = preview_root / "browser-validate-install.log"
         wrapped_install_command = install_command.rstrip(" ;")
         install_exec_command = (
@@ -3011,10 +3169,18 @@ def _browser_validate_local_workspace(
         )
         install_result = _run_local_command(
             install_exec_command,
-            cwd=repo_root,
+            cwd=app_cwd,
             timeout_seconds_value=min(timeout_seconds, 240),
         )
         install_exit_code = int(install_result.get("exitCode", -1))
+        logger.info(
+            "browser_validate local install completed workspace=%s cwd=%s exit=%s stdout=%s stderr=%s",
+            session.workspace_ref,
+            app_cwd,
+            install_exit_code,
+            str(install_result.get("stdout") or "")[:200],
+            str(install_result.get("stderr") or "")[:200],
+        )
         if install_exit_code != 0:
             cleaned_stderr = _strip_shell_startup_noise(install_result.get("stderr"))
             cleaned_stdout = str(install_result.get("stdout") or "").strip()
@@ -3038,11 +3204,7 @@ def _browser_validate_local_workspace(
 
     if not _is_base_url_ready():
         _cleanup_preview_server(app_cwd)
-        launch_result = _run_local_command(
-            request.devServerCommand,
-            cwd=repo_root,
-            timeout_seconds_value=min(timeout_seconds, 60),
-        )
+        launch_result = _launch_local_devserver(app_cwd)
         launch_exit = int(launch_result.get("exitCode", -1))
         launch_stdout = str(launch_result.get("stdout") or "").strip()
         launch_stderr = str(launch_result.get("stderr") or "").strip()
@@ -3071,6 +3233,14 @@ def _browser_validate_local_workspace(
             "success": False,
             "error": f"Dev server did not become ready: {detail or 'timeout'}",
             "phase": "devserver-poll",
+        }
+
+    browser_ready, browser_detail = _ensure_local_playwright_browser()
+    if not browser_ready:
+        return {
+            "success": False,
+            "error": f"Playwright browser runtime is unavailable: {browser_detail}",
+            "phase": "capture-prerequisites",
         }
 
     try:

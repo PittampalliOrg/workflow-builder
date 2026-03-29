@@ -628,11 +628,11 @@ dev:
     workingDir: /workspace/dapr-agent-runtime
     resources:
       requests:
-        cpu: 250m
-        memory: 512Mi
+        cpu: 500m
+        memory: 1Gi
       limits:
         cpu: "2"
-        memory: 2Gi
+        memory: 4Gi
     command:
       - /bin/sh
       - -c
@@ -646,6 +646,9 @@ dev:
         . .venv/bin/activate
         pip install --upgrade pip
         pip install -e .
+        export PLAYWRIGHT_BROWSERS_PATH=/workspace/dapr-agent-runtime/.cache/ms-playwright
+        mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
+        python -m playwright install --with-deps chromium
 
         exec uvicorn app:app --host 0.0.0.0 --port ${DAPR_AGENT_CONTAINER_PORT} --reload
     sync:
@@ -1421,6 +1424,93 @@ pipelines:
       ensure_pull_secrets --all
       build_images --all
       create_deployments --all
+      if kubectl get deployment dapr-agent-runtime-devspace --namespace "$WL_NS" >/dev/null 2>&1; then
+        echo "==> Seeding OpenShell gateway config into dapr-agent-runtime-devspace"
+        kubectl patch deployment dapr-agent-runtime-devspace \
+          --namespace "$WL_NS" \
+          --type strategic \
+          --patch "$(cat <<'EOF'
+      spec:
+        template:
+          spec:
+            initContainers:
+              - name: seed-openshell-config
+                image: ghcr.io/astral-sh/uv:python3.12-trixie-slim
+                imagePullPolicy: IfNotPresent
+                command:
+                  - sh
+                  - -lc
+                args:
+                  - |
+                    set -eu
+                    CONFIG_ROOT="${XDG_CONFIG_HOME}/openshell"
+                    GATEWAY_DIR="${CONFIG_ROOT}/gateways/${OPENSHELL_GATEWAY_NAME}"
+                    MTLS_DIR="${GATEWAY_DIR}/mtls"
+                    install -d -m 700 "${MTLS_DIR}"
+                    cat >"${GATEWAY_DIR}/metadata.json" <<JSON
+                    {
+                      "name": "${OPENSHELL_GATEWAY_NAME}",
+                      "gateway_endpoint": "${OPENSHELL_GATEWAY_URL}",
+                      "is_remote": false,
+                      "gateway_port": ${OPENSHELL_GATEWAY_PORT},
+                      "auth_mode": "mtls"
+                    }
+                    JSON
+                    printf '%s\n' "${OPENSHELL_GATEWAY_NAME}" > "${CONFIG_ROOT}/active_gateway"
+                    cp /etc/openshell-tls/client/tls.crt "${MTLS_DIR}/tls.crt"
+                    cp /etc/openshell-tls/client/tls.key "${MTLS_DIR}/tls.key"
+                    if [ -f /etc/openshell-tls/client/ca.crt ]; then
+                      cp /etc/openshell-tls/client/ca.crt "${MTLS_DIR}/ca.crt"
+                    else
+                      cp /etc/openshell-tls/client-ca/tls.crt "${MTLS_DIR}/ca.crt"
+                    fi
+                    chmod 644 "${MTLS_DIR}/ca.crt" "${MTLS_DIR}/tls.crt"
+                    chmod 600 "${MTLS_DIR}/tls.key"
+                env:
+                  - name: HOME
+                    value: /workspace
+                  - name: XDG_CONFIG_HOME
+                    value: /workspace/.config
+                  - name: OPENSHELL_GATEWAY_NAME
+                    value: ryzen-internal
+                  - name: OPENSHELL_GATEWAY_URL
+                    value: https://openshell.openshell.svc.cluster.local:8080
+                  - name: OPENSHELL_GATEWAY_PORT
+                    value: "8080"
+                volumeMounts:
+                  - name: workspace
+                    mountPath: /workspace
+                  - name: openshell-client-tls
+                    mountPath: /etc/openshell-tls/client
+                    readOnly: true
+                  - name: openshell-client-ca
+                    mountPath: /etc/openshell-tls/client-ca
+                    readOnly: true
+            containers:
+              - name: dapr-agent-runtime
+                env:
+                  - name: HOME
+                    value: /workspace
+                  - name: XDG_CONFIG_HOME
+                    value: /workspace/.config
+                  - name: OPENSHELL_GATEWAY_NAME
+                    value: ryzen-internal
+                  - name: OPENSHELL_GATEWAY_URL
+                    value: https://openshell.openshell.svc.cluster.local:8080
+                  - name: OPENSHELL_GATEWAY_PORT
+                    value: "8080"
+            volumes:
+              - name: openshell-client-tls
+                secret:
+                  defaultMode: 256
+                  secretName: openshell-client-tls
+              - name: openshell-client-ca
+                secret:
+                  defaultMode: 292
+                  secretName: openshell-server-client-ca
+      EOF
+        )" >/dev/null
+      fi
       start_dev --all
 
 # ============================================================================

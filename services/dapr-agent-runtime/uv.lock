@@ -393,15 +393,6 @@ wheels = [
 ]
 
 [[package]]
-name = "cloudpickle"
-version = "3.1.2"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/27/fb/576f067976d320f5f0114a8d9fa1215425441bb35627b1993e5afd8111e5/cloudpickle-3.1.2.tar.gz", hash = "sha256:7fda9eb655c9c230dab534f1983763de5835249750e85fbcef43aaa30a9a2414", size = 22330, upload-time = "2025-11-03T09:25:26.604Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl", hash = "sha256:9acb47f6afd73f60dc1df93bb801b472f05ff42fa6c84167d25cb206be1fbf4a", size = 22228, upload-time = "2025-11-03T09:25:25.534Z" },
-]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -493,7 +484,6 @@ dependencies = [
     { name = "fastapi" },
     { name = "langchain-openai" },
     { name = "langgraph" },
-    { name = "openshell" },
     { name = "playwright" },
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
@@ -517,7 +507,6 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.0" },
     { name = "langchain-openai", specifier = ">=0.2.14" },
     { name = "langgraph", specifier = ">=0.2.60" },
-    { name = "openshell", specifier = ">=0.0.7" },
     { name = "playwright", specifier = ">=1.57.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2.9" },
     { name = "pydantic", specifier = ">=2.11.0" },
@@ -1744,21 +1733,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/df/32/c79bf8bd3ea5a00e492449b31ca600bbc2a8e88a301e42c872af925a156c/openinference_semantic_conventions-0.1.28.tar.gz", hash = "sha256:6388465174e8ab3f27ebc6a9e9bb2e1b804d30caefb57234e16db874da1c6a7b", size = 12893, upload-time = "2026-03-11T04:45:46.543Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/40/34b570462c3ce250277254bb0cca655eb39b64c0dffe63cd7751f103f8d6/openinference_semantic_conventions-0.1.28-py3-none-any.whl", hash = "sha256:a2fed5bb167aa56c1c7448cdb7a8d775f989339ba1f8b04a7b45d4f8388cccfb", size = 10522, upload-time = "2026-03-11T04:45:45.423Z" },
-]
-
-[[package]]
-name = "openshell"
-version = "0.0.16"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "cloudpickle" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/72/2c2db025424c6181d7a295e6baa07ced8b029d0c6a28e97838324d75f0e6/openshell-0.0.16-py3-none-macosx_11_0_arm64.whl", hash = "sha256:efdbb5f9897411cb7d52bc506ef7835bf4d3eda782a02535d7079ef91774361e", size = 6069739, upload-time = "2026-03-25T14:57:37.513Z" },
-    { url = "https://files.pythonhosted.org/packages/c8/d7/99c0f577d3b393a2c60199f3e6b4bffa748bc774c187341bfdfad5cbfcd8/openshell-0.0.16-py3-none-manylinux_2_39_aarch64.whl", hash = "sha256:72cd3d9de6fb8bdbb6a6002d4228223b248db6f1064491b9000eac7ecaf52eaf", size = 6147513, upload-time = "2026-03-25T14:58:01.63Z" },
-    { url = "https://files.pythonhosted.org/packages/16/7c/7c37b65dd7945d88aaf1311fa94713292a5070ad48c33892ec72a50d3d6c/openshell-0.0.16-py3-none-manylinux_2_39_x86_64.whl", hash = "sha256:92ff85982e3ccf91e0f0581b987c36ada8f4d350df3cdc46679aab1fad845317", size = 6467908, upload-time = "2026-03-25T14:58:21.818Z" },
 ]
 
 [[package]]
