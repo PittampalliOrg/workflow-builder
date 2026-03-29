@@ -32,6 +32,7 @@ COPY pyproject.toml ./pyproject.toml
 COPY app.py ./app.py
 COPY langgraph_engine.py ./langgraph_engine.py
 COPY tools.py ./tools.py
+COPY tracing.py ./tracing.py
 
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
