@@ -34,9 +34,9 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 │         │          ┌──────────┼────────────────┐                       │
 │         │          ▼          ▼                ▼                        │
 │  ┌──────────────┐  ┌────────────┐  ┌──────────────┐                   │
-│  │ mastra-agent │  │ fn-active  │  │  fn-system    │                   │
-│  │ -tanstack    │  │ -pieces    │  │  (http-req,   │                   │
-│  │ (secondary)  │  │ (42 AP     │  │   db-query,   │                   │
+│  │ openshell-   │  │ fn-active  │  │  fn-system    │                   │
+│  │ agent-runtime│  │ -pieces    │  │  (http-req,   │                   │
+│  │ (sandbox I/O)│  │ (42 AP     │  │   db-query,   │                   │
 │  └──────────────┘  │  pieces)   │  │   condition)  │                   │
 │                    └────────────┘  └──────────────┘                   │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
@@ -57,7 +57,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 - **Auth**: Better Auth (email/password, social login, JWT API keys)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: durable-agent (Dapr Workflow ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service
-- **Function Execution**: function-router → fn-system, fn-activepieces, durable-agent
+- **Function Execution**: function-router → fn-system, fn-activepieces, openshell-agent-runtime, durable-agent
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry → OTEL Collector → Jaeger
@@ -90,7 +90,6 @@ pnpm test:e2e         # Run Playwright E2E tests
 | **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
 | **workflow-mcp-server** | 3200 | Retained MCP server, not part of the current core local runtime |
 | **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
-| **node-sandbox** | 8888 | Sandbox image / helper runtime |
 | **openshell-sandbox** | — | Custom OpenShell sandbox image with Chromium/Playwright for browser validation |
 
 > See `docs/services.md` for full endpoint details and build commands.
@@ -131,7 +130,7 @@ lib/
   app-connections/oauth2.ts         # OAuth2 PKCE flow
   activepieces/installed-pieces.ts  # Installed AP pieces (single source of truth)
   activepieces/action-adapter.ts    # AP props → WB field converter
-  actions/builtin-pieces.ts         # Builtin piece definitions (agent, mastra, durable, mcp)
+  actions/builtin-pieces.ts         # Builtin piece definitions (workspace, browser, OpenShell, durable, mcp)
   actions/pieces-store.ts           # Client-side pieces catalog (Jotai)
 
 services/
@@ -198,7 +197,7 @@ pnpm discover-plugins  # Generates plugins/index.ts
 pnpm seed-functions    # Seeds functions table from plugins
 ```
 
-**Current plugins**: `mastra-agent`, `durable-agent`, `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
+**Current plugins**: `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
 
 ## Database Schema (Key Tables)
 

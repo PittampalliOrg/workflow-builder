@@ -1,10 +1,10 @@
 # Deployment & Infrastructure
 
-This document describes the current deployment model for `workflow-builder` on `kind-ryzen`.
+This document describes the current deployment model for `workflow-builder`.
 
 ## Current Cluster Shape
 
-Current `workflow-builder` namespace runtime:
+The active cluster shape is:
 
 - `workflow-builder`
 - `workflow-orchestrator`
@@ -14,138 +14,109 @@ Current `workflow-builder` namespace runtime:
 - `durable-agent`
 - `fn-activepieces`
 - `postgresql`
-- Dapr sidecars and backing Redis / pub-sub infrastructure
+- Dapr sidecars and their Redis/pub-sub backing services
 
-Important distinction:
+## Deployment Truth
 
-- app repos build images
-- `stacks/main` declares which images and manifests ArgoCD should run
+There are two different operating modes and they are not equivalent.
 
-## Two Deployment Modes
+### DevSpace inner loop
 
-### 1. DevSpace inner loop
-
-Use this for fast iteration on app code.
-
-- DevSpace swaps selected workloads with `*-devspace` replacements
-- it is useful for hot reload and sync
-- it is not the authoritative cluster deployment state
-
-Use DevSpace when you are editing code. Do not use DevSpace alone to prove that the cluster reflects the intended architecture.
-
-### 2. Git-backed cluster rollout
-
-Use this to update the real cluster state.
-
-Typical flow:
-
-1. build the required images
-2. push them to the local Gitea registry or load them into KIND
-3. update image refs and manifests in `stacks/main`
-4. push `stacks/main`
-5. let ArgoCD reconcile
-
-On `ryzen`, pushing only the app repo does not change live cluster state.
-
-## Current Coding Stack Rollout
-
-For the validated coding path, a rollout usually involves:
-
-- `workflow-builder`
-- `workflow-orchestrator`
-- `function-router`
-- `openshell-agent-runtime`
-- `openshell-langgraph-observable`
-- `durable-agent`
-- sometimes `ai-chatbot` in its own repo and app
-
-## Current Desired Runtime Behavior
-
-The live coding path should be:
-
-1. `workflow-builder` starts a run
-2. `workflow-orchestrator` owns the durable parent workflow
-3. `function-router` routes standard OpenShell work to `openshell-agent-runtime`
-4. `workflow-orchestrator` starts native child workflows for `openshell-langgraph-observable/run`
-5. `durable-agent` persists change sets, patches, and file snapshots
-6. review APIs serve persisted artifacts back to the UI
-
-If the live cluster is not behaving like that, first check whether the correct image tags are pinned in `stacks/main`.
-
-## Build Guidance
-
-Examples:
+Use this for fast local iteration:
 
 ```bash
-# Next.js app uses repo root as build context
-docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-builder:git-<sha> .
-
-# Python orchestrator
-docker build -t gitea.cnoe.localtest.me/giteaadmin/workflow-orchestrator:git-<sha> \
-  -f services/workflow-orchestrator/Dockerfile services/workflow-orchestrator/
-
-# OpenShell workspace/browser runtime
-docker build -t gitea.cnoe.localtest.me/giteaadmin/openshell-agent-runtime:git-<sha> \
-  -f ../openshell-deepagent/Dockerfile ../openshell-deepagent/
-
-# OpenShell LangGraph coding backend
-docker build -t gitea.cnoe.localtest.me/giteaadmin/openshell-langgraph-observable:git-<sha> \
-  -f ../openshell-deepagent/Dockerfile ../openshell-deepagent/
-
-# Shared artifact service
-docker build -t gitea.cnoe.localtest.me/giteaadmin/opencode-durable-agent:git-<sha> \
-  -f services/durable-agent/Dockerfile services/durable-agent/
-
-# Router
-docker build -t gitea.cnoe.localtest.me/giteaadmin/function-router:git-<sha> \
-  -f services/function-router/Dockerfile .
+./scripts/devspace-dev-ryzen.sh
 ```
+
+This swaps selected workloads with `*-devspace` replacements and syncs local files into the running pods.
+
+It is useful for:
+
+- UI iteration
+- API route iteration
+- runtime code debugging
+
+It is not the authoritative cluster deployment state.
+
+### GitOps rollout
+
+Use this to change the real cluster:
+
+1. build images
+2. push image tags to the in-cluster registry
+3. update `stacks/main`
+4. let ArgoCD reconcile
+
+On `ryzen`, changing only this repo does not change the real cluster until the corresponding `stacks/main` change lands.
+
+## Build and Promotion Model
+
+The cluster uses a GitOps and in-cluster build flow:
+
+- app repos contain source
+- Tekton builds images in the hub cluster
+- Gitea stores the built image tags
+- `stacks/main` pins the live image refs
+- ArgoCD reconciles the runtime from `stacks/main`
+
+If the live cluster does not match local code, first check whether the image tags and manifests in `stacks/main` were updated.
+
+## Runtime Expectations
+
+The expected live coding path is:
+
+1. `workflow-builder` starts a run
+2. `workflow-orchestrator` resolves draft or published execution target
+3. `function-router` routes OpenShell workspace, browser, and standard agent actions to `openshell-agent-runtime`
+4. `workflow-orchestrator` starts native child workflows for `openshell-langgraph-observable/run`
+5. `durable-agent` persists patches, snapshots, and related review artifacts
+6. the UI reads persisted artifacts back through the BFF
 
 ## Validation Checklist
 
-After a live rollout, verify:
+After a real rollout, verify:
 
 1. Argo apps are `Synced` and `Healthy`
 2. all core pods are `Running` with healthy Dapr sidecars
-3. a fresh coding run reaches `awaiting_approval`
-4. approval resumes execution
-5. tool details stream in the run UI
-6. `/changes`, `/patch`, and `/files/snapshot/...` return persisted data for the run
+3. `function-router` routes `workspace/*`, `browser/*`, and `openshell/*` to the intended runtimes
+4. a fresh OpenShell-backed workflow run progresses through workspace creation and clone
+5. coding runs persist patch, change-set, and snapshot artifacts
+6. published workflows appear in runtime introspection and can execute by name/version
 
 ## Operational Notes
 
-### Dapr first
+### Dapr health matters
 
-If a pod is healthy at the app container level but the pod is not fully ready, inspect the Dapr control plane before assuming the app rollout is broken.
+If a pod looks healthy at the app container level but the overall pod is not ready, inspect the Dapr sidecar and control plane before assuming the app rollout is broken.
 
 ### Parent workflow owns timeouts
 
-Long-running agent execution should not fail because of a synchronous HTTP timeout between services. The durable parent workflow owns timeout policy.
+Long-running agent execution should be governed by the parent durable workflow timeout, not by ad hoc inter-service HTTP timeouts.
 
 ### Review data must be durable
 
-For new successful text-file coding runs:
+For successful coding runs:
 
-- `/changes` should resolve to a real persisted change set
-- `/patch` should return a persisted patch
+- `/changes` should resolve from persisted artifacts
+- `/patch` should return a durable patch
 - `/files/snapshot/...` should return durable snapshots
 
-Patch-only fallback is acceptable for historical runs, not for newly persisted ones.
+Patch-only fallback is acceptable for historical runs, not for newly persisted OpenShell runs.
 
-## Key Environment Expectations
+## Environment Expectations
 
-Important environment variables and dependencies:
+Important runtime dependencies include:
 
 - `DATABASE_URL`
 - `INTERNAL_API_TOKEN`
 - `WORKFLOW_ORCHESTRATOR_URL`
 - `DAPR_HOST`
 - `DAPR_HTTP_PORT`
-- local Gitea registry reachability from KIND nodes
+- OpenShell runtime availability
+- local Gitea registry reachability from cluster nodes
 - healthy `dapr-system`
 
 ## Related Docs
 
-- `docs/architecture.md`
-- `docs/services.md`
-- `../stacks/main/docs/devspace-gitops-promoter-workflow.md`
+- [docs/architecture.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/architecture.md)
+- [docs/services.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/services.md)

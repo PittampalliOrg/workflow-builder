@@ -1758,14 +1758,6 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					required: true,
 				},
 				{
-					key: "repositoryUrl",
-					label: "Repository URL (optional)",
-					type: "template-input",
-					placeholder:
-						"https://gitea.cnoe.localtest.me:8443/giteaadmin/repo.git",
-					required: false,
-				},
-				{
 					key: "repositoryOwner",
 					label: "GitHub Owner",
 					type: "dynamic-select",
@@ -1808,25 +1800,40 @@ const WORKSPACE_PIECE: IntegrationDefinition = {
 					},
 				},
 				{
-					key: "repositoryUsername",
-					label: "Repository Username (optional)",
-					type: "template-input",
-					placeholder: "giteaadmin",
-					required: false,
-				},
-				{
-					key: "repositoryToken",
-					label: "Repository Token (optional)",
-					type: "template-input",
-					placeholder: "{{secrets.REPO_TOKEN}}",
-					required: false,
-				},
-				{
 					key: "targetDir",
 					label: "Target Directory (optional)",
 					type: "template-input",
 					placeholder: "repo",
 					required: false,
+				},
+				{
+					type: "group",
+					label: "Advanced",
+					defaultExpanded: false,
+					fields: [
+						{
+							key: "repositoryUrl",
+							label: "Repository URL (optional)",
+							type: "template-input",
+							placeholder:
+								"https://gitea.cnoe.localtest.me:8443/giteaadmin/repo.git",
+							required: false,
+						},
+						{
+							key: "repositoryUsername",
+							label: "Repository Username (optional)",
+							type: "template-input",
+							placeholder: "giteaadmin",
+							required: false,
+						},
+						{
+							key: "repositoryToken",
+							label: "Repository Token (optional)",
+							type: "template-input",
+							placeholder: "{{secrets.REPO_TOKEN}}",
+							required: false,
+						},
+					],
 				},
 			],
 			outputFields: [

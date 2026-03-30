@@ -6,40 +6,17 @@ export function buildOpenShellSessionWorkflow(): WorkflowTemplate {
 	const cloneId = "workspace-clone";
 	const sessionStartId = "openshell-session-start";
 
-	const repositoryOwnerTemplate = `{{@${triggerId}:Manual Trigger.repository_owner}}`;
-	const repositoryRepoTemplate = `{{@${triggerId}:Manual Trigger.repository_repo}}`;
-	const repositoryBranchTemplate = `{{@${triggerId}:Manual Trigger.repository_branch}}`;
-
 	return {
 		nodes: [
 			{
 				id: triggerId,
 				type: "trigger",
 				label: "Manual Trigger",
-				description:
-					"Provide the repository and initial prompt for the Claude session.",
+				description: "Provide the initial prompt for the Claude session.",
 				position: { x: 400, y: 0 },
 				config: {
 					triggerType: "Manual",
 					inputSchema: JSON.stringify([
-						{
-							name: "repository_owner",
-							type: "TEXT",
-							required: true,
-							description: "GitHub owner or organization.",
-						},
-						{
-							name: "repository_repo",
-							type: "TEXT",
-							required: true,
-							description: "GitHub repository name.",
-						},
-						{
-							name: "repository_branch",
-							type: "TEXT",
-							required: true,
-							description: "Branch to clone and open in the sandbox.",
-						},
 						{
 							name: "initial_prompt",
 							type: "TEXT",
@@ -72,11 +49,9 @@ export function buildOpenShellSessionWorkflow(): WorkflowTemplate {
 				position: { x: 400, y: 300 },
 				config: {
 					actionType: "workspace/clone",
+					auth: "{{connections['github']}}",
 					workspaceRef: "{{@workspace-profile:Workspace Profile.workspaceRef}}",
-					repositoryOwner: repositoryOwnerTemplate,
-					repositoryRepo: repositoryRepoTemplate,
-					repositoryBranch: repositoryBranchTemplate,
-					targetDir: repositoryRepoTemplate,
+					targetDir: "repo",
 				},
 			},
 			{
@@ -89,8 +64,9 @@ export function buildOpenShellSessionWorkflow(): WorkflowTemplate {
 					actionType: "openshell/session-start",
 					workspaceRef: "{{@workspace-profile:Workspace Profile.workspaceRef}}",
 					prompt: "{{@trigger-session:Manual Trigger.initial_prompt}}",
-					repositoryUrl: `https://github.com/${repositoryOwnerTemplate}/${repositoryRepoTemplate}.git`,
-					repositoryBranch: repositoryBranchTemplate,
+					repositoryUrl:
+						"https://github.com/{{@workspace-clone:Workspace Clone.repository}}.git",
+					repositoryBranch: "{{@workspace-clone:Workspace Clone.branch}}",
 					sandboxRepoPath: "/sandbox/repo",
 					cwd: "{{@workspace-clone:Workspace Clone.clonePath}}",
 					provider: "claude",

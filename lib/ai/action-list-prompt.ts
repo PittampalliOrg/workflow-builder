@@ -48,9 +48,9 @@ function buildExampleConfig(action: {
 		return {
 			actionType: action.id,
 			workspaceRef: "{{@workspace_profile:Workspace Profile.workspaceRef}}",
-			repositoryOwner: "{{@trigger:Manual.repo_owner}}",
-			repositoryRepo: "{{@trigger:Manual.repo_name}}",
-			repositoryBranch: "{{@trigger:Manual.branch}}",
+			repositoryOwner: "PittampalliOrg",
+			repositoryRepo: "workflow-builder",
+			repositoryBranch: "main",
 			targetDir: "repo",
 		};
 	}

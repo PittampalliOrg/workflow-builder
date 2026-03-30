@@ -1,10 +1,10 @@
 # Services Reference
 
-This document describes the services that make up the current `workflow-builder` runtime on `kind-ryzen`.
+This document describes the current `workflow-builder` runtime.
 
 ## Core Runtime
 
-The primary runtime to reason about today is:
+The current core runtime is:
 
 - `workflow-builder`
 - `workflow-orchestrator`
@@ -15,126 +15,144 @@ The primary runtime to reason about today is:
 - `fn-activepieces`
 - `postgresql`
 
-Retained but not on the core path:
+Supporting infrastructure:
 
-- `workflow-mcp-server`
-- `piece-mcp-server`
-- `mcp-gateway`
-- `node-sandbox`
+- Dapr sidecars
+- Redis and pub/sub components
+- cluster ingress and secrets infrastructure
 
-## workflow-builder (Next.js)
+## workflow-builder
 
-Human-facing app and BFF.
+Next.js UI and BFF.
 
 - Port: `3000`
 - Responsibilities:
   - visual workflow builder
-  - run launch and approval UX
-  - review UI for logs, traces, changes, patch, and file snapshots
-  - proxy/BFF routes into workflow-orchestrator and internal review APIs
+  - workflow save and publish UI
+  - run launch and approval UI
+  - run review UI for logs, traces, changes, patch, snapshots, and browser artifacts
+  - API routes that proxy to orchestrator and internal review surfaces
 
-## workflow-orchestrator (Python / FastAPI)
+## workflow-orchestrator
 
-Durable workflow owner.
+Python FastAPI service and Dapr workflow owner.
 
 - Port: `8080`
 - Dapr app-id: `workflow-orchestrator`
 - Responsibilities:
-  - interpret workflow definitions
-  - own Dapr parent workflow state
-  - schedule child runs and timers
-  - own approval waits and timeouts
-  - normalize execution state into PostgreSQL
-- Key endpoints:
-  - `POST /api/v2/workflows`
+  - execute draft workflows via `dynamic_workflow`
+  - register and execute published workflow revisions
+  - own parent workflow state, timers, and approvals
+  - schedule child runs
+  - normalize execution state into Postgres
+- Important endpoints:
   - `POST /api/v2/workflows/execute-by-id`
-  - `GET /api/v2/workflows/{id}/status`
-  - `POST /api/v2/workflows/{id}/events`
-  - `POST /api/v2/workflows/{id}/terminate`
-- Important behavior:
-  - long-running agent runs use native Dapr child-workflow semantics
-  - parent timeout is authoritative
-  - approval waits are durable external events
+  - `GET /api/v2/workflows/{instanceId}/status`
+  - `POST /api/v2/workflows/{instanceId}/events`
+  - `POST /api/v2/workflows/{instanceId}/terminate`
+  - `GET /api/v2/runtime/introspect`
 
-## function-router (TypeScript)
+## function-router
 
-Repo-aware action router.
+TypeScript action router.
 
 - Port: `8080`
 - Dapr app-id: `function-router`
 - Key endpoint:
   - `POST /execute`
 - Responsibilities:
-  - route `system/*`, `workspace/*`, and `browser/*`
-  - route agent actions to the correct backend
-  - default unknown action slugs to `fn-activepieces`
-- Important current routes:
-  - `workspace/*` -> `openshell-agent-runtime`
-  - `browser/*` -> `openshell-agent-runtime`
-  - `openshell/run` -> `openshell-agent-runtime`
-  - `openshell/session-start` -> `openshell-agent-runtime`
-  - `openshell-langgraph-observable/run` -> `openshell-langgraph-observable`
-  - `_default` -> `fn-activepieces`
+  - route built-in system and workspace actions
+  - route OpenShell-backed agent and browser actions
+  - route unclaimed plugin slugs to `fn-activepieces`
 
-## openshell-agent-runtime (Python)
+Current route contract:
 
-Canonical OpenShell workspace, browser, and standard agent runtime.
+- `workspace/*` -> `openshell-agent-runtime`
+- `browser/*` -> `openshell-agent-runtime`
+- `openshell/*` -> `openshell-agent-runtime`
+- `openshell-langgraph-observable/*` -> `openshell-langgraph-observable`
+- `_default` -> `fn-activepieces`
+
+## openshell-agent-runtime
+
+Canonical OpenShell runtime for standard agent and workspace flows.
 
 - Port: `8080`
 - Dapr app-id: `openshell-agent-runtime`
 - Responsibilities:
-  - workspace profile/clone/cleanup
-  - standard `openshell/run` execution
-  - retained `openshell/session-start` execution
-  - browser materialization, dev-server startup, and capture
-- Important behavior:
-  - owns the canonical OpenShell sandbox/session registry for active workspace-backed flows
-  - browser validation runs against materialized change artifacts, not stale clones
-  - emits sandbox metadata and browser artifacts used by the review UI
+  - `workspace/profile`
+  - `workspace/clone`
+  - `workspace/command`
+  - `workspace/cleanup`
+  - `openshell/run`
+  - `openshell/session-start`
+  - `browser/*`
 
-## durable-agent (TypeScript / Express)
+Important behavior:
 
-Shared durable workspace and review-artifact service.
+- uses OpenShell sandboxes as the active sandbox substrate
+- owns standard repo-aware OpenShell runs
+- supports retained Claude session handoff
+- runs browser validation against materialized workspace state
 
-- Port: `8001`
-- Dapr app-id: `durable-agent`
-- Responsibilities:
-  - workspace profile and repo session management
-  - change-artifact persistence
-  - durable patch and file-snapshot storage
-  - artifact read/write APIs shared across backends
-- Important behavior:
-  - not the primary LangGraph execution backend on `ryzen`
-  - is the shared durable service for repo/session/review persistence
+## openshell-langgraph-observable
 
-## openshell-langgraph-observable (Python)
-
-Specialized OpenShell LangGraph coding backend.
+Specialized OpenShell LangGraph backend.
 
 - Port: `8003`
 - Dapr app-id: `openshell-langgraph-observable`
 - Responsibilities:
-  - planning/execute child workflows for complex coding runs
-  - repo-aware coding execution in OpenShell sandboxes
-  - durable progress events and review artifact publication
+  - specialized planning and execution for feature-delivery style coding runs
+  - native child workflow execution under the parent orchestrator
+  - OpenShell sandbox-backed coding work with richer LangGraph control flow
 
-## fn-activepieces (TypeScript)
+## durable-agent
+
+Durable artifact and review-data service.
+
+- Port: `8001`
+- Dapr app-id: `durable-agent`
+- Responsibilities:
+  - persist change artifacts
+  - store and serve patches
+  - store and serve file snapshots
+  - support durable execution review APIs
+
+Important behavior:
+
+- retained as a data and artifact service
+- no longer the active sandbox execution path for agent work
+
+## fn-activepieces
 
 Default SaaS action backend.
 
 - Port: `8080`
 - Responsibilities:
-  - execute Activepieces piece actions
-  - satisfy `_default` routes from `function-router`
+  - execute plugin-backed SaaS actions
+  - satisfy `_default` routing from `function-router`
+
+## PostgreSQL
+
+Primary persistence layer.
+
+- Responsibilities:
+  - workflow definitions
+  - workflow executions and logs
+  - workflow agent runs and events
+  - published workflow revisions
+  - plan artifacts
+  - browser artifacts
+  - workspace session metadata
 
 ## Shared Runtime Contract
 
-Across agent backends, the desired stable behavior is:
+Across OpenShell-backed workflow actions, the stable contract is:
 
-1. create/load workspace profile
-2. clone or reconnect repo
-3. run backend-specific planning/execution
-4. persist final patch + file snapshots
-5. expose review APIs from persisted artifacts
+1. create or resolve a workspace profile
+2. clone or reconnect the repo
+3. run planning or coding work in the chosen OpenShell runtime
+4. persist review artifacts
+5. expose those artifacts back to the UI
 
-That contract is part of the platform architecture and should not depend on the specific reasoning backend.
+That contract should stay stable even if the reasoning backend changes.

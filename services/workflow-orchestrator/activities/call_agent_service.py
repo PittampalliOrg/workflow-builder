@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import uuid
+import base64
 from pathlib import Path
 from urllib.parse import quote
 
@@ -377,10 +378,11 @@ def _build_openshell_command(input_data: dict) -> str:
             "Inside the block, produce a short numbered implementation plan.\n"
             "Do not modify files, run write operations, or include any text outside the tags."
         ).strip()
+    prompt_b64 = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     args = [
         "claude",
         "-p",
-        prompt,
+        '"$WF_PROMPT"',
         "--permission-mode",
         "bypassPermissions",
         "--no-session-persistence",
@@ -392,7 +394,13 @@ def _build_openshell_command(input_data: dict) -> str:
     )
     if should_forward_model:
         args.extend(["--model", model])
-    command = " ".join(shlex.quote(part) for part in args)
+    command = " ".join(
+        part if part == '"$WF_PROMPT"' else shlex.quote(part) for part in args
+    )
+    command = (
+        f'WF_PROMPT="$(printf %s {shlex.quote(prompt_b64)} | base64 -d)"; '
+        + command
+    )
     if cwd:
         return f"cd {shlex.quote(cwd)} && {command}"
     return command
@@ -412,10 +420,11 @@ def _build_openshell_session_start_command(
         model_provider, model = [part.strip() for part in model.split("/", 1)]
         model_provider = model_provider.lower()
     cwd = str(input_data.get("sandboxRepoPath") or input_data.get("cwd") or "").strip()
+    prompt_b64 = base64.b64encode(prompt.encode("utf-8")).decode("ascii")
     args = [
         "claude",
         "-p",
-        prompt,
+        '"$WF_PROMPT"',
         "--permission-mode",
         "bypassPermissions",
         "--session-id",
@@ -428,7 +437,13 @@ def _build_openshell_session_start_command(
     )
     if should_forward_model:
         args.extend(["--model", model])
-    command = " ".join(shlex.quote(part) for part in args)
+    command = " ".join(
+        part if part == '"$WF_PROMPT"' else shlex.quote(part) for part in args
+    )
+    command = (
+        f'WF_PROMPT="$(printf %s {shlex.quote(prompt_b64)} | base64 -d)"; '
+        + command
+    )
     if cwd:
         return f"cd {shlex.quote(cwd)} && {command}"
     return command

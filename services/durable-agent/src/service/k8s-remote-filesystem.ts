@@ -119,8 +119,11 @@ export class K8sRemoteFilesystem {
 
 		const buf = this.toBuffer(content);
 
-		// For large files (>1MB), use the /upload endpoint (node-sandbox only)
-		if (buf.length > 1_048_576 && this._endpointConfig.executePath === "/execute") {
+		// For large files (>1MB), use the dedicated upload endpoint
+		if (
+			buf.length > 1_048_576 &&
+			this._endpointConfig.executePath === "/execute"
+		) {
 			await this.uploadFile(absPath, buf);
 			return;
 		}

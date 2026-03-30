@@ -27,12 +27,8 @@ describe("buildRelevantActionListPrompt", () => {
 		});
 
 		expect(prompt).toContain('"actionType":"workspace/clone"');
-		expect(prompt).toContain(
-			'"repositoryOwner":"{{@trigger:Manual.repo_owner}}"',
-		);
-		expect(prompt).toContain(
-			'"repositoryRepo":"{{@trigger:Manual.repo_name}}"',
-		);
-		expect(prompt).toContain('"repositoryBranch":"{{@trigger:Manual.branch}}"');
+		expect(prompt).toContain('"repositoryOwner":"PittampalliOrg"');
+		expect(prompt).toContain('"repositoryRepo":"workflow-builder"');
+		expect(prompt).toContain('"repositoryBranch":"main"');
 	});
 });

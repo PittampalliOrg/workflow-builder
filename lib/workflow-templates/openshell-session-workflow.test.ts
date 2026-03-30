@@ -15,9 +15,22 @@ describe("buildOpenShellSessionWorkflow", () => {
 		const sessionNode = template.nodes.find(
 			(node) => node.id === "openshell-session-start",
 		);
+		const triggerNode = template.nodes.find(
+			(node) => node.id === "trigger-session",
+		);
+		const cloneNode = template.nodes.find(
+			(node) => node.id === "workspace-clone",
+		);
 		expect(sessionNode?.config.actionType).toBe("openshell/session-start");
 		expect(String(sessionNode?.config.repositoryUrl)).toContain(
-			"https://github.com/",
+			"{{@workspace-clone:Workspace Clone.repository}}",
+		);
+		expect(sessionNode?.config.repositoryBranch).toBe(
+			"{{@workspace-clone:Workspace Clone.branch}}",
+		);
+		expect(cloneNode?.config.auth).toBe("{{connections['github']}}");
+		expect(String(triggerNode?.config.inputSchema)).not.toContain(
+			"repository_owner",
 		);
 		expect(sessionNode?.config.keepSandbox).toBe("true");
 		expect(template.edges).toHaveLength(3);

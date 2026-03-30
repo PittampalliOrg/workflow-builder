@@ -131,9 +131,9 @@ const Home = () => {
 
 	// Canvas and toolbar are rendered by PersistentCanvas in the layout
 	return (
-		<div className="pointer-events-auto mx-auto flex min-h-[calc(100vh-6rem)] w-full max-w-6xl items-start justify-center px-6 py-10">
-			<div className="w-full rounded-2xl border border-white/10 bg-[#111827]/80 p-6 shadow-2xl backdrop-blur">
-				<TemplateGallery />
+		<div className="pointer-events-none flex min-h-[calc(100vh-6rem)] w-full items-start justify-start px-4 pb-10 pt-20 sm:px-6">
+			<div className="pointer-events-auto w-full">
+				<TemplateGallery onStartBlank={handleAddNode} />
 			</div>
 		</div>
 	);

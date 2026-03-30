@@ -1,6 +1,13 @@
 "use client";
 
-import { ArrowRight, Bot, Code2, Layers } from "lucide-react";
+import {
+	ArrowRight,
+	Bot,
+	Code2,
+	Layers,
+	Sparkles,
+	Workflow,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -38,25 +45,25 @@ function TemplateCard({
 	isCreating: boolean;
 }) {
 	return (
-		<div className="group relative flex flex-col rounded-lg border border-gray-700 bg-[#1e2433] p-4 transition-colors hover:border-teal-500/50 hover:bg-[#232a3b]">
-			<div className="mb-3 flex items-start justify-between">
-				<div className="rounded-md border border-gray-600 bg-gray-800 p-2 text-teal-400">
+		<div className="group relative flex h-full flex-col rounded-xl border bg-card/95 p-4 shadow-sm transition-colors hover:border-primary/40 hover:bg-accent/30">
+			<div className="mb-3 flex items-start justify-between gap-3">
+				<div className="rounded-lg border bg-background p-2 text-primary">
 					{getCategoryIcon(template.category)}
 				</div>
-				<span className="rounded-full bg-gray-800 px-2 py-0.5 text-gray-500 text-xs">
+				<span className="rounded-full border bg-background px-2 py-0.5 text-muted-foreground text-xs">
 					{template.nodeCount} nodes
 				</span>
 			</div>
-			<h3 className="mb-1 font-semibold text-gray-200 text-sm">
+			<h3 className="mb-1 font-semibold text-foreground text-sm">
 				{template.name}
 			</h3>
-			<p className="mb-4 flex-1 text-gray-500 text-xs leading-relaxed">
+			<p className="mb-4 flex-1 text-muted-foreground text-xs leading-relaxed">
 				{template.description}
 			</p>
 			<div className="mb-3 flex flex-wrap gap-1">
 				{template.tags.map((tag) => (
 					<span
-						className="rounded bg-gray-800 px-1.5 py-0.5 text-gray-500 text-[10px]"
+						className="rounded-md border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground"
 						key={tag}
 					>
 						{tag}
@@ -83,9 +90,13 @@ function TemplateCard({
 
 type TemplateGalleryProps = {
 	onWorkflowCreated?: (workflowId: string) => void;
+	onStartBlank?: () => void;
 };
 
-export function TemplateGallery({ onWorkflowCreated }: TemplateGalleryProps) {
+export function TemplateGallery({
+	onWorkflowCreated,
+	onStartBlank,
+}: TemplateGalleryProps) {
 	const router = useRouter();
 	const [creatingId, setCreatingId] = useState<string | null>(null);
 
@@ -127,19 +138,39 @@ export function TemplateGallery({ onWorkflowCreated }: TemplateGalleryProps) {
 	);
 
 	return (
-		<div>
-			<div className="mb-4">
-				<h2 className="font-semibold text-gray-200 text-lg">
-					Workflow Templates
-				</h2>
-				<p className="text-gray-500 text-sm">
-					Start with a pre-configured workflow pattern
-				</p>
+		<div className="w-full max-w-5xl">
+			<div className="mb-5 rounded-2xl border bg-card/95 p-5 shadow-sm">
+				<div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+					<div className="space-y-2">
+						<div className="inline-flex items-center gap-2 rounded-full border bg-background px-3 py-1 text-muted-foreground text-xs">
+							<Sparkles className="h-3.5 w-3.5 text-primary" />
+							Start a workflow
+						</div>
+						<div>
+							<h1 className="font-semibold text-2xl tracking-tight">
+								Choose a starting point
+							</h1>
+							<p className="max-w-2xl text-muted-foreground text-sm">
+								Use a workflow template to bootstrap a common pattern, or start
+								with a blank canvas and build the graph yourself.
+							</p>
+						</div>
+					</div>
+					<Button
+						className="gap-2 self-start lg:self-auto"
+						onClick={onStartBlank}
+						size="sm"
+						variant="secondary"
+					>
+						<Workflow className="h-4 w-4" />
+						Start Blank
+					</Button>
+				</div>
 			</div>
 			<div
 				className={cn(
 					"grid gap-4",
-					"grid-cols-1 sm:grid-cols-2 lg:grid-cols-3",
+					"grid-cols-1 lg:grid-cols-2 xl:grid-cols-3",
 				)}
 			>
 				{workflowTemplates.map((template) => (

@@ -2009,6 +2009,7 @@ async function seedWorkflow() {
 			nodes: buildAgentSystemDemoNodes(githubConnection),
 			edges: buildAgentSystemDemoEdges(),
 		});
+
 		console.log("[seed-workflows] Completed successfully");
 	} finally {
 		await sql.end();

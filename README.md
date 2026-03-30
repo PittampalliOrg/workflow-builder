@@ -1,303 +1,154 @@
-# AI Workflow Builder Template
+# Workflow Builder
 
-A template for building your own AI-driven workflow automation platform. Built on top of Workflow DevKit, this template provides a complete visual workflow builder with real integrations and code generation capabilities.
+Workflow Builder is the internal visual workflow system used to design, run, publish, and review durable workflows on Kubernetes.
 
-![AI Workflow Builder Screenshot](screenshot.png)
+It is not a generic starter template anymore. The live platform is built around:
 
-## Deploy Your Own
+- `workflow-builder`: Next.js UI and BFF
+- `workflow-orchestrator`: Python Dapr Workflow owner
+- `function-router`: action router
+- `openshell-agent-runtime`: OpenShell workspace, browser, and standard agent runtime
+- `openshell-langgraph-observable`: specialized OpenShell LangGraph coding backend
+- `durable-agent`: durable artifact and review-data service
+- `fn-activepieces`: default SaaS action backend
 
-You can deploy your own version of the workflow builder to Vercel with one click:
+## Current Model
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.new/workflow-builder)
+The system now has two workflow execution modes:
 
-**What happens during deployment:**
+- Draft workflows
+  - saved in Postgres
+  - executed by the generic Dapr workflow interpreter `dynamic_workflow`
+- Published workflows
+  - frozen into immutable revision snapshots in `spec.metadata.publishedRuntime`
+  - registered at orchestrator startup as named and versioned Dapr workflows
+  - executed by stable workflow name and version
 
-- **Automatic Database Setup**: A Neon Postgres database is automatically created and connected to your project
-- **Environment Configuration**: You'll be prompted to provide required environment variables (Better Auth credentials and AI Gateway API key)
-- **Ready to Use**: After deployment, you can start building workflows immediately
+The system now has one active sandbox model for agent work:
 
-## What's Included
+- OpenShell-only sandboxes for coding, session handoff, workspace actions, and browser validation
 
-- **Visual Workflow Builder** - Drag-and-drop interface powered by React Flow
-- **Workflow DevKit Integration** - Built on top of Workflow DevKit for powerful execution capabilities
-- **Real Integrations** - Connect to Resend (emails), Linear (tickets), Slack, PostgreSQL, and external APIs
-- **Code Generation** - Convert workflows to executable TypeScript with `"use workflow"` directive
-- **Execution Tracking** - Monitor workflow runs with detailed logs
-- **Authentication** - Secure user authentication with Better Auth
-- **AI-Powered** - Create workflows from natural language prompts and edit saved workflows incrementally with AI
-- **Database** - PostgreSQL with Drizzle ORM for type-safe database access
-- **Modern UI** - Beautiful shadcn/ui components with dark mode support
+Retired paths such as `dapr-agent`, `ms-agent`, `openshell-durable`, and `agent-sandbox` are no longer part of the active runtime.
 
-## Getting Started
+## Core Concepts
 
-### Prerequisites
+### Workflow definition
 
-- Node.js 18+
-- PostgreSQL database
-- pnpm package manager
+Workflows are stored in Postgres with both the visual `nodes` / `edges` representation and a canonical `spec`.
 
-### Environment Variables
+The UI edits saved workflow data. The orchestrator interprets that saved definition at runtime.
 
-Create a `.env.local` file with the following:
+### Draft vs published
 
-```env
-# Database
-DATABASE_URL=postgresql://user:password@localhost:5432/workflow_builder
+Saving a workflow does not publish it.
 
-# Better Auth
-BETTER_AUTH_SECRET=your-secret-key
-BETTER_AUTH_URL=http://localhost:3000
+- Save:
+  - persists the current workflow definition
+  - keeps execution on `dynamic_workflow`
+- Publish:
+  - creates an immutable revision snapshot
+  - assigns a stable workflow name like `wf_<workflowId>`
+  - assigns an immutable version like `pub_<...>`
+  - requires orchestrator startup to load and register that revision with Dapr
 
-# AI Gateway (for prompt-based workflow creation and AI workflow editing)
-AI_GATEWAY_API_KEY=your-openai-api-key
-```
+### OpenShell agent actions
 
-### Installation
+The supported OpenShell-backed agent actions are:
 
-```bash
-# Install dependencies
-pnpm install
+- `openshell/run`
+- `openshell/session-start`
+- `openshell-langgraph-observable/run`
 
-# Run database migrations
-pnpm db:push
+Typical workspace-backed flows use:
 
-# Start development server
-pnpm dev
-```
+- `workspace/profile`
+- `workspace/clone`
+- `workspace/command`
+- `browser/validate`
 
-Visit [http://localhost:3000](http://localhost:3000) to get started.
+All of those route to OpenShell-backed runtimes.
 
-## Workflow Types
+## Request Flow
 
-### Trigger Nodes
+1. The browser calls the `workflow-builder` BFF.
+2. The BFF starts or inspects a workflow through `workflow-orchestrator`.
+3. `workflow-orchestrator` runs the durable parent workflow.
+4. Action nodes are routed through `function-router`.
+5. `function-router` sends:
+   - `workspace/*`, `browser/*`, and `openshell/*` to `openshell-agent-runtime`
+   - `openshell-langgraph-observable/*` to `openshell-langgraph-observable`
+   - all other plugin-backed actions to `fn-activepieces`
+6. Execution metadata, child-run state, and review artifacts are persisted to Postgres.
+7. The UI reads status, logs, patch, change-set, snapshot, and published-workflow metadata back through the BFF.
 
-- Webhook
-- Schedule
-- Manual
-- Database Event
+## Review Data
 
-### Action Nodes
+Successful coding runs should produce durable review data:
 
-<!-- PLUGINS:START - Do not remove. Auto-generated by discover-plugins -->
-- **Blob**: Put Blob, List Blobs
-- **Clerk**: Get User, Create User, Update User, Delete User
-- **fal.ai**: Generate Image, Generate Video, Upscale Image, Remove Background, Image to Image
-- **Firecrawl**: Scrape URL, Search Web
-- **GitHub**: Create Issue, List Issues, Get Issue, Update Issue
-- **Linear**: Create Ticket, Find Issues
-- **MCP**: Reply to MCP Client
-- **Perplexity**: Search Web, Ask Question, Research Topic
-- **Resend**: Send Email
-- **Slack**: Send Slack Message
-- **Stripe**: Create Customer, Get Customer, Create Invoice
-- **Superagent**: Guard, Redact
-- **v0**: Create Chat, Send Message
-- **Webflow**: List Sites, Get Site, Publish Site
-<!-- PLUGINS:END -->
+- child-run metadata
+- patch
+- file-change summaries
+- file snapshots
+- browser artifacts when validation is configured
 
-## Code Generation
-
-Workflows can be converted to executable TypeScript code with the `"use workflow"` directive:
-
-```typescript
-export async function welcome(email: string, name: string, plan: string) {
-  "use workflow";
-
-  const { subject, body } = await generateEmail({
-    name,
-    plan,
-  });
-
-  const { status } = await sendEmail({
-    to: email,
-    subject,
-    body,
-  });
-
-  return { status, subject, body };
-}
-```
-
-### Generate Code for a Workflow
-
-```bash
-# Via API
-GET /api/workflows/{id}/generate-code
-```
-
-The generated code includes:
-
-- Type-safe TypeScript
-- Real integration calls
-- Error handling
-- Execution logging
-
-## API Endpoints
-
-### Workflow Management
-
-- `GET /api/workflows` - List all workflows
-- `POST /api/workflows` - Create a new workflow
-- `GET /api/workflows/{id}` - Get workflow by ID
-- `PUT /api/workflows/{id}` - Update workflow
-- `DELETE /api/workflows/{id}` - Delete workflow
-
-### Workflow Execution
-
-- `POST /api/workflows/{id}/execute` - Execute a workflow
-- `GET /api/workflows/{id}/executions` - Get execution history
-- `GET /api/workflows/executions/{executionId}/logs` - Get detailed execution logs
-
-### Code Generation
-
-- `GET /api/workflows/{id}/generate-code` - Generate TypeScript code
-- `POST /api/workflows/{id}/generate-code` - Generate with custom options
-
-### AI Generation
-
-- `POST /api/workflows/generate-from-prompt` - Generate a workflow definition from a prompt without persisting it
-- `POST /api/workflows/create-from-prompt` - Generate and persist a workflow from a prompt
-- `POST /api/ai/generate` - Apply incremental AI edits to an existing workflow
-
-## Database Schema
-
-### Tables
-
-- `user` - User accounts
-- `session` - User sessions
-- `workflows` - Workflow definitions
-- `workflow_executions` - Execution history
-- `workflow_execution_logs` - Detailed node execution logs
+The UI should prefer persisted artifacts over live workspace state.
 
 ## Development
 
-### Scripts
+### Local app checks
 
 ```bash
-# Development
-pnpm dev
-
-# Build
-pnpm build
-
-# Type checking
-pnpm type-check
-
-# Linting
-pnpm check
-
-# Formatting
+pnpm install
 pnpm fix
-
-# Database
-pnpm db:generate  # Generate migrations
-pnpm db:push      # Push schema to database
-pnpm db:studio    # Open Drizzle Studio
+pnpm type-check
 ```
 
-## Integrations
+### DevSpace inner loop
 
-### Resend (Email)
+Use the repo script:
 
-Send transactional emails with Resend's API.
-
-```typescript
-import { sendEmail } from "@/lib/integrations/resend";
-
-await sendEmail({
-  to: "user@example.com",
-  subject: "Welcome!",
-  body: "Welcome to our platform",
-});
+```bash
+./scripts/devspace-dev-ryzen.sh
 ```
 
-### Linear (Tickets)
+That is the fast iteration path for the live `ryzen` cluster, but it is not the authoritative cluster deployment state.
 
-Create and manage Linear issues.
+### GitOps rollout
 
-```typescript
-import { createTicket } from "@/lib/integrations/linear";
+The real cluster state is controlled by `stacks/main`.
 
-await createTicket({
-  title: "Bug Report",
-  description: "Something is broken",
-  priority: 1,
-});
-```
+The normal production-like flow is:
 
-### PostgreSQL
+1. build images
+2. push tags to the in-cluster registry
+3. update `stacks/main`
+4. let ArgoCD reconcile
 
-Direct database access for queries and updates.
+On `ryzen`, changing only this repo does not change the real cluster until `stacks/main` is updated.
 
-```typescript
-import { queryData } from "@/lib/integrations/database";
+## Key APIs
 
-await queryData("users", { email: "user@example.com" });
-```
+### Workflow management
 
-### External APIs
+- `GET /api/workflows`
+- `GET /api/workflows/:id`
+- `PUT /api/workflows/:id`
+- `POST /api/workflows/:id/publish`
+- `GET /api/workflows/:id/published/:version`
 
-Make HTTP requests to any API.
+### Workflow execution
 
-```typescript
-import { callApi } from "@/lib/integrations/api";
+- `POST /api/workflows/:id/execute`
+- `POST /api/v2/workflows/execute-by-id`
+- `GET /api/workflows/executions/:executionId/status`
+- `GET /api/workflows/executions/:executionId/logs`
+- `GET /api/workflows/executions/:executionId/changes`
+- `GET /api/workflows/executions/:executionId/patch`
 
-await callApi({
-  url: "https://api.example.com/endpoint",
-  method: "POST",
-  body: { data: "value" },
-});
-```
+## Related Docs
 
-### Firecrawl (Web Scraping)
-
-Scrape websites and search the web with Firecrawl.
-
-```typescript
-import {
-  firecrawlScrapeStep,
-  firecrawlSearchStep,
-} from "@/lib/steps/firecrawl";
-
-// Scrape a URL
-const scrapeResult = await firecrawlScrapeStep({
-  url: "https://example.com",
-  formats: ["markdown"],
-});
-
-// Search the web
-const searchResult = await firecrawlSearchStep({
-  query: "AI workflow builders",
-  limit: 5,
-});
-```
-
-## Tech Stack
-
-- **Framework**: Next.js 16 with React 19
-- **Workflow Engine**: Workflow DevKit
-- **UI**: shadcn/ui with Tailwind CSS
-- **State Management**: Jotai
-- **Database**: PostgreSQL with Drizzle ORM
-- **Authentication**: Better Auth
-- **Code Editor**: Monaco Editor
-- **Workflow Canvas**: React Flow
-- **AI**: OpenAI GPT-5
-- **Type Checking**: TypeScript
-- **Code Quality**: Ultracite (formatter + linter)
-
-## About Workflow DevKit
-
-This template is built on top of Workflow DevKit, a powerful workflow execution engine that enables:
-
-- Native TypeScript workflow definitions with `"use workflow"` directive
-- Type-safe workflow execution
-- Automatic code generation from visual workflows
-- Built-in logging and error handling
-- Serverless deployment support
-
-Learn more about Workflow DevKit at [useworkflow.dev](https://useworkflow.dev)
-
-## License
-
-Apache 2.0
+- [ARCHITECTURE.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/ARCHITECTURE.md)
+- [docs/architecture.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/architecture.md)
+- [docs/services.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/services.md)
+- [docs/deployment.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/deployment.md)
+- [docs/quick-start.md](/home/vpittamp/repos/PittampalliOrg/workflow-builder/main/docs/quick-start.md)

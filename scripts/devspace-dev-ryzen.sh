@@ -26,12 +26,40 @@ fi
 
 # Guard: if replacement deployments already exist, session is running
 if kubectl get deployment -n "$WL_NS" -l devspace.sh/replaced=true -o name 2>/dev/null | grep -q .; then
-  printf '==> DevSpace session already active. Use devspace enter/attach/logs.\n'
-  exit 0
+  stale_session=0
+  while IFS= read -r line; do
+    ready="${line%%/*}"
+    desired="${line##*/}"
+    if [[ "$ready" != "$desired" ]]; then
+      stale_session=1
+      break
+    fi
+  done < <(
+    kubectl get deployment -n "$WL_NS" -l devspace.sh/replaced=true \
+      -o jsonpath='{range .items[*]}{.status.readyReplicas}/{.status.replicas}{"\n"}{end}' 2>/dev/null
+  )
+
+  if [[ "$stale_session" -eq 1 ]]; then
+    printf '==> Found degraded DevSpace replacement deployments. Purging stale session first.\n'
+    (cd "$PROJECT_ROOT" && devspace purge --force-purge --profile "$profile") || true
+  else
+    printf '==> DevSpace session already active. Use devspace enter/attach/logs.\n'
+    exit 0
+  fi
 fi
 
 printf '==> Using kube context: %s\n' "$(kubectl config current-context 2>/dev/null || echo unknown)"
 printf '==> Profile: %s\n' "$profile"
 
 cd "$PROJECT_ROOT"
-exec devspace dev "${args[@]}"
+set +e
+devspace dev "${args[@]}"
+status=$?
+set -e
+
+if [[ "$status" -ne 0 ]]; then
+  printf '==> DevSpace exited with status %s. Purging failed replacement session.\n' "$status"
+  devspace purge --force-purge --profile "$profile" || true
+fi
+
+exit "$status"

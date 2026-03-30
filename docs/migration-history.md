@@ -9,7 +9,7 @@ Agent routing has been migrated from mastra-agent-tanstack to durable-agent:
 - `mastra/execute` → durable-agent `/api/execute-plan` (was mastra-agent-tanstack)
 - `durable/*` → new action type family, routes to durable-agent
 - function-router registry: `mastra/*` now routes to durable-agent (was mastra-agent-tanstack)
-- legacy mastra-agent service trees have been removed from the source tree
+- legacy mastra-agent service trees have been removed from the source tree, including the archived `services/mastra-agent-tanstack/` service and retired plugin shims
 
 ## Standalone fn-* Services → Consolidated
 
