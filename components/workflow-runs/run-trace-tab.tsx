@@ -346,22 +346,20 @@ export function RunTraceTab({
 										<Download className="mr-2 h-3.5 w-3.5" />
 										Raw JSON
 									</Button>
-									{process.env.NEXT_PUBLIC_PHOENIX_URL ? (
-										<Button
-											asChild
-											size="sm"
-											variant="outline"
+									<Button
+										asChild
+										size="sm"
+										variant="outline"
+									>
+										<a
+											href={`https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDox/traces/${activeSummary.traceId}`}
+											target="_blank"
+											rel="noopener noreferrer"
 										>
-											<a
-												href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/${process.env.NEXT_PUBLIC_PHOENIX_PROJECT_ID || "UHJvamVjdDox"}/traces/${activeSummary.traceId}`}
-												target="_blank"
-												rel="noopener noreferrer"
-											>
-												<ExternalLink className="mr-2 h-3.5 w-3.5" />
-												View in Phoenix
-											</a>
-										</Button>
-									) : null}
+											<ExternalLink className="mr-2 h-3.5 w-3.5" />
+											View in Phoenix
+										</a>
+									</Button>
 								</>
 							) : null}
 							<Button

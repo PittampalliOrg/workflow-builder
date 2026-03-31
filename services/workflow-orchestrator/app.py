@@ -382,6 +382,7 @@ def _schedule_new_workflow_instance(
     workflow_input: dict[str, Any],
     *,
     workflow_version: str | None = None,
+    idempotent: bool = False,
 ) -> str:
     request = pb.CreateInstanceRequest(
         instanceId=instance_id,
@@ -390,11 +391,87 @@ def _schedule_new_workflow_instance(
     )
     if workflow_version:
         request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
+    if idempotent:
+        # Use IGNORE policy: if instance already exists and is RUNNING/PENDING,
+        # the scheduler returns it without error (atomic dedup, no TOCTOU race).
+        request.orchestrationIdReusePolicy.CopyFrom(
+            pb.OrchestrationIdReusePolicy(
+                operationStatus=[
+                    pb.ORCHESTRATION_STATUS_RUNNING,
+                    pb.ORCHESTRATION_STATUS_PENDING,
+                    pb.ORCHESTRATION_STATUS_SUSPENDED,
+                ],
+                action=pb.IGNORE,
+            )
+        )
     response = _taskhub_call("StartInstance", request)
     result_id = str(getattr(response, "instanceId", "") or "").strip()
     if not result_id:
         raise RuntimeError("workflow runtime returned an empty instance ID")
     return result_id
+
+
+def _idempotent_schedule(
+    workflow_name: str,
+    instance_id: str,
+    workflow_input: dict[str, Any],
+    *,
+    workflow_version: str | None = None,
+) -> str:
+    """Schedule a workflow instance idempotently.
+
+    Uses the Dapr/durabletask ``OrchestrationIdReusePolicy`` with ``IGNORE``
+    action for atomic dedup: if the instance already exists and is
+    RUNNING/PENDING/SUSPENDED, the scheduler returns the existing ID
+    without error (no TOCTOU race condition).
+
+    If the instance is in a terminal state (COMPLETED/FAILED/TERMINATED),
+    purge it first, then schedule fresh.
+    """
+    try:
+        return _schedule_new_workflow_instance(
+            workflow_name=workflow_name,
+            instance_id=instance_id,
+            workflow_input=workflow_input,
+            workflow_version=workflow_version,
+            idempotent=True,
+        )
+    except Exception as schedule_err:
+        # Atomic IGNORE didn't help -- instance may be in terminal state.
+        # Try purging and retrying.
+        try:
+            client = get_workflow_client()
+            existing = client.get_workflow_state(
+                instance_id=instance_id, fetch_payloads=False
+            )
+        except Exception:
+            existing = None
+
+        if existing is None:
+            raise schedule_err
+
+        status_name = str(getattr(existing, "runtime_status", "")).upper()
+        logger.info(
+            "[Idempotent Schedule] Instance %s exists (status=%s), purging and retrying",
+            instance_id,
+            status_name,
+        )
+
+        if status_name in ("COMPLETED", "FAILED", "TERMINATED"):
+            try:
+                client.purge_workflow(instance_id=instance_id)
+                logger.info("[Idempotent Schedule] Purged terminal instance %s", instance_id)
+            except Exception as purge_err:
+                logger.warning("[Idempotent Schedule] Purge failed: %s", purge_err)
+            return _schedule_new_workflow_instance(
+                workflow_name=workflow_name,
+                instance_id=instance_id,
+                workflow_input=workflow_input,
+                workflow_version=workflow_version,
+            )
+
+        # Instance is RUNNING/PENDING/SUSPENDED — return existing
+        return instance_id
 
 
 def _clone_json_value(value: Any) -> Any:
@@ -698,6 +775,9 @@ async def lifespan(app: FastAPI):
     # Start the workflow runtime
     wfr.start()
     logger.info("[Workflow Orchestrator] Dapr Workflow Runtime started")
+
+    # Cleanup stale workflow instances on startup to prevent cascade
+    _cleanup_stale_instances_on_startup()
 
     yield
 
@@ -1200,6 +1280,91 @@ def _mark_workflow_execution_failed_to_start(execution_id: str, error: str) -> N
         conn.close()
 
 
+def _cleanup_stale_instances_on_startup() -> None:
+    """Terminate stale Dapr workflow instances and mark DB records on startup.
+
+    Prevents the cascade problem where the orchestrator restart replays all
+    running workflow actors from Redis, each creating new sandbox pods.
+    """
+    stale_threshold_minutes = int(os.environ.get("STALE_THRESHOLD_MINUTES", "60"))
+    if os.environ.get("CLEANUP_STALE_ON_STARTUP", "true").lower() != "true":
+        logger.info("[Startup Cleanup] Disabled via CLEANUP_STALE_ON_STARTUP=false")
+        return
+
+    logger.info(
+        "[Startup Cleanup] Cleaning up stale instances older than %d minutes",
+        stale_threshold_minutes,
+    )
+
+    try:
+        import psycopg2
+
+        db_url = _get_database_url()
+        conn = psycopg2.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, dapr_instance_id
+                    FROM workflow_executions
+                    WHERE status = 'running'
+                      AND started_at < NOW() - INTERVAL '%s minutes'
+                    """,
+                    (stale_threshold_minutes,),
+                )
+                stale_rows = cur.fetchall()
+        finally:
+            conn.close()
+
+        if not stale_rows:
+            logger.info("[Startup Cleanup] No stale instances found")
+            return
+
+        logger.info("[Startup Cleanup] Found %d stale execution(s)", len(stale_rows))
+        client = get_workflow_client()
+        terminated_count = 0
+
+        for execution_id, dapr_instance_id in stale_rows:
+            if dapr_instance_id:
+                try:
+                    client.terminate_workflow(instance_id=dapr_instance_id)
+                    terminated_count += 1
+                    logger.info(
+                        "[Startup Cleanup] Terminated Dapr instance %s (exec %s)",
+                        dapr_instance_id,
+                        execution_id,
+                    )
+                except Exception as term_err:
+                    logger.warning(
+                        "[Startup Cleanup] Failed to terminate %s: %s",
+                        dapr_instance_id,
+                        term_err,
+                    )
+
+            # Mark DB record as error
+            try:
+                _mark_workflow_execution_failed_to_start(
+                    execution_id,
+                    "Terminated on startup: stale instance",
+                )
+            except Exception as db_err:
+                logger.warning(
+                    "[Startup Cleanup] Failed to mark execution %s: %s",
+                    execution_id,
+                    db_err,
+                )
+
+        logger.info(
+            "[Startup Cleanup] Done: terminated %d Dapr instance(s), "
+            "cleaned %d DB record(s)",
+            terminated_count,
+            len(stale_rows),
+        )
+
+    except Exception as exc:
+        logger.error("[Startup Cleanup] Failed: %s", exc, exc_info=True)
+
+
 def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
     """Kahn's algorithm – returns node IDs in execution order (skips trigger/add/note)."""
     edges_by_source: dict[str, list[str]] = {}
@@ -1519,7 +1684,20 @@ def map_runtime_status(dapr_status: str) -> str:
 
 
 def _workflow_id_from_instance(instance_id: str) -> str:
-    """Extract workflow ID from instance ID."""
+    """Extract workflow ID from instance ID.
+
+    Supports formats:
+    - Deterministic: ``{workflow_id}-exec-{execution_id}``
+    - Legacy random:  ``{workflow_id}-{timestamp_ms}-{random_suffix}``
+    - Child:          ``{parent_instance_id}__sub__{node_id}__{index}``
+    """
+    # Child workflow: strip the __sub__ suffix first
+    if "__sub__" in instance_id:
+        instance_id = instance_id.split("__sub__")[0]
+    # Deterministic format: {workflow_id}-exec-{execution_id}
+    if "-exec-" in instance_id:
+        return instance_id.split("-exec-")[0]
+    # Legacy format: {workflow_id}-{timestamp_ms}-{random_suffix}
     parts = instance_id.rsplit("-", 2)
     if len(parts) == 3 and parts[1].isdigit():
         return parts[0]
@@ -1864,14 +2042,20 @@ def start_workflow(request: StartWorkflowRequest, http_request: Request):
             "_otel": _merge_otel_context(http_request),
         }
 
-        # Generate a unique instance ID
-        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
-        instance_id = f"{definition['id']}-{int(time.time() * 1000)}-{random_suffix}"
+        # Generate instance ID: deterministic when dbExecutionId is available,
+        # random fallback otherwise. Deterministic IDs enable Dapr-level dedup
+        # and prevent cascade on orchestrator restart (actor replay).
+        if db_execution_id:
+            instance_id = f"{definition['id']}-exec-{db_execution_id}"
+        else:
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
+            instance_id = f"{definition['id']}-{int(time.time() * 1000)}-{random_suffix}"
 
         logger.info(f"[Workflow Routes] Starting workflow: {definition['name']} ({instance_id})")
 
-        # Schedule the workflow
-        result_id = _schedule_new_workflow_instance(
+        # Idempotent start: if the instance already exists and is running,
+        # return it instead of failing. If terminal, purge and retry.
+        result_id = _idempotent_schedule(
             workflow_name=DYNAMIC_WORKFLOW_NAME,
             instance_id=instance_id,
             workflow_input=workflow_input,
@@ -1945,8 +2129,8 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
             "_otel": _merge_otel_context(http_request),
         }
 
-        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
-        instance_id = f"{wf['id']}-{int(time.time() * 1000)}-{random_suffix}"
+        # Deterministic instance ID from the DB execution ID
+        instance_id = f"{wf['id']}-exec-{db_execution_id}"
 
         logger.info(
             "[Execute-By-Id] Starting workflow: %s (%s) via %s@%s [%s]",
@@ -1957,7 +2141,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
             execution_target["mode"],
         )
 
-        result_id = _schedule_new_workflow_instance(
+        result_id = _idempotent_schedule(
             workflow_name=execution_target["workflowName"],
             instance_id=instance_id,
             workflow_input=workflow_input,

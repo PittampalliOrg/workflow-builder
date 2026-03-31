@@ -13,7 +13,6 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg2
-import requests
 from dapr.clients import DaprClient
 
 from core.config import config
@@ -48,15 +47,9 @@ def _get_database_url() -> str:
     if _database_url is not None:
         return _database_url
 
-    url = (
-        f"http://{config.DAPR_HOST}:{config.DAPR_HTTP_PORT}"
-        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
-    )
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    secrets = response.json()
-
-    db_url = secrets.get("DATABASE_URL")
+    with DaprClient() as client:
+        secret = client.get_secret(store_name=SECRET_STORE_NAME, key=SECRET_NAME)
+        db_url = secret.secret.get("DATABASE_URL")
     if not db_url:
         raise RuntimeError(
             f"DATABASE_URL not found in secret '{SECRET_NAME}' from store '{SECRET_STORE_NAME}'"

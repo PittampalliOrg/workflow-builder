@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
+from dapr.clients import DaprClient
 
 from core.config import config
 from tracing import start_activity_span
@@ -69,6 +70,49 @@ _DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] = {
         "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
     },
 }
+
+
+def _dapr_invoke(app_id: str, method_name: str, payload: dict, *, timeout: int = 300) -> tuple[int, dict, str]:
+    """Invoke a Dapr service method via SDK, returning (status_code, json_body, raw_text).
+
+    Mirrors the return signature of _post_json_with_details for easy migration.
+    """
+    try:
+        with DaprClient() as client:
+            response = client.invoke_method(
+                app_id=app_id,
+                method_name=method_name,
+                data=json.dumps(payload),
+                http_verb="POST",
+                timeout=timeout,
+            )
+            text = response.text() if hasattr(response, 'text') else response.data.decode('utf-8')
+            try:
+                body = json.loads(text) if text else {}
+            except (json.JSONDecodeError, ValueError):
+                body = {}
+            return 200, body, text
+    except Exception as exc:
+        error_msg = str(exc)
+        return 500, {"error": error_msg}, error_msg
+
+
+def _dapr_invoke_or_raise(app_id: str, method_name: str, payload: dict, *, timeout: int = 300, service_label: str = "") -> dict:
+    """Invoke a Dapr service method via SDK, returning the JSON body or raising RuntimeError.
+
+    Drop-in replacement for _post_json_with_details when used with Dapr service invocation URLs.
+    """
+    status, body, text = _dapr_invoke(app_id, method_name, payload, timeout=timeout)
+    if status >= 400:
+        body_preview = text[:1200] if text else "<empty>"
+        raise RuntimeError(
+            f"{service_label} failed with HTTP {status}: {body_preview}"
+        )
+    if not isinstance(body, dict):
+        raise RuntimeError(
+            f"{service_label} returned invalid response type: {type(body).__name__}"
+        )
+    return body
 
 
 def _post_json_with_details(
@@ -461,22 +505,18 @@ def terminate_durable_runs_by_parent_execution(
     if not parent_execution_id:
         return {"success": False, "error": "parentExecutionId is required"}
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/runs/terminate-by-parent"
-    )
     payload = {
         "parentExecutionId": parent_execution_id,
         "reason": reason or "terminated due to parent workflow termination",
         "cleanupWorkspace": cleanup_workspace,
     }
-    with httpx.Client(timeout=20.0) as client:
-        return _post_json_with_details(
-            client=client,
-            url=url,
-            payload=payload,
-            service_label="Durable run parent termination",
-        )
+    return _dapr_invoke_or_raise(
+        DURABLE_AGENT_APP_ID,
+        "api/runs/terminate-by-parent",
+        payload,
+        timeout=20,
+        service_label="Durable run parent termination",
+    )
 
 
 def call_durable_agent_run(ctx, input_data: dict) -> dict:
@@ -495,10 +535,6 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
     """
     workspace_ref = str(input_data.get("workspaceRef") or "").strip()
     run_route = "api/run-sandboxed" if workspace_ref else "api/run"
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/{run_route}"
-    )
     otel = input_data.get("_otel") or {}
     attrs = {
         "action.type": "durable/run",
@@ -510,13 +546,13 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.call_durable_agent_run", otel, attrs):
         try:
-            with httpx.Client(timeout=30.0) as client:
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=input_data,
-                    service_label="Durable agent run",
-                )
+            return _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                run_route,
+                input_data,
+                timeout=30,
+                service_label="Durable agent run",
+            )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -526,13 +562,11 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
     """
     Run an OpenShell sandboxed Claude-style coding task synchronously.
     """
-    url = (
+    _use_direct_url = bool(OPENSHELL_AGENT_RUNTIME_BASE_URL)
+    direct_url = (
         f"{OPENSHELL_AGENT_RUNTIME_BASE_URL}/api/v1/agent-runs"
-        if OPENSHELL_AGENT_RUNTIME_BASE_URL
-        else (
-            f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-            f"{OPENSHELL_AGENT_APP_ID}/method/api/v1/agent-runs"
-        )
+        if _use_direct_url
+        else ""
     )
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -636,13 +670,22 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
                 "traceId": trace_id,
                 "_otel": otel if isinstance(otel, dict) else {},
             }
-            with httpx.Client(timeout=request_timeout_seconds) as client:
-                data = _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
+            if _use_direct_url:
+                with httpx.Client(timeout=request_timeout_seconds) as client:
+                    data = _post_json_with_details(
+                        client=client,
+                        url=direct_url,
+                        payload=payload,
+                        service_label="OpenShell agent run",
+                        headers=otel_headers or None,
+                    )
+            else:
+                data = _dapr_invoke_or_raise(
+                    OPENSHELL_AGENT_APP_ID,
+                    "api/v1/agent-runs",
+                    payload,
+                    timeout=request_timeout_seconds,
                     service_label="OpenShell agent run",
-                    headers=otel_headers or None,
                 )
             result = data.get("result") if isinstance(data.get("result"), dict) else {}
             stdout = str(result.get("stdout") or "").strip()
@@ -726,10 +769,6 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
     """
     Generate a structured plan on durable-agent service.
     """
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/plan"
-    )
     otel = input_data.get("_otel") or {}
     planning_backend = str(input_data.get("planningBackend") or "").strip().lower()
     action_type = "durable/claude-plan" if planning_backend == "claude_code_v1" else "durable/plan"
@@ -754,34 +793,34 @@ def call_durable_plan(ctx, input_data: dict) -> dict:
             # timeout aligned with configured planning budget plus a small buffer.
             planning_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 3600)
 
-            with httpx.Client(timeout=planning_timeout_seconds) as client:
-                payload = {
-                    "prompt": input_data.get("prompt", ""),
-                    "cwd": input_data.get("cwd", ""),
-                    "workspaceRef": input_data.get("workspaceRef", ""),
-                    "model": input_data.get("model"),
-                    "maxTurns": input_data.get("maxTurns"),
-                    "timeoutMinutes": timeout_minutes,
-                    "planningBackend": input_data.get("planningBackend"),
-                    "instructions": input_data.get("instructions"),
-                    "tools": input_data.get("tools"),
-                    "loopPolicy": input_data.get("loopPolicy"),
-                    "contextPolicyPreset": input_data.get("contextPolicyPreset"),
-                    "agentConfig": input_data.get("agentConfig"),
-                    "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("executionId", "")
-                    or input_data.get("dbExecutionId", ""),
-                    "dbExecutionId": input_data.get("dbExecutionId", ""),
-                    "workflowId": input_data.get("workflowId", ""),
-                    "nodeId": input_data.get("nodeId", ""),
-                    "nodeName": input_data.get("nodeName", ""),
-                }
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="Durable plan",
-                )
+            payload = {
+                "prompt": input_data.get("prompt", ""),
+                "cwd": input_data.get("cwd", ""),
+                "workspaceRef": input_data.get("workspaceRef", ""),
+                "model": input_data.get("model"),
+                "maxTurns": input_data.get("maxTurns"),
+                "timeoutMinutes": timeout_minutes,
+                "planningBackend": input_data.get("planningBackend"),
+                "instructions": input_data.get("instructions"),
+                "tools": input_data.get("tools"),
+                "loopPolicy": input_data.get("loopPolicy"),
+                "contextPolicyPreset": input_data.get("contextPolicyPreset"),
+                "agentConfig": input_data.get("agentConfig"),
+                "parentExecutionId": input_data.get("parentExecutionId", ""),
+                "executionId": input_data.get("executionId", "")
+                or input_data.get("dbExecutionId", ""),
+                "dbExecutionId": input_data.get("dbExecutionId", ""),
+                "workflowId": input_data.get("workflowId", ""),
+                "nodeId": input_data.get("nodeId", ""),
+                "nodeName": input_data.get("nodeName", ""),
+            }
+            return _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                "api/plan",
+                payload,
+                timeout=planning_timeout_seconds,
+                service_label="Durable plan",
+            )
         except Exception as e:
             logger.error(f"[Call Durable Plan] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -800,10 +839,6 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
       - nodeId: str (agent node id)
       - nodeName: str (agent node label)
     """
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/execute-plan"
-    )
     otel = input_data.get("_otel") or {}
     attrs = {
         "action.type": "durable/execute-plan",
@@ -823,39 +858,39 @@ def call_durable_execute_plan(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.call_durable_execute_plan", otel, attrs):
         try:
-            with httpx.Client(timeout=30.0) as client:
-                payload = {
-                    "prompt": input_data.get("prompt", ""),
-                    "plan": plan,
-                    "artifactRef": input_data.get("artifactRef", ""),
-                    "cwd": input_data.get("cwd", ""),
-                    "model": input_data.get("model"),
-                    "instructions": input_data.get("instructions"),
-                    "tools": input_data.get("tools"),
-                    "agentConfig": input_data.get("agentConfig"),
-                    "cleanupWorkspace": input_data.get("cleanupWorkspace"),
-                    "requireFileChanges": input_data.get("requireFileChanges"),
-                    "loopPolicy": input_data.get("loopPolicy"),
-                    "contextPolicyPreset": input_data.get("contextPolicyPreset"),
-                    "approval": input_data.get("approval"),
-                    "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("executionId", "")
-                    or input_data.get("dbExecutionId", ""),
-                    "dbExecutionId": input_data.get("dbExecutionId", ""),
-                    "workflowId": input_data.get("workflowId", ""),
-                    "nodeId": input_data.get("nodeId", ""),
-                    "nodeName": input_data.get("nodeName", ""),
-                    "workspaceRef": input_data.get("workspaceRef", ""),
-                    "timeoutMinutes": input_data.get("timeoutMinutes"),
-                }
-                if input_data.get("maxTurns"):
-                    payload["maxTurns"] = input_data["maxTurns"]
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="Durable execute plan",
-                )
+            payload = {
+                "prompt": input_data.get("prompt", ""),
+                "plan": plan,
+                "artifactRef": input_data.get("artifactRef", ""),
+                "cwd": input_data.get("cwd", ""),
+                "model": input_data.get("model"),
+                "instructions": input_data.get("instructions"),
+                "tools": input_data.get("tools"),
+                "agentConfig": input_data.get("agentConfig"),
+                "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                "requireFileChanges": input_data.get("requireFileChanges"),
+                "loopPolicy": input_data.get("loopPolicy"),
+                "contextPolicyPreset": input_data.get("contextPolicyPreset"),
+                "approval": input_data.get("approval"),
+                "parentExecutionId": input_data.get("parentExecutionId", ""),
+                "executionId": input_data.get("executionId", "")
+                or input_data.get("dbExecutionId", ""),
+                "dbExecutionId": input_data.get("dbExecutionId", ""),
+                "workflowId": input_data.get("workflowId", ""),
+                "nodeId": input_data.get("nodeId", ""),
+                "nodeName": input_data.get("nodeName", ""),
+                "workspaceRef": input_data.get("workspaceRef", ""),
+                "timeoutMinutes": input_data.get("timeoutMinutes"),
+            }
+            if input_data.get("maxTurns"):
+                payload["maxTurns"] = input_data["maxTurns"]
+            return _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                "api/execute-plan",
+                payload,
+                timeout=30,
+                service_label="Durable execute plan",
+            )
         except Exception as e:
             logger.error(f"[Call Durable Execute Plan] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -883,10 +918,6 @@ def call_durable_execute_plan_dag(ctx, input_data: dict) -> dict:
       - nodeId: str
       - nodeName: str
     """
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/execute-plan-dag"
-    )
     otel = input_data.get("_otel") or {}
     attrs = {
         "action.type": "durable/execute-plan-dag",
@@ -906,31 +937,31 @@ def call_durable_execute_plan_dag(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.call_durable_execute_plan_dag", otel, attrs):
         try:
-            with httpx.Client(timeout=30.0) as client:
-                payload = {
-                    "plan": plan,
-                    "artifactRef": input_data.get("artifactRef", ""),
-                    "cwd": input_data.get("cwd", ""),
-                    "model": input_data.get("model"),
-                    "maxTaskRetries": input_data.get("maxTaskRetries"),
-                    "taskTimeoutMinutes": input_data.get("taskTimeoutMinutes"),
-                    "overallTimeoutMinutes": input_data.get("overallTimeoutMinutes"),
-                    "cleanupWorkspace": input_data.get("cleanupWorkspace"),
-                    "parentExecutionId": input_data.get("parentExecutionId", ""),
-                    "executionId": input_data.get("executionId", "")
-                    or input_data.get("dbExecutionId", ""),
-                    "dbExecutionId": input_data.get("dbExecutionId", ""),
-                    "workflowId": input_data.get("workflowId", ""),
-                    "nodeId": input_data.get("nodeId", ""),
-                    "nodeName": input_data.get("nodeName", ""),
-                    "workspaceRef": input_data.get("workspaceRef", ""),
-                }
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="Durable execute plan DAG",
-                )
+            payload = {
+                "plan": plan,
+                "artifactRef": input_data.get("artifactRef", ""),
+                "cwd": input_data.get("cwd", ""),
+                "model": input_data.get("model"),
+                "maxTaskRetries": input_data.get("maxTaskRetries"),
+                "taskTimeoutMinutes": input_data.get("taskTimeoutMinutes"),
+                "overallTimeoutMinutes": input_data.get("overallTimeoutMinutes"),
+                "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                "parentExecutionId": input_data.get("parentExecutionId", ""),
+                "executionId": input_data.get("executionId", "")
+                or input_data.get("dbExecutionId", ""),
+                "dbExecutionId": input_data.get("dbExecutionId", ""),
+                "workflowId": input_data.get("workflowId", ""),
+                "nodeId": input_data.get("nodeId", ""),
+                "nodeName": input_data.get("nodeName", ""),
+                "workspaceRef": input_data.get("workspaceRef", ""),
+            }
+            return _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                "api/execute-plan-dag",
+                payload,
+                timeout=30,
+                service_label="Durable execute plan DAG",
+            )
         except Exception as e:
             logger.error(f"[Call Durable Execute Plan DAG] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -944,10 +975,6 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
     if not workspace_ref:
         return {"success": False, "error": "workspaceRef is required"}
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{OPENSHELL_AGENT_APP_ID}/method/api/workspaces/capabilities/validate"
-    )
     otel = input_data.get("_otel") or {}
     attrs = {
         "action.type": "workspace/validate-capabilities",
@@ -960,23 +987,23 @@ def validate_workspace_capabilities(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.validate_workspace_capabilities", otel, attrs):
         try:
-            with httpx.Client(timeout=15.0) as client:
-                result = _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload={
-                        "workspaceRef": workspace_ref,
-                        "requiredCapabilities": input_data.get("requiredCapabilities"),
-                        "preferredExecutionProfile": input_data.get(
-                            "preferredExecutionProfile"
-                        ),
-                        "sandboxProfileRef": input_data.get("sandboxProfileRef"),
-                        "verifyCommands": input_data.get("verifyCommands"),
-                        "toolBackend": input_data.get("toolBackend"),
-                    },
-                    service_label="Workspace capability validation",
-                )
-                return _merge_openshell_capability_validation(result, input_data)
+            result = _dapr_invoke_or_raise(
+                OPENSHELL_AGENT_APP_ID,
+                "api/workspaces/capabilities/validate",
+                {
+                    "workspaceRef": workspace_ref,
+                    "requiredCapabilities": input_data.get("requiredCapabilities"),
+                    "preferredExecutionProfile": input_data.get(
+                        "preferredExecutionProfile"
+                    ),
+                    "sandboxProfileRef": input_data.get("sandboxProfileRef"),
+                    "verifyCommands": input_data.get("verifyCommands"),
+                    "toolBackend": input_data.get("toolBackend"),
+                },
+                timeout=15,
+                service_label="Workspace capability validation",
+            )
+            return _merge_openshell_capability_validation(result, input_data)
         except RuntimeError as exc:
             message = str(exc)
             if "HTTP 404" in message:
@@ -1016,10 +1043,6 @@ def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
     if not agent_workflow_id:
         return {"success": False, "error": "agentWorkflowId is required"}
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{DURABLE_AGENT_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
-    )
     payload = {
         "daprInstanceId": input_data.get("daprInstanceId"),
         "parentExecutionId": input_data.get("parentExecutionId"),
@@ -1038,13 +1061,13 @@ def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.terminate_durable_agent_run", otel, attrs):
         try:
-            with httpx.Client(timeout=20.0) as client:
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="Durable run termination",
-                )
+            return _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                f"api/run/{quote(agent_workflow_id)}/terminate",
+                payload,
+                timeout=20,
+                service_label="Durable run termination",
+            )
         except Exception as e:
             logger.error(f"[Terminate Durable Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
@@ -1060,10 +1083,6 @@ def terminate_openshell_langgraph_run(ctx, input_data: dict) -> dict:
     if not agent_workflow_id:
         return {"success": False, "error": "agentWorkflowId is required"}
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/"
-        f"{OPENSHELL_LANGGRAPH_APP_ID}/method/api/run/{quote(agent_workflow_id)}/terminate"
-    )
     payload = {
         "daprInstanceId": input_data.get("daprInstanceId"),
         "parentExecutionId": input_data.get("parentExecutionId"),
@@ -1082,13 +1101,13 @@ def terminate_openshell_langgraph_run(ctx, input_data: dict) -> dict:
 
     with start_activity_span("activity.terminate_openshell_langgraph_run", otel, attrs):
         try:
-            with httpx.Client(timeout=20.0) as client:
-                return _post_json_with_details(
-                    client=client,
-                    url=url,
-                    payload=payload,
-                    service_label="OpenShell LangGraph run termination",
-                )
+            return _dapr_invoke_or_raise(
+                OPENSHELL_LANGGRAPH_APP_ID,
+                f"api/run/{quote(agent_workflow_id)}/terminate",
+                payload,
+                timeout=20,
+                service_label="OpenShell LangGraph run termination",
+            )
         except Exception as e:
             logger.error(f"[Terminate OpenShell LangGraph Run] Failed: {e}")
             return {"success": False, "error": str(e)}

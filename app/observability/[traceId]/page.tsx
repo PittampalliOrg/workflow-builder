@@ -111,18 +111,16 @@ export default function TraceDetailPage() {
 						<RefreshCw className="mr-2 h-4 w-4" />
 						Refresh
 					</Button>
-					{process.env.NEXT_PUBLIC_PHOENIX_URL ? (
-						<Button asChild size="sm" variant="outline">
-							<a
-								href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/${process.env.NEXT_PUBLIC_PHOENIX_PROJECT_ID || "UHJvamVjdDox"}/traces/${traceId}`}
-								target="_blank"
-								rel="noopener noreferrer"
-							>
-								<ExternalLink className="mr-2 h-4 w-4" />
-								View in Phoenix
-							</a>
-						</Button>
-					) : null}
+					<Button asChild size="sm" variant="outline">
+						<a
+							href={`https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDox/traces/${traceId}`}
+							target="_blank"
+							rel="noopener noreferrer"
+						>
+							<ExternalLink className="mr-2 h-4 w-4" />
+							View in Phoenix
+						</a>
+					</Button>
 				</div>
 			</div>
 

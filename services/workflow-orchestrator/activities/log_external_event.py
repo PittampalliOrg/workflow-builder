@@ -12,7 +12,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
+import json
+
 import requests
+from dapr.clients import DaprClient
 
 from core.config import config
 
@@ -50,8 +53,6 @@ def log_external_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     )
 
     try:
-        url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{FUNCTION_ROUTER_APP_ID}/method/external-event"
-
         request_payload = {
             "execution_id": execution_id,
             "node_id": node_id,
@@ -69,10 +70,17 @@ def log_external_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             key: value for key, value in request_payload.items() if value is not None
         }
 
-        response = requests.post(url, json=request_payload, timeout=30)
-        response.raise_for_status()
+        with DaprClient() as dapr_client:
+            resp = dapr_client.invoke_method(
+                app_id=FUNCTION_ROUTER_APP_ID,
+                method_name="external-event",
+                data=json.dumps(request_payload),
+                http_verb="POST",
+                timeout=30,
+            )
 
-        result = response.json()
+        resp_text = resp.text() if hasattr(resp, "text") else resp.data.decode("utf-8")
+        result = json.loads(resp_text) if resp_text else {}
 
         if not result.get("success"):
             logger.warning(

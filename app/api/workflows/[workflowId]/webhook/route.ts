@@ -110,6 +110,8 @@ async function executeDaprWorkflowBackground(
 			orchestratorUrl,
 			executionIr.definition,
 			input,
+			undefined,
+			executionId,
 		);
 
 		await db

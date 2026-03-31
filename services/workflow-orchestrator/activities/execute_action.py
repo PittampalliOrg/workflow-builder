@@ -16,7 +16,10 @@ import os
 import time
 from typing import Any
 
+import json as json_module
+
 import requests
+from dapr.clients import DaprClient
 from pydantic import BaseModel
 
 from core.config import config
@@ -145,8 +148,6 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
 
     try:
         with start_activity_span("activity.execute_action", otel, attrs):
-            url = f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}/v1.0/invoke/{FUNCTION_ROUTER_APP_ID}/method/execute"
-
             # Use per-node timeoutMs if available, otherwise default to 5 min.
             # Add 30s overhead for routing / serialization.
             node_timeout_ms = None
@@ -162,27 +163,22 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             http_timeout = (node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
             logger.info(
                 f"[Execute Action] http_timeout={http_timeout}s node_timeout_ms={node_timeout_ms} "
-                f"url={url} "
+                f"url=dapr://{FUNCTION_ROUTER_APP_ID}/execute "
                 f"config_timeoutMs={config.get('timeoutMs') if isinstance(config, dict) else 'N/A'}"
             )
 
-            # Propagate OTEL trace headers as belt-and-suspenders (Dapr handles this automatically)
-            headers = {"Content-Type": "application/json"}
-            if otel:
-                for key in ("traceparent", "tracestate"):
-                    if otel.get(key):
-                        headers[key] = otel[key]
-
-            response = requests.post(
-                url,
-                json=request_payload,
-                headers=headers,
-                timeout=http_timeout,
-            )
-            response.raise_for_status()
+            with DaprClient() as dapr_client:
+                resp = dapr_client.invoke_method(
+                    app_id=FUNCTION_ROUTER_APP_ID,
+                    method_name="execute",
+                    data=json_module.dumps(request_payload),
+                    http_verb="POST",
+                    timeout=int(http_timeout),
+                )
 
             duration_ms = int((time.time() - start_time) * 1000)
-            result = response.json()
+            resp_text = resp.text() if hasattr(resp, "text") else resp.data.decode("utf-8")
+            result = json_module.loads(resp_text) if resp_text else {}
 
             logger.info(
                 f"[Execute Action] Function {action_type} completed "

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import psycopg2
-import requests
+from dapr.clients import DaprClient
 
 from core.config import config
 from core.output_summary import SUMMARY_OUTPUT_KEYS, extract_summary_fields_from_outputs
@@ -24,8 +24,6 @@ from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
-DAPR_HOST = config.DAPR_HOST
-DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 SECRET_STORE_NAME = "kubernetes-secrets"
 SECRET_NAME = "workflow-builder-secrets"
 
@@ -50,29 +48,19 @@ def _get_database_url() -> str:
     if _database_url is not None:
         return _database_url
 
-    url = (
-        f"http://{DAPR_HOST}:{DAPR_HTTP_PORT}"
-        f"/v1.0/secrets/{SECRET_STORE_NAME}/{SECRET_NAME}"
-    )
+    with DaprClient() as client:
+        secret = client.get_secret(store_name=SECRET_STORE_NAME, key=SECRET_NAME)
+        db_url = secret.secret.get("DATABASE_URL")
 
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        secrets = response.json()
+    if not db_url:
+        raise RuntimeError(
+            f"DATABASE_URL not found in secret '{SECRET_NAME}' "
+            f"from store '{SECRET_STORE_NAME}'"
+        )
 
-        db_url = secrets.get("DATABASE_URL")
-        if not db_url:
-            raise RuntimeError(
-                f"DATABASE_URL not found in secret '{SECRET_NAME}' "
-                f"from store '{SECRET_STORE_NAME}'"
-            )
-
-        _database_url = db_url
-        logger.info("[Persist Results] Fetched DATABASE_URL from Dapr secrets")
-        return db_url
-
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Failed to fetch DATABASE_URL from Dapr secrets: {e}")
+    _database_url = db_url
+    logger.info("[Persist Results] Fetched DATABASE_URL from Dapr secrets")
+    return db_url
 
 
 def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
