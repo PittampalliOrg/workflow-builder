@@ -353,7 +353,7 @@ export function RunTraceTab({
 											variant="outline"
 										>
 											<a
-												href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/default/traces/${activeSummary.traceId}`}
+												href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/${process.env.NEXT_PUBLIC_PHOENIX_PROJECT_ID || "UHJvamVjdDox"}/traces/${activeSummary.traceId}`}
 												target="_blank"
 												rel="noopener noreferrer"
 											>

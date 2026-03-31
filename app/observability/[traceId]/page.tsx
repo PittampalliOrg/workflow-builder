@@ -114,7 +114,7 @@ export default function TraceDetailPage() {
 					{process.env.NEXT_PUBLIC_PHOENIX_URL ? (
 						<Button asChild size="sm" variant="outline">
 							<a
-								href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/default/traces/${traceId}`}
+								href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/${process.env.NEXT_PUBLIC_PHOENIX_PROJECT_ID || "UHJvamVjdDox"}/traces/${traceId}`}
 								target="_blank"
 								rel="noopener noreferrer"
 							>
