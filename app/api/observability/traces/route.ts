@@ -137,6 +137,7 @@ const WORKFLOW_SERVICES = [
 	"workflow-orchestrator",
 	"openshell-agent-runtime",
 	"function-router",
+	"dapr-swe",
 ];
 
 function resolveJaegerServices(searchParams: URLSearchParams): string[] {
