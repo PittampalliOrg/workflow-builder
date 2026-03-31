@@ -2426,6 +2426,294 @@ const BROWSER_PIECE: IntegrationDefinition = {
 	],
 };
 
+const DAPR_SWE_PIECE: IntegrationDefinition = {
+	type: "dapr-swe",
+	label: "Dapr SWE",
+	pieceName: "dapr-swe",
+	logoUrl: "",
+	actions: [
+		{
+			slug: "initialize",
+			label: "Initialize Sandbox",
+			description:
+				"Provision a sandboxed development environment for the target repository and issue",
+			category: "Dapr SWE",
+			configFields: [
+				{
+					key: "owner",
+					label: "Owner",
+					type: "template-input",
+					required: true,
+					placeholder: "organization-or-user",
+				},
+				{
+					key: "repo",
+					label: "Repository",
+					type: "template-input",
+					required: true,
+					placeholder: "repository-name",
+				},
+				{
+					key: "issue_number",
+					label: "Issue Number",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Trigger.issue_number}}",
+				},
+				{
+					key: "title",
+					label: "Title",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Trigger.title}}",
+				},
+				{
+					key: "body",
+					label: "Body",
+					type: "template-textarea",
+					required: false,
+					rows: 6,
+					placeholder: "Issue or task description",
+				},
+			],
+			outputFields: [
+				{ field: "sandbox_id", description: "Unique identifier for the provisioned sandbox" },
+				{ field: "working_dir", description: "Working directory inside the sandbox" },
+				{ field: "github_token", description: "GitHub token scoped to the sandbox" },
+				{ field: "agents_md", description: "Generated AGENTS.md context for the repository" },
+			],
+		},
+		{
+			slug: "plan",
+			label: "Plan Changes",
+			description:
+				"Analyze the issue and produce a structured implementation plan",
+			category: "Dapr SWE",
+			configFields: [
+				{
+					key: "sandbox_id",
+					label: "Sandbox ID",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.sandbox_id}}",
+				},
+				{
+					key: "working_dir",
+					label: "Working Directory",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Initialize Sandbox.working_dir}}",
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "select",
+					required: false,
+					defaultValue: "claude-sonnet-4-6",
+					options: [
+						{ label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+						{ label: "Claude Opus 4.6", value: "claude-opus-4-6" },
+						{ label: "Claude Haiku 4.5", value: "claude-haiku-4-5" },
+					],
+				},
+				{
+					key: "maxIterations",
+					label: "Max Iterations",
+					type: "number",
+					required: false,
+					defaultValue: "30",
+					min: 1,
+					placeholder: "30",
+				},
+				{
+					key: "systemPromptOverride",
+					label: "System Prompt Override",
+					type: "template-textarea",
+					required: false,
+					rows: 6,
+					placeholder: "Optional custom system prompt for the planning agent",
+				},
+			],
+			outputFields: [
+				{ field: "plan", description: "Structured implementation plan JSON" },
+				{ field: "summary", description: "Human-readable plan summary" },
+				{ field: "step_count", description: "Number of steps in the plan" },
+			],
+		},
+		{
+			slug: "develop",
+			label: "Implement Changes",
+			description:
+				"Execute the implementation plan by writing code changes in the sandbox",
+			category: "Dapr SWE",
+			configFields: [
+				{
+					key: "sandbox_id",
+					label: "Sandbox ID",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.sandbox_id}}",
+				},
+				{
+					key: "working_dir",
+					label: "Working Directory",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Initialize Sandbox.working_dir}}",
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "select",
+					required: false,
+					defaultValue: "claude-sonnet-4-6",
+					options: [
+						{ label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+						{ label: "Claude Opus 4.6", value: "claude-opus-4-6" },
+						{ label: "Claude Haiku 4.5", value: "claude-haiku-4-5" },
+					],
+				},
+				{
+					key: "maxIterations",
+					label: "Max Iterations",
+					type: "number",
+					required: false,
+					defaultValue: "50",
+					min: 1,
+					placeholder: "50",
+				},
+				{
+					key: "systemPromptOverride",
+					label: "System Prompt Override",
+					type: "template-textarea",
+					required: false,
+					rows: 6,
+					placeholder: "Optional custom system prompt for the development agent",
+				},
+			],
+			outputFields: [
+				{ field: "status", description: "Implementation status (success, partial, failed)" },
+				{ field: "steps_completed", description: "Number of implementation steps completed" },
+			],
+		},
+		{
+			slug: "review",
+			label: "Review Changes",
+			description:
+				"Review the implemented changes for correctness, style, and completeness",
+			category: "Dapr SWE",
+			configFields: [
+				{
+					key: "sandbox_id",
+					label: "Sandbox ID",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.sandbox_id}}",
+				},
+				{
+					key: "working_dir",
+					label: "Working Directory",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Initialize Sandbox.working_dir}}",
+				},
+				{
+					key: "model",
+					label: "Model",
+					type: "select",
+					required: false,
+					defaultValue: "claude-sonnet-4-6",
+					options: [
+						{ label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+						{ label: "Claude Opus 4.6", value: "claude-opus-4-6" },
+						{ label: "Claude Haiku 4.5", value: "claude-haiku-4-5" },
+					],
+				},
+			],
+			outputFields: [
+				{ field: "approved", description: "Whether the changes passed review" },
+				{ field: "feedback", description: "Review feedback text" },
+				{ field: "suggestions", description: "List of improvement suggestions" },
+			],
+		},
+		{
+			slug: "commit-pr",
+			label: "Commit & Open PR",
+			description:
+				"Commit the sandbox changes and open a pull request on the target repository",
+			category: "Dapr SWE",
+			configFields: [
+				{
+					key: "sandbox_id",
+					label: "Sandbox ID",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.sandbox_id}}",
+				},
+				{
+					key: "working_dir",
+					label: "Working Directory",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Initialize Sandbox.working_dir}}",
+				},
+				{
+					key: "owner",
+					label: "Owner",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.owner}}",
+				},
+				{
+					key: "repo",
+					label: "Repository",
+					type: "template-input",
+					required: true,
+					placeholder: "{{Initialize Sandbox.repo}}",
+				},
+				{
+					key: "issue_number",
+					label: "Issue Number",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Initialize Sandbox.issue_number}}",
+				},
+				{
+					key: "title",
+					label: "PR Title",
+					type: "template-input",
+					required: false,
+					placeholder: "{{Plan Changes.summary}}",
+				},
+				{
+					key: "draft",
+					label: "Draft PR",
+					type: "select",
+					required: false,
+					defaultValue: "Yes",
+					options: [
+						{ label: "Yes", value: "Yes" },
+						{ label: "No", value: "No" },
+					],
+				},
+				{
+					key: "baseBranch",
+					label: "Base Branch",
+					type: "template-input",
+					required: false,
+					defaultValue: "main",
+					placeholder: "main",
+				},
+			],
+			outputFields: [
+				{ field: "pr_url", description: "URL of the created pull request" },
+				{ field: "branch", description: "Branch name pushed for the PR" },
+				{ field: "status", description: "PR creation status" },
+			],
+		},
+	],
+};
+
 export function getBuiltinPieces(): IntegrationDefinition[] {
 	return [
 		MCP_PIECE,
@@ -2433,6 +2721,7 @@ export function getBuiltinPieces(): IntegrationDefinition[] {
 		WORKSPACE_PIECE,
 		OPENSHELL_AGENT_PIECE,
 		OPENSHELL_LANGGRAPH_AGENT_PIECE,
+		DAPR_SWE_PIECE,
 	];
 }
 
