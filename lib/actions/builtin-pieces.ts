@@ -2506,7 +2506,7 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 					key: "sandbox_id",
 					label: "Sandbox ID",
 					type: "template-input",
-					required: true,
+					
 					placeholder: "{{Initialize Sandbox.sandbox_id}}",
 				},
 				{
@@ -2563,7 +2563,7 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 					key: "sandbox_id",
 					label: "Sandbox ID",
 					type: "template-input",
-					required: true,
+					
 					placeholder: "{{Initialize Sandbox.sandbox_id}}",
 				},
 				{
@@ -2619,7 +2619,7 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 					key: "sandbox_id",
 					label: "Sandbox ID",
 					type: "template-input",
-					required: true,
+					
 					placeholder: "{{Initialize Sandbox.sandbox_id}}",
 				},
 				{
@@ -2659,7 +2659,7 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 					key: "sandbox_id",
 					label: "Sandbox ID",
 					type: "template-input",
-					required: true,
+					
 					placeholder: "{{Initialize Sandbox.sandbox_id}}",
 				},
 				{
@@ -2673,14 +2673,14 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 					key: "owner",
 					label: "Owner",
 					type: "template-input",
-					required: true,
+					required: false,
 					placeholder: "{{Initialize Sandbox.owner}}",
 				},
 				{
 					key: "repo",
 					label: "Repository",
 					type: "template-input",
-					required: true,
+					required: false,
 					placeholder: "{{Initialize Sandbox.repo}}",
 				},
 				{

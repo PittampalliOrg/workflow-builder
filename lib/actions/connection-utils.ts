@@ -41,7 +41,8 @@ export function requiresConnectionForIntegration(
 		integrationType === "mcp" ||
 		integrationType === "workspace" ||
 		integrationType === "mastra" ||
-		integrationType === "openshell-langgraph"
+		integrationType === "openshell-langgraph" ||
+		integrationType === "dapr-swe"
 	) {
 		return false;
 	}
