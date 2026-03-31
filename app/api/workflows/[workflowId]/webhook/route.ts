@@ -201,6 +201,21 @@ export async function POST(
 		// Parse request body
 		const body = await request.json().catch(() => ({}));
 
+		// Deduplication: reject if there's already a running execution for this workflow
+		const runningExecution = await db.query.workflowExecutions.findFirst({
+			where: (t, { and: andOp, eq: eqOp }) =>
+				andOp(eqOp(t.workflowId, workflowId), eqOp(t.status, "running")),
+		});
+		if (runningExecution) {
+			return NextResponse.json(
+				{
+					error: "A workflow execution is already running",
+					existingExecutionId: runningExecution.id,
+				},
+				{ status: 409, headers: corsHeaders },
+			);
+		}
+
 		// Create execution record
 		const [execution] = await db
 			.insert(workflowExecutions)
