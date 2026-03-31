@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, RefreshCw } from "lucide-react";
+import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
@@ -106,10 +106,24 @@ export default function TraceDetailPage() {
 						Trace ID: {trace.trace.traceId}
 					</p>
 				</div>
-				<Button onClick={() => mutate()} size="sm" variant="outline">
-					<RefreshCw className="mr-2 h-4 w-4" />
-					Refresh
-				</Button>
+				<div className="flex items-center gap-2">
+					<Button onClick={() => mutate()} size="sm" variant="outline">
+						<RefreshCw className="mr-2 h-4 w-4" />
+						Refresh
+					</Button>
+					{process.env.NEXT_PUBLIC_PHOENIX_URL ? (
+						<Button asChild size="sm" variant="outline">
+							<a
+								href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/default/traces/${traceId}`}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								<ExternalLink className="mr-2 h-4 w-4" />
+								View in Phoenix
+							</a>
+						</Button>
+					) : null}
+				</div>
 			</div>
 
 			<div className="grid gap-4 rounded-lg border bg-background p-4 md:grid-cols-2 xl:grid-cols-4">

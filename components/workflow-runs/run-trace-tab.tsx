@@ -346,6 +346,22 @@ export function RunTraceTab({
 										<Download className="mr-2 h-3.5 w-3.5" />
 										Raw JSON
 									</Button>
+									{process.env.NEXT_PUBLIC_PHOENIX_URL ? (
+										<Button
+											asChild
+											size="sm"
+											variant="outline"
+										>
+											<a
+												href={`${process.env.NEXT_PUBLIC_PHOENIX_URL}/projects/default/traces/${activeSummary.traceId}`}
+												target="_blank"
+												rel="noopener noreferrer"
+											>
+												<ExternalLink className="mr-2 h-3.5 w-3.5" />
+												View in Phoenix
+											</a>
+										</Button>
+									) : null}
 								</>
 							) : null}
 							<Button
