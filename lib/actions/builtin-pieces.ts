@@ -2441,17 +2441,29 @@ const DAPR_SWE_PIECE: IntegrationDefinition = {
 			configFields: [
 				{
 					key: "owner",
-					label: "Owner",
-					type: "template-input",
+					label: "GitHub Owner",
+					type: "dynamic-select",
 					required: true,
-					placeholder: "organization-or-user",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "dapr-swe",
+						actionName: "dapr-swe/initialize",
+						propName: "owner",
+						refreshers: [],
+					},
 				},
 				{
 					key: "repo",
-					label: "Repository",
-					type: "template-input",
+					label: "GitHub Repository",
+					type: "dynamic-select",
 					required: true,
-					placeholder: "repository-name",
+					dynamicOptions: {
+						provider: "builtin",
+						pieceName: "dapr-swe",
+						actionName: "dapr-swe/initialize",
+						propName: "repo",
+						refreshers: ["owner"],
+					},
 				},
 				{
 					key: "issue_number",

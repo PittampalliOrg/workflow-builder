@@ -594,6 +594,76 @@ export async function POST(request: Request) {
 			);
 		}
 
+		// dapr-swe/initialize — same GitHub owner/repo options as workspace/clone
+		if (normalizedActionName === "dapr-swe/initialize") {
+			if (!rawBody.connectionExternalId) {
+				return NextResponse.json(
+					buildDisabledResponse("Select a GitHub connection first"),
+				);
+			}
+
+			const connection = await getAppConnectionByExternalId(
+				rawBody.connectionExternalId,
+				session.user.id,
+			);
+
+			if (!connection) {
+				return NextResponse.json(
+					{ error: "Connection not found" },
+					{ status: 404 },
+				);
+			}
+
+			if (!connection.pieceName.toLowerCase().includes("github")) {
+				return NextResponse.json(
+					{
+						error: "dapr-swe/initialize options require a GitHub connection",
+					},
+					{ status: 400 },
+				);
+			}
+
+			const resolvedValue = await resolveConnectionValueForUse(connection);
+			const token = extractTokenFromConnectionValue(resolvedValue);
+
+			if (!token) {
+				return NextResponse.json(
+					{
+						error:
+							"Selected GitHub connection does not contain a usable access token",
+					},
+					{ status: 400 },
+				);
+			}
+
+			switch (rawBody.propertyName) {
+				case "owner": {
+					return NextResponse.json({
+						options: filterOptions(
+							await getOwnerOptions(token),
+							rawBody.searchValue,
+						),
+					});
+				}
+				case "repo": {
+					const owner = String(rawBody.input?.owner || "").trim();
+					if (!owner) {
+						return NextResponse.json(
+							buildDisabledResponse("Select a GitHub owner first"),
+						);
+					}
+					return NextResponse.json({
+						options: filterOptions(
+							await getRepoOptions(token, owner),
+							rawBody.searchValue,
+						),
+					});
+				}
+				default:
+					return NextResponse.json({ options: [] });
+			}
+		}
+
 		// GitHub repo/branch selectors for clone actions
 		// Keep mastra/clone for backward compatibility and support workspace/clone.
 		if (
