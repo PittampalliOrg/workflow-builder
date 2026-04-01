@@ -12,6 +12,35 @@ export type SWValidationIssue = {
 	message: string;
 };
 
+function repairCommonWorkflowShape(workflow: unknown): unknown {
+	if (!workflow || typeof workflow !== "object") {
+		return workflow;
+	}
+
+	const cloned = JSON.parse(JSON.stringify(workflow)) as Record<
+		string,
+		unknown
+	>;
+	const document =
+		cloned.document && typeof cloned.document === "object"
+			? (cloned.document as Record<string, unknown>)
+			: null;
+
+	if (
+		document &&
+		typeof document.description === "string" &&
+		typeof document.summary !== "string"
+	) {
+		document.summary = document.description;
+	}
+
+	if (document && "description" in document) {
+		delete document.description;
+	}
+
+	return cloned;
+}
+
 function parseValidationMessage(message: string): SWValidationIssue[] {
 	const issues = message
 		.split("\n")
@@ -43,7 +72,7 @@ export function validateWorkflowDefinition(
 	workflow: unknown,
 ): SWValidationIssue[] {
 	try {
-		validate("Workflow", workflow);
+		validate("Workflow", repairCommonWorkflowShape(workflow));
 		return [];
 	} catch (error) {
 		return parseValidationMessage(
@@ -66,13 +95,14 @@ export function isWorkflowDefinition(
 }
 
 export function normalizeWorkflowDefinition(workflow: unknown): SWWorkflow {
-	const issues = validateWorkflowDefinition(workflow);
+	const repairedWorkflow = repairCommonWorkflowShape(workflow);
+	const issues = validateWorkflowDefinition(repairedWorkflow);
 	if (issues.length > 0) {
 		throw new Error(
 			issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"),
 		);
 	}
-	return toPlainWorkflow(workflow as Partial<Specification.Workflow>);
+	return toPlainWorkflow(repairedWorkflow as Partial<Specification.Workflow>);
 }
 
 export function parseWorkflowDefinition(source: string): SWWorkflow {
