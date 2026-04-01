@@ -94,6 +94,12 @@ export function RunOverviewTab({
 	);
 
 	const observabilityLink = `/observability?entityId=${encodeURIComponent(workflowId)}&search=${encodeURIComponent(execution.id)}`;
+	const prLabel = outcomeSummary?.prNumber
+		? `#${outcomeSummary.prNumber}`
+		: "Open Pull Request";
+	const prMetaLabel = outcomeSummary?.prState
+		? `${prLabel} (${outcomeSummary.prState})`
+		: prLabel;
 
 	return (
 		<div className="space-y-3">
@@ -215,7 +221,7 @@ export function RunOverviewTab({
 								rel="noreferrer"
 								target="_blank"
 							>
-								{`#${outcomeSummary.prNumber ?? "?"} (${outcomeSummary.prState ?? "unknown"})`}
+								{prMetaLabel}
 							</Link>
 						) : (
 							<p className="mt-1 text-sm">-</p>

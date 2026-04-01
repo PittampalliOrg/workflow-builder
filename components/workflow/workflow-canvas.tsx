@@ -169,8 +169,10 @@ function isValidConnectionForGraph(input: {
 	// Trigger/group nodes cannot be targeted and group nodes cannot connect.
 	if (
 		targetNode.type === "trigger" ||
+		targetNode.type === "start" ||
 		targetNode.type === "group" ||
-		sourceNode.type === "group"
+		sourceNode.type === "group" ||
+		sourceNode.type === "end"
 	) {
 		return false;
 	}
@@ -910,10 +912,10 @@ export function WorkflowCanvas() {
 			}
 
 			if (handleType === "target") {
-				return node.type !== "trigger";
+				return node.type !== "trigger" && node.type !== "start";
 			}
 
-			return true;
+			return node.type !== "end";
 		},
 		[nodes],
 	);

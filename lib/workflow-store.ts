@@ -20,6 +20,21 @@ export type WorkflowNodeType =
 	| "action"
 	| "add"
 	| "group" // UI container: generic visual grouping
+	// CNCF Serverless Workflow 1.0 structural/task node types
+	| "start"
+	| "end"
+	| "call"
+	| "set"
+	| "switch"
+	| "wait"
+	| "emit"
+	| "listen"
+	| "for"
+	| "fork"
+	| "try"
+	| "run"
+	| "raise"
+	| "do"
 	// Dapr workflow node types
 	| "activity" // ctx.call_activity()
 	| "approval-gate" // ctx.wait_for_external_event() + timer
@@ -241,7 +256,15 @@ function isGroupableNode(node: WorkflowNode): boolean {
 	if (node.parentId) {
 		return false;
 	}
-	return !["trigger", "add", "group", "while"].includes(node.type ?? "");
+	return !["trigger", "start", "end", "add", "group", "while"].includes(
+		node.type ?? "",
+	);
+}
+
+function isProtectedStructuralNode(node: WorkflowNode | undefined): boolean {
+	return ["trigger", "start", "end"].includes(
+		node?.data.type ?? node?.type ?? "",
+	);
 }
 
 // Autosave functionality
@@ -301,8 +324,7 @@ export const onNodesChangeAtom = atom(
 		const filteredChanges = changes.filter((change) => {
 			if (change.type === "remove") {
 				const nodeToRemove = currentNodes.find((n) => n.id === change.id);
-				// Prevent deletion of trigger nodes
-				return nodeToRemove?.data.type !== "trigger";
+				return !isProtectedStructuralNode(nodeToRemove);
 			}
 			return true;
 		});
@@ -1083,9 +1105,8 @@ function escapeRegex(str: string): string {
 export const deleteNodeAtom = atom(null, (get, set, nodeId: string) => {
 	const currentNodes = get(nodesAtom);
 
-	// Prevent deletion of trigger nodes
 	const nodeToDelete = currentNodes.find((node) => node.id === nodeId);
-	if (nodeToDelete?.data.type === "trigger") {
+	if (isProtectedStructuralNode(nodeToDelete)) {
 		return;
 	}
 
@@ -1203,9 +1224,9 @@ export const deleteSelectedItemsAtom = atom(null, (get, set) => {
 	set(historyAtom, [...history, { nodes: currentNodes, edges: currentEdges }]);
 	set(futureAtom, []);
 
-	// Get all selected nodes, excluding trigger nodes
+	// Get all selected nodes, excluding structural nodes
 	const selectedNodeIds = currentNodes
-		.filter((node) => node.selected && node.data.type !== "trigger")
+		.filter((node) => node.selected && !isProtectedStructuralNode(node))
 		.map((node) => node.id);
 	const selectedNodeIdSet = new Set(selectedNodeIds);
 	const selectedGroupIds = new Set(
@@ -1217,11 +1238,10 @@ export const deleteSelectedItemsAtom = atom(null, (get, set) => {
 		currentNodes.map((node) => [node.id, node] as const),
 	);
 
-	// Delete selected nodes (excluding trigger nodes) and their connected edges
+	// Delete selected nodes (excluding structural nodes) and their connected edges
 	const newNodes = currentNodes
 		.filter((node) => {
-			// Keep trigger nodes even if selected
-			if (node.data.type === "trigger") {
+			if (isProtectedStructuralNode(node)) {
 				return true;
 			}
 			// Remove other selected nodes

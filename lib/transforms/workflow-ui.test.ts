@@ -55,6 +55,36 @@ describe("parseExecutionOutcomeSummary", () => {
 		expect(parseExecutionOutcomeSummary({ success: true })).toBeNull();
 		expect(parseExecutionOutcomeSummary("not-an-object")).toBeNull();
 	});
+
+	it("parses nested workflow step outputs wrapped in data.data", () => {
+		const summary = parseExecutionOutcomeSummary({
+			success: true,
+			outputs: {
+				commitPR: {
+					data: {
+						data: {
+							branch: "dapr-swe/issue-1-1775049286",
+							pr_url: "https://github.com/PittampalliOrg/open-swe/pull/3",
+							status: "success",
+						},
+						success: true,
+					},
+					label: "commitPR",
+					actionType: "dapr-swe/commit-pr",
+				},
+			},
+		});
+
+		expect(summary).toEqual({
+			branch: "dapr-swe/issue-1-1775049286",
+			commit: undefined,
+			prNumber: "3",
+			prUrl: "https://github.com/PittampalliOrg/open-swe/pull/3",
+			prState: "success",
+			remote: undefined,
+			changedFileCount: undefined,
+		});
+	});
 });
 
 describe("parseExecutionFileChangeData", () => {

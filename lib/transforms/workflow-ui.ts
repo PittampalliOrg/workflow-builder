@@ -538,21 +538,19 @@ function buildCandidateRecords(
 		record: Record<string, unknown>;
 	}> = [];
 	const pushRecord = (record: Record<string, unknown>, nodeKey?: string) => {
-		candidates.push({ nodeKey, record });
-		const nestedData = asRecord(record.data);
-		if (nestedData) {
-			candidates.push({ nodeKey, record: nestedData });
-			const nestedDataResult = asRecord(nestedData.result);
-			if (nestedDataResult) {
-				candidates.push({ nodeKey, record: nestedDataResult });
+		const queue: Record<string, unknown>[] = [record];
+		const seen = new Set<Record<string, unknown>>();
+		while (queue.length > 0) {
+			const current = queue.shift();
+			if (!current || seen.has(current)) {
+				continue;
 			}
-		}
-		const nestedResult = asRecord(record.result);
-		if (nestedResult) {
-			candidates.push({ nodeKey, record: nestedResult });
-			const nestedResultData = asRecord(nestedResult.data);
-			if (nestedResultData) {
-				candidates.push({ nodeKey, record: nestedResultData });
+			seen.add(current);
+			candidates.push({ nodeKey, record: current });
+			for (const nested of [asRecord(current.data), asRecord(current.result)]) {
+				if (nested && !seen.has(nested)) {
+					queue.push(nested);
+				}
 			}
 		}
 	};
@@ -595,8 +593,15 @@ function buildOutputNodeRecords(
 		if (!outputRecord) {
 			continue;
 		}
-		const dataRecord = asRecord(outputRecord.data) ?? outputRecord;
-		records.push({ nodeKey, record: dataRecord });
+		let record = outputRecord;
+		while (true) {
+			const nested = asRecord(record.data) ?? asRecord(record.result);
+			if (!nested) {
+				break;
+			}
+			record = nested;
+		}
+		records.push({ nodeKey, record });
 	}
 	return records;
 }
@@ -911,23 +916,13 @@ export function deriveAgentRunsFromExecutionOutput(
 export function parseExecutionOutcomeSummary(
 	output: unknown,
 ): ExecutionOutcomeSummary | null {
-	if (!output || typeof output !== "object") {
+	const candidates = buildCandidateRecords(output);
+	if (candidates.length === 0) {
 		return null;
 	}
 
-	const root = output as Record<string, unknown>;
-	const nestedResult =
-		root.result && typeof root.result === "object"
-			? (root.result as Record<string, unknown>)
-			: null;
-
-	const records: Array<Record<string, unknown>> = [root];
-	if (nestedResult) {
-		records.push(nestedResult);
-	}
-
 	const read = (keys: string[]) => {
-		for (const record of records) {
+		for (const { record } of candidates) {
 			const value = getRecordValue(record, keys);
 			if (value !== undefined) {
 				return value;
@@ -939,14 +934,23 @@ export function parseExecutionOutcomeSummary(
 	const branch = toOptionalString(read(["branch"]));
 	const commit = toOptionalString(read(["commit"]));
 	const prUrl = toOptionalString(read(["prUrl", "pr_url"]));
-	const prState = toOptionalString(read(["prState", "pr_state"]));
+	const prState = toOptionalString(read(["prState", "pr_state", "status"]));
 	const remote = toOptionalString(read(["remote"]));
 
 	const prNumberRaw = read(["prNumber", "pr_number"]);
-	const prNumber =
+	const prNumberFromRecord =
 		typeof prNumberRaw === "number" || typeof prNumberRaw === "string"
 			? prNumberRaw
 			: undefined;
+	const prNumber =
+		prNumberFromRecord ??
+		(() => {
+			if (!prUrl) {
+				return undefined;
+			}
+			const match = prUrl.match(/\/pull\/(\d+)(?:\/|$)/);
+			return match?.[1];
+		})();
 
 	const changedFileCount = toOptionalInt(
 		read(["changedFileCount", "changed_count"]),

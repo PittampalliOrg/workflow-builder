@@ -188,10 +188,11 @@ export function WorkflowContextMenu({
 		return null;
 	}
 
-	// Check if the node is a trigger (can't be deleted)
-	const isTriggerNode = Boolean(
+	const isProtectedNode = Boolean(
 		menuState.nodeId &&
-			nodes.find((n) => n.id === menuState.nodeId)?.data.type === "trigger",
+			["trigger", "start", "end"].includes(
+				nodes.find((n) => n.id === menuState.nodeId)?.data.type ?? "",
+			),
 	);
 
 	const getNodeLabel = () => {
@@ -204,7 +205,9 @@ export function WorkflowContextMenu({
 	const selectedGroupableNodes = nodes.filter(
 		(node) =>
 			node.selected &&
-			!["trigger", "add", "group", "while"].includes(node.type ?? "") &&
+			!["trigger", "start", "end", "add", "group", "while"].includes(
+				node.type ?? "",
+			) &&
 			!node.parentId,
 	);
 	const canGroupSelection = selectedGroupableNodes.length >= 2;
@@ -251,7 +254,7 @@ export function WorkflowContextMenu({
 						/>
 					)}
 					<MenuItem
-						disabled={isTriggerNode}
+						disabled={isProtectedNode}
 						icon={<Trash2 className="size-4" />}
 						label={`Delete ${getNodeLabel()}`}
 						onClick={handleDeleteNode}

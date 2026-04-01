@@ -636,9 +636,9 @@ async function executeTestWorkflow({
 	// Set all nodes to idle first
 	updateNodesStatus(nodes, updateNodeData, "idle");
 
-	// Immediately set trigger nodes to running for instant visual feedback
+	// Immediately set entry nodes to running for instant visual feedback
 	for (const node of nodes) {
-		if (node.data.type === "trigger") {
+		if (node.data.type === "trigger" || node.data.type === "start") {
 			updateNodeData({ id: node.id, data: { status: "running" } });
 		}
 	}
@@ -1351,8 +1351,9 @@ function ToolbarActions({
 	const selectedNodes = nodes.filter((node) => node.selected);
 	const groupableSelectedNodes = selectedNodes.filter(
 		(node) =>
-			!["trigger", "add", "group", "while"].includes(node.type ?? "") &&
-			!node.parentId,
+			!["trigger", "start", "end", "add", "group", "while"].includes(
+				node.type ?? "",
+			) && !node.parentId,
 	);
 	const canGroupSelectedNodes = groupableSelectedNodes.length >= 2;
 	const selectedGroupNode =
