@@ -15,11 +15,9 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AiChatComposer } from "@/components/workflow/ai-chat-composer";
+import { AiChatCreatePanel } from "@/components/workflow/ai-chat-create-panel";
 import { useWorkflowAiToolsChat } from "@/hooks/use-workflow-ai-tools-chat";
-import {
-	clearWorkflowAiCreateSeed,
-	readWorkflowAiCreateSeed,
-} from "@/lib/workflow-ai-authoring";
+import { readWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
 import type { CanvasToolResult } from "@/lib/ai/canvas-tools";
 import { workflowAiCreateDraftAtom } from "@/lib/workflow-store";
 import type { WorkflowNode } from "@/lib/workflow-store";
@@ -382,23 +380,18 @@ function ExistingAiChatPanel({ workflowId }: AiChatPanelProps) {
 }
 
 export function AiChatPanel({ workflowId }: AiChatPanelProps) {
-	const [createDraft, setCreateDraft] = useAtom(workflowAiCreateDraftAtom);
+	const [createDraft] = useAtom(workflowAiCreateDraftAtom);
 	const [hasPendingCreateSeed, setHasPendingCreateSeed] = useState(false);
 
 	useEffect(() => {
 		setHasPendingCreateSeed(
 			readWorkflowAiCreateSeed()?.workflowId === workflowId,
 		);
-	}, [workflowId]);
-	useEffect(() => {
-		if (createDraft?.workflowId === workflowId) {
-			setCreateDraft(null);
-		}
-		if (hasPendingCreateSeed) {
-			clearWorkflowAiCreateSeed();
-			setHasPendingCreateSeed(false);
-		}
-	}, [createDraft, hasPendingCreateSeed, setCreateDraft, workflowId]);
+	}, [createDraft, workflowId]);
+
+	if (createDraft?.workflowId === workflowId || hasPendingCreateSeed) {
+		return <AiChatCreatePanel workflowId={workflowId} />;
+	}
 
 	return <ExistingAiChatPanel workflowId={workflowId} />;
 }
