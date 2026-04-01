@@ -42,16 +42,20 @@ def _init_otel() -> None:
         # classifies spans correctly with OpenInference semantics (LLM/TOOL icons)
         phoenix_url = os.environ.get(
             "PHOENIX_COLLECTOR_ENDPOINT",
-            "http://arize-phoenix.observability.svc.cluster.local:4318",
+            "http://arize-phoenix.observability.svc.cluster.local:4317",
         )
         try:
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                OTLPSpanExporter as GRPCSpanExporter,
+            )
             provider.add_span_processor(BatchSpanProcessor(
-                OTLPSpanExporter(
-                    endpoint=f"{phoenix_url}/v1/traces",
-                    headers={"phoenix-project-name": "dapr-swe"},
+                GRPCSpanExporter(
+                    endpoint=phoenix_url,
+                    insecure=True,
+                    headers=(("phoenix-project-name", "dapr-swe"),),
                 )
             ))
-            logging.getLogger(__name__).info("Phoenix direct exporter enabled → %s (project=dapr-swe)", phoenix_url)
+            logging.getLogger(__name__).info("Phoenix gRPC exporter enabled → %s (project=dapr-swe)", phoenix_url)
         except Exception as phoenix_exc:
             logging.getLogger(__name__).warning("Phoenix exporter failed: %s", phoenix_exc)
         trace.set_tracer_provider(provider)
