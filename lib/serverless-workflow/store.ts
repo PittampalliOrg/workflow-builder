@@ -9,16 +9,15 @@
  * during the big-bang cutover.
  */
 
-import type {
-  Edge,
-  EdgeChange,
-  Node,
-  NodeChange,
-} from "@xyflow/react";
+import type { Edge, EdgeChange, Node, NodeChange } from "@xyflow/react";
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 
-import type { WorkflowEdge, WorkflowNode, WorkflowNodeData } from "./graph-types";
+import type {
+	WorkflowEdge,
+	WorkflowNode,
+	WorkflowNodeData,
+} from "./graph-types";
 import type { Workflow, TaskType } from "./types";
 import { SW_DSL_VERSION } from "./types";
 import { compileGraphToWorkflow } from "./compile";
@@ -83,7 +82,7 @@ export const swCurrentRunningTaskAtom = atom<string | null>(null);
 
 /** Task execution status by task name */
 export const swTaskStatusAtom = atom<
-  Record<string, "idle" | "running" | "success" | "error" | "skipped">
+	Record<string, "idle" | "running" | "success" | "error" | "skipped">
 >({});
 
 // ---------------------------------------------------------------------------
@@ -92,22 +91,22 @@ export const swTaskStatusAtom = atom<
 
 /** Apply node changes from @xyflow/react */
 export const swOnNodesChangeAtom = atom(
-  null,
-  (get, set, changes: NodeChange[]) => {
-    const nodes = get(swNodesAtom);
-    set(swNodesAtom, applyNodeChanges(changes, nodes) as SWWorkflowNode[]);
-    set(swHasUnsavedChangesAtom, true);
-  },
+	null,
+	(get, set, changes: NodeChange<SWWorkflowNode>[]) => {
+		const nodes = get(swNodesAtom);
+		set(swNodesAtom, applyNodeChanges(changes, nodes) as SWWorkflowNode[]);
+		set(swHasUnsavedChangesAtom, true);
+	},
 );
 
 /** Apply edge changes from @xyflow/react */
 export const swOnEdgesChangeAtom = atom(
-  null,
-  (get, set, changes: EdgeChange[]) => {
-    const edges = get(swEdgesAtom);
-    set(swEdgesAtom, applyEdgeChanges(changes, edges) as SWWorkflowEdge[]);
-    set(swHasUnsavedChangesAtom, true);
-  },
+	null,
+	(get, set, changes: EdgeChange<SWWorkflowEdge>[]) => {
+		const edges = get(swEdgesAtom);
+		set(swEdgesAtom, applyEdgeChanges(changes, edges) as SWWorkflowEdge[]);
+		set(swHasUnsavedChangesAtom, true);
+	},
 );
 
 // ---------------------------------------------------------------------------
@@ -116,39 +115,39 @@ export const swOnEdgesChangeAtom = atom(
 
 /** Load a SW 1.0 workflow into the editor (decompile to visual graph) */
 export const swLoadWorkflowAtom = atom(
-  null,
-  (_get, set, workflow: Workflow) => {
-    const graph = decompileWorkflowToGraph(workflow);
-    set(swSpecAtom, workflow);
-    set(swNodesAtom, graph.nodes as SWWorkflowNode[]);
-    set(swEdgesAtom, graph.edges as SWWorkflowEdge[]);
-    set(swWorkflowNameAtom, workflow.document.title || workflow.document.name);
-    set(swWorkflowDescriptionAtom, workflow.document.summary || "");
-    set(swWorkflowNamespaceAtom, workflow.document.namespace);
-    set(swWorkflowVersionAtom, workflow.document.version);
-    set(swHasUnsavedChangesAtom, false);
-  },
+	null,
+	(_get, set, workflow: Workflow) => {
+		const graph = decompileWorkflowToGraph(workflow);
+		set(swSpecAtom, workflow);
+		set(swNodesAtom, graph.nodes as unknown as SWWorkflowNode[]);
+		set(swEdgesAtom, graph.edges as unknown as SWWorkflowEdge[]);
+		set(swWorkflowNameAtom, workflow.document.title || workflow.document.name);
+		set(swWorkflowDescriptionAtom, workflow.document.summary || "");
+		set(swWorkflowNamespaceAtom, workflow.document.namespace);
+		set(swWorkflowVersionAtom, workflow.document.version);
+		set(swHasUnsavedChangesAtom, false);
+	},
 );
 
 /** Compile the current visual graph to a SW 1.0 workflow document */
 export const swCompileWorkflowAtom = atom((get) => {
-  const nodes = get(swNodesAtom) as unknown as WorkflowNode[];
-  const edges = get(swEdgesAtom) as unknown as WorkflowEdge[];
-  const name = get(swWorkflowNameAtom);
-  const namespace = get(swWorkflowNamespaceAtom);
-  const version = get(swWorkflowVersionAtom);
-  const description = get(swWorkflowDescriptionAtom);
+	const nodes = get(swNodesAtom) as unknown as WorkflowNode[];
+	const edges = get(swEdgesAtom) as unknown as WorkflowEdge[];
+	const name = get(swWorkflowNameAtom);
+	const namespace = get(swWorkflowNamespaceAtom);
+	const version = get(swWorkflowVersionAtom);
+	const description = get(swWorkflowDescriptionAtom);
 
-  return compileGraphToWorkflow(
-    { nodes, edges },
-    {
-      namespace,
-      name,
-      version,
-      title: name,
-      summary: description || undefined,
-    },
-  );
+	return compileGraphToWorkflow(
+		{ nodes, edges },
+		{
+			namespace,
+			name,
+			version,
+			title: name,
+			summary: description || undefined,
+		},
+	);
 });
 
 // ---------------------------------------------------------------------------
@@ -156,31 +155,103 @@ export const swCompileWorkflowAtom = atom((get) => {
 // ---------------------------------------------------------------------------
 
 export interface TaskPaletteItem {
-  type: TaskType;
-  label: string;
-  description: string;
-  icon: string;
-  category: "control-flow" | "data" | "integration" | "error-handling";
+	type: TaskType;
+	label: string;
+	description: string;
+	icon: string;
+	category: "control-flow" | "data" | "integration" | "error-handling";
 }
 
 export const TASK_PALETTE: TaskPaletteItem[] = [
-  // Integration
-  { type: "call", label: "Call", description: "HTTP, gRPC, or function call", icon: "Globe", category: "integration" },
-  { type: "run", label: "Run", description: "Shell, script, container, or child workflow", icon: "Zap", category: "integration" },
-  { type: "emit", label: "Emit", description: "Publish an event", icon: "Send", category: "integration" },
-  { type: "listen", label: "Listen", description: "Wait for an event", icon: "Headphones", category: "integration" },
+	// Integration
+	{
+		type: "call",
+		label: "Call",
+		description: "HTTP, gRPC, or function call",
+		icon: "Globe",
+		category: "integration",
+	},
+	{
+		type: "run",
+		label: "Run",
+		description: "Shell, script, container, or child workflow",
+		icon: "Zap",
+		category: "integration",
+	},
+	{
+		type: "emit",
+		label: "Emit",
+		description: "Publish an event",
+		icon: "Send",
+		category: "integration",
+	},
+	{
+		type: "listen",
+		label: "Listen",
+		description: "Wait for an event",
+		icon: "Headphones",
+		category: "integration",
+	},
 
-  // Control flow
-  { type: "switch", label: "Switch", description: "Conditional branching", icon: "GitBranch", category: "control-flow" },
-  { type: "for", label: "For", description: "Iterate over items", icon: "Repeat", category: "control-flow" },
-  { type: "fork", label: "Fork", description: "Parallel execution", icon: "GitFork", category: "control-flow" },
-  { type: "wait", label: "Wait", description: "Delay execution", icon: "Clock", category: "control-flow" },
-  { type: "do", label: "Do", description: "Sequential sub-tasks", icon: "Layers", category: "control-flow" },
+	// Control flow
+	{
+		type: "switch",
+		label: "Switch",
+		description: "Conditional branching",
+		icon: "GitBranch",
+		category: "control-flow",
+	},
+	{
+		type: "for",
+		label: "For",
+		description: "Iterate over items",
+		icon: "Repeat",
+		category: "control-flow",
+	},
+	{
+		type: "fork",
+		label: "Fork",
+		description: "Parallel execution",
+		icon: "GitFork",
+		category: "control-flow",
+	},
+	{
+		type: "wait",
+		label: "Wait",
+		description: "Delay execution",
+		icon: "Clock",
+		category: "control-flow",
+	},
+	{
+		type: "do",
+		label: "Do",
+		description: "Sequential sub-tasks",
+		icon: "Layers",
+		category: "control-flow",
+	},
 
-  // Data
-  { type: "set", label: "Set", description: "Set variables", icon: "Variable", category: "data" },
+	// Data
+	{
+		type: "set",
+		label: "Set",
+		description: "Set variables",
+		icon: "Variable",
+		category: "data",
+	},
 
-  // Error handling
-  { type: "try", label: "Try/Catch", description: "Error handling", icon: "Shield", category: "error-handling" },
-  { type: "raise", label: "Raise", description: "Throw an error", icon: "OctagonAlert", category: "error-handling" },
+	// Error handling
+	{
+		type: "try",
+		label: "Try/Catch",
+		description: "Error handling",
+		icon: "Shield",
+		category: "error-handling",
+	},
+	{
+		type: "raise",
+		label: "Raise",
+		description: "Throw an error",
+		icon: "OctagonAlert",
+		category: "error-handling",
+	},
 ];

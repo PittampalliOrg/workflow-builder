@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useObservabilityTrace } from "@/hooks/use-observability-trace";
 import { useObservabilityTraces } from "@/hooks/use-observability-traces";
+import { getPhoenixTraceUrl } from "@/lib/observability/phoenix";
 import type {
 	ObservabilityTraceDetails,
 	ObservabilityTraceSummary,
@@ -223,10 +224,7 @@ export function RunTraceTab({
 	return (
 		<>
 			{agentRuns.length > 0 && (
-				<AgentProgressPanel
-					agentRuns={agentRuns}
-					executionId={executionId}
-				/>
+				<AgentProgressPanel agentRuns={agentRuns} executionId={executionId} />
 			)}
 			<div className="grid gap-3 xl:grid-cols-[280px_1fr]">
 				<div className="overflow-hidden rounded-md border bg-background">
@@ -346,13 +344,12 @@ export function RunTraceTab({
 										<Download className="mr-2 h-3.5 w-3.5" />
 										Raw JSON
 									</Button>
-									<Button
-										asChild
-										size="sm"
-										variant="outline"
-									>
+									<Button asChild size="sm" variant="outline">
 										<a
-											href={`https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDox/traces/${activeSummary.traceId}`}
+											href={getPhoenixTraceUrl(
+												activeSummary.traceId,
+												activeSummary.serviceNames,
+											)}
 											target="_blank"
 											rel="noopener noreferrer"
 										>

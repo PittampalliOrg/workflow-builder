@@ -41,26 +41,38 @@ def _init_otel() -> None:
         provider.add_span_processor(BatchSpanProcessor(
             OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
         ))
-        # Phoenix direct exporter: sends with project name header so Phoenix
-        # classifies spans correctly with OpenInference semantics (LLM/TOOL icons)
-        phoenix_url = os.environ.get(
-            "PHOENIX_COLLECTOR_ENDPOINT",
-            "http://arize-phoenix.observability.svc.cluster.local:4317",
-        )
-        try:
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
-                OTLPSpanExporter as GRPCSpanExporter,
+        phoenix_direct_export_enabled = os.environ.get(
+            "PHOENIX_DIRECT_EXPORT_ENABLED", ""
+        ).lower() in {"1", "true", "yes"}
+        if phoenix_direct_export_enabled:
+            phoenix_url = os.environ.get(
+                "PHOENIX_COLLECTOR_ENDPOINT",
+                "http://arize-phoenix.observability.svc.cluster.local:4317",
             )
-            provider.add_span_processor(BatchSpanProcessor(
-                GRPCSpanExporter(
-                    endpoint=phoenix_url,
-                    insecure=True,
-                    headers=(("phoenix-project-name", "dapr-swe"),),
+            try:
+                from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
+                    OTLPSpanExporter as GRPCSpanExporter,
                 )
-            ))
-            logging.getLogger(__name__).info("Phoenix gRPC exporter enabled → %s (project=dapr-swe)", phoenix_url)
-        except Exception as phoenix_exc:
-            logging.getLogger(__name__).warning("Phoenix exporter failed: %s", phoenix_exc)
+
+                provider.add_span_processor(BatchSpanProcessor(
+                    GRPCSpanExporter(
+                        endpoint=phoenix_url,
+                        insecure=True,
+                        headers=(("phoenix-project-name", "dapr-swe"),),
+                    )
+                ))
+                logging.getLogger(__name__).info(
+                    "Phoenix gRPC exporter enabled → %s (project=dapr-swe)",
+                    phoenix_url,
+                )
+            except Exception as phoenix_exc:
+                logging.getLogger(__name__).warning(
+                    "Phoenix exporter failed: %s", phoenix_exc
+                )
+        else:
+            logging.getLogger(__name__).info(
+                "Phoenix direct exporter disabled; relying on OTEL collector"
+            )
         trace.set_tracer_provider(provider)
 
         # Enable dapr-agents native instrumentation (LLM spans, tool spans,
@@ -161,7 +173,8 @@ app.include_router(github_router)
 if _otel_ready:
     try:
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-        FastAPIInstrumentor.instrument_app(app)
+        # Exclude probe endpoints from tracing so Phoenix focuses on workflow traffic.
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="healthz,readyz")
         logger.info("FastAPI OTEL instrumentation applied")
     except Exception as exc:
         logger.warning("FastAPI OTEL instrumentation failed: %s", exc)

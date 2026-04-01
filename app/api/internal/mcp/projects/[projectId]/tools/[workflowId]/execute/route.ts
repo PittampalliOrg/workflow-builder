@@ -196,16 +196,36 @@ export async function POST(request: Request, { params }: RouteParams) {
 	const nodes = workflow.nodes as unknown as any[];
 	const edges = workflow.edges as unknown as any[];
 	const existingSpec = (workflow as Record<string, unknown>).spec;
+	const executionIr = buildWorkflowExecutionIR({
+		workflowId: workflow.id,
+		name: workflow.name,
+		description: workflow.description || undefined,
+		author: "mcp-tool",
+		nodes,
+		edges,
+		spec: existingSpec,
+		specVersion:
+			((workflow as Record<string, unknown>).specVersion as
+				| string
+				| null
+				| undefined) ?? null,
+	});
 
 	// Compile to SW 1.0 document
-	const { compileGraphToWorkflow } = await import("@/lib/serverless-workflow/compile");
+	const { compileGraphToWorkflow } = await import(
+		"@/lib/serverless-workflow/compile"
+	);
 	const { isSWWorkflow } = await import("@/lib/workflow-contract");
 	const safeName = workflow.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
 	const swWorkflow = isSWWorkflow(existingSpec)
 		? existingSpec
 		: compileGraphToWorkflow(
 				{ nodes, edges },
-				{ name: safeName, title: workflow.name, summary: workflow.description || undefined },
+				{
+					name: safeName,
+					title: workflow.name,
+					summary: workflow.description || undefined,
+				},
 			);
 
 	// Create execution record (links to monitor UI).

@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { SpanDetailsPanel } from "@/components/observability/span-details-panel";
 import { TraceStatusBadge } from "@/components/observability/trace-status-badge";
 import { TraceTimeline } from "@/components/observability/trace-timeline";
+import { getPhoenixTraceUrl } from "@/lib/observability/phoenix";
 import { SidebarToggle } from "@/components/sidebar-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -113,7 +114,7 @@ export default function TraceDetailPage() {
 					</Button>
 					<Button asChild size="sm" variant="outline">
 						<a
-							href={`https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDox/traces/${traceId}`}
+							href={getPhoenixTraceUrl(traceId, trace.trace.serviceNames)}
 							target="_blank"
 							rel="noopener noreferrer"
 						>
