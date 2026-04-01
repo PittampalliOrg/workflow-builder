@@ -8,6 +8,10 @@ import type {
 import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { nanoid } from "nanoid";
+import type {
+	WorkflowAuthoringDiagnostics,
+	WorkflowGenerationDraftSettings,
+} from "./ai/workflow-authoring/types";
 import { api } from "./api-client";
 import type { SWWorkflow } from "./serverless-workflow/sdk";
 import type { AgentNodeProgress } from "./types/durable-timeline";
@@ -92,14 +96,12 @@ export type WorkflowAiMessage = {
 	updatedAt: string;
 };
 
-export type WorkflowAiCreateIssueSet = {
-	errors: unknown[];
-	warnings: unknown[];
-};
+export type WorkflowAiCreateIssueSet = WorkflowAuthoringDiagnostics;
 
 export type WorkflowAiCreateDraftState = {
 	workflowId: string;
 	prompt: string;
+	settings: WorkflowGenerationDraftSettings;
 	status: "generating" | "staged" | "applying" | "error";
 	originalName: string;
 	originalNodes: WorkflowNode[];

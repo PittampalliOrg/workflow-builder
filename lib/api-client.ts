@@ -13,6 +13,10 @@ import type {
 } from "./types/app-connection";
 import type { IntegrationDefinition } from "./actions/types";
 import type { WorkflowAiMentionRef } from "./ai/workflow-ai-tools";
+import type {
+	WorkflowAuthoringContextPayload,
+	WorkflowGenerationInput,
+} from "./ai/workflow-authoring/types";
 import type { McpInputProperty } from "./mcp/types";
 import type {
 	ObservabilityEntitiesResponse,
@@ -44,6 +48,13 @@ import type { WorkflowEdge, WorkflowNode } from "./workflow-store";
 
 // Workflow data types
 export type WorkflowVisibility = "private" | "public";
+
+export type WorkflowGenerationIssues = {
+	errors: Array<{ message: string; path?: string; code?: string }>;
+	warnings: Array<{ message: string; code?: string }>;
+	repairActions?: string[];
+	unsupportedRequirements?: string[];
+};
 
 export type WorkflowData = {
 	id?: string;
@@ -1018,15 +1029,11 @@ export const workflowApi = {
 			body: JSON.stringify(input),
 		}),
 
-	generateFromPrompt: (input: {
-		prompt: string;
-		name?: string;
-		description?: string;
-	}) =>
+	generateFromPrompt: (input: WorkflowGenerationInput) =>
 		apiCall<
 			WorkflowData & {
 				spec: unknown;
-				issues: { errors: unknown[]; warnings: unknown[] };
+				issues: WorkflowGenerationIssues;
 			}
 		>("/api/workflows/generate-from-prompt", {
 			method: "POST",
@@ -1091,6 +1098,68 @@ export const workflowApi = {
 			}, AUTOSAVE_DELAY);
 		};
 	})(),
+};
+
+export const workflowAuthoringApi = {
+	getContext: (input?: Partial<WorkflowGenerationInput>) => {
+		const params = new URLSearchParams();
+		if (input?.prompt) {
+			params.set("prompt", input.prompt);
+		}
+		if (input?.complexity) {
+			params.set("complexity", input.complexity);
+		}
+		if (typeof input?.requiresPullRequest === "boolean") {
+			params.set(
+				"requiresPullRequest",
+				input.requiresPullRequest ? "true" : "false",
+			);
+		}
+		if (typeof input?.preferAvailableMcp === "boolean") {
+			params.set(
+				"preferAvailableMcp",
+				input.preferAvailableMcp ? "true" : "false",
+			);
+		}
+		if (input?.repoOwner) {
+			params.set("repoOwner", input.repoOwner);
+		}
+		if (input?.repoName) {
+			params.set("repoName", input.repoName);
+		}
+		if (typeof input?.issueNumber === "number") {
+			params.set("issueNumber", String(input.issueNumber));
+		}
+		const query = params.toString();
+		return apiCall<WorkflowAuthoringContextPayload>(
+			`/api/workflow-authoring/context${query ? `?${query}` : ""}`,
+		);
+	},
+
+	validate: (spec: unknown) =>
+		apiCall<{
+			valid: boolean;
+			issues: WorkflowGenerationIssues["errors"];
+		}>("/api/workflow-authoring/validate", {
+			method: "POST",
+			body: JSON.stringify({ spec }),
+		}),
+
+	repair: (spec: unknown) =>
+		apiCall<{
+			spec: unknown;
+			repairActions: string[];
+			issues: WorkflowGenerationIssues["errors"];
+		}>("/api/workflow-authoring/repair", {
+			method: "POST",
+			body: JSON.stringify({ spec }),
+		}),
+
+	preview: (input: { spec: unknown; name?: string; description?: string }) =>
+		apiCall<WorkflowData>("/api/workflow-authoring/preview", {
+			method: "POST",
+			body: JSON.stringify(input),
+		}),
 };
 
 // Dapr Workflow API
@@ -2335,5 +2404,6 @@ export const api = {
 	secrets: secretsApi,
 	user: userApi,
 	workflow: workflowApi,
+	workflowAuthoring: workflowAuthoringApi,
 	workflowDashboard: workflowDashboardApi,
 };

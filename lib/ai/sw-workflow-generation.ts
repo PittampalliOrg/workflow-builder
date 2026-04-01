@@ -3,11 +3,19 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
+import {
+	buildWorkflowGenerationBrief,
+	getWorkflowAuthoringContext,
+} from "@/lib/ai/workflow-authoring/context";
+import type {
+	WorkflowAuthoringCapability,
+	WorkflowGenerationInput,
+} from "@/lib/ai/workflow-authoring/types";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
 import { normalizeWorkflowToSwCutover } from "@/lib/serverless-workflow/cutover";
-import { FUNCTION_CATALOG } from "@/lib/serverless-workflow/function-catalog";
 import {
 	parseWorkflowDefinition,
+	repairWorkflowDefinitionShape,
 	validateWorkflowDefinition,
 	type SWWorkflow,
 } from "@/lib/serverless-workflow/sdk";
@@ -15,20 +23,6 @@ import {
 const WorkflowTextEnvelopeSchema = z.object({
 	workflowText: z.string().min(1),
 });
-
-const MULTI_AGENT_REFERENCE = `Example multi-agent pattern:
-- initialize input and working context with a set task
-- call specialized agents in sequence
-- evaluate or review outputs with a call task
-- use switch to branch on approval/refinement
-- use for or do for repeated refinement or step execution
-- emit events or shape output at the end`;
-
-function buildFunctionCatalogPrompt(): string {
-	return FUNCTION_CATALOG.map(
-		(fn) => `- ${fn.name}: ${fn.description} [${fn.category}]`,
-	).join("\n");
-}
 
 async function getAi(): Promise<{
 	model: Parameters<typeof generateObject>[0]["model"];
@@ -87,37 +81,137 @@ function stripCodeFences(text: string): string {
 		.trim();
 }
 
-function buildSystemPrompt(): string {
-	return `You generate CNCF Serverless Workflow 1.0 workflow definitions for a Dapr-based multi-agent automation platform.
-
-Rules:
-- Output only a complete workflow definition as YAML or JSON text, with no markdown commentary.
-- Use document.dsl: "1.0.0".
-- Prefer YAML unless JSON is significantly clearer.
-- The workflow must be valid CNCF Serverless Workflow 1.0.
-- Do not invent placeholder entries under use.functions. If you reference a platform function by name in a call task, omit use.functions unless you can provide the full function definition.
-- Use only supported task types: call, set, switch, wait, emit, for, do, fork, try, run, listen, raise.
-- Favor call, set, switch, for, do, and emit for AI-agent workflows.
-- Reference platform functions by name in call tasks. Do not invent raw URLs.
-- Use workflow context expressions consistently, for example \${ .plan }, \${ .review }, or \${ .input.issue_number }.
-- Give tasks stable names like initialize, plan, implementStep, review, commitPR.
-- Include output.as when it helps surface key results like PR URLs or review status.
-- Keep the workflow practical for graph visualization: avoid deeply nested branches unless needed.
-
-Available platform functions:
-${buildFunctionCatalogPrompt()}
-
-${MULTI_AGENT_REFERENCE}
-`;
+function renderFunctionsPrompt(
+	functions: Awaited<
+		ReturnType<typeof getWorkflowAuthoringContext>
+	>["functions"],
+): string {
+	return functions
+		.map((fn) => {
+			const inputs =
+				fn.requiredInputs.length > 0 ? fn.requiredInputs.join(", ") : "none";
+			const outputs = fn.outputs.length > 0 ? fn.outputs.join(", ") : "none";
+			const example =
+				fn.examplePayload && Object.keys(fn.examplePayload).length > 0
+					? ` Example payload: ${JSON.stringify(fn.examplePayload)}`
+					: "";
+			return `- ${fn.name} [${fn.category}]: ${fn.description}
+  Use when: ${fn.whenToUse}
+  Avoid when: ${fn.avoidWhen}
+  Required inputs: ${inputs}
+  Typical outputs: ${outputs}
+  Long running: ${fn.longRunning ? "yes" : "no"}
+  Idempotent: ${fn.idempotent ? "yes" : "no"}${example}`;
+		})
+		.join("\n");
 }
 
-export async function generateSwWorkflowWithRepairs(input: {
-	prompt: string;
-	maxAttempts?: number;
-}): Promise<{ spec: SWWorkflow; warnings: Array<{ message: string }> }> {
+function renderCapabilitiesPrompt(
+	capabilities: WorkflowAuthoringCapability[],
+	preferAvailableMcp: boolean,
+): string {
+	if (!preferAvailableMcp) {
+		return "Project MCP capabilities are intentionally ignored for this generation request.";
+	}
+	if (capabilities.length === 0) {
+		return "No enabled project MCP capabilities are available. Do not invent external MCP tool calls.";
+	}
+	return `Enabled project MCP capabilities:
+${capabilities
+	.map(
+		(capability) =>
+			`- ${capability.displayName} [${capability.sourceType}]${
+				capability.description ? `: ${capability.description}` : ""
+			}`,
+	)
+	.join("\n")}
+
+These capabilities may inform downstream agent behavior, but they are not direct SW call targets unless a catalog function exposes them.`;
+}
+
+function renderExamplesPrompt(
+	examples: Awaited<ReturnType<typeof getWorkflowAuthoringContext>>["examples"],
+): string {
+	return examples
+		.map(
+			(example) =>
+				`## ${example.name}
+Intent: ${example.intent}
+${example.workflow}`,
+		)
+		.join("\n\n");
+}
+
+function buildSystemPrompt(
+	context: Awaited<ReturnType<typeof getWorkflowAuthoringContext>>,
+	preferAvailableMcp: boolean,
+): string {
+	return `You generate CNCF Serverless Workflow 1.0 definitions for workflow-builder.
+
+Follow this authoring guide exactly:
+${context.guide}
+
+Available platform functions:
+${renderFunctionsPrompt(context.functions)}
+
+Project capability context:
+${renderCapabilitiesPrompt(context.capabilities, preferAvailableMcp)}
+
+Canonical valid examples:
+${renderExamplesPrompt(context.examples)}
+
+Return only workflow YAML or JSON with no markdown commentary.`;
+}
+
+function collectUnsupportedRequirements(
+	input: WorkflowGenerationInput,
+	context: Awaited<ReturnType<typeof getWorkflowAuthoringContext>>,
+): string[] {
+	const unsupported: string[] = [];
+	const normalizedPrompt = input.prompt.toLowerCase();
+	if (
+		input.preferAvailableMcp !== false &&
+		normalizedPrompt.includes("mcp") &&
+		context.capabilities.length === 0
+	) {
+		unsupported.push(
+			"The prompt references MCP capabilities, but this project has no enabled MCP connections.",
+		);
+	}
+	if (
+		input.requiresPullRequest === false &&
+		/(\bpr\b|pull request)/.test(normalizedPrompt)
+	) {
+		unsupported.push(
+			"The prompt requests a pull request, but the structured settings say PR creation is not required.",
+		);
+	}
+	return unsupported;
+}
+
+export async function generateSwWorkflowWithRepairs(
+	input: WorkflowGenerationInput & {
+		projectId: string;
+		maxAttempts?: number;
+	},
+): Promise<{
+	spec: SWWorkflow;
+	warnings: Array<{ message: string; code?: string }>;
+	repairActions: string[];
+	unsupportedRequirements: string[];
+}> {
 	const maxAttempts = input.maxAttempts ?? 3;
 	const ai = await getAi();
-	const system = buildSystemPrompt();
+	const context = await getWorkflowAuthoringContext({
+		projectId: input.projectId,
+		generation: input,
+	});
+	const unsupportedRequirements = collectUnsupportedRequirements(
+		input,
+		context,
+	);
+	const system = buildSystemPrompt(context, input.preferAvailableMcp !== false);
+	const brief = buildWorkflowGenerationBrief(input);
 
 	let lastWorkflowText = "";
 	let lastErrors = "";
@@ -125,8 +219,15 @@ export async function generateSwWorkflowWithRepairs(input: {
 	for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
 		const prompt =
 			attempt === 1
-				? input.prompt
+				? `Workflow request:
+${brief}
+
+User prompt:
+${input.prompt}`
 				: `Fix the Serverless Workflow definition.
+
+Workflow request:
+${brief}
 
 Validation errors:
 ${lastErrors}
@@ -146,15 +247,18 @@ ${lastWorkflowText}`;
 
 		try {
 			const parsed = parseWorkflowDefinition(workflowText);
+			const repaired = repairWorkflowDefinitionShape(parsed);
 			const normalized = normalizeWorkflowToSwCutover({
 				name:
+					input.name?.trim() ||
 					parsed.document.title?.trim() ||
 					parsed.document.name?.trim() ||
 					"Generated Workflow",
-				description: parsed.document.summary?.trim() || null,
+				description:
+					input.description?.trim() || parsed.document.summary?.trim() || null,
 				nodes: [],
 				edges: [],
-				spec: parsed,
+				spec: repaired.workflow,
 				specVersion: null,
 			});
 			const spec = normalized.spec as unknown as SWWorkflow;
@@ -162,14 +266,23 @@ ${lastWorkflowText}`;
 			if (issues.length === 0) {
 				return {
 					spec,
-					warnings: normalized.needsMigration
-						? [
-								{
-									message:
-										"Normalized generated workflow for platform compatibility.",
-								},
-							]
-						: [],
+					warnings: [
+						...(normalized.needsMigration
+							? [
+									{
+										message:
+											"Normalized generated workflow for platform compatibility.",
+										code: "NORMALIZED_WORKFLOW",
+									},
+								]
+							: []),
+						...unsupportedRequirements.map((message) => ({
+							message,
+							code: "UNSUPPORTED_REQUIREMENT",
+						})),
+					],
+					repairActions: repaired.actions,
+					unsupportedRequirements,
 				};
 			}
 			lastErrors = issues

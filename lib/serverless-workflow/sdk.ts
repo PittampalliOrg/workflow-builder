@@ -12,15 +12,104 @@ export type SWValidationIssue = {
 	message: string;
 };
 
-function repairCommonWorkflowShape(workflow: unknown): unknown {
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function repairTaskItems(
+	tasks: unknown,
+	actions: string[],
+	path = "/do",
+): void {
+	if (!Array.isArray(tasks)) {
+		return;
+	}
+
+	for (const [index, item] of tasks.entries()) {
+		if (!isRecord(item)) {
+			continue;
+		}
+		const [taskName, taskValue] = Object.entries(item)[0] ?? [];
+		if (!taskName || !isRecord(taskValue)) {
+			continue;
+		}
+
+		const taskPath = `${path}/${index}/${taskName}`;
+		const forConfig = isRecord(taskValue.for) ? taskValue.for : null;
+		if (
+			forConfig &&
+			Array.isArray(forConfig.do) &&
+			!Array.isArray(taskValue.do)
+		) {
+			taskValue.do = forConfig.do;
+			delete forConfig.do;
+			actions.push(`Moved nested for.do array to ${taskPath}.do`);
+		}
+
+		const emitEvent =
+			isRecord(taskValue.emit) && isRecord(taskValue.emit.event)
+				? taskValue.emit.event
+				: null;
+		if (emitEvent && !("with" in emitEvent)) {
+			taskValue.emit = {
+				event: {
+					with: emitEvent,
+				},
+			};
+			actions.push(`Wrapped ${taskPath}.emit.event fields in emit.event.with`);
+		}
+
+		if (Array.isArray(taskValue.switch)) {
+			const repairedCases = taskValue.switch.flatMap((caseValue) => {
+				if (!isRecord(caseValue)) {
+					return [caseValue];
+				}
+				const entries = Object.entries(caseValue);
+				if (entries.length <= 1) {
+					return [caseValue];
+				}
+				actions.push(
+					`Split multi-key switch case at ${taskPath}.switch into one-case entries`,
+				);
+				return entries.map(([key, value]) => ({ [key]: value }));
+			});
+			taskValue.switch = repairedCases;
+		}
+
+		if (Array.isArray(taskValue.do)) {
+			repairTaskItems(taskValue.do, actions, `${taskPath}/do`);
+		}
+		if (Array.isArray(taskValue.try)) {
+			repairTaskItems(taskValue.try, actions, `${taskPath}/try`);
+		}
+		if (isRecord(taskValue.catch) && Array.isArray(taskValue.catch.do)) {
+			repairTaskItems(taskValue.catch.do, actions, `${taskPath}/catch/do`);
+		}
+		if (isRecord(taskValue.fork) && Array.isArray(taskValue.fork.branches)) {
+			for (const [branchIndex, branch] of taskValue.fork.branches.entries()) {
+				repairTaskItems(
+					branch,
+					actions,
+					`${taskPath}/fork/branches/${branchIndex}`,
+				);
+			}
+		}
+	}
+}
+
+export function repairWorkflowDefinitionShape(workflow: unknown): {
+	workflow: unknown;
+	actions: string[];
+} {
 	if (!workflow || typeof workflow !== "object") {
-		return workflow;
+		return { workflow, actions: [] };
 	}
 
 	const cloned = JSON.parse(JSON.stringify(workflow)) as Record<
 		string,
 		unknown
 	>;
+	const actions: string[] = [];
 	const document =
 		cloned.document && typeof cloned.document === "object"
 			? (cloned.document as Record<string, unknown>)
@@ -32,13 +121,16 @@ function repairCommonWorkflowShape(workflow: unknown): unknown {
 		typeof document.summary !== "string"
 	) {
 		document.summary = document.description;
+		actions.push("Converted document.description to document.summary");
 	}
 
 	if (document && "description" in document) {
 		delete document.description;
 	}
 
-	return cloned;
+	repairTaskItems(cloned.do, actions);
+
+	return { workflow: cloned, actions };
 }
 
 function parseValidationMessage(message: string): SWValidationIssue[] {
@@ -72,7 +164,7 @@ export function validateWorkflowDefinition(
 	workflow: unknown,
 ): SWValidationIssue[] {
 	try {
-		validate("Workflow", repairCommonWorkflowShape(workflow));
+		validate("Workflow", repairWorkflowDefinitionShape(workflow).workflow);
 		return [];
 	} catch (error) {
 		return parseValidationMessage(
@@ -95,7 +187,7 @@ export function isWorkflowDefinition(
 }
 
 export function normalizeWorkflowDefinition(workflow: unknown): SWWorkflow {
-	const repairedWorkflow = repairCommonWorkflowShape(workflow);
+	const repairedWorkflow = repairWorkflowDefinitionShape(workflow).workflow;
 	const issues = validateWorkflowDefinition(repairedWorkflow);
 	if (issues.length > 0) {
 		throw new Error(

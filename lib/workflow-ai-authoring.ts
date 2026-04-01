@@ -1,5 +1,9 @@
 "use client";
 
+import type {
+	WorkflowGenerationComplexity,
+	WorkflowGenerationDraftSettings,
+} from "@/lib/ai/workflow-authoring/types";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 export const WORKFLOW_AI_CREATE_SEED_KEY = "workflow-ai-create-seed";
@@ -7,7 +11,46 @@ export const WORKFLOW_AI_CREATE_SEED_KEY = "workflow-ai-create-seed";
 export type WorkflowAiCreateSeed = {
 	workflowId: string;
 	prompt: string;
+	settings?: Partial<WorkflowGenerationDraftSettings>;
 };
+
+function inferWorkflowGenerationComplexity(
+	prompt: string,
+): WorkflowGenerationComplexity {
+	const normalized = prompt.toLowerCase();
+	if (
+		normalized.includes("multi-agent") ||
+		normalized.includes("multi agent") ||
+		normalized.includes("review loop") ||
+		normalized.includes("parallel") ||
+		normalized.includes("fork")
+	) {
+		return "multi_agent";
+	}
+	if (
+		normalized.includes("simple") ||
+		normalized.includes("minimal") ||
+		normalized.includes("basic")
+	) {
+		return "simple";
+	}
+	return "standard";
+}
+
+export function buildDefaultWorkflowGenerationDraftSettings(
+	prompt: string,
+	overrides?: Partial<WorkflowGenerationDraftSettings>,
+): WorkflowGenerationDraftSettings {
+	return {
+		complexity:
+			overrides?.complexity ?? inferWorkflowGenerationComplexity(prompt),
+		requiresPullRequest: overrides?.requiresPullRequest ?? true,
+		preferAvailableMcp: overrides?.preferAvailableMcp ?? true,
+		repoOwner: overrides?.repoOwner ?? "",
+		repoName: overrides?.repoName ?? "",
+		issueNumber: overrides?.issueNumber ?? "",
+	};
+}
 
 export function readWorkflowAiCreateSeed(): WorkflowAiCreateSeed | null {
 	if (typeof window === "undefined") {
@@ -30,6 +73,7 @@ export function readWorkflowAiCreateSeed(): WorkflowAiCreateSeed | null {
 		return {
 			workflowId: parsed.workflowId,
 			prompt: parsed.prompt,
+			settings: parsed.settings,
 		};
 	} catch {
 		return null;
