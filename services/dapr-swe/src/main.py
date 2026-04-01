@@ -32,6 +32,9 @@ def _init_otel() -> None:
         resource = Resource.create({
             "service.name": os.environ.get("OTEL_SERVICE_NAME", "dapr-swe"),
             "service.namespace": "workflow-builder",
+            # OpenInference project name - Phoenix uses this to route spans
+            # to a named project with LLM/TOOL/CHAIN classification
+            "openinference.project.name": "dapr-swe",
         })
         provider = TracerProvider(resource=resource)
         # Primary exporter: OTEL Collector (forwards to Tempo + Phoenix)
