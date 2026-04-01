@@ -35,6 +35,7 @@ import {
 	Zap,
 } from "lucide-react";
 import { memo } from "react";
+import type { CSSProperties } from "react";
 import {
 	Node,
 	NodeDescription,
@@ -93,12 +94,19 @@ function makeTaskNode(
 	iconColor: string,
 	options?: {
 		handles?: { target: boolean; source: boolean };
-		sources?: Array<{
-			id: string;
-			label: string;
-			position: typeof Position.Right;
-			style: React.CSSProperties;
-		}>;
+		sources?:
+			| Array<{
+					id: string;
+					label: string;
+					position: typeof Position.Right;
+					style: CSSProperties;
+			  }>
+			| ((config: Record<string, unknown>) => Array<{
+					id: string;
+					label: string;
+					position: typeof Position.Right;
+					style: CSSProperties;
+			  }>);
 		subtitle?: (config: Record<string, unknown>) => string | undefined;
 	},
 ) {
@@ -115,6 +123,10 @@ function makeTaskNode(
 		const status = data.status;
 		const nodeStatus = status === "skipped" ? "idle" : status;
 		const handles = options?.handles ?? { target: true, source: true };
+		const sources =
+			typeof options?.sources === "function"
+				? options.sources(config)
+				: options?.sources;
 
 		return (
 			<Node
@@ -124,11 +136,7 @@ function makeTaskNode(
 					data.enabled === false && "opacity-50",
 				)}
 				data-testid={`sw-${displayName.toLowerCase()}-node-${id}`}
-				handles={
-					options?.sources
-						? { target: handles.target, sources: options.sources }
-						: handles
-				}
+				handles={sources ? { target: handles.target, sources } : handles}
 				runnable
 				selected={selected}
 				status={nodeStatus}
@@ -148,6 +156,36 @@ function makeTaskNode(
 	});
 	TaskNode.displayName = `${displayName}Node`;
 	return TaskNode;
+}
+
+export function buildSwitchSourceHandles(config: Record<string, unknown>) {
+	const rawCases = Array.isArray(config.switch)
+		? (config.switch as Array<Record<string, unknown>>)
+		: [];
+	const caseNames = rawCases
+		.flatMap((switchCase) => Object.keys(switchCase))
+		.filter((caseName) => caseName.length > 0);
+
+	if (caseNames.length === 0) {
+		return [
+			{
+				id: "case",
+				label: "case",
+				position: Position.Right as const,
+				style: { top: "50%" } as CSSProperties,
+			},
+		];
+	}
+
+	return caseNames.map((caseName, index) => {
+		const topPercent = ((index + 1) / (caseNames.length + 1)) * 100;
+		return {
+			id: caseName,
+			label: caseName,
+			position: Position.Right as const,
+			style: { top: `${topPercent}%` } as CSSProperties,
+		};
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -197,20 +235,7 @@ export const SetNode = makeTaskNode("Set", Variable, "text-purple-400", {
 
 /** switch task - conditional branching */
 export const SwitchNode = makeTaskNode("Switch", GitBranch, "text-pink-400", {
-	sources: [
-		{
-			id: "true",
-			label: "true",
-			position: Position.Right,
-			style: { top: "35%" },
-		},
-		{
-			id: "false",
-			label: "false",
-			position: Position.Right,
-			style: { top: "65%" },
-		},
-	],
+	sources: buildSwitchSourceHandles,
 	subtitle: (config) => {
 		const cases = config.switch as Array<Record<string, unknown>> | undefined;
 		if (cases) return `${cases.length} case${cases.length !== 1 ? "s" : ""}`;
