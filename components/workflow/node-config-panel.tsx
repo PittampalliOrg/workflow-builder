@@ -74,7 +74,15 @@ import { TimerConfig } from "./config/timer-config";
 import { TransformConfig } from "./config/transform-config";
 import { TriggerConfig } from "./config/trigger-config";
 import { WhileConfig } from "./config/while-config";
+import { SWTaskConfigPanel } from "./config/sw-task-configs";
 import { WorkflowRuns } from "./workflow-runs";
+
+// SW 1.0 task types that use the new config panel
+const SW_TASK_TYPES = new Set([
+	"call", "set", "switch", "wait", "emit", "listen",
+	"for", "fork", "try", "run", "raise", "do",
+	"start", "end",
+]);
 
 // System actions that need integrations (not in plugin registry)
 const SYSTEM_ACTION_INTEGRATIONS: Record<string, IntegrationType> = {
@@ -1085,6 +1093,20 @@ export const PanelInner = () => {
 							currentWorkflowId={currentWorkflowId ?? undefined}
 							disabled={isGenerating || !isOwner}
 							onUpdateConfig={handleUpdateConfig}
+						/>
+					)}
+
+					{/* CNCF Serverless Workflow 1.0 Task Config */}
+					{SW_TASK_TYPES.has(selectedNode.type as string) && (
+						<SWTaskConfigPanel
+							taskType={selectedNode.type as string}
+							config={
+								(selectedNode.data as { taskConfig?: Record<string, unknown> }).taskConfig
+								|| selectedNode.data.config
+								|| {}
+							}
+							onUpdateConfig={handleUpdateConfig}
+							disabled={isGenerating || !isOwner}
 						/>
 					)}
 

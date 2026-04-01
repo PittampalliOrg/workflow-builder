@@ -55,7 +55,7 @@ class OrchestratorConfig:
     DURABLE_AGENT_APP_ID: str = "durable-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     OPENSHELL_LANGGRAPH_APP_ID: str = "openshell-langgraph-observable"
-    OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME: str = "daprAgentRunWorkflowV1"
+    OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME: str = "dapr.langgraph.OpenShellLanggraphObservable.workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"

@@ -1,0 +1,164 @@
+# CNCF Serverless Workflow 1.0
+# Resolve GitHub Issue using Dapr SWE Agents
+#
+# Equivalent of dapr-swe resolve_issue_workflow, expressed as a visual SW 1.0 workflow.
+# Each agent step (plan, develop, review) is a single call task that blocks while
+# the DurableAgent iterates through LLM turns with tool calls internally.
+#
+# Agent execution times:
+#   - initialize: 10-30s (sandbox creation, repo clone)
+#   - plan:       30s-3min (PlannerAgent with read_file, list_directory, execute tools)
+#   - develop:    1-5min per step (DeveloperAgent with write_file, execute tools)
+#   - review:     10-30s (ReviewerAgent analyzing git diff)
+#   - commit-pr:  5-15s (git commit, push, GitHub API)
+
+document:
+  dsl: "1.0.0"
+  namespace: dapr-swe
+  name: resolve-issue
+  version: "1.0.0"
+  title: "Resolve GitHub Issue"
+  summary: >
+    Automated issue resolution using DurableAgent-based agents.
+    Creates a sandbox, plans the implementation, develops each step
+    with tool calls, reviews changes, opens a PR, and notifies.
+
+input:
+  schema:
+    format: json
+    document:
+      type: object
+      properties:
+        owner: { type: string }
+        repo: { type: string }
+        issue_number: { type: integer }
+        title: { type: string }
+        body: { type: string }
+        sender: { type: string }
+      required: [owner, repo, issue_number, title]
+
+do:
+  # 1. Initialize sandbox, clone repo, read AGENTS.md
+  - initialize:
+      call: dapr-swe/initialize
+      with:
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        title: ${ .input.title }
+        body: ${ .input.body }
+      metadata:
+        description: "Create OpenShell sandbox, clone repo (depth=50), configure git identity"
+
+  # 2. Emit sandbox ready event
+  - emitSandboxReady:
+      emit:
+        event:
+          with:
+            type: dapr-swe.sandbox.ready
+            source: /dapr-swe/resolve-issue
+            data:
+              sandbox_id: ${ .initialize.sandbox_id }
+
+  # 3. Plan - run PlannerAgent (multi-turn LLM with read_file, list_directory, execute tools)
+  #    Output: { plan: { summary, steps: [{ title, description, files, complexity }] } }
+  - createPlan:
+      call: dapr-swe/plan
+      with:
+        sandbox_id: "{{@initialize:data.sandbox_id}}"
+        working_dir: "{{@initialize:data.working_dir}}"
+        agents_md: "{{@initialize:data.agents_md}}"
+        github_token: "{{@initialize:data.github_token}}"
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        title: ${ .input.title }
+        body: ${ .input.body }
+      metadata:
+        description: "PlannerAgent: explore codebase, analyze issue, produce structured plan"
+
+  # 4. Emit plan created event
+  - emitPlanCreated:
+      emit:
+        event:
+          with:
+            type: dapr-swe.plan.created
+            source: /dapr-swe/resolve-issue
+            data:
+              summary: ${ .createPlan.summary }
+
+  # 5. Develop - run DeveloperAgent (multi-turn LLM with read_file, write_file, execute tools)
+  #    Implements ALL steps from the plan in a single call
+  - implementChanges:
+      call: dapr-swe/develop
+      with:
+        sandbox_id: "{{@initialize:data.sandbox_id}}"
+        working_dir: "{{@initialize:data.working_dir}}"
+        github_token: "{{@initialize:data.github_token}}"
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        title: ${ .input.title }
+        body: ${ .input.body }
+        plan: "{{@createPlan:data.plan}}"
+      metadata:
+        description: "DeveloperAgent: implement all plan steps with code changes"
+
+  # 6. Review - run ReviewerAgent (LLM analysis of full git diff)
+  #    Output: { approved: bool, feedback: string, suggestions: [] }
+  - reviewChanges:
+      call: dapr-swe/review
+      with:
+        sandbox_id: "{{@initialize:data.sandbox_id}}"
+        working_dir: "{{@initialize:data.working_dir}}"
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        title: ${ .input.title }
+        plan: "{{@createPlan:data.plan}}"
+      metadata:
+        description: "ReviewerAgent: analyze git diff for correctness and completeness"
+
+  # 7. Emit review completed event
+  - emitReviewDone:
+      emit:
+        event:
+          with:
+            type: dapr-swe.review.completed
+            source: /dapr-swe/resolve-issue
+            data:
+              approved: ${ .reviewChanges.approved }
+
+  # 8. Commit & Open PR
+  - commitAndOpenPR:
+      call: dapr-swe/commit-pr
+      with:
+        sandbox_id: "{{@initialize:data.sandbox_id}}"
+        working_dir: "{{@initialize:data.working_dir}}"
+        github_token: "{{@initialize:data.github_token}}"
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        title: ${ .input.title }
+        plan: "{{@createPlan:data.plan}}"
+        review: "{{@reviewChanges:data}}"
+      metadata:
+        description: "Stage, commit, push, and open draft PR on GitHub"
+
+  # 9. Emit workflow completed
+  - emitWorkflowCompleted:
+      emit:
+        event:
+          with:
+            type: dapr-swe.workflow.completed
+            source: /dapr-swe/resolve-issue
+            data:
+              pr_url: ${ .commitAndOpenPR.pr_url }
+              status: ${ .commitAndOpenPR.status }
+
+output:
+  as:
+    pr_url: ${ .commitAndOpenPR.pr_url }
+    status: ${ .commitAndOpenPR.status }
+    plan_summary: ${ .createPlan.summary }
+    review_approved: ${ .reviewChanges.approved }

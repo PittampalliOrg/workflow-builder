@@ -10,11 +10,14 @@ import {
 	type WorkflowDefinition,
 } from "@/lib/workflow-definition";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
+// CNCF Serverless Workflow 1.0 — types only (no heavy imports at module level)
+// Full modules loaded dynamically in isSWWorkflow() and compileSWWorkflowFromGraph()
 
 export const WORKFLOW_EXECUTION_IR_VERSION =
 	"workflow-execution-ir/v1" as const;
 
 const SUPPORTED_WORKFLOW_SPEC_NODE_KINDS = new Set([
+	// Legacy custom node types
 	"trigger",
 	"action",
 	"approval-gate",
@@ -25,6 +28,21 @@ const SUPPORTED_WORKFLOW_SPEC_NODE_KINDS = new Set([
 	"transform",
 	"publish-event",
 	"note",
+	// CNCF Serverless Workflow 1.0 task types
+	"start",
+	"end",
+	"call",
+	"set",
+	"switch",
+	"wait",
+	"emit",
+	"listen",
+	"for",
+	"fork",
+	"try",
+	"run",
+	"raise",
+	"do",
 ]);
 
 type WorkflowSpecSource = "persisted-spec" | "derived-graph" | "legacy-graph";
@@ -172,6 +190,18 @@ export function resolveCanonicalWorkflowSpec(input: {
 	};
 }
 
+/**
+ * Check if a spec object is a CNCF Serverless Workflow 1.0 document.
+ */
+export function isSWWorkflow(spec: unknown): boolean {
+	// Inline check to avoid importing the full SW types module at the top level.
+	if (typeof spec !== "object" || spec === null) return false;
+	const w = spec as Record<string, unknown>;
+	if (typeof w.document !== "object" || w.document === null) return false;
+	const doc = w.document as Record<string, unknown>;
+	return doc.dsl === "1.0.0" && typeof doc.namespace === "string" && typeof doc.name === "string";
+}
+
 export function buildWorkflowExecutionIR(input: {
 	workflowId: string;
 	name: string;
@@ -182,6 +212,25 @@ export function buildWorkflowExecutionIR(input: {
 	spec?: unknown;
 	specVersion?: string | null;
 }): WorkflowExecutionIR {
+	// Check if the spec is a SW 1.0 document
+	if (isSWWorkflow(input.spec)) {
+		// SW 1.0 path: the spec IS the definition (no translation needed)
+		const sanitized = sanitizeGraphForSpec({ nodes: input.nodes, edges: input.edges });
+		return {
+			apiVersion: WORKFLOW_EXECUTION_IR_VERSION,
+			workflowId: input.workflowId,
+			name: input.name,
+			description: input.description,
+			author: input.author,
+			source: "persisted-spec",
+			specVersion: "1.0.0",
+			spec: null, // SW 1.0 uses its own spec format, not WorkflowSpec
+			graph: sanitized,
+			// For SW 1.0, the "definition" IS the SW 1.0 document itself
+			definition: input.spec as unknown as WorkflowDefinition,
+		};
+	}
+
 	const resolved = resolveCanonicalWorkflowSpec(input);
 	const graph = resolved.spec
 		? (() => {

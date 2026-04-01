@@ -9,6 +9,7 @@
 #
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default observable OpenShell inner loop
+#   bash scripts/devspace-dev-ryzen.sh --profile sw-workflow-dev  # CNCF Serverless Workflow 1.0 development
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on artifact/read-model support service + UI
@@ -671,6 +672,8 @@ dev:
         value: "50001"
       - name: OPENSHELL_AGENT_APP_ID
         value: "openshell-agent-runtime.openshell"
+      - name: OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME
+        value: "dapr.langgraph.OpenShellLanggraphObservable.workflow"
 
   function-router:
     namespace: ${APP_NAME}
@@ -1314,6 +1317,32 @@ profiles:
         path: dev.ai-chatbot
       - op: remove
         path: dev.durable-agent
+      - op: remove
+        path: dev.mcp-gateway
+      - op: remove
+        path: dev.openshell-langgraph-observable
+
+  - name: sw-workflow-dev
+    description: >
+      CNCF Serverless Workflow 1.0 development loop.
+      Starts: workflow-builder (frontend types/nodes/config/store),
+              workflow-orchestrator (SW 1.0 interpreter + sw_workflow_v1),
+              function-router (call task routing via Dapr service invocation).
+      Use this profile when iterating on the SW 1.0 migration: types, compile/decompile,
+      visual editor nodes, task config panels, Python interpreter, and the execute API.
+    patches:
+      - op: replace
+        path: vars.ARGO_APPS.default
+        value: "workflow-builder workflow-orchestrator function-router"
+      - op: replace
+        path: vars.PRODUCTION_DEPLOYMENTS.default
+        value: "workflow-builder workflow-orchestrator function-router"
+      - op: remove
+        path: dev.ai-chatbot
+      - op: remove
+        path: dev.durable-agent
+      - op: remove
+        path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
       - op: remove

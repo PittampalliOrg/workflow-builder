@@ -90,6 +90,9 @@ import {
 import { Edge } from "../ai-elements/edge";
 import { Panel } from "../ai-elements/panel";
 import { CanvasAiChatInput } from "./canvas-ai-chat-input";
+// CNCF Serverless Workflow 1.0 task node types (primary)
+import { swNodeTypes } from "./nodes/sw-task-nodes";
+// Legacy node types kept for rendering existing saved workflows during cutover
 import { ActionNode } from "./nodes/action-node";
 import { ActivityNode } from "./nodes/activity-node";
 import { AddNode } from "./nodes/add-node";
@@ -867,11 +870,13 @@ export function WorkflowCanvas() {
 
 	const nodeTypes = useMemo(
 		() => ({
+			// CNCF Serverless Workflow 1.0 task types (primary)
+			...swNodeTypes,
+			// Legacy node types (render-only for existing saved workflows)
 			trigger: TriggerNode,
 			action: ActionNode,
 			add: AddNode,
 			group: GroupNode,
-			// Dapr workflow node types
 			activity: ActivityNode,
 			"approval-gate": ApprovalGateNode,
 			timer: TimerNode,

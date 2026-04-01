@@ -34,9 +34,26 @@ def _init_otel() -> None:
             "service.namespace": "workflow-builder",
         })
         provider = TracerProvider(resource=resource)
+        # Primary exporter: OTEL Collector (forwards to Tempo + Phoenix)
         provider.add_span_processor(BatchSpanProcessor(
             OTLPSpanExporter(endpoint=f"{endpoint}/v1/traces")
         ))
+        # Phoenix direct exporter: sends with project name header so Phoenix
+        # classifies spans correctly with OpenInference semantics (LLM/TOOL icons)
+        phoenix_url = os.environ.get(
+            "PHOENIX_COLLECTOR_ENDPOINT",
+            "http://arize-phoenix.observability.svc.cluster.local:4318",
+        )
+        try:
+            provider.add_span_processor(BatchSpanProcessor(
+                OTLPSpanExporter(
+                    endpoint=f"{phoenix_url}/v1/traces",
+                    headers={"phoenix-project-name": "dapr-swe"},
+                )
+            ))
+            logging.getLogger(__name__).info("Phoenix direct exporter enabled → %s (project=dapr-swe)", phoenix_url)
+        except Exception as phoenix_exc:
+            logging.getLogger(__name__).warning("Phoenix exporter failed: %s", phoenix_exc)
         trace.set_tracer_provider(provider)
 
         # Enable dapr-agents native instrumentation (LLM spans, tool spans,

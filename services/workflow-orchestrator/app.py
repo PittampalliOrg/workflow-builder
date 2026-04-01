@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from core.config import config
 from workflows.dynamic_workflow import wfr, dynamic_workflow
 from workflows.ap_workflow import ap_workflow
+from workflows.sw_workflow import sw_workflow
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state, get_state, delete_state
 from activities.publish_event import (
@@ -342,6 +343,7 @@ _taskhub_channel: grpc.Channel | None = None
 _taskhub_stub: pb_grpc.TaskHubSidecarServiceStub | None = None
 DYNAMIC_WORKFLOW_NAME = "dynamic_workflow"
 AP_WORKFLOW_NAME = "ap_workflow"
+SW_WORKFLOW_NAME = "sw_workflow_v1"
 _published_workflow_descriptors: list[dict[str, Any]] = []
 _published_workflow_handlers: list[Any] = []
 
@@ -383,12 +385,24 @@ def _schedule_new_workflow_instance(
     *,
     workflow_version: str | None = None,
     idempotent: bool = False,
+    parent_trace_context: dict[str, str] | None = None,
 ) -> str:
     request = pb.CreateInstanceRequest(
         instanceId=instance_id,
         name=workflow_name,
         input=wrappers_pb2.StringValue(value=json.dumps(workflow_input)),
     )
+    # Propagate W3C trace context into the Dapr workflow span tree.
+    # The sidecar uses parentTraceContext to connect workflow/activity spans
+    # under the caller's trace (Dapr 1.17+ / durabletask-go TraceContext proto).
+    if parent_trace_context and parent_trace_context.get("traceparent"):
+        trace_ctx = pb.TraceContext(
+            traceParent=parent_trace_context["traceparent"],
+        )
+        trace_state = parent_trace_context.get("tracestate", "")
+        if trace_state:
+            trace_ctx.traceState.CopyFrom(wrappers_pb2.StringValue(value=trace_state))
+        request.parentTraceContext.CopyFrom(trace_ctx)
     if workflow_version:
         request.version.CopyFrom(wrappers_pb2.StringValue(value=workflow_version))
     if idempotent:
@@ -417,6 +431,7 @@ def _idempotent_schedule(
     workflow_input: dict[str, Any],
     *,
     workflow_version: str | None = None,
+    parent_trace_context: dict[str, str] | None = None,
 ) -> str:
     """Schedule a workflow instance idempotently.
 
@@ -435,6 +450,7 @@ def _idempotent_schedule(
             workflow_input=workflow_input,
             workflow_version=workflow_version,
             idempotent=True,
+            parent_trace_context=parent_trace_context,
         )
     except Exception as schedule_err:
         # Atomic IGNORE didn't help -- instance may be in terminal state.
@@ -468,6 +484,7 @@ def _idempotent_schedule(
                 instance_id=instance_id,
                 workflow_input=workflow_input,
                 workflow_version=workflow_version,
+                parent_trace_context=parent_trace_context,
             )
 
         # Instance is RUNNING/PENDING/SUSPENDED — return existing
@@ -762,13 +779,21 @@ async def lifespan(app: FastAPI):
         version_name=config.AP_WORKFLOW_VERSION,
         is_latest=True,
     )
+    # CNCF Serverless Workflow 1.0 interpreter
+    wfr.register_versioned_workflow(
+        sw_workflow,
+        name=SW_WORKFLOW_NAME,
+        version_name="1.0.0",
+        is_latest=True,
+    )
     published_workflows = _register_published_workflows()
     logger.info(
-        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s (+ %s published revisions)",
+        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s, %s@1.0.0 (+ %s published revisions)",
         DYNAMIC_WORKFLOW_NAME,
         config.DYNAMIC_WORKFLOW_VERSION,
         AP_WORKFLOW_NAME,
         config.AP_WORKFLOW_VERSION,
+        SW_WORKFLOW_NAME,
         len(published_workflows),
     )
 
@@ -2032,6 +2057,7 @@ def start_workflow(request: StartWorkflowRequest, http_request: Request):
         )
 
         # Build the input for the dynamic workflow
+        otel_ctx = _merge_otel_context(http_request)
         workflow_input = {
             "definition": definition,
             "triggerData": trigger_data,
@@ -2039,7 +2065,7 @@ def start_workflow(request: StartWorkflowRequest, http_request: Request):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": _merge_otel_context(http_request),
+            "_otel": otel_ctx,
         }
 
         # Generate instance ID: deterministic when dbExecutionId is available,
@@ -2060,6 +2086,7 @@ def start_workflow(request: StartWorkflowRequest, http_request: Request):
             instance_id=instance_id,
             workflow_input=workflow_input,
             workflow_version=selected_workflow_version,
+            parent_trace_context=otel_ctx,
         )
 
         if not result_id:
@@ -2119,6 +2146,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
 
         # 7. Schedule via the existing start_workflow logic
         selected_workflow_version = execution_target["workflowVersion"]
+        otel_ctx = _merge_otel_context(http_request)
         workflow_input = {
             "definition": definition,
             "triggerData": request.triggerData,
@@ -2126,7 +2154,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
             "dbExecutionId": db_execution_id,
             "nodeConnectionMap": request.nodeConnectionMap,
             "_workflowVersion": selected_workflow_version,
-            "_otel": _merge_otel_context(http_request),
+            "_otel": otel_ctx,
         }
 
         # Deterministic instance ID from the DB execution ID
@@ -2146,6 +2174,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
             instance_id=instance_id,
             workflow_input=workflow_input,
             workflow_version=selected_workflow_version,
+            parent_trace_context=otel_ctx,
         )
 
         _mark_workflow_execution_started(db_execution_id, result_id)
@@ -2174,6 +2203,80 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
             )
         logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
         _raise_workflow_route_error("execute_workflow_by_id", e)
+
+
+class ExecuteSWWorkflowRequest(BaseModel):
+    """Request body for executing a CNCF Serverless Workflow 1.0 document."""
+    workflow: dict = Field(..., description="CNCF SW 1.0 workflow JSON document")
+    triggerData: dict = Field(default_factory=dict)
+    integrations: dict | None = None
+    dbExecutionId: str | None = None
+
+
+@app.post("/api/v2/sw-workflows", response_model=StartWorkflowResponse)
+def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request):
+    """
+    Execute a CNCF Serverless Workflow 1.0 document.
+
+    POST /api/v2/sw-workflows
+
+    Accepts a full SW 1.0 JSON document and executes it via the
+    sw_workflow_v1 Dapr workflow interpreter.
+    """
+    try:
+        from core.sw_types import Workflow as SWWorkflowModel
+
+        # Validate the workflow document
+        sw_workflow_doc = SWWorkflowModel.model_validate(request.workflow)
+        workflow_name = sw_workflow_doc.document.name
+
+        # Create DB execution row if a dbExecutionId is provided,
+        # otherwise run without DB tracking (for direct API testing).
+        db_execution_id = request.dbExecutionId
+
+        workflow_input = {
+            "workflow": request.workflow,
+            "triggerData": request.triggerData,
+            "integrations": request.integrations,
+            "dbExecutionId": db_execution_id,
+            "_otel": _merge_otel_context(http_request),
+        }
+
+        import hashlib, re, time
+        run_hash = hashlib.md5(f"{workflow_name}-{time.time()}".encode()).hexdigest()[:12]
+        safe_name = re.sub(r'[^a-z0-9-]', '-', workflow_name.lower()).strip('-')[:40]
+        instance_id = f"sw-{safe_name}-{run_hash}"
+
+        logger.info(
+            "[SW Workflow] Starting: %s (%s)",
+            workflow_name,
+            instance_id,
+        )
+
+        otel_ctx = _merge_otel_context(http_request)
+        result_id = _idempotent_schedule(
+            workflow_name=SW_WORKFLOW_NAME,
+            instance_id=instance_id,
+            workflow_input=workflow_input,
+            workflow_version="1.0.0",
+            parent_trace_context=otel_ctx,
+        )
+
+        if db_execution_id:
+            _mark_workflow_execution_started(db_execution_id, result_id)
+
+        return StartWorkflowResponse(
+            instanceId=result_id,
+            workflowId=workflow_name,
+            status="started",
+            workflowVersion="1.0.0",
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[SW Workflow] Failed to execute: {e}")
+        _raise_workflow_route_error("execute_sw_workflow", e)
 
 
 @app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)

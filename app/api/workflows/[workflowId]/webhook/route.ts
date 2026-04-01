@@ -2,13 +2,9 @@ import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
-import {
-	buildWorkflowExecutionIR,
-	WORKFLOW_EXECUTION_IR_VERSION,
-} from "@/lib/workflow-contract";
+import { isSWWorkflow } from "@/lib/workflow-contract";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
@@ -89,41 +85,56 @@ async function executeDaprWorkflowBackground(
 			(workflow.daprOrchestratorUrl as string) ||
 			(await getGenericOrchestratorUrl());
 
-		console.log("[Webhook] Starting Dapr execution:", executionId);
+		console.log("[Webhook] Starting SW 1.0 execution:", executionId);
 
 		const nodes = workflow.nodes as WorkflowNode[];
 		const edges = workflow.edges as WorkflowEdge[];
+		const existingSpec = workflow.spec;
 
-		const executionIr = buildWorkflowExecutionIR({
-			workflowId: workflow.id,
-			name: workflow.name,
-			description: workflow.description || undefined,
-			author: workflow.userId,
-			nodes,
-			edges,
-			spec: workflow.spec,
-			specVersion:
-				typeof workflow.specVersion === "string" ? workflow.specVersion : null,
-		});
-
-		const genericResult = await genericOrchestratorClient.startWorkflow(
-			orchestratorUrl,
-			executionIr.definition,
-			input,
-			undefined,
-			executionId,
+		// Compile to SW 1.0 document
+		const { compileGraphToWorkflow } = await import(
+			"@/lib/serverless-workflow/compile"
 		);
+		const safeName = workflow.name
+			.replace(/[^a-zA-Z0-9_-]/g, "-")
+			.toLowerCase();
+		const swWorkflow = isSWWorkflow(existingSpec)
+			? existingSpec
+			: compileGraphToWorkflow(
+					{ nodes: nodes as any, edges: edges as any },
+					{ name: safeName, title: workflow.name, summary: workflow.description || undefined },
+				);
+
+		const daprPort = process.env.DAPR_HTTP_PORT || "3500";
+		const swResponse = await fetch(
+			`http://localhost:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/sw-workflows`,
+			{
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					workflow: swWorkflow,
+					triggerData: input,
+					dbExecutionId: executionId,
+				}),
+			},
+		);
+
+		if (!swResponse.ok) {
+			const errorText = await swResponse.text().catch(() => "Unknown error");
+			throw new Error(`SW workflow failed: ${swResponse.status} ${errorText}`);
+		}
+
+		const swResult = await swResponse.json();
 
 		await db
 			.update(workflowExecutions)
 			.set({
-				daprInstanceId: genericResult.instanceId,
-				executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
-				executionIr,
+				daprInstanceId: swResult.instanceId,
+				executionIrVersion: "sw-1.0.0",
 			})
 			.where(eq(workflowExecutions.id, executionId));
 
-		console.log("[Webhook] Dapr workflow started:", genericResult.instanceId);
+		console.log("[Webhook] SW workflow started:", swResult.instanceId);
 	} catch (error) {
 		console.error("[Webhook] Error during Dapr execution:", error);
 

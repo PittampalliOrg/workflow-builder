@@ -27,6 +27,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+	// dapr-swe agent actions (PlannerAgent, DeveloperAgent, ReviewerAgent)
+	"dapr-swe/*": { appId: "dapr-swe", type: "knative" },
 	// Default fallback: all other slugs route to fn-activepieces
 	_default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -47,6 +49,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+	"dapr-swe/*": { appId: "dapr-swe", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

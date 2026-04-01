@@ -195,20 +195,18 @@ export async function POST(request: Request, { params }: RouteParams) {
 	};
 	const nodes = workflow.nodes as unknown as any[];
 	const edges = workflow.edges as unknown as any[];
-	const executionIr = buildWorkflowExecutionIR({
-		workflowId: workflow.id,
-		name: workflow.name,
-		description: workflow.description || undefined,
-		author: workflow.userId,
-		nodes,
-		edges,
-		spec: (workflow as Record<string, unknown>).spec,
-		specVersion:
-			((workflow as Record<string, unknown>).specVersion as
-				| string
-				| null
-				| undefined) ?? null,
-	});
+	const existingSpec = (workflow as Record<string, unknown>).spec;
+
+	// Compile to SW 1.0 document
+	const { compileGraphToWorkflow } = await import("@/lib/serverless-workflow/compile");
+	const { isSWWorkflow } = await import("@/lib/workflow-contract");
+	const safeName = workflow.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
+	const swWorkflow = isSWWorkflow(existingSpec)
+		? existingSpec
+		: compileGraphToWorkflow(
+				{ nodes, edges },
+				{ name: safeName, title: workflow.name, summary: workflow.description || undefined },
+			);
 
 	// Create execution record (links to monitor UI).
 	const [execution] = await db
@@ -218,28 +216,34 @@ export async function POST(request: Request, { params }: RouteParams) {
 			userId: workflow.userId,
 			status: "running",
 			input: triggerData,
-			executionIrVersion: WORKFLOW_EXECUTION_IR_VERSION,
-			executionIr,
+			executionIrVersion: "sw-1.0.0",
 		})
 		.returning();
-
-	const nodeConnectionMap = await extractNodeConnectionMap(
-		nodes,
-		workflow.userId,
-	);
 
 	const defaultOrchestratorUrl = await getGenericOrchestratorUrl();
 	const orchestratorUrl = (workflow as Record<string, unknown>)
 		.daprOrchestratorUrl as string | undefined;
 
-	const result = await genericOrchestratorClient.startWorkflow(
-		orchestratorUrl || defaultOrchestratorUrl,
-		executionIr.definition,
-		triggerData,
-		{},
-		execution.id,
-		nodeConnectionMap,
+	const daprPort = process.env.DAPR_HTTP_PORT || "3500";
+	const swResponse = await fetch(
+		`http://localhost:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/sw-workflows`,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				workflow: swWorkflow,
+				triggerData,
+				dbExecutionId: execution.id,
+			}),
+		},
 	);
+
+	if (!swResponse.ok) {
+		const errorText = await swResponse.text().catch(() => "Unknown error");
+		throw new Error(`SW workflow failed: ${swResponse.status} ${errorText}`);
+	}
+
+	const result = await swResponse.json();
 
 	await db
 		.update(workflowExecutions)
