@@ -1357,11 +1357,29 @@ export function WorkflowRuns({
 			{executions.map((execution, index) => {
 				const isExpanded = expandedRuns.has(execution.id);
 				const isSelected = selectedExecutionId === execution.id;
-				const executionLogs = (logs[execution.id] || []).sort((a, b) => {
+				const rawLogs = (logs[execution.id] || []).sort((a, b) => {
 					// Sort by startedAt to ensure first to last order
 					return (
 						new Date(a.startedAt).getTime() - new Date(b.startedAt).getTime()
 					);
+				});
+				// Deduplicate: when a nodeId appears twice (start + complete),
+				// keep only the later entry (complete) which has duration/output.
+				const seenNodeIds = new Map<string, number>();
+				const executionLogs = rawLogs.filter((log, idx) => {
+					const prev = seenNodeIds.get(log.nodeId);
+					seenNodeIds.set(log.nodeId, idx);
+					// If this nodeId was seen before, remove the earlier one
+					if (prev !== undefined) {
+						// Mark previous as duplicate by keeping this one
+						return true;
+					}
+					// Check if a later entry has the same nodeId
+					const laterIdx = rawLogs.findIndex(
+						(l, i) => i > idx && l.nodeId === log.nodeId,
+					);
+					// If there's a later entry with same nodeId, skip this one (the start entry)
+					return laterIdx === -1;
 				});
 
 				return (
