@@ -31,6 +31,7 @@ describe("repairWorkflowDefinitionShape", () => {
 						emit: {
 							event: {
 								name: "workflow.completed",
+								source: "event",
 								data: {
 									success: true,
 								},
@@ -80,6 +81,7 @@ describe("repairWorkflowDefinitionShape", () => {
 					data: {
 						success: true,
 					},
+					source: "https://workflow-builder.local/events/event",
 				},
 			},
 		});

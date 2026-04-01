@@ -16,6 +16,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function isExpressionString(value: unknown): value is string {
+	return typeof value === "string" && /^\s*\$\{.+\}\s*$/.test(value);
+}
+
+function normalizeEventSourceUri(source: string): string {
+	const trimmed = source.trim();
+	if (!trimmed) {
+		return "https://workflow-builder.local/events/event";
+	}
+	const normalizedSlug = trimmed
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return `https://workflow-builder.local/events/${normalizedSlug || "event"}`;
+}
+
 function repairTaskItems(
 	tasks: unknown,
 	actions: string[],
@@ -57,6 +73,25 @@ function repairTaskItems(
 				},
 			};
 			actions.push(`Wrapped ${taskPath}.emit.event fields in emit.event.with`);
+		}
+		const emitEventWith =
+			isRecord(taskValue.emit) &&
+			isRecord(taskValue.emit.event) &&
+			isRecord(taskValue.emit.event.with)
+				? taskValue.emit.event.with
+				: null;
+		if (
+			emitEventWith &&
+			typeof emitEventWith.source === "string" &&
+			!emitEventWith.source.includes("://") &&
+			!emitEventWith.source.startsWith("urn:") &&
+			!isExpressionString(emitEventWith.source)
+		) {
+			const previousSource = emitEventWith.source;
+			emitEventWith.source = normalizeEventSourceUri(previousSource);
+			actions.push(
+				`Converted ${taskPath}.emit.event.with.source to URI form (${emitEventWith.source})`,
+			);
 		}
 
 		if (Array.isArray(taskValue.switch)) {
