@@ -62,6 +62,7 @@
 		"@radix-ui/react-progress": "^1.1.8",
 		"@radix-ui/react-switch": "^1.2.6",
 		"@radix-ui/react-tooltip": "^1.2.8",
+		"@serverlessworkflow/sdk": "^1.0.1",
 		"@slack/web-api": "^7.12.0",
 		"@tanstack/react-table": "^8.21.3",
 		"@types/react-syntax-highlighter": "^15.5.13",

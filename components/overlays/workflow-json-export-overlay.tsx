@@ -5,11 +5,12 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { decompileGraphToWorkflowSpec } from "@/lib/workflow-spec/decompile";
+import { normalizeWorkflowToSwCutover } from "@/lib/serverless-workflow/cutover";
 import type {
-	WorkflowTableEdge,
-	WorkflowTableNode,
-} from "@/lib/workflow-spec/compile";
+	WorkflowEdge,
+	WorkflowNode,
+} from "@/lib/serverless-workflow/graph-types";
+import { serializeWorkflowDefinition } from "@/lib/serverless-workflow/sdk";
 import { Overlay } from "./overlay";
 import { useOverlay } from "./overlay-provider";
 import type { OverlayComponentProps } from "./types";
@@ -21,13 +22,22 @@ type WorkflowJsonExportOverlayProps = OverlayComponentProps<{
 	edges: unknown[];
 }>;
 
-function downloadJson(filename: string, content: string) {
-	const blob = new Blob([content], { type: "application/json;charset=utf-8" });
+function downloadDefinition(
+	filename: string,
+	content: string,
+	format: "yaml" | "json",
+) {
+	const blob = new Blob([content], {
+		type:
+			format === "yaml"
+				? "application/yaml;charset=utf-8"
+				: "application/json;charset=utf-8",
+	});
 	const url = URL.createObjectURL(blob);
-	const a = document.createElement("a");
-	a.href = url;
-	a.download = filename;
-	a.click();
+	const anchor = document.createElement("a");
+	anchor.href = url;
+	anchor.download = filename;
+	anchor.click();
 	URL.revokeObjectURL(url);
 }
 
@@ -40,38 +50,62 @@ export function WorkflowJsonExportOverlay({
 }: WorkflowJsonExportOverlayProps) {
 	const { closeAll } = useOverlay();
 	const [isCopying, setIsCopying] = useState(false);
+	const [format, setFormat] = useState<"yaml" | "json">("yaml");
 
-	const json = useMemo(() => {
-		const spec = decompileGraphToWorkflowSpec({
+	const definition = useMemo(() => {
+		const safeName =
+			name
+				.trim()
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "") || "workflow";
+		const normalized = normalizeWorkflowToSwCutover({
 			name,
 			description,
-			nodes: nodes as WorkflowTableNode[],
-			edges: edges as WorkflowTableEdge[],
+			nodes: nodes as unknown as import("@/lib/workflow-store").WorkflowNode[],
+			edges: edges as unknown as import("@/lib/workflow-store").WorkflowEdge[],
+			spec: {
+				document: {
+					dsl: "1.0.0",
+					namespace: "dapr-swe",
+					name: safeName,
+					version: "0.0.1",
+					title: name,
+					...(description ? { summary: description } : {}),
+				},
+				do: [],
+			},
+			specVersion: null,
 		});
-		return JSON.stringify(spec, null, 2);
-	}, [name, description, nodes, edges]);
+		return serializeWorkflowDefinition(normalized.spec, format);
+	}, [description, edges, format, name, nodes]);
 
 	const handleCopy = async () => {
 		setIsCopying(true);
 		try {
-			await navigator.clipboard.writeText(json);
-			toast.success("Copied workflow JSON.");
+			await navigator.clipboard.writeText(definition);
+			toast.success(`Copied SW workflow ${format.toUpperCase()}.`);
 		} catch (error) {
 			console.error("Copy failed:", error);
-			toast.error("Failed to copy workflow JSON.");
+			toast.error(`Failed to copy SW workflow ${format.toUpperCase()}.`);
 		} finally {
 			setIsCopying(false);
 		}
 	};
 
 	const handleDownload = () => {
-		const safe = name
-			.trim()
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, "-")
-			.replace(/^-+|-+$/g, "");
-		downloadJson(`${safe || "workflow"}.json`, json);
-		toast.success("Downloaded workflow JSON.");
+		const safeName =
+			name
+				.trim()
+				.toLowerCase()
+				.replace(/[^a-z0-9]+/g, "-")
+				.replace(/^-+|-+$/g, "") || "workflow";
+		downloadDefinition(
+			`${safeName}.${format === "yaml" ? "yaml" : "json"}`,
+			definition,
+			format,
+		);
+		toast.success(`Downloaded SW workflow ${format.toUpperCase()}.`);
 	};
 
 	return (
@@ -82,17 +116,33 @@ export function WorkflowJsonExportOverlay({
 				{ label: "Download", onClick: handleDownload },
 			]}
 			overlayId={overlayId}
-			title="Export Workflow JSON"
+			title="Export SW Definition"
 		>
 			<div className="flex items-center gap-2 text-muted-foreground">
 				<FileJson className="size-5" />
 				<p className="text-sm">
-					Exports the current graph as `workflow-spec/v1`.
+					Exports the current graph as a{" "}
+					<code className="font-mono">CNCF Serverless Workflow 1.0</code> JSON
+					or YAML document.
 				</p>
 			</div>
 
 			<div className="mt-4 space-y-2">
-				<Textarea readOnly rows={14} value={json} />
+				<div className="flex gap-2">
+					<Button
+						onClick={() => setFormat("yaml")}
+						variant={format === "yaml" ? "default" : "outline"}
+					>
+						YAML
+					</Button>
+					<Button
+						onClick={() => setFormat("json")}
+						variant={format === "json" ? "default" : "outline"}
+					>
+						JSON
+					</Button>
+				</div>
+				<Textarea readOnly rows={14} value={definition} />
 				<div className="flex flex-wrap items-center gap-2">
 					<Button onClick={handleCopy} variant="outline" disabled={isCopying}>
 						<Copy className="mr-2 size-4" />

@@ -1,7 +1,5 @@
 import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { NextResponse } from "next/server";
-import { getGenericOrchestratorUrl } from "@/lib/config-service";
-import { genericOrchestratorClient } from "@/lib/dapr-client";
 import { db } from "@/lib/db";
 import {
 	attachMcpRunExecution,
@@ -20,6 +18,11 @@ import {
 	buildWorkflowExecutionIR,
 	WORKFLOW_EXECUTION_IR_VERSION,
 } from "@/lib/workflow-contract";
+import {
+	isSupportedWorkflowId,
+	normalizeWorkflowToSwCutover,
+} from "@/lib/serverless-workflow/cutover";
+import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 type RouteParams = {
 	params: Promise<{ projectId: string; workflowId: string }>;
@@ -133,6 +136,9 @@ export async function POST(request: Request, { params }: RouteParams) {
 	}
 
 	const { projectId, workflowId } = await params;
+	if (!isSupportedWorkflowId(workflowId)) {
+		return NextResponse.json({ error: "Workflow not found" }, { status: 404 });
+	}
 	const body = (await request.json().catch(() => ({}))) as Body;
 	const input = body.input ?? {};
 
@@ -193,40 +199,40 @@ export async function POST(request: Request, { params }: RouteParams) {
 		},
 		...input,
 	};
-	const nodes = workflow.nodes as unknown as any[];
-	const edges = workflow.edges as unknown as any[];
-	const existingSpec = (workflow as Record<string, unknown>).spec;
-	const executionIr = buildWorkflowExecutionIR({
-		workflowId: workflow.id,
+	const normalized = normalizeWorkflowToSwCutover({
 		name: workflow.name,
-		description: workflow.description || undefined,
-		author: "mcp-tool",
-		nodes,
-		edges,
-		spec: existingSpec,
+		description: workflow.description ?? undefined,
+		nodes: workflow.nodes as WorkflowNode[],
+		edges: workflow.edges as WorkflowEdge[],
+		spec: (workflow as Record<string, unknown>).spec,
 		specVersion:
 			((workflow as Record<string, unknown>).specVersion as
 				| string
 				| null
 				| undefined) ?? null,
 	});
-
-	// Compile to SW 1.0 document
-	const { compileGraphToWorkflow } = await import(
-		"@/lib/serverless-workflow/compile"
-	);
-	const { isSWWorkflow } = await import("@/lib/workflow-contract");
-	const safeName = workflow.name.replace(/[^a-zA-Z0-9_-]/g, "-").toLowerCase();
-	const swWorkflow = isSWWorkflow(existingSpec)
-		? existingSpec
-		: compileGraphToWorkflow(
-				{ nodes, edges },
-				{
-					name: safeName,
-					title: workflow.name,
-					summary: workflow.description || undefined,
-				},
-			);
+	if (normalized.needsMigration) {
+		await db
+			.update(workflows)
+			.set({
+				nodes: normalized.nodes,
+				edges: normalized.edges,
+				specVersion: normalized.specVersion,
+				spec: normalized.spec,
+				updatedAt: new Date(),
+			})
+			.where(eq(workflows.id, workflow.id));
+	}
+	const executionIr = buildWorkflowExecutionIR({
+		workflowId: workflow.id,
+		name: workflow.name,
+		description: workflow.description || undefined,
+		author: "mcp-tool",
+		nodes: normalized.nodes,
+		edges: normalized.edges,
+		spec: normalized.spec,
+		specVersion: normalized.specVersion,
+	});
 
 	// Create execution record (links to monitor UI).
 	const [execution] = await db
@@ -240,10 +246,6 @@ export async function POST(request: Request, { params }: RouteParams) {
 		})
 		.returning();
 
-	const defaultOrchestratorUrl = await getGenericOrchestratorUrl();
-	const orchestratorUrl = (workflow as Record<string, unknown>)
-		.daprOrchestratorUrl as string | undefined;
-
 	const daprPort = process.env.DAPR_HTTP_PORT || "3500";
 	const swResponse = await fetch(
 		`http://localhost:${daprPort}/v1.0/invoke/workflow-orchestrator/method/api/v2/sw-workflows`,
@@ -251,7 +253,7 @@ export async function POST(request: Request, { params }: RouteParams) {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
-				workflow: swWorkflow,
+				workflow: normalized.spec,
 				triggerData,
 				dbExecutionId: execution.id,
 			}),

@@ -49,7 +49,6 @@ import {
 	selectedEdgeAtom,
 	selectedNodeAtom,
 	showClearDialogAtom,
-	showDeleteDialogAtom,
 	updateNodeDataAtom,
 } from "@/lib/workflow-store";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
@@ -79,9 +78,20 @@ import { WorkflowRuns } from "./workflow-runs";
 
 // SW 1.0 task types that use the new config panel
 const SW_TASK_TYPES = new Set([
-	"call", "set", "switch", "wait", "emit", "listen",
-	"for", "fork", "try", "run", "raise", "do",
-	"start", "end",
+	"call",
+	"set",
+	"switch",
+	"wait",
+	"emit",
+	"listen",
+	"for",
+	"fork",
+	"try",
+	"run",
+	"raise",
+	"do",
+	"start",
+	"end",
 ]);
 
 // System actions that need integrations (not in plugin registry)
@@ -219,7 +229,6 @@ export const PanelInner = () => {
 	const deleteEdge = useSetAtom(deleteEdgeAtom);
 	const deleteSelectedItems = useSetAtom(deleteSelectedItemsAtom);
 	const setShowClearDialog = useSetAtom(showClearDialogAtom);
-	const setShowDeleteDialog = useSetAtom(showDeleteDialogAtom);
 	const clearNodeStatuses = useSetAtom(clearNodeStatusesAtom);
 	const setPendingIntegrationNodes = useSetAtom(pendingIntegrationNodesAtom);
 	const morphNodeType = useSetAtom(morphNodeTypeAtom);
@@ -769,8 +778,8 @@ export const PanelInner = () => {
 							{!isOwner && (
 								<div className="rounded-lg border border-muted bg-muted/30 p-3">
 									<p className="text-muted-foreground text-sm">
-										You are viewing a public workflow. Duplicate it to make
-										changes.
+										You are viewing a read-only workflow. Editing is limited to
+										the supported SW 1.0 workflow owner.
 									</p>
 								</div>
 							)}
@@ -784,15 +793,6 @@ export const PanelInner = () => {
 									>
 										<Eraser className="mr-2 size-4" />
 										Clear
-									</Button>
-									<Button
-										className="text-muted-foreground"
-										onClick={() => setShowDeleteDialog(true)}
-										size="sm"
-										variant="ghost"
-									>
-										<Trash2 className="mr-2 size-4" />
-										Delete
 									</Button>
 								</div>
 							)}
@@ -1101,9 +1101,10 @@ export const PanelInner = () => {
 						<SWTaskConfigPanel
 							taskType={selectedNode.type as string}
 							config={
-								(selectedNode.data as { taskConfig?: Record<string, unknown> }).taskConfig
-								|| selectedNode.data.config
-								|| {}
+								(selectedNode.data as { taskConfig?: Record<string, unknown> })
+									.taskConfig ||
+								selectedNode.data.config ||
+								{}
 							}
 							onUpdateConfig={handleUpdateConfig}
 							disabled={isGenerating || !isOwner}
@@ -1155,7 +1156,8 @@ export const PanelInner = () => {
 					{!isOwner && (
 						<div className="rounded-lg border border-muted bg-muted/30 p-3">
 							<p className="text-muted-foreground text-sm">
-								You are viewing a public workflow. Duplicate it to make changes.
+								You are viewing a read-only workflow. Editing is limited to the
+								supported SW 1.0 workflow owner.
 							</p>
 						</div>
 					)}

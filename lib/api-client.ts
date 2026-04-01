@@ -30,10 +30,7 @@ import type {
 	DaprDebugAppDetailResponse,
 	DaprDebugOverviewResponse,
 } from "./types/dapr-debug";
-import type {
-	PublishedRuntimeMetadata,
-	WorkflowSpec,
-} from "./workflow-spec/types";
+import type { PublishedRuntimeMetadata } from "./workflow-spec/types";
 import type {
 	AgentNodeProgress,
 	DurableAgentRunSummary,
@@ -55,7 +52,7 @@ export type WorkflowData = {
 	nodes: WorkflowNode[];
 	edges: WorkflowEdge[];
 	specVersion?: string | null;
-	spec?: WorkflowSpec | null;
+	spec?: unknown;
 	visibility?: WorkflowVisibility;
 };
 

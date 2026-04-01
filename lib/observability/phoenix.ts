@@ -1,4 +1,4 @@
-const PHOENIX_BASE_URL = "https://phoenix-ryzen.tail286401.ts.net";
+export const PHOENIX_BASE_URL = "https://phoenix-ryzen.tail286401.ts.net";
 
 const DEFAULT_PHOENIX_PROJECT_ID = "UHJvamVjdDox";
 
@@ -22,5 +22,23 @@ export function getPhoenixTraceUrl(
 	traceId: string,
 	serviceNames: string[],
 ): string {
-	return `${PHOENIX_BASE_URL}/projects/${getPhoenixProjectId(serviceNames)}/traces/${traceId}`;
+	const params = new URLSearchParams({
+		traceId,
+		projectId: getPhoenixProjectId(serviceNames),
+	});
+	return `/api/observability/phoenix-trace?${params.toString()}`;
+}
+
+export function getDirectPhoenixTraceUrl(input: {
+	projectId: string;
+	traceId: string;
+	selectedSpanNodeId?: string | null;
+}): string {
+	const url = new URL(
+		`${PHOENIX_BASE_URL}/projects/${input.projectId}/traces/${input.traceId}`,
+	);
+	if (input.selectedSpanNodeId) {
+		url.searchParams.set("selectedSpanNodeId", input.selectedSpanNodeId);
+	}
+	return url.toString();
 }

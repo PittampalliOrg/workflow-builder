@@ -4,8 +4,11 @@ import { NextResponse } from "next/server";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
-import { isSWWorkflow } from "@/lib/workflow-contract";
 import { apiKeys, workflowExecutions, workflows } from "@/lib/db/schema";
+import {
+	isSupportedWorkflowId,
+	normalizeWorkflowToSwCutover,
+} from "@/lib/serverless-workflow/cutover";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 // Validate API key and return the user ID if valid
@@ -86,24 +89,26 @@ async function executeDaprWorkflowBackground(
 			(await getGenericOrchestratorUrl());
 
 		console.log("[Webhook] Starting SW 1.0 execution:", executionId);
-
-		const nodes = workflow.nodes as WorkflowNode[];
-		const edges = workflow.edges as WorkflowEdge[];
-		const existingSpec = workflow.spec;
-
-		// Compile to SW 1.0 document
-		const { compileGraphToWorkflow } = await import(
-			"@/lib/serverless-workflow/compile"
-		);
-		const safeName = workflow.name
-			.replace(/[^a-zA-Z0-9_-]/g, "-")
-			.toLowerCase();
-		const swWorkflow = isSWWorkflow(existingSpec)
-			? existingSpec
-			: compileGraphToWorkflow(
-					{ nodes: nodes as any, edges: edges as any },
-					{ name: safeName, title: workflow.name, summary: workflow.description || undefined },
-				);
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes: workflow.nodes as WorkflowNode[],
+			edges: workflow.edges as WorkflowEdge[],
+			spec: workflow.spec,
+			specVersion: (workflow.specVersion as string | null | undefined) ?? null,
+		});
+		if (normalized.needsMigration) {
+			await db
+				.update(workflows)
+				.set({
+					nodes: normalized.nodes,
+					edges: normalized.edges,
+					specVersion: normalized.specVersion,
+					spec: normalized.spec,
+					updatedAt: new Date(),
+				})
+				.where(eq(workflows.id, workflow.id));
+		}
 
 		const daprPort = process.env.DAPR_HTTP_PORT || "3500";
 		const swResponse = await fetch(
@@ -112,7 +117,7 @@ async function executeDaprWorkflowBackground(
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
-					workflow: swWorkflow,
+					workflow: normalized.spec,
 					triggerData: input,
 					dbExecutionId: executionId,
 				}),
@@ -159,6 +164,12 @@ export async function POST(
 ) {
 	try {
 		const { workflowId } = await context.params;
+		if (!isSupportedWorkflowId(workflowId)) {
+			return NextResponse.json(
+				{ error: "Workflow not found" },
+				{ status: 404, headers: corsHeaders },
+			);
+		}
 
 		// Get workflow
 		const workflow = await db.query.workflows.findFirst({

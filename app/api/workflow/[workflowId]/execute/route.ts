@@ -5,11 +5,11 @@ import { getSession } from "@/lib/auth-helpers";
 import { getGenericOrchestratorUrl } from "@/lib/config-service";
 import { db } from "@/lib/db";
 import { getWorkflowExecutionsSchemaGuardResponse } from "@/lib/db/workflow-executions-schema-guard";
+import { workflowExecutions, workflows } from "@/lib/db/schema";
 import {
-	workflowExecutions,
-	workflows,
-} from "@/lib/db/schema";
-import { isSWWorkflow } from "@/lib/workflow-contract";
+	isSupportedWorkflowId,
+	normalizeWorkflowToSwCutover,
+} from "@/lib/serverless-workflow/cutover";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 function extractTraceHeaders(request: Request): Record<string, string> {
@@ -53,6 +53,12 @@ export async function POST(
 ) {
 	try {
 		const { workflowId } = await context.params;
+		if (!isSupportedWorkflowId(workflowId)) {
+			return NextResponse.json(
+				{ error: "Workflow not found" },
+				{ status: 404 },
+			);
+		}
 
 		const session = await getSession(request);
 		if (!session) {
@@ -86,29 +92,30 @@ export async function POST(
 		const orchestratorUrl =
 			((workflow as Record<string, unknown>).daprOrchestratorUrl as string) ||
 			(await getGenericOrchestratorUrl());
-		const nodes = workflow.nodes as WorkflowNode[];
-		const edges = workflow.edges as WorkflowEdge[];
-		const existingSpec = (workflow as Record<string, unknown>).spec;
-
-		// Compile the visual graph to a SW 1.0 document.
-		// If the spec is already SW 1.0 (stored from a previous save), use it directly.
-		// Otherwise compile from the visual graph nodes/edges.
-		const { compileGraphToWorkflow } = await import(
-			"@/lib/serverless-workflow/compile"
-		);
-		const safeName = workflow.name
-			.replace(/[^a-zA-Z0-9_-]/g, "-")
-			.toLowerCase();
-		const swWorkflow = isSWWorkflow(existingSpec)
-			? existingSpec
-			: compileGraphToWorkflow(
-					{ nodes: nodes as any, edges: edges as any },
-					{
-						name: safeName,
-						title: workflow.name,
-						summary: workflow.description || undefined,
-					},
-				);
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes: workflow.nodes as WorkflowNode[],
+			edges: workflow.edges as WorkflowEdge[],
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
+		});
+		if (normalized.needsMigration) {
+			await db
+				.update(workflows)
+				.set({
+					nodes: normalized.nodes,
+					edges: normalized.edges,
+					specVersion: normalized.specVersion,
+					spec: normalized.spec,
+					updatedAt: new Date(),
+				})
+				.where(eq(workflows.id, workflow.id));
+		}
 
 		// Create execution record
 		const [execution] = await db
@@ -136,7 +143,7 @@ export async function POST(
 						...extractTraceHeaders(request),
 					},
 					body: JSON.stringify({
-						workflow: swWorkflow,
+						workflow: normalized.spec,
 						triggerData: input,
 						dbExecutionId: execution.id,
 					}),
@@ -144,9 +151,7 @@ export async function POST(
 			);
 
 			if (!swResponse.ok) {
-				const errorText = await swResponse
-					.text()
-					.catch(() => "Unknown error");
+				const errorText = await swResponse.text().catch(() => "Unknown error");
 				throw new Error(
 					`SW workflow failed: ${swResponse.status} ${errorText}`,
 				);
@@ -197,9 +202,7 @@ export async function POST(
 		return NextResponse.json(
 			{
 				error:
-					error instanceof Error
-						? error.message
-						: "Failed to execute workflow",
+					error instanceof Error ? error.message : "Failed to execute workflow",
 			},
 			{ status: 500 },
 		);

@@ -3,7 +3,10 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
-import { buildWorkflowExecutionIR } from "@/lib/workflow-contract";
+import {
+	isSupportedWorkflowId,
+	normalizeWorkflowToSwCutover,
+} from "@/lib/serverless-workflow/cutover";
 import {
 	buildPublishedVersion,
 	buildPublishedWorkflowName,
@@ -14,9 +17,7 @@ import type {
 	JsonValue,
 	PublishedRuntimeMetadata,
 	PublishedWorkflowRevision,
-	WorkflowSpec,
 } from "@/lib/workflow-spec/types";
-import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
 export async function POST(
 	request: Request,
@@ -24,6 +25,12 @@ export async function POST(
 ) {
 	try {
 		const { workflowId } = await context.params;
+		if (!isSupportedWorkflowId(workflowId)) {
+			return NextResponse.json(
+				{ error: "Workflow not found" },
+				{ status: 404 },
+			);
+		}
 		const session = await getSession(request);
 
 		if (!session?.user) {
@@ -44,36 +51,19 @@ export async function POST(
 			);
 		}
 
-		const existingSpec =
-			((existingWorkflow as Record<string, unknown>).spec as
-				| WorkflowSpec
-				| Record<string, unknown>
-				| null
-				| undefined) ?? null;
-		const existingPublishedRuntime = extractPublishedRuntime(existingSpec);
-		const executionIr = buildWorkflowExecutionIR({
-			workflowId: existingWorkflow.id,
+		const normalized = normalizeWorkflowToSwCutover({
 			name: existingWorkflow.name,
 			description: existingWorkflow.description ?? undefined,
-			nodes: existingWorkflow.nodes as WorkflowNode[],
-			edges: existingWorkflow.edges as WorkflowEdge[],
-			spec: existingSpec,
+			nodes: existingWorkflow.nodes as never,
+			edges: existingWorkflow.edges as never,
+			spec: (existingWorkflow as Record<string, unknown>).spec,
 			specVersion:
 				((existingWorkflow as Record<string, unknown>).specVersion as
 					| string
 					| null
 					| undefined) ?? null,
 		});
-
-		if (!executionIr.spec) {
-			return NextResponse.json(
-				{
-					error:
-						"Workflow is not publishable yet. Publish currently requires a canonical workflow spec.",
-				},
-				{ status: 400 },
-			);
-		}
+		const existingPublishedRuntime = extractPublishedRuntime(normalized.spec);
 
 		const publishedAt = new Date().toISOString();
 		const workflowName =
@@ -87,12 +77,12 @@ export async function POST(
 			existingPublishedRuntime?.revisions,
 		);
 		const definitionSnapshot = JSON.parse(
-			JSON.stringify(executionIr.definition),
+			JSON.stringify(normalized.spec),
 		) as Record<string, JsonValue>;
 		const revision: PublishedWorkflowRevision = {
 			version,
 			publishedAt,
-			specVersion: executionIr.specVersion,
+			specVersion: normalized.specVersion,
 			definition: definitionSnapshot,
 		};
 		const publishedRuntime: PublishedRuntimeMetadata = {
@@ -102,10 +92,10 @@ export async function POST(
 			publishedAt,
 			revisions: [...revisions, revision],
 		};
-		const nextSpec: WorkflowSpec = {
-			...executionIr.spec,
+		const nextSpec = {
+			...normalized.spec,
 			metadata: {
-				...(executionIr.spec.metadata ?? {}),
+				...(normalized.spec.metadata ?? {}),
 				publishedRuntime,
 			},
 		};
@@ -114,7 +104,9 @@ export async function POST(
 			.update(workflows)
 			.set({
 				daprWorkflowName: workflowName,
-				specVersion: executionIr.specVersion,
+				nodes: normalized.nodes,
+				edges: normalized.edges,
+				specVersion: normalized.specVersion,
 				spec: nextSpec,
 				updatedAt: new Date(),
 			})

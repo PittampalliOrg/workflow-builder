@@ -5,8 +5,12 @@ import { db } from "@/lib/db";
 import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
 import { workflows } from "@/lib/db/schema";
 import type { WorkflowResourceRefInput } from "@/lib/db/resources";
+import {
+	isSupportedWorkflowId,
+	normalizeWorkflowToSwCutover,
+	SW_SPEC_VERSION,
+} from "@/lib/serverless-workflow/cutover";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
-import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
 import { extractPublishedRuntime } from "@/lib/workflow-publishing";
 import {
 	applyResourcePresetsToNodes,
@@ -132,7 +136,7 @@ export async function GET(
 			where: eq(workflows.id, workflowId),
 		});
 
-		if (!workflow) {
+		if (!workflow || !isSupportedWorkflowId(workflowId)) {
 			return NextResponse.json(
 				{ error: "Workflow not found" },
 				{ status: 404 },
@@ -149,23 +153,48 @@ export async function GET(
 			);
 		}
 
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes: workflow.nodes as WorkflowNode[],
+			edges: workflow.edges as WorkflowEdge[],
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
+		});
+		const [persistedWorkflow] = normalized.needsMigration
+			? await db
+					.update(workflows)
+					.set({
+						nodes: normalized.nodes,
+						edges: normalized.edges,
+						specVersion: normalized.specVersion,
+						spec: normalized.spec,
+						updatedAt: new Date(),
+					})
+					.where(eq(workflows.id, workflowId))
+					.returning()
+			: [workflow];
+
 		// For public workflows viewed by non-owners, sanitize sensitive data
 		const responseData = {
-			...workflow,
+			...persistedWorkflow,
 			nodes: isOwner
-				? workflow.nodes
+				? normalized.nodes
 				: sanitizeNodesForPublicView(
-						workflow.nodes as Record<string, unknown>[],
+						normalized.nodes as Record<string, unknown>[],
 					),
 			spec: isOwner
-				? (workflow as Record<string, unknown>).spec
-				: sanitizeSpecForPublicView((workflow as Record<string, unknown>).spec),
-			createdAt: workflow.createdAt.toISOString(),
-			updatedAt: workflow.updatedAt.toISOString(),
+				? normalized.spec
+				: sanitizeSpecForPublicView(normalized.spec),
+			specVersion: SW_SPEC_VERSION,
+			createdAt: persistedWorkflow.createdAt.toISOString(),
+			updatedAt: persistedWorkflow.updatedAt.toISOString(),
 			isOwner,
-			publishedRuntime: extractPublishedRuntime(
-				(workflow as Record<string, unknown>).spec,
-			),
+			publishedRuntime: extractPublishedRuntime(normalized.spec),
 		};
 
 		return NextResponse.json(responseData);
@@ -228,7 +257,7 @@ export async function PATCH(
 			),
 		});
 
-		if (!existingWorkflow) {
+		if (!existingWorkflow || !isSupportedWorkflowId(workflowId)) {
 			return NextResponse.json(
 				{ error: "Workflow not found" },
 				{ status: 404 },
@@ -288,8 +317,7 @@ export async function PATCH(
 			typeof updateData.description === "string"
 				? updateData.description
 				: (existingWorkflow.description ?? undefined);
-		const graphUpdated = Array.isArray(body.nodes) || Array.isArray(body.edges);
-		const canonicalSpec = resolveCanonicalWorkflowSpec({
+		const normalized = normalizeWorkflowToSwCutover({
 			name: effectiveName,
 			description: effectiveDescription,
 			nodes: effectiveNodes,
@@ -297,26 +325,21 @@ export async function PATCH(
 			spec:
 				body.spec !== undefined
 					? body.spec
-					: graphUpdated
-						? undefined
-						: (existingWorkflow as Record<string, unknown>).spec,
+					: (existingWorkflow as Record<string, unknown>).spec,
 			specVersion:
-				typeof body.specVersion === "string"
-					? body.specVersion
-					: graphUpdated
-						? null
-						: (((existingWorkflow as Record<string, unknown>).specVersion as
-								| string
-								| null
-								| undefined) ?? null),
+				((existingWorkflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
 		});
-		const preservedMetadata =
-			extractSpecMetadata(body.spec) ??
-			extractSpecMetadata((existingWorkflow as Record<string, unknown>).spec);
-		updateData.specVersion = canonicalSpec.specVersion;
+		updateData.nodes = normalized.nodes;
+		updateData.edges = normalized.edges;
+		updateData.specVersion = normalized.specVersion;
 		updateData.spec = applyPreservedSpecMetadata({
-			spec: canonicalSpec.spec,
-			metadata: preservedMetadata,
+			spec: normalized.spec,
+			metadata:
+				extractSpecMetadata(body.spec) ??
+				extractSpecMetadata((existingWorkflow as Record<string, unknown>).spec),
 		});
 
 		const [updatedWorkflow] = await db
@@ -363,6 +386,12 @@ export async function DELETE(
 ) {
 	try {
 		const { workflowId } = await context.params;
+		if (!isSupportedWorkflowId(workflowId)) {
+			return NextResponse.json(
+				{ error: "Workflow not found" },
+				{ status: 404 },
+			);
+		}
 		const session = await getSession(request);
 
 		if (!session?.user) {
@@ -384,9 +413,10 @@ export async function DELETE(
 			);
 		}
 
-		await db.delete(workflows).where(eq(workflows.id, workflowId));
-
-		return NextResponse.json({ success: true });
+		return NextResponse.json(
+			{ error: "Deleting the supported SW 1.0 workflow is disabled" },
+			{ status: 405 },
+		);
 	} catch (error) {
 		console.error("Failed to delete workflow:", error);
 		return NextResponse.json(

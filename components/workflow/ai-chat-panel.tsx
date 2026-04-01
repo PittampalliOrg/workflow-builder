@@ -1,7 +1,7 @@
 "use client";
 
-import { useAtomValue } from "jotai";
-import { useState, useEffect, useRef } from "react";
+import { useAtom, useAtomValue } from "jotai";
+import { useEffect, useRef, useState } from "react";
 import {
 	Loader2,
 	CheckCircle2,
@@ -14,10 +14,12 @@ import {
 	Play,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { AiChatCreatePanel } from "@/components/workflow/ai-chat-create-panel";
 import { AiChatComposer } from "@/components/workflow/ai-chat-composer";
 import { useWorkflowAiToolsChat } from "@/hooks/use-workflow-ai-tools-chat";
-import { readWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
+import {
+	clearWorkflowAiCreateSeed,
+	readWorkflowAiCreateSeed,
+} from "@/lib/workflow-ai-authoring";
 import type { CanvasToolResult } from "@/lib/ai/canvas-tools";
 import { workflowAiCreateDraftAtom } from "@/lib/workflow-store";
 import type { WorkflowNode } from "@/lib/workflow-store";
@@ -380,7 +382,7 @@ function ExistingAiChatPanel({ workflowId }: AiChatPanelProps) {
 }
 
 export function AiChatPanel({ workflowId }: AiChatPanelProps) {
-	const createDraft = useAtomValue(workflowAiCreateDraftAtom);
+	const [createDraft, setCreateDraft] = useAtom(workflowAiCreateDraftAtom);
 	const [hasPendingCreateSeed, setHasPendingCreateSeed] = useState(false);
 
 	useEffect(() => {
@@ -388,13 +390,15 @@ export function AiChatPanel({ workflowId }: AiChatPanelProps) {
 			readWorkflowAiCreateSeed()?.workflowId === workflowId,
 		);
 	}, [workflowId]);
-
-	const isCreateMode =
-		createDraft?.workflowId === workflowId || hasPendingCreateSeed;
-
-	if (isCreateMode) {
-		return <AiChatCreatePanel workflowId={workflowId} />;
-	}
+	useEffect(() => {
+		if (createDraft?.workflowId === workflowId) {
+			setCreateDraft(null);
+		}
+		if (hasPendingCreateSeed) {
+			clearWorkflowAiCreateSeed();
+			setHasPendingCreateSeed(false);
+		}
+	}, [createDraft, hasPendingCreateSeed, setCreateDraft, workflowId]);
 
 	return <ExistingAiChatPanel workflowId={workflowId} />;
 }

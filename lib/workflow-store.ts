@@ -9,11 +9,9 @@ import { applyEdgeChanges, applyNodeChanges } from "@xyflow/react";
 import { atom } from "jotai";
 import { nanoid } from "nanoid";
 import { api } from "./api-client";
+import type { SWWorkflow } from "./serverless-workflow/sdk";
 import type { AgentNodeProgress } from "./types/durable-timeline";
-import type {
-	PublishedRuntimeMetadata,
-	WorkflowSpec,
-} from "./workflow-spec/types";
+import type { PublishedRuntimeMetadata } from "./workflow-spec/types";
 
 export type WorkflowNodeType =
 	| "trigger"
@@ -108,7 +106,7 @@ export type WorkflowAiCreateDraftState = {
 	originalEdges: WorkflowEdge[];
 	name?: string;
 	description?: string;
-	spec?: WorkflowSpec | null;
+	spec?: SWWorkflow | null;
 	nodes?: WorkflowNode[];
 	edges?: WorkflowEdge[];
 	issues: WorkflowAiCreateIssueSet;
@@ -528,7 +526,7 @@ export const insertNodeAtConnectionAtom = atom(
 			source,
 			target,
 			edgeId,
-			nodeType = "action",
+			nodeType = "call",
 			selectNode = true,
 		}: {
 			position: XYPosition;
@@ -539,7 +537,7 @@ export const insertNodeAtConnectionAtom = atom(
 			selectNode?: boolean;
 		},
 	) => {
-		const effectiveNodeType = nodeType === "add" ? "action" : nodeType;
+		const effectiveNodeType = nodeType === "add" ? "call" : nodeType;
 		const currentNodes = get(nodesAtom);
 		const currentEdges = get(edgesAtom);
 		const history = get(historyAtom);

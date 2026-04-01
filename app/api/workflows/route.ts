@@ -1,8 +1,12 @@
-import { desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
+import {
+	isSupportedWorkflowId,
+	SUPPORTED_WORKFLOW_ID,
+} from "@/lib/serverless-workflow/cutover";
 import { extractPublishedRuntime } from "@/lib/workflow-publishing";
 
 export async function GET(request: Request) {
@@ -16,17 +20,23 @@ export async function GET(request: Request) {
 		const userWorkflows = await db
 			.select()
 			.from(workflows)
-			.where(eq(workflows.userId, session.user.id))
-			.orderBy(desc(workflows.updatedAt));
+			.where(
+				and(
+					eq(workflows.userId, session.user.id),
+					eq(workflows.id, SUPPORTED_WORKFLOW_ID),
+				),
+			);
 
-		const mappedWorkflows = userWorkflows.map((workflow) => ({
-			...workflow,
-			createdAt: workflow.createdAt.toISOString(),
-			updatedAt: workflow.updatedAt.toISOString(),
-			publishedRuntime: extractPublishedRuntime(
-				(workflow as Record<string, unknown>).spec,
-			),
-		}));
+		const mappedWorkflows = userWorkflows
+			.filter((workflow) => isSupportedWorkflowId(workflow.id))
+			.map((workflow) => ({
+				...workflow,
+				createdAt: workflow.createdAt.toISOString(),
+				updatedAt: workflow.updatedAt.toISOString(),
+				publishedRuntime: extractPublishedRuntime(
+					(workflow as Record<string, unknown>).spec,
+				),
+			}));
 
 		return NextResponse.json(mappedWorkflows);
 	} catch (error) {

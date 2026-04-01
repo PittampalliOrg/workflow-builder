@@ -14,6 +14,7 @@ import {
 	getRequiredConnectionForAction,
 	requiresConnectionForIntegration,
 } from "@/lib/actions/connection-utils";
+import { SUPPORTED_WORKFLOW_ID } from "@/lib/serverless-workflow/cutover";
 import { readWorkflowAiCreateSeed } from "@/lib/workflow-ai-authoring";
 import {
 	connectionsAtom,
@@ -689,14 +690,16 @@ const WorkflowEditor = ({ params }: WorkflowPageProps) => {
 		<div className="flex h-dvh w-full flex-col overflow-hidden">
 			{/* Workflow not found overlay */}
 			{workflowNotFound && (
-				<div className="pointer-events-auto absolute inset-0 z-20 flex items-center justify-center">
-					<div className="rounded-lg border bg-background p-8 text-center shadow-lg">
+				<div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+					<div className="pointer-events-auto rounded-lg border bg-background p-8 text-center shadow-lg">
 						<h1 className="mb-2 font-semibold text-2xl">Workflow Not Found</h1>
 						<p className="mb-6 text-muted-foreground">
 							The workflow you're looking for doesn't exist or has been deleted.
 						</p>
 						<Button asChild>
-							<Link href="/">New Workflow</Link>
+							<Link href={`/workflows/${SUPPORTED_WORKFLOW_ID}`}>
+								Open Supported Workflow
+							</Link>
 						</Button>
 					</div>
 				</div>

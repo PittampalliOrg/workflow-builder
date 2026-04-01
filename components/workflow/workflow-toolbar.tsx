@@ -6,7 +6,6 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
 	Check,
 	ChevronDown,
-	Copy,
 	Download,
 	Globe,
 	Loader2,
@@ -49,7 +48,6 @@ import {
 	canRedoAtom,
 	canUndoAtom,
 	clearWorkflowAtom,
-	currentWorkflowEngineTypeAtom,
 	currentWorkflowIdAtom,
 	currentWorkflowNameAtom,
 	currentWorkflowPublishedRuntimeAtom,
@@ -85,6 +83,7 @@ import {
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ActionDefinition, IntegrationType } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
+import { SUPPORTED_WORKFLOW_ID } from "@/lib/serverless-workflow/cutover";
 import { getNavigableWorkflows } from "@/lib/workflow-navigation";
 import type { ContractIssue } from "@/lib/workflow-validation/types";
 import { Panel } from "../ai-elements/panel";
@@ -936,7 +935,6 @@ function useWorkflowState() {
 	const [edges, setEdges] = useAtom(edgesAtom);
 	const [isExecuting, setIsExecuting] = useAtom(isExecutingAtom);
 	const [isGenerating] = useAtom(isGeneratingAtom);
-	const clearWorkflow = useSetAtom(clearWorkflowAtom);
 	const updateNodeData = useSetAtom(updateNodeDataAtom);
 	const [currentWorkflowId] = useAtom(currentWorkflowIdAtom);
 	const [workflowName, setCurrentWorkflowName] = useAtom(
@@ -947,7 +945,6 @@ function useWorkflowState() {
 	const [workflowVisibility, setWorkflowVisibility] = useAtom(
 		currentWorkflowVisibilityAtom,
 	);
-	const engineType = useAtomValue(currentWorkflowEngineTypeAtom);
 	const isOwner = useAtomValue(isWorkflowOwnerAtom);
 	const router = useRouter();
 	const [isSaving, setIsSaving] = useAtom(isSavingAtom);
@@ -957,6 +954,7 @@ function useWorkflowState() {
 	const undo = useSetAtom(undoAtom);
 	const redo = useSetAtom(redoAtom);
 	const addNode = useSetAtom(addNodeAtom);
+	const clearWorkflow = useSetAtom(clearWorkflowAtom);
 	const [canUndo] = useAtom(canUndoAtom);
 	const [canRedo] = useAtom(canRedoAtom);
 	const { data: session } = useSession();
@@ -970,7 +968,6 @@ function useWorkflowState() {
 	const aiCreateDraft = useAtomValue(workflowAiCreateDraftAtom);
 
 	const [isDownloading, setIsDownloading] = useState(false);
-	const [isDuplicating, setIsDuplicating] = useState(false);
 	const [isPublishing, setIsPublishing] = useState(false);
 	const [allWorkflows, setAllWorkflows] = useState<SavedWorkflow[]>([]);
 
@@ -993,7 +990,6 @@ function useWorkflowState() {
 		isExecuting,
 		setIsExecuting,
 		isGenerating,
-		clearWorkflow,
 		updateNodeData,
 		currentWorkflowId,
 		workflowName,
@@ -1002,7 +998,6 @@ function useWorkflowState() {
 		setCurrentWorkflowPublishedRuntime,
 		workflowVisibility,
 		setWorkflowVisibility,
-		engineType,
 		isOwner,
 		router,
 		isSaving,
@@ -1012,13 +1007,12 @@ function useWorkflowState() {
 		undo,
 		redo,
 		addNode,
+		clearWorkflow,
 		canUndo,
 		canRedo,
 		session,
 		isDownloading,
 		setIsDownloading,
-		isDuplicating,
-		setIsDuplicating,
 		isPublishing,
 		setIsPublishing,
 		allWorkflows,
@@ -1058,7 +1052,6 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setWorkflowVisibility,
 		setAllWorkflows,
 		setIsDownloading,
-		setIsDuplicating,
 		setIsPublishing,
 		setActiveTab,
 		setNodes,
@@ -1066,11 +1059,9 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		setSelectedNodeId,
 		setSelectedExecutionId,
 		userIntegrations,
-		engineType,
 		simulationMode,
 		triggerExecute,
 		setTriggerExecute,
-		router,
 		session,
 		aiCreateDraft,
 	} = state;
@@ -1102,43 +1093,6 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 			handleExecute();
 		}
 	}, [triggerExecute, setTriggerExecute, handleExecute]);
-
-	const handleClearWorkflow = () => {
-		openOverlay(ConfirmOverlay, {
-			title: "Clear Workflow",
-			message:
-				"Are you sure you want to clear all nodes and connections? This action cannot be undone.",
-			confirmLabel: "Clear Workflow",
-			confirmVariant: "destructive" as const,
-			destructive: true,
-			onConfirm: () => {
-				clearWorkflow();
-			},
-		});
-	};
-
-	const handleDeleteWorkflow = () => {
-		openOverlay(ConfirmOverlay, {
-			title: "Delete Workflow",
-			message: `Are you sure you want to delete "${workflowName}"? This will permanently delete the workflow. This cannot be undone.`,
-			confirmLabel: "Delete Workflow",
-			confirmVariant: "destructive" as const,
-			destructive: true,
-			onConfirm: async () => {
-				if (!currentWorkflowId) {
-					return;
-				}
-				try {
-					await api.workflow.delete(currentWorkflowId);
-					toast.success("Workflow deleted successfully");
-					window.location.href = "/";
-				} catch (error) {
-					console.error("Failed to delete workflow:", error);
-					toast.error("Failed to delete workflow. Please try again.");
-				}
-			},
-		});
-	};
 
 	const handleDownload = async () => {
 		if (!currentWorkflowId) {
@@ -1238,30 +1192,6 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		}
 	};
 
-	const handleDuplicate = async () => {
-		if (!currentWorkflowId) {
-			return;
-		}
-
-		setIsDuplicating(true);
-		try {
-			if (!session?.user) {
-				toast.error("Please sign in to duplicate workflows");
-				setIsDuplicating(false);
-				return;
-			}
-
-			const newWorkflow = await api.workflow.duplicate(currentWorkflowId);
-			toast.success("Workflow duplicated successfully");
-			router.push(`/workflows/${newWorkflow.id}`);
-		} catch (error) {
-			console.error("Failed to duplicate workflow:", error);
-			toast.error("Failed to duplicate workflow. Please try again.");
-		} finally {
-			setIsDuplicating(false);
-		}
-	};
-
 	const handleCancelSimulation = () => {
 		cancelWorkflowSimulation();
 		setIsExecuting(false);
@@ -1316,12 +1246,9 @@ function useWorkflowActions(state: ReturnType<typeof useWorkflowState>) {
 		handlePublish,
 		handleExecute,
 		handleCancelSimulation,
-		handleClearWorkflow,
-		handleDeleteWorkflow,
 		handleDownload,
 		loadWorkflows,
 		handleToggleVisibility,
-		handleDuplicate,
 	};
 }
 
@@ -1406,8 +1333,7 @@ function ToolbarActions({
 		// Convert to flow coordinates
 		const position = screenToFlowPosition({ x: centerX, y: centerY });
 
-		// Adjust for node dimensions to center it properly
-		// Action node is 192px wide and 192px tall (w-48 h-48 in Tailwind)
+		// Adjust for node dimensions to center it properly.
 		const nodeWidth = 192;
 		const nodeHeight = 192;
 		position.x -= nodeWidth / 2;
@@ -1437,16 +1363,16 @@ function ToolbarActions({
 			}
 		}
 
-		// Create new action node
+		// Create a new SW call task node.
 		const newNode: WorkflowNode = {
 			id: nanoid(),
-			type: "action",
+			type: "call",
 			position: finalPosition,
 			data: {
 				label: "",
 				description: "",
-				type: "action",
-				config: {},
+				type: "call",
+				config: { call: "http", with: { method: "GET" } },
 				status: "idle",
 			},
 		};
@@ -1851,33 +1777,6 @@ function RunButtonGroup({
 	);
 }
 
-// Duplicate Button Component - placed next to Sign In for non-owners
-function DuplicateButton({
-	isDuplicating,
-	onDuplicate,
-}: {
-	isDuplicating: boolean;
-	onDuplicate: () => void;
-}) {
-	return (
-		<Button
-			className="h-9 border hover:bg-black/5 dark:hover:bg-white/5"
-			disabled={isDuplicating}
-			onClick={onDuplicate}
-			size="sm"
-			title="Duplicate to your workflows"
-			variant="secondary"
-		>
-			{isDuplicating ? (
-				<Loader2 className="mr-2 size-4 animate-spin" />
-			) : (
-				<Copy className="mr-2 size-4" />
-			)}
-			Duplicate
-		</Button>
-	);
-}
-
 // Workflow Menu Component
 function WorkflowMenuComponent({
 	workflowId,
@@ -1907,16 +1806,9 @@ function WorkflowMenuComponent({
 						<div className="min-w-0 flex-1 text-left">
 							<p
 								className="truncate font-medium text-sm"
-								title={workflowId ? state.workflowName : "New Workflow"}
+								title={workflowId ? state.workflowName : "Workflow"}
 							>
-								{workflowId ? (
-									state.workflowName
-								) : (
-									<>
-										<span className="sm:hidden">New</span>
-										<span className="hidden sm:inline">New Workflow</span>
-									</>
-								)}
+								{workflowId ? state.workflowName : "Workflow"}
 							</p>
 						</div>
 						{workflowId && (
@@ -1932,24 +1824,26 @@ function WorkflowMenuComponent({
 						className="w-[calc(100vw-1rem)] max-w-[30rem] sm:w-[28rem]"
 					>
 						<DropdownMenuItem
-							asChild
 							className="flex items-center justify-between"
+							onSelect={() => {
+								window.location.href = `/workflows/${SUPPORTED_WORKFLOW_ID}`;
+							}}
 						>
-							<a href="/">
-								New Workflow{" "}
-								{!workflowId && <Check className="size-4 shrink-0" />}
-							</a>
+							<span>Open Supported Workflow</span>
+							{!workflowId && <Check className="size-4 shrink-0" />}
 						</DropdownMenuItem>
-						<DropdownMenuItem
-							className="flex items-center justify-between"
-							onClick={() =>
-								openOverlay(WorkflowJsonImportOverlay, {
-									mode: workflowId ? "replace" : "create",
-								})
-							}
-						>
-							<span>Import JSON</span>
-						</DropdownMenuItem>
+						{workflowId && (
+							<DropdownMenuItem
+								className="flex items-center justify-between"
+								onClick={() =>
+									openOverlay(WorkflowJsonImportOverlay, {
+										mode: "replace",
+									})
+								}
+							>
+								<span>Import SW Definition</span>
+							</DropdownMenuItem>
+						)}
 						{workflowId && (
 							<DropdownMenuItem
 								className="flex items-center justify-between"
@@ -1961,21 +1855,7 @@ function WorkflowMenuComponent({
 									})
 								}
 							>
-								<span>Export JSON</span>
-							</DropdownMenuItem>
-						)}
-						{workflowId && (
-							<DropdownMenuItem
-								className="flex items-center gap-2"
-								disabled={state.isDuplicating}
-								onClick={actions.handleDuplicate}
-							>
-								{state.isDuplicating ? (
-									<Loader2 className="size-4 animate-spin" />
-								) : (
-									<Copy className="size-4" />
-								)}
-								<span>Duplicate workflow</span>
+								<span>Export SW Definition</span>
 							</DropdownMenuItem>
 						)}
 						<DropdownMenuSeparator />
@@ -2074,12 +1954,6 @@ export const WorkflowToolbar = ({ workflowId }: WorkflowToolbarProps) => {
 								<GitHubStarsButton />
 								<DeployButton />
 							</>
-						)}
-						{workflowId && !state.isOwner && (
-							<DuplicateButton
-								isDuplicating={state.isDuplicating}
-								onDuplicate={actions.handleDuplicate}
-							/>
 						)}
 						<UserMenu />
 					</div>

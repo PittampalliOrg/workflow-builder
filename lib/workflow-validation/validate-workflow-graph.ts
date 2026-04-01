@@ -1,9 +1,9 @@
-import { decompileGraphToWorkflowSpec } from "@/lib/workflow-spec/decompile";
+import { compileGraphToWorkflow } from "@/lib/serverless-workflow/compile";
+import { validateWorkflowDefinition } from "@/lib/serverless-workflow/sdk";
 import {
 	areHandleTypesCompatible,
 	getConnectionRulesForEdge,
 } from "@/lib/workflow-connection-rules";
-import { lintWorkflowSpec, type LintIssue } from "@/lib/workflow-spec/lint";
 import type { WorkflowSpecCatalog } from "@/lib/workflow-spec/catalog";
 import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 import { buildWorkflowContextAvailability } from "./context-availability";
@@ -14,11 +14,6 @@ import type {
 	EdgeValidationState,
 	WorkflowValidationSnapshot,
 } from "./types";
-import type {
-	WorkflowTableEdge,
-	WorkflowTableNode,
-} from "@/lib/workflow-spec/compile";
-
 type ValidateWorkflowGraphInput = {
 	nodes: WorkflowNode[];
 	edges: WorkflowEdge[];
@@ -39,7 +34,7 @@ function normalizeIssueCode(code: string): ContractIssueCode {
 }
 
 function toContractIssue(
-	issue: LintIssue,
+	issue: { code: string; message: string; path: string; nodeId?: string },
 	severity: ContractIssueSeverity,
 ): ContractIssue {
 	return {
@@ -147,33 +142,6 @@ function sanitizeGraph(nodes: WorkflowNode[], edges: WorkflowEdge[]) {
 	return { filteredNodes, filteredEdges };
 }
 
-function toWorkflowTableNode(node: WorkflowNode): WorkflowTableNode {
-	return {
-		id: node.id,
-		type: String(node.type ?? node.data.type ?? "action"),
-		position: node.position,
-		data: {
-			label: node.data.label || node.id,
-			description: node.data.description,
-			type: String(node.data.type ?? node.type ?? "action"),
-			config: (node.data.config as Record<string, unknown> | undefined) || {},
-			status: node.data.status,
-			enabled: node.data.enabled,
-		},
-	};
-}
-
-function toWorkflowTableEdge(edge: WorkflowEdge): WorkflowTableEdge {
-	return {
-		id: edge.id,
-		source: edge.source,
-		target: edge.target,
-		sourceHandle: edge.sourceHandle,
-		targetHandle: edge.targetHandle,
-		type: edge.type,
-	};
-}
-
 export function validateWorkflowGraph(
 	input: ValidateWorkflowGraphInput,
 ): WorkflowValidationSnapshot {
@@ -195,21 +163,21 @@ export function validateWorkflowGraph(
 		};
 	}
 
-	const spec = decompileGraphToWorkflowSpec({
-		name: "Workflow",
-		nodes: filteredNodes.map(toWorkflowTableNode),
-		edges: filteredEdges.map(toWorkflowTableEdge),
-	});
-	const lintResult = lintWorkflowSpec(spec, {
-		catalog: input.catalog,
-		unknownActionType: "warn",
-	});
+	const spec = compileGraphToWorkflow(
+		{
+			nodes: filteredNodes as never,
+			edges: filteredEdges as never,
+		},
+		{
+			name: "workflow",
+			title: "Workflow",
+			namespace: "dapr-swe",
+		},
+	);
+	const lintIssues = validateWorkflowDefinition(spec);
 
 	const issues = [
-		...lintResult.result.errors.map((issue) => toContractIssue(issue, "error")),
-		...lintResult.result.warnings.map((issue) =>
-			toContractIssue(issue, "warning"),
-		),
+		...lintIssues.map((issue) => toContractIssue(issue, "error")),
 		...getConnectionContractIssues(filteredNodes, filteredEdges),
 	];
 	const issuesByNodeId = buildIssuesByNodeId(issues);

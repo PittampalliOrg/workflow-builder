@@ -1,55 +1,70 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
 import { db } from "@/lib/db";
 import { workflows } from "@/lib/db/schema";
-import { generateId } from "@/lib/utils/id";
-import { resolveCanonicalWorkflowSpec } from "@/lib/workflow-contract";
 import {
-	applyResourcePresetsToNodes,
-	persistWorkflowResourceRefs,
-} from "@/lib/workflows/apply-resource-presets";
-import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
+	normalizeWorkflowToSwCutover,
+	SUPPORTED_WORKFLOW_ID,
+} from "@/lib/serverless-workflow/cutover";
+import type { WorkflowEdge, WorkflowNode } from "@/lib/workflow-store";
 
-const CURRENT_WORKFLOW_NAME = "~~__CURRENT__~~";
+async function loadSupportedWorkflow(userId: string) {
+	return db.query.workflows.findFirst({
+		where: and(
+			eq(workflows.id, SUPPORTED_WORKFLOW_ID),
+			eq(workflows.userId, userId),
+		),
+	});
+}
 
 export async function GET(request: Request) {
 	try {
 		const session = await getSession(request);
-
 		if (!session?.user) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
 
-		const [currentWorkflow] = await db
-			.select()
-			.from(workflows)
-			.where(
-				and(
-					eq(workflows.name, CURRENT_WORKFLOW_NAME),
-					eq(workflows.userId, session.user.id),
-				),
-			)
-			.orderBy(desc(workflows.updatedAt))
-			.limit(1);
+		const workflow = await loadSupportedWorkflow(session.user.id);
+		if (!workflow) {
+			return NextResponse.json(
+				{ error: "Workflow not found" },
+				{ status: 404 },
+			);
+		}
 
-		if (!currentWorkflow) {
-			// Return empty workflow if no current state exists
-			return NextResponse.json({
-				nodes: [],
-				edges: [],
-				specVersion: null,
-				spec: null,
-			});
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes: workflow.nodes as WorkflowNode[],
+			edges: workflow.edges as WorkflowEdge[],
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
+		});
+
+		if (normalized.needsMigration) {
+			await db
+				.update(workflows)
+				.set({
+					nodes: normalized.nodes,
+					edges: normalized.edges,
+					specVersion: normalized.specVersion,
+					spec: normalized.spec,
+					updatedAt: new Date(),
+				})
+				.where(eq(workflows.id, workflow.id));
 		}
 
 		return NextResponse.json({
-			id: currentWorkflow.id,
-			nodes: currentWorkflow.nodes,
-			edges: currentWorkflow.edges,
-			specVersion:
-				(currentWorkflow as Record<string, unknown>).specVersion ?? null,
-			spec: (currentWorkflow as Record<string, unknown>).spec ?? null,
+			id: workflow.id,
+			nodes: normalized.nodes,
+			edges: normalized.edges,
+			specVersion: normalized.specVersion,
+			spec: normalized.spec,
 		});
 	} catch (error) {
 		console.error("Failed to get current workflow:", error);
@@ -68,105 +83,60 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
 	try {
 		const session = await getSession(request);
-
 		if (!session?.user) {
 			return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 		}
 
-		const body = await request.json();
-		const { nodes, edges } = body;
-
-		if (!(nodes && edges)) {
+		const workflow = await loadSupportedWorkflow(session.user.id);
+		if (!workflow) {
 			return NextResponse.json(
-				{ error: "Nodes and edges are required" },
-				{ status: 400 },
+				{ error: "Workflow not found" },
+				{ status: 404 },
 			);
 		}
 
-		const normalizedNodes = normalizeWorkflowNodes(nodes) as any[];
-		const presetApplied = await applyResourcePresetsToNodes({
-			nodes: normalizedNodes,
-			userId: session.user.id,
-			projectId: session.user.projectId,
-		});
-		const canonicalSpec = resolveCanonicalWorkflowSpec({
-			name: CURRENT_WORKFLOW_NAME,
-			description: "Auto-saved current workflow",
-			nodes: presetApplied.nodes as any[],
+		const body = (await request.json().catch(() => ({}))) as {
+			nodes?: WorkflowNode[];
+			edges?: WorkflowEdge[];
+		};
+		const nodes = Array.isArray(body.nodes)
+			? body.nodes
+			: (workflow.nodes as WorkflowNode[]);
+		const edges = Array.isArray(body.edges)
+			? body.edges
+			: (workflow.edges as WorkflowEdge[]);
+
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes,
 			edges,
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
 		});
 
-		// Check if current workflow exists
-		const [existingWorkflow] = await db
-			.select()
-			.from(workflows)
-			.where(
-				and(
-					eq(workflows.name, CURRENT_WORKFLOW_NAME),
-					eq(workflows.userId, session.user.id),
-				),
-			)
-			.limit(1);
-
-		if (existingWorkflow) {
-			// Update existing current workflow
-			const [updatedWorkflow] = await db
-				.update(workflows)
-				.set({
-					nodes: presetApplied.nodes as any[],
-					edges,
-					specVersion: canonicalSpec.specVersion,
-					spec: canonicalSpec.spec,
-					updatedAt: new Date(),
-				})
-				.where(eq(workflows.id, existingWorkflow.id))
-				.returning();
-
-			await persistWorkflowResourceRefs({
-				workflowId: updatedWorkflow.id,
-				refs: presetApplied.refs,
-			});
-
-			return NextResponse.json({
-				id: updatedWorkflow.id,
-				nodes: updatedWorkflow.nodes,
-				edges: updatedWorkflow.edges,
-				specVersion:
-					(updatedWorkflow as Record<string, unknown>).specVersion ?? null,
-				spec: (updatedWorkflow as Record<string, unknown>).spec ?? null,
-			});
-		}
-
-		// Create new current workflow
-		const workflowId = generateId();
-
-		const [savedWorkflow] = await db
-			.insert(workflows)
-			.values({
-				id: workflowId,
-				name: CURRENT_WORKFLOW_NAME,
-				description: "Auto-saved current workflow",
-				nodes: presetApplied.nodes as any[],
-				edges,
-				specVersion: canonicalSpec.specVersion,
-				spec: canonicalSpec.spec,
-				userId: session.user.id,
-				projectId: session.user.projectId,
+		const [updated] = await db
+			.update(workflows)
+			.set({
+				nodes: normalized.nodes,
+				edges: normalized.edges,
+				specVersion: normalized.specVersion,
+				spec: normalized.spec,
+				updatedAt: new Date(),
 			})
+			.where(eq(workflows.id, workflow.id))
 			.returning();
 
-		await persistWorkflowResourceRefs({
-			workflowId: savedWorkflow.id,
-			refs: presetApplied.refs,
-		});
-
 		return NextResponse.json({
-			id: savedWorkflow.id,
-			nodes: savedWorkflow.nodes,
-			edges: savedWorkflow.edges,
-			specVersion:
-				(savedWorkflow as Record<string, unknown>).specVersion ?? null,
-			spec: (savedWorkflow as Record<string, unknown>).spec ?? null,
+			id: updated.id,
+			nodes: normalized.nodes,
+			edges: normalized.edges,
+			specVersion: normalized.specVersion,
+			spec: normalized.spec,
 		});
 	} catch (error) {
 		console.error("Failed to save current workflow:", error);

@@ -23,7 +23,7 @@ import {
 	normalizeGeneratedWorkflowNodes,
 	readWorkflowAiCreateSeed,
 } from "@/lib/workflow-ai-authoring";
-import type { WorkflowSpec } from "@/lib/workflow-spec/types";
+import type { SWWorkflow } from "@/lib/serverless-workflow/sdk";
 import {
 	currentWorkflowNameAtom,
 	edgesAtom,
@@ -37,23 +37,30 @@ import {
 } from "@/lib/workflow-store";
 
 function summarizeGeneratedWorkflow(nodes: WorkflowNode[]) {
-	const executable = nodes.filter((node) => node.type !== "add");
-	const hasApproval = executable.some((node) => node.type === "approval-gate");
-	const hasBranching = executable.some((node) => node.type === "if-else");
-	const hasLoop = executable.some(
-		(node) => node.type === "loop-until" || node.type === "while",
+	const executable = nodes.filter(
+		(node) => !["add", "start", "end"].includes(node.type ?? ""),
 	);
-	const actionCount = executable.filter(
-		(node) => node.type === "action" || node.type === "activity",
-	).length;
-	const trigger =
-		executable.find((node) => node.type === "trigger")?.data.config
-			?.triggerType ?? "Manual";
+	const hasBranching = executable.some(
+		(node) => node.type === "switch" || node.type === "if-else",
+	);
+	const hasLoop = executable.some((node) =>
+		["for", "do", "loop-until", "while"].includes(node.type ?? ""),
+	);
+	const taskCount = executable.length;
+	const startNode = nodes.find((node) => node.type === "start");
+	const startConfig =
+		(startNode?.data.config as Record<string, unknown> | undefined) ||
+		((startNode?.data as Record<string, unknown> | undefined)?.taskConfig as
+			| Record<string, unknown>
+			| undefined);
+	const authoringMode =
+		startConfig?.document && typeof startConfig.document === "object"
+			? "SW 1.0"
+			: "Graph";
 
 	return {
-		trigger: String(trigger || "Manual"),
-		actionCount,
-		hasApproval,
+		authoringMode,
+		taskCount,
 		hasBranching,
 		hasLoop,
 	};
@@ -144,7 +151,7 @@ export function AiChatCreatePanel({ workflowId }: { workflowId: string }) {
 						status: "staged",
 						name: generated.name,
 						description: generated.description,
-						spec: (generated.spec ?? null) as WorkflowSpec | null,
+						spec: (generated.spec ?? null) as SWWorkflow | null,
 						nodes: stagedNodes,
 						edges: stagedEdges,
 						issues: generated.issues,
@@ -236,7 +243,6 @@ export function AiChatCreatePanel({ workflowId }: { workflowId: string }) {
 				description: currentDraft.description,
 				nodes: currentDraft.nodes,
 				edges: currentDraft.edges,
-				specVersion: "workflow-spec/v1",
 				spec: currentDraft.spec,
 			});
 
@@ -248,7 +254,7 @@ export function AiChatCreatePanel({ workflowId }: { workflowId: string }) {
 			setWorkflowName(updated.name);
 			setHasUnsavedChanges(false);
 			setCreateDraft(null);
-			toast.success("Workflow created from AI draft");
+			toast.success("Applied AI draft to the supported workflow");
 		} catch (error) {
 			console.error("Failed to apply AI draft:", error);
 			setCreateDraft((previous) =>
@@ -429,14 +435,11 @@ export function AiChatCreatePanel({ workflowId }: { workflowId: string }) {
 
 						{summary && (
 							<div className="flex flex-wrap gap-2">
-								<Badge variant="outline">Trigger: {summary.trigger}</Badge>
+								<Badge variant="outline">{summary.authoringMode}</Badge>
 								<Badge variant="outline">
-									{summary.actionCount} action
-									{summary.actionCount === 1 ? "" : "s"}
+									{summary.taskCount} task
+									{summary.taskCount === 1 ? "" : "s"}
 								</Badge>
-								{summary.hasApproval && (
-									<Badge variant="outline">Approval</Badge>
-								)}
 								{summary.hasBranching && (
 									<Badge variant="outline">Branching</Badge>
 								)}

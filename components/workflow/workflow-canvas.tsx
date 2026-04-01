@@ -129,12 +129,12 @@ const nodeTemplates = [
 		defaultConfig: { triggerType: "Manual" },
 	},
 	{
-		type: "action" as WorkflowNodeType,
+		type: "call" as WorkflowNodeType,
 		label: "",
 		description: "",
-		displayLabel: "Action",
+		displayLabel: "Call",
 		icon: Zap,
-		defaultConfig: {},
+		defaultConfig: { call: "http", with: { method: "GET" } },
 	},
 ];
 
@@ -1231,9 +1231,8 @@ export function WorkflowCanvas() {
 				clientY,
 			);
 
-			// Get the action template
-			const actionTemplate = nodeTemplates.find((t) => t.type === "action");
-			if (!actionTemplate) {
+			const callTemplate = nodeTemplates.find((t) => t.type === "call");
+			if (!callTemplate) {
 				return;
 			}
 
@@ -1250,13 +1249,13 @@ export function WorkflowCanvas() {
 
 			const newNode: WorkflowNode = {
 				id: nanoid(),
-				type: actionTemplate.type,
+				type: callTemplate.type,
 				position,
 				data: {
-					label: actionTemplate.label,
-					description: actionTemplate.description,
-					type: actionTemplate.type,
-					config: actionTemplate.defaultConfig,
+					label: callTemplate.label,
+					description: callTemplate.description,
+					type: callTemplate.type,
+					config: callTemplate.defaultConfig,
 					status: "idle",
 				},
 				selected: true,

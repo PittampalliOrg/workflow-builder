@@ -2,16 +2,18 @@
 
 import type { LucideIcon } from "lucide-react";
 import {
-	Braces,
-	Database,
+	BellRing,
+	Clock3,
 	GitBranch,
-	NotebookPen,
+	GitFork,
+	Globe,
+	Headphones,
+	Layers3,
+	Play,
 	Repeat,
+	ShieldAlert,
 	ShieldCheck,
-	Sparkles,
-	Timer,
-	Workflow,
-	Zap,
+	Variable,
 } from "lucide-react";
 import type { WorkflowNodeType } from "@/lib/workflow-store";
 import { cn } from "@/lib/utils";
@@ -26,61 +28,39 @@ export type StepTemplate = {
 };
 
 export const STEP_TEMPLATES: StepTemplate[] = [
-	{ type: "action", label: "Action", icon: Zap, supportsInlineInsert: true },
+	{ type: "call", label: "Call", icon: Globe, supportsInlineInsert: true },
+	{ type: "set", label: "Set", icon: Variable, supportsInlineInsert: true },
 	{
-		type: "activity",
-		label: "Activity",
-		icon: Sparkles,
-		supportsInlineInsert: true,
-	},
-	{ type: "timer", label: "Timer", icon: Timer, supportsInlineInsert: true },
-	{
-		type: "approval-gate",
-		label: "Approval",
-		icon: ShieldCheck,
-		supportsInlineInsert: true,
-	},
-	{
-		type: "loop-until",
-		label: "Loop",
-		icon: Repeat,
-		supportsInlineInsert: true,
-	},
-	{
-		type: "if-else",
-		label: "If / Else",
+		type: "switch",
+		label: "Switch",
 		icon: GitBranch,
-		supportsInlineInsert: false,
+		supportsInlineInsert: true,
 	},
+	{ type: "wait", label: "Wait", icon: Clock3, supportsInlineInsert: true },
+	{ type: "for", label: "For", icon: Repeat, supportsInlineInsert: true },
+	{ type: "fork", label: "Fork", icon: GitFork, supportsInlineInsert: true },
+	{ type: "try", label: "Try", icon: ShieldCheck, supportsInlineInsert: true },
+	{ type: "run", label: "Run", icon: Play, supportsInlineInsert: true },
+	{ type: "do", label: "Do", icon: Layers3, supportsInlineInsert: true },
+	{ type: "emit", label: "Emit", icon: BellRing, supportsInlineInsert: true },
 	{
-		type: "set-state",
-		label: "Set State",
-		icon: Database,
+		type: "listen",
+		label: "Listen",
+		icon: Headphones,
 		supportsInlineInsert: true,
 	},
 	{
-		type: "transform",
-		label: "Transform",
-		icon: Braces,
+		type: "raise",
+		label: "Raise",
+		icon: ShieldAlert,
 		supportsInlineInsert: true,
-	},
-	{
-		type: "sub-workflow",
-		label: "Sub-Workflow",
-		icon: Workflow,
-		supportsInlineInsert: true,
-	},
-	{
-		type: "note",
-		label: "Note",
-		icon: NotebookPen,
-		supportsInlineInsert: false,
 	},
 ];
 
 const STEP_TEMPLATE_TYPES = new Set<WorkflowNodeType>(
 	STEP_TEMPLATES.map((template) => template.type),
 );
+
 const INLINE_INSERT_STEP_TYPES = new Set<WorkflowNodeType>(
 	STEP_TEMPLATES.filter((template) => template.supportsInlineInsert).map(
 		(template) => template.type,
@@ -122,7 +102,9 @@ export function StepPalette({
 			)}
 			data-testid="step-palette"
 		>
-			<div className="mb-2 px-1 text-muted-foreground text-xs">Drag a step</div>
+			<div className="mb-2 px-1 text-muted-foreground text-xs">
+				Drag an SW task
+			</div>
 			<div className="grid grid-cols-3 gap-1.5">
 				{STEP_TEMPLATES.map((template) => {
 					const Icon = template.icon;

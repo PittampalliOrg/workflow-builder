@@ -1,13 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth-helpers";
-import { buildRelevantActionListPrompt } from "@/lib/ai/action-list-prompt";
-import { generateWorkflowSpecWithRepairs } from "@/lib/ai/workflow-spec-generation";
-import { validateWorkflowAppConnections } from "@/lib/db/app-connections";
-import { compileWorkflowSpecToGraph } from "@/lib/workflow-spec/compile";
-import { loadInstalledWorkflowSpecCatalog } from "@/lib/workflow-spec/catalog-server";
-import type { WorkflowSpec } from "@/lib/workflow-spec/types";
-import { applyResourcePresetsToNodes } from "@/lib/workflows/apply-resource-presets";
-import { normalizeWorkflowNodes } from "@/lib/workflows/normalize-nodes";
+import { generateSwWorkflowWithRepairs } from "@/lib/ai/sw-workflow-generation";
+import { normalizeWorkflowToSwCutover } from "@/lib/serverless-workflow/cutover";
 
 export async function POST(request: Request) {
 	try {
@@ -17,79 +11,51 @@ export async function POST(request: Request) {
 		}
 
 		const body = (await request.json().catch(() => ({}))) as {
-			prompt?: unknown;
-			name?: unknown;
-			description?: unknown;
+			prompt?: string;
+			name?: string;
+			description?: string;
 		};
-
-		if (typeof body.prompt !== "string" || body.prompt.trim().length === 0) {
+		const prompt = typeof body.prompt === "string" ? body.prompt.trim() : "";
+		if (!prompt) {
 			return NextResponse.json(
-				{ error: "prompt is required" },
+				{ error: "Prompt is required" },
 				{ status: 400 },
 			);
 		}
 
-		const catalog = await loadInstalledWorkflowSpecCatalog();
-		const actionListPrompt = buildRelevantActionListPrompt({
-			catalog,
-			prompt: body.prompt,
-			limit: 80,
+		const generated = await generateSwWorkflowWithRepairs({ prompt });
+		const workflowName =
+			body.name?.trim() ||
+			generated.spec.document.title ||
+			generated.spec.document.name;
+		const workflowDescription =
+			body.description?.trim() || generated.spec.document.summary;
+		const normalized = normalizeWorkflowToSwCutover({
+			name: workflowName,
+			description: workflowDescription,
+			nodes: [],
+			edges: [],
+			spec: generated.spec,
+			specVersion: null,
 		});
-		const generated = await generateWorkflowSpecWithRepairs({
-			prompt: body.prompt,
-			actionListPrompt,
-		});
-
-		const effectiveSpec: WorkflowSpec = {
-			...generated.spec,
-			name:
-				typeof body.name === "string" && body.name.trim().length > 0
-					? body.name.trim()
-					: generated.spec.name,
-			description:
-				typeof body.description === "string"
-					? body.description
-					: generated.spec.description,
-		};
-
-		const { nodes, edges } = compileWorkflowSpecToGraph(effectiveSpec);
-		const normalizedNodes = normalizeWorkflowNodes(nodes) as typeof nodes;
-		const presetApplied = await applyResourcePresetsToNodes({
-			nodes: normalizedNodes as unknown[],
-			userId: session.user.id,
-			projectId: session.user.projectId,
-		});
-
-		const validation = await validateWorkflowAppConnections(
-			presetApplied.nodes as unknown[],
-			session.user.id,
-		);
-		if (!validation.valid) {
-			return NextResponse.json(
-				{
-					error: "Invalid connection references in workflow",
-					issues: { errors: [], warnings: generated.warnings },
-				},
-				{ status: 403 },
-			);
-		}
 
 		return NextResponse.json({
-			name: effectiveSpec.name,
-			description: effectiveSpec.description,
-			spec: effectiveSpec,
-			nodes: presetApplied.nodes,
-			edges,
+			name: workflowName,
+			description: workflowDescription,
+			spec: normalized.spec,
+			specVersion: normalized.specVersion,
+			nodes: normalized.nodes,
+			edges: normalized.edges,
 			issues: { errors: [], warnings: generated.warnings },
 		});
 	} catch (error) {
-		console.error("Failed to generate workflow from prompt:", error);
+		console.error("Failed to generate SW workflow from prompt:", error);
 		return NextResponse.json(
 			{
 				error:
 					error instanceof Error
 						? error.message
-						: "Failed to generate workflow from prompt",
+						: "Failed to generate SW workflow from prompt",
 			},
 			{ status: 500 },
 		);
