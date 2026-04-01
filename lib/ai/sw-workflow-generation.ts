@@ -4,6 +4,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { resolveCatalogModelKey } from "@/lib/ai/openai-model-selection";
 import { getSecretValueAsync } from "@/lib/dapr/config-provider";
+import { normalizeWorkflowToSwCutover } from "@/lib/serverless-workflow/cutover";
 import { FUNCTION_CATALOG } from "@/lib/serverless-workflow/function-catalog";
 import {
 	parseWorkflowDefinition,
@@ -94,6 +95,7 @@ Rules:
 - Use document.dsl: "1.0.0".
 - Prefer YAML unless JSON is significantly clearer.
 - The workflow must be valid CNCF Serverless Workflow 1.0.
+- Do not invent placeholder entries under use.functions. If you reference a platform function by name in a call task, omit use.functions unless you can provide the full function definition.
 - Use only supported task types: call, set, switch, wait, emit, for, do, fork, try, run, listen, raise.
 - Favor call, set, switch, for, do, and emit for AI-agent workflows.
 - Reference platform functions by name in call tasks. Do not invent raw URLs.
@@ -143,10 +145,32 @@ ${lastWorkflowText}`;
 		lastWorkflowText = workflowText;
 
 		try {
-			const spec = parseWorkflowDefinition(workflowText);
+			const parsed = parseWorkflowDefinition(workflowText);
+			const normalized = normalizeWorkflowToSwCutover({
+				name:
+					parsed.document.title?.trim() ||
+					parsed.document.name?.trim() ||
+					"Generated Workflow",
+				description: parsed.document.summary?.trim() || null,
+				nodes: [],
+				edges: [],
+				spec: parsed,
+				specVersion: null,
+			});
+			const spec = normalized.spec as unknown as SWWorkflow;
 			const issues = validateWorkflowDefinition(spec);
 			if (issues.length === 0) {
-				return { spec, warnings: [] };
+				return {
+					spec,
+					warnings: normalized.needsMigration
+						? [
+								{
+									message:
+										"Normalized generated workflow for platform compatibility.",
+								},
+							]
+						: [],
+				};
 			}
 			lastErrors = issues
 				.map((issue) => `- ${issue.path}: ${issue.message}`)

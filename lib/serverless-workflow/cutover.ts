@@ -119,8 +119,8 @@ function hydrateUseFunctions(spec: Workflow): Workflow {
 		use: {
 			...((spec.use ?? {}) as Record<string, unknown>),
 			functions: {
-				...buildUseFunctions(functionNames),
 				...((spec.use?.functions ?? {}) as Record<string, unknown>),
+				...buildUseFunctions(functionNames),
 			},
 		} as never,
 	};
