@@ -142,6 +142,60 @@ class OpenShellBackend:
             truncated=data.get("timedOut", False),
         )
 
+    def clone_repository(
+        self,
+        *,
+        repository_url: str,
+        repository_branch: str = "main",
+        repository_token: str = "",
+        repository_username: str = "",
+        repository_owner: str = "",
+        repository_repo: str = "",
+        target_dir: str = "repo",
+        timeout: int = 300,
+    ) -> dict:
+        payload = {
+            "workspaceRef": self._workspace_ref,
+            "repositoryUrl": repository_url,
+            "repositoryBranch": repository_branch,
+            "repositoryToken": repository_token,
+            "repositoryUsername": repository_username,
+            "repositoryOwner": repository_owner,
+            "repositoryRepo": repository_repo,
+            "targetDir": target_dir,
+            "timeoutMs": timeout * 1000,
+        }
+        with httpx.Client(timeout=max(timeout + 30, 60)) as client:
+            response = client.post(f"{self._base_url}/api/workspaces/clone", json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    def materialize_files(
+        self,
+        files: list[tuple[str, bytes, int | None]],
+        *,
+        timeout: int = 60,
+    ) -> dict:
+        payload = {
+            "workspaceRef": self._workspace_ref,
+            "files": [
+                {
+                    "path": path,
+                    "contentB64": base64.b64encode(content).decode("ascii"),
+                    **({"mode": mode} if mode is not None else {}),
+                }
+                for path, content, mode in files
+            ],
+            "timeoutMs": timeout * 1000,
+        }
+        with httpx.Client(timeout=max(timeout + 30, 60)) as client:
+            response = client.post(
+                f"{self._base_url}/api/workspaces/materialize-files",
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write content to a file in the sandbox.
 

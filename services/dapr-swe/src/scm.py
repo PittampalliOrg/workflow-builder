@@ -9,11 +9,18 @@ from urllib.parse import quote
 
 import httpx
 
+from src.dapr_runtime import get_configuration_values, get_secret_value
 from src.config import (
+    DAPR_CONFIG_STORE,
+    DAPR_SECRETS_STORE,
     GITEA_API_URL,
     GITEA_INTERNAL_CLONE_BASE_URL,
     GITEA_PASSWORD,
+    GITEA_PASSWORD_SECRET_NAME,
+    GITEA_TOKEN,
+    GITEA_TOKEN_SECRET_NAME,
     GITEA_USERNAME,
+    GITEA_USERNAME_SECRET_NAME,
 )
 
 ScmProvider = Literal["github", "gitea"]
@@ -28,9 +35,10 @@ class ScmAuth:
 
 @dataclass(frozen=True)
 class CloneConfig:
-    clone_url: str
     canonical_remote_url: str
     credential_url: str
+    repository_username: str
+    repository_token: str
     git_user_name: str
     git_user_email: str
 
@@ -46,8 +54,28 @@ def get_gitea_auth(
     username: str | None = None,
     secret: str | None = None,
 ) -> ScmAuth | None:
-    resolved_username = (username or GITEA_USERNAME or "giteaadmin").strip()
-    resolved_secret = (secret or GITEA_PASSWORD).strip()
+    runtime_config = get_configuration_values(
+        DAPR_CONFIG_STORE,
+        [
+            "GITEA_USERNAME",
+            "GITEA_API_URL",
+            "GITEA_INTERNAL_CLONE_BASE_URL",
+        ],
+    )
+    resolved_username = (
+        username
+        or runtime_config.get("GITEA_USERNAME")
+        or get_secret_value(DAPR_SECRETS_STORE, GITEA_USERNAME_SECRET_NAME)
+        or GITEA_USERNAME
+        or "giteaadmin"
+    ).strip()
+    resolved_secret = (
+        secret
+        or GITEA_TOKEN
+        or get_secret_value(DAPR_SECRETS_STORE, GITEA_TOKEN_SECRET_NAME)
+        or get_secret_value(DAPR_SECRETS_STORE, GITEA_PASSWORD_SECRET_NAME)
+        or GITEA_PASSWORD
+    ).strip()
     if not resolved_secret:
         return None
     return ScmAuth(provider="gitea", username=resolved_username, secret=resolved_secret)
@@ -56,20 +84,32 @@ def get_gitea_auth(
 def build_clone_config(provider: ScmProvider, owner: str, repo: str, auth: ScmAuth) -> CloneConfig:
     if provider == "github":
         return CloneConfig(
-            clone_url=f"https://x-access-token:{auth.secret}@github.com/{owner}/{repo}.git",
             canonical_remote_url=f"https://github.com/{owner}/{repo}.git",
-            credential_url=f"https://x-access-token:{auth.secret}@github.com",
+            credential_url=f"https://x-access-token:{auth.secret}@github.com/{owner}/{repo}.git",
+            repository_username="x-access-token",
+            repository_token=auth.secret,
             git_user_name="dapr-swe[bot]",
             git_user_email="dapr-swe[bot]@users.noreply.github.com",
         )
 
-    clone_base = GITEA_INTERNAL_CLONE_BASE_URL.rstrip("/")
-    api_base = GITEA_API_URL.rstrip("/")
+    runtime_config = get_configuration_values(
+        DAPR_CONFIG_STORE,
+        [
+            "GITEA_API_URL",
+            "GITEA_INTERNAL_CLONE_BASE_URL",
+        ],
+    )
+    clone_base = (
+        runtime_config.get("GITEA_INTERNAL_CLONE_BASE_URL")
+        or GITEA_INTERNAL_CLONE_BASE_URL
+    ).rstrip("/")
+    api_base = (runtime_config.get("GITEA_API_URL") or GITEA_API_URL).rstrip("/")
     auth_prefix = f"{quote(auth.username)}:{quote(auth.secret)}@"
     return CloneConfig(
-        clone_url=clone_base.replace("://", f"://{auth_prefix}") + f"/{owner}/{repo}.git",
         canonical_remote_url=f"{api_base}/{owner}/{repo}.git",
-        credential_url=api_base.replace("://", f"://{auth_prefix}"),
+        credential_url=clone_base.replace("://", f"://{auth_prefix}") + f"/{owner}/{repo}.git",
+        repository_username=auth.username or "giteaadmin",
+        repository_token=auth.secret,
         git_user_name=auth.username or "dapr-swe",
         git_user_email=f"{auth.username or 'dapr-swe'}@gitea.local",
     )
@@ -153,8 +193,8 @@ def create_pull_request(
             return {"status": "error", "pr_url": "", "error": response.text}
 
         response = client.post(
-            f"{GITEA_API_URL.rstrip('/')}/api/v1/repos/{owner}/{repo}/pulls",
-            auth=(auth.username, auth.secret),
+            f"{(get_configuration_values(DAPR_CONFIG_STORE, ['GITEA_API_URL']).get('GITEA_API_URL') or GITEA_API_URL).rstrip('/')}/api/v1/repos/{owner}/{repo}/pulls",
+            headers={"Authorization": f"token {auth.secret}"},
             json={
                 "head": head_branch,
                 "base": base_branch,
@@ -192,8 +232,8 @@ def post_issue_comment(
             )
         else:
             response = client.post(
-                f"{GITEA_API_URL.rstrip('/')}/api/v1/repos/{owner}/{repo}/issues/{issue_number}/comments",
-                auth=(auth.username, auth.secret),
+                f"{(get_configuration_values(DAPR_CONFIG_STORE, ['GITEA_API_URL']).get('GITEA_API_URL') or GITEA_API_URL).rstrip('/')}/api/v1/repos/{owner}/{repo}/issues/{issue_number}/comments",
+                headers={"Authorization": f"token {auth.secret}"},
                 json={"body": body},
             )
 

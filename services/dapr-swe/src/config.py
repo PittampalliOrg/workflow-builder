@@ -19,6 +19,16 @@ GITEA_INTERNAL_CLONE_BASE_URL: str = os.environ.get(
 )
 GITEA_USERNAME: str = os.environ.get("GITEA_USERNAME", "giteaadmin")
 GITEA_PASSWORD: str = os.environ.get("GITEA_PASSWORD", "")
+GITEA_TOKEN: str = os.environ.get("GITEA_TOKEN", "")
+GITEA_TOKEN_SECRET_NAME: str = os.environ.get("GITEA_TOKEN_SECRET_NAME", "GITEA-TOKEN")
+GITEA_PASSWORD_SECRET_NAME: str = os.environ.get(
+    "GITEA_PASSWORD_SECRET_NAME",
+    "GITEA-REGISTRY-PASSWORD",
+)
+GITEA_USERNAME_SECRET_NAME: str = os.environ.get(
+    "GITEA_USERNAME_SECRET_NAME",
+    "GITEA-REGISTRY-USERNAME",
+)
 
 # LLM provider
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -41,6 +51,13 @@ DEFAULT_REPO_OWNER: str = os.environ.get("DEFAULT_REPO_OWNER", "PittampalliOrg")
 # Dapr component names
 DAPR_STATE_STORE: str = os.environ.get("DAPR_STATE_STORE", "dapr-swe-statestore")
 DAPR_PUBSUB: str = os.environ.get("DAPR_PUBSUB", "pubsub")
+DAPR_HOST: str = os.environ.get("DAPR_HOST", "localhost")
+DAPR_HTTP_PORT: str = os.environ.get("DAPR_HTTP_PORT", "3500")
+DAPR_SECRETS_STORE: str = os.environ.get("DAPR_SECRETS_STORE", "azure-keyvault")
+DAPR_CONFIG_STORE: str = os.environ.get(
+    "DAPR_CONFIG_STORE",
+    "azureappconfig-workflow-runtime",
+)
 WORKFLOW_EVENT_TOPIC: str = os.environ.get("WORKFLOW_EVENT_TOPIC", "workflow.stream")
 ENABLE_WORKFLOW_EVENTS: bool = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").lower() == "true"
 

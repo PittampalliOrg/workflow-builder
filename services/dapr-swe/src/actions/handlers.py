@@ -94,13 +94,11 @@ def _resolve_scm_auth(
         username = (
             _resolve(input_data, node_outputs, "gitea_username")
             or _resolve(input_data, node_outputs, "repositoryUsername")
-            or os.environ.get("GITEA_USERNAME")
         )
         secret = (
             _resolve(input_data, node_outputs, "gitea_token")
             or _resolve(input_data, node_outputs, "gitea_password")
             or _resolve(input_data, node_outputs, "repositoryToken")
-            or os.environ.get("GITEA_PASSWORD")
         )
         return get_gitea_auth(username=username, secret=secret)
 
@@ -303,27 +301,28 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
 
     clone = build_clone_config(provider, owner, repo, auth)
 
-    # Clone repository (skip if already cloned — idempotent for activity replay)
+    # Clone repository via the runtime's archive staging path.
+    # This avoids putting SCM credentials into the shell command transport.
     check = sandbox.execute(f"test -d {working_dir}/.git && echo exists", timeout=10)
     if "exists" in (check.output or ""):
         logger.info("Repo already cloned at %s, skipping clone", working_dir)
     else:
-        clone_depth = _resolve(input_data, node_outputs, "cloneDepth") or "50"
-        result = sandbox.execute(
-            " ".join(
-                [
-                    f"git clone --depth={clone_depth}",
-                    shlex.quote(clone.clone_url),
-                    shlex.quote(working_dir),
-                ],
-            ),
-            timeout=120,
-        )
-        if result.exit_code != 0:
+        try:
+            sandbox.clone_repository(
+                repository_url=clone.canonical_remote_url,
+                repository_branch=str(_resolve(input_data, node_outputs, "baseBranch") or "main"),
+                repository_token=clone.repository_token,
+                repository_username=clone.repository_username,
+                repository_owner=str(owner),
+                repository_repo=str(repo),
+                target_dir=str(repo),
+                timeout=300,
+            )
+        except Exception as exc:
             return {
                 "success": False,
                 "data": {"sandbox_id": sandbox_id},
-                "error": f"CLONE FAIL: {result.output[:200]}",
+                "error": f"CLONE FAIL: {str(exc)[:200]}",
             }
 
     # Reused sandboxes can point at a stale fork/remote from a previous run.
@@ -351,15 +350,28 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
                 "error": f"Failed to set origin remote: {set_remote_result.output}",
             }
 
-    # Store credentials for later push
-    sandbox.execute(
-        "printf '%s\\n' "
-        + shlex.quote(clone.credential_url)
-        + " > /tmp/.git-credentials",
-        timeout=10,
-    )
+    # Materialize a repo-scoped credential file out of band so later git push
+    # never needs to carry credentials in the OpenShell command payload.
+    try:
+        sandbox.materialize_files(
+            [
+                (
+                    "/tmp/.git-credentials",
+                    f"{clone.credential_url}\n".encode("utf-8"),
+                    0o600,
+                )
+            ],
+            timeout=30,
+        )
+    except Exception as exc:
+        return {
+            "success": False,
+            "data": {"sandbox_id": sandbox_id},
+            "error": f"Failed to materialize git credentials: {exc}",
+        }
     sandbox.execute(
         "git config --global credential.helper 'store --file=/tmp/.git-credentials' "
+        "&& git config --global credential.useHttpPath true "
         "&& git config --global http.sslVerify false",
         timeout=10,
     )
@@ -398,7 +410,7 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
             "agents_md": agents_md,
             "github_token": auth.secret if provider == "github" else "",
             "gitea_username": auth.username if provider == "gitea" else "",
-            "gitea_password": auth.secret if provider == "gitea" else "",
+            "gitea_token": auth.secret if provider == "gitea" else "",
             "wb_execution_id": "",
         },
         "error": None,
@@ -426,7 +438,7 @@ def handle_plan(input_data: dict, node_outputs: dict) -> dict:
     # Build issue context from all available fields
     issue_context = {}
     for key in ("provider", "owner", "repo", "issue_number", "title", "body", "comments",
-                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_password"):
+                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_token"):
         val = _resolve(input_data, node_outputs, key)
         if val is not None:
             issue_context[key] = val
@@ -483,7 +495,7 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
     # Build issue context from all available sources
     issue_context = {}
     for key in ("provider", "owner", "repo", "issue_number", "title", "body", "comments",
-                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_password"):
+                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_token"):
         val = _resolve(input_data, node_outputs, key)
         if val is not None:
             issue_context[key] = val

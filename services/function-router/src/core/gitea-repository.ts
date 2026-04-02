@@ -1,11 +1,17 @@
-const GITEA_API_URL =
+const DEFAULT_GITEA_API_URL =
 	process.env.GITEA_API_URL || "http://gitea-http.gitea.svc.cluster.local:3000";
-const GITEA_REPO_OWNER = process.env.GITEA_REPO_OWNER || "giteaadmin";
-const GITEA_INTERNAL_CLONE_BASE_URL =
+const DEFAULT_GITEA_REPO_OWNER = process.env.GITEA_REPO_OWNER || "giteaadmin";
+const DEFAULT_GITEA_INTERNAL_CLONE_BASE_URL =
 	process.env.GITEA_INTERNAL_CLONE_BASE_URL ||
 	"http://gitea-http.gitea.svc.cluster.local:3000";
-const GITEA_USERNAME = process.env.GITEA_USERNAME || "";
-const GITEA_PASSWORD = process.env.GITEA_PASSWORD || "";
+const DEFAULT_GITEA_USERNAME = process.env.GITEA_USERNAME || "";
+const DEFAULT_GITEA_TOKEN =
+	process.env.GITEA_TOKEN || process.env.GITEA_PASSWORD || "";
+const DAPR_CONFIG_STORE =
+	process.env.DAPR_CONFIG_STORE || "azureappconfig-workflow-runtime";
+const DAPR_SECRETS_STORE = process.env.DAPR_SECRETS_STORE || "azure-keyvault";
+const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
+const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const GITHUB_API_URL = "https://api.github.com";
 const GITHUB_ACCEPT_HEADER = "application/vnd.github+json";
 const GITHUB_USER_AGENT = "workflow-builder-function-router";
@@ -26,11 +32,92 @@ function hostFromUrl(value: string): string {
 	}
 }
 
-const GITEA_HOSTS = new Set<string>([
-	...GITEA_HOST_ALIASES,
-	hostFromUrl(GITEA_API_URL),
-	hostFromUrl(GITEA_INTERNAL_CLONE_BASE_URL),
-]);
+type RuntimeGiteaSettings = {
+	apiUrl: string;
+	repoOwner: string;
+	internalCloneBaseUrl: string;
+	username: string;
+	token: string;
+};
+
+let runtimeSettingsPromise: Promise<RuntimeGiteaSettings> | null = null;
+
+async function getDaprConfiguration(
+	keys: string[],
+): Promise<Record<string, string>> {
+	const url = new URL(
+		`http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${DAPR_CONFIG_STORE}`,
+	);
+	for (const key of keys) {
+		url.searchParams.append("key", key);
+	}
+	const response = await fetch(url.toString(), {
+		signal: AbortSignal.timeout(5_000),
+	});
+	if (!response.ok) {
+		return {};
+	}
+	const payload = (await response.json()) as Record<string, { value?: string }>;
+	const values: Record<string, string> = {};
+	for (const [key, item] of Object.entries(payload || {})) {
+		if (typeof item?.value === "string") {
+			values[key] = item.value;
+		}
+	}
+	return values;
+}
+
+async function getDaprSecret(secretName: string): Promise<string> {
+	const response = await fetch(
+		`http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/secrets/${DAPR_SECRETS_STORE}/${encodeURIComponent(secretName)}`,
+		{ signal: AbortSignal.timeout(5_000) },
+	);
+	if (!response.ok) {
+		return "";
+	}
+	const payload = (await response.json()) as Record<string, string>;
+	if (typeof payload?.[secretName] === "string") {
+		return payload[secretName];
+	}
+	const firstValue = Object.values(payload || {})[0];
+	return typeof firstValue === "string" ? firstValue : "";
+}
+
+async function getRuntimeGiteaSettings(): Promise<RuntimeGiteaSettings> {
+	if (!runtimeSettingsPromise) {
+		runtimeSettingsPromise = (async () => {
+			const config = await getDaprConfiguration([
+				"GITEA_API_URL",
+				"GITEA_REPO_OWNER",
+				"GITEA_INTERNAL_CLONE_BASE_URL",
+				"GITEA_USERNAME",
+			]).catch(() => ({}));
+			const token =
+				(await getDaprSecret("GITEA-TOKEN").catch(() => "")) ||
+				(await getDaprSecret("GITEA-REGISTRY-PASSWORD").catch(() => "")) ||
+				DEFAULT_GITEA_TOKEN;
+			return {
+				apiUrl: config.GITEA_API_URL || DEFAULT_GITEA_API_URL,
+				repoOwner: config.GITEA_REPO_OWNER || DEFAULT_GITEA_REPO_OWNER,
+				internalCloneBaseUrl:
+					config.GITEA_INTERNAL_CLONE_BASE_URL ||
+					DEFAULT_GITEA_INTERNAL_CLONE_BASE_URL,
+				username: config.GITEA_USERNAME || DEFAULT_GITEA_USERNAME,
+				token,
+			};
+		})();
+	}
+	return runtimeSettingsPromise;
+}
+
+async function getGiteaHosts(): Promise<Set<string>> {
+	const settings = await getRuntimeGiteaSettings();
+	return new Set<string>([
+		...GITEA_HOST_ALIASES,
+		hostFromUrl(settings.apiUrl),
+		hostFromUrl(settings.internalCloneBaseUrl),
+	]);
+}
 
 type CloneResolutionInput = {
 	repositoryUrl: string;
@@ -85,17 +172,19 @@ function parseRepositoryUrl(value: string): ParsedRepoUrl | null {
 	}
 }
 
-function isGiteaHost(host: string): boolean {
-	return GITEA_HOSTS.has(host.trim().toLowerCase());
+async function isGiteaHost(host: string): Promise<boolean> {
+	const giteaHosts = await getGiteaHosts();
+	return giteaHosts.has(host.trim().toLowerCase());
 }
 
-function giteaAuth(
+async function giteaAuth(
 	input: CloneResolutionInput,
-): { username: string; password: string } | undefined {
-	if (GITEA_USERNAME && GITEA_PASSWORD) {
+): Promise<{ username: string; password: string } | undefined> {
+	const settings = await getRuntimeGiteaSettings();
+	if (settings.username && settings.token) {
 		return {
-			username: GITEA_USERNAME,
-			password: GITEA_PASSWORD,
+			username: settings.username,
+			password: settings.token,
 		};
 	}
 	if (input.repositoryUsername && input.repositoryToken) {
@@ -107,8 +196,12 @@ function giteaAuth(
 	return undefined;
 }
 
-function buildGiteaCloneUrl(owner: string, repo: string): string {
-	const base = GITEA_INTERNAL_CLONE_BASE_URL.replace(/\/+$/, "");
+async function buildGiteaCloneUrl(
+	owner: string,
+	repo: string,
+): Promise<string> {
+	const settings = await getRuntimeGiteaSettings();
+	const base = settings.internalCloneBaseUrl.replace(/\/+$/, "");
 	return `${base}/${owner}/${repo}.git`;
 }
 
@@ -131,6 +224,7 @@ async function giteaRequest(
 		auth?: { username: string; password: string };
 	},
 ): Promise<Response> {
+	const settings = await getRuntimeGiteaSettings();
 	const headers: Record<string, string> = {};
 	if (input.body !== undefined) {
 		headers["Content-Type"] = "application/json";
@@ -138,7 +232,7 @@ async function giteaRequest(
 	if (input.auth) {
 		headers.Authorization = `Basic ${Buffer.from(`${input.auth.username}:${input.auth.password}`).toString("base64")}`;
 	}
-	return await fetch(`${GITEA_API_URL}${path}`, {
+	return await fetch(`${settings.apiUrl}${path}`, {
 		method: input.method || "GET",
 		headers,
 		body: input.body === undefined ? undefined : JSON.stringify(input.body),
@@ -368,7 +462,7 @@ export async function resolveCloneRepository(
 	const repositoryOwner = input.repositoryOwner.trim();
 	const repositoryRepo = input.repositoryRepo.trim();
 	const repositoryBranch = input.repositoryBranch.trim();
-	const auth = giteaAuth(input);
+	const auth = await giteaAuth(input);
 
 	if (repositoryUrl) {
 		const parsed = parseRepositoryUrl(repositoryUrl);
@@ -383,14 +477,14 @@ export async function resolveCloneRepository(
 			};
 		}
 
-		if (isGiteaHost(parsed.host)) {
+		if (await isGiteaHost(parsed.host)) {
 			await assertGiteaBranchExists(
 				parsed.owner,
 				parsed.repo,
 				repositoryBranch,
 			);
 			return {
-				repositoryUrl: buildGiteaCloneUrl(parsed.owner, parsed.repo),
+				repositoryUrl: await buildGiteaCloneUrl(parsed.owner, parsed.repo),
 				repositoryOwner: parsed.owner,
 				repositoryRepo: parsed.repo,
 				repositoryUsername: auth?.username || input.repositoryUsername,
@@ -400,7 +494,7 @@ export async function resolveCloneRepository(
 		}
 
 		if (parsed.host === "github.com") {
-			const giteaOwner = GITEA_REPO_OWNER;
+			const giteaOwner = (await getRuntimeGiteaSettings()).repoOwner;
 			const giteaRepo = parsed.repo;
 			const ensuredResult = await ensureRepoInGitea({
 				owner: giteaOwner,
@@ -417,7 +511,7 @@ export async function resolveCloneRepository(
 			});
 			await assertGiteaBranchExists(giteaOwner, giteaRepo, repositoryBranch);
 			return {
-				repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
+				repositoryUrl: await buildGiteaCloneUrl(giteaOwner, giteaRepo),
 				repositoryOwner: giteaOwner,
 				repositoryRepo: giteaRepo,
 				repositoryUsername: auth?.username || "",
@@ -442,7 +536,7 @@ export async function resolveCloneRepository(
 		);
 	}
 
-	const giteaOwner = GITEA_REPO_OWNER;
+	const giteaOwner = (await getRuntimeGiteaSettings()).repoOwner;
 	const giteaRepo = repositoryRepo;
 	const ensuredResult = await ensureRepoInGitea({
 		owner: giteaOwner,
@@ -459,7 +553,7 @@ export async function resolveCloneRepository(
 	});
 	await assertGiteaBranchExists(giteaOwner, giteaRepo, repositoryBranch);
 	return {
-		repositoryUrl: buildGiteaCloneUrl(giteaOwner, giteaRepo),
+		repositoryUrl: await buildGiteaCloneUrl(giteaOwner, giteaRepo),
 		repositoryOwner: giteaOwner,
 		repositoryRepo: giteaRepo,
 		repositoryUsername: auth?.username || "",
@@ -480,9 +574,9 @@ export async function createGiteaPullRequest(input: {
 }) {
 	// Always use GITEA_REPO_OWNER — repos are mirrored from GitHub under the
 	// Gitea admin user, so the provided owner (e.g. a GitHub org) won't exist.
-	const owner = GITEA_REPO_OWNER;
+	const owner = (await getRuntimeGiteaSettings()).repoOwner;
 	const repo = input.repositoryRepo.trim();
-	const auth = giteaAuth({
+	const auth = await giteaAuth({
 		repositoryUrl: "",
 		repositoryOwner: owner,
 		repositoryRepo: repo,
