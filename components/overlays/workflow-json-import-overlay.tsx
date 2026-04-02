@@ -5,7 +5,7 @@ import { AlertTriangle, FileJson, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { CodeEditor } from "@/components/ui/code-editor";
 import { api } from "@/lib/api-client";
 import {
 	currentWorkflowIdAtom,
@@ -40,6 +40,10 @@ function formatIssues(issues: {
 		errorCount: issues.errors.length,
 		warningCount: issues.warnings.length,
 	};
+}
+
+function detectDefinitionLanguage(raw: string): "yaml" | "json" {
+	return raw.trim().startsWith("{") ? "json" : "yaml";
 }
 
 function validateSwWorkflow(
@@ -183,14 +187,25 @@ export function WorkflowJsonImportOverlay({
 			</div>
 
 			<div className="mt-4 space-y-2">
-				<Textarea
-					placeholder={
-						'document:\n  dsl: "1.0.0"\n  namespace: dapr-swe\n  name: resolve-issue\n  version: "0.0.1"\n  title: Resolve Issue\nuse:\n  functions:\n    daprSweInitialize:\n      call: http\n      with:\n        method: POST\n        endpoint:\n          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/initialize\ndo:\n  - initialize:\n      call: daprSweInitialize\n      with:\n        sandbox_name: demo'
-					}
-					rows={12}
-					value={raw}
-					onChange={(event) => setRaw(event.target.value)}
-				/>
+				<div className="overflow-hidden rounded-lg border">
+					<CodeEditor
+						height="360px"
+						language={detectDefinitionLanguage(raw)}
+						onChange={(value) => setRaw(value ?? "")}
+						options={{
+							fontSize: 13,
+							lineNumbers: "on",
+							minimap: { enabled: false },
+							scrollBeyondLastLine: false,
+							wordWrap: "on",
+						}}
+						value={raw}
+					/>
+				</div>
+				<p className="text-muted-foreground text-xs">
+					Paste a valid Serverless Workflow definition in YAML or JSON. The
+					editor highlights the detected format automatically.
+				</p>
 
 				<div className="flex flex-wrap items-center gap-2">
 					<Button

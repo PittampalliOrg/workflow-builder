@@ -4,7 +4,7 @@ import { Copy, Download, FileJson } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { CodeEditor } from "@/components/ui/code-editor";
 import { normalizeWorkflowToSwCutover } from "@/lib/serverless-workflow/cutover";
 import type {
 	WorkflowEdge,
@@ -142,7 +142,21 @@ export function WorkflowJsonExportOverlay({
 						JSON
 					</Button>
 				</div>
-				<Textarea readOnly rows={14} value={definition} />
+				<div className="overflow-hidden rounded-lg border">
+					<CodeEditor
+						height="420px"
+						language={format}
+						options={{
+							fontSize: 13,
+							lineNumbers: "on",
+							minimap: { enabled: false },
+							readOnly: true,
+							scrollBeyondLastLine: false,
+							wordWrap: "on",
+						}}
+						value={definition}
+					/>
+				</div>
 				<div className="flex flex-wrap items-center gap-2">
 					<Button onClick={handleCopy} variant="outline" disabled={isCopying}>
 						<Copy className="mr-2 size-4" />

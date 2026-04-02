@@ -5,6 +5,7 @@ import { Check, ShieldCheck, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/api-client";
+import { CodeBlock } from "@/components/ui/code-block";
 import {
 	approvalEventNameAtom,
 	approvalExecutionIdAtom,
@@ -164,9 +165,7 @@ export function ApprovalBanner() {
 								Loading plan preview...
 							</p>
 						) : planArtifact?.planMarkdown ? (
-							<pre className="whitespace-pre-wrap break-words font-mono text-xs">
-								{planArtifact.planMarkdown}
-							</pre>
+							<CodeBlock code={planArtifact.planMarkdown} language="markdown" />
 						) : (
 							<p className="text-xs text-muted-foreground">
 								Plan preview unavailable.

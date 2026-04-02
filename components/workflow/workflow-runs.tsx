@@ -42,6 +42,7 @@ import {
 } from "@/lib/workflow-store";
 import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import { Button } from "../ui/button";
+import { CodeBlock } from "../ui/code-block";
 import { Spinner } from "../ui/spinner";
 
 type ExecutionLog = {
@@ -156,49 +157,8 @@ function createExecutionLogsMap(logs: ExecutionLog[]): Record<
 	return logsMap;
 }
 
-// Helper to check if a string is a URL
-function isUrl(str: string): boolean {
-	try {
-		const url = new URL(str);
-		return url.protocol === "http:" || url.protocol === "https:";
-	} catch {
-		return false;
-	}
-}
-
-// Component to render JSON with clickable links
-function JsonWithLinks({ data }: { data: unknown }) {
-	// Use regex to find and replace URLs in the JSON string
-	const jsonString = JSON.stringify(data, null, 2);
-
-	// Split by quoted strings to preserve structure
-	const parts = jsonString.split(/("https?:\/\/[^"]+"|"[^"]*")/g);
-
-	return (
-		<>
-			{parts.map((part) => {
-				// Check if this part is a quoted URL string
-				if (part.startsWith('"') && part.endsWith('"')) {
-					const innerValue = part.slice(1, -1);
-					if (isUrl(innerValue)) {
-						return (
-							<a
-								className="text-blue-500 underline hover:text-blue-400"
-								href={innerValue}
-								key={innerValue}
-								rel="noopener noreferrer"
-								target="_blank"
-							>
-								{part}
-							</a>
-						);
-					}
-				}
-				// For non-URL parts, just render as text (no key needed for text nodes)
-				return part;
-			})}
-		</>
-	);
+function formatJson(data: unknown) {
+	return JSON.stringify(data, null, 2);
 }
 
 function fileStatusLabel(status: string): string {
@@ -521,9 +481,7 @@ function OutputDisplay({
 
 			{/* Always show JSON output */}
 			<CollapsibleSection copyData={output} title="Output">
-				<pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
-					<JsonWithLinks data={output} />
-				</pre>
+				<CodeBlock code={formatJson(output)} language="json" />
 			</CollapsibleSection>
 
 			{/* Show rich result if available */}
@@ -677,18 +635,18 @@ function DaprExecutionDetails({
 					<div className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
 						Error
 					</div>
-					<pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
-						{execution.error}
-					</pre>
+					<CodeBlock
+						className="border-red-500/20 bg-red-500/5"
+						code={execution.error}
+						language="text"
+					/>
 				</div>
 			)}
 
 			{/* Input data */}
 			{execution.input && Object.keys(execution.input).length > 0 && (
 				<CollapsibleSection copyData={execution.input} title="Input">
-					<pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
-						<JsonWithLinks data={execution.input} />
-					</pre>
+					<CodeBlock code={formatJson(execution.input)} language="json" />
 				</CollapsibleSection>
 			)}
 
@@ -779,9 +737,7 @@ function ExecutionLogEntry({
 					<div className="mt-2 mb-2 space-y-3 px-3">
 						{log.input !== null && log.input !== undefined && (
 							<CollapsibleSection copyData={log.input} title="Input">
-								<pre className="overflow-auto rounded-lg border bg-muted/50 p-3 font-mono text-xs leading-relaxed">
-									<JsonWithLinks data={log.input} />
-								</pre>
+								<CodeBlock code={formatJson(log.input)} language="json" />
 							</CollapsibleSection>
 						)}
 						{log.output !== null && log.output !== undefined && (
@@ -799,9 +755,11 @@ function ExecutionLogEntry({
 								isError
 								title="Error"
 							>
-								<pre className="overflow-auto rounded-lg border border-red-500/20 bg-red-500/5 p-3 font-mono text-red-600 text-xs leading-relaxed">
-									{log.error}
-								</pre>
+								<CodeBlock
+									className="border-red-500/20 bg-red-500/5"
+									code={log.error}
+									language="text"
+								/>
 							</CollapsibleSection>
 						)}
 						{!(log.input || log.output || log.error) && (
@@ -1125,10 +1083,14 @@ export function WorkflowRuns({
 								// Fire browser notifications for approval
 								const notifKey = `${incomingExecutionId}:approval`;
 								if (!notifiedSetRef.current.has(notifKey)) {
-									dispatchNotification("approval", {
-										executionId: incomingExecutionId,
-										workflowId: currentWorkflowId ?? undefined,
-									}, { muted: audioMuted });
+									dispatchNotification(
+										"approval",
+										{
+											executionId: incomingExecutionId,
+											workflowId: currentWorkflowId ?? undefined,
+										},
+										{ muted: audioMuted },
+									);
 									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
 							}
@@ -1158,22 +1120,36 @@ export function WorkflowRuns({
 							}
 
 							// Fire browser notifications for completion/error
-							if (statusResponse.status === "completed" || statusResponse.phase === "completed") {
+							if (
+								statusResponse.status === "completed" ||
+								statusResponse.phase === "completed"
+							) {
 								const notifKey = `${execution.id}:completed`;
 								if (!notifiedSetRef.current.has(notifKey)) {
-									dispatchNotification("completed", {
-										executionId: execution.id,
-										workflowId: currentWorkflowId ?? undefined,
-									}, { muted: audioMuted });
+									dispatchNotification(
+										"completed",
+										{
+											executionId: execution.id,
+											workflowId: currentWorkflowId ?? undefined,
+										},
+										{ muted: audioMuted },
+									);
 									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
-							} else if (statusResponse.status === "error" || statusResponse.phase === "failed") {
+							} else if (
+								statusResponse.status === "error" ||
+								statusResponse.phase === "failed"
+							) {
 								const notifKey = `${execution.id}:error`;
 								if (!notifiedSetRef.current.has(notifKey)) {
-									dispatchNotification("error", {
-										executionId: execution.id,
-										workflowId: currentWorkflowId ?? undefined,
-									}, { muted: audioMuted });
+									dispatchNotification(
+										"error",
+										{
+											executionId: execution.id,
+											workflowId: currentWorkflowId ?? undefined,
+										},
+										{ muted: audioMuted },
+									);
 									setNotifiedSet(new Set(notifiedSet).add(notifKey));
 								}
 							}

@@ -4,6 +4,7 @@ import { Check, Pencil, X } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { CodeEditor } from "@/components/ui/code-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -395,13 +396,21 @@ export function EditConnectionOverlay({
 				return (
 					<div className="space-y-2">
 						<Label htmlFor="props_json">Auth Properties (JSON)</Label>
-						<Input
-							id="props_json"
-							onChange={(e) => updateConfig("props_json", e.target.value)}
-							placeholder='{"apiKey":"..."}'
-							type="text"
-							value={config.props_json || ""}
-						/>
+						<div className="overflow-hidden rounded-lg border">
+							<CodeEditor
+								height="180px"
+								language="json"
+								onChange={(value) => updateConfig("props_json", value ?? "")}
+								options={{
+									fontSize: 13,
+									lineNumbers: "on",
+									minimap: { enabled: false },
+									scrollBeyondLastLine: false,
+									wordWrap: "on",
+								}}
+								value={config.props_json || ""}
+							/>
+						</div>
 						<p className="text-muted-foreground text-xs">
 							For complex auth, use the Connections page to create a new
 							connection with the piece-auth form.

@@ -8,6 +8,7 @@ import type { PublishedRuntimeMetadata } from "@/lib/workflow-spec/types";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import {
 	Popover,
 	PopoverContent,
@@ -260,9 +261,11 @@ export function WorkflowPublicationStatus({
 										Published {formatPublishedTime(activeRevision.publishedAt)}
 									</Badge>
 								</div>
-								<pre className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-[11px] leading-relaxed">
-									{JSON.stringify(activeRevision.definition, null, 2)}
-								</pre>
+								<CodeBlock
+									className="max-h-64"
+									code={JSON.stringify(activeRevision.definition, null, 2)}
+									language="json"
+								/>
 							</>
 						)}
 						{!isLoading && !error && !activeRevision && (

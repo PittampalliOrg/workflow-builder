@@ -18,6 +18,11 @@ type ManualTriggerInputOverlayProps = OverlayComponentProps<{
 	fields: McpInputProperty[];
 	workflowName?: string;
 	triggerLabel?: string;
+	description?: string;
+	contextLabel?: string;
+	emptyStateTitle?: string;
+	emptyStateDescription?: string;
+	submitLabel?: string;
 }>;
 
 function getDefaultDraftValue(field: McpInputProperty): string | boolean {
@@ -123,6 +128,11 @@ export function ManualTriggerInputOverlay({
 	fields,
 	workflowName,
 	triggerLabel,
+	description,
+	contextLabel,
+	emptyStateTitle,
+	emptyStateDescription,
+	submitLabel,
 }: ManualTriggerInputOverlayProps) {
 	const { closeAll } = useOverlay();
 	const [values, setValues] = useState<Record<string, string | boolean>>(() =>
@@ -153,21 +163,29 @@ export function ManualTriggerInputOverlay({
 		<Overlay
 			actions={[
 				{
-					label: "Run Workflow",
+					label: submitLabel ?? "Run Workflow",
 					variant: "default",
 					onClick: handleRun,
 				},
 				{ label: "Cancel", onClick: closeAll },
 			]}
-			description="Enter the Manual Trigger values for this run. Put the feature request here, not in the node description."
+			description={
+				description ??
+				"Enter the workflow execution values for this run. Put the task details here, not in the node description."
+			}
 			overlayId={overlayId}
 			title={title}
 		>
 			<div className="space-y-4">
 				<div className="rounded-lg border border-blue-200 bg-blue-50/70 p-4 text-sm dark:border-blue-900 dark:bg-blue-950/20">
 					<p className="font-medium text-foreground">
-						This form is the per-run input for the
-						{triggerLabel ? ` ${triggerLabel}` : " Manual Trigger"} node.
+						This form collects the per-run input for
+						{contextLabel
+							? ` ${contextLabel}`
+							: triggerLabel
+								? ` ${triggerLabel}`
+								: " this workflow"}
+						.
 					</p>
 					<p className="mt-1 text-muted-foreground">
 						The Description field in the editor is only a static note on the
@@ -178,11 +196,11 @@ export function ManualTriggerInputOverlay({
 				{fields.length === 0 ? (
 					<div className="rounded-lg border border-dashed p-4 text-sm">
 						<p className="font-medium text-foreground">
-							No Manual Trigger inputs are configured.
+							{emptyStateTitle ?? "No workflow inputs are configured."}
 						</p>
 						<p className="mt-1 text-muted-foreground">
-							Add fields in the Manual Trigger node under Run Form Inputs if
-							this workflow should ask for values before execution.
+							{emptyStateDescription ??
+								"Add run input fields before starting this workflow."}
 						</p>
 					</div>
 				) : (

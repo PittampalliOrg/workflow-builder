@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CodeBlock } from "@/components/ui/code-block";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Table,
@@ -46,7 +47,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { WorkflowDefinitionGraph } from "@/components/monitor/workflow-definition-graph";
 import { api } from "@/lib/api-client";
-import type { WorkflowExecutionDetail, WorkflowHistoryEvent } from "@/lib/types/workflow-dashboard";
+import type {
+	WorkflowExecutionDetail,
+	WorkflowHistoryEvent,
+} from "@/lib/types/workflow-dashboard";
 import type { WorkflowRuntimeGraph } from "@/lib/types/workflow-graph";
 import type { WorkflowUIStatus } from "@/lib/types/workflow-ui";
 
@@ -86,7 +90,9 @@ export default function ExecutionDetailPage() {
 	const [data, setData] = useState<WorkflowExecutionDetail | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [tab, setTab] = useState<DetailTab>("graph");
-	const [graph, setGraph] = useState<WorkflowRuntimeGraph | undefined>(undefined);
+	const [graph, setGraph] = useState<WorkflowRuntimeGraph | undefined>(
+		undefined,
+	);
 	const [copiedId, setCopiedId] = useState(false);
 	const [showContext, setShowContext] = useState(false);
 	const [relationships, setRelationships] = useState<RelationshipRow[]>([]);
@@ -106,8 +112,14 @@ export default function ExecutionDetailPage() {
 
 	useEffect(() => {
 		fetchDetail();
-		api.workflowDashboard.getExecutionGraph(instanceId).then(setGraph).catch(() => {});
-		api.workflowDashboard.getExecutionRelationships(instanceId).then((r) => setRelationships(r.relationships)).catch(() => {});
+		api.workflowDashboard
+			.getExecutionGraph(instanceId)
+			.then(setGraph)
+			.catch(() => {});
+		api.workflowDashboard
+			.getExecutionRelationships(instanceId)
+			.then((r) => setRelationships(r.relationships))
+			.catch(() => {});
 	}, [fetchDetail, instanceId]);
 
 	const handleTerminate = async () => {
@@ -124,7 +136,9 @@ export default function ExecutionDetailPage() {
 		try {
 			const result = await api.workflowDashboard.rerunExecution(instanceId);
 			toast.success("New execution started");
-			router.push(`/dapr-workflows/executions/${encodeURIComponent(result.newInstanceId)}`);
+			router.push(
+				`/dapr-workflows/executions/${encodeURIComponent(result.newInstanceId)}`,
+			);
 		} catch {
 			toast.error("Failed to rerun workflow");
 		}
@@ -251,12 +265,8 @@ export default function ExecutionDetailPage() {
 				<MetaItem label="START TIME">
 					{formatTimestamp(data.startTime)}
 				</MetaItem>
-				<MetaItem label="END TIME">
-					{formatTimestamp(data.endTime)}
-				</MetaItem>
-				<MetaItem label="EXECUTION TIME">
-					{data.executionTime ?? "-"}
-				</MetaItem>
+				<MetaItem label="END TIME">{formatTimestamp(data.endTime)}</MetaItem>
+				<MetaItem label="EXECUTION TIME">{data.executionTime ?? "-"}</MetaItem>
 			</div>
 
 			{/* Status Badge */}
@@ -319,13 +329,18 @@ export default function ExecutionDetailPage() {
 					<div className="mb-3 flex items-center justify-end gap-3">
 						<div className="flex items-center gap-2">
 							<Switch checked={showContext} onCheckedChange={setShowContext} />
-							<label className="text-sm text-muted-foreground">Show context</label>
+							<label className="text-sm text-muted-foreground">
+								Show context
+							</label>
 						</div>
 						<Button
 							variant="outline"
 							size="sm"
 							onClick={() => {
-								api.workflowDashboard.getExecutionGraph(instanceId).then(setGraph).catch(() => {});
+								api.workflowDashboard
+									.getExecutionGraph(instanceId)
+									.then(setGraph)
+									.catch(() => {});
 							}}
 						>
 							<RefreshCw className="mr-1.5 size-3.5" />
@@ -397,13 +412,12 @@ function JsonPanel({
 					)}
 				</div>
 			</div>
-			<pre
-				className={`overflow-auto p-4 text-xs font-mono ${
-					isLong ? "max-h-48" : ""
-				}`}
-			>
-				{json}
-			</pre>
+			<pre className="hidden" />
+			<CodeBlock
+				className={isLong ? "max-h-48" : undefined}
+				code={json}
+				language="json"
+			/>
 			<Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
 				<DialogContent className="max-w-3xl max-h-[80vh]">
 					<DialogHeader>
@@ -419,9 +433,7 @@ function JsonPanel({
 							Copy
 						</Button>
 					</div>
-					<pre className="overflow-auto max-h-[60vh] rounded-md bg-muted p-4 text-xs font-mono">
-						{json}
-					</pre>
+					<CodeBlock className="max-h-[60vh]" code={json} language="json" />
 				</DialogContent>
 			</Dialog>
 		</div>
@@ -437,7 +449,11 @@ type RelationshipRow = {
 	endTime: string | null;
 };
 
-function RelationshipsTab({ relationships }: { relationships: RelationshipRow[] }) {
+function RelationshipsTab({
+	relationships,
+}: {
+	relationships: RelationshipRow[];
+}) {
 	if (relationships.length === 0) {
 		return (
 			<div className="rounded-lg border p-8 text-center text-muted-foreground text-sm">
@@ -514,7 +530,7 @@ function HistoryTab({
 	}
 
 	const toggleEvent = (index: number) => {
-		setExpandedEvents(prev => {
+		setExpandedEvents((prev) => {
 			const next = new Set(prev);
 			if (next.has(index)) next.delete(index);
 			else next.add(index);
@@ -523,11 +539,16 @@ function HistoryTab({
 	};
 
 	// Calculate duration between consecutive events
-	const getDuration = (event: WorkflowHistoryEvent, index: number): string | null => {
+	const getDuration = (
+		event: WorkflowHistoryEvent,
+		index: number,
+	): string | null => {
 		if (index >= history.length - 1) return null;
 		const nextEvent = history[index + 1];
 		if (!event.timestamp || !nextEvent.timestamp) return null;
-		const ms = new Date(nextEvent.timestamp).getTime() - new Date(event.timestamp).getTime();
+		const ms =
+			new Date(nextEvent.timestamp).getTime() -
+			new Date(event.timestamp).getTime();
 		if (ms < 0) return null;
 		if (ms < 1000) return `${ms.toFixed(2)}ms`;
 		if (ms < 60000) return `${(ms / 1000).toFixed(2)}s`;
@@ -539,24 +560,45 @@ function HistoryTab({
 	const getEventIcon = (eventType: string) => {
 		const type = eventType.toLowerCase();
 		if (type.includes("started") || type.includes("created")) {
-			return { icon: <Play className="size-3.5 text-white" />, bg: "bg-emerald-500" };
+			return {
+				icon: <Play className="size-3.5 text-white" />,
+				bg: "bg-emerald-500",
+			};
 		}
 		if (type.includes("completed")) {
-			return { icon: <Check className="size-3.5 text-white" />, bg: "bg-emerald-500" };
+			return {
+				icon: <Check className="size-3.5 text-white" />,
+				bg: "bg-emerald-500",
+			};
 		}
 		if (type.includes("scheduled")) {
-			return { icon: <Clock className="size-3.5 text-white" />, bg: "bg-amber-500" };
+			return {
+				icon: <Clock className="size-3.5 text-white" />,
+				bg: "bg-amber-500",
+			};
 		}
 		if (type.includes("failed") || type.includes("error")) {
-			return { icon: <XCircle className="size-3.5 text-white" />, bg: "bg-red-500" };
+			return {
+				icon: <XCircle className="size-3.5 text-white" />,
+				bg: "bg-red-500",
+			};
 		}
 		if (type.includes("raised")) {
-			return { icon: <Bell className="size-3.5 text-white" />, bg: "bg-blue-500" };
+			return {
+				icon: <Bell className="size-3.5 text-white" />,
+				bg: "bg-blue-500",
+			};
 		}
 		if (type.includes("timer")) {
-			return { icon: <Clock className="size-3.5 text-white" />, bg: "bg-purple-500" };
+			return {
+				icon: <Clock className="size-3.5 text-white" />,
+				bg: "bg-purple-500",
+			};
 		}
-		return { icon: <Circle className="size-3.5 text-white" />, bg: "bg-gray-500" };
+		return {
+			icon: <Circle className="size-3.5 text-white" />,
+			bg: "bg-gray-500",
+		};
 	};
 
 	const getEventBadgeClasses = (eventType: string) => {
@@ -588,20 +630,30 @@ function HistoryTab({
 					const hasContent = event.input != null || event.output != null;
 
 					return (
-						<div key={event.eventId ?? i} className="relative flex gap-4 pb-8 last:pb-0">
+						<div
+							key={event.eventId ?? i}
+							className="relative flex gap-4 pb-8 last:pb-0"
+						>
 							{/* Timeline line */}
 							{!isLast && (
 								<div className="absolute left-[15px] top-[32px] bottom-0 w-[2px] bg-gray-200 dark:bg-gray-700" />
 							)}
 							{/* Icon */}
-							<div className={`relative z-10 flex size-8 shrink-0 items-center justify-center rounded-full ${bg}`}>
+							<div
+								className={`relative z-10 flex size-8 shrink-0 items-center justify-center rounded-full ${bg}`}
+							>
 								{icon}
 							</div>
 							{/* Content */}
 							<div className="flex-1 min-w-0">
 								<div className="flex items-center gap-2 flex-wrap">
-									<span className="font-medium text-sm">{event.name ?? event.eventType}</span>
-									<Badge variant="secondary" className={`text-[11px] px-2 py-0 font-medium ${getEventBadgeClasses(event.eventType)}`}>
+									<span className="font-medium text-sm">
+										{event.name ?? event.eventType}
+									</span>
+									<Badge
+										variant="secondary"
+										className={`text-[11px] px-2 py-0 font-medium ${getEventBadgeClasses(event.eventType)}`}
+									>
 										{event.eventType}
 									</Badge>
 									{hasContent && (
@@ -610,13 +662,17 @@ function HistoryTab({
 											className="ml-auto text-muted-foreground hover:text-foreground transition-colors"
 											onClick={() => toggleEvent(i)}
 										>
-											<ChevronDown className={`size-4 transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+											<ChevronDown
+												className={`size-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+											/>
 										</button>
 									)}
 								</div>
 								<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
 									<span>{formatTimestamp(event.timestamp)}</span>
-									{duration && <span className="font-medium">({duration})</span>}
+									{duration && (
+										<span className="font-medium">({duration})</span>
+									)}
 								</div>
 								{event.eventId != null && (
 									<div className="mt-0.5 text-xs text-muted-foreground">
@@ -628,7 +684,9 @@ function HistoryTab({
 									<div className="mt-3 space-y-2">
 										{event.input != null && (
 											<div className="rounded-md bg-muted/50 p-3">
-												<span className="text-xs font-medium text-muted-foreground">Input</span>
+												<span className="text-xs font-medium text-muted-foreground">
+													Input
+												</span>
 												<pre className="mt-1 overflow-auto text-xs font-mono max-h-40">
 													{JSON.stringify(event.input, null, 2)}
 												</pre>
@@ -636,7 +694,9 @@ function HistoryTab({
 										)}
 										{event.output != null && (
 											<div className="rounded-md bg-muted/50 p-3">
-												<span className="text-xs font-medium text-muted-foreground">Output</span>
+												<span className="text-xs font-medium text-muted-foreground">
+													Output
+												</span>
 												<pre className="mt-1 overflow-auto text-xs font-mono max-h-40">
 													{JSON.stringify(event.output, null, 2)}
 												</pre>

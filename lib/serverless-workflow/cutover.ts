@@ -2,6 +2,7 @@ import { compileGraphToWorkflow } from "./compile";
 import { decompileWorkflowToGraph } from "./decompile";
 import { buildUseFunctions, getCatalogFunction } from "./function-catalog";
 import { isWorkflowDefinition, normalizeWorkflowDefinition } from "./sdk";
+import type { McpInputProperty } from "@/lib/mcp/types";
 import {
 	getTaskType,
 	SW_DSL_VERSION,
@@ -14,9 +15,81 @@ export const SUPPORTED_WORKFLOW_ID = "vajlzrprpie7fvco6ibhi" as const;
 export const SUPPORTED_WORKFLOW_NAME =
 	"Resolve Issue (Dapr SWE Agents)" as const;
 export const SW_SPEC_VERSION = `sw-${SW_DSL_VERSION}` as const;
+export const SUPPORTED_WORKFLOW_RUN_INPUT_FIELDS: McpInputProperty[] = [
+	{
+		name: "owner",
+		type: "TEXT",
+		required: true,
+		description: "GitHub owner or organization for the repository.",
+	},
+	{
+		name: "repo",
+		type: "TEXT",
+		required: true,
+		description: "GitHub repository name to inspect and update.",
+	},
+	{
+		name: "issue_number",
+		type: "NUMBER",
+		required: true,
+		description: "Issue number to resolve in the target repository.",
+	},
+	{
+		name: "title",
+		type: "TEXT",
+		required: true,
+		description:
+			"Short run title used for the execution and downstream PR context.",
+	},
+	{
+		name: "body",
+		type: "TEXT",
+		required: true,
+		description:
+			"Detailed task description for the agent. Include the requested change or bug fix here.",
+	},
+	{
+		name: "sender",
+		type: "TEXT",
+		required: false,
+		description: "Optional requester identity or email for audit context.",
+	},
+];
 
 export function isSupportedWorkflowId(workflowId: string): boolean {
 	return workflowId === SUPPORTED_WORKFLOW_ID;
+}
+
+export function getSupportedWorkflowRunInputFields(
+	workflowId: string | null | undefined,
+): McpInputProperty[] {
+	if (!workflowId || !isSupportedWorkflowId(workflowId)) {
+		return [];
+	}
+	return SUPPORTED_WORKFLOW_RUN_INPUT_FIELDS;
+}
+
+export function validateSupportedWorkflowTriggerInput(
+	input: Record<string, unknown>,
+): string[] {
+	const issues: string[] = [];
+	const requiredStringFields = ["owner", "repo", "title", "body"] as const;
+	for (const field of requiredStringFields) {
+		const value = input[field];
+		if (typeof value !== "string" || !value.trim()) {
+			issues.push(`Missing required input field: ${field}`);
+		}
+	}
+
+	const issueNumber = input.issue_number;
+	if (
+		typeof issueNumber !== "number" &&
+		!(typeof issueNumber === "string" && issueNumber.trim())
+	) {
+		issues.push("Missing required input field: issue_number");
+	}
+
+	return issues;
 }
 
 export function isSwWorkflowDocument(spec: unknown): spec is Workflow {

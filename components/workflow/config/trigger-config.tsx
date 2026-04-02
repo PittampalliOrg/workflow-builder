@@ -247,12 +247,12 @@ export function TriggerConfig({
 				<div className="space-y-3">
 					<div className="rounded-md border border-blue-200 bg-blue-50/70 p-3 text-sm dark:border-blue-900 dark:bg-blue-950/20">
 						<p className="font-medium text-foreground">
-							These fields create the Run Workflow form.
+							These fields define the workflow execution form.
 						</p>
 						<p className="mt-1 text-muted-foreground text-xs">
-							When someone clicks Run Workflow, they enter the feature request
-							and any other per-run values there. Do not put per-run input in
-							the node Description field.
+							When someone clicks Run Workflow, they enter the task request and
+							any other per-run values there. Do not put execution input in the
+							node Description field.
 						</p>
 					</div>
 					<div className="space-y-2">
@@ -278,7 +278,7 @@ export function TriggerConfig({
 						<p className="text-muted-foreground text-xs">
 							Define the values collected before the workflow starts. For a
 							coding workflow, add a required `feature_request` text field so
-							the run dialog clearly asks for the task description.
+							the execution form clearly asks for the task description.
 						</p>
 					</div>
 					<div className="space-y-2 rounded-md border border-dashed p-3">

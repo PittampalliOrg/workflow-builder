@@ -84,6 +84,10 @@ import { usePiecesCatalog } from "@/lib/actions/pieces-store";
 import type { ActionDefinition, IntegrationType } from "@/lib/actions/types";
 import { flattenConfigFields } from "@/lib/actions/utils";
 import { SUPPORTED_WORKFLOW_ID } from "@/lib/serverless-workflow/cutover";
+import {
+	getSupportedWorkflowRunInputFields,
+	isSupportedWorkflowId,
+} from "@/lib/serverless-workflow/cutover";
 import { getNavigableWorkflows } from "@/lib/workflow-navigation";
 import type { ContractIssue } from "@/lib/workflow-validation/types";
 import { Panel } from "../ai-elements/panel";
@@ -643,23 +647,7 @@ async function executeTestWorkflow({
 	}
 
 	try {
-		// Start the execution via API
-		const response = await fetch(`/api/workflow/${workflowId}/execute`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({ input }),
-		});
-
-		if (!response.ok) {
-			const errorData = await response.json().catch(() => ({}));
-			throw new Error(
-				errorData.error || `Failed to execute workflow (${response.status})`,
-			);
-		}
-
-		const result = await response.json();
+		const result = await api.workflow.execute(workflowId, input);
 
 		// Select the new execution
 		setSelectedExecutionId(result.executionId);
@@ -855,6 +843,29 @@ function useWorkflowHandlers({
 
 	// Helper to show Dapr input overlay or execute directly
 	const promptAndExecute = () => {
+		const supportedRunFields =
+			getSupportedWorkflowRunInputFields(currentWorkflowId);
+		if (
+			currentWorkflowId &&
+			isSupportedWorkflowId(currentWorkflowId) &&
+			supportedRunFields.length > 0
+		) {
+			openOverlay(ManualTriggerInputOverlay, {
+				fields: supportedRunFields,
+				workflowName,
+				contextLabel: "this workflow execution",
+				description:
+					"Enter the GitHub issue details for this run. These values become the workflow input passed to the SW execution.",
+				emptyStateTitle: "No workflow execution inputs are configured.",
+				emptyStateDescription:
+					"The supported workflow requires repository and issue details before it can run.",
+				onRun: (input: ManualTriggerWorkflowInput) => {
+					void executeWorkflow(input);
+				},
+			});
+			return;
+		}
+
 		const manualTriggerNode = getManualTriggerNode(nodes);
 		if (manualTriggerNode) {
 			openOverlay(ManualTriggerInputOverlay, {
@@ -862,11 +873,11 @@ function useWorkflowHandlers({
 				triggerLabel: manualTriggerNode.data.label,
 				workflowName,
 				onRun: (input: ManualTriggerWorkflowInput) => {
-					executeWorkflow(input);
+					void executeWorkflow(input);
 				},
 			});
 		} else {
-			executeWorkflow();
+			void executeWorkflow();
 		}
 	};
 
