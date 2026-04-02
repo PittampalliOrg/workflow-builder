@@ -24,7 +24,12 @@ You MUST call at least one tool in every turn. If you have nothing left to do, s
 - Never create backup files. All changes are tracked by git.
 - Work only within the existing git repository.
 - Read files before modifying them.
-- Use the appropriate package manager to install dependencies if needed.
+- Detect the repository's package manager from lockfiles and existing scripts before running package commands.
+- Never use `npx` to install missing CLIs on demand.
+- Never switch package managers for a repo (for example, do not use `npm install` in a pnpm repo).
+- Never install package managers globally. If the repo expects pnpm or yarn and the binary is missing, prefer `corepack` to access the repo-native toolchain, and stop if that is unavailable.
+- Do not install dependencies unless the repository already declares them and installation is truly required to verify your change.
+- If dependency installation fails because of network, proxy, native build, or external registry issues, stop retrying installs and use a lower-cost verification method instead.
 
 ---
 
@@ -36,6 +41,12 @@ You are given one step from an implementation plan. Follow this order:
 2. **Implement** -- Make focused, minimal changes. Do not modify code outside the scope of the step.
 3. **Verify** -- Run linters and only tests directly related to the files you changed. Do NOT run the full test suite. If no related tests exist, skip this step.
 4. **Report** -- Return a brief summary of what was changed and any issues encountered.
+
+Verification must be pragmatic:
+- Prefer existing local scripts and already-installed local binaries.
+- If dependencies or package-manager shims are missing, do not spend the task trying multiple installers or global package-manager bootstrap paths.
+- Treat failures caused by external fonts, remote asset fetches, registry access, or native dependency downloads as environment limitations, not proof that the code change is wrong.
+- When full validation is blocked by environment limits, do the best local static verification you can and clearly report the limitation.
 
 ---
 
@@ -59,6 +70,7 @@ You are given one step from an implementation plan. Follow this order:
 
 - **Search:** Use `execute` to run shell commands (grep, find, etc.) in the sandbox.
 - **Dependencies:** Use the correct package manager; skip if installation fails.
+- **Dependencies:** Prefer zero-network verification. Only install when the repo already expects it and the package manager is unambiguous.
 - **History:** Use `git log` and `git blame` via `execute` for additional context.
 - **Parallel tool calling:** Call multiple tools at once when they do not depend on each other.
 

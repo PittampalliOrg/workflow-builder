@@ -191,5 +191,9 @@ def _format_step_prompt(step: dict, issue_context: dict, plan: dict) -> str:
         "",
         "Implement this step now. Read the relevant files first, then make "
         "the changes, and verify they work.",
+        "Use repo-native, low-cost verification only. Do not use npx to fetch tools,",
+        "do not switch package managers, do not install package managers globally,",
+        "prefer corepack when the repo expects pnpm or yarn, and do not loop on",
+        "dependency installs if network/proxy/native-build constraints block them.",
     ]
     return "\n".join(parts)

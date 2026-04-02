@@ -36,6 +36,9 @@ OPENSHELL_RUNTIME_URL: str = os.environ.get(
 OPENSHELL_COMMAND_TIMEOUT_MS: int = int(
     os.environ.get("OPENSHELL_COMMAND_TIMEOUT_MS", "600000")
 )
+OPENSHELL_WORKSPACE_TIMEOUT_S: int = int(
+    os.environ.get("OPENSHELL_WORKSPACE_TIMEOUT_S", "900")
+)
 
 # LLM model
 LLM_MODEL_ID: str = os.environ.get("LLM_MODEL_ID", "anthropic/claude-sonnet-4-6")

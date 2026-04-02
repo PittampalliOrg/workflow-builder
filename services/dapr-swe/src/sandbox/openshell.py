@@ -15,10 +15,12 @@ from typing import Protocol
 
 import httpx
 
-from src.config import OPENSHELL_COMMAND_TIMEOUT_MS, OPENSHELL_RUNTIME_URL
+from src.config import (
+    OPENSHELL_COMMAND_TIMEOUT_MS,
+    OPENSHELL_RUNTIME_URL,
+    OPENSHELL_WORKSPACE_TIMEOUT_S,
+)
 
-# Workspace creation timeout
-DEFAULT_WORKSPACE_TIMEOUT_S = 120  # 2 minutes
 _MAX_INLINE_BASE64_CHARS = 32_000
 _BASE64_CHUNK_SIZE = 24_000
 
@@ -352,7 +354,12 @@ def create_openshell_sandbox(
         "requiredCapabilities": ["bash", "git"],
     }
 
-    with httpx.Client(timeout=DEFAULT_WORKSPACE_TIMEOUT_S) as client:
+    workspace_timeout_s = max(
+        OPENSHELL_WORKSPACE_TIMEOUT_S,
+        int(OPENSHELL_COMMAND_TIMEOUT_MS / 1000) + 30,
+    )
+
+    with httpx.Client(timeout=workspace_timeout_s) as client:
         response = client.post(f"{base_url}/api/workspaces/profile", json=payload)
         response.raise_for_status()
         data = response.json()
@@ -370,7 +377,7 @@ def create_openshell_sandbox(
     )
 
     # Verify sandbox is ready
-    for _ in range(DEFAULT_WORKSPACE_TIMEOUT_S // 2):
+    for _ in range(max(workspace_timeout_s // 2, 1)):
         try:
             result = backend.execute("echo ready", timeout=5)
             if result.exit_code == 0:
@@ -379,7 +386,7 @@ def create_openshell_sandbox(
             pass
         time.sleep(2)
     else:
-        msg = f"OpenShell sandbox failed to become ready within {DEFAULT_WORKSPACE_TIMEOUT_S} seconds"
+        msg = f"OpenShell sandbox failed to become ready within {workspace_timeout_s} seconds"
         raise RuntimeError(msg)
 
     # Configure the reusable sandbox for git operations and remove any stale

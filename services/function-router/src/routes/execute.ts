@@ -182,6 +182,20 @@ function resolveObservableAgentHttpTimeoutMs(input: {
 	);
 }
 
+function resolveDaprSweHttpTimeoutMs(input: {
+	timeoutMinutes: unknown;
+	timeoutMs: unknown;
+}): number {
+	const explicitTimeoutMs = asNumber(input.timeoutMs);
+	if (explicitTimeoutMs !== undefined) {
+		return clampTimeoutMs(explicitTimeoutMs + AGENT_HTTP_TIMEOUT_BUFFER_MS, {
+			min: MIN_AGENT_HTTP_TIMEOUT_MS,
+			max: MAX_AGENT_HTTP_TIMEOUT_MS,
+		});
+	}
+	return resolveAgentHttpTimeoutMs(input.timeoutMinutes);
+}
+
 function clampTimeoutMs(
 	value: number,
 	{
@@ -2056,7 +2070,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								mode: observableArgs.mode,
 								timeoutMinutes: observableArgs.timeoutMinutes,
 							})
-						: HTTP_TIMEOUT_MS;
+						: target.appId === "dapr-swe"
+							? resolveDaprSweHttpTimeoutMs({
+									timeoutMinutes: observableArgs.timeoutMinutes,
+									timeoutMs: observableArgs.timeoutMs,
+								})
+							: HTTP_TIMEOUT_MS;
 
 					// Make direct HTTP call to the Knative service
 					const controller = new AbortController();
