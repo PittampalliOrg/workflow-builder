@@ -1,10 +1,16 @@
 export const PHOENIX_BASE_URL = "https://phoenix-ryzen.tail286401.ts.net";
 
 const DEFAULT_PHOENIX_PROJECT_ID = "UHJvamVjdDox";
+const WORKFLOW_BUILDER_PROJECT_ID = "UHJvamVjdDo0";
 
 const PHOENIX_PROJECT_IDS_BY_SERVICE = new Map<string, string>([
-	["dapr-swe", "UHJvamVjdDoy"],
-	["openshell-langgraph-observable", "UHJvamVjdDoz"],
+	["workflow-builder", WORKFLOW_BUILDER_PROJECT_ID],
+	["workflow-orchestrator", WORKFLOW_BUILDER_PROJECT_ID],
+	["function-router", WORKFLOW_BUILDER_PROJECT_ID],
+	["dapr-swe", WORKFLOW_BUILDER_PROJECT_ID],
+	["openshell-agent-runtime", WORKFLOW_BUILDER_PROJECT_ID],
+	["openshell-langgraph-observable", WORKFLOW_BUILDER_PROJECT_ID],
+	["durable-agent", WORKFLOW_BUILDER_PROJECT_ID],
 ]);
 
 export function getPhoenixProjectId(serviceNames: string[]): string {
