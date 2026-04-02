@@ -2,6 +2,40 @@ import { describe, expect, it } from "vitest";
 import { resolveSupportedWorkflowTriggerFromEnvelope } from "./external-event-registry";
 
 describe("resolveSupportedWorkflowTriggerFromEnvelope", () => {
+	it("accepts opened GitHub issue events when the trigger label is already present", () => {
+		const resolved = resolveSupportedWorkflowTriggerFromEnvelope({
+			source: "github",
+			eventType: "issues",
+			payload: {
+				action: "opened",
+				issue: {
+					number: 10,
+					title: "Fix issue",
+					body: "Please fix it",
+					labels: [{ name: "dapr-swe" }],
+				},
+				repository: {
+					name: "open-swe",
+					owner: { login: "PittampalliOrg" },
+				},
+				sender: { login: "vinod" },
+			},
+		});
+
+		expect(resolved).toMatchObject({
+			status: "accepted",
+			workflowId: "vajlzrprpie7fvco6ibhi",
+			input: {
+				owner: "PittampalliOrg",
+				repo: "open-swe",
+				issue_number: 10,
+				title: "Fix issue",
+				body: "Please fix it",
+				sender: "vinod",
+			},
+		});
+	});
+
 	it("accepts labeled GitHub issue events", () => {
 		const resolved = resolveSupportedWorkflowTriggerFromEnvelope({
 			source: "github",

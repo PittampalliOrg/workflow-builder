@@ -158,7 +158,7 @@ function normalizeGitHubIssuesPayload(
 	payload: GitHubIssuesPayload,
 	triggerLabel = DEFAULT_TRIGGER_LABEL,
 ): ResolveResult {
-	if (payload.action !== "labeled") {
+	if (!["opened", "labeled"].includes(payload.action ?? "")) {
 		return { status: "ignored", reason: "Unsupported GitHub issue action" };
 	}
 

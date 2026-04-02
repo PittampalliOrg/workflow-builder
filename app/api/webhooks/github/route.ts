@@ -79,6 +79,14 @@ export async function POST(request: Request) {
 		);
 	}
 
+	const action =
+		typeof payload === "object" && payload && "action" in payload
+			? (payload as { action?: unknown }).action
+			: undefined;
+	if (action !== "labeled") {
+		return acceptedIgnored("Unsupported GitHub issue action");
+	}
+
 	const workflow = await db.query.workflows.findFirst({
 		where: eq(workflows.id, SUPPORTED_WORKFLOW_ID),
 	});

@@ -30,6 +30,23 @@ function getSingleQueryParam(url: URL, key: string): string | undefined {
 	return value ? value : undefined;
 }
 
+function normalizePayload(payload: unknown): unknown {
+	if (typeof payload !== "string") {
+		return payload;
+	}
+
+	const trimmed = payload.trim();
+	if (!trimmed) {
+		return payload;
+	}
+
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		return payload;
+	}
+}
+
 export async function POST(request: Request) {
 	if (!isValidInternalToken(request)) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -68,7 +85,7 @@ export async function POST(request: Request) {
 		eventId: typeof body.eventId === "string" ? body.eventId : undefined,
 		receivedAt:
 			typeof body.receivedAt === "string" ? body.receivedAt : undefined,
-		payload: body.payload,
+		payload: normalizePayload(body.payload),
 	};
 
 	const resolved = resolveSupportedWorkflowTriggerFromEnvelope(
