@@ -2,11 +2,15 @@ import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFindFirst = vi.hoisted(() => vi.fn());
+const mockExecutionFindMany = vi.hoisted(() => vi.fn());
 const mockStartSupportedWorkflowExecution = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/db", () => ({
 	db: {
 		query: {
+			workflowExecutions: {
+				findMany: mockExecutionFindMany,
+			},
 			workflows: {
 				findFirst: mockFindFirst,
 			},
@@ -15,6 +19,10 @@ vi.mock("@/lib/db", () => ({
 }));
 
 vi.mock("@/lib/db/schema", () => ({
+	workflowExecutions: {
+		workflowId: "workflow_id",
+		startedAt: "started_at",
+	},
 	workflows: {
 		id: "id",
 	},
@@ -43,6 +51,7 @@ function signBody(body: string): string {
 describe("POST /api/webhooks/github", () => {
 	beforeEach(() => {
 		mockFindFirst.mockReset();
+		mockExecutionFindMany.mockReset();
 		mockStartSupportedWorkflowExecution.mockReset();
 		process.env.GITHUB_WEBHOOK_SECRET = "test-secret";
 		delete process.env.GITHUB_WEBHOOK_TRIGGER_LABEL;
@@ -57,6 +66,7 @@ describe("POST /api/webhooks/github", () => {
 			spec: { document: { dsl: "1.0.0" }, do: [] },
 			specVersion: "sw-1.0.0",
 		});
+		mockExecutionFindMany.mockResolvedValue([]);
 		mockStartSupportedWorkflowExecution.mockResolvedValue({
 			executionId: "exec-1",
 			instanceId: "inst-1",
@@ -106,7 +116,7 @@ describe("POST /api/webhooks/github", () => {
 
 	it("ignores issues without the trigger label", async () => {
 		const body = JSON.stringify({
-			action: "opened",
+			action: "labeled",
 			issue: {
 				number: 1,
 				title: "Fix bug",
@@ -141,7 +151,7 @@ describe("POST /api/webhooks/github", () => {
 
 	it("starts the supported workflow for labeled issue events", async () => {
 		const body = JSON.stringify({
-			action: "opened",
+			action: "labeled",
 			issue: {
 				number: 42,
 				title: "Resolve issue",
@@ -189,5 +199,145 @@ describe("POST /api/webhooks/github", () => {
 				sender: "vinod",
 			},
 		});
+	});
+
+	it("ignores opened issue events even if the label is present", async () => {
+		const body = JSON.stringify({
+			action: "opened",
+			issue: {
+				number: 42,
+				title: "Resolve issue",
+				body: "Detailed description",
+				labels: [{ name: "dapr-swe" }],
+			},
+			repository: {
+				name: "open-swe",
+				owner: { login: "PittampalliOrg" },
+			},
+			sender: { login: "vinod" },
+		});
+		const response = await POST(
+			new Request("http://localhost/api/webhooks/github", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-GitHub-Event": "issues",
+					"X-Hub-Signature-256": signBody(body),
+				},
+				body,
+			}),
+		);
+
+		expect(response.status).toBe(202);
+		await expect(response.json()).resolves.toMatchObject({
+			status: "ignored",
+			reason: "Unsupported issue action",
+		});
+		expect(mockExecutionFindMany).not.toHaveBeenCalled();
+		expect(mockStartSupportedWorkflowExecution).not.toHaveBeenCalled();
+	});
+
+	it("ignores duplicate issue deliveries while a matching run is active", async () => {
+		mockExecutionFindMany.mockResolvedValue([
+			{
+				id: "exec-active",
+				status: "running",
+				input: {
+					owner: "PittampalliOrg",
+					repo: "open-swe",
+					issue_number: 42,
+				},
+				output: null,
+			},
+		]);
+
+		const body = JSON.stringify({
+			action: "labeled",
+			issue: {
+				number: 42,
+				title: "Resolve issue",
+				body: "Detailed description",
+				labels: [{ name: "dapr-swe" }],
+			},
+			repository: {
+				name: "open-swe",
+				owner: { login: "PittampalliOrg" },
+			},
+			sender: { login: "vinod" },
+		});
+
+		const response = await POST(
+			new Request("http://localhost/api/webhooks/github", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-GitHub-Event": "issues",
+					"X-Hub-Signature-256": signBody(body),
+				},
+				body,
+			}),
+		);
+
+		expect(response.status).toBe(202);
+		await expect(response.json()).resolves.toMatchObject({
+			status: "ignored",
+			executionId: "exec-active",
+			reason: "A workflow execution is already in progress for this issue",
+		});
+		expect(mockStartSupportedWorkflowExecution).not.toHaveBeenCalled();
+	});
+
+	it("ignores duplicate issue deliveries when a PR already exists", async () => {
+		mockExecutionFindMany.mockResolvedValue([
+			{
+				id: "exec-pr",
+				status: "success",
+				input: {
+					owner: "PittampalliOrg",
+					repo: "open-swe",
+					issue_number: 42,
+				},
+				output: {
+					workflowOutput: {
+						pr_url: "https://github.com/PittampalliOrg/open-swe/pull/12",
+					},
+				},
+			},
+		]);
+
+		const body = JSON.stringify({
+			action: "labeled",
+			issue: {
+				number: 42,
+				title: "Resolve issue",
+				body: "Detailed description",
+				labels: [{ name: "dapr-swe" }],
+			},
+			repository: {
+				name: "open-swe",
+				owner: { login: "PittampalliOrg" },
+			},
+			sender: { login: "vinod" },
+		});
+
+		const response = await POST(
+			new Request("http://localhost/api/webhooks/github", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-GitHub-Event": "issues",
+					"X-Hub-Signature-256": signBody(body),
+				},
+				body,
+			}),
+		);
+
+		expect(response.status).toBe(202);
+		await expect(response.json()).resolves.toMatchObject({
+			status: "ignored",
+			executionId: "exec-pr",
+			reason: "A workflow execution already created a PR for this issue",
+		});
+		expect(mockStartSupportedWorkflowExecution).not.toHaveBeenCalled();
 	});
 });

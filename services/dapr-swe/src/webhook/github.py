@@ -78,16 +78,15 @@ async def github_webhook(
 
 
 async def _handle_issue_event(payload: dict) -> dict[str, Any]:
-    """Handle issues.opened and issues.labeled events."""
+    """Handle issues events that explicitly mention @dapr-swe."""
     event = GitHubIssueEvent.model_validate(payload)
 
     if event.action not in ("opened", "labeled"):
         return {"status": "ignored", "action": event.action}
 
-    # Check for trigger label
-    label_names = [label.name for label in event.issue.labels]
-    if TRIGGER_LABEL not in label_names:
-        return {"status": "ignored", "reason": f"missing '{TRIGGER_LABEL}' label"}
+    issue_text = f"{event.issue.title}\n{event.issue.body or ''}"
+    if "@dapr-swe" not in issue_text:
+        return {"status": "ignored", "reason": "no explicit @dapr-swe mention"}
 
     issue_context = _build_issue_context(event)
 
@@ -109,11 +108,16 @@ async def _handle_issue_comment_event(payload: dict) -> dict[str, Any]:
     if event.action != "created":
         return {"status": "ignored", "action": event.action}
 
-    # Only trigger on comment body containing @dapr-swe or the trigger label
+    comment_user = event.comment.user.login if event.comment.user else ""
+    if comment_user.endswith("[bot]"):
+        return {"status": "ignored", "reason": "bot-authored comment"}
+
+    # Only trigger on an explicit @dapr-swe mention.
     comment_body = event.comment.body or ""
+    if "@dapr-swe" not in comment_body:
+        return {"status": "ignored", "reason": "no explicit @dapr-swe mention"}
+
     label_names = [label.name for label in event.issue.labels]
-    if "@dapr-swe" not in comment_body and TRIGGER_LABEL not in label_names:
-        return {"status": "ignored", "reason": "no trigger found in comment"}
 
     issue_context = IssueContext(
         owner=event.repository.owner.login,

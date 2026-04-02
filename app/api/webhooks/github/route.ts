@@ -1,8 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { workflows } from "@/lib/db/schema";
+import { workflowExecutions, workflows } from "@/lib/db/schema";
 import { SUPPORTED_WORKFLOW_ID } from "@/lib/serverless-workflow/cutover";
 import {
 	StartSupportedWorkflowExecutionError,
@@ -31,6 +31,23 @@ type GitHubIssuesPayload = {
 	};
 	sender?: {
 		login?: string;
+	};
+};
+
+type WorkflowExecutionOutput = {
+	workflowOutput?: {
+		pr_url?: string;
+		status?: string;
+	};
+	outputs?: {
+		commitAndOpenPR?: {
+			data?: {
+				data?: {
+					pr_url?: string;
+					status?: string;
+				};
+			};
+		};
 	};
 };
 
@@ -112,6 +129,78 @@ function normalizeIssuesPayload(payload: GitHubIssuesPayload) {
 	};
 }
 
+function getExecutionIssueKey(input: unknown) {
+	if (!input || typeof input !== "object") {
+		return null;
+	}
+	const data = input as Record<string, unknown>;
+	const owner = typeof data.owner === "string" ? data.owner.trim() : "";
+	const repo = typeof data.repo === "string" ? data.repo.trim() : "";
+	const issueNumber =
+		typeof data.issue_number === "number"
+			? data.issue_number
+			: typeof data.issue_number === "string"
+				? Number(data.issue_number)
+				: Number.NaN;
+
+	if (!owner || !repo || !Number.isInteger(issueNumber)) {
+		return null;
+	}
+
+	return { owner, repo, issueNumber };
+}
+
+function getExecutionPrUrl(output: unknown): string {
+	if (!output || typeof output !== "object") {
+		return "";
+	}
+	const data = output as WorkflowExecutionOutput;
+	return (
+		data.workflowOutput?.pr_url?.trim() ||
+		data.outputs?.commitAndOpenPR?.data?.data?.pr_url?.trim() ||
+		""
+	);
+}
+
+async function findDuplicateExecution(
+	workflowId: string,
+	input: ReturnType<typeof normalizeIssuesPayload>,
+) {
+	const recentExecutions = await db.query.workflowExecutions.findMany({
+		where: eq(workflowExecutions.workflowId, workflowId),
+		orderBy: [desc(workflowExecutions.startedAt)],
+		limit: 25,
+	});
+
+	for (const execution of recentExecutions) {
+		const issueKey = getExecutionIssueKey(execution.input);
+		if (
+			!issueKey ||
+			issueKey.owner !== input.owner ||
+			issueKey.repo !== input.repo ||
+			issueKey.issueNumber !== input.issue_number
+		) {
+			continue;
+		}
+
+		if (execution.status === "pending" || execution.status === "running") {
+			return {
+				reason: "A workflow execution is already in progress for this issue",
+				executionId: execution.id,
+			};
+		}
+
+		if (execution.status === "success" && getExecutionPrUrl(execution.output)) {
+			return {
+				reason: "A workflow execution already created a PR for this issue",
+				executionId: execution.id,
+			};
+		}
+	}
+
+	return null;
+}
+
 export async function POST(request: Request) {
 	const signature = request.headers.get("X-Hub-Signature-256")?.trim() || "";
 	const event = request.headers.get("X-GitHub-Event")?.trim() || "";
@@ -135,7 +224,7 @@ export async function POST(request: Request) {
 		);
 	}
 
-	if (!["opened", "labeled"].includes(payload.action ?? "")) {
+	if (payload.action !== "labeled") {
 		return acceptedIgnored("Unsupported issue action");
 	}
 
@@ -152,6 +241,13 @@ export async function POST(request: Request) {
 
 	try {
 		const input = normalizeIssuesPayload(payload);
+		const duplicateExecution = await findDuplicateExecution(workflow.id, input);
+		if (duplicateExecution) {
+			return NextResponse.json(
+				{ status: "ignored", ...duplicateExecution },
+				{ status: 202 },
+			);
+		}
 		const started = await startSupportedWorkflowExecution({
 			request,
 			workflow,
