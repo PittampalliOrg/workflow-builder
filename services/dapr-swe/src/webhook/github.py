@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import os
 from typing import Any
 
 import httpx
@@ -23,6 +24,7 @@ router = APIRouter(tags=["webhooks"])
 
 # Label that triggers the bot (optional filter)
 TRIGGER_LABEL = "dapr-swe"
+ENABLE_LEGACY_GITHUB_WEBHOOKS = os.environ.get("ENABLE_LEGACY_GITHUB_WEBHOOKS", "").strip().lower() == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +57,9 @@ async def github_webhook(
     x_github_event: str = Header("", alias="X-GitHub-Event"),
 ) -> dict[str, Any]:
     """Receive GitHub webhook events and start a Dapr Workflow for qualifying issues."""
+    if not ENABLE_LEGACY_GITHUB_WEBHOOKS:
+        return {"status": "ignored", "reason": "legacy webhook ingress disabled"}
+
     body = await request.body()
 
     # Verify signature

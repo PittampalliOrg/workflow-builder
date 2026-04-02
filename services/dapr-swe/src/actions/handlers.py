@@ -141,6 +141,23 @@ def _collect_changed_files(sandbox: OpenShellBackend, working_dir: str) -> list[
     return changed_files
 
 
+def _reset_worktree(sandbox: OpenShellBackend, working_dir: str) -> None:
+    """Reset a reused sandbox checkout to a clean remote-tracking state."""
+    quoted_dir = shlex.quote(working_dir)
+    sandbox.execute(
+        " && ".join(
+            [
+                f"cd {quoted_dir}",
+                "git fetch origin --prune --tags || true",
+                "(git checkout -B main origin/main || git checkout -B master origin/master || true)",
+                "git reset --hard HEAD",
+                "git clean -fd",
+            ],
+        ),
+        timeout=60,
+    )
+
+
 def _build_full_plan_step(plan: dict[str, Any], issue_context: dict[str, Any]) -> dict[str, Any]:
     """Synthesize one implementation task from a structured multi-step plan."""
     steps = plan.get("steps", [])
@@ -346,6 +363,10 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
         "&& git config --global http.sslVerify false",
         timeout=10,
     )
+
+    # Reused sandboxes can retain stale branches and untracked files from prior runs.
+    # Reset to a clean remote-tracking checkout before planning or implementation.
+    _reset_worktree(sandbox, working_dir)
 
     # Configure git identity
     sandbox.execute(
