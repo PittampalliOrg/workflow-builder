@@ -8,6 +8,8 @@ from typing import Any
 
 import httpx
 
+from src.config import DAPR_CONFIG_LABEL
+
 _CACHE_TTL_SECONDS = 30
 _config_cache: dict[str, tuple[float, dict[str, str]]] = {}
 _secret_cache: dict[str, tuple[float, str]] = {}
@@ -47,6 +49,8 @@ def get_configuration_values(store_name: str, keys: list[str]) -> dict[str, str]
     params: list[tuple[str, str]] = []
     for key in normalized_keys:
         params.append(("key", key))
+    if DAPR_CONFIG_LABEL:
+        params.append(("metadata.label", DAPR_CONFIG_LABEL))
 
     try:
         with httpx.Client(timeout=5) as client:

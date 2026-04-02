@@ -53,6 +53,7 @@ DAPR_CONFIG_STORE: str = os.environ.get(
     "DAPR_CONFIG_STORE",
     "azureappconfig-workflow-runtime",
 )
+DAPR_CONFIG_LABEL: str = os.environ.get("DAPR_CONFIG_LABEL", "workflow-runtime")
 WORKFLOW_EVENT_TOPIC: str = os.environ.get("WORKFLOW_EVENT_TOPIC", "workflow.stream")
 ENABLE_WORKFLOW_EVENTS: bool = os.environ.get("ENABLE_WORKFLOW_EVENTS", "true").lower() == "true"
 
