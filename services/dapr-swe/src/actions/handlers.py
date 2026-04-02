@@ -154,6 +154,8 @@ def _build_full_plan_step(plan: dict[str, Any], issue_context: dict[str, Any]) -
     description_lines = [
         "Implement the full plan end to end. You are responsible for sequencing the work,",
         "iterating through the plan steps, and verifying the result before finishing.",
+        "Do not create branches, commit changes, push to remotes, or open pull requests.",
+        "Those SCM actions are handled by later workflow steps.",
         "",
         f"Plan summary: {summary}",
     ]
@@ -164,7 +166,29 @@ def _build_full_plan_step(plan: dict[str, Any], issue_context: dict[str, Any]) -
             description_lines.append(f"{index}. {step.get('title', 'Untitled step')}")
             step_description = step.get("description", "").strip()
             if step_description:
-                description_lines.append(step_description)
+                filtered_lines = []
+                for raw_line in step_description.splitlines():
+                    line = raw_line.strip()
+                    lowered = line.lower()
+                    if any(
+                        marker in lowered
+                        for marker in (
+                            "create a new branch",
+                            "checkout -b",
+                            "git checkout",
+                            "git commit",
+                            "commit with message",
+                            "git push",
+                            "open a draft pull request",
+                            "open a pull request",
+                            "pull request",
+                            "gh pr",
+                        )
+                    ):
+                        continue
+                    filtered_lines.append(raw_line)
+                if filtered_lines:
+                    description_lines.append("\n".join(filtered_lines))
     elif issue_context.get("body"):
         description_lines.append("")
         description_lines.append(issue_context["body"])

@@ -65,10 +65,11 @@ def build_clone_config(provider: ScmProvider, owner: str, repo: str, auth: ScmAu
 
     clone_base = GITEA_INTERNAL_CLONE_BASE_URL.rstrip("/")
     api_base = GITEA_API_URL.rstrip("/")
+    auth_prefix = f"{quote(auth.username)}:{quote(auth.secret)}@"
     return CloneConfig(
-        clone_url=f"{clone_base}/{owner}/{repo}.git",
+        clone_url=clone_base.replace("://", f"://{auth_prefix}") + f"/{owner}/{repo}.git",
         canonical_remote_url=f"{api_base}/{owner}/{repo}.git",
-        credential_url=f"{api_base.replace('://', f'://{quote(auth.username)}:{quote(auth.secret)}@')}",
+        credential_url=api_base.replace("://", f"://{auth_prefix}"),
         git_user_name=auth.username or "dapr-swe",
         git_user_email=f"{auth.username or 'dapr-swe'}@gitea.local",
     )

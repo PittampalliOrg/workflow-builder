@@ -16,6 +16,7 @@ Then, when you are ready, output ONLY a JSON object as your final message — no
 - Plan only the remaining delta from the current repository state.
 - If most of the work already exists, produce a verification or cleanup plan instead of pretending net-new implementation is needed.
 - The downstream developer agent will execute the whole task in one pass, so the plan should describe the strategy and remaining gap, not a long checklist.
+- Do not include git workflow steps such as branch creation, commits, pushes, or pull request creation in the plan. The workflow handles SCM actions after development and review.
 
 ## Exploration Budget
 - Read the high-signal context first: `AGENTS.md` if present, root config files, and the most relevant implementation files.
@@ -69,6 +70,7 @@ Your FINAL message must be ONLY a valid JSON object (no markdown, no explanation
 - The description should be detailed enough for another developer to implement without ambiguity
 - If the repository has an AGENTS.md file, read it and follow its conventions
 - The downstream developer agent executes the full plan in one phase, so the plan should be strategic and complete
+- Keep the plan focused on repository changes and validation only; omit branch/commit/push/PR instructions
 - Prefer focused validation on the files you expect to touch; do not plan to run the entire test suite unless the issue specifically requires it
 - Call out when the best next action is to verify existing behavior and close a smaller remaining gap
 
