@@ -266,6 +266,17 @@ async function apiCall<T>(endpoint: string, options?: RequestInit): Promise<T> {
 	return response.json();
 }
 
+export type DynamicDropdownOption = {
+	label: string;
+	value: string;
+};
+
+export type DynamicDropdownState = {
+	options: DynamicDropdownOption[];
+	disabled?: boolean;
+	placeholder?: string;
+};
+
 // AI API
 
 type StreamMessage = {
@@ -1716,6 +1727,21 @@ const oauthAppApi = {
 		),
 };
 
+const builtinApi = {
+	getOptions: (body: {
+		actionName: string;
+		propertyName: string;
+		connectionExternalId?: string;
+		workflowId?: string;
+		input?: Record<string, unknown>;
+		searchValue?: string;
+	}) =>
+		apiCall<DynamicDropdownState>("/api/builtin/options", {
+			method: "POST",
+			body: JSON.stringify(body),
+		}),
+};
+
 export type McpServerStatus = "ENABLED" | "DISABLED";
 
 export type PopulatedMcpWorkflow = {
@@ -2390,6 +2416,7 @@ export const api = {
 	ai: aiApi,
 	aiChat: aiChatApi,
 	appConnection: appConnectionApi,
+	builtin: builtinApi,
 	dapr: daprApi,
 	daprDebug: daprDebugApi,
 	discoveredAgent: discoveredAgentApi,
