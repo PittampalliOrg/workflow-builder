@@ -231,7 +231,7 @@ describe("POST /api/webhooks/github", () => {
 		expect(response.status).toBe(202);
 		await expect(response.json()).resolves.toMatchObject({
 			status: "ignored",
-			reason: "Unsupported issue action",
+			reason: "Unsupported GitHub issue action",
 		});
 		expect(mockExecutionFindMany).not.toHaveBeenCalled();
 		expect(mockStartSupportedWorkflowExecution).not.toHaveBeenCalled();
