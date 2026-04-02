@@ -384,10 +384,9 @@ export function ManualTriggerInputOverlay({
 					) {
 						return current;
 					}
-					const nextOwner = response.options[0]?.value ?? "";
 					return {
 						...current,
-						owner: nextOwner,
+						owner: "",
 						repo: "",
 					};
 				});
@@ -449,7 +448,7 @@ export function ManualTriggerInputOverlay({
 					}
 					return {
 						...current,
-						repo: response.options[0]?.value ?? "",
+						repo: "",
 					};
 				});
 			} catch (error) {
