@@ -258,13 +258,13 @@ function buildCanonicalSupportedWorkflow(
 					switch: [
 						{
 							noChanges: {
-								when: "${ .implementChanges.status == 'no_changes' }",
+								when: '${ .implementChanges.status == "no_changes" }',
 								then: "notifyNoChanges",
 							},
 						},
 						{
 							changesReady: {
-								when: "${ .implementChanges.status == 'changes_ready' }",
+								when: '${ .implementChanges.status == "changes_ready" }',
 								then: "reviewChanges",
 							},
 						},
