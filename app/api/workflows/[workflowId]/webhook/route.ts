@@ -90,6 +90,7 @@ async function executeDaprWorkflowBackground(
 
 		console.log("[Webhook] Starting SW 1.0 execution:", executionId);
 		const normalized = normalizeWorkflowToSwCutover({
+			workflowId: workflow.id,
 			name: workflow.name,
 			description: workflow.description ?? undefined,
 			nodes: workflow.nodes as WorkflowNode[],

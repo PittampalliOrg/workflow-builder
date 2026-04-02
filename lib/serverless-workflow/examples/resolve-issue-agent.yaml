@@ -1,27 +1,12 @@
-# CNCF Serverless Workflow 1.0
-# Resolve GitHub Issue using Dapr SWE Agents
-#
-# Equivalent of dapr-swe resolve_issue_workflow, expressed as a visual SW 1.0 workflow.
-# Each agent step (plan, develop, review) is a single call task that blocks while
-# the DurableAgent iterates through LLM turns with tool calls internally.
-#
-# Agent execution times:
-#   - initialize: 10-30s (sandbox creation, repo clone)
-#   - plan:       30s-3min (PlannerAgent with read_file, list_directory, execute tools)
-#   - develop:    1-5min per step (DeveloperAgent with write_file, execute tools)
-#   - review:     10-30s (ReviewerAgent analyzing git diff)
-#   - commit-pr:  5-15s (git commit, push, GitHub API)
-
 document:
   dsl: "1.0.0"
   namespace: dapr-swe
   name: resolve-issue
   version: "1.0.0"
-  title: "Resolve GitHub Issue"
+  title: "Resolve Issue (Dapr SWE Agents)"
   summary: >
-    Automated issue resolution using DurableAgent-based agents.
-    Creates a sandbox, plans the implementation, develops each step
-    with tool calls, reviews changes, opens a PR, and notifies.
+    Create a sandbox, plan the implementation, apply changes, review them,
+    open a draft PR when appropriate, and post one terminal issue comment.
 
 input:
   schema:
@@ -29,136 +14,246 @@ input:
     document:
       type: object
       properties:
+        provider: { type: string }
         owner: { type: string }
         repo: { type: string }
         issue_number: { type: integer }
         title: { type: string }
         body: { type: string }
         sender: { type: string }
-      required: [owner, repo, issue_number, title]
+      required: [owner, repo, issue_number, title, body]
+
+use:
+  functions:
+    daprSweInitialize:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/initialize
+    daprSwePlan:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/plan
+    daprSweDevelop:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/develop
+    daprSweReview:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/review
+    daprSweCommitPR:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/commit-pr
+    daprSweNotify:
+      call: http
+      with:
+        method: POST
+        endpoint:
+          uri: http://localhost:3500/v1.0/invoke/dapr-swe/method/dapr-swe/notify
 
 do:
-  # 1. Initialize sandbox, clone repo, read AGENTS.md
   - initialize:
-      call: dapr-swe/initialize
+      call: daprSweInitialize
       with:
+        provider: ${ .input.provider }
         owner: ${ .input.owner }
         repo: ${ .input.repo }
         issue_number: ${ .input.issue_number }
         title: ${ .input.title }
         body: ${ .input.body }
-      metadata:
-        description: "Create OpenShell sandbox, clone repo (depth=50), configure git identity"
+        sender: ${ .input.sender }
 
-  # 2. Emit sandbox ready event
   - emitSandboxReady:
       emit:
         event:
           with:
             type: dapr-swe.sandbox.ready
-            source: /dapr-swe/resolve-issue
+            source: https://workflow-builder.local/events/resolve-issue
             data:
               sandbox_id: ${ .initialize.sandbox_id }
 
-  # 3. Plan - run PlannerAgent (multi-turn LLM with read_file, list_directory, execute tools)
-  #    Output: { plan: { summary, steps: [{ title, description, files, complexity }] } }
   - createPlan:
-      call: dapr-swe/plan
+      call: daprSwePlan
       with:
-        sandbox_id: "{{@initialize:data.sandbox_id}}"
-        working_dir: "{{@initialize:data.working_dir}}"
-        agents_md: "{{@initialize:data.agents_md}}"
-        github_token: "{{@initialize:data.github_token}}"
+        provider: ${ .input.provider }
+        sandbox_id: ${ .initialize.sandbox_id }
+        working_dir: ${ .initialize.working_dir }
+        agents_md: ${ .initialize.agents_md }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
         owner: ${ .input.owner }
         repo: ${ .input.repo }
         issue_number: ${ .input.issue_number }
         title: ${ .input.title }
         body: ${ .input.body }
-      metadata:
-        description: "PlannerAgent: explore codebase, analyze issue, produce structured plan"
 
-  # 4. Emit plan created event
   - emitPlanCreated:
       emit:
         event:
           with:
             type: dapr-swe.plan.created
-            source: /dapr-swe/resolve-issue
+            source: https://workflow-builder.local/events/resolve-issue
             data:
               summary: ${ .createPlan.summary }
+              step_count: ${ .createPlan.step_count }
 
-  # 5. Develop - run DeveloperAgent (multi-turn LLM with read_file, write_file, execute tools)
-  #    Implements ALL steps from the plan in a single call
   - implementChanges:
-      call: dapr-swe/develop
+      call: daprSweDevelop
       with:
-        sandbox_id: "{{@initialize:data.sandbox_id}}"
-        working_dir: "{{@initialize:data.working_dir}}"
-        github_token: "{{@initialize:data.github_token}}"
+        provider: ${ .input.provider }
+        sandbox_id: ${ .initialize.sandbox_id }
+        working_dir: ${ .initialize.working_dir }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
         owner: ${ .input.owner }
         repo: ${ .input.repo }
         issue_number: ${ .input.issue_number }
         title: ${ .input.title }
         body: ${ .input.body }
-        plan: "{{@createPlan:data.plan}}"
-      metadata:
-        description: "DeveloperAgent: implement all plan steps with code changes"
+        plan: ${ .createPlan.plan }
 
-  # 6. Review - run ReviewerAgent (LLM analysis of full git diff)
-  #    Output: { approved: bool, feedback: string, suggestions: [] }
+  - decideAfterDevelop:
+      switch:
+        - noChanges:
+            when: ${ .implementChanges.status == 'no_changes' }
+            then: notifyNoChanges
+        - changesReady:
+            when: ${ .implementChanges.status == 'changes_ready' }
+            then: reviewChanges
+        - default:
+            then: notifyFailure
+
   - reviewChanges:
-      call: dapr-swe/review
+      call: daprSweReview
       with:
-        sandbox_id: "{{@initialize:data.sandbox_id}}"
-        working_dir: "{{@initialize:data.working_dir}}"
+        provider: ${ .input.provider }
+        sandbox_id: ${ .initialize.sandbox_id }
+        working_dir: ${ .initialize.working_dir }
         owner: ${ .input.owner }
         repo: ${ .input.repo }
         issue_number: ${ .input.issue_number }
         title: ${ .input.title }
-        plan: "{{@createPlan:data.plan}}"
-      metadata:
-        description: "ReviewerAgent: analyze git diff for correctness and completeness"
+        body: ${ .input.body }
+        plan: ${ .createPlan.plan }
+      then: emitReviewDone
 
-  # 7. Emit review completed event
   - emitReviewDone:
       emit:
         event:
           with:
             type: dapr-swe.review.completed
-            source: /dapr-swe/resolve-issue
+            source: https://workflow-builder.local/events/resolve-issue
             data:
               approved: ${ .reviewChanges.approved }
+              status: ${ .reviewChanges.status }
+      then: decideAfterReview
 
-  # 8. Commit & Open PR
+  - decideAfterReview:
+      switch:
+        - approved:
+            when: ${ .reviewChanges.approved == true }
+            then: commitAndOpenPR
+        - rejected:
+            then: notifyReviewRejected
+
   - commitAndOpenPR:
-      call: dapr-swe/commit-pr
+      call: daprSweCommitPR
       with:
-        sandbox_id: "{{@initialize:data.sandbox_id}}"
-        working_dir: "{{@initialize:data.working_dir}}"
-        github_token: "{{@initialize:data.github_token}}"
+        provider: ${ .input.provider }
+        sandbox_id: ${ .initialize.sandbox_id }
+        working_dir: ${ .initialize.working_dir }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
         owner: ${ .input.owner }
         repo: ${ .input.repo }
         issue_number: ${ .input.issue_number }
         title: ${ .input.title }
-        plan: "{{@createPlan:data.plan}}"
-        review: "{{@reviewChanges:data}}"
-      metadata:
-        description: "Stage, commit, push, and open draft PR on GitHub"
+        plan: ${ .createPlan.plan }
+        review: ${ .reviewChanges }
+      then: notifyCommitResult
 
-  # 9. Emit workflow completed
+  - notifyNoChanges:
+      call: daprSweNotify
+      with:
+        provider: ${ .input.provider }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        status: no_changes
+      then: emitWorkflowCompleted
+
+  - notifyReviewRejected:
+      call: daprSweNotify
+      with:
+        provider: ${ .input.provider }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        status: review_rejected
+        review: ${ .reviewChanges }
+      then: emitWorkflowCompleted
+
+  - notifyCommitResult:
+      call: daprSweNotify
+      with:
+        provider: ${ .input.provider }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        status: ${ .commitAndOpenPR.status }
+        pr_url: ${ .commitAndOpenPR.pr_url }
+        review: ${ .reviewChanges }
+      then: emitWorkflowCompleted
+
+  - notifyFailure:
+      call: daprSweNotify
+      with:
+        provider: ${ .input.provider }
+        github_token: ${ .initialize.github_token }
+        gitea_username: ${ .initialize.gitea_username }
+        gitea_password: ${ .initialize.gitea_password }
+        owner: ${ .input.owner }
+        repo: ${ .input.repo }
+        issue_number: ${ .input.issue_number }
+        status: ${ .implementChanges.status }
+        error: ${ .implementChanges.summary }
+      then: emitWorkflowCompleted
+
   - emitWorkflowCompleted:
       emit:
         event:
           with:
             type: dapr-swe.workflow.completed
-            source: /dapr-swe/resolve-issue
+            source: https://workflow-builder.local/events/resolve-issue
             data:
-              pr_url: ${ .commitAndOpenPR.pr_url }
-              status: ${ .commitAndOpenPR.status }
+              status: ${ if .notifyCommitResult.status then .notifyCommitResult.status elif .notifyReviewRejected.status then .notifyReviewRejected.status elif .notifyNoChanges.status then .notifyNoChanges.status else .notifyFailure.status end }
+              pr_url: ${ if .notifyCommitResult.pr_url then .notifyCommitResult.pr_url else "" end }
 
 output:
   as:
-    pr_url: ${ .commitAndOpenPR.pr_url }
-    status: ${ .commitAndOpenPR.status }
-    plan_summary: ${ .createPlan.summary }
-    review_approved: ${ .reviewChanges.approved }
+    pr_url: ${ if .notifyCommitResult.pr_url then .notifyCommitResult.pr_url else "" end }
+    status: ${ if .notifyCommitResult.status then .notifyCommitResult.status elif .notifyReviewRejected.status then .notifyReviewRejected.status elif .notifyNoChanges.status then .notifyNoChanges.status else .notifyFailure.status end }
+    review_approved: ${ if .reviewChanges.approved then .reviewChanges.approved else false end }

@@ -484,6 +484,7 @@ class SWWorkflowOutput(BaseModel):
     """Output from the SW 1.0 dynamic workflow function."""
     success: bool
     outputs: dict[str, Any] = Field(default_factory=dict)
+    workflow_output: Any | None = Field(None, alias="workflowOutput")
     error: str | None = None
     duration_ms: int = Field(0, alias="durationMs")
     phase: str = "completed"

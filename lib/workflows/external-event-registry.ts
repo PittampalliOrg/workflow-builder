@@ -80,6 +80,7 @@ export type ExternalEventEnvelope = {
 };
 
 export type SupportedWorkflowTriggerInput = {
+	provider: "github" | "gitea";
 	owner: string;
 	repo: string;
 	issue_number: number;
@@ -184,6 +185,7 @@ function normalizeGitHubIssuesPayload(
 		status: "accepted",
 		workflowId: SUPPORTED_WORKFLOW_ID,
 		input: {
+			provider: "github",
 			owner,
 			repo,
 			issue_number: issueNumber,
@@ -235,6 +237,7 @@ function normalizeGiteaIssuePayload(
 		status: "accepted",
 		workflowId: SUPPORTED_WORKFLOW_ID,
 		input: {
+			provider: "gitea",
 			owner,
 			repo,
 			issue_number: issueNumber,
@@ -287,6 +290,11 @@ function getExecutionIssueKey(input: unknown) {
 	const data = input as Record<string, unknown>;
 	const owner = typeof data.owner === "string" ? data.owner.trim() : "";
 	const repo = typeof data.repo === "string" ? data.repo.trim() : "";
+	const provider =
+		typeof data.provider === "string" &&
+		data.provider.trim().toLowerCase() === "gitea"
+			? "gitea"
+			: "github";
 	const issueNumber =
 		typeof data.issue_number === "number"
 			? data.issue_number
@@ -298,7 +306,7 @@ function getExecutionIssueKey(input: unknown) {
 		return null;
 	}
 
-	return { owner, repo, issueNumber };
+	return { provider, owner, repo, issueNumber };
 }
 
 function getExecutionPrUrl(output: unknown): string {
@@ -327,6 +335,7 @@ export async function findDuplicateSupportedWorkflowExecution(
 		const issueKey = getExecutionIssueKey(execution.input);
 		if (
 			!issueKey ||
+			issueKey.provider !== input.provider ||
 			issueKey.owner !== input.owner ||
 			issueKey.repo !== input.repo ||
 			issueKey.issueNumber !== input.issue_number

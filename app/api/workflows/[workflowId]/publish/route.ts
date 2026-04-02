@@ -51,18 +51,30 @@ export async function POST(
 			);
 		}
 
-		const normalized = normalizeWorkflowToSwCutover({
-			name: existingWorkflow.name,
-			description: existingWorkflow.description ?? undefined,
-			nodes: existingWorkflow.nodes as never,
-			edges: existingWorkflow.edges as never,
-			spec: (existingWorkflow as Record<string, unknown>).spec,
-			specVersion:
-				((existingWorkflow as Record<string, unknown>).specVersion as
-					| string
-					| null
-					| undefined) ?? null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				workflowId,
+				name: existingWorkflow.name,
+				description: existingWorkflow.description ?? undefined,
+				nodes: existingWorkflow.nodes as never,
+				edges: existingWorkflow.edges as never,
+				spec: (existingWorkflow as Record<string, unknown>).spec,
+				specVersion:
+					((existingWorkflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 		const existingPublishedRuntime = extractPublishedRuntime(normalized.spec);
 
 		const publishedAt = new Date().toISOString();

@@ -21,6 +21,39 @@ logger = logging.getLogger(__name__)
 # See: https://docs.anthropic.com/en/api/openai-sdk
 _ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 _OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+_OPENAI_FALLBACK_MODEL = os.environ.get("OPENAI_FALLBACK_MODEL", "gpt-5-mini")
+
+
+def is_anthropic_model(model_name: str) -> bool:
+    """Return True when the model spec targets Anthropic."""
+    model_lower = model_name.lower()
+    if model_lower.startswith("anthropic/"):
+        return True
+    model_lower = model_lower.removeprefix("openai/")
+    return model_lower.startswith(("claude", "anthropic"))
+
+
+def is_anthropic_usage_error(exc: Exception) -> bool:
+    """Detect Anthropic balance and billing failures surfaced through the OpenAI SDK."""
+    text = str(exc).lower()
+    if "anthropic" not in text:
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "credit balance is too low",
+            "plans & billing",
+            "purchase credits",
+            "invalid_request_error",
+        )
+    )
+
+
+def get_openai_fallback_model() -> str | None:
+    """Return the configured OpenAI fallback model when an API key is available."""
+    if not _OPENAI_API_KEY:
+        return None
+    return _OPENAI_FALLBACK_MODEL
 
 
 def resolve_llm_client(model_name: str) -> ChatClientBase:

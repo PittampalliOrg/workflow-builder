@@ -1,4 +1,4 @@
-"""CEL helpers for loop condition evaluation."""
+"""CEL helpers for SW expression and loop condition evaluation."""
 
 from __future__ import annotations
 
@@ -44,14 +44,43 @@ def eval_cel_boolean(expression: str, context: dict[str, Any]) -> bool:
         _CEL_PROGRAM_CACHE[expression] = program
 
     activation = {
-        "input": json_to_cel(context.get("input")),
-        "state": json_to_cel(context.get("state")),
-        "workflow": json_to_cel(context.get("workflow")),
-        "iteration": json_to_cel(context.get("iteration", 0)),
-        "last": json_to_cel(context.get("last")),
+        key: json_to_cel(value)
+        for key, value in context.items()
+        if isinstance(key, str) and key.isidentifier()
     }
+    activation.setdefault("input", json_to_cel(context.get("input")))
+    activation.setdefault("state", json_to_cel(context.get("state")))
+    activation.setdefault("workflow", json_to_cel(context.get("workflow")))
+    activation.setdefault("iteration", json_to_cel(context.get("iteration", 0)))
+    activation.setdefault("last", json_to_cel(context.get("last")))
     result = program.evaluate(activation)
     return bool(result)
 
 
-__all__ = ["eval_cel_boolean", "get_loop_iteration_for_evaluation"]
+def eval_cel_value(expression: str, context: dict[str, Any]) -> Any:
+    """Evaluate a CEL expression and return the raw result."""
+
+    program = _CEL_PROGRAM_CACHE.get(expression)
+    if program is None:
+        ast = _CEL_ENV.compile(expression)
+        program = _CEL_ENV.program(ast)
+        _CEL_PROGRAM_CACHE[expression] = program
+
+    activation = {
+        key: json_to_cel(value)
+        for key, value in context.items()
+        if isinstance(key, str) and key.isidentifier()
+    }
+    activation.setdefault("input", json_to_cel(context.get("input")))
+    activation.setdefault("state", json_to_cel(context.get("state")))
+    activation.setdefault("workflow", json_to_cel(context.get("workflow")))
+    activation.setdefault("iteration", json_to_cel(context.get("iteration", 0)))
+    activation.setdefault("last", json_to_cel(context.get("last")))
+    return program.evaluate(activation)
+
+
+__all__ = [
+    "eval_cel_boolean",
+    "eval_cel_value",
+    "get_loop_iteration_for_evaluation",
+]

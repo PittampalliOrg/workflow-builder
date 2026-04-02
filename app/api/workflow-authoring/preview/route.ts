@@ -18,14 +18,25 @@ export async function POST(request: Request) {
 			return NextResponse.json({ error: "spec is required" }, { status: 400 });
 		}
 
-		const normalized = normalizeWorkflowToSwCutover({
-			name: body.name?.trim() || "Workflow Preview",
-			description: body.description?.trim() || null,
-			nodes: [],
-			edges: [],
-			spec: body.spec,
-			specVersion: null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				name: body.name?.trim() || "Workflow Preview",
+				description: body.description?.trim() || null,
+				nodes: [],
+				edges: [],
+				spec: body.spec,
+				specVersion: null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 
 		return NextResponse.json({
 			name: body.name?.trim() || "Workflow Preview",

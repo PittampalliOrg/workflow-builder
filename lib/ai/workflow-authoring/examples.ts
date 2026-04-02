@@ -16,14 +16,27 @@ export const WORKFLOW_AUTHORING_EXAMPLES: WorkflowAuthoringExample[] = [
   summary: "Simple linear issue triage workflow"
 do:
   - initialize:
-      set:
-        issueNumber: \${ .input.issue_number }
-        issueSummary: \${ .input.issue_summary }
+      call: daprSweInitialize
+      with:
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        body: \${ .input.body }
+      output:
+        as: sandbox
   - plan:
       call: daprSwePlan
       with:
-        issueNumber: \${ .issueNumber }
-        issueSummary: \${ .issueSummary }
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        agents_md: \${ .initialize.agents_md }
+        github_token: \${ .initialize.github_token }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        body: \${ .input.body }
       output:
         as: plan
   - emitResult:
@@ -33,7 +46,7 @@ do:
             type: com.workflow.issue.triaged
             source: workflow-builder
             data:
-              issueNumber: \${ .issueNumber }
+              issueNumber: \${ .input.issue_number }
               planSummary: \${ .plan.summary }`,
 	},
 	{
@@ -51,15 +64,23 @@ do:
   - initialize:
       call: daprSweInitialize
       with:
+        owner: \${ .input.owner }
         repo: \${ .input.repo }
-        issueNumber: \${ .input.issue_number }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
       output:
         as: sandbox
   - plan:
       call: daprSwePlan
       with:
-        sessionId: \${ .sandbox.sessionId }
-        issueNumber: \${ .input.issue_number }
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        agents_md: \${ .initialize.agents_md }
+        github_token: \${ .initialize.github_token }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
       output:
         as: plan
   - reviewLoop:
@@ -70,16 +91,26 @@ do:
         - implement:
             call: daprSweDevelop
             with:
-              sessionId: \${ .sandbox.sessionId }
-              planId: \${ .plan.planId }
-              stepIndex: 0
+              sandbox_id: \${ .initialize.sandbox_id }
+              working_dir: \${ .initialize.working_dir }
+              github_token: \${ .initialize.github_token }
+              owner: \${ .input.owner }
+              repo: \${ .input.repo }
+              issue_number: \${ .input.issue_number }
+              title: \${ .input.title }
+              plan: \${ .plan.plan }
             output:
               as: developResult
         - review:
             call: daprSweReview
             with:
-              sessionId: \${ .sandbox.sessionId }
-              planId: \${ .plan.planId }
+              sandbox_id: \${ .initialize.sandbox_id }
+              working_dir: \${ .initialize.working_dir }
+              owner: \${ .input.owner }
+              repo: \${ .input.repo }
+              issue_number: \${ .input.issue_number }
+              title: \${ .input.title }
+              plan: \${ .plan.plan }
             output:
               as: review
         - approved:
@@ -112,42 +143,81 @@ do:
         owner: \${ .input.owner }
         repo: \${ .input.repo }
         issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        body: \${ .input.body }
       output:
         as: sandbox
   - createPlan:
       call: daprSwePlan
       with:
-        sessionId: \${ .sandbox.sessionId }
-        issueNumber: \${ .input.issue_number }
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        agents_md: \${ .initialize.agents_md }
+        github_token: \${ .initialize.github_token }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        body: \${ .input.body }
       output:
         as: plan
-  - implement:
+  - implementChanges:
       call: daprSweDevelop
       with:
-        sessionId: \${ .sandbox.sessionId }
-        planId: \${ .plan.planId }
-        stepIndex: 0
-      output:
-        as: implementation
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        github_token: \${ .initialize.github_token }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        body: \${ .input.body }
+        plan: \${ .createPlan.plan }
   - review:
       call: daprSweReview
       with:
-        sessionId: \${ .sandbox.sessionId }
-        planId: \${ .plan.planId }
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        plan: \${ .createPlan.plan }
       output:
         as: review
-  - openPullRequest:
+  - reviewGate:
       switch:
         - approved:
             when: \${ .review.approved == true }
             then: commitPR
+        - notApproved:
+            when: \${ .review.approved != true }
+            then: emitReviewRejected
   - commitPR:
       call: daprSweCommitPR
       with:
-        sessionId: \${ .sandbox.sessionId }
-        issueNumber: \${ .input.issue_number }
+        sandbox_id: \${ .initialize.sandbox_id }
+        working_dir: \${ .initialize.working_dir }
+        github_token: \${ .initialize.github_token }
+        owner: \${ .input.owner }
+        repo: \${ .input.repo }
+        issue_number: \${ .input.issue_number }
+        title: \${ .input.title }
+        plan: \${ .createPlan.plan }
+        review: \${ .review }
+      then: emitCompletion
       output:
         as: pullRequest
+  - emitReviewRejected:
+      emit:
+        event:
+          with:
+            type: com.workflow.issue.review-rejected
+            source: workflow-builder
+            data:
+              issueNumber: \${ .input.issue_number }
+              feedback: \${ .review.feedback }
+      then: end
   - emitCompletion:
       emit:
         event:

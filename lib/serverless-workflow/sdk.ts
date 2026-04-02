@@ -20,6 +20,68 @@ function isExpressionString(value: unknown): value is string {
 	return typeof value === "string" && /^\s*\$\{.+\}\s*$/.test(value);
 }
 
+function collectSupportedRuntimeIssues(
+	value: unknown,
+	path = "/",
+): SWValidationIssue[] {
+	const issues: SWValidationIssue[] = [];
+
+	if (typeof value === "string") {
+		if (value.includes("{{") && value.includes("}}")) {
+			issues.push({
+				code: "UNSUPPORTED_LEGACY_TEMPLATE",
+				path,
+				message:
+					"Legacy {{ ... }} template syntax is not supported for Serverless Workflow execution",
+			});
+		}
+
+		const requiresExpression =
+			path.endsWith("/input/from") ||
+			path.endsWith("/output/as") ||
+			path.endsWith("/if") ||
+			path.endsWith("/for/in") ||
+			(path.endsWith("/when") && path.includes("/switch/"));
+		if (requiresExpression && value.trim() && !isExpressionString(value)) {
+			issues.push({
+				code: "UNSUPPORTED_EXPRESSION_SYNTAX",
+				path,
+				message:
+					"This field must use jq runtime expressions wrapped in ${ ... }",
+			});
+		}
+
+		return issues;
+	}
+
+	if (Array.isArray(value)) {
+		for (const [index, item] of value.entries()) {
+			issues.push(
+				...collectSupportedRuntimeIssues(
+					item,
+					`${path}${path.endsWith("/") ? "" : "/"}${index}`,
+				),
+			);
+		}
+		return issues;
+	}
+
+	if (!isRecord(value)) {
+		return issues;
+	}
+
+	for (const [key, nested] of Object.entries(value)) {
+		issues.push(
+			...collectSupportedRuntimeIssues(
+				nested,
+				`${path}${path.endsWith("/") ? "" : "/"}${key}`,
+			),
+		);
+	}
+
+	return issues;
+}
+
 function normalizeEventSourceUri(source: string): string {
 	const trimmed = source.trim();
 	if (!trimmed) {
@@ -198,8 +260,13 @@ function toPlainWorkflow(
 export function validateWorkflowDefinition(
 	workflow: unknown,
 ): SWValidationIssue[] {
+	const repairedWorkflow = repairWorkflowDefinitionShape(workflow).workflow;
+	const runtimeIssues = collectSupportedRuntimeIssues(repairedWorkflow);
+	if (runtimeIssues.length > 0) {
+		return runtimeIssues;
+	}
 	try {
-		validate("Workflow", repairWorkflowDefinitionShape(workflow).workflow);
+		validate("Workflow", repairedWorkflow);
 		return [];
 	} catch (error) {
 		return parseValidationMessage(

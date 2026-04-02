@@ -74,6 +74,7 @@ describe("serverless workflow cutover", () => {
 		const graph = buildGraph();
 
 		const result = normalizeWorkflowToSwCutover({
+			workflowId: SUPPORTED_WORKFLOW_ID,
 			name: "Resolve Issue (Dapr SWE Agents)",
 			description: "Resolve a GitHub issue with dapr-swe",
 			nodes: graph.nodes,
@@ -96,8 +97,14 @@ describe("serverless workflow cutover", () => {
 		expect(result.spec.metadata).toMatchObject({
 			publishedRuntime: { latestVersion: "pub_1" },
 		});
-		expect(result.nodes).toHaveLength(3);
-		expect(result.edges).toHaveLength(2);
+		expect(result.spec.do.map((task) => Object.keys(task)[0])).toContain(
+			"decideAfterReview",
+		);
+		expect(result.spec.do.map((task) => Object.keys(task)[0])).toContain(
+			"notifyCommitResult",
+		);
+		expect(result.nodes.length).toBeGreaterThan(3);
+		expect(result.edges.length).toBeGreaterThan(2);
 		expect(result.needsMigration).toBe(true);
 	});
 });

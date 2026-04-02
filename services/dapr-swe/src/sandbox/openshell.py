@@ -7,6 +7,8 @@ sandboxed execution environments via OpenShell.
 from __future__ import annotations
 
 import base64
+import hashlib
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -17,6 +19,8 @@ from src.config import OPENSHELL_COMMAND_TIMEOUT_MS, OPENSHELL_RUNTIME_URL
 
 # Workspace creation timeout
 DEFAULT_WORKSPACE_TIMEOUT_S = 120  # 2 minutes
+_MAX_INLINE_BASE64_CHARS = 32_000
+_BASE64_CHUNK_SIZE = 24_000
 
 
 # ---------------------------------------------------------------------------
@@ -145,14 +149,20 @@ class OpenShellBackend:
         with tokens and special characters.
         """
         encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-        result = self.execute(
-            f"mkdir -p $(dirname {file_path}) && printf '%s' '{encoded}' | base64 -d > {file_path}",
-            timeout=30,
-        )
+        if len(encoded) <= _MAX_INLINE_BASE64_CHARS:
+            result = self.execute(
+                _build_inline_base64_write_command(file_path, encoded),
+                timeout=30,
+            )
+        else:
+            result = self._write_large_base64_file(file_path, encoded, timeout=60)
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to write file '{file_path}': {result.output}")
         # Verify the write succeeded
-        verify = self.execute(f"test -f {file_path} && echo ok || echo fail", timeout=5)
+        verify = self.execute(
+            f"test -f {shlex.quote(file_path)} && echo ok || echo fail",
+            timeout=5,
+        )
         if "fail" in verify.output:
             return WriteResult(error=f"Write verification failed for '{file_path}'")
         return WriteResult(path=file_path)
@@ -172,16 +182,55 @@ class OpenShellBackend:
         """Upload files to the sandbox via shell commands."""
         results: list[FileUploadResult] = []
         for path, content in files:
-            encoded = base64.b64encode(content).decode()
-            result = self.execute(
-                f"mkdir -p $(dirname {path}) && echo {encoded} | base64 -d > {path}",
-                timeout=30,
-            )
+            encoded = base64.b64encode(content).decode("ascii")
+            if len(encoded) <= _MAX_INLINE_BASE64_CHARS:
+                result = self.execute(
+                    _build_inline_base64_write_command(path, encoded),
+                    timeout=30,
+                )
+            else:
+                result = self._write_large_base64_file(path, encoded, timeout=60)
             if result.exit_code == 0:
                 results.append(FileUploadResult(path=path))
             else:
                 results.append(FileUploadResult(path=path, error=result.output))
         return results
+
+    def _write_large_base64_file(
+        self,
+        file_path: str,
+        encoded: str,
+        *,
+        timeout: int,
+    ) -> ExecuteResult:
+        """Write large file contents in bounded shell commands."""
+        quoted_path = shlex.quote(file_path)
+        quoted_dir = shlex.quote(_parent_directory(file_path))
+        quoted_tmp = shlex.quote(_temp_base64_path(file_path, encoded))
+
+        init_result = self.execute(
+            f"mkdir -p {quoted_dir} && : > {quoted_tmp}",
+            timeout=10,
+        )
+        if init_result.exit_code != 0:
+            return init_result
+
+        for chunk in _chunk_string(encoded, _BASE64_CHUNK_SIZE):
+            append_result = self.execute(
+                f"printf '%s' '{chunk}' >> {quoted_tmp}",
+                timeout=10,
+            )
+            if append_result.exit_code != 0:
+                self.execute(f"rm -f {quoted_tmp}", timeout=5)
+                return append_result
+
+        finalize_result = self.execute(
+            f"base64 -d {quoted_tmp} > {quoted_path} && rm -f {quoted_tmp}",
+            timeout=timeout,
+        )
+        if finalize_result.exit_code != 0:
+            self.execute(f"rm -f {quoted_tmp}", timeout=5)
+        return finalize_result
 
     def cleanup(self) -> None:
         """Clean up the workspace session."""
@@ -277,3 +326,30 @@ def create_openshell_sandbox(
     )
 
     return backend
+
+
+def _parent_directory(file_path: str) -> str:
+    """Return the parent directory for a target path."""
+    if "/" not in file_path.rstrip("/"):
+        return "/sandbox"
+    return file_path.rsplit("/", 1)[0] or "/"
+
+
+def _chunk_string(value: str, size: int) -> list[str]:
+    """Split a string into fixed-size chunks."""
+    return [value[index:index + size] for index in range(0, len(value), size)]
+
+
+def _temp_base64_path(file_path: str, encoded: str) -> str:
+    """Build a deterministic temp file path for staged writes."""
+    digest = hashlib.sha1(
+        f"{file_path}:{len(encoded)}".encode("utf-8"),
+    ).hexdigest()[:12]
+    return f"/tmp/openshell-write-{digest}.b64"
+
+
+def _build_inline_base64_write_command(file_path: str, encoded: str) -> str:
+    """Build a single-command base64 write for small payloads."""
+    quoted_path = shlex.quote(file_path)
+    quoted_dir = shlex.quote(_parent_directory(file_path))
+    return f"mkdir -p {quoted_dir} && printf '%s' '{encoded}' | base64 -d > {quoted_path}"

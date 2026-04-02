@@ -153,18 +153,30 @@ export async function GET(
 			);
 		}
 
-		const normalized = normalizeWorkflowToSwCutover({
-			name: workflow.name,
-			description: workflow.description ?? undefined,
-			nodes: workflow.nodes as WorkflowNode[],
-			edges: workflow.edges as WorkflowEdge[],
-			spec: (workflow as Record<string, unknown>).spec,
-			specVersion:
-				((workflow as Record<string, unknown>).specVersion as
-					| string
-					| null
-					| undefined) ?? null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				workflowId,
+				name: workflow.name,
+				description: workflow.description ?? undefined,
+				nodes: workflow.nodes as WorkflowNode[],
+				edges: workflow.edges as WorkflowEdge[],
+				spec: (workflow as Record<string, unknown>).spec,
+				specVersion:
+					((workflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 		const [persistedWorkflow] = normalized.needsMigration
 			? await db
 					.update(workflows)
@@ -317,21 +329,33 @@ export async function PATCH(
 			typeof updateData.description === "string"
 				? updateData.description
 				: (existingWorkflow.description ?? undefined);
-		const normalized = normalizeWorkflowToSwCutover({
-			name: effectiveName,
-			description: effectiveDescription,
-			nodes: effectiveNodes,
-			edges: effectiveEdges,
-			spec:
-				body.spec !== undefined
-					? body.spec
-					: (existingWorkflow as Record<string, unknown>).spec,
-			specVersion:
-				((existingWorkflow as Record<string, unknown>).specVersion as
-					| string
-					| null
-					| undefined) ?? null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				workflowId,
+				name: effectiveName,
+				description: effectiveDescription,
+				nodes: effectiveNodes,
+				edges: effectiveEdges,
+				spec:
+					body.spec !== undefined
+						? body.spec
+						: (existingWorkflow as Record<string, unknown>).spec,
+				specVersion:
+					((existingWorkflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 		updateData.nodes = normalized.nodes;
 		updateData.edges = normalized.edges;
 		updateData.specVersion = normalized.specVersion;

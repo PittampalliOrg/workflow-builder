@@ -6,7 +6,7 @@ to backend services (fn-system, fn-activepieces, durable-agent, etc.).
 
 The function-router supports:
 - Registry-based routing with wildcard and default fallback support
-- Dapr service invocation for all routing
+- Direct HTTP execution on the in-cluster service
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from typing import Any
 import json as json_module
 
 import requests
-from dapr.clients import DaprClient
 from pydantic import BaseModel
 
 from core.config import config
@@ -29,8 +28,19 @@ from tracing import start_activity_span
 logger = logging.getLogger(__name__)
 
 FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
-DAPR_HOST = config.DAPR_HOST
-DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
+
+
+def _function_router_base_url() -> str:
+    explicit = os.environ.get("FUNCTION_ROUTER_HTTP_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    service_host = os.environ.get("FUNCTION_ROUTER_SERVICE_HOST", "").strip()
+    service_port = os.environ.get("FUNCTION_ROUTER_SERVICE_PORT", "80").strip() or "80"
+    if service_host:
+        return f"http://{service_host}:{service_port}"
+
+    return f"http://{FUNCTION_ROUTER_APP_ID}:{os.environ.get('FUNCTION_ROUTER_SERVICE_PORT', '80')}"
 
 
 class ExecuteActionInput(BaseModel):
@@ -61,7 +71,7 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     This activity:
     1. Extracts the actionType from the node config
     2. Resolves template variables in the config
-    3. Invokes function-router via Dapr service invocation
+    3. Invokes function-router over direct HTTP
     4. Returns the execution result
 
     Args:
@@ -163,21 +173,25 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             http_timeout = (node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
             logger.info(
                 f"[Execute Action] http_timeout={http_timeout}s node_timeout_ms={node_timeout_ms} "
-                f"url=dapr://{FUNCTION_ROUTER_APP_ID}/execute "
+                f"url={_function_router_base_url()}/execute "
                 f"config_timeoutMs={config.get('timeoutMs') if isinstance(config, dict) else 'N/A'}"
             )
+            headers = {"Content-Type": "application/json"}
+            for trace_header in ("traceparent", "tracestate", "baggage"):
+                trace_value = otel.get(trace_header)
+                if isinstance(trace_value, str) and trace_value.strip():
+                    headers[trace_header] = trace_value.strip()
 
-            with DaprClient() as dapr_client:
-                resp = dapr_client.invoke_method(
-                    app_id=FUNCTION_ROUTER_APP_ID,
-                    method_name="execute",
-                    data=json_module.dumps(request_payload),
-                    http_verb="POST",
-                    timeout=int(http_timeout),
-                )
+            resp = requests.post(
+                f"{_function_router_base_url()}/execute",
+                data=json_module.dumps(request_payload),
+                headers=headers,
+                timeout=http_timeout,
+            )
+            resp.raise_for_status()
 
             duration_ms = int((time.time() - start_time) * 1000)
-            resp_text = resp.text() if hasattr(resp, "text") else resp.data.decode("utf-8")
+            resp_text = resp.text or ""
             result = json_module.loads(resp_text) if resp_text else {}
 
             logger.info(

@@ -20,13 +20,13 @@ export const SUPPORTED_WORKFLOW_RUN_INPUT_FIELDS: McpInputProperty[] = [
 		name: "owner",
 		type: "TEXT",
 		required: true,
-		description: "GitHub owner or organization for the repository.",
+		description: "Repository owner or organization.",
 	},
 	{
 		name: "repo",
 		type: "TEXT",
 		required: true,
-		description: "GitHub repository name to inspect and update.",
+		description: "Repository name to inspect and update.",
 	},
 	{
 		name: "issue_number",
@@ -56,6 +56,15 @@ export const SUPPORTED_WORKFLOW_RUN_INPUT_FIELDS: McpInputProperty[] = [
 	},
 ];
 
+const SUPPORTED_WORKFLOW_FUNCTIONS = [
+	"daprSweInitialize",
+	"daprSwePlan",
+	"daprSweDevelop",
+	"daprSweReview",
+	"daprSweCommitPR",
+	"daprSweNotify",
+] as const;
+
 export function isSupportedWorkflowId(workflowId: string): boolean {
 	return workflowId === SUPPORTED_WORKFLOW_ID;
 }
@@ -73,6 +82,14 @@ export function validateSupportedWorkflowTriggerInput(
 	input: Record<string, unknown>,
 ): string[] {
 	const issues: string[] = [];
+	const provider = input.provider;
+	if (
+		typeof provider === "string" &&
+		provider.trim() &&
+		!["github", "gitea"].includes(provider.trim().toLowerCase())
+	) {
+		issues.push("provider must be either github or gitea when provided");
+	}
 	const requiredStringFields = ["owner", "repo", "title", "body"] as const;
 	for (const field of requiredStringFields) {
 		const value = input[field];
@@ -114,6 +131,320 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function deepCloneWorkflow(spec: Workflow): Workflow {
 	return JSON.parse(JSON.stringify(spec)) as Workflow;
+}
+
+function buildCanonicalSupportedWorkflow(
+	name: string,
+	description?: string | null,
+): Workflow {
+	return {
+		document: {
+			dsl: SW_DSL_VERSION,
+			namespace: "dapr-swe",
+			name: sanitizeDocumentName(name),
+			version: "1.0.0",
+			title: name,
+			...(description ? { summary: description } : {}),
+		},
+		input: {
+			schema: {
+				format: "json",
+				document: {
+					type: "object",
+					properties: {
+						provider: { type: "string" },
+						owner: { type: "string" },
+						repo: { type: "string" },
+						issue_number: { type: "integer" },
+						title: { type: "string" },
+						body: { type: "string" },
+						sender: { type: "string" },
+					},
+					required: ["owner", "repo", "issue_number", "title", "body"],
+				},
+			},
+		},
+		use: {
+			functions: buildUseFunctions([...SUPPORTED_WORKFLOW_FUNCTIONS]),
+		},
+		do: [
+			{
+				initialize: {
+					call: "daprSweInitialize",
+					with: {
+						provider: "${ .input.provider }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						title: "${ .input.title }",
+						body: "${ .input.body }",
+						sender: "${ .input.sender }",
+					},
+				},
+			},
+			{
+				emitSandboxReady: {
+					emit: {
+						event: {
+							with: {
+								type: "dapr-swe.sandbox.ready",
+								source: "https://workflow-builder.local/events/resolve-issue",
+								data: {
+									sandbox_id: "${ .initialize.sandbox_id }",
+									repo: "${ .input.repo }",
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				createPlan: {
+					call: "daprSwePlan",
+					with: {
+						provider: "${ .input.provider }",
+						sandbox_id: "${ .initialize.sandbox_id }",
+						working_dir: "${ .initialize.working_dir }",
+						agents_md: "${ .initialize.agents_md }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						title: "${ .input.title }",
+						body: "${ .input.body }",
+						sender: "${ .input.sender }",
+					},
+				},
+			},
+			{
+				emitPlanCreated: {
+					emit: {
+						event: {
+							with: {
+								type: "dapr-swe.plan.created",
+								source: "https://workflow-builder.local/events/resolve-issue",
+								data: {
+									summary: "${ .createPlan.summary }",
+									step_count: "${ .createPlan.step_count }",
+								},
+							},
+						},
+					},
+				},
+			},
+			{
+				implementChanges: {
+					call: "daprSweDevelop",
+					with: {
+						provider: "${ .input.provider }",
+						sandbox_id: "${ .initialize.sandbox_id }",
+						working_dir: "${ .initialize.working_dir }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						title: "${ .input.title }",
+						body: "${ .input.body }",
+						plan: "${ .createPlan.plan }",
+					},
+				},
+			},
+			{
+				decideAfterDevelop: {
+					switch: [
+						{
+							noChanges: {
+								when: "${ .implementChanges.status == 'no_changes' }",
+								then: "notifyNoChanges",
+							},
+						},
+						{
+							changesReady: {
+								when: "${ .implementChanges.status == 'changes_ready' }",
+								then: "reviewChanges",
+							},
+						},
+						{
+							default: {
+								then: "notifyFailure",
+							},
+						},
+					],
+				},
+			},
+			{
+				reviewChanges: {
+					call: "daprSweReview",
+					with: {
+						provider: "${ .input.provider }",
+						sandbox_id: "${ .initialize.sandbox_id }",
+						working_dir: "${ .initialize.working_dir }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						title: "${ .input.title }",
+						body: "${ .input.body }",
+						plan: "${ .createPlan.plan }",
+					},
+					then: "emitReviewDone",
+				},
+			},
+			{
+				emitReviewDone: {
+					emit: {
+						event: {
+							with: {
+								type: "dapr-swe.review.completed",
+								source: "https://workflow-builder.local/events/resolve-issue",
+								data: {
+									approved: "${ .reviewChanges.approved }",
+									status: "${ .reviewChanges.status }",
+								},
+							},
+						},
+					},
+					then: "decideAfterReview",
+				},
+			},
+			{
+				decideAfterReview: {
+					switch: [
+						{
+							approved: {
+								when: "${ .reviewChanges.approved == true }",
+								then: "commitAndOpenPR",
+							},
+						},
+						{
+							rejected: {
+								then: "notifyReviewRejected",
+							},
+						},
+					],
+				},
+			},
+			{
+				commitAndOpenPR: {
+					call: "daprSweCommitPR",
+					with: {
+						provider: "${ .input.provider }",
+						sandbox_id: "${ .initialize.sandbox_id }",
+						working_dir: "${ .initialize.working_dir }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						title: "${ .input.title }",
+						plan: "${ .createPlan.plan }",
+						review: "${ .reviewChanges }",
+					},
+					then: "notifyCommitResult",
+				},
+			},
+			{
+				notifyNoChanges: {
+					call: "daprSweNotify",
+					with: {
+						provider: "${ .input.provider }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						status: "no_changes",
+					},
+					then: "emitWorkflowCompleted",
+				},
+			},
+			{
+				notifyReviewRejected: {
+					call: "daprSweNotify",
+					with: {
+						provider: "${ .input.provider }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						status: "review_rejected",
+						review: "${ .reviewChanges }",
+					},
+					then: "emitWorkflowCompleted",
+				},
+			},
+			{
+				notifyCommitResult: {
+					call: "daprSweNotify",
+					with: {
+						provider: "${ .input.provider }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						status: "${ .commitAndOpenPR.status }",
+						pr_url: "${ .commitAndOpenPR.pr_url }",
+						review: "${ .reviewChanges }",
+					},
+					then: "emitWorkflowCompleted",
+				},
+			},
+			{
+				notifyFailure: {
+					call: "daprSweNotify",
+					with: {
+						provider: "${ .input.provider }",
+						github_token: "${ .initialize.github_token }",
+						gitea_username: "${ .initialize.gitea_username }",
+						gitea_password: "${ .initialize.gitea_password }",
+						owner: "${ .input.owner }",
+						repo: "${ .input.repo }",
+						issue_number: "${ .input.issue_number }",
+						status: "${ .implementChanges.status }",
+						error: "${ .implementChanges.summary }",
+					},
+					then: "emitWorkflowCompleted",
+				},
+			},
+			{
+				emitWorkflowCompleted: {
+					emit: {
+						event: {
+							with: {
+								type: "dapr-swe.workflow.completed",
+								source: "https://workflow-builder.local/events/resolve-issue",
+								data: {
+									status:
+										"${ if .notifyCommitResult.status then .notifyCommitResult.status elif .notifyReviewRejected.status then .notifyReviewRejected.status elif .notifyNoChanges.status then .notifyNoChanges.status else .notifyFailure.status end }",
+									pr_url:
+										'${ if .notifyCommitResult.pr_url then .notifyCommitResult.pr_url else "" end }',
+								},
+							},
+						},
+					},
+				},
+			},
+		],
+		output: {
+			as: {
+				pr_url:
+					'${ if .notifyCommitResult.pr_url then .notifyCommitResult.pr_url else "" end }',
+				status:
+					"${ if .notifyCommitResult.status then .notifyCommitResult.status elif .notifyReviewRejected.status then .notifyReviewRejected.status elif .notifyNoChanges.status then .notifyNoChanges.status else .notifyFailure.status end }",
+				review_approved:
+					"${ if .reviewChanges.approved then .reviewChanges.approved else false end }",
+			},
+		},
+	};
 }
 
 function jsonEquals(left: unknown, right: unknown): boolean {
@@ -200,6 +531,7 @@ function hydrateUseFunctions(spec: Workflow): Workflow {
 }
 
 export function normalizeWorkflowToSwCutover(input: {
+	workflowId?: string | null;
 	name: string;
 	description?: string | null;
 	nodes: WorkflowNode[];
@@ -215,20 +547,23 @@ export function normalizeWorkflowToSwCutover(input: {
 } {
 	const metadata = asRecord(asRecord(input.spec)?.metadata);
 
-	const spec = isSwWorkflowDocument(input.spec)
-		? deepCloneWorkflow(input.spec)
-		: compileGraphToWorkflow(
-				{
-					nodes: input.nodes as never,
-					edges: input.edges as never,
-				},
-				{
-					namespace: "dapr-swe",
-					name: sanitizeDocumentName(input.name),
-					title: input.name,
-					summary: input.description || undefined,
-				},
-			);
+	const spec =
+		input.workflowId && isSupportedWorkflowId(input.workflowId)
+			? buildCanonicalSupportedWorkflow(input.name, input.description)
+			: isSwWorkflowDocument(input.spec)
+				? deepCloneWorkflow(input.spec)
+				: compileGraphToWorkflow(
+						{
+							nodes: input.nodes as never,
+							edges: input.edges as never,
+						},
+						{
+							namespace: "dapr-swe",
+							name: sanitizeDocumentName(input.name),
+							title: input.name,
+							summary: input.description || undefined,
+						},
+					);
 
 	const nextSpec = {
 		...spec,

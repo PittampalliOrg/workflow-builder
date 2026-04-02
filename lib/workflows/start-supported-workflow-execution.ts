@@ -80,6 +80,7 @@ export async function startSupportedWorkflowExecution({
 	let normalized;
 	try {
 		normalized = normalizeWorkflowToSwCutover({
+			workflowId: workflow.id,
 			name: workflow.name,
 			description: workflow.description ?? undefined,
 			nodes: workflow.nodes as WorkflowNode[],

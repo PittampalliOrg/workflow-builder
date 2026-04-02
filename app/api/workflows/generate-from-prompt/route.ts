@@ -33,14 +33,25 @@ export async function POST(request: Request) {
 			generated.spec.document.name;
 		const workflowDescription =
 			body.description?.trim() || generated.spec.document.summary;
-		const normalized = normalizeWorkflowToSwCutover({
-			name: workflowName,
-			description: workflowDescription,
-			nodes: [],
-			edges: [],
-			spec: generated.spec,
-			specVersion: null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				name: workflowName,
+				description: workflowDescription,
+				nodes: [],
+				edges: [],
+				spec: generated.spec,
+				specVersion: null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid generated workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 
 		return NextResponse.json({
 			name: workflowName,

@@ -33,18 +33,30 @@ export async function GET(request: Request) {
 			);
 		}
 
-		const normalized = normalizeWorkflowToSwCutover({
-			name: workflow.name,
-			description: workflow.description ?? undefined,
-			nodes: workflow.nodes as WorkflowNode[],
-			edges: workflow.edges as WorkflowEdge[],
-			spec: (workflow as Record<string, unknown>).spec,
-			specVersion:
-				((workflow as Record<string, unknown>).specVersion as
-					| string
-					| null
-					| undefined) ?? null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				workflowId: workflow.id,
+				name: workflow.name,
+				description: workflow.description ?? undefined,
+				nodes: workflow.nodes as WorkflowNode[],
+				edges: workflow.edges as WorkflowEdge[],
+				spec: (workflow as Record<string, unknown>).spec,
+				specVersion:
+					((workflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 
 		if (normalized.needsMigration) {
 			await db
@@ -106,18 +118,30 @@ export async function POST(request: Request) {
 			? body.edges
 			: (workflow.edges as WorkflowEdge[]);
 
-		const normalized = normalizeWorkflowToSwCutover({
-			name: workflow.name,
-			description: workflow.description ?? undefined,
-			nodes,
-			edges,
-			spec: (workflow as Record<string, unknown>).spec,
-			specVersion:
-				((workflow as Record<string, unknown>).specVersion as
-					| string
-					| null
-					| undefined) ?? null,
-		});
+		let normalized;
+		try {
+			normalized = normalizeWorkflowToSwCutover({
+				workflowId: workflow.id,
+				name: workflow.name,
+				description: workflow.description ?? undefined,
+				nodes,
+				edges,
+				spec: (workflow as Record<string, unknown>).spec,
+				specVersion:
+					((workflow as Record<string, unknown>).specVersion as
+						| string
+						| null
+						| undefined) ?? null,
+			});
+		} catch (error) {
+			return NextResponse.json(
+				{
+					error: "Invalid workflow definition",
+					issues: [error instanceof Error ? error.message : "Invalid workflow"],
+				},
+				{ status: 400 },
+			);
+		}
 
 		const [updated] = await db
 			.update(workflows)

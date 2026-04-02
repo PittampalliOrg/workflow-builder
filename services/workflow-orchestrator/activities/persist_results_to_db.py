@@ -87,6 +87,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": True, "skipped": True}
 
     outputs = input_data.get("outputs")
+    workflow_output = input_data.get("workflowOutput")
     success = input_data.get("success", True)
     error = input_data.get("error")
     duration_ms = _coerce_duration_ms(input_data.get("durationMs"))
@@ -114,6 +115,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             final_output = {
                 "success": success,
                 "outputs": outputs,
+                "workflowOutput": workflow_output,
                 "durationMs": duration_ms,
                 "phase": "completed" if success else "failed",
             }

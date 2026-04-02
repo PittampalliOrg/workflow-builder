@@ -9,6 +9,16 @@ GITHUB_APP_ID: str = os.environ.get("GITHUB_APP_ID", "")
 GITHUB_APP_PRIVATE_KEY: str = os.environ.get("GITHUB_APP_PRIVATE_KEY", "")
 GITHUB_APP_INSTALLATION_ID: str = os.environ.get("GITHUB_APP_INSTALLATION_ID", "")
 GITHUB_WEBHOOK_SECRET: str = os.environ.get("GITHUB_WEBHOOK_SECRET", "")
+GITEA_API_URL: str = os.environ.get(
+    "GITEA_API_URL",
+    "http://gitea-http.gitea.svc.cluster.local:3000",
+)
+GITEA_INTERNAL_CLONE_BASE_URL: str = os.environ.get(
+    "GITEA_INTERNAL_CLONE_BASE_URL",
+    GITEA_API_URL,
+)
+GITEA_USERNAME: str = os.environ.get("GITEA_USERNAME", "giteaadmin")
+GITEA_PASSWORD: str = os.environ.get("GITEA_PASSWORD", "")
 
 # LLM provider
 ANTHROPIC_API_KEY: str = os.environ.get("ANTHROPIC_API_KEY", "")

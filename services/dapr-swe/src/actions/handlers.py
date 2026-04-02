@@ -7,16 +7,26 @@ Each handler takes (input_data, node_outputs) and returns
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shlex
 from typing import Any
 
-import httpx
-
-from src.events import publish_event, register_execution, update_execution_status, post_agent_event, post_issue_comment
+from src.events import publish_event, update_execution_status, post_agent_event
 from src.integrations.github_app import get_github_app_installation_token
+from src.scm import (
+    ScmAuth,
+    build_clone_config,
+    build_pr_body,
+    configure_git_identity_command,
+    create_pull_request,
+    get_gitea_auth,
+    normalize_provider,
+    post_issue_comment as post_provider_issue_comment,
+    remote_matches,
+)
 from src.sandbox.openshell import OpenShellBackend, create_openshell_sandbox
-from src.tracing import trace_activity
 
 logger = logging.getLogger(__name__)
 
@@ -58,31 +68,160 @@ def _reconnect_sandbox(sandbox_id: str) -> OpenShellBackend:
     return create_openshell_sandbox(sandbox_id=sandbox_id)
 
 
-def _build_pr_body(plan: dict, issue_number: int) -> str:
-    """Build a PR description from the plan."""
-    summary = plan.get("summary", "Automated implementation")
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    """Accept either a dict payload or a JSON-encoded dict string."""
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _resolve_provider(input_data: dict, node_outputs: dict) -> str:
+    return normalize_provider(_resolve(input_data, node_outputs, "provider"))
+
+
+def _resolve_scm_auth(
+    input_data: dict,
+    node_outputs: dict,
+    provider: str,
+) -> ScmAuth | None:
+    if provider == "gitea":
+        username = (
+            _resolve(input_data, node_outputs, "gitea_username")
+            or _resolve(input_data, node_outputs, "repositoryUsername")
+            or os.environ.get("GITEA_USERNAME")
+        )
+        secret = (
+            _resolve(input_data, node_outputs, "gitea_token")
+            or _resolve(input_data, node_outputs, "gitea_password")
+            or _resolve(input_data, node_outputs, "repositoryToken")
+            or os.environ.get("GITEA_PASSWORD")
+        )
+        return get_gitea_auth(username=username, secret=secret)
+
+    token = (
+        _resolve(input_data, node_outputs, "githubToken")
+        or _resolve(input_data, node_outputs, "github_token")
+        or _resolve(input_data, node_outputs, "repositoryToken")
+    )
+    if not token:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            token = pool.submit(
+                lambda: asyncio.run(get_github_app_installation_token())
+            ).result(timeout=30)
+    if not token:
+        token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        return None
+    return ScmAuth(provider="github", username="x-access-token", secret=str(token))
+
+
+def _collect_changed_files(sandbox: OpenShellBackend, working_dir: str) -> list[str]:
+    result = sandbox.execute(
+        f"cd {shlex.quote(working_dir)} && git status --porcelain",
+        timeout=10,
+    )
+    changed_files: list[str] = []
+    for raw_line in (result.output or "").splitlines():
+        line = raw_line.strip()
+        if not line or len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path and path not in changed_files:
+            changed_files.append(path)
+    return changed_files
+
+
+def _build_full_plan_step(plan: dict[str, Any], issue_context: dict[str, Any]) -> dict[str, Any]:
+    """Synthesize one implementation task from a structured multi-step plan."""
     steps = plan.get("steps", [])
+    summary = plan.get("summary") or issue_context.get("title") or "Implement the requested changes"
+    files: list[str] = []
+    for step in steps:
+        for path in step.get("files", []):
+            if isinstance(path, str) and path not in files:
+                files.append(path)
 
-    parts = [
-        "## Summary",
+    description_lines = [
+        "Implement the full plan end to end. You are responsible for sequencing the work,",
+        "iterating through the plan steps, and verifying the result before finishing.",
         "",
-        summary,
-        "",
-        f"Closes #{issue_number}",
-        "",
+        f"Plan summary: {summary}",
     ]
-
     if steps:
-        parts.append("## Changes")
-        parts.append("")
-        for step in steps:
-            parts.append(f"- **{step.get('title', '')}**: {step.get('description', '')}")
-        parts.append("")
+        description_lines.append("")
+        description_lines.append("Plan steps:")
+        for index, step in enumerate(steps, start=1):
+            description_lines.append(f"{index}. {step.get('title', 'Untitled step')}")
+            step_description = step.get("description", "").strip()
+            if step_description:
+                description_lines.append(step_description)
+    elif issue_context.get("body"):
+        description_lines.append("")
+        description_lines.append(issue_context["body"])
 
-    parts.append("---")
-    parts.append("*Generated by dapr-swe*")
+    complexities = [
+        step.get("complexity")
+        for step in steps
+        if isinstance(step, dict) and step.get("complexity")
+    ]
+    complexity = "high" if "high" in complexities else "medium"
 
-    return "\n".join(parts)
+    return {
+        "title": "Implement full plan",
+        "description": "\n".join(description_lines),
+        "files": files,
+        "complexity": complexity,
+    }
+
+
+def _collect_review_diff(sandbox: OpenShellBackend, working_dir: str) -> str:
+    """Return a review diff that includes tracked and untracked file changes."""
+    quoted_dir = shlex.quote(working_dir)
+    diff_parts: list[str] = []
+
+    tracked_result = sandbox.execute(
+        f"cd {quoted_dir} && git diff HEAD --",
+        timeout=60,
+    )
+    tracked_diff = tracked_result.output or ""
+    if tracked_diff.strip():
+        diff_parts.append(tracked_diff)
+    else:
+        ahead_result = sandbox.execute(
+            f"cd {quoted_dir} && git diff origin/main...HEAD --",
+            timeout=60,
+        )
+        ahead_diff = ahead_result.output or ""
+        if ahead_diff.strip():
+            diff_parts.append(ahead_diff)
+
+    untracked_result = sandbox.execute(
+        f"cd {quoted_dir} && git ls-files --others --exclude-standard",
+        timeout=30,
+    )
+    for raw_path in (untracked_result.output or "").splitlines():
+        path = raw_path.strip()
+        if not path:
+            continue
+        patch_result = sandbox.execute(
+            f"cd {quoted_dir} && git diff --no-index -- /dev/null {shlex.quote(path)} || true",
+            timeout=30,
+        )
+        patch = patch_result.output or ""
+        if patch.strip():
+            diff_parts.append(patch)
+
+    return "\n".join(part for part in diff_parts if part.strip())
 
 
 # ---------------------------------------------------------------------------
@@ -102,26 +241,15 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
     if not owner or not repo:
         return {"success": False, "data": {}, "error": "Missing required fields: owner, repo"}
 
-    # Get GitHub token — prefer connection token from workflow-builder, fall back to App token
-    token = (
-        _resolve(input_data, node_outputs, "githubToken")
-        or _resolve(input_data, node_outputs, "github_token")
-        or _resolve(input_data, node_outputs, "repositoryToken")
-        or os.environ.get("GITHUB_TOKEN")
-    )
-    if not token:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            token = pool.submit(
-                lambda: asyncio.run(get_github_app_installation_token())
-            ).result(timeout=30)
-
-    if not token:
-        return {"success": False, "data": {}, "error": "No GitHub token available"}
+    provider = _resolve_provider(input_data, node_outputs)
+    auth = _resolve_scm_auth(input_data, node_outputs, provider)
+    if not auth:
+        credential_name = "repository credentials" if provider == "gitea" else "GitHub token"
+        return {"success": False, "data": {}, "error": f"No {credential_name} available"}
 
     # Derive deterministic sandbox ID from context
     issue_num = _resolve(input_data, node_outputs, "issue_number") or "latest"
-    sandbox_id = f"dapr-swe-{owner}-{repo}-{issue_num}"
+    sandbox_id = f"dapr-swe-{provider}-{owner}-{repo}-{issue_num}"
 
     # Create sandbox (reconnects if sandbox_id already exists)
     try:
@@ -132,15 +260,22 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
     sandbox_id = sandbox.id
     working_dir = f"/sandbox/{repo}"
 
+    clone = build_clone_config(provider, owner, repo, auth)
+
     # Clone repository (skip if already cloned — idempotent for activity replay)
     check = sandbox.execute(f"test -d {working_dir}/.git && echo exists", timeout=10)
     if "exists" in (check.output or ""):
         logger.info("Repo already cloned at %s, skipping clone", working_dir)
     else:
-        clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
         clone_depth = _resolve(input_data, node_outputs, "cloneDepth") or "50"
         result = sandbox.execute(
-            f"git clone --depth={clone_depth} {clone_url} {working_dir}",
+            " ".join(
+                [
+                    f"git clone --depth={clone_depth}",
+                    shlex.quote(clone.clone_url),
+                    shlex.quote(working_dir),
+                ],
+            ),
             timeout=120,
         )
         if result.exit_code != 0:
@@ -150,17 +285,47 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
                 "error": f"CLONE FAIL: {result.output[:200]}",
             }
 
+    # Reused sandboxes can point at a stale fork/remote from a previous run.
+    # Force origin to the requested repository before any fetch/push operations.
+    remote_result = sandbox.execute(
+        f"cd {working_dir} && git remote get-url origin",
+        timeout=10,
+    )
+    current_remote = (remote_result.output or "").strip()
+    if remote_result.exit_code != 0 or not remote_matches(provider, current_remote, owner, repo):
+        logger.info(
+            "Updating origin for %s from %r to %s",
+            working_dir,
+            current_remote or None,
+            clone.canonical_remote_url,
+        )
+        set_remote_result = sandbox.execute(
+            f"cd {working_dir} && git remote set-url origin {shlex.quote(clone.canonical_remote_url)}",
+            timeout=10,
+        )
+        if set_remote_result.exit_code != 0:
+            return {
+                "success": False,
+                "data": {"sandbox_id": sandbox_id},
+                "error": f"Failed to set origin remote: {set_remote_result.output}",
+            }
+
     # Store credentials for later push
     sandbox.execute(
-        f"echo 'https://x-access-token:{token}@github.com' > /tmp/.git-credentials",
+        "printf '%s\\n' "
+        + shlex.quote(clone.credential_url)
+        + " > /tmp/.git-credentials",
+        timeout=10,
+    )
+    sandbox.execute(
+        "git config --global credential.helper 'store --file=/tmp/.git-credentials' "
+        "&& git config --global http.sslVerify false",
         timeout=10,
     )
 
     # Configure git identity
     sandbox.execute(
-        f"cd {working_dir} && "
-        "git config user.email 'dapr-swe[bot]@users.noreply.github.com' && "
-        "git config user.name 'dapr-swe[bot]'",
+        configure_git_identity_command(working_dir, clone),
         timeout=10,
     )
 
@@ -182,10 +347,13 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
     return {
         "success": True,
         "data": {
+            "provider": provider,
             "sandbox_id": sandbox_id,
             "working_dir": working_dir,
             "agents_md": agents_md,
-            "github_token": token,
+            "github_token": auth.secret if provider == "github" else "",
+            "gitea_username": auth.username if provider == "gitea" else "",
+            "gitea_password": auth.secret if provider == "gitea" else "",
             "wb_execution_id": "",
         },
         "error": None,
@@ -212,8 +380,8 @@ def handle_plan(input_data: dict, node_outputs: dict) -> dict:
 
     # Build issue context from all available fields
     issue_context = {}
-    for key in ("owner", "repo", "issue_number", "title", "body", "comments",
-                "sender", "working_dir", "agents_md", "github_token"):
+    for key in ("provider", "owner", "repo", "issue_number", "title", "body", "comments",
+                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_password"):
         val = _resolve(input_data, node_outputs, key)
         if val is not None:
             issue_context[key] = val
@@ -258,10 +426,7 @@ def handle_plan(input_data: dict, node_outputs: dict) -> dict:
 
 
 def handle_develop(input_data: dict, node_outputs: dict) -> dict:
-    """Run the DeveloperAgent for a single plan step.
-
-    Expects sandbox_id, step (dict), and issue/plan context.
-    """
+    """Run the DeveloperAgent once for an explicit step or the full plan."""
     from src.agents.developer import run_developer
 
     sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
@@ -272,13 +437,13 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
 
     # Build issue context from all available sources
     issue_context = {}
-    for key in ("owner", "repo", "issue_number", "title", "body", "comments",
-                "sender", "working_dir", "agents_md", "github_token"):
+    for key in ("provider", "owner", "repo", "issue_number", "title", "body", "comments",
+                "sender", "working_dir", "agents_md", "github_token", "gitea_username", "gitea_password"):
         val = _resolve(input_data, node_outputs, key)
         if val is not None:
             issue_context[key] = val
 
-    plan = _resolve(input_data, node_outputs, "plan") or {}
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
 
     # Resolve event tracking context
     wb_exec_id = _resolve(input_data, node_outputs, "wb_execution_id") or ""
@@ -294,37 +459,10 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
         system_prompt_extra=prompt_extra,
     )
 
-    # Get step(s) to implement
-    step = _resolve(input_data, node_outputs, "step")
-    steps = plan.get("steps", [])
-
-    # If no specific step, implement all steps from the plan
-    if not step and steps:
-        results = []
-        for i, s in enumerate(steps):
-            logger.info("Implementing step %d/%d: %s", i + 1, len(steps), s.get("title", ""))
-            publish_event("dapr-swe.step.started", {"issue": issue_ref, "step_index": i, "step_title": s.get("title", "")})
-            try:
-                r = run_developer(sandbox=sandbox, step=s, issue_context=issue_context, plan=plan, **dev_overrides)
-                results.append(r)
-                publish_event("dapr-swe.step.completed", {"issue": issue_ref, "step_index": i, "step_title": s.get("title", ""), "status": r.get("status", "")})
-                update_execution_status(wb_exec_id, "implementing", 40 + i * 10)
-                post_agent_event(wb_exec_id, "step_completed", {"phase": "implementing", "stepIndex": i, "stepTitle": s.get("title", "")})
-            except Exception as exc:
-                logger.warning("Step %d failed: %s", i + 1, exc)
-                results.append({"status": "error", "error": str(exc)})
-        return {
-            "success": True,
-            "data": {"status": "completed", "steps_completed": len(results), "results": results},
-        }
+    step = _coerce_mapping(_resolve(input_data, node_outputs, "step"))
 
     if not step:
-        # No step and no plan steps — implement based on issue description
-        step = {
-            "title": "Implement changes",
-            "description": issue_context.get("body", issue_context.get("title", "")),
-            "files": [],
-        }
+        step = _build_full_plan_step(plan, issue_context)
 
     publish_event("dapr-swe.step.started", {"issue": issue_ref, "step_index": 0, "step_title": step.get("title", "")})
     try:
@@ -343,11 +481,18 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
     update_execution_status(wb_exec_id, "implementing", 50)
     post_agent_event(wb_exec_id, "step_completed", {"phase": "implementing", "stepIndex": 0, "stepTitle": step.get("title", "")})
 
+    changed_files = _collect_changed_files(
+        sandbox,
+        issue_context.get("working_dir", "/sandbox"),
+    )
+    status = "changes_ready" if changed_files else "no_changes"
+
     return {
         "success": True,
         "data": {
-            "status": result.get("status", "unknown"),
-            "files_changed": result.get("files_changed", []),
+            "status": status,
+            "summary": result.get("summary", ""),
+            "files_changed": changed_files,
         },
         "error": None,
     }
@@ -375,22 +520,17 @@ def handle_review(input_data: dict, node_outputs: dict) -> dict:
 
     sandbox = _reconnect_sandbox(sandbox_id)
 
-    # Get the full diff
-    diff_result = sandbox.execute(f"cd {working_dir} && git diff HEAD", timeout=60)
-    diff = diff_result.output or ""
-
-    # If no unstaged changes, check for staged changes or commits ahead of origin
-    if not diff.strip():
-        diff_result = sandbox.execute(
-            f"cd {working_dir} && git diff origin/main...HEAD",
-            timeout=60,
-        )
-        diff = diff_result.output or ""
+    diff = _collect_review_diff(sandbox, working_dir)
 
     if not diff.strip():
         return {
             "success": True,
-            "data": {"approved": True, "feedback": "No changes to review", "suggestions": []},
+            "data": {
+                "approved": False,
+                "status": "no_changes",
+                "feedback": "No changes to review",
+                "suggestions": [],
+            },
             "error": None,
         }
 
@@ -401,7 +541,7 @@ def handle_review(input_data: dict, node_outputs: dict) -> dict:
         if val is not None:
             issue_context[key] = val
 
-    plan = _resolve(input_data, node_outputs, "plan") or {}
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
 
     # Resolve optional configuration overrides from workflow-builder UI
     model = _resolve(input_data, node_outputs, "model")
@@ -410,7 +550,14 @@ def handle_review(input_data: dict, node_outputs: dict) -> dict:
         review = run_reviewer(diff=diff, issue_context=issue_context, plan=plan, model_override=model)
     except Exception as exc:
         logger.exception("ReviewerAgent failed")
-        return {"success": False, "data": {}, "error": f"ReviewerAgent failed: {exc}"}
+        review = {
+            "approved": False,
+            "feedback": f"Automated review failed: {exc}",
+            "suggestions": [
+                "Inspect the reviewer logs and provider credentials, then rerun the workflow.",
+            ],
+            "review_error": str(exc),
+        }
 
     # Publish review events
     wb_exec_id = _resolve(input_data, node_outputs, "wb_execution_id") or ""
@@ -422,8 +569,10 @@ def handle_review(input_data: dict, node_outputs: dict) -> dict:
         "success": True,
         "data": {
             "approved": review.get("approved", False),
+            "status": "approved" if review.get("approved", False) else "review_rejected",
             "feedback": review.get("feedback", ""),
             "suggestions": review.get("suggestions", []),
+            "review_error": review.get("review_error", ""),
         },
         "error": None,
     }
@@ -444,15 +593,26 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
     owner = _resolve(input_data, node_outputs, "owner")
     repo = _resolve(input_data, node_outputs, "repo")
     issue_number = _resolve(input_data, node_outputs, "issue_number")
-    token = _resolve(input_data, node_outputs, "github_token")
+    provider = _resolve_provider(input_data, node_outputs)
+    auth = _resolve_scm_auth(input_data, node_outputs, provider)
     title = _resolve(input_data, node_outputs, "title") or "Untitled issue"
-    plan = _resolve(input_data, node_outputs, "plan") or {}
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
+    review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
 
     for field, val in [("sandbox_id", sandbox_id), ("working_dir", working_dir),
                        ("owner", owner), ("repo", repo),
-                       ("issue_number", issue_number), ("github_token", token)]:
+                       ("issue_number", issue_number)]:
         if not val:
             return {"success": False, "data": {}, "error": f"Missing required field: {field}"}
+    if not auth:
+        credential_name = "repository credentials" if provider == "gitea" else "GitHub token"
+        return {"success": False, "data": {}, "error": f"Missing required field: {credential_name}"}
+    if review and review.get("approved") is False:
+        return {
+            "success": True,
+            "data": {"pr_url": "", "branch": "", "status": "review_rejected"},
+            "error": None,
+        }
 
     # Resolve optional configuration overrides from workflow-builder UI
     draft = _resolve(input_data, node_outputs, "draft")
@@ -466,8 +626,8 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
     import time; branch_name = f"dapr-swe/issue-{issue_number}-{int(time.time())}"
 
     # Check for actual changes
-    status_result = sandbox.execute(f"cd {working_dir} && git status --porcelain", timeout=10)
-    if not status_result.output.strip():
+    changed_files = _collect_changed_files(sandbox, working_dir)
+    if not changed_files:
         return {
             "success": True,
             "data": {"pr_url": "", "branch": branch_name, "status": "no_changes"},
@@ -475,11 +635,11 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
         }
 
     # Configure git user, create branch, stage, commit
+    clone = build_clone_config(provider, owner, repo, auth)
     commit_result = sandbox.execute(
-        f"cd {working_dir} && "
-        "git config user.email 'dapr-swe[bot]@users.noreply.github.com' && "
-        "git config user.name 'dapr-swe[bot]' && "
-        f"git checkout -b {branch_name} && "
+        configure_git_identity_command(working_dir, clone)
+        + " && "
+        + f"git checkout -B {branch_name} && "
         "git add -A && "
         f'git commit -m "{pr_title}"',
         timeout=60,
@@ -492,6 +652,11 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
         }
 
     # Push
+    sandbox.execute(
+        "git config --global credential.helper 'store --file=/tmp/.git-credentials' "
+        "&& git config --global http.sslVerify false",
+        timeout=10,
+    )
     push_result = sandbox.execute(
         f"cd {working_dir} && git push -u origin {branch_name}",
         timeout=120,
@@ -503,61 +668,125 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
             "error": f"Push failed: {push_result.output}",
         }
 
-    # Open PR via GitHub API
-    pr_body = _build_pr_body(plan, int(issue_number))
-    pr_data = {
-        "title": pr_title,
-        "head": branch_name,
-        "base": base_branch,
-        "body": pr_body,
-        "draft": is_draft,
-    }
-
+    # Open PR via SCM API
+    pr_body = build_pr_body(plan, int(issue_number))
     try:
-        with httpx.Client(timeout=30) as client:
-            resp = client.post(
-                f"https://api.github.com/repos/{owner}/{repo}/pulls",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                    "X-GitHub-Api-Version": "2022-11-28",
-                },
-                json=pr_data,
-            )
+        pr_result = create_pull_request(
+            provider=provider,
+            owner=owner,
+            repo=repo,
+            head_branch=branch_name,
+            base_branch=str(base_branch),
+            title=str(pr_title),
+            body=pr_body,
+            auth=auth,
+            draft=is_draft,
+        )
     except Exception as exc:
         return {
             "success": False,
             "data": {"branch": branch_name},
-            "error": f"GitHub API request failed: {exc}",
+            "error": f"SCM API request failed: {exc}",
         }
 
-    if resp.status_code == 201:
-        pr_url = resp.json().get("html_url", "")
+    if pr_result["status"] == "success":
+        pr_url = pr_result.get("pr_url", "")
         publish_event("dapr-swe.pr.created", {"issue": f"{owner}/{repo}#{issue_number}", "pr_url": pr_url})
-        # Post issue comment (notification)
-        post_issue_comment(owner, repo, issue_number, f"I've opened a draft PR: {pr_url}", token)
-        publish_event("dapr-swe.workflow.completed", {"issue": f"{owner}/{repo}#{issue_number}", "status": "success", "pr_url": pr_url})
         return {
             "success": True,
             "data": {"pr_url": pr_url, "branch": branch_name, "status": "success"},
             "error": None,
         }
-    elif resp.status_code == 422:
+    if pr_result["status"] == "already_exists":
         return {
             "success": True,
             "data": {"pr_url": "", "branch": branch_name, "status": "already_exists"},
             "error": None,
         }
-    else:
-        return {
-            "success": False,
-            "data": {"branch": branch_name},
-            "error": f"PR creation failed ({resp.status_code}): {resp.text}",
-        }
+    return {
+        "success": False,
+        "data": {"branch": branch_name},
+        "error": f"PR creation failed: {pr_result.get('error') or pr_result.get('detail') or 'Unknown error'}",
+    }
 
 
 # ---------------------------------------------------------------------------
-# 6. Solve -- single DurableAgent that does everything end-to-end
+# 6. Notify -- post a result-specific issue comment
+# ---------------------------------------------------------------------------
+
+
+def handle_notify(input_data: dict, node_outputs: dict) -> dict:
+    provider = _resolve_provider(input_data, node_outputs)
+    auth = _resolve_scm_auth(input_data, node_outputs, provider)
+    owner = _resolve(input_data, node_outputs, "owner")
+    repo = _resolve(input_data, node_outputs, "repo")
+    issue_number = _resolve(input_data, node_outputs, "issue_number")
+    pr_url = _resolve(input_data, node_outputs, "pr_url") or ""
+    status = _resolve(input_data, node_outputs, "status") or ""
+    error = _resolve(input_data, node_outputs, "error") or ""
+    review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+
+    for field, val in [("owner", owner), ("repo", repo), ("issue_number", issue_number)]:
+        if not val:
+            return {"success": False, "data": {}, "error": f"Missing required field: {field}"}
+    if not auth:
+        credential_name = "repository credentials" if provider == "gitea" else "GitHub token"
+        return {"success": False, "data": {}, "error": f"Missing required field: {credential_name}"}
+
+    if status == "success" and pr_url:
+        body = (
+            f"I've opened a draft PR with the implementation: {pr_url}\n\n"
+            f"Review: {'Approved' if review.get('approved') else 'Needs changes'}\n"
+            f"Feedback: {review.get('feedback', 'N/A')}"
+        )
+    elif status == "no_changes":
+        body = (
+            "I investigated this issue and did not find any repository changes to make.\n\n"
+            f"Summary: {review.get('feedback') or 'No code changes were produced.'}"
+        )
+    elif status == "review_rejected":
+        body = (
+            "I implemented changes, but the automated review did not approve them.\n\n"
+            f"Feedback: {review.get('feedback', 'Review rejected the changes.')}"
+        )
+    elif status == "already_exists":
+        body = "A pull request for this issue already exists, so I did not open a new one."
+    else:
+        body = (
+            "I encountered an error while trying to resolve this issue.\n\n"
+            f"Error: {error or 'Unknown error'}"
+        )
+
+    try:
+        post_provider_issue_comment(
+            provider=provider,
+            owner=str(owner),
+            repo=str(repo),
+            issue_number=int(issue_number),
+            body=body,
+            auth=auth,
+        )
+    except Exception as exc:
+        logger.exception("Failed to post completion comment")
+        return {"success": False, "data": {}, "error": f"Failed to post issue comment: {exc}"}
+
+    publish_event(
+        "dapr-swe.workflow.completed",
+        {
+            "issue": f"{owner}/{repo}#{issue_number}",
+            "status": status or "completed",
+            "pr_url": pr_url,
+        },
+    )
+    return {
+        "success": True,
+        "data": {"status": status or "completed", "pr_url": pr_url, "notified": True},
+        "error": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 7. Solve -- single DurableAgent that does everything end-to-end
 # ---------------------------------------------------------------------------
 
 
@@ -707,4 +936,5 @@ ACTION_HANDLERS: dict[str, Any] = {
     "dapr-swe/develop": handle_develop,
     "dapr-swe/review": handle_review,
     "dapr-swe/commit-pr": handle_commit_pr,
+    "dapr-swe/notify": handle_notify,
 }

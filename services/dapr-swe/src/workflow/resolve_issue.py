@@ -1,4 +1,4 @@
-"""Main Dapr Workflow: plan -> develop -> review -> PR."""
+"""Main Dapr Workflow: plan -> implement full plan -> review -> PR."""
 
 from __future__ import annotations
 
@@ -28,13 +28,11 @@ def resolve_issue_workflow(ctx: wf.DaprWorkflowContext, input: dict) -> dict:
         input=context,
     )
 
-    # 3. Develop: implement each step sequentially
-    for i, step in enumerate(plan.get("steps", [])):
-        step_input = {**context, "step": step, "step_index": i, "plan": plan}
-        yield ctx.call_activity(
-            implement_step,
-            input=step_input,
-        )
+    # 3. Develop: give the full plan to the developer and let it iterate internally
+    yield ctx.call_activity(
+        implement_step,
+        input={**context, "plan": plan},
+    )
 
     # 4. Review: check the full diff
     review = yield ctx.call_activity(

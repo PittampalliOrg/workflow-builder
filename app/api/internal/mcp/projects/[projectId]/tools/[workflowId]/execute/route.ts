@@ -199,18 +199,30 @@ export async function POST(request: Request, { params }: RouteParams) {
 		},
 		...input,
 	};
-	const normalized = normalizeWorkflowToSwCutover({
-		name: workflow.name,
-		description: workflow.description ?? undefined,
-		nodes: workflow.nodes as WorkflowNode[],
-		edges: workflow.edges as WorkflowEdge[],
-		spec: (workflow as Record<string, unknown>).spec,
-		specVersion:
-			((workflow as Record<string, unknown>).specVersion as
-				| string
-				| null
-				| undefined) ?? null,
-	});
+	let normalized;
+	try {
+		normalized = normalizeWorkflowToSwCutover({
+			workflowId,
+			name: workflow.name,
+			description: workflow.description ?? undefined,
+			nodes: workflow.nodes as WorkflowNode[],
+			edges: workflow.edges as WorkflowEdge[],
+			spec: (workflow as Record<string, unknown>).spec,
+			specVersion:
+				((workflow as Record<string, unknown>).specVersion as
+					| string
+					| null
+					| undefined) ?? null,
+		});
+	} catch (error) {
+		return NextResponse.json(
+			{
+				error: "Invalid workflow definition",
+				issues: [error instanceof Error ? error.message : "Invalid workflow"],
+			},
+			{ status: 400 },
+		);
+	}
 	if (normalized.needsMigration) {
 		await db
 			.update(workflows)

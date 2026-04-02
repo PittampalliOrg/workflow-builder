@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 
 import httpx
 from dapr.ext.workflow import WorkflowActivityContext
@@ -61,7 +62,13 @@ def initialize_context(ctx: WorkflowActivityContext, input: dict) -> dict:
     else:
         clone_url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
         result = sandbox.execute(
-            f"git clone --depth=50 {clone_url} {working_dir}",
+            " ".join(
+                [
+                    "git clone --depth=50",
+                    shlex.quote(clone_url),
+                    shlex.quote(working_dir),
+                ],
+            ),
             timeout=120,
         )
         if result.exit_code != 0:
@@ -69,7 +76,9 @@ def initialize_context(ctx: WorkflowActivityContext, input: dict) -> dict:
 
     # Store credentials for later push
     sandbox.execute(
-        f"echo 'https://x-access-token:{token}@github.com' > /tmp/.git-credentials",
+        "printf '%s\\n' "
+        + shlex.quote(f"https://x-access-token:{token}@github.com")
+        + " > /tmp/.git-credentials",
         timeout=10,
     )
 
@@ -107,6 +116,89 @@ def initialize_context(ctx: WorkflowActivityContext, input: dict) -> dict:
     }
 
 
+def _build_full_plan_step(plan: dict, issue_context: dict) -> dict:
+    """Synthesize one implementation task from the full plan."""
+    steps = plan.get("steps", [])
+    summary = plan.get("summary") or issue_context.get("title") or "Implement the requested changes"
+    files: list[str] = []
+    for step in steps:
+        for path in step.get("files", []):
+            if isinstance(path, str) and path not in files:
+                files.append(path)
+
+    description_lines = [
+        "Implement the full plan end to end. You are responsible for sequencing the work,",
+        "iterating through the plan steps, and verifying the result before finishing.",
+        "",
+        f"Plan summary: {summary}",
+    ]
+    if steps:
+        description_lines.append("")
+        description_lines.append("Plan steps:")
+        for index, step in enumerate(steps, start=1):
+            description_lines.append(f"{index}. {step.get('title', 'Untitled step')}")
+            step_description = step.get("description", "").strip()
+            if step_description:
+                description_lines.append(step_description)
+    elif issue_context.get("body"):
+        description_lines.append("")
+        description_lines.append(issue_context["body"])
+
+    complexities = [
+        step.get("complexity")
+        for step in steps
+        if isinstance(step, dict) and step.get("complexity")
+    ]
+    complexity = "high" if "high" in complexities else "medium"
+
+    return {
+        "title": "Implement full plan",
+        "description": "\n".join(description_lines),
+        "files": files,
+        "complexity": complexity,
+    }
+
+
+def _collect_review_diff(sandbox: OpenShellBackend, working_dir: str) -> str:
+    """Return a review diff that includes tracked and untracked file changes."""
+    quoted_dir = shlex.quote(working_dir)
+    diff_parts: list[str] = []
+
+    tracked_result = sandbox.execute(
+        f"cd {quoted_dir} && git diff HEAD --",
+        timeout=60,
+    )
+    tracked_diff = tracked_result.output or ""
+    if tracked_diff.strip():
+        diff_parts.append(tracked_diff)
+    else:
+        ahead_result = sandbox.execute(
+            f"cd {quoted_dir} && git diff origin/main...HEAD --",
+            timeout=60,
+        )
+        ahead_diff = ahead_result.output or ""
+        if ahead_diff.strip():
+            diff_parts.append(ahead_diff)
+
+    untracked_result = sandbox.execute(
+        f"cd {quoted_dir} && git ls-files --others --exclude-standard",
+        timeout=30,
+    )
+    for raw_path in (untracked_result.output or "").splitlines():
+        path = raw_path.strip()
+        if not path:
+            continue
+        patch_result = sandbox.execute(
+            f"cd {quoted_dir} && git diff --no-index -- /dev/null {shlex.quote(path)} || true",
+            timeout=30,
+        )
+        patch = patch_result.output or ""
+        if patch.strip():
+            diff_parts.append(patch)
+
+    return "\n".join(part for part in diff_parts if part.strip())
+
+
 # ---------------------------------------------------------------------------
 # 2. Create plan
 # ---------------------------------------------------------------------------
@@ -141,12 +233,12 @@ def create_plan(ctx: WorkflowActivityContext, input: dict) -> dict:
 
 
 def implement_step(ctx: WorkflowActivityContext, input: dict) -> dict:
-    """Run the DeveloperAgent for a single plan step."""
+    """Run the DeveloperAgent once for an explicit step or the full plan."""
     from src.agents.developer import run_developer
 
     sandbox = _reconnect_sandbox(input["sandbox_id"])
-    step = input["step"]
     plan = input.get("plan", {})
+    step = input.get("step") or _build_full_plan_step(plan, input)
     step_index = input.get("step_index", 0)
 
     logger.info("Implementing step %d: %s", step_index, step.get("title", ""))
@@ -194,27 +286,25 @@ def review_changes(ctx: WorkflowActivityContext, input: dict) -> dict:
     sandbox = _reconnect_sandbox(input["sandbox_id"])
     working_dir = input["working_dir"]
 
-    # Get the full diff
-    diff_result = sandbox.execute(
-        f"cd {working_dir} && git diff HEAD",
-        timeout=60,
-    )
-    diff = diff_result.output or ""
-
-    # If no unstaged changes, check for staged changes or commits ahead of origin
-    if not diff.strip():
-        diff_result = sandbox.execute(
-            f"cd {working_dir} && git diff origin/main...HEAD",
-            timeout=60,
-        )
-        diff = diff_result.output or ""
+    diff = _collect_review_diff(sandbox, working_dir)
 
     if not diff.strip():
         logger.info("No diff to review — skipping")
         return {"approved": True, "feedback": "No changes to review", "suggestions": []}
 
     plan = input.get("plan", {})
-    review = run_reviewer(diff=diff, issue_context=input, plan=plan)
+    try:
+        review = run_reviewer(diff=diff, issue_context=input, plan=plan)
+    except Exception as exc:
+        logger.exception("ReviewerAgent failed during workflow activity")
+        review = {
+            "approved": False,
+            "feedback": f"Automated review failed: {exc}",
+            "suggestions": [
+                "Inspect the reviewer logs and provider credentials, then rerun the workflow.",
+            ],
+            "review_error": str(exc),
+        }
     logger.info("Review: approved=%s", review.get("approved"))
 
     update_execution_status(input.get("wb_execution_id", ""), "reviewing", 75)

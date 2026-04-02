@@ -296,7 +296,7 @@ const NODE_TYPE_CONFIG_SCHEMAS: Record<
 	},
 	"set-state": {
 		description:
-			"Set a workflow variable that can be referenced via {{state.key}}",
+			"Set a workflow variable that can be referenced via ${ .state.key }",
 		fields: [
 			{
 				key: "entries",
@@ -464,7 +464,7 @@ function buildSelectedNodeContext(
 			if (upstream.length > 0) {
 				lines.push(``);
 				lines.push(
-					`Upstream context (referenceable via {{@nodeId:Label.field}}):`,
+					`Upstream context (referenceable via \${ .taskName.field }):`,
 				);
 				for (const u of upstream) {
 					let line = `  - ${u.nodeId} "${u.nodeLabel}" (${u.nodeType}) [${u.availability}]`;
@@ -489,7 +489,7 @@ function buildSelectedNodeContext(
 
 			if (ctx.stateKeys.length > 0) {
 				lines.push(
-					`State keys: ${ctx.stateKeys.map((k) => `${k} (use {{state.${k}}})`).join(", ")}`,
+					`State keys: ${ctx.stateKeys.map((k) => `${k} (use \${ .state.${k} })`).join(", ")}`,
 				);
 			}
 		}
@@ -678,8 +678,8 @@ POSITIONING RULES:
 - Check existing node positions to avoid overlaps
 
 TEMPLATE REFERENCES:
-- Reference node output: {{@nodeId:Label.field}}
-- Reference state: {{state.key}}
+- Reference task output: \${ .taskName.field }
+- Reference state: \${ .state.key }
 
 EDGE RULES:
 - Every workflow must start with the trigger node

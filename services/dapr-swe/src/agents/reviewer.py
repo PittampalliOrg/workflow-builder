@@ -54,29 +54,44 @@ def run_reviewer(
     Returns a dict with keys: approved, feedback, suggestions.
     """
     from src.config import LLM_MODEL_ID
-    from src.llm_providers import resolve_llm_client
-
-    model = (
-        model_override.removeprefix("anthropic/")
-        if model_override
-        else LLM_MODEL_ID.removeprefix("anthropic/")
+    from src.llm_providers import (
+        get_openai_fallback_model,
+        is_anthropic_model,
+        is_anthropic_usage_error,
+        resolve_llm_client,
     )
+
+    model = model_override or LLM_MODEL_ID
 
     import asyncio
     from dapr_agents import Agent
 
-    agent = Agent(
-        name="ReviewerAgent",
-        role="Code Reviewer",
-        goal="Review code changes for correctness, style, and completeness",
-        system_prompt=REVIEWER_SYSTEM_PROMPT,
-        llm=resolve_llm_client(model),
-        tools=[],
-        execution=AgentExecutionConfig(max_iterations=1),
-    )
+    prompt = _format_review_prompt(diff, issue_context, plan)
 
-    result = asyncio.run(agent.run(_format_review_prompt(diff, issue_context, plan)))
-    return _parse_review(result.content if result else "")
+    def _run_with_model(model_name: str) -> dict:
+        agent = Agent(
+            name="ReviewerAgent",
+            role="Code Reviewer",
+            goal="Review code changes for correctness, style, and completeness",
+            system_prompt=REVIEWER_SYSTEM_PROMPT,
+            llm=resolve_llm_client(model_name),
+            tools=[],
+            execution=AgentExecutionConfig(max_iterations=1),
+        )
+        result = asyncio.run(agent.run(prompt))
+        return _parse_review(result.content if result else "")
+
+    try:
+        return _run_with_model(model)
+    except Exception as exc:
+        fallback_model = get_openai_fallback_model()
+        if is_anthropic_model(model) and is_anthropic_usage_error(exc) and fallback_model:
+            logger.warning(
+                "ReviewerAgent Anthropic request failed; retrying with OpenAI fallback model %s",
+                fallback_model,
+            )
+            return _run_with_model(fallback_model)
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +135,9 @@ def _parse_review(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    logger.warning("Could not parse review JSON, treating as approved with raw feedback")
+    logger.warning("Could not parse review JSON, treating as rejected with raw feedback")
     return {
-        "approved": True,
+        "approved": False,
         "feedback": text[:1000],
         "suggestions": [],
     }

@@ -393,12 +393,7 @@ const agentActions: CatalogFunction[] = [
 			avoidWhen:
 				"Do not use for workflows that only transform existing data or emit an event.",
 			requiredInputs: ["owner", "repo", "issue_number"],
-			outputs: [
-				"sessionId",
-				"workspaceRef",
-				"issue metadata",
-				"branch context",
-			],
+			outputs: ["sandbox_id", "working_dir", "agents_md", "github_token"],
 			examplePayload: {
 				owner: "PittampalliOrg",
 				repo: "open-swe",
@@ -426,11 +421,17 @@ const agentActions: CatalogFunction[] = [
 				"Use after initialize when the workflow needs a structured implementation plan for a coding task.",
 			avoidWhen:
 				"Do not use for trivial single-step automations that can go straight to implementation.",
-			requiredInputs: ["sessionId", "issue or task context"],
-			outputs: ["planId", "summary", "steps[]"],
+			requiredInputs: [
+				"sandbox_id",
+				"working_dir",
+				"agents_md",
+				"github_token",
+				"issue context",
+			],
+			outputs: ["plan", "summary", "step_count"],
 			examplePayload: {
-				sessionId: "${ .sandbox.sessionId }",
-				issueNumber: "${ .input.issue_number }",
+				sandbox_id: "${ .initialize.sandbox_id }",
+				title: "${ .input.title }",
 			},
 			idempotent: false,
 			longRunning: true,
@@ -454,16 +455,16 @@ const agentActions: CatalogFunction[] = [
 				"Use to execute one implementation step or apply review feedback inside an existing dapr-swe session.",
 			avoidWhen:
 				"Do not use before initialize, and avoid many nested develop loops unless the user explicitly asks for multi-agent behavior.",
-			requiredInputs: ["sessionId", "planId", "stepIndex or step description"],
-			outputs: [
-				"implementation result",
-				"changed files summary",
-				"tool activity",
+			requiredInputs: [
+				"sandbox_id",
+				"working_dir",
+				"provider-specific repository credentials",
+				"plan or step context",
 			],
+			outputs: ["status", "files_changed", "summary"],
 			examplePayload: {
-				sessionId: "${ .sandbox.sessionId }",
-				planId: "${ .plan.planId }",
-				stepIndex: 0,
+				sandbox_id: "${ .initialize.sandbox_id }",
+				plan: "${ .createPlan.plan }",
 			},
 			idempotent: false,
 			longRunning: true,
@@ -486,11 +487,11 @@ const agentActions: CatalogFunction[] = [
 			whenToUse:
 				"Use after implementation when the workflow needs an approval signal or review feedback before creating a PR.",
 			avoidWhen: "Do not use before any code changes have been made.",
-			requiredInputs: ["sessionId", "planId or change context"],
-			outputs: ["approved", "feedback", "review summary"],
+			requiredInputs: ["sandbox_id", "working_dir", "plan or change context"],
+			outputs: ["approved", "status", "feedback", "suggestions"],
 			examplePayload: {
-				sessionId: "${ .sandbox.sessionId }",
-				planId: "${ .plan.planId }",
+				sandbox_id: "${ .initialize.sandbox_id }",
+				working_dir: "${ .initialize.working_dir }",
 			},
 			idempotent: true,
 			longRunning: true,
@@ -507,18 +508,25 @@ const agentActions: CatalogFunction[] = [
 		name: "daprSweCommitPR",
 		label: "Commit & Open PR",
 		description:
-			"Stage changes, create branch, commit, push, and open a draft GitHub PR",
+			"Stage changes, create a branch, push it, and open a draft pull request through the active SCM provider",
 		category: "Dapr SWE",
 		authoring: {
 			whenToUse:
-				"Use only when the workflow is expected to create a branch and pull request after changes are approved.",
+				"Use only when the workflow is expected to create a branch and pull request after changes are approved, typically behind a switch or other explicit review gate.",
 			avoidWhen:
 				"Do not use if the user explicitly does not want a PR or if the workflow never changes code.",
-			requiredInputs: ["sessionId", "issue metadata or PR title context"],
+			requiredInputs: [
+				"sandbox_id",
+				"working_dir",
+				"provider-specific repository credentials",
+				"owner",
+				"repo",
+				"issue_number",
+			],
 			outputs: ["branch", "pr_url", "status"],
 			examplePayload: {
-				sessionId: "${ .sandbox.sessionId }",
-				issueNumber: "${ .input.issue_number }",
+				sandbox_id: "${ .initialize.sandbox_id }",
+				issue_number: "${ .input.issue_number }",
 			},
 			idempotent: false,
 			longRunning: true,
@@ -528,6 +536,42 @@ const agentActions: CatalogFunction[] = [
 			with: {
 				method: "POST",
 				endpoint: { uri: daprInvokeUrl("dapr-swe", "dapr-swe/commit-pr") },
+			},
+		},
+	},
+	{
+		name: "daprSweNotify",
+		label: "Notify Issue",
+		description:
+			"Post a result-specific completion comment back to the issue tracker through the active SCM provider",
+		category: "Dapr SWE",
+		authoring: {
+			whenToUse:
+				"Use after a no-op, review rejection, or successful PR creation so the issue thread receives one final outcome comment.",
+			avoidWhen:
+				"Do not use for intermediate progress updates or before the workflow has reached a terminal outcome.",
+			requiredInputs: [
+				"provider-specific repository credentials",
+				"owner",
+				"repo",
+				"issue_number",
+				"status",
+			],
+			outputs: ["status", "pr_url", "notified"],
+			examplePayload: {
+				owner: "${ .input.owner }",
+				repo: "${ .input.repo }",
+				issue_number: "${ .input.issue_number }",
+				status: "no_changes",
+			},
+			idempotent: false,
+			longRunning: false,
+		},
+		definition: {
+			call: "http",
+			with: {
+				method: "POST",
+				endpoint: { uri: daprInvokeUrl("dapr-swe", "dapr-swe/notify") },
 			},
 		},
 	},

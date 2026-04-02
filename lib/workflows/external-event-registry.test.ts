@@ -26,6 +26,7 @@ describe("resolveSupportedWorkflowTriggerFromEnvelope", () => {
 			status: "accepted",
 			workflowId: "vajlzrprpie7fvco6ibhi",
 			input: {
+				provider: "github",
 				owner: "PittampalliOrg",
 				repo: "open-swe",
 				issue_number: 11,
@@ -60,6 +61,7 @@ describe("resolveSupportedWorkflowTriggerFromEnvelope", () => {
 			status: "accepted",
 			workflowId: "vajlzrprpie7fvco6ibhi",
 			input: {
+				provider: "gitea",
 				owner: "giteaadmin",
 				repo: "open-swe",
 				issue_number: 13,
