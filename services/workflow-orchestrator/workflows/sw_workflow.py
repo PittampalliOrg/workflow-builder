@@ -38,8 +38,12 @@ from core.sw_types import (
     SWWorkflowCustomStatus,
     get_task_type,
 )
-from core.template_resolver import resolve_templates, NodeOutputs
-from core.cel_loop import eval_cel_boolean
+from core.sw_expressions import (
+    evaluate_condition,
+    evaluate_structure,
+    resolve_input_definition,
+    resolve_output_definition,
+)
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
@@ -155,6 +159,106 @@ def _trace_id_from_otel(otel_ctx: object) -> str | None:
     return None
 
 
+def _unwrap_standardized_output(value: Any) -> Any:
+    if (
+        isinstance(value, dict)
+        and isinstance(value.get("success"), bool)
+        and "data" in value
+    ):
+        return value.get("data")
+    return value
+
+
+def _build_expression_context(
+    tc: "TaskContext",
+    *,
+    task_input: Any = None,
+    has_task_input: bool = False,
+    task_output: Any = None,
+    has_task_output: bool = False,
+) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "input": tc.trigger_data,
+        "state": tc.state_vars,
+        "workflow": tc.workflow.model_dump(mode="json"),
+    }
+    context.update(tc.state_vars)
+    for key, output in tc.task_outputs.items():
+        if key == "__trigger__":
+            continue
+        if isinstance(output, dict):
+            context[key] = _unwrap_standardized_output(output.get("data", output))
+    if has_task_input:
+        context["input"] = task_input
+        context["taskInput"] = task_input
+    if has_task_output:
+        unwrapped_output = _unwrap_standardized_output(task_output)
+        context["task"] = unwrapped_output
+        context["output"] = unwrapped_output
+    return context
+
+
+def _resolve_task_input(task_data: dict[str, Any], tc: "TaskContext") -> Any:
+    base_context = _build_expression_context(tc)
+    return resolve_input_definition(
+        task_data.get("input"),
+        base_context,
+        default_input=base_context.get("input"),
+    )
+
+
+def _apply_task_output_definition(
+    task_data: dict[str, Any],
+    tc: "TaskContext",
+    *,
+    task_input: Any,
+    raw_output: Any,
+) -> Any:
+    context = _build_expression_context(
+        tc,
+        task_input=task_input,
+        has_task_input=True,
+        task_output=raw_output,
+        has_task_output=True,
+    )
+    return resolve_output_definition(
+        task_data.get("output"),
+        context,
+        default_output=raw_output,
+    )
+
+
+def _action_type_from_endpoint(uri: str | None) -> str | None:
+    if not uri:
+        return None
+    marker = "/v1.0/invoke/"
+    marker_index = uri.find(marker)
+    if marker_index == -1:
+        return None
+    method_marker = "/method/"
+    method_index = uri.find(method_marker, marker_index + len(marker))
+    if method_index == -1:
+        return None
+    method = uri[method_index + len(method_marker) :].strip("/")
+    return method or None
+
+
+def _store_task_output(
+    tc: "TaskContext",
+    task_name: str,
+    action_type: str,
+    result: Any,
+    *,
+    label: str | None = None,
+) -> None:
+    """Store task output in the legacy NodeOutputs-compatible envelope."""
+    tc.task_outputs[task_name] = {
+        "label": label or task_name,
+        "actionType": action_type,
+        "data": result,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Task execution context
 # ---------------------------------------------------------------------------
@@ -230,10 +334,15 @@ def _resolve_function_call(
                 merged_args.update(func_def.with_)
             if with_args:
                 merged_args.update(with_args)
+            endpoint_uri = None
+            endpoint = merged_args.get("endpoint")
+            if isinstance(endpoint, dict):
+                endpoint_uri = endpoint.get("uri")
             return {
                 "protocol": func_def.call,
                 "args": merged_args,
                 "functionName": call_value,
+                "actionType": _action_type_from_endpoint(str(endpoint_uri)) if endpoint_uri else None,
             }
 
     # Fallback: treat as custom function name
@@ -268,7 +377,11 @@ def _handle_call_task(
     tracking. All other calls go through execute_action as single-shot HTTP.
     """
     resolved = _resolve_function_call(task_data, tc.workflow)
-    action_type = resolved.get("functionName") or f"{resolved['protocol']}-call"
+    action_type = (
+        resolved.get("actionType")
+        or resolved.get("functionName")
+        or f"{resolved['protocol']}-call"
+    )
 
     _log_info(ctx, "[SW Workflow] call task: %s (action=%s)", task_name, action_type)
 
@@ -300,7 +413,7 @@ def _handle_call_task(
             otel_ctx=tc.otel_ctx,
         )
 
-        tc.task_outputs[task_name] = result
+        _store_task_output(tc, task_name, action_type, result)
         tc.completed_tasks.add(task_name)
 
         if isinstance(result, dict) and not result.get("success", True):
@@ -308,13 +421,15 @@ def _handle_call_task(
 
         return result
 
-    # Standard call: single-shot HTTP via function-router
-    # Resolve template variables ({{@nodeId:field}}) in the task args
+    # Standard call: single-shot HTTP via function-router.
+    # Materialize task input and call arguments through SW `${ ... }` expressions.
+    task_input = _resolve_task_input(task_data, tc)
     raw_config = {
         "actionType": action_type,
         **resolved.get("args", {}),
     }
-    resolved_config = resolve_templates(raw_config, tc.task_outputs)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    resolved_config = evaluate_structure(raw_config, expr_context)
 
     node_compat = {
         "id": task_name,
@@ -335,13 +450,15 @@ def _handle_call_task(
             "_otel": tc.otel_ctx,
         }),
     )
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output=result,
+    )
 
     # Store in NodeOutputs format for cross-node template resolution
-    tc.task_outputs[task_name] = {
-        "label": task_name,
-        "actionType": action_type,
-        "data": result,
-    }
+    _store_task_output(tc, task_name, action_type, result)
     tc.completed_tasks.add(task_name)
 
     if not result.get("success", True):
@@ -357,19 +474,22 @@ def _handle_set_task(
     tc: TaskContext,
 ) -> Any:
     """Execute a set task: update state variables."""
-    assignments = task_data.get("set", {})
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    assignments = evaluate_structure(task_data.get("set", {}), expr_context)
     _log_info(ctx, "[SW Workflow] set task: %s (keys=%s)", task_name, list(assignments.keys()))
 
     for key, value in assignments.items():
         tc.state_vars[key] = value
 
     # Store in NodeOutputs format for resolve_templates compatibility
-    result = {"success": True, "data": dict(tc.state_vars)}
-    tc.task_outputs[task_name] = {
-        "label": task_name,
-        "actionType": "set",
-        "data": result,
-    }
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True, "data": dict(tc.state_vars)},
+    )
+    _store_task_output(tc, task_name, "set", result)
     # Keep state virtual node updated
     tc.task_outputs["state"] = {
         "label": "State",
@@ -393,16 +513,8 @@ def _handle_switch_task(
     cases = task_data.get("switch", [])
     _log_info(ctx, "[SW Workflow] switch task: %s (%d cases)", task_name, len(cases))
 
-    # Build evaluation context from task outputs and state
-    eval_context = {
-        "input": tc.trigger_data,
-        "state": tc.state_vars,
-    }
-    # Add task outputs as top-level context for CEL evaluation
-    for key, val in tc.task_outputs.items():
-        if key != "__trigger__" and isinstance(val, dict):
-            data = val.get("data", val)
-            eval_context[key] = data
+    task_input = _resolve_task_input(task_data, tc)
+    eval_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
 
     for case_item in cases:
         for case_name, case_def in case_item.items():
@@ -411,29 +523,40 @@ def _handle_switch_task(
             # Default case (no when condition)
             if when_expr is None:
                 tc.completed_tasks.add(task_name)
-                tc.task_outputs[task_name] = {"matched": case_name}
+                _store_task_output(tc, task_name, "switch", {"matched": case_name})
                 return case_def.get("then")
 
-            # Evaluate condition via CEL (strip ${ } wrapper if present)
-            expr = str(when_expr).strip()
-            if expr.startswith("${") and expr.endswith("}"):
-                expr = expr[2:-1].strip()
-            if expr.startswith("."):
-                expr = expr[1:]  # Remove leading dot for CEL compat
-
             try:
-                matched = eval_cel_boolean(expr, eval_context)
+                matched = evaluate_condition(when_expr, eval_context)
             except Exception:
-                # Fallback: truthy string evaluation
-                matched = expr.lower() not in ("false", "0", "")
+                logger.warning(
+                    "[SW Workflow] switch condition evaluation failed for %s case %s: %s",
+                    task_name,
+                    case_name,
+                    when_expr,
+                    exc_info=True,
+                )
+                matched = False
 
             if matched:
                 tc.completed_tasks.add(task_name)
-                tc.task_outputs[task_name] = {"matched": case_name}
+                switch_result = _apply_task_output_definition(
+                    task_data,
+                    tc,
+                    task_input=task_input,
+                    raw_output={"matched": case_name},
+                )
+                _store_task_output(tc, task_name, "switch", switch_result)
                 return case_def.get("then")
 
     tc.completed_tasks.add(task_name)
-    tc.task_outputs[task_name] = {"matched": None}
+    switch_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"matched": None},
+    )
+    _store_task_output(tc, task_name, "switch", switch_result)
     return None  # No case matched, continue default flow
 
 
@@ -444,14 +567,21 @@ def _handle_wait_task(
     tc: TaskContext,
 ) -> Any:
     """Execute a wait task: create a Dapr timer."""
-    duration = task_data.get("wait", "PT0S")
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    duration = evaluate_structure(task_data.get("wait", "PT0S"), expr_context)
     td = _parse_duration(duration)
     _log_info(ctx, "[SW Workflow] wait task: %s (duration=%s)", task_name, td)
 
     yield ctx.create_timer(td)
 
-    result = {"success": True, "data": {"waited": str(td)}}
-    tc.task_outputs[task_name] = result
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True, "data": {"waited": str(td)}},
+    )
+    _store_task_output(tc, task_name, "wait", result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -465,7 +595,11 @@ def _handle_emit_task(
     """Execute an emit task: publish an event via Dapr pub/sub."""
     emit_config = task_data.get("emit", {})
     event_def = emit_config.get("event", {})
-    event_with = event_def.get("with", {})
+    task_input = _resolve_task_input(task_data, tc)
+    event_with = evaluate_structure(
+        event_def.get("with", {}),
+        _build_expression_context(tc, task_input=task_input, has_task_input=True),
+    )
     _log_info(ctx, "[SW Workflow] emit task: %s (type=%s)", task_name, event_with.get("type"))
 
     result = yield ctx.call_activity(
@@ -479,7 +613,13 @@ def _handle_emit_task(
         }),
     )
 
-    tc.task_outputs[task_name] = {"success": True, "data": result}
+    emit_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True, "data": result},
+    )
+    _store_task_output(tc, task_name, "emit", emit_result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -493,6 +633,9 @@ def _handle_listen_task(
     """Execute a listen task: wait for an external event."""
     listen_config = task_data.get("listen", {})
     to_config = listen_config.get("to", {})
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    to_config = evaluate_structure(to_config, expr_context)
     _log_info(ctx, "[SW Workflow] listen task: %s", task_name)
 
     # Determine event name from filter
@@ -537,7 +680,13 @@ def _handle_listen_task(
             )
         result = {"success": False, "data": {"timedOut": True}}
 
-    tc.task_outputs[task_name] = result
+    listen_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output=result,
+    )
+    _store_task_output(tc, task_name, "listen", listen_result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -555,12 +704,13 @@ def _handle_for_task(
     at_var = for_config.get("at", "index")
     sub_tasks = task_data.get("do", [])
     while_expr = task_data.get("while")
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
 
     _log_info(ctx, "[SW Workflow] for task: %s (each=%s)", task_name, each_var)
 
-    # Resolve the collection to iterate
-    # TODO: evaluate runtime expression for `in`
-    items = tc.task_outputs.get(in_expr, []) if isinstance(in_expr, str) else in_expr
+    # Resolve the collection to iterate.
+    items = evaluate_structure(in_expr, expr_context) if isinstance(in_expr, str) else evaluate_structure(in_expr, expr_context)
     if not isinstance(items, list):
         items = list(items) if hasattr(items, "__iter__") else [items]
 
@@ -570,7 +720,10 @@ def _handle_for_task(
         tc.state_vars[each_var] = item
         tc.state_vars[at_var] = idx
 
-        # TODO: evaluate while expression for early termination
+        if while_expr is not None:
+            loop_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+            if not evaluate_condition(while_expr, loop_context):
+                break
 
         # Execute sub-tasks
         for sub_item in sub_tasks:
@@ -580,8 +733,13 @@ def _handle_for_task(
 
         iteration_results.append(item)
 
-    result = {"success": True, "data": {"iterations": len(iteration_results)}}
-    tc.task_outputs[task_name] = result
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True, "data": {"iterations": len(iteration_results)}},
+    )
+    _store_task_output(tc, task_name, "for", result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -595,6 +753,7 @@ def _handle_fork_task(
     """Execute a fork task: run branches (sequentially for now, parallel TBD)."""
     fork_config = task_data.get("fork", {})
     branches = fork_config.get("branches", [])
+    task_input = _resolve_task_input(task_data, tc)
     _log_info(ctx, "[SW Workflow] fork task: %s (%d branches)", task_name, len(branches))
 
     # Execute branches sequentially (Dapr doesn't natively support parallel activities
@@ -606,7 +765,13 @@ def _handle_fork_task(
             result = yield from _dispatch_task(ctx, branch_task_name, branch_data, tc)
             branch_results[branch_name] = result
 
-    tc.task_outputs[task_name] = {"success": True, "data": branch_results}
+    fork_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True, "data": branch_results},
+    )
+    _store_task_output(tc, task_name, "fork", fork_result)
     tc.completed_tasks.add(task_name)
     return branch_results
 
@@ -620,6 +785,7 @@ def _handle_try_task(
     """Execute a try task: run sub-tasks with error handling."""
     try_tasks = task_data.get("try", [])
     catch_config = task_data.get("catch", {})
+    task_input = _resolve_task_input(task_data, tc)
     _log_info(ctx, "[SW Workflow] try task: %s", task_name)
 
     try:
@@ -639,7 +805,13 @@ def _handle_try_task(
                     yield from _dispatch_task(ctx, f"{task_name}/catch/{sub_name}", sub_data, tc)
         result = {"success": False, "error": str(e)}
 
-    tc.task_outputs[task_name] = result
+    try_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output=result,
+    )
+    _store_task_output(tc, task_name, "try", try_result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -656,6 +828,9 @@ def _handle_run_task(
     which handles multi-turn LLM loops, plan approval, and progress tracking.
     """
     run_config = task_data.get("run", {})
+    task_input = _resolve_task_input(task_data, tc)
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    run_config = evaluate_structure(run_config, expr_context)
     _log_info(ctx, "[SW Workflow] run task: %s (type=%s)", task_name, list(run_config.keys()))
 
     if "workflow" in run_config:
@@ -691,7 +866,13 @@ def _handle_run_task(
                 execution_id=tc.execution_id,
                 otel_ctx=tc.otel_ctx,
             )
-            tc.task_outputs[task_name] = result
+            run_result = _apply_task_output_definition(
+                task_data,
+                tc,
+                task_input=task_input,
+                raw_output=result,
+            )
+            _store_task_output(tc, task_name, agent_action_type, run_result)
             tc.completed_tasks.add(task_name)
             return result
 
@@ -701,7 +882,13 @@ def _handle_run_task(
             child_wf_name,
             input=_freeze(child_input),
         )
-        tc.task_outputs[task_name] = result
+        run_result = _apply_task_output_definition(
+            task_data,
+            tc,
+            task_input=task_input,
+            raw_output=result,
+        )
+        _store_task_output(tc, task_name, child_wf_name, run_result)
         tc.completed_tasks.add(task_name)
         return result
 
@@ -730,7 +917,13 @@ def _handle_run_task(
                 "_otel": tc.otel_ctx,
             }),
         )
-        tc.task_outputs[task_name] = result
+        run_result = _apply_task_output_definition(
+            task_data,
+            tc,
+            task_input=task_input,
+            raw_output=result,
+        )
+        _store_task_output(tc, task_name, "shell", run_result)
         tc.completed_tasks.add(task_name)
         return result
 
@@ -755,7 +948,13 @@ def _handle_run_task(
             "_otel": tc.otel_ctx,
         }),
     )
-    tc.task_outputs[task_name] = result
+    run_result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output=result,
+    )
+    _store_task_output(tc, task_name, "run", run_result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -769,7 +968,12 @@ def _handle_raise_task(
     """Execute a raise task: raise an error."""
     raise_config = task_data.get("raise", {})
     error_def = raise_config.get("error", {})
-    error_msg = error_def.get("detail") or error_def.get("title") or f"Error raised at {task_name}"
+    task_input = _resolve_task_input(task_data, tc)
+    resolved_error = evaluate_structure(
+        error_def,
+        _build_expression_context(tc, task_input=task_input, has_task_input=True),
+    )
+    error_msg = resolved_error.get("detail") or resolved_error.get("title") or f"Error raised at {task_name}"
     _log_info(ctx, "[SW Workflow] raise task: %s (%s)", task_name, error_msg)
     raise RuntimeError(error_msg)
 
@@ -782,14 +986,20 @@ def _handle_do_task(
 ) -> Any:
     """Execute a do task: run sub-tasks sequentially."""
     sub_tasks = task_data.get("do", [])
+    task_input = _resolve_task_input(task_data, tc)
     _log_info(ctx, "[SW Workflow] do task: %s (%d sub-tasks)", task_name, len(sub_tasks))
 
     for sub_item in sub_tasks:
         for sub_name, sub_data in sub_item.items():
             yield from _dispatch_task(ctx, f"{task_name}/{sub_name}", sub_data, tc)
 
-    result = {"success": True}
-    tc.task_outputs[task_name] = result
+    result = _apply_task_output_definition(
+        task_data,
+        tc,
+        task_input=task_input,
+        raw_output={"success": True},
+    )
+    _store_task_output(tc, task_name, "do", result)
     tc.completed_tasks.add(task_name)
     return result
 
@@ -809,9 +1019,16 @@ def _dispatch_task(
 
     # Check conditional execution (if field)
     if_expr = task_data.get("if")
-    if if_expr and str(if_expr).lower() in ("false", "0"):
+    if if_expr is not None and not evaluate_condition(
+        if_expr,
+        _build_expression_context(
+            tc,
+            task_input=_resolve_task_input(task_data, tc),
+            has_task_input=True,
+        ),
+    ):
         _log_info(ctx, "[SW Workflow] Skipping task (if=false): %s", task_name)
-        tc.task_outputs[task_name] = {"skipped": True}
+        _store_task_output(tc, task_name, "skip", {"skipped": True})
         tc.completed_tasks.add(task_name)
         return {"skipped": True}
 
@@ -898,6 +1115,14 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     )
     tc.otel_ctx = otel_ctx
     tc.trace_id = trace_id
+    tc.trigger_data = resolve_input_definition(
+        workflow.input.model_dump(by_alias=True) if workflow.input else None,
+        _build_expression_context(tc),
+        default_input=tc.trigger_data,
+    )
+    if not isinstance(tc.trigger_data, dict):
+        tc.trigger_data = {"value": tc.trigger_data}
+    tc.task_outputs["trigger"]["data"] = tc.trigger_data
 
     # Unwrap the top-level task list
     tasks = workflow.unwrap_tasks()
@@ -956,7 +1181,12 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # Log task completion
             if db_execution_id and log_id:
                 task_duration_ms = _elapsed_ms(ctx, task_start_ms)
-                task_success = isinstance(result, dict) and result.get("success", True) if result else True
+                if result is None:
+                    task_success = True
+                elif isinstance(result, dict):
+                    task_success = result.get("success", True)
+                else:
+                    task_success = True
                 yield ctx.call_activity(
                     log_node_complete,
                     input=_freeze({
@@ -1002,6 +1232,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         }))
 
         # Persist results
+        workflow_output = resolve_output_definition(
+            workflow.output.model_dump(by_alias=True) if workflow.output else None,
+            _build_expression_context(tc),
+            default_output=tc.task_outputs,
+        )
         if db_execution_id:
             yield ctx.call_activity(
                 persist_results_to_db,
@@ -1010,6 +1245,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "dbExecutionId": db_execution_id,
                     "success": True,
                     "outputs": tc.task_outputs,
+                    "workflowOutput": workflow_output,
                     "durationMs": duration_ms,
                     "phase": "completed",
                     "_otel": tc.otel_ctx,
@@ -1033,6 +1269,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         return SWWorkflowOutput(
             success=True,
             outputs=tc.task_outputs,
+            workflowOutput=workflow_output,
             duration_ms=duration_ms,
             phase="completed",
         ).model_dump(by_alias=True)
@@ -1041,6 +1278,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         duration_ms = _elapsed_ms(ctx, start_time_ms)
         error_msg = str(e)
         logger.error("[SW Workflow] Failed: %s - %s", workflow_name, error_msg)
+        workflow_output = resolve_output_definition(
+            workflow.output.model_dump(by_alias=True) if workflow.output else None,
+            _build_expression_context(tc),
+            default_output=tc.task_outputs,
+        )
 
         ctx.set_custom_status(json.dumps({
             "phase": "failed",
@@ -1057,6 +1299,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "dbExecutionId": db_execution_id,
                     "success": False,
                     "outputs": tc.task_outputs,
+                    "workflowOutput": workflow_output,
                     "error": error_msg,
                     "durationMs": duration_ms,
                     "phase": "failed",
@@ -1067,6 +1310,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
         return SWWorkflowOutput(
             success=False,
             outputs=tc.task_outputs,
+            workflowOutput=workflow_output,
             error=error_msg,
             duration_ms=duration_ms,
             phase="failed",
