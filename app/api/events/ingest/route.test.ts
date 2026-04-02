@@ -171,4 +171,56 @@ describe("POST /api/events/ingest", () => {
 			},
 		});
 	});
+
+	it("accepts stringified payloads from Argo HTTP trigger parameterization", async () => {
+		const request = new Request(
+			"http://localhost/api/events/ingest?source=github&eventType=issues",
+			{
+				method: "POST",
+				body: JSON.stringify({
+					eventId: "evt-2",
+					receivedAt: "2026-04-02T12:05:00Z",
+					payload: JSON.stringify({
+						action: "labeled",
+						issue: {
+							number: 12,
+							title: "Fix issue from string payload",
+							body: "Please fix from string payload",
+							labels: [{ name: "dapr-swe" }],
+						},
+						repository: {
+							name: "open-swe",
+							owner: { login: "PittampalliOrg" },
+						},
+						sender: { login: "vinod" },
+					}),
+				}),
+			},
+		);
+
+		const response = await POST(request);
+		const json = await response.json();
+
+		expect(response.status).toBe(202);
+		expect(json).toMatchObject({
+			status: "accepted",
+			workflowId: "vajlzrprpie7fvco6ibhi",
+			executionId: "exec-1",
+		});
+		expect(mockStartSupportedWorkflowExecution).toHaveBeenCalledWith({
+			request,
+			workflow: expect.objectContaining({
+				id: "vajlzrprpie7fvco6ibhi",
+				userId: "user-1",
+			}),
+			input: {
+				owner: "PittampalliOrg",
+				repo: "open-swe",
+				issue_number: 12,
+				title: "Fix issue from string payload",
+				body: "Please fix from string payload",
+				sender: "vinod",
+			},
+		});
+	});
 });
