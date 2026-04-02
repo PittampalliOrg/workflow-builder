@@ -102,12 +102,13 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
     if not owner or not repo:
         return {"success": False, "data": {}, "error": "Missing required fields: owner, repo"}
 
-    # Get GitHub token — prefer connection token from workflow-builder, fall back to App token
+    # Prefer an explicit token from workflow-builder. If none was provided,
+    # fetch a fresh installation token rather than falling back to an ambient
+    # environment token, which may be read-only or scoped to a different flow.
     token = (
         _resolve(input_data, node_outputs, "githubToken")
         or _resolve(input_data, node_outputs, "github_token")
         or _resolve(input_data, node_outputs, "repositoryToken")
-        or os.environ.get("GITHUB_TOKEN")
     )
     if not token:
         import concurrent.futures
@@ -115,6 +116,8 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
             token = pool.submit(
                 lambda: asyncio.run(get_github_app_installation_token())
             ).result(timeout=30)
+    if not token:
+        token = os.environ.get("GITHUB_TOKEN")
 
     if not token:
         return {"success": False, "data": {}, "error": "No GitHub token available"}
