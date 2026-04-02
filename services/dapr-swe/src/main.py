@@ -32,9 +32,9 @@ def _init_otel() -> None:
         resource = Resource.create({
             "service.name": os.environ.get("OTEL_SERVICE_NAME", "dapr-swe"),
             "service.namespace": "workflow-builder",
-            # OpenInference project name - Phoenix uses this to route spans
-            # to a named project with LLM/TOOL/CHAIN classification
-            "openinference.project.name": "dapr-swe",
+            # Keep the full workflow execution path in one Phoenix project so
+            # parent/child span hierarchy is preserved across services.
+            "openinference.project.name": "workflow-builder",
         })
         provider = TracerProvider(resource=resource)
         # Primary exporter: OTEL Collector (forwards to Tempo + Phoenix)
@@ -58,11 +58,11 @@ def _init_otel() -> None:
                     GRPCSpanExporter(
                         endpoint=phoenix_url,
                         insecure=True,
-                        headers=(("phoenix-project-name", "dapr-swe"),),
+                        headers=(("phoenix-project-name", "workflow-builder"),),
                     )
                 ))
                 logging.getLogger(__name__).info(
-                    "Phoenix gRPC exporter enabled → %s (project=dapr-swe)",
+                    "Phoenix gRPC exporter enabled → %s (project=workflow-builder)",
                     phoenix_url,
                 )
             except Exception as phoenix_exc:
