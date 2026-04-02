@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import shlex
+import subprocess
+import tempfile
 from typing import Any
 
 from src.events import publish_event, update_execution_status, post_agent_event
@@ -223,6 +225,119 @@ def _build_full_plan_step(plan: dict[str, Any], issue_context: dict[str, Any]) -
     }
 
 
+def _credential_file_path(working_dir: str) -> str:
+    return f"{working_dir}/.git/dapr-swe-credentials"
+
+
+def _run_local_git(
+    args: list[str],
+    *,
+    cwd: str,
+    env: dict[str, str] | None = None,
+    timeout: int = 120,
+) -> str:
+    result = subprocess.run(
+        args,
+        cwd=cwd,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "git command failed")
+    return (result.stdout or "").strip()
+
+
+def _build_staged_patch(sandbox: OpenShellBackend, working_dir: str) -> str:
+    quoted_dir = shlex.quote(working_dir)
+    result = sandbox.execute(
+        f"cd {quoted_dir} && git add -A && git diff --cached --binary",
+        timeout=30,
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(result.output or "Failed to build staged patch")
+    return result.output or ""
+
+
+def _commit_and_push_gitea_from_local_clone(
+    *,
+    clone_config,
+    base_branch: str,
+    branch_name: str,
+    pr_title: str,
+    patch_text: str,
+) -> None:
+    with tempfile.TemporaryDirectory(prefix="dapr-swe-gitea-") as temp_dir:
+        repo_dir = os.path.join(temp_dir, "repo")
+        patch_path = os.path.join(temp_dir, "changes.patch")
+        credential_path = os.path.join(repo_dir, ".git", "dapr-swe-credentials")
+
+        _run_local_git(
+            [
+                "git",
+                "clone",
+                "--branch",
+                base_branch,
+                clone_config.credential_url,
+                repo_dir,
+            ],
+            cwd=temp_dir,
+            timeout=120,
+        )
+        _run_local_git(
+            ["git", "remote", "set-url", "origin", clone_config.canonical_remote_url],
+            cwd=repo_dir,
+        )
+
+        with open(credential_path, "w", encoding="utf-8") as handle:
+            handle.write(f"{clone_config.credential_url}\n")
+        os.chmod(credential_path, 0o600)
+
+        _run_local_git(
+            ["git", "config", "credential.helper", f"store --file={credential_path}"],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "config", "credential.useHttpPath", "true"],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "config", "http.sslVerify", "false"],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "config", "user.email", clone_config.git_user_email],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "config", "user.name", clone_config.git_user_name],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "checkout", "-B", branch_name, f"origin/{base_branch}"],
+            cwd=repo_dir,
+        )
+
+        with open(patch_path, "w", encoding="utf-8") as handle:
+            handle.write(patch_text)
+
+        _run_local_git(
+            ["git", "apply", "--index", "--binary", patch_path],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "commit", "-m", pr_title],
+            cwd=repo_dir,
+        )
+        _run_local_git(
+            ["git", "push", "-u", "origin", branch_name],
+            cwd=repo_dir,
+            timeout=120,
+        )
+
+
 def _collect_review_diff(sandbox: OpenShellBackend, working_dir: str) -> str:
     """Return a review diff that includes tracked and untracked file changes."""
     quoted_dir = shlex.quote(working_dir)
@@ -356,7 +471,7 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
         sandbox.materialize_files(
             [
                 (
-                    "/tmp/.git-credentials",
+                    _credential_file_path(working_dir),
                     f"{clone.credential_url}\n".encode("utf-8"),
                     0o600,
                 )
@@ -369,12 +484,20 @@ def handle_initialize(input_data: dict, node_outputs: dict) -> dict:
             "data": {"sandbox_id": sandbox_id},
             "error": f"Failed to materialize git credentials: {exc}",
         }
-    sandbox.execute(
-        "git config --global credential.helper 'store --file=/tmp/.git-credentials' "
-        "&& git config --global credential.useHttpPath true "
-        "&& git config --global http.sslVerify false",
+    credential_file = _credential_file_path(working_dir)
+    git_auth_result = sandbox.execute(
+        f"cd {working_dir} && "
+        f"git config credential.helper {shlex.quote(f'store --file={credential_file}')} && "
+        "git config credential.useHttpPath true && "
+        "git config http.sslVerify false",
         timeout=10,
     )
+    if git_auth_result.exit_code != 0:
+        return {
+            "success": False,
+            "data": {"sandbox_id": sandbox_id},
+            "error": f"Failed to configure git credentials: {git_auth_result.output}",
+        }
 
     # Reused sandboxes can retain stale branches and untracked files from prior runs.
     # Reset to a clean remote-tracking checkout before planning or implementation.
@@ -693,37 +816,75 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
 
     # Configure git user, create branch, stage, commit
     clone = build_clone_config(provider, owner, repo, auth)
-    commit_result = sandbox.execute(
-        configure_git_identity_command(working_dir, clone)
-        + " && "
-        + f"git checkout -B {branch_name} && "
-        "git add -A && "
-        f'git commit -m "{pr_title}"',
-        timeout=60,
-    )
-    if commit_result.exit_code != 0:
-        return {
-            "success": False,
-            "data": {"branch": branch_name},
-            "error": f"Failed to commit: {commit_result.output}",
-        }
+    if provider == "gitea":
+        try:
+            patch_text = _build_staged_patch(sandbox, working_dir)
+        except Exception as exc:
+            return {
+                "success": False,
+                "data": {"branch": branch_name},
+                "error": f"Failed to build staged patch: {exc}",
+            }
+        if not patch_text.strip():
+            return {
+                "success": True,
+                "data": {"pr_url": "", "branch": branch_name, "status": "no_changes"},
+                "error": None,
+            }
+        try:
+            _commit_and_push_gitea_from_local_clone(
+                clone_config=clone,
+                base_branch=str(base_branch),
+                branch_name=branch_name,
+                pr_title=str(pr_title),
+                patch_text=patch_text,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "data": {"branch": branch_name},
+                "error": f"Push failed: {exc}",
+            }
+    else:
+        commit_result = sandbox.execute(
+            configure_git_identity_command(working_dir, clone)
+            + " && "
+            + f"git checkout -B {branch_name} && "
+            "git add -A && "
+            f'git commit -m "{pr_title}"',
+            timeout=60,
+        )
+        if commit_result.exit_code != 0:
+            return {
+                "success": False,
+                "data": {"branch": branch_name},
+                "error": f"Failed to commit: {commit_result.output}",
+            }
 
-    # Push
-    sandbox.execute(
-        "git config --global credential.helper 'store --file=/tmp/.git-credentials' "
-        "&& git config --global http.sslVerify false",
-        timeout=10,
-    )
-    push_result = sandbox.execute(
-        f"cd {working_dir} && git push -u origin {branch_name}",
-        timeout=120,
-    )
-    if push_result.exit_code != 0:
-        return {
-            "success": False,
-            "data": {"branch": branch_name},
-            "error": f"Push failed: {push_result.output}",
-        }
+        credential_file = _credential_file_path(working_dir)
+        git_auth_result = sandbox.execute(
+            f"cd {working_dir} && "
+            f"git config credential.helper {shlex.quote(f'store --file={credential_file}')} && "
+            "git config credential.useHttpPath true && "
+            "git config http.sslVerify false",
+            timeout=10,
+        )
+        if git_auth_result.exit_code != 0:
+            return {
+                "success": False,
+                "data": {"branch": branch_name},
+                "error": f"Failed to configure git push credentials: {git_auth_result.output}",
+            }
+        push_result = sandbox.execute(
+            f"cd {working_dir} && git push -u origin {branch_name}",
+            timeout=120,
+        )
+        if push_result.exit_code != 0:
+            return {
+                "success": False,
+                "data": {"branch": branch_name},
+                "error": f"Push failed: {push_result.output}",
+            }
 
     # Open PR via SCM API
     pr_body = build_pr_body(plan, int(issue_number))

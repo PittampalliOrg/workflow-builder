@@ -296,6 +296,20 @@ class OpenShellBackend:
             pass
 
 
+def _sanitize_git_runtime(backend: OpenShellBackend) -> None:
+    """Remove stale global git auth state from reusable sandboxes."""
+    backend.execute(
+        "git config --global --unset-all credential.helper || true "
+        "&& git config --global --unset-all credential.useHttpPath || true "
+        "&& git config --global --get-regexp '^http\\..*\\.extraHeader$' "
+        "| cut -d' ' -f1 | xargs -r -n1 git config --global --unset-all || true "
+        "&& git config --global http.sslVerify false "
+        "&& (apt-get update -qq && apt-get install -y -qq ca-certificates 2>/dev/null "
+        "&& git config --global http.sslVerify true || true)",
+        timeout=60,
+    )
+
+
 def create_openshell_sandbox(
     sandbox_id: str | None = None,
 ) -> OpenShellBackend:
@@ -324,6 +338,7 @@ def create_openshell_sandbox(
         try:
             result = backend.execute("echo ready", timeout=10)
             if result.exit_code == 0:
+                _sanitize_git_runtime(backend)
                 return backend
         except Exception:
             pass
@@ -367,17 +382,9 @@ def create_openshell_sandbox(
         msg = f"OpenShell sandbox failed to become ready within {DEFAULT_WORKSPACE_TIMEOUT_S} seconds"
         raise RuntimeError(msg)
 
-    # Configure sandbox environment for git operations:
-    # 1. Disable SSL verification (sandbox images may lack CA certs)
-    # 2. Set up global credential helper so git push works across execute() calls
-    # 3. Try to install ca-certificates for proper SSL (re-enable if successful)
-    backend.execute(
-        "git config --global http.sslVerify false "
-        "&& git config --global credential.helper 'store --file=/tmp/.git-credentials' "
-        "&& (apt-get update -qq && apt-get install -y -qq ca-certificates 2>/dev/null "
-        "&& git config --global http.sslVerify true || true)",
-        timeout=60,
-    )
+    # Configure the reusable sandbox for git operations and remove any stale
+    # global auth state inherited from earlier runtime images.
+    _sanitize_git_runtime(backend)
 
     return backend
 

@@ -18,13 +18,8 @@ GITEA_INTERNAL_CLONE_BASE_URL: str = os.environ.get(
     GITEA_API_URL,
 )
 GITEA_USERNAME: str = os.environ.get("GITEA_USERNAME", "giteaadmin")
-GITEA_PASSWORD: str = os.environ.get("GITEA_PASSWORD", "")
 GITEA_TOKEN: str = os.environ.get("GITEA_TOKEN", "")
 GITEA_TOKEN_SECRET_NAME: str = os.environ.get("GITEA_TOKEN_SECRET_NAME", "GITEA-TOKEN")
-GITEA_PASSWORD_SECRET_NAME: str = os.environ.get(
-    "GITEA_PASSWORD_SECRET_NAME",
-    "GITEA-REGISTRY-PASSWORD",
-)
 GITEA_USERNAME_SECRET_NAME: str = os.environ.get(
     "GITEA_USERNAME_SECRET_NAME",
     "GITEA-REGISTRY-USERNAME",

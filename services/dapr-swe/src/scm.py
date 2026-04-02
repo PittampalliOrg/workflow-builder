@@ -15,8 +15,6 @@ from src.config import (
     DAPR_SECRETS_STORE,
     GITEA_API_URL,
     GITEA_INTERNAL_CLONE_BASE_URL,
-    GITEA_PASSWORD,
-    GITEA_PASSWORD_SECRET_NAME,
     GITEA_TOKEN,
     GITEA_TOKEN_SECRET_NAME,
     GITEA_USERNAME,
@@ -73,8 +71,6 @@ def get_gitea_auth(
         secret
         or GITEA_TOKEN
         or get_secret_value(DAPR_SECRETS_STORE, GITEA_TOKEN_SECRET_NAME)
-        or get_secret_value(DAPR_SECRETS_STORE, GITEA_PASSWORD_SECRET_NAME)
-        or GITEA_PASSWORD
     ).strip()
     if not resolved_secret:
         return None
