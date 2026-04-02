@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from pathlib import PurePosixPath
+import shlex
 from typing import Any
 
 from dapr_agents import DurableAgent
@@ -16,6 +18,40 @@ from src.prompts.developer import DEVELOPER_SYSTEM_PROMPT, construct_developer_p
 from src.sandbox.openshell import OpenShellBackend
 
 logger = logging.getLogger(__name__)
+
+_MAX_TOOL_OUTPUT_CHARS = 16000
+_SKIP_READ_SUFFIXES = {
+    ".tsbuildinfo",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".sqlite",
+    ".db",
+    ".lock",
+}
+
+
+def _format_tool_output(output: str) -> str:
+    text = output or ""
+    if len(text) <= _MAX_TOOL_OUTPUT_CHARS:
+        return text
+    omitted = len(text) - _MAX_TOOL_OUTPUT_CHARS
+    return (
+        f"{text[:_MAX_TOOL_OUTPUT_CHARS]}\n"
+        f"\n[output truncated: omitted {omitted} characters. Narrow the command or read a smaller file.]"
+    )
+
+
+def _should_skip_direct_read(path: str) -> bool:
+    suffix = PurePosixPath(path).suffix.lower()
+    return suffix in _SKIP_READ_SUFFIXES
 
 
 # ---------------------------------------------------------------------------
@@ -33,15 +69,20 @@ def make_developer_tools(sandbox: OpenShellBackend) -> list:
         output = result.output or ""
         if result.exit_code != 0:
             output += f"\n[exit code {result.exit_code}]"
-        return output
+        return _format_tool_output(output)
 
     @tool
     def read_file(path: str) -> str:
         """Read a file from the sandbox and return its contents."""
-        result = sandbox.execute(f"cat {path}", timeout=30)
+        if _should_skip_direct_read(path):
+            return (
+                f"Refusing to read {path} directly because it is likely a generated, "
+                "binary, or oversized artifact. Read a source file instead."
+            )
+        result = sandbox.execute(f"cat {shlex.quote(path)}", timeout=30)
         if result.exit_code != 0:
             return f"Error reading {path}: {result.output}"
-        return result.output
+        return _format_tool_output(result.output)
 
     @tool
     def write_file(path: str, content: str) -> str:
@@ -54,18 +95,18 @@ def make_developer_tools(sandbox: OpenShellBackend) -> list:
     @tool
     def list_directory(path: str = ".") -> str:
         """List directory contents in the sandbox."""
-        result = sandbox.execute(f"ls -la {path}", timeout=30)
-        return result.output
+        result = sandbox.execute(f"ls -la {shlex.quote(path)}", timeout=30)
+        return _format_tool_output(result.output)
 
     @tool
     def search_code(pattern: str, path: str = ".", file_glob: str = "") -> str:
         """Search for a pattern in the codebase using grep."""
         glob_flag = f"--include='{file_glob}'" if file_glob else ""
         result = sandbox.execute(
-            f"grep -rn {glob_flag} '{pattern}' {path} | head -100",
+            f"grep -rn {glob_flag} {shlex.quote(pattern)} {shlex.quote(path)} | head -100",
             timeout=60,
         )
-        return result.output
+        return _format_tool_output(result.output)
 
     return [execute, read_file, write_file, list_directory, search_code]
 
