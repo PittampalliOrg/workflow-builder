@@ -23,7 +23,7 @@ Supporting infrastructure:
 
 ## workflow-builder
 
-Next.js UI and BFF.
+SvelteKit UI and BFF.
 
 - Port: `3000`
 - Responsibilities:

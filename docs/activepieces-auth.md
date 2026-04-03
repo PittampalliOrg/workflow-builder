@@ -35,7 +35,7 @@ Connection credentials are encrypted using AES-256-CBC (format aligned to Active
   - 64-char hex key: `openssl rand -hex 32`
   - 32-char string: treated as binary for upstream compatibility
 
-Implementation: `lib/security/encryption.ts`
+Implementation: `src/lib/server/security/encryption.ts`
 
 ## Supported Auth Types (From piece_metadata.auth)
 
@@ -52,7 +52,7 @@ Parsing:
 - `parsePieceAuthAll(raw)` handles `auth` as either an object or an array and returns all supported configs.
 - `parsePieceAuth(raw)` returns the first config for backward compatibility.
 
-Implementation: `lib/types/piece-auth.ts`
+Implementation: `src/lib/server/db/schema.ts` (piece auth types)
 
 ## OAuth2 Flows
 
@@ -78,9 +78,9 @@ Implementation: `lib/types/piece-auth.ts`
 
 Endpoints:
 
-- `app/api/app-connections/oauth2/start/route.ts`
-- `app/api/app-connections/oauth2/callback/route.ts`
-- `app/api/app-connections/route.ts` (token exchange on upsert)
+- `src/routes/api/app-connections/oauth2/start/+server.ts`
+- `src/routes/api/app-connections/oauth2/callback/+server.ts`
+- `src/routes/api/app-connections/+server.ts` (token exchange on upsert)
 
 ### Client Credentials (no browser redirect)
 
@@ -91,8 +91,8 @@ If the piece declares client credentials (or supports both), the UI can create a
 
 Implementation:
 
-- `app/api/app-connections/route.ts`
-- `lib/app-connections/oauth2.ts` (exchange)
+- `src/routes/api/app-connections/+server.ts`
+- `src/lib/server/app-connections/oauth2.ts` (exchange)
 
 ## OAuth2 Refresh Semantics
 
@@ -106,8 +106,7 @@ Refresh behavior is handled at runtime when a connection is used:
 
 Implementation:
 
-- `lib/app-connections/oauth2-refresh.ts`
-- `lib/app-connections/resolve-connection-value.ts`
+- `src/lib/server/app-connections/oauth2.ts` (refresh logic)
 
 ## Runtime Decryption And Token Refresh
 
@@ -133,9 +132,7 @@ Security note:
 Required in most deployments:
 
 - `DATABASE_URL`
-- `BETTER_AUTH_SECRET`
-- `BETTER_AUTH_URL`
-- `INTEGRATION_ENCRYPTION_KEY` (or `AP_ENCRYPTION_KEY`)
+- `AP_ENCRYPTION_KEY` (AES-256-CBC encryption key)
 
 Activepieces integration (depending on deployment):
 

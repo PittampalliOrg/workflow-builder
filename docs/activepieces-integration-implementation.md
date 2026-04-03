@@ -1,5 +1,8 @@
 # Activepieces Integration/Authentication Implementation
 
+> **Note**: This doc was written during the Next.js era. The app has since been migrated to SvelteKit.
+> Path mappings: `app/api/` → `src/routes/api/`, `lib/` → `src/lib/server/`, `components/` → `src/lib/components/`.
+
 ## Date
 - February 6, 2026
 

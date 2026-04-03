@@ -3,13 +3,10 @@
 Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. The SvelteKit app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
 
 > **Supplementary docs**: See `docs/` for detailed references:
-> - `docs/services.md` — Full service descriptions, endpoints, and build commands
-> - `docs/deployment.md` — Kind cluster, Docker builds, Dapr integration, env vars, DevSpace
-> - `docs/migration-history.md` — Completed migration notes
-> - `docs/architecture.md` — Extended architecture overview
 > - `docs/activepieces-auth.md` — AP auth/connection system details
 > - `docs/activepieces-integration-implementation.md` — AP integration implementation
-> - `docs/quick-start.md` — Getting started guide
+> - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
+> - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
 
 ## Architecture
 
@@ -90,67 +87,66 @@ pnpm test:e2e         # Run Playwright E2E tests
 | **piece-mcp-server** | dynamic | Retained MCP server, provisioned on demand |
 | **openshell-sandbox** | — | Custom OpenShell sandbox image with Chromium/Playwright for browser validation |
 
-> See `docs/services.md` for full endpoint details and build commands.
+> See service Dockerfiles in `services/` for build details.
 
 ## Project Structure
 
 ```
-app/
-  api/
-    workflow/[workflowId]/execute/   # Session-auth execution
-    orchestrator/workflows/          # Proxy to workflow-orchestrator
-    dapr/workflows/[id]/             # Status polling + SSE events
-    app-connections/                  # CRUD + OAuth2 PKCE
-    internal/connections/             # Service-to-service decrypt
-    internal/mcp/                    # MCP gateway internal endpoints
-    v1/auth/                         # JWT auth API
-    mcp-chat/                        # MCP Chat API
-    pieces/                          # AP piece metadata + actions + options
-    ai/generate/                     # AI generation endpoint
-  workflows/[workflowId]/page.tsx    # Workflow editor
-  connections/page.tsx               # Connections management
-  mcp-chat/page.tsx                  # MCP Chat
-  mcp-apps/page.tsx                  # MCP Apps
-
-lib/
-  api-client.ts                      # Client-side API client
-  workflow-store.ts                  # Jotai atoms, node/edge types
-  workflow-definition.ts             # Workflow serialization
-  dapr-activity-registry.ts         # Dapr workflow primitives
-  dapr-client.ts                    # Dapr orchestrator API client
-  auth-service.ts                   # Better Auth + JWT API keys
-  workflow-spec/                    # WorkflowSpec v1 JSON import/export/lint
-    system-actions.ts               # System action definitions
-  ai/                               # AI workflow generation
-  db/schema.ts                      # Drizzle ORM schema
-  db/app-connections.ts             # App connection encrypt/decrypt
-  security/encryption.ts            # AES-256-CBC encryption
-  app-connections/oauth2.ts         # OAuth2 PKCE flow
-  activepieces/installed-pieces.ts  # Installed AP pieces (single source of truth)
-  activepieces/action-adapter.ts    # AP props → WB field converter
-  actions/builtin-pieces.ts         # Builtin piece definitions (workspace, browser, OpenShell, durable, mcp)
-  actions/pieces-store.ts           # Client-side pieces catalog (Jotai)
+src/
+  routes/
+    api/
+      workflows/[workflowId]/execute/  # Session-auth execution
+      orchestrator/workflows/           # Proxy to workflow-orchestrator
+      app-connections/                   # CRUD + OAuth2 PKCE
+      internal/connections/              # Service-to-service decrypt
+      internal/mcp/                     # MCP gateway internal endpoints
+      internal/agent/                   # Agent execution + events
+      events/ingest/                    # External event ingestion
+      v1/auth/                          # JWT auth + social OAuth
+      pieces/                           # AP piece metadata
+    workflows/[workflowId]/+page.svelte # Workflow editor
+    connections/+page.svelte             # Connections management
+    settings/+page.svelte                # Settings (API keys, OAuth, MCP)
+    auth/sign-in/+page.svelte           # Auth sign-in
+  lib/
+    components/
+      workflow/
+        workflow-canvas.svelte          # Svelte Flow canvas
+        side-panel.svelte               # Properties/Code/Runs tabs
+        workflow-toolbar.svelte         # Toolbar with name, badges, actions
+        nodes/base-sw-node.svelte       # SW 1.0 node component
+        edges/animated-edge.svelte      # Animated edge with glow
+      ui/                               # shadcn-svelte components (50+)
+      sidebar.svelte                    # App sidebar with avatar/nav
+    server/
+      db/schema.ts                      # Drizzle ORM schema
+      db/mcp/index.ts                   # MCP server DB helpers
+      dapr-client.ts                    # Dapr orchestrator API client
+      auth.ts                           # Session auth + JWT API keys
+      security/encryption.ts            # AES-256-CBC encryption
+      app-connections/oauth2.ts         # OAuth2 PKCE flow
+      internal-auth.ts                  # Internal API token validation
+      workflows/external-event-registry.ts # GitHub/Gitea event triggers
+      otel/clickhouse.ts               # ClickHouse trace queries
+    utils/
+      layout/elk-layout.ts             # ELK layout engine
+      layout/index.ts                   # Unified layout API
 
 services/
-  workflow-orchestrator/             # Python Dapr workflow orchestrator
-  durable-agent/                     # Durable AI agent (PRIMARY)
-  function-router/                   # Function execution router
-  fn-activepieces/                   # AP piece executor
-  fn-system/                         # System functions
-  workflow-mcp-server/               # Optional workflow MCP tools
-  piece-mcp-server/                  # Optional AP piece MCP tools
-  mcp-gateway/                       # Hosted MCP gateway
-  openshell-sandbox/                 # Custom OpenShell sandbox image (Chromium + Playwright)
+  workflow-orchestrator/               # Python Dapr workflow orchestrator
+  durable-agent/                       # Durable AI agent (PRIMARY)
+  dapr-swe/                            # Dapr SWE coding agent
+  function-router/                     # Function execution router
+  fn-activepieces/                     # AP piece executor
+  fn-system/                           # System functions
+  workflow-mcp-server/                 # Optional workflow MCP tools
+  piece-mcp-server/                    # Optional AP piece MCP tools
+  mcp-gateway/                         # Hosted MCP gateway
+  openshell-sandbox/                   # Custom sandbox image (Chromium + Playwright)
 
-components/workflow/
-  workflow-canvas.tsx                # React Flow canvas
-  node-config-panel.tsx             # Properties/Code/Runs tabs
-  config/action-config.tsx          # Action node configuration
-  config/action-grid.tsx            # Action palette (plugins + AP pieces)
-  config/action-config-renderer.tsx # Dynamic config field renderer
-
-plugins/                             # Plugin registry (auto-discovered)
-  registry.ts                        # Registration and discovery
+drizzle/                               # Database migration SQL files
+scripts/                               # Dev/seed/test scripts
+docs/                                  # Documentation
 ```
 
 ## Action Routing
@@ -188,15 +184,6 @@ Actions are routed by `actionType` slug prefix:
 | `publish-event` | Dapr pub/sub publish |
 | `note` | Non-executing annotation |
 
-## Plugin Registry
-
-```bash
-pnpm discover-plugins  # Generates plugins/index.ts
-pnpm seed-functions    # Seeds functions table from plugins
-```
-
-**Current plugins**: `mcp`, `slack`, `github`, `resend`, `linear`, `firecrawl`, `perplexity`, `stripe`, `fal`, `blob`, `v0`, `clerk`, `webflow`, `superagent`
-
 ## Database Schema (Key Tables)
 
 - **workflows**: `id`, `name`, `nodes` (JSONB), `edges` (JSONB), `engine_type`, MCP trigger config
@@ -225,7 +212,7 @@ MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in 
 - Connection flow: User creates → encrypted in DB → function-router decrypts at execution time
 - Adding a new piece: (1) add to `installed-pieces.ts`, (2) add npm dep to fn-activepieces, (3) add to `piece-registry.ts`, (4) rebuild
 
-> See `docs/activepieces-auth.md` for full auth flow details.
+> See `docs/activepieces-auth.md` for the full auth flow.
 
 ## Browser Validation (In-Sandbox Screenshots)
 
@@ -247,20 +234,17 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 
 ## Troubleshooting
 
-- Missing `actionType` in node config → UI bug, recreate node
-- Function not found → Check `functions` table, run `pnpm seed-functions`
 - Missing credentials → Add API keys to Azure Key Vault or create app connections
 - Agent timeout → Check durable-agent logs (`kubectl logs -l app=durable-agent`)
 - Agent stops before completing plan → Check `maxTurns` setting (default: 50, configurable per-node)
-- AP piece not showing → Check `lib/activepieces/installed-pieces.ts`, re-sync piece metadata
 - OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY`
 - AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches across services
-- Dapr pub/sub scoping → durable-agent uses `durable-pubsub` (NATS); orchestrator uses `pubsub` (Redis) — isolated. Completion events use direct service invocation.
-- Workflow output lost on navigation → Verify both persistence paths: status polling + `persist_results_to_db`
+- Dapr pub/sub scoping → durable-agent uses `durable-pubsub` (NATS); orchestrator uses `pubsub` (Redis) — isolated
+- SvelteKit type errors → Run `pnpm check` (svelte-check)
 
-> See `docs/deployment.md` for service logs, env vars, Docker builds, and Dapr component scoping.
+> See Dapr component YAMLs in the stacks repo for service scoping and env var configuration.
 
 ---
 
-**Last Updated**: 2026-03-25
-**Status**: Production-ready with OpenTelemetry observability, sandbox execution, MCP Apps, and hosted MCP servers
+**Last Updated**: 2026-04-03
+**Status**: Production-ready SvelteKit app with OpenTelemetry observability, sandbox execution, and hosted MCP servers

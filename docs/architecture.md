@@ -6,7 +6,7 @@ Workflow Builder is a visual workflow system that uses Dapr Workflows for durabl
 
 The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 
-- `workflow-builder`: Next.js UI and BFF
+- `workflow-builder`: SvelteKit UI and BFF
 - `workflow-orchestrator`: Python Dapr durable workflow owner
 - `function-router`: action router
 - `openshell-agent-runtime`: canonical OpenShell workspace, browser, and standard agent runtime
@@ -168,7 +168,7 @@ openshell-agent-runtime / openshell-langgraph-observable
 
 Provides:
 
-- React Flow editor
+- Svelte Flow editor (@xyflow/svelte)
 - workflow save and publish UX
 - run launch, approval, and review UI
 - BFF routes for orchestrator and execution data
