@@ -1,9 +1,0 @@
-export default function WorkflowRunsLayout({
-	children,
-}: {
-	children: React.ReactNode;
-}) {
-	return (
-		<div className="pointer-events-auto h-full overflow-y-auto bg-background">{children}</div>
-	);
-}

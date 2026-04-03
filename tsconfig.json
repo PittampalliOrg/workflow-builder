@@ -1,45 +1,20 @@
 {
+	"extends": "./.svelte-kit/tsconfig.json",
 	"compilerOptions": {
-		"target": "ES2017",
-		"lib": ["dom", "dom.iterable", "esnext"],
+		"rewriteRelativeImportExtensions": true,
 		"allowJs": true,
-		"skipLibCheck": true,
-		"strict": true,
-		"noEmit": true,
+		"checkJs": true,
 		"esModuleInterop": true,
-		"module": "esnext",
-		"moduleResolution": "bundler",
+		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,
-		"isolatedModules": true,
-		"jsx": "react-jsx",
-		"incremental": true,
-		"plugins": [
-			{
-				"name": "next"
-			},
-			{
-				"name": "workflow"
-			}
-		],
-		"paths": {
-			"@/*": ["./*"]
-		},
-		"strictNullChecks": true
-	},
-	"include": [
-		"next-env.d.ts",
-		"**/*.ts",
-		"**/*.tsx",
-		".next/types/**/*.ts",
-		".next/dev/types/**/*.ts",
-		"**/*.mts"
-	],
-	"exclude": [
-		"node_modules",
-		"lib/next-boilerplate/**/*.ts",
-		"lib/next-boilerplate/**/*.tsx",
-		"tmp/**/*",
-		"services/**/*",
-		"scripts/**/*"
-	]
+		"skipLibCheck": true,
+		"sourceMap": true,
+		"strict": true,
+		"moduleResolution": "bundler"
+	}
+	// Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
+	// except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
+	//
+	// To make changes to top-level options such as include and exclude, we recommend extending
+	// the generated config; see https://svelte.dev/docs/kit/configuration#typescript
 }

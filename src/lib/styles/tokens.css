@@ -1,0 +1,108 @@
+/* =============================================================
+   Design Tokens — 3-tier CSS custom property system
+   Inspired by Flowdrop, mapped to existing shadcn/tailwind theme
+   ============================================================= */
+
+/* ── Tier 1: Private palette ─────────────────────────────────── */
+:root {
+	--_gray-1: 0 0% 98%;
+	--_gray-2: 240 4.8% 95.9%;
+	--_gray-3: 240 5.9% 90%;
+	--_gray-4: 240 5.2% 84%;
+	--_gray-5: 240 5% 65%;
+	--_gray-6: 240 3.8% 46.1%;
+	--_gray-7: 240 5.3% 26%;
+	--_gray-8: 240 5.9% 10%;
+	--_gray-9: 240 10% 3.9%;
+
+	--_blue: 217 91% 60%;
+	--_blue-light: 214 95% 93%;
+	--_blue-dark: 224 76% 48%;
+	--_amber: 38 92% 50%;
+	--_amber-light: 48 96% 89%;
+	--_green: 142 71% 45%;
+	--_green-light: 142 76% 93%;
+	--_red: 0 84% 60%;
+	--_red-light: 0 93% 94%;
+	--_yellow: 48 96% 53%;
+	--_yellow-light: 48 96% 89%;
+	--_pink: 330 81% 60%;
+	--_pink-light: 330 100% 95%;
+	--_purple: 271 91% 65%;
+	--_purple-light: 270 95% 95%;
+	--_orange: 25 95% 53%;
+	--_orange-light: 33 100% 92%;
+	--_teal: 172 66% 50%;
+	--_teal-light: 166 76% 93%;
+	--_cyan: 189 94% 43%;
+	--_cyan-light: 185 96% 90%;
+	--_indigo: 239 84% 67%;
+	--_indigo-light: 226 100% 94%;
+	--_emerald: 160 84% 39%;
+	--_emerald-light: 152 81% 92%;
+	--_sky: 199 89% 48%;
+	--_sky-light: 201 94% 86%;
+
+	/* ── Tier 2: Semantic tokens ─────────────────────────────── */
+	--wb-background: var(--background);
+	--wb-foreground: var(--foreground);
+	--wb-primary: var(--primary);
+	--wb-primary-foreground: var(--primary-foreground);
+	--wb-muted: var(--muted);
+	--wb-muted-foreground: var(--muted-foreground);
+	--wb-border: var(--border);
+	--wb-card: var(--card);
+	--wb-card-foreground: var(--card-foreground);
+
+	--wb-success: 142 71% 45%;
+	--wb-error: 0 84% 60%;
+	--wb-warning: 38 92% 50%;
+
+	/* ── Tier 3: Component tokens ────────────────────────────── */
+	/* Node */
+	--wb-node-width: 180px;
+	--wb-node-radius: var(--radius);
+	--wb-node-border-width: 2px;
+	--wb-node-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
+
+	/* Handle */
+	--wb-handle-size: 12px;
+	--wb-handle-color: hsl(var(--_gray-5));
+	--wb-handle-hover-color: hsl(var(--_blue));
+	--wb-handle-border: 2px solid hsl(var(--_gray-3));
+
+	/* Edge */
+	--wb-edge-color: hsl(var(--_gray-4));
+	--wb-edge-selected-color: hsl(var(--_blue));
+	--wb-edge-hover-color: hsl(var(--_gray-6));
+	--wb-edge-width: 2px;
+
+	/* Status colors */
+	--wb-status-idle: var(--wb-border);
+	--wb-status-running: var(--_yellow);
+	--wb-status-success: var(--_green);
+	--wb-status-error: var(--_red);
+
+	/* Selection */
+	--wb-selection-ring: hsl(var(--ring));
+	--wb-selection-ring-width: 2px;
+}
+
+/* ── Dark mode overrides ─────────────────────────────────────── */
+.dark {
+	--_gray-1: 240 6% 10%;
+	--_gray-2: 240 3.7% 15.9%;
+	--_gray-3: 240 5% 22%;
+	--_gray-4: 240 5% 30%;
+	--_gray-5: 240 5% 48%;
+	--_gray-6: 240 5% 64.9%;
+	--_gray-7: 240 5% 78%;
+	--_gray-8: 240 5% 90%;
+	--_gray-9: 0 0% 98%;
+
+	--wb-handle-color: hsl(var(--_gray-5));
+	--wb-handle-border: 2px solid hsl(var(--_gray-3));
+	--wb-edge-color: hsl(var(--_gray-3));
+	--wb-edge-hover-color: hsl(var(--_gray-5));
+	--wb-node-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.3);
+}

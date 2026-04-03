@@ -1,0 +1,191 @@
+<script lang="ts">
+	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
+	import { onDestroy } from 'svelte';
+	import { formatDistanceToNow } from 'date-fns';
+	import { Loader2, CheckCircle2, XCircle, Clock, ExternalLink } from 'lucide-svelte';
+	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
+
+	let workflowId = $derived(page.params.workflowId);
+
+	interface Execution {
+		id: string;
+		status: string;
+		startTime?: string;
+		createdAt?: string;
+		endTime?: string;
+		completedAt?: string;
+	}
+
+	let executions = $state<Execution[]>([]);
+	let isLoading = $state(true);
+	let error = $state<string | null>(null);
+
+	const hasRunning = $derived(
+		executions.some(
+			(e) => e.status === 'RUNNING' || e.status === 'running' || e.status === 'PENDING'
+		)
+	);
+
+	async function fetchExecutions() {
+		try {
+			const res = await fetch(`/api/workflows/${workflowId}/executions`);
+			if (!res.ok) throw new Error('Failed to fetch executions');
+			const data = await res.json();
+			executions = Array.isArray(data) ? data : data.executions ?? [];
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load executions';
+		} finally {
+			isLoading = false;
+		}
+	}
+
+	function formatDuration(exec: Execution): string {
+		const start = exec.startTime ?? exec.createdAt;
+		if (!start) return '-';
+		const startDate = new Date(start);
+		const end = exec.endTime ?? exec.completedAt;
+		const endDate = end ? new Date(end) : new Date();
+		const ms = endDate.getTime() - startDate.getTime();
+		if (ms < 1000) return `${ms}ms`;
+		if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+		return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+	}
+
+	function statusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+		switch (status.toUpperCase()) {
+			case 'RUNNING':
+			case 'PENDING':
+				return 'default';
+			case 'COMPLETED':
+			case 'SUCCESS':
+				return 'secondary';
+			case 'FAILED':
+			case 'ERROR':
+				return 'destructive';
+			default:
+				return 'outline';
+		}
+	}
+
+	// Initial fetch
+	$effect(() => {
+		fetchExecutions();
+	});
+
+	// Auto-refresh when running executions exist
+	let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+	$effect(() => {
+		if (hasRunning) {
+			refreshInterval = setInterval(fetchExecutions, 5000);
+		} else if (refreshInterval) {
+			clearInterval(refreshInterval);
+			refreshInterval = null;
+		}
+	});
+
+	onDestroy(() => {
+		if (refreshInterval) clearInterval(refreshInterval);
+	});
+</script>
+
+<div class="flex h-full flex-col">
+	<header class="flex h-12 items-center gap-4 border-b border-border px-6">
+		<Breadcrumb.Root>
+			<Breadcrumb.List class="gap-1 text-xs">
+				<Breadcrumb.Item>
+					<Breadcrumb.Link href="/workflows" class="text-[10px] uppercase tracking-wide">Workflows</Breadcrumb.Link>
+				</Breadcrumb.Item>
+				<Breadcrumb.Separator class="[&>svg]:size-3" />
+				<Breadcrumb.Item>
+					<Breadcrumb.Link href="/workflows/{workflowId}" class="text-xs">Editor</Breadcrumb.Link>
+				</Breadcrumb.Item>
+				<Breadcrumb.Separator class="[&>svg]:size-3" />
+				<Breadcrumb.Item>
+					<Breadcrumb.Page class="text-xs font-semibold">Runs</Breadcrumb.Page>
+				</Breadcrumb.Item>
+			</Breadcrumb.List>
+		</Breadcrumb.Root>
+		{#if hasRunning}
+			<span class="flex items-center gap-1 text-xs text-muted-foreground">
+				<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
+				Auto-refreshing
+			</span>
+		{/if}
+	</header>
+
+	<div class="flex-1 overflow-auto p-6">
+		{#if isLoading}
+			<div class="flex items-center justify-center py-12">
+				<Loader2 size={24} class="animate-spin text-muted-foreground" />
+			</div>
+		{:else if error}
+			<div class="flex flex-col items-center justify-center py-12 gap-2">
+				<XCircle size={24} class="text-red-500" />
+				<p class="text-sm text-muted-foreground">{error}</p>
+			</div>
+		{:else if executions.length === 0}
+			<div class="flex flex-col items-center justify-center py-12 gap-2 text-muted-foreground">
+				<Clock size={24} />
+				<p class="text-sm">No executions yet for this workflow.</p>
+			</div>
+		{:else}
+			<div class="rounded-lg border border-border overflow-hidden">
+				<Table class="w-full">
+					<TableHeader>
+						<TableRow class="border-b border-border bg-muted/50">
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Execution ID</TableHead>
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Status</TableHead>
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Started</TableHead>
+							<TableHead class="px-4 py-3 text-left text-xs font-medium text-muted-foreground">Duration</TableHead>
+							<TableHead class="px-4 py-3 text-right text-xs font-medium text-muted-foreground"></TableHead>
+						</TableRow>
+					</TableHeader>
+					<TableBody class="divide-y divide-border">
+						{#each executions as exec (exec.id)}
+							{@const startStr = exec.startTime ?? exec.createdAt}
+							<TableRow
+								class="hover:bg-muted/30 transition-colors cursor-pointer"
+								onclick={() => goto(`/workflows/${workflowId}/runs/${exec.id}`)}
+							>
+								<TableCell class="px-4 py-3">
+									<code class="text-xs">{exec.id.slice(0, 8)}</code>
+								</TableCell>
+								<TableCell class="px-4 py-3">
+									<Badge variant={statusVariant(exec.status)} class="flex w-fit items-center gap-1">
+										{#if exec.status === 'RUNNING' || exec.status === 'running' || exec.status === 'PENDING'}
+											<Loader2 size={12} class="animate-spin" />
+										{:else if exec.status.toUpperCase() === 'COMPLETED' || exec.status.toUpperCase() === 'SUCCESS'}
+											<CheckCircle2 size={12} />
+										{:else if exec.status.toUpperCase() === 'FAILED' || exec.status.toUpperCase() === 'ERROR'}
+											<XCircle size={12} />
+										{:else}
+											<Clock size={12} />
+										{/if}
+										{exec.status}
+									</Badge>
+								</TableCell>
+								<TableCell class="px-4 py-3 text-sm text-muted-foreground">
+									{#if startStr}
+										{formatDistanceToNow(new Date(startStr), { addSuffix: true })}
+									{:else}
+										-
+									{/if}
+								</TableCell>
+								<TableCell class="px-4 py-3 text-sm text-muted-foreground">
+									{formatDuration(exec)}
+								</TableCell>
+								<TableCell class="px-4 py-3 text-right">
+									<ExternalLink size={14} class="text-muted-foreground" />
+								</TableCell>
+							</TableRow>
+						{/each}
+					</TableBody>
+				</Table>
+			</div>
+		{/if}
+	</div>
+</div>

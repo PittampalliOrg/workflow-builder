@@ -1,6 +1,6 @@
 # Workflow Builder
 
-Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. The Next.js app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
+Visual workflow builder with Dapr workflow orchestration, durable AI agents, and MCP server integration. The SvelteKit app serves as a UI + BFF proxy layer; all workflow execution lives in Dapr on Kubernetes.
 
 > **Supplementary docs**: See `docs/` for detailed references:
 > - `docs/services.md` — Full service descriptions, endpoints, and build commands
@@ -18,8 +18,8 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 │                          Kubernetes Cluster                               │
 │                                                                           │
 │  ┌─────────────────┐    ┌──────────────────────────────────────────────┐ │
-│  │  Next.js App    │    │  workflow-orchestrator (Python/Dapr)         │ │
-│  │  (no sidecar)   │───▶│  - Dynamic workflow interpreter              │ │
+│  │  SvelteKit App  │    │  workflow-orchestrator (Python/Dapr)         │ │
+│  │  (Dapr sidecar) │───▶│  - Dynamic workflow interpreter              │ │
 │  │  Port 3000      │    │  - Topological node execution                │ │
 │  └─────────────────┘    │  - Routes to agents & function services     │ │
 │         │               └──────────┬──────────────┬───────────────────┘ │
@@ -51,10 +51,10 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 
 ## Tech Stack
 
-- **Frontend**: Next.js 16, React 19, React Flow (@xyflow/react), Jotai, shadcn/ui
-- **Backend**: Next.js API routes (BFF proxy to Dapr orchestrator)
+- **Frontend**: SvelteKit 5, Svelte 5, Svelte Flow (@xyflow/svelte), shadcn-svelte
+- **Backend**: SvelteKit API routes (BFF proxy to Dapr orchestrator)
 - **Database**: PostgreSQL via Drizzle ORM
-- **Auth**: Better Auth (email/password, social login, JWT API keys)
+- **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: durable-agent (Dapr Workflow ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service
 - **Function Execution**: function-router → fn-system, fn-activepieces, openshell-agent-runtime, durable-agent
@@ -66,15 +66,13 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 ## Key Commands
 
 ```bash
-pnpm dev              # Start dev server
-pnpm build            # Production build (runs discover-plugins first)
+pnpm dev              # Start SvelteKit dev server
+pnpm build            # Production build
+pnpm check            # Svelte type checking
 pnpm db:generate      # Generate Drizzle migrations
 pnpm db:push          # Push schema to DB
-pnpm db:migrate       # Run migrations (safe wrapper)
-pnpm discover-plugins # Generate plugin manifest
-pnpm seed-functions   # Seed builtin functions to DB
-pnpm sync:activepieces-pieces  # Fetch AP piece metadata from cloud API → DB
-pnpm sync-oauth-apps  # Sync OAuth app configs
+pnpm db:migrate       # Run migrations
+pnpm db:studio        # Drizzle Studio (DB browser)
 pnpm test:e2e         # Run Playwright E2E tests
 ```
 

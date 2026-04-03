@@ -1,97 +1,27 @@
-# Multi-stage Dockerfile for Workflow Builder (Next.js 16 Standalone)
-
-# Stage 1: Dependencies
 FROM node:22-alpine AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
-
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy package files
+RUN npm install -g pnpm@10
 COPY package.json pnpm-lock.yaml ./
-
-# Install dependencies
 RUN pnpm install --frozen-lockfile
 
-# Stage 2: Builder
 FROM node:22-alpine AS builder
 WORKDIR /app
-
-# Install pnpm
-RUN npm install -g pnpm
-
-# Copy deps from previous stage
+RUN npm install -g pnpm@10
 COPY --from=deps /app/node_modules ./node_modules
-
-# Copy source code
 COPY . .
-
-# Set build-time environment variables
-ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
+RUN pnpm build
 
-# Build-time environment variables
-ARG NEXT_PUBLIC_APP_URL="https://workflow-builder-ryzen.tail286401.ts.net"
-ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL}
-
-# Bundle scripts for runtime use (self-contained with dependencies)
-RUN npm install -g esbuild && \
-    esbuild scripts/seed-functions.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-functions.bundle.js && \
-    esbuild scripts/sync-activepieces-pieces.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-activepieces-pieces.bundle.js && \
-    esbuild scripts/sync-oauth-apps.ts --bundle --platform=node --target=node22 --outfile=scripts/sync-oauth-apps.bundle.js && \
-    esbuild scripts/seed-dev-user.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-dev-user.bundle.js && \
-    esbuild scripts/seed-workflows.ts --bundle --platform=node --target=node22 --outfile=scripts/seed-workflows.bundle.js && \
-    esbuild custom-proxy.js --bundle --platform=node --target=node22 --outfile=custom-proxy.bundle.js
-
-# Run plugin discovery and build
-RUN pnpm discover-plugins && pnpm next build
-
-# Stage 3: Runner
 FROM node:22-alpine AS runner
 WORKDIR /app
-
 ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
-
-# Atlas CLI
-# Use "latest" by default for dev inner-loop images; override in CI if you need
-# a reproducible, pinned version.
-ARG ATLAS_VERSION=latest
-
-# Create non-root user for security
-RUN addgroup --system --gid 1001 nodejs && \
-    adduser --system --uid 1001 nextjs
-
-# Install Atlas CLI for in-cluster migration jobs.
-# Verify the published sha256 for supply-chain hygiene.
-RUN apk add --no-cache curl ca-certificates && \
-    curl -sSfL -o /usr/local/bin/atlas "https://atlasbinaries.com/atlas/atlas-linux-amd64-${ATLAS_VERSION}" && \
-    curl -sSfL -o /tmp/atlas.sha256 "https://atlasbinaries.com/atlas/atlas-linux-amd64-${ATLAS_VERSION}.sha256" && \
-    echo "$(cat /tmp/atlas.sha256)  /usr/local/bin/atlas" | sha256sum -c - && \
-    chmod +x /usr/local/bin/atlas && \
-    rm -f /tmp/atlas.sha256
-
-# Copy standalone build output
-COPY --from=builder /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-
-# Copy Atlas migrations/config and bundled scripts
-COPY --from=builder /app/atlas.hcl ./atlas.hcl
-COPY --from=builder /app/atlas ./atlas
-COPY --from=builder /app/scripts/seed-functions.bundle.js ./scripts/seed-functions.bundle.js
-COPY --from=builder /app/scripts/sync-activepieces-pieces.bundle.js ./scripts/sync-activepieces-pieces.bundle.js
-COPY --from=builder /app/scripts/sync-oauth-apps.bundle.js ./scripts/sync-oauth-apps.bundle.js
-COPY --from=builder /app/scripts/seed-dev-user.bundle.js ./scripts/seed-dev-user.bundle.js
-COPY --from=builder /app/scripts/seed-workflows.bundle.js ./scripts/seed-workflows.bundle.js
-COPY --from=builder --chown=nextjs:nodejs /app/custom-proxy.bundle.js ./custom-proxy.js
-
-USER nextjs
-
+RUN addgroup -S nodejs && adduser -S sveltekit -G nodejs
+COPY --from=builder --chown=sveltekit:nodejs /app/build ./build
+COPY --from=builder --chown=sveltekit:nodejs /app/package.json ./
+COPY --from=builder --chown=sveltekit:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=sveltekit:nodejs /app/drizzle ./drizzle
+COPY --from=builder --chown=sveltekit:nodejs /app/drizzle.config.ts ./
+USER sveltekit
 EXPOSE 3000
-
-# Migrations run via GitOps (ArgoCD job). App should start without attempting schema changes.
-CMD ["sh", "-c", "PORT=3001 node server.js & PORT=3000 node custom-proxy.js"]
+CMD ["node", "build/index.js"]

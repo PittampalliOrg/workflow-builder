@@ -222,7 +222,15 @@ async def execute_action(request: Request) -> dict:
     try:
         import asyncio
 
-        from src.tracing import trace_activity
+        from src.tracing import trace_activity_with_parent
+
+        # Extract W3C trace context from incoming HTTP headers so that
+        # dapr-swe spans become children of the orchestrator trace.
+        trace_headers: dict[str, str] = {}
+        for h in ("traceparent", "tracestate", "baggage"):
+            val = request.headers.get(h)
+            if val:
+                trace_headers[h] = val
 
         # Run handler in thread with tracing span
         # Include workflow correlation tags so the WB UI trace tab can find these spans.
@@ -232,13 +240,13 @@ async def execute_action(request: Request) -> dict:
         workflow_id = body.get("workflow_id") or ""
         instance_id = body.get("execution_id") or ""
         def _run():
-            with trace_activity(f"dapr-swe.execute.{function_slug}", {
+            with trace_activity_with_parent(f"dapr-swe.execute.{function_slug}", {
                 "dapr_swe.action": function_slug,
                 "dapr_swe.repo": (input_data.get("owner", "") + "/" + input_data.get("repo", "")).strip("/"),
                 "workflow.db_execution_id": db_execution_id,
                 "workflow.id": workflow_id,
                 "workflow.instance_id": instance_id,
-            }):
+            }, headers=trace_headers or None):
                 return handler(input_data, node_outputs)
 
         result = await asyncio.to_thread(_run)

@@ -1,0 +1,20 @@
+export enum AppConnectionScope {
+	PROJECT = 'PROJECT',
+	PLATFORM = 'PLATFORM'
+}
+
+export enum AppConnectionStatus {
+	ACTIVE = 'ACTIVE',
+	MISSING = 'MISSING',
+	ERROR = 'ERROR'
+}
+
+export enum AppConnectionType {
+	OAUTH2 = 'OAUTH2',
+	PLATFORM_OAUTH2 = 'PLATFORM_OAUTH2',
+	CLOUD_OAUTH2 = 'CLOUD_OAUTH2',
+	SECRET_TEXT = 'SECRET_TEXT',
+	BASIC_AUTH = 'BASIC_AUTH',
+	CUSTOM_AUTH = 'CUSTOM_AUTH',
+	NO_AUTH = 'NO_AUTH'
+}
