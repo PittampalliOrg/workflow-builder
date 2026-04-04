@@ -238,14 +238,14 @@
           ],
           "output": {
             "as": {
-              "status": "${ .task.tasks.validate.data.result.status // (if .task.success then \"completed\" else \"failed\" end) }",
-              "artifactId": "${ .task.tasks.validate.data.result.artifactId // \"\" }",
-              "screenshots": "${ .task.tasks.validate.data.result.screenshots // 0 }",
-              "traceAssetRef": "${ ((.task.tasks.validate.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
-              "videoAssetRef": "${ ((.task.tasks.validate.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
-              "artifact": "${ .task.tasks.validate.data.result.artifact // null }",
-              "error": "${ .task.tasks.validate.data.result.error // .task.error // \"\" }",
-              "phase": "${ .task.tasks.validate.data.result.phase // \"\" }"
+              "status": "${ .[\"preview_capture/try/validate\"].result.status // (if .task.success then \"completed\" else \"failed\" end) }",
+              "artifactId": "${ .[\"preview_capture/try/validate\"].result.artifactId // \"\" }",
+              "screenshots": "${ .[\"preview_capture/try/validate\"].result.screenshots // 0 }",
+              "traceAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
+              "videoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
+              "artifact": "${ .[\"preview_capture/try/validate\"].result.artifact // null }",
+              "error": "${ .[\"preview_capture/try/validate\"].result.error // .task.error // \"\" }",
+              "phase": "${ .[\"preview_capture/try/validate\"].result.phase // \"\" }"
             }
           }
         }
