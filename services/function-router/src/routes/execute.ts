@@ -1136,6 +1136,37 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							body.db_execution_id.trim()
 								? body.db_execution_id.trim()
 								: body.execution_id;
+						const browserDbExecutionId =
+							typeof body.db_execution_id === "string" &&
+							body.db_execution_id.trim().length > 0
+								? body.db_execution_id.trim()
+								: typeof args.dbExecutionId === "string" &&
+										args.dbExecutionId.trim().length > 0
+									? args.dbExecutionId.trim()
+									: undefined;
+						const browserWorkflowId =
+							typeof body.workflow_id === "string" &&
+							body.workflow_id.trim().length > 0
+								? body.workflow_id.trim()
+								: typeof args.workflowId === "string" &&
+										args.workflowId.trim().length > 0
+									? args.workflowId.trim()
+									: undefined;
+						const browserNodeId =
+							typeof body.node_id === "string" && body.node_id.trim().length > 0
+								? body.node_id.trim()
+								: typeof args.nodeId === "string" &&
+										args.nodeId.trim().length > 0
+									? args.nodeId.trim()
+									: undefined;
+						const browserNodeName =
+							typeof body.node_name === "string" &&
+							body.node_name.trim().length > 0
+								? body.node_name.trim()
+								: typeof args.nodeName === "string" &&
+										args.nodeName.trim().length > 0
+									? args.nodeName.trim()
+									: browserNodeId;
 						const openshellLanggraphSandboxName =
 							pluginId === "openshell-langgraph"
 								? resolveOpenShellLangGraphSandboxName({
@@ -1463,14 +1494,14 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/browser/materialize-change-artifact`;
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
-								dbExecutionId: body.db_execution_id ?? undefined,
+								dbExecutionId: browserDbExecutionId,
 								workspaceRef: args.workspaceRef,
 								sourceExecutionId: args.sourceExecutionId,
 								durableInstanceId: args.durableInstanceId,
 								preferredOperation: args.preferredOperation,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
+								workflowId: browserWorkflowId,
+								nodeId: browserNodeId,
+								nodeName: browserNodeName,
 							});
 						} else if (isBrowserCaptureFlow) {
 							targetUrl = `${functionUrl}/api/browser/capture-flow`;
@@ -1485,7 +1516,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							targetUrl = `${functionUrl}/api/browser/capture-flow`;
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
-								dbExecutionId: body.db_execution_id ?? undefined,
+								dbExecutionId: browserDbExecutionId,
 								workspaceRef: args.workspaceRef,
 								baseUrl: args.baseUrl,
 								steps,
@@ -1500,9 +1531,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 												}
 											})()
 										: args.metadata,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
+								workflowId: browserWorkflowId,
+								nodeId: browserNodeId,
+								nodeName: browserNodeName,
 							});
 						} else if (isBrowserValidate) {
 							targetUrl = `${functionUrl}/api/browser/validate`;
@@ -1516,7 +1547,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							}
 							requestBody = JSON.stringify({
 								executionId: workspaceExecutionId,
-								dbExecutionId: body.db_execution_id ?? undefined,
+								dbExecutionId: browserDbExecutionId,
 								workspaceRef: args.workspaceRef,
 								sandboxName: args.sandboxName,
 								repoPath: args.repoPath,
@@ -1538,9 +1569,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 											})()
 										: args.metadata,
 								timeoutMs: args.timeoutMs,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
+								workflowId: browserWorkflowId,
+								nodeId: browserNodeId,
+								nodeName: browserNodeName,
 							});
 						} else {
 							targetUrl = `${functionUrl}/api/tools/${encodeURIComponent(toolId)}`;
