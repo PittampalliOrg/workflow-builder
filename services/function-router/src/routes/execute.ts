@@ -1558,6 +1558,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								captureTrace: args.captureTrace,
 								captureVideo: args.captureVideo,
 								viewportPreset: args.viewportPreset,
+								captureMode: args.captureMode,
+								demoTitle: args.demoTitle,
+								demoSummary: args.demoSummary,
+								stepCount: args.stepCount,
 								metadata:
 									typeof args.metadata === "string"
 										? (() => {
