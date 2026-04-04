@@ -261,10 +261,10 @@
                   "captureTrace": "${ .prepare_preview.captureTrace // true }",
                   "captureVideo": "${ .prepare_preview.captureVideo // true }",
                   "viewportPreset": "${ .prepare_preview.viewportPreset // \"desktop\" }",
-                  "captureMode": "${ .prepare_preview.captureMode // \"validation\" }",
-                  "demoTitle": "${ .prepare_preview.demoTitle // \"\" }",
-                  "demoSummary": "${ .prepare_preview.demoSummary // \"\" }",
-                  "stepCount": "${ .prepare_preview.stepCount // 0 }",
+                  "captureMode": "${ .plan_demo.captureMode // .prepare_preview.captureMode // \"validation\" }",
+                  "demoTitle": "${ .plan_demo.demoTitle // .prepare_preview.demoTitle // \"\" }",
+                  "demoSummary": "${ .plan_demo.demoSummary // .prepare_preview.demoSummary // \"\" }",
+                  "stepCount": "${ .plan_demo.stepCount // .prepare_preview.stepCount // 0 }",
                   "timeoutMs": 900000
                 }
               }
