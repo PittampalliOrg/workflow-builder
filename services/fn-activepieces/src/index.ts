@@ -11,9 +11,11 @@ import { otelLogMixin } from "./otel.js";
 import cors from "@fastify/cors";
 import Fastify from "fastify";
 import { z } from "zod";
+import { WorkflowRuntime } from "@dapr/dapr";
 import { executeAction } from "./executor.js";
 import { fetchOptions, type OptionsRequest } from "./options-executor.js";
-import { listPieceNames } from "./piece-registry.js";
+import { PIECES, listPieceNames } from "./piece-registry.js";
+import { registerPieceActivities, type ApActivityMeta } from "./dapr-activities.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
@@ -108,6 +110,27 @@ async function main() {
 		}),
 	);
 
+	// List all pieces with their actions and metadata
+	app.get("/pieces/actions", async (_request, reply) => {
+		const result: Record<string, { displayName: string; actions: Record<string, { displayName: string; description: string }> }> = {};
+		for (const [name, piece] of Object.entries(PIECES)) {
+			try {
+				const actions = piece.actions() as Record<string, { displayName: string; description: string }>;
+				const actionsMeta: Record<string, { displayName: string; description: string }> = {};
+				for (const [actionName, action] of Object.entries(actions)) {
+					actionsMeta[actionName] = {
+						displayName: action.displayName || actionName,
+						description: action.description || "",
+					};
+				}
+				result[name] = { displayName: piece.displayName, actions: actionsMeta };
+			} catch {
+				// Skip pieces that fail to enumerate actions
+			}
+		}
+		return reply.status(200).send(result);
+	});
+
 	// Options route — fetch dynamic dropdown options for a prop
 	const OptionsRequestSchema = z.object({
 		pieceName: z.string().min(1),
@@ -199,6 +222,51 @@ async function main() {
 
 		const statusCode = result.success ? 200 : 500;
 		return reply.status(statusCode).send(response);
+	});
+
+	// ---------------------------------------------------------------------------
+	// Dapr Workflow Activity Registration
+	// ---------------------------------------------------------------------------
+
+	let registeredActivities: ApActivityMeta[] = [];
+	const daprEnabled = process.env.DAPR_HTTP_PORT || process.env.DAPR_GRPC_PORT;
+
+	if (daprEnabled) {
+		try {
+			const runtime = new WorkflowRuntime();
+			registeredActivities = registerPieceActivities(runtime);
+			await runtime.start();
+			console.log(
+				`[fn-activepieces] Registered ${registeredActivities.length} AP piece activities with Dapr`,
+			);
+		} catch (err) {
+			console.error("[fn-activepieces] Failed to start Dapr workflow runtime:", err);
+			// Continue without Dapr — HTTP endpoints still work
+		}
+	} else {
+		console.log("[fn-activepieces] No Dapr sidecar detected, skipping activity registration");
+	}
+
+	// Runtime introspection endpoint (same shape as workflow-orchestrator)
+	app.get("/api/runtime/introspect", async (_request, reply) => {
+		return reply.status(200).send({
+			service: "fn-activepieces",
+			version: "1.0.0",
+			runtime: "node-dapr-workflow",
+			ready: true,
+			features: ["ap-piece-activities"],
+			registeredWorkflows: [],
+			registeredActivities: registeredActivities.map((a) => ({
+				name: a.name,
+				source: "service-introspection",
+				doc: `${a.displayName}: ${a.description} [AP piece: ${a.pieceName}/${a.actionName}]`,
+			})),
+			errors: [],
+			additional: {
+				pieceCount: Object.keys(PIECES).length,
+				daprEnabled: Boolean(daprEnabled),
+			},
+		});
 	});
 
 	// Start server

@@ -71,3 +71,40 @@ export function getDurableAgentUrl(): string {
 		'http://durable-agent.workflow-builder.svc.cluster.local:8001'
 	);
 }
+
+/** Get the fn-activepieces base URL */
+export function getFnActivepiecesUrl(): string {
+	return (
+		env.FN_ACTIVEPIECES_URL ||
+		'http://fn-activepieces.workflow-builder.svc.cluster.local:8080'
+	);
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-capable service discovery
+// ---------------------------------------------------------------------------
+
+export interface WorkflowServiceDescriptor {
+	id: string;
+	getBaseUrl: () => string;
+	introspectPath: string;
+}
+
+/**
+ * Static registry of services that register Dapr workflow activities.
+ * Add new entries here when a new workflow-capable service is deployed.
+ */
+export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
+	return [
+		{
+			id: 'workflow-orchestrator',
+			getBaseUrl: getOrchestratorUrl,
+			introspectPath: '/api/v2/runtime/introspect',
+		},
+		{
+			id: 'fn-activepieces',
+			getBaseUrl: getFnActivepiecesUrl,
+			introspectPath: '/api/runtime/introspect',
+		},
+	];
+}

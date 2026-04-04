@@ -16,6 +16,7 @@ KEY FEATURE: Native child workflow support for Dapr agent actions via Dapr child
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -42,48 +43,7 @@ from core.config import config
 from workflows.dynamic_workflow import wfr, dynamic_workflow
 from workflows.ap_workflow import ap_workflow
 from workflows.sw_workflow import sw_workflow
-from activities.execute_action import execute_action
-from activities.persist_state import persist_state, get_state, delete_state
-from activities.publish_event import (
-    publish_event,
-    publish_phase_changed,
-    publish_workflow_started,
-    publish_workflow_completed,
-    publish_workflow_failed,
-    publish_approval_requested,
-)
-from activities.log_external_event import (
-    log_external_event,
-    log_approval_request,
-    log_approval_response,
-    log_approval_timeout,
-)
-from activities.call_agent_service import (
-    call_openshell_agent_run,
-    call_durable_agent_run,
-    call_durable_plan,
-    call_durable_execute_plan,
-    call_durable_execute_plan_dag,
-    validate_workspace_capabilities,
-    terminate_openshell_langgraph_run,
-    terminate_durable_agent_run,
-    terminate_durable_runs_by_parent_execution,
-    cleanup_execution_workspaces,
-)
-from activities.log_node_execution import log_node_start, log_node_complete
-from activities.persist_results_to_db import persist_results_to_db
-from activities.persist_plan_artifact import (
-    fetch_plan_artifact,
-    persist_plan_artifact,
-    update_plan_artifact_status,
-)
-from activities.send_ap_callback import send_ap_callback, send_ap_step_update
-from activities.fetch_child_workflow import fetch_child_workflow
-from activities.track_agent_run import (
-    track_agent_run_running,
-    track_agent_run_scheduled,
-    track_agent_run_completed,
-)
+from activities.call_agent_service import terminate_durable_runs_by_parent_execution
 
 # OpenTelemetry
 from tracing import setup_tracing, inject_current_context
@@ -723,47 +683,11 @@ async def lifespan(app: FastAPI):
     setup_tracing("workflow-orchestrator", app)
     _check_min_dapr_runtime_version()
 
-    # Register activities
-    wfr.register_activity(execute_action)
-    wfr.register_activity(persist_state)
-    wfr.register_activity(get_state)
-    wfr.register_activity(delete_state)
-    wfr.register_activity(publish_event)
-    wfr.register_activity(publish_phase_changed)
-    wfr.register_activity(publish_workflow_started)
-    wfr.register_activity(publish_workflow_completed)
-    wfr.register_activity(publish_workflow_failed)
-    wfr.register_activity(publish_approval_requested)
-    wfr.register_activity(log_external_event)
-    wfr.register_activity(log_approval_request)
-    wfr.register_activity(log_approval_response)
-    wfr.register_activity(log_approval_timeout)
-    # Node execution logging
-    wfr.register_activity(log_node_start)
-    wfr.register_activity(log_node_complete)
-    # Persist final results to PostgreSQL
-    wfr.register_activity(persist_results_to_db)
-    wfr.register_activity(persist_plan_artifact)
-    wfr.register_activity(update_plan_artifact_status)
-    wfr.register_activity(fetch_plan_artifact)
-    # Agent service activities
-    wfr.register_activity(call_openshell_agent_run)
-    wfr.register_activity(call_durable_agent_run)
-    wfr.register_activity(call_durable_plan)
-    wfr.register_activity(call_durable_execute_plan)
-    wfr.register_activity(call_durable_execute_plan_dag)
-    wfr.register_activity(validate_workspace_capabilities)
-    wfr.register_activity(terminate_openshell_langgraph_run)
-    wfr.register_activity(terminate_durable_agent_run)
-    wfr.register_activity(cleanup_execution_workspaces)
-    wfr.register_activity(track_agent_run_scheduled)
-    wfr.register_activity(track_agent_run_running)
-    wfr.register_activity(track_agent_run_completed)
-    # AP workflow callback activities
-    wfr.register_activity(send_ap_callback)
-    wfr.register_activity(send_ap_step_update)
-    # Sub-workflow support
-    wfr.register_activity(fetch_child_workflow)
+    # Register all activities from the canonical ACTIVITIES list.
+    # To add a new activity, update activities/__init__.py — no changes needed here.
+    from activities import ACTIVITIES
+    for fn in ACTIVITIES:
+        _register_activity(fn)
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 
@@ -1031,45 +955,39 @@ def get_workflow_client() -> DaprWorkflowClient:
     return DaprWorkflowClient()
 
 
+# Activity registry — populated by _register_activity() during startup.
+_activity_registry: list[Any] = []
+_activity_registry_seen: set[str] = set()
+
+
+def _register_activity(fn: Any) -> None:
+    """Register an activity with both Dapr and the introspection registry."""
+    wfr.register_activity(fn)
+    if fn.__name__ not in _activity_registry_seen:
+        _activity_registry_seen.add(fn.__name__)
+        _activity_registry.append(fn)
+
+
+def _registered_activity_functions() -> list[Any]:
+    """Return the list of registered activity function objects."""
+    return _activity_registry
+
+
 def _registered_activity_names() -> list[str]:
-    return [
-        execute_action.__name__,
-        persist_state.__name__,
-        get_state.__name__,
-        delete_state.__name__,
-        publish_event.__name__,
-        publish_phase_changed.__name__,
-        publish_workflow_started.__name__,
-        publish_workflow_completed.__name__,
-        publish_workflow_failed.__name__,
-        publish_approval_requested.__name__,
-        log_external_event.__name__,
-        log_approval_request.__name__,
-        log_approval_response.__name__,
-        log_approval_timeout.__name__,
-        log_node_start.__name__,
-        log_node_complete.__name__,
-        persist_results_to_db.__name__,
-        persist_plan_artifact.__name__,
-        update_plan_artifact_status.__name__,
-        fetch_plan_artifact.__name__,
-        call_openshell_agent_run.__name__,
-        call_durable_agent_run.__name__,
-        call_durable_plan.__name__,
-        call_durable_execute_plan.__name__,
-        call_durable_execute_plan_dag.__name__,
-        validate_workspace_capabilities.__name__,
-        terminate_openshell_langgraph_run.__name__,
-        terminate_durable_agent_run.__name__,
-        cleanup_execution_workspaces.__name__,
-        track_agent_run_running.__name__,
-        track_agent_run_scheduled.__name__,
-        track_agent_run_running.__name__,
-        track_agent_run_completed.__name__,
-        send_ap_callback.__name__,
-        send_ap_step_update.__name__,
-        fetch_child_workflow.__name__,
-    ]
+    return [fn.__name__ for fn in _activity_registry]
+
+
+def _get_activity_source(fn: Any) -> str | None:
+    """Return the source code of an activity function, or None on failure."""
+    try:
+        return inspect.getsource(fn)
+    except (OSError, TypeError):
+        return None
+
+
+def _get_activity_doc(fn: Any) -> str | None:
+    """Return the formatted docstring of an activity function."""
+    return inspect.getdoc(fn)
 
 
 def _registered_workflow_descriptors() -> list[dict[str, Any]]:
@@ -2980,8 +2898,13 @@ def get_runtime_introspection():
         ],
         registeredWorkflows=_registered_workflow_descriptors(),
         registeredActivities=[
-            {"name": name, "source": "service-introspection"}
-            for name in _registered_activity_names()
+            {
+                "name": fn.__name__,
+                "source": "service-introspection",
+                "sourceCode": _get_activity_source(fn),
+                "doc": _get_activity_doc(fn),
+            }
+            for fn in _registered_activity_functions()
         ],
         errors=errors,
         additional={

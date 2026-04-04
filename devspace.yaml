@@ -4,23 +4,26 @@
 # Architecture:
 #   - Replaces production container with devcontainer (full build tools)
 #   - Syncs local files to container in real-time
-#   - Runs Next.js dev server with hot module replacement
+#   - Runs SvelteKit dev server with hot module replacement
 #   - Integrates with existing OTEL observability stack
 #
 # Usage:
 #   bash scripts/devspace-dev-ryzen.sh  # Start the default observable OpenShell inner loop
 #   bash scripts/devspace-dev-ryzen.sh --profile sw-workflow-dev  # CNCF Serverless Workflow 1.0 development
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
-#   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the Next.js app only
+#   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the SvelteKit app only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Iterate on artifact/read-model support service + UI
 #   bash scripts/devspace-dev-ryzen.sh --profile full-agent-stack  # Start every active in-repo workflow service
 #   devspace dev       # Raw DevSpace entrypoint (pauses ArgoCD via pipeline)
+#   devspace run deploy-ui      # Build + deploy SvelteKit image (no dev loop)
+#   devspace run restart-ui     # Restart deployment with current image (no build)
+#   devspace run-pipeline deploy-ui  # Pipeline: build + deploy (no dev loop)
 #   devspace enter     # Shell into container
 #   devspace purge     # Clean up devspace resources
 #
 # Notes:
 #   - This repo can replace workflow-builder, workflow-orchestrator, function-router,
-#     durable-agent, fn-activepieces, mcp-gateway, and openshell-langgraph-observable.
+#     durable-agent, fn-activepieces, and mcp-gateway.
 #   - openshell-agent-runtime is consumed as a deployed cluster service and is not
 #     replaced by this DevSpace config because its source does not live in this repo.
 #   - Use one profile at a time. If a session is already active, use `devspace enter`,
@@ -62,10 +65,6 @@ vars:
   MCP_GATEWAY_APP_NAME: mcp-gateway
   MCP_GATEWAY_LOCAL_PORT: "3018"
   MCP_GATEWAY_CONTAINER_PORT: "8080"
-  OPENSHELL_LANGGRAPH_OBSERVABLE_APP_NAME: openshell-langgraph-observable
-  OPENSHELL_LANGGRAPH_OBSERVABLE_LOCAL_PORT: "3020"
-  OPENSHELL_LANGGRAPH_OBSERVABLE_CONTAINER_PORT: "8003"
-  OPENSHELL_LANGGRAPH_OBSERVABLE_SOURCE_PATH: "../../openshell-deepagent/main"
   OPENSHELL_AGENT_RUNTIME_API_BASE_URL: "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"
 
   # Registry configuration
@@ -94,7 +93,7 @@ vars:
   OTEL_ENVIRONMENT:
     default: "development"
 
-  # Next.js / pnpm configuration
+  # SvelteKit / pnpm configuration
   PNPM_VERSION:
     default: "9.12.3"
 
@@ -177,10 +176,10 @@ vars:
     default: "${GITEA_HOST}/${GITEA_USER}/nodejs-22-devspace"
   # ArgoCD apps to pause/resume during dev (space-separated, profile-patched)
   ARGO_APPS:
-    default: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+    default: "workflow-builder workflow-orchestrator function-router"
   # Production deployments to wait for on cleanup (space-separated, profile-patched)
   PRODUCTION_DEPLOYMENTS:
-    default: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+    default: "workflow-builder workflow-orchestrator function-router"
 
 # ============================================================================
 # Development Configuration
@@ -242,8 +241,8 @@ dev:
         # Add node_modules/.bin to PATH
         export PATH="/app/node_modules/.bin:$PATH"
 
-        echo "Starting Next.js development server..."
-        exec next dev
+        echo "Starting SvelteKit development server..."
+        exec vite dev --host 0.0.0.0 --port ${CONTAINER_PORT}
 
     # File synchronization
     sync:
@@ -266,14 +265,13 @@ dev:
                 - package.json
                 - pnpm-lock.yaml
         excludePaths:
-          # Node.js / Next.js artifacts
+          # Node.js / SvelteKit artifacts
           - node_modules/
           - .pnpm-store/
-          - .next/
+          - .svelte-kit/
+          - build/
           - dist/
-          - out/
           - coverage/
-          - next-env.d.ts
           # Dev tooling
           - .devenv/
           - .devspace/
@@ -342,8 +340,6 @@ dev:
     env:
       - name: NODE_ENV
         value: development
-      - name: NEXT_TELEMETRY_DISABLED
-        value: "1"
       - name: OTEL_SERVICE_NAME
         value: ${OTEL_SERVICE_NAME}
       - name: OTEL_RESOURCE_ATTRIBUTES
@@ -385,16 +381,14 @@ dev:
       - name: MASTRA_AGENT_API_BASE_URL
         value: ""
       # Auth configuration for ingress access
-      - name: NEXT_PUBLIC_APP_URL
+      - name: APP_PUBLIC_URL
         value: ${APP_PUBLIC_URL}
       - name: BETTER_AUTH_URL
         value: ${APP_PUBLIC_URL}
-      # Auth providers (enables social login buttons in UI)
-      - name: NEXT_PUBLIC_AUTH_PROVIDERS
-        value: "email,github,google"
-      - name: NEXT_PUBLIC_GITHUB_CLIENT_ID
+      # Public client IDs (SvelteKit PUBLIC_ prefix for client-side access)
+      - name: PUBLIC_GITHUB_CLIENT_ID
         value: "Ov23lixcpFfGjGtsNCxC"
-      - name: NEXT_PUBLIC_GOOGLE_CLIENT_ID
+      - name: PUBLIC_GOOGLE_CLIENT_ID
         value: "875421392000-2u0qcvoa6sc2vpisl0v8ah5h4drrljvr.apps.googleusercontent.com"
       # fn-activepieces internal URL (dev override for dynamic dropdown options)
       - name: FN_ACTIVEPIECES_URL
@@ -611,7 +605,7 @@ dev:
         pip install --upgrade pip
         pip install -e .
 
-        exec uvicorn app:app --host 0.0.0.0 --port ${ORCHESTRATOR_CONTAINER_PORT}
+        exec uvicorn app:app --host 0.0.0.0 --port ${ORCHESTRATOR_CONTAINER_PORT} --reload --reload-dir /app
     sync:
       - path: ./services/workflow-orchestrator/:/app
         initialSync: mirrorLocal
@@ -1027,78 +1021,6 @@ dev:
       - name: NODE_ENV
         value: development
 
-  openshell-langgraph-observable:
-    namespace: ${APP_NAME}
-    labelSelector:
-      app: openshell-langgraph-observable
-    container: ${OPENSHELL_LANGGRAPH_OBSERVABLE_APP_NAME}
-    workingDir: /app
-    resources:
-      requests:
-        cpu: 250m
-        memory: 512Mi
-      limits:
-        cpu: "2"
-        memory: 2Gi
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set -e
-        echo "=== DevSpace Development Container (OpenShell LangGraph Observable) ==="
-        echo "Deps pre-installed in image. Syncing source files only."
-        cd /app
-
-        exec python -m src.langgraph_observable_app
-    sync:
-      - path: ${OPENSHELL_LANGGRAPH_OBSERVABLE_SOURCE_PATH}/:/app
-        initialSync: preferLocal
-        disableDownload: true
-        polling: true
-        startContainer: true
-        waitInitialSync: true
-        onUpload:
-          restartContainer: false
-          exec:
-            - name: install-openshell-langgraph-observable-deps
-              command: sh
-              args:
-                - -lc
-                - "cd /app && pip install --no-deps -e . 2>/dev/null || true"
-              failOnError: false
-              onChange:
-                - pyproject.toml
-        excludePaths:
-          - .venv/
-          - __pycache__/
-          - .pytest_cache/
-          - "*.pyc"
-          - .claude/
-    patches:
-      - op: remove
-        path: spec.containers.name=${OPENSHELL_LANGGRAPH_OBSERVABLE_APP_NAME}.livenessProbe
-      - op: remove
-        path: spec.containers.name=${OPENSHELL_LANGGRAPH_OBSERVABLE_APP_NAME}.readinessProbe
-      - op: replace
-        path: spec.containers.name=${OPENSHELL_LANGGRAPH_OBSERVABLE_APP_NAME}.securityContext
-        value:
-          runAsUser: 0
-          runAsGroup: 0
-          runAsNonRoot: false
-          allowPrivilegeEscalation: false
-      - op: replace
-        path: spec.securityContext
-        value:
-          fsGroup: 1001
-          runAsNonRoot: false
-    ports:
-      - port: "${OPENSHELL_LANGGRAPH_OBSERVABLE_LOCAL_PORT}:${OPENSHELL_LANGGRAPH_OBSERVABLE_CONTAINER_PORT}"
-    env:
-      - name: PYTHONUNBUFFERED
-        value: "1"
-      - name: PYTHONDONTWRITEBYTECODE
-        value: "1"
-
 # ============================================================================
 # Pipelines — override the default `dev` pipeline to manage ArgoCD
 # ============================================================================
@@ -1152,6 +1074,10 @@ pipelines:
       create_deployments --all
       start_dev --all
 
+  deploy-ui:
+    run: |
+      run_command deploy-ui
+
 # ============================================================================
 # Hooks — safety net for `devspace purge`
 # ============================================================================
@@ -1187,6 +1113,47 @@ commands:
       kubectl annotate application "$app" --namespace argocd \
         "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
     done
+  deploy-ui: |-
+    echo "==> Building and deploying SvelteKit app (workflow-builder)"
+    echo "    Use 'devspace run restart-ui' to skip the build and just restart."
+    echo ""
+    WL_NS="workflow-builder"
+    REPO="${CURRENT_IMAGE_REPOSITORY}"
+    TAG="deploy-$(date +%s)"
+    IMAGE="${REPO}:${TAG}"
+    echo "Step 1: Pause ArgoCD"
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/skip-reconcile=true" --overwrite 2>/dev/null || true
+    echo "Step 2: Build image (${IMAGE})"
+    docker build -t "${IMAGE}" -t "${REPO}:latest" -f Dockerfile .
+    echo "Step 3: Load into Kind cluster"
+    kind load docker-image "${IMAGE}" --name "$(kubectl config current-context | sed 's/kind-//')" 2>/dev/null || \
+      docker push "${IMAGE}"
+    echo "Step 4: Update deployment"
+    kubectl set image deployment/workflow-builder \
+      workflow-builder="${IMAGE}" --namespace "$WL_NS"
+    echo "Step 5: Wait for rollout"
+    kubectl rollout status deployment/workflow-builder \
+      --namespace "$WL_NS" --timeout=180s
+    echo "Step 6: Resume ArgoCD"
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/skip-reconcile-" 2>/dev/null || true
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
+    echo "==> Done: ${IMAGE}"
+  restart-ui: |-
+    echo "==> Restarting SvelteKit deployment (no build)"
+    WL_NS="workflow-builder"
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/skip-reconcile=true" --overwrite 2>/dev/null || true
+    kubectl rollout restart deployment/workflow-builder --namespace "$WL_NS"
+    kubectl rollout status deployment/workflow-builder \
+      --namespace "$WL_NS" --timeout=180s
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/skip-reconcile-" 2>/dev/null || true
+    kubectl annotate application workflow-builder --namespace argocd \
+      "argocd.argoproj.io/refresh=hard" --overwrite 2>/dev/null || true
+    echo "==> Done."
 
 # ============================================================================
 # Profiles
@@ -1209,20 +1176,18 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: openshell-inner-loop
     description: >
-      Default short inner loop for the observable OpenShell authoring path.
-      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
+      Default short inner loop.
+      Starts: workflow-builder, workflow-orchestrator, function-router.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator function-router"
       - op: remove
         path: dev.ai-chatbot
       - op: remove
@@ -1232,20 +1197,21 @@ profiles:
       - op: remove
         path: dev.mcp-gateway
 
-  - name: openshell-observable-dev
+  - name: ui-orchestrator
     description: >
-      Explicit observable OpenShell loop. Use this for current LangGraph tracing
-      and feature-delivery work.
-      Starts: workflow-builder, workflow-orchestrator, function-router, openshell-langgraph-observable.
+      SvelteKit UI + workflow-orchestrator development loop.
+      Starts: workflow-builder, workflow-orchestrator.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder workflow-orchestrator function-router openshell-langgraph-observable"
+        value: "workflow-builder workflow-orchestrator"
       - op: remove
         path: dev.ai-chatbot
+      - op: remove
+        path: dev.function-router
       - op: remove
         path: dev.durable-agent
       - op: remove
@@ -1255,7 +1221,7 @@ profiles:
 
   - name: workflow-ui-only
     description: >
-      Fastest loop when only the Next.js UI and BFF are changing.
+      Fastest loop when only the SvelteKit UI and BFF are changing.
       Starts: workflow-builder only.
     patches:
       - op: replace
@@ -1276,12 +1242,10 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: durable-agent-only
     description: >
-      Iterate on the durable-agent artifact/read-model support service with the Next.js UI.
+      Iterate on the durable-agent artifact/read-model support service with the SvelteKit UI.
       Starts: workflow-builder, durable-agent.
       Requires durable-agent Deployment in the cluster.
     patches:
@@ -1301,8 +1265,6 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: function-stack
     description: >
@@ -1319,8 +1281,6 @@ profiles:
         path: dev.durable-agent
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: sw-workflow-dev
     description: >
@@ -1345,17 +1305,15 @@ profiles:
         path: dev.fn-activepieces
       - op: remove
         path: dev.mcp-gateway
-      - op: remove
-        path: dev.openshell-langgraph-observable
 
   - name: full-agent-stack
     description: >
-      Every active in-repo workflow service for the OpenShell-first architecture.
-      Includes the internal durable-agent support service and the OpenShell LangGraph runtime.
+      Every active in-repo workflow service.
+      Includes the internal durable-agent support service.
     patches:
       - op: replace
         path: vars.ARGO_APPS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway durable-agent openshell-langgraph-observable"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-system mcp-gateway durable-agent"
       - op: replace
         path: vars.PRODUCTION_DEPLOYMENTS.default
-        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent openshell-langgraph-observable"
+        value: "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"

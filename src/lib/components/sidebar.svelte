@@ -14,7 +14,8 @@
 		Sun,
 		LogOut,
 		Eye,
-		ChevronsUpDown
+		ChevronsUpDown,
+		Server
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -38,6 +39,7 @@
 		{ href: '/agents', label: 'Agents', icon: Bot },
 		{ href: '/mcp-chat', label: 'MCP Chat', icon: MessageSquare },
 		{ href: '/monitor', label: 'Monitor', icon: Activity },
+		{ href: '/runtime', label: 'Runtime', icon: Server },
 		{ href: '/observability', label: 'Observability', icon: Eye },
 		{ href: '/settings', label: 'Settings', icon: Settings }
 	];

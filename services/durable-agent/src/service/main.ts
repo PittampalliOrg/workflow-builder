@@ -39,7 +39,7 @@ interceptConsole();
 import express from "express";
 import { DaprWorkflowClient } from "@dapr/dapr";
 import { nanoid } from "nanoid";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { posix as pathPosix } from "node:path";
 import { DurableAgent } from "../durable-agent.js";
@@ -222,7 +222,83 @@ function listRuntimeWorkflowRegistrations() {
 	];
 }
 
+// Map activity names → factory function names in activities.ts for source extraction
+const ACTIVITY_FACTORY_MAP: Record<string, string> = {
+	recordInitialEntry: "createRecordInitialEntry",
+	callLlm: "createCallLlm",
+	runTool: "createRunTool",
+	saveToolResults: "createSaveToolResults",
+	compactConversation: "createCompactConversation",
+	finalizeWorkflow: "createFinalizeWorkflow",
+	executeClaudeTask: "executeClaudeTaskActivity",
+	persistDagState: "persistDagStateActivity",
+	durablePlanActivity: "durablePlanActivity",
+};
+
+let _activitySourceCache: Map<string, string> | null = null;
+
+function getActivitySources(): Map<string, string> {
+	if (_activitySourceCache) return _activitySourceCache;
+	_activitySourceCache = new Map();
+	try {
+		// Resolve activities.ts source relative to compiled main.js
+		const candidates = [
+			new URL("../../workflow/activities.ts", import.meta.url),
+			new URL("../workflow/activities.ts", import.meta.url),
+		];
+		let source = "";
+		for (const candidate of candidates) {
+			try {
+				source = readFileSync(candidate, "utf-8");
+				if (source) break;
+			} catch {
+				// try next
+			}
+		}
+		if (!source) return _activitySourceCache;
+
+		// Extract each factory function by name
+		for (const [activityName, factoryName] of Object.entries(
+			ACTIVITY_FACTORY_MAP,
+		)) {
+			const pattern = new RegExp(
+				`^(?:export\\s+)?(?:async\\s+)?function\\s+${factoryName}\\b`,
+				"m",
+			);
+			const match = pattern.exec(source);
+			if (!match) continue;
+			const startIdx = match.index;
+			// Walk braces to find the end of the function
+			let depth = 0;
+			let endIdx = startIdx;
+			let foundOpen = false;
+			for (let i = startIdx; i < source.length; i++) {
+				if (source[i] === "{") {
+					depth++;
+					foundOpen = true;
+				} else if (source[i] === "}") {
+					depth--;
+					if (foundOpen && depth === 0) {
+						endIdx = i + 1;
+						break;
+					}
+				}
+			}
+			if (endIdx > startIdx) {
+				_activitySourceCache.set(
+					activityName,
+					source.slice(startIdx, endIdx),
+				);
+			}
+		}
+	} catch {
+		// Source extraction is best-effort
+	}
+	return _activitySourceCache;
+}
+
 function listRuntimeActivityRegistrations() {
+	const sources = getActivitySources();
 	return [
 		"recordInitialEntry",
 		"callLlm",
@@ -236,6 +312,7 @@ function listRuntimeActivityRegistrations() {
 	].map((name) => ({
 		name,
 		source: "service-introspection" as const,
+		sourceCode: sources.get(name) ?? null,
 	}));
 }
 
