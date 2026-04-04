@@ -19,13 +19,13 @@ if "dapr" not in sys.modules:
     clients_module = types.ModuleType("dapr.clients")
 
     class _FakeWorkflowRuntime:
-        def activity(self, _name=None):
+        def activity(self, _name=None, **_kwargs):
             def decorator(fn):
                 return fn
 
             return decorator
 
-        def workflow(self, _name=None):
+        def workflow(self, _name=None, **_kwargs):
             def decorator(fn):
                 return fn
 

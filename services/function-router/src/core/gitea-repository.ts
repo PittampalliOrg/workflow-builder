@@ -40,11 +40,21 @@ type RuntimeGiteaSettings = {
 	token: string;
 };
 
+type DaprGiteaConfig = Partial<
+	Record<
+		| "GITEA_API_URL"
+		| "GITEA_REPO_OWNER"
+		| "GITEA_INTERNAL_CLONE_BASE_URL"
+		| "GITEA_USERNAME",
+		string
+	>
+>;
+
 let runtimeSettingsPromise: Promise<RuntimeGiteaSettings> | null = null;
 
 async function getDaprConfiguration(
 	keys: string[],
-): Promise<Record<string, string>> {
+): Promise<DaprGiteaConfig> {
 	const url = new URL(
 		`http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${DAPR_CONFIG_STORE}`,
 	);
@@ -91,7 +101,7 @@ async function getRuntimeGiteaSettings(): Promise<RuntimeGiteaSettings> {
 				"GITEA_REPO_OWNER",
 				"GITEA_INTERNAL_CLONE_BASE_URL",
 				"GITEA_USERNAME",
-			]).catch(() => ({}));
+			]).catch((): DaprGiteaConfig => ({}));
 			const token =
 				(await getDaprSecret("GITEA-TOKEN").catch(() => "")) ||
 				(await getDaprSecret("GITEA-REGISTRY-PASSWORD").catch(() => "")) ||
