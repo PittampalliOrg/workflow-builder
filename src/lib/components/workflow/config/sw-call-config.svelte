@@ -4,6 +4,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import ApFunctionConfig from './ap-function-config.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -11,6 +12,15 @@
 	}
 
 	let { data, onUpdate }: Props = $props();
+
+	let isApFunction = $derived(
+		Boolean(data.catalogFunction) ||
+		Boolean((((data.taskConfig as Record<string, unknown>)?.with as Record<string, unknown>)?.body as Record<string, unknown>)?.metadata)
+	);
+	let catalogFunction = $derived(
+		(data.catalogFunction as { name: string; displayName: string; pieceName: string; actionName: string } | undefined) || null
+	);
+	let showRawConfig = $state(false);
 
 	let taskConfig = $derived((data.taskConfig as Record<string, unknown>) || {});
 	let withConfig = $derived((taskConfig.with as Record<string, unknown>) || {});
@@ -73,6 +83,21 @@
 </script>
 
 <div class="space-y-4">
+	{#if isApFunction && catalogFunction}
+		<ApFunctionConfig
+			{catalogFunction}
+			taskConfig={taskConfig}
+			{onUpdate}
+		/>
+		<button
+			class="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+			onclick={() => (showRawConfig = !showRawConfig)}
+		>
+			{showRawConfig ? 'Hide' : 'Show'} raw config
+		</button>
+	{/if}
+
+	{#if !isApFunction || showRawConfig}
 	<div class="space-y-1.5">
 		<Label for="call-type">Call Type</Label>
 		<NativeSelect
@@ -172,5 +197,6 @@
 				placeholder={callType === 'grpc' ? 'service.Method' : 'path/to/spec.yaml'}
 			/>
 		</div>
+	{/if}
 	{/if}
 </div>

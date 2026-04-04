@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked } from 'lucide-svelte';
+	import { goto } from '$app/navigation';
+	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
@@ -75,6 +76,33 @@
 		}
 	}
 
+	async function handleNewWorkflow() {
+		if (store.isDirty) {
+			if (!confirm('You have unsaved changes. Create new workflow anyway?')) return;
+		}
+		try {
+			const res = await fetch('/api/workflows', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: 'Untitled Workflow',
+					nodes: [
+						{ id: '__start__', type: 'start', position: { x: 250, y: 50 }, data: { label: 'Start', status: 'idle', taskType: 'start' } },
+						{ id: '__end__', type: 'end', position: { x: 250, y: 300 }, data: { label: 'End', status: 'idle', taskType: 'end' } }
+					],
+					edges: [{ id: '__start__->__end__', source: '__start__', target: '__end__' }]
+				})
+			});
+			if (res.ok) {
+				const workflow = await res.json();
+				goto(`/workflows/${workflow.id}`);
+			}
+		} catch (err) {
+			console.error('Failed to create workflow:', err);
+			toast.error('Failed to create workflow');
+		}
+	}
+
 	function onKeyDown(event: KeyboardEvent) {
 		if ((event.metaKey || event.ctrlKey) && event.key === 's') {
 			event.preventDefault();
@@ -86,8 +114,16 @@
 <svelte:window onkeydown={onKeyDown} />
 
 <div class="flex h-10 items-center justify-between border-b border-border bg-card px-2">
-	<!-- Left: workflow name container -->
+	<!-- Left: new + workflow name container -->
 	<div class="flex items-center gap-2">
+		<Tooltip.Root>
+			<Tooltip.Trigger>
+				<Button variant="ghost" size="icon" onclick={handleNewWorkflow} class="h-7 w-7 shrink-0">
+					<FilePlus size={14} />
+				</Button>
+			</Tooltip.Trigger>
+			<Tooltip.Content>New workflow</Tooltip.Content>
+		</Tooltip.Root>
 		<div class="flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2.5 py-1">
 			<Input
 				type="text"

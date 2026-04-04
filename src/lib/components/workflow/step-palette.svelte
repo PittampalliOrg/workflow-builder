@@ -17,15 +17,20 @@
 		OctagonAlert,
 		Layers,
 		ChevronRight,
-		ChevronLeft
+		ChevronLeft,
+		Blocks
 	} from 'lucide-svelte';
+	import { Separator } from '$lib/components/ui/separator';
+	import FunctionBrowser from './function-browser.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { WorkflowNodeType } from '$lib/stores/workflow.svelte';
+	import type { CatalogFunction } from '$lib/stores/catalog.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { screenToFlowPosition } = useSvelteFlow();
 
 	let expanded = $state(false);
+	let showFunctionBrowser = $state(false);
 
 	const nodeDefinitions: {
 		type: WorkflowNodeType;
@@ -56,12 +61,28 @@
 	}
 
 	function onClickAdd(type: WorkflowNodeType, label: string) {
-		// Add at center of viewport
 		const position = screenToFlowPosition({
 			x: window.innerWidth / 2,
 			y: window.innerHeight / 2
 		});
 		store.addNode(type, position, label);
+	}
+
+	function onFunctionSelect(fn: CatalogFunction, definition: Record<string, unknown>) {
+		const position = screenToFlowPosition({
+			x: window.innerWidth / 2,
+			y: window.innerHeight / 2
+		});
+		const id = store.addNode('call', position, fn.displayName);
+		store.updateNodeData(id, {
+			taskConfig: definition,
+			catalogFunction: {
+				name: fn.name,
+				displayName: fn.displayName,
+				pieceName: fn.pieceName,
+				actionName: fn.actionName,
+			}
+		});
 	}
 </script>
 
@@ -104,7 +125,25 @@
 						</button>
 					</div>
 				{/each}
+
+				<Separator class="my-1.5" />
+
+				<button
+					onclick={() => (showFunctionBrowser = true)}
+					class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-accent"
+				>
+					<div class="rounded p-1 bg-violet-100 text-violet-600 dark:bg-violet-900 dark:text-violet-400">
+						<Blocks size={12} />
+					</div>
+					<span class="text-foreground">Integrations</span>
+				</button>
 			</div>
 		{/if}
 	</div>
 </Panel>
+
+<FunctionBrowser
+	open={showFunctionBrowser}
+	onClose={() => (showFunctionBrowser = false)}
+	onSelect={onFunctionSelect}
+/>
