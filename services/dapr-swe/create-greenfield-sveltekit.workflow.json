@@ -70,6 +70,15 @@
             }
           }
         },
+        "plan_demo_annotations": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/plan-demo-annotations"
+            }
+          }
+        },
         "prepare_preview": {
           "call": "http",
           "with": {
@@ -207,6 +216,23 @@
         }
       },
       {
+        "plan_demo_annotations": {
+          "call": "plan_demo_annotations",
+          "with": {
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "title": "${ .input.title // (\"Bootstrap a new SvelteKit app for \" + (.input.app_name // .input.repo)) }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }",
+            "plan": "${ .plan.plan }",
+            "review": "${ .review }",
+            "demoPlan": "${ .plan_demo.demoPlan }",
+            "model": "${ .input.model // \"\" }"
+          }
+        }
+      },
+      {
         "prepare_preview": {
           "call": "prepare_preview",
           "with": {
@@ -265,6 +291,10 @@
                   "demoTitle": "${ .plan_demo.demoTitle // .prepare_preview.demoTitle // \"\" }",
                   "demoSummary": "${ .plan_demo.demoSummary // .prepare_preview.demoSummary // \"\" }",
                   "stepCount": "${ .plan_demo.stepCount // .prepare_preview.stepCount // 0 }",
+                  "annotationPlan": "${ .plan_demo_annotations.annotationPlan // null }",
+                  "annotationStyle": "${ .plan_demo_annotations.annotationStyle // \"feature-walkthrough\" }",
+                  "renderAnnotatedVideo": "${ .plan_demo_annotations.renderAnnotatedVideo // true }",
+                  "renderCaptions": "${ .plan_demo_annotations.renderCaptions // true }",
                   "timeoutMs": 900000
                 }
               }
@@ -276,14 +306,19 @@
               "artifactId": "${ .[\"preview_capture/try/validate\"].result.artifactId // \"\" }",
               "screenshots": "${ .[\"preview_capture/try/validate\"].result.screenshots // 0 }",
               "traceAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
-              "videoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
+              "videoAssetRef": "${ (((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video-annotated\"))[0].storageRef) // ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef)) // \"\" }",
+              "annotatedVideoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video-annotated\"))[0].storageRef) // \"\" }",
+              "rawVideoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
+              "captionAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"caption\"))[0].storageRef) // \"\" }",
               "artifact": "${ .[\"preview_capture/try/validate\"].result.artifact // null }",
               "error": "${ .[\"preview_capture/try/validate\"].result.error // .task.error // \"\" }",
               "phase": "${ .[\"preview_capture/try/validate\"].result.phase // \"\" }",
               "captureMode": "${ .[\"preview_capture/try/validate\"].result.captureMode // .prepare_preview.captureMode // \"validation\" }",
               "demoTitle": "${ .[\"preview_capture/try/validate\"].result.demoTitle // .prepare_preview.demoTitle // \"\" }",
               "demoSummary": "${ .[\"preview_capture/try/validate\"].result.demoSummary // .prepare_preview.demoSummary // \"\" }",
-              "stepCount": "${ .[\"preview_capture/try/validate\"].result.stepCount // .prepare_preview.stepCount // 0 }"
+              "stepCount": "${ .[\"preview_capture/try/validate\"].result.stepCount // .prepare_preview.stepCount // 0 }",
+              "annotationStyle": "${ .[\"preview_capture/try/validate\"].result.annotationStyle // .plan_demo_annotations.annotationStyle // \"feature-walkthrough\" }",
+              "annotationCount": "${ .[\"preview_capture/try/validate\"].result.annotationCount // .plan_demo_annotations.annotationCount // 0 }"
             }
           }
         }
@@ -382,33 +417,39 @@
       "data": { "label": "Plan Demo", "type": "call", "status": "idle", "enabled": true }
     },
     {
-      "id": "prepare_preview",
+      "id": "plan_demo_annotations",
       "type": "call",
       "position": { "x": 1600, "y": 120 },
+      "data": { "label": "Plan Annotations", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "prepare_preview",
+      "type": "call",
+      "position": { "x": 1820, "y": 120 },
       "data": { "label": "Prepare Preview", "type": "call", "status": "idle", "enabled": true }
     },
     {
       "id": "preview_route",
       "type": "switch",
-      "position": { "x": 1820, "y": 120 },
+      "position": { "x": 2040, "y": 120 },
       "data": { "label": "Preview?", "type": "switch", "status": "idle", "enabled": true }
     },
     {
       "id": "preview_capture",
       "type": "try",
-      "position": { "x": 2040, "y": 40 },
+      "position": { "x": 2260, "y": 40 },
       "data": { "label": "Capture UX", "type": "try", "status": "idle", "enabled": true }
     },
     {
       "id": "publish",
       "type": "call",
-      "position": { "x": 2040, "y": 220 },
+      "position": { "x": 2260, "y": 220 },
       "data": { "label": "Bootstrap PR", "type": "call", "status": "idle", "enabled": true }
     },
     {
       "id": "end",
       "type": "end",
-      "position": { "x": 2260, "y": 220 },
+      "position": { "x": 2480, "y": 220 },
       "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
     }
   ],
@@ -419,7 +460,8 @@
     { "id": "e-plan-scaffold", "source": "plan", "target": "scaffold" },
     { "id": "e-scaffold-review", "source": "scaffold", "target": "review" },
     { "id": "e-review-plan-demo", "source": "review", "target": "plan_demo" },
-    { "id": "e-plan-demo-prepare", "source": "plan_demo", "target": "prepare_preview" },
+    { "id": "e-plan-demo-annotations", "source": "plan_demo", "target": "plan_demo_annotations" },
+    { "id": "e-annotations-prepare", "source": "plan_demo_annotations", "target": "prepare_preview" },
     { "id": "e-prepare-route", "source": "prepare_preview", "target": "preview_route" },
     { "id": "e-route-preview", "source": "preview_route", "target": "preview_capture" },
     { "id": "e-route-publish", "source": "preview_route", "target": "publish" },

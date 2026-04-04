@@ -124,12 +124,22 @@
 		error?: string;
 	};
 	type BrowserAsset = {
-		kind: 'screenshot' | 'trace' | 'video';
+		kind: 'screenshot' | 'trace' | 'video' | 'video-annotated' | 'caption';
 		label: string;
 		storageRef: string;
 		contentType: string;
 		fileName?: string;
 		stepId?: string;
+	};
+	type BrowserAnnotationCue = {
+		id: string;
+		stepId?: string;
+		kind?: string;
+		title?: string;
+		body?: string;
+		startMs?: number;
+		endMs?: number;
+		durationMs?: number;
 	};
 	type BrowserArtifact = {
 		id: string;
@@ -496,6 +506,21 @@
 		return artifact.manifestJson.assets?.find((asset) => asset.kind === kind);
 	}
 
+	function primaryVideoAsset(artifact: BrowserArtifact): BrowserAsset | undefined {
+		return (
+			firstAssetByKind(artifact, 'video-annotated') ??
+			firstAssetByKind(artifact, 'video')
+		);
+	}
+
+	function rawVideoAsset(artifact: BrowserArtifact): BrowserAsset | undefined {
+		return firstAssetByKind(artifact, 'video');
+	}
+
+	function captionAsset(artifact: BrowserArtifact): BrowserAsset | undefined {
+		return firstAssetByKind(artifact, 'caption');
+	}
+
 	function metadataText(
 		artifact: BrowserArtifact,
 		key: string
@@ -510,6 +535,28 @@
 	): number | null {
 		const value = artifact.manifestJson.metadata?.[key];
 		return typeof value === 'number' && Number.isFinite(value) ? value : null;
+	}
+
+	function annotationCues(artifact: BrowserArtifact): BrowserAnnotationCue[] {
+		const value = artifact.manifestJson.metadata?.annotationPlan;
+		if (!value || typeof value !== 'object') return [];
+		const raw = (value as Record<string, unknown>).captions;
+		if (!Array.isArray(raw)) return [];
+		return raw
+			.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object')
+			.map((entry, index) => ({
+				id:
+					typeof entry.id === 'string' && entry.id.trim()
+						? entry.id.trim()
+						: `caption-${index + 1}`,
+				stepId: typeof entry.stepId === 'string' ? entry.stepId : undefined,
+				kind: typeof entry.kind === 'string' ? entry.kind : undefined,
+				title: typeof entry.title === 'string' ? entry.title : undefined,
+				body: typeof entry.body === 'string' ? entry.body : undefined,
+				startMs: typeof entry.startMs === 'number' ? entry.startMs : undefined,
+				endMs: typeof entry.endMs === 'number' ? entry.endMs : undefined,
+				durationMs: typeof entry.durationMs === 'number' ? entry.durationMs : undefined
+			}));
 	}
 
 	function asRecord(value: unknown): Record<string, unknown> | null {
@@ -874,10 +921,10 @@
 									{/if}
 								</div>
 
-								<div class="flex flex-wrap gap-3">
-									{#each artifact.manifestJson.assets ?? [] as asset}
-										{#if asset.kind === 'trace' || asset.kind === 'video'}
-											<a
+									<div class="flex flex-wrap gap-3">
+										{#each artifact.manifestJson.assets ?? [] as asset}
+											{#if asset.kind === 'trace' || asset.kind === 'video'}
+												<a
 												class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
 												href={browserBlobUrl(asset.storageRef)}
 												target="_blank"
@@ -888,11 +935,25 @@
 												{:else}
 													<Video size={12} />
 												{/if}
-												{asset.label}
-											</a>
-										{/if}
-									{/each}
-								</div>
+													{asset.label}
+												</a>
+											{:else if asset.kind === 'video-annotated' || asset.kind === 'caption'}
+												<a
+													class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+													href={browserBlobUrl(asset.storageRef)}
+													target="_blank"
+													rel="noreferrer"
+												>
+													{#if asset.kind === 'video-annotated'}
+														<Video size={12} />
+													{:else}
+														<FileArchive size={12} />
+													{/if}
+													{asset.label}
+												</a>
+											{/if}
+										{/each}
+									</div>
 
 								{#if metadataText(artifact, 'captureMode') === 'demo'}
 									<div class="rounded-lg border border-border bg-muted/30 p-3 text-sm">
@@ -908,15 +969,46 @@
 									</div>
 								{/if}
 
-									{#if firstAssetByKind(artifact, 'video')?.storageRef}
-										<!-- svelte-ignore a11y_media_has_caption -->
-										<video
-											class="w-full overflow-hidden rounded-lg border border-border bg-black"
-											src={browserBlobUrl(firstAssetByKind(artifact, 'video')?.storageRef ?? '')}
-										controls
-										preload="metadata"
-									></video>
-								{/if}
+										{#if primaryVideoAsset(artifact)?.storageRef}
+											<!-- svelte-ignore a11y_media_has_caption -->
+											<video
+												class="w-full overflow-hidden rounded-lg border border-border bg-black"
+												src={browserBlobUrl(primaryVideoAsset(artifact)?.storageRef ?? '')}
+												controls
+												preload="metadata"
+											>
+												{#if captionAsset(artifact)?.storageRef}
+													<track
+														default
+														kind="captions"
+														label="Feature walkthrough"
+														src={browserBlobUrl(captionAsset(artifact)?.storageRef ?? '')}
+														srclang="en"
+													/>
+												{/if}
+											</video>
+											{#if primaryVideoAsset(artifact)?.kind === 'video-annotated' && rawVideoAsset(artifact)?.storageRef}
+												<p class="text-xs text-muted-foreground">
+													Primary player uses the annotated demo. The raw recording is still available in the asset list.
+												</p>
+											{/if}
+										{/if}
+
+										{#if annotationCues(artifact).length > 0}
+											<div class="rounded-lg border border-border bg-muted/20 p-3">
+												<p class="text-sm font-medium">Feature Walkthrough</p>
+												<div class="mt-3 space-y-3">
+													{#each annotationCues(artifact) as cue}
+														<div class="space-y-1 text-sm">
+															<p class="font-medium">{cue.title || 'Annotation'}</p>
+															{#if cue.body}
+																<p class="text-muted-foreground">{cue.body}</p>
+															{/if}
+														</div>
+													{/each}
+												</div>
+											</div>
+									{/if}
 
 								<div class="grid gap-4 md:grid-cols-2">
 									{#each artifact.manifestJson.steps ?? [] as step}

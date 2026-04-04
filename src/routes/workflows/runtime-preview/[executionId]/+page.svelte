@@ -13,7 +13,7 @@
 	let statusMessage = $state('');
 
 	function previewId(): string {
-		return page.url.searchParams.get('previewId') ?? page.params.executionId;
+		return page.url.searchParams.get('previewId') ?? page.params.executionId ?? '';
 	}
 
 	async function startPreview() {

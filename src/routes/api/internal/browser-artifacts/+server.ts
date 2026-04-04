@@ -20,7 +20,7 @@ type ArtifactBody = {
 		storageRef?: string;
 	}>;
 	assets?: Array<{
-		kind: 'trace' | 'video' | 'screenshot';
+		kind: 'trace' | 'video' | 'video-annotated' | 'caption' | 'screenshot';
 		payloadBase64: string;
 		contentType?: string;
 		fileName?: string;

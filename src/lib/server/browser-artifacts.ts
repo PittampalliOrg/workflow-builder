@@ -27,7 +27,7 @@ export type WorkflowBrowserCaptureStep = {
 };
 
 export type WorkflowBrowserAsset = {
-	kind: 'screenshot' | 'trace' | 'video';
+	kind: 'screenshot' | 'trace' | 'video' | 'video-annotated' | 'caption';
 	label: string;
 	storageRef: string;
 	contentType: string;
@@ -60,7 +60,7 @@ export type WorkflowBrowserArtifactRecord = {
 };
 
 type SaveAssetInput = {
-	kind: 'screenshot' | 'trace' | 'video';
+	kind: 'screenshot' | 'trace' | 'video' | 'video-annotated' | 'caption';
 	label: string;
 	payloadBase64: string;
 	contentType?: string;
@@ -93,13 +93,15 @@ function toIsoString(input: string | Date): string {
 function deriveContentType(asset: SaveAssetInput): string {
 	if (asset.contentType?.trim()) return asset.contentType.trim();
 	if (asset.kind === 'trace') return 'application/zip';
-	if (asset.kind === 'video') return 'video/webm';
+	if (asset.kind === 'video' || asset.kind === 'video-annotated') return 'video/webm';
+	if (asset.kind === 'caption') return 'text/vtt; charset=utf-8';
 	return 'image/png';
 }
 
 function fileExtension(contentType: string, fileName?: string): string {
 	if (fileName?.includes('.')) return fileName.split('.').pop() || 'bin';
 	if (contentType === 'application/zip') return 'zip';
+	if (contentType.startsWith('text/vtt')) return 'vtt';
 	if (contentType.startsWith('video/')) return 'webm';
 	if (contentType === 'image/jpeg') return 'jpg';
 	return 'png';
@@ -180,12 +182,17 @@ function parseManifest(input: Record<string, unknown>): WorkflowBrowserArtifactM
 		steps: rawSteps.map((step, index) => parseStep(step, index)),
 		assets: rawAssets
 			.filter((asset): asset is Record<string, unknown> => Boolean(asset) && typeof asset === 'object')
-			.map((asset) => ({
-				kind:
-					asset.kind === 'trace' || asset.kind === 'video' ? asset.kind : 'screenshot',
-				label: typeof asset.label === 'string' && asset.label.trim() ? asset.label.trim() : 'Artifact',
-				storageRef: typeof asset.storageRef === 'string' ? asset.storageRef : '',
-				contentType: typeof asset.contentType === 'string' ? asset.contentType : 'application/octet-stream',
+				.map((asset) => ({
+					kind:
+						asset.kind === 'trace' ||
+						asset.kind === 'video' ||
+						asset.kind === 'video-annotated' ||
+						asset.kind === 'caption'
+							? asset.kind
+							: 'screenshot',
+					label: typeof asset.label === 'string' && asset.label.trim() ? asset.label.trim() : 'Artifact',
+					storageRef: typeof asset.storageRef === 'string' ? asset.storageRef : '',
+					contentType: typeof asset.contentType === 'string' ? asset.contentType : 'application/octet-stream',
 				fileName:
 					typeof asset.fileName === 'string' && asset.fileName.trim() ? asset.fileName.trim() : undefined,
 				stepId: typeof asset.stepId === 'string' && asset.stepId.trim() ? asset.stepId.trim() : undefined

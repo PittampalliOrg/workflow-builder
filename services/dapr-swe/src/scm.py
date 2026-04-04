@@ -246,6 +246,21 @@ def build_pr_body(
         video_ref = str(validation.get("videoAssetRef") or "").strip()
         if video_ref:
             parts.append(f"- Video: `{video_ref}`")
+        annotated_video_ref = str(validation.get("annotatedVideoAssetRef") or "").strip()
+        if annotated_video_ref:
+            parts.append(f"- Annotated Video: `{annotated_video_ref}`")
+        raw_video_ref = str(validation.get("rawVideoAssetRef") or "").strip()
+        if raw_video_ref:
+            parts.append(f"- Raw Video: `{raw_video_ref}`")
+        caption_ref = str(validation.get("captionAssetRef") or "").strip()
+        if caption_ref:
+            parts.append(f"- Captions: `{caption_ref}`")
+        annotation_style = str(validation.get("annotationStyle") or "").strip()
+        if annotation_style:
+            parts.append(f"- Annotation Style: {annotation_style}")
+        annotation_count = validation.get("annotationCount")
+        if isinstance(annotation_count, int) and annotation_count > 0:
+            parts.append(f"- Annotation Cues: {annotation_count}")
         validation_error = str(validation.get("error") or "").strip()
         if validation_error:
             parts.append(f"- Error: {validation_error}")
@@ -343,6 +358,21 @@ def build_greenfield_pr_body(
         video_ref = str(validation.get("videoAssetRef") or "").strip()
         if video_ref:
             parts.append(f"- Video: `{video_ref}`")
+        annotated_video_ref = str(validation.get("annotatedVideoAssetRef") or "").strip()
+        if annotated_video_ref:
+            parts.append(f"- Annotated Video: `{annotated_video_ref}`")
+        raw_video_ref = str(validation.get("rawVideoAssetRef") or "").strip()
+        if raw_video_ref:
+            parts.append(f"- Raw Video: `{raw_video_ref}`")
+        caption_ref = str(validation.get("captionAssetRef") or "").strip()
+        if caption_ref:
+            parts.append(f"- Captions: `{caption_ref}`")
+        annotation_style = str(validation.get("annotationStyle") or "").strip()
+        if annotation_style:
+            parts.append(f"- Annotation Style: {annotation_style}")
+        annotation_count = validation.get("annotationCount")
+        if isinstance(annotation_count, int) and annotation_count > 0:
+            parts.append(f"- Annotation Cues: {annotation_count}")
         validation_error = str(validation.get("error") or "").strip()
         if validation_error:
             parts.append(f"- Error: {validation_error}")

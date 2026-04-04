@@ -1492,10 +1492,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							});
 						} else if (isBrowserMaterializeChangeArtifact) {
 							targetUrl = `${functionUrl}/api/browser/materialize-change-artifact`;
-							requestBody = JSON.stringify({
-								executionId: workspaceExecutionId,
-								dbExecutionId: browserDbExecutionId,
-								workspaceRef: args.workspaceRef,
+								requestBody = JSON.stringify({
+									executionId: workspaceExecutionId,
+									dbExecutionId: browserDbExecutionId,
+									workspaceRef: args.workspaceRef,
 								sourceExecutionId: args.sourceExecutionId,
 								durableInstanceId: args.durableInstanceId,
 								preferredOperation: args.preferredOperation,
@@ -1558,12 +1558,25 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								captureTrace: args.captureTrace,
 								captureVideo: args.captureVideo,
 								viewportPreset: args.viewportPreset,
-								captureMode: args.captureMode,
-								demoTitle: args.demoTitle,
-								demoSummary: args.demoSummary,
-								stepCount: args.stepCount,
-								metadata:
-									typeof args.metadata === "string"
+									captureMode: args.captureMode,
+									demoTitle: args.demoTitle,
+									demoSummary: args.demoSummary,
+									stepCount: args.stepCount,
+									annotationPlan:
+										typeof args.annotationPlan === "string"
+											? (() => {
+													try {
+														return JSON.parse(args.annotationPlan);
+													} catch {
+														return args.annotationPlan;
+													}
+												})()
+											: args.annotationPlan,
+									annotationStyle: args.annotationStyle,
+									renderAnnotatedVideo: args.renderAnnotatedVideo,
+									renderCaptions: args.renderCaptions,
+									metadata:
+										typeof args.metadata === "string"
 										? (() => {
 												try {
 													return JSON.parse(args.metadata);

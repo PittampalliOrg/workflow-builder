@@ -279,6 +279,100 @@ def _normalize_demo_plan(raw_plan: Any, *, app_subdir: str = ".") -> dict[str, A
     return normalized
 
 
+def _default_annotation_plan(demo_plan: dict[str, Any]) -> dict[str, Any]:
+    title = str(demo_plan.get("title") or "Functional Demo").strip() or "Functional Demo"
+    summary = (
+        str(demo_plan.get("summary") or "").strip()
+        or "Walk through the visible feature changes and the value they add for the user."
+    )
+    captions = [
+        {
+            "id": "intro",
+            "stepId": str((demo_plan.get("steps") or [{}])[0].get("id") or "step-1"),
+            "kind": "title",
+            "title": title,
+            "body": summary,
+            "durationMs": 3200,
+        }
+    ]
+    for index, step in enumerate(_coerce_list(demo_plan.get("steps"))):
+        if not isinstance(step, dict):
+            continue
+        step_id = str(step.get("id") or f"step-{index + 1}").strip() or f"step-{index + 1}"
+        label = str(step.get("label") or f"Step {index + 1}").strip() or f"Step {index + 1}"
+        goal = str(step.get("goal") or "").strip()
+        if not goal and index == 0:
+            continue
+        captions.append(
+            {
+                "id": f"caption-{index + 1}",
+                "stepId": step_id,
+                "kind": "feature",
+                "title": label,
+                "body": goal or f"Demonstrates {label.lower()}.",
+                "durationMs": 2600,
+            }
+        )
+    return {
+        "title": title,
+        "summary": summary,
+        "style": "feature-walkthrough",
+        "captions": captions[:8],
+    }
+
+
+def _normalize_annotation_plan(raw_plan: Any, demo_plan: dict[str, Any]) -> dict[str, Any]:
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    normalized = _default_annotation_plan(demo_plan)
+    normalized["title"] = str(plan.get("title") or normalized["title"]).strip() or normalized["title"]
+    normalized["summary"] = str(plan.get("summary") or normalized["summary"]).strip() or normalized["summary"]
+    normalized["style"] = (
+        str(plan.get("style") or plan.get("annotationStyle") or "feature-walkthrough").strip().lower()
+        or "feature-walkthrough"
+    )
+
+    demo_steps = [
+        step
+        for step in _coerce_list(demo_plan.get("steps"))
+        if isinstance(step, dict)
+    ]
+    step_ids = {
+        str(step.get("id") or f"step-{index + 1}").strip() or f"step-{index + 1}"
+        for index, step in enumerate(demo_steps)
+    }
+    raw_captions = plan.get("captions") or plan.get("annotations")
+    captions: list[dict[str, Any]] = []
+    if isinstance(raw_captions, list):
+        for index, raw_caption in enumerate(raw_captions):
+            caption = raw_caption if isinstance(raw_caption, dict) else {}
+            step_id = str(caption.get("stepId") or "").strip()
+            if step_id and step_id not in step_ids:
+                step_id = ""
+            if not step_id and demo_steps:
+                fallback_index = min(index, len(demo_steps) - 1)
+                step_id = str(demo_steps[fallback_index].get("id") or f"step-{fallback_index + 1}").strip()
+            title = str(caption.get("title") or "").strip()
+            body = str(caption.get("body") or caption.get("text") or "").strip()
+            if not title and not body:
+                continue
+            try:
+                duration_value = int(caption.get("durationMs") or caption.get("duration_ms") or 0)
+            except Exception:
+                duration_value = 0
+            captions.append(
+                {
+                    "id": str(caption.get("id") or f"caption-{index + 1}").strip() or f"caption-{index + 1}",
+                    "stepId": step_id,
+                    "kind": str(caption.get("kind") or "feature").strip().lower() or "feature",
+                    "title": title,
+                    "body": body,
+                    "durationMs": duration_value if duration_value > 0 else 2600,
+                }
+            )
+    normalized["captions"] = captions or normalized["captions"]
+    return normalized
+
+
 def _extract_validation_asset_ref(data: dict[str, Any], *, kind: str) -> str:
     trace_assets = [
         asset
@@ -310,6 +404,14 @@ def _extract_validation_summary(value: Any) -> dict[str, Any]:
         asset for asset in assets
         if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == "video"
     ]
+    annotated_video_assets = [
+        asset for asset in assets
+        if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == "video-annotated"
+    ]
+    caption_assets = [
+        asset for asset in assets
+        if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == "caption"
+    ]
     steps = _coerce_list(artifact.get("steps") or artifact_manifest.get("steps") or data.get("steps"))
     screenshot_count = data.get("screenshots")
     if not isinstance(screenshot_count, int):
@@ -332,11 +434,26 @@ def _extract_validation_summary(value: Any) -> dict[str, Any]:
         "demoTitle": str(data.get("demoTitle") or artifact_manifest.get("metadata", {}).get("demoTitle") or "").strip(),
         "demoSummary": str(data.get("demoSummary") or artifact_manifest.get("metadata", {}).get("demoSummary") or "").strip(),
         "stepCount": int(data.get("stepCount") or len(steps) or 0),
+        "annotationStyle": str(data.get("annotationStyle") or artifact_manifest.get("metadata", {}).get("annotationStyle") or "").strip(),
+        "annotationCount": int(data.get("annotationCount") or artifact_manifest.get("metadata", {}).get("annotationCount") or 0),
+        "captionAssetRef": str(data.get("captionAssetRef") or "").strip(),
+        "annotatedVideoAssetRef": str(data.get("annotatedVideoAssetRef") or "").strip(),
+        "rawVideoAssetRef": str(data.get("rawVideoAssetRef") or "").strip(),
     }
     if trace_assets and not summary["traceAssetRef"]:
         summary["traceAssetRef"] = str(trace_assets[0].get("storageRef") or "").strip()
     if video_assets and not summary["videoAssetRef"]:
         summary["videoAssetRef"] = str(video_assets[0].get("storageRef") or "").strip()
+    if annotated_video_assets and not summary["annotatedVideoAssetRef"]:
+        summary["annotatedVideoAssetRef"] = str(annotated_video_assets[0].get("storageRef") or "").strip()
+    if video_assets and not summary["rawVideoAssetRef"]:
+        summary["rawVideoAssetRef"] = str(video_assets[0].get("storageRef") or "").strip()
+    if caption_assets and not summary["captionAssetRef"]:
+        summary["captionAssetRef"] = str(caption_assets[0].get("storageRef") or "").strip()
+    if summary["annotatedVideoAssetRef"]:
+        summary["videoAssetRef"] = summary["annotatedVideoAssetRef"]
+    elif summary["rawVideoAssetRef"] and not summary["videoAssetRef"]:
+        summary["videoAssetRef"] = summary["rawVideoAssetRef"]
     if not summary["error"]:
         summary["error"] = str(artifact.get("error") or "").strip()
     return summary
@@ -349,6 +466,8 @@ def _resolve_validation_summary(input_data: dict, node_outputs: dict) -> dict[st
         or int(summary.get("screenshots") or 0) > 0
         or summary.get("traceAssetRef")
         or summary.get("videoAssetRef")
+        or summary.get("annotatedVideoAssetRef")
+        or summary.get("captionAssetRef")
     ):
         return summary
     raw_summary = _extract_validation_summary(node_outputs.get("preview_capture/try/validate"))
@@ -357,6 +476,8 @@ def _resolve_validation_summary(input_data: dict, node_outputs: dict) -> dict[st
         or int(raw_summary.get("screenshots") or 0) > 0
         or raw_summary.get("traceAssetRef")
         or raw_summary.get("videoAssetRef")
+        or raw_summary.get("annotatedVideoAssetRef")
+        or raw_summary.get("captionAssetRef")
     ):
         return raw_summary
     return summary
@@ -391,6 +512,21 @@ def _render_validation_lines(validation: dict[str, Any]) -> list[str]:
     video_ref = str(validation.get("videoAssetRef") or "").strip()
     if video_ref:
         lines.append(f"- Video: `{video_ref}`")
+    annotated_video_ref = str(validation.get("annotatedVideoAssetRef") or "").strip()
+    if annotated_video_ref:
+        lines.append(f"- Annotated Video: `{annotated_video_ref}`")
+    raw_video_ref = str(validation.get("rawVideoAssetRef") or "").strip()
+    if raw_video_ref:
+        lines.append(f"- Raw Video: `{raw_video_ref}`")
+    caption_ref = str(validation.get("captionAssetRef") or "").strip()
+    if caption_ref:
+        lines.append(f"- Captions: `{caption_ref}`")
+    annotation_style = str(validation.get("annotationStyle") or "").strip()
+    if annotation_style:
+        lines.append(f"- Annotation Style: {annotation_style}")
+    annotation_count = validation.get("annotationCount")
+    if isinstance(annotation_count, int) and annotation_count > 0:
+        lines.append(f"- Annotation Cues: {annotation_count}")
     error = str(validation.get("error") or "").strip()
     if error:
         lines.append(f"- Error: {error}")
@@ -511,6 +647,70 @@ def _generate_demo_plan_with_agent(
         name="DemoPlannerAgent",
         role="Product Demo Planner",
         goal="Generate a deterministic browser walkthrough plan for the changed functionality",
+        system_prompt=system_prompt,
+        llm=resolve_llm_client(model),
+        tools=tools,
+        execution=AgentExecutionConfig(max_iterations=8, tool_choice="auto"),
+    )
+    result = asyncio.run(agent.run(prompt))
+    return _parse_json_object(result.content if result else "")
+
+
+def _generate_demo_annotations_with_agent(
+    *,
+    sandbox: OpenShellBackend,
+    issue_context: dict[str, Any],
+    plan: dict[str, Any],
+    review: dict[str, Any],
+    changed_files: list[str],
+    demo_plan: dict[str, Any],
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    from dapr_agents import Agent
+    from dapr_agents.agents.configs import AgentExecutionConfig
+    from src.agents.planner import make_planner_tools
+    from src.config import LLM_MODEL_ID
+    from src.llm_providers import resolve_llm_client
+
+    model = model_override or LLM_MODEL_ID
+    tools = make_planner_tools(sandbox)
+    changed_files_block = "\n".join(f"- {path}" for path in changed_files[:25]) or "- No changed files detected"
+    review_feedback = str(review.get("feedback") or "").strip() or "No automated review feedback."
+    prompt = "\n".join(
+        [
+            f"Issue: {issue_context.get('title', 'Untitled')}",
+            issue_context.get("body", ""),
+            "",
+            f"Repository: {issue_context.get('owner', '')}/{issue_context.get('repo', '')}",
+            f"Working directory: {issue_context.get('working_dir', '/sandbox')}",
+            "",
+            f"Implementation summary: {plan.get('summary', '')}",
+            "Changed files:",
+            changed_files_block,
+            "",
+            f"Automated review feedback: {review_feedback}",
+            "",
+            "Demo plan JSON:",
+            json.dumps(demo_plan, indent=2),
+            "",
+            "Produce user-facing demo annotations as JSON only.",
+            "Return an object with keys: title, summary, style, captions.",
+            "Set style to feature-walkthrough.",
+            "Each caption must be an object with: id, stepId, kind, title, body, durationMs.",
+            "Keep captions short, product-facing, and understandable to a non-technical viewer.",
+            "Describe what the viewer is seeing and why it matters, not implementation details.",
+            "Annotate only meaningful feature moments, not every browser action.",
+        ]
+    )
+    system_prompt = (
+        "You are a product demo narrator. Study the codebase using the tools and produce only valid JSON. "
+        "Your output must explain the user-visible feature changes in a short, readable demo. "
+        "Do not include markdown fences."
+    )
+    agent = Agent(
+        name="DemoAnnotationPlannerAgent",
+        role="Product Demo Annotation Planner",
+        goal="Generate concise feature-walkthrough captions for a deterministic product demo",
         system_prompt=system_prompt,
         llm=resolve_llm_client(model),
         tools=tools,
@@ -1620,6 +1820,74 @@ def handle_plan_demo(input_data: dict, node_outputs: dict) -> dict:
     }
 
 
+def handle_plan_demo_annotations(input_data: dict, node_outputs: dict) -> dict:
+    """Infer user-facing annotations for the deterministic demo walkthrough."""
+    sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
+    working_dir = _resolve(input_data, node_outputs, "working_dir")
+    if not sandbox_id or not working_dir:
+        return {"success": False, "data": {}, "error": "Missing required fields: sandbox_id, working_dir"}
+
+    sandbox = _reconnect_sandbox(str(sandbox_id))
+    issue_context: dict[str, Any] = {}
+    for key in ("owner", "repo", "issue_number", "title", "body", "working_dir"):
+        val = _resolve(input_data, node_outputs, key)
+        if val is not None:
+            issue_context[key] = val
+    issue_context.setdefault("working_dir", working_dir)
+
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
+    review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+    demo_plan = _normalize_demo_plan(
+        _coerce_mapping(_resolve(input_data, node_outputs, "demoPlan") or _resolve(input_data, node_outputs, "demo_plan")),
+        app_subdir=".",
+    )
+    model = _resolve(input_data, node_outputs, "model")
+    changed_files = _collect_changed_files(sandbox, str(working_dir))
+    default_plan = _default_annotation_plan(demo_plan)
+    try:
+        inferred = _generate_demo_annotations_with_agent(
+            sandbox=sandbox,
+            issue_context=issue_context,
+            plan=plan,
+            review=review,
+            changed_files=changed_files,
+            demo_plan=demo_plan,
+            model_override=str(model).strip() if model else None,
+        )
+        annotation_plan = _normalize_annotation_plan(inferred, demo_plan)
+        planning_error = ""
+    except Exception as exc:
+        logger.exception("Demo annotation planner failed")
+        annotation_plan = default_plan
+        planning_error = str(exc)
+
+    wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
+    if wb_exec_id and dapr_instance_id:
+        post_agent_event(
+            wb_exec_id,
+            dapr_instance_id,
+            "demo_annotations_created",
+            {
+                "phase": "preview_planning",
+                "annotationStyle": annotation_plan.get("style", "feature-walkthrough"),
+                "annotationCount": len(_coerce_list(annotation_plan.get("captions"))),
+            },
+        )
+
+    return {
+        "success": True,
+        "data": {
+            "annotationPlan": annotation_plan,
+            "annotationStyle": str(annotation_plan.get("style") or "feature-walkthrough"),
+            "annotationCount": len(_coerce_list(annotation_plan.get("captions"))),
+            "renderAnnotatedVideo": True,
+            "renderCaptions": True,
+            "planningError": planning_error,
+        },
+        "error": None,
+    }
+
+
 def handle_greenfield_scaffold(input_data: dict, node_outputs: dict) -> dict:
     """Scaffold a new SvelteKit app in the target repository."""
     from src.agents.developer import run_developer
@@ -1998,12 +2266,17 @@ def handle_report_preview(input_data: dict, node_outputs: dict) -> dict:
         "screenshots": validation.get("screenshots"),
         "traceAssetRef": validation.get("traceAssetRef"),
         "videoAssetRef": validation.get("videoAssetRef"),
+        "annotatedVideoAssetRef": validation.get("annotatedVideoAssetRef"),
+        "rawVideoAssetRef": validation.get("rawVideoAssetRef"),
+        "captionAssetRef": validation.get("captionAssetRef"),
         "error": validation.get("error"),
         "appSubdir": app_subdir,
         "captureMode": validation.get("captureMode") or str(_resolve(input_data, node_outputs, "captureMode") or "validation"),
         "demoTitle": validation.get("demoTitle") or str(_resolve(input_data, node_outputs, "demoTitle") or ""),
         "demoSummary": validation.get("demoSummary") or str(_resolve(input_data, node_outputs, "demoSummary") or ""),
         "stepCount": validation.get("stepCount") or int(_resolve(input_data, node_outputs, "stepCount") or 0),
+        "annotationStyle": validation.get("annotationStyle") or str(_resolve(input_data, node_outputs, "annotationStyle") or ""),
+        "annotationCount": validation.get("annotationCount") or int(_resolve(input_data, node_outputs, "annotationCount") or 0),
     }
     update_execution_status(wb_exec_id, phase, progress)
     post_agent_event(wb_exec_id, dapr_instance_id, event_type, payload)
@@ -2159,6 +2432,7 @@ ACTION_HANDLERS: dict[str, Any] = {
     "dapr-swe/solve": handle_solve,
     "dapr-swe/greenfield-plan": handle_greenfield_plan,
     "dapr-swe/plan-demo": handle_plan_demo,
+    "dapr-swe/plan-demo-annotations": handle_plan_demo_annotations,
     "dapr-swe/greenfield-scaffold": handle_greenfield_scaffold,
     "dapr-swe/greenfield-publish": handle_greenfield_publish,
     "dapr-swe/prepare-preview": handle_prepare_preview,
