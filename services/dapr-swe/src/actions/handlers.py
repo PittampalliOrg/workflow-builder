@@ -428,6 +428,128 @@ def _infer_heuristic_demo_plan(
     return None
 
 
+def _source_contains_selector(source_text: str, selector: str) -> bool:
+    if not selector:
+        return False
+    checks = {
+        "#ev-title": 'id="ev-title"' in source_text,
+        "#ev-desc": 'id="ev-desc"' in source_text,
+        ".calendar": 'class="calendar"' in source_text or 'class:calendar' in source_text,
+        ".calendar-grid": "calendar-grid" in source_text,
+        ".agenda": 'class="agenda"' in source_text,
+        ".agenda-header .add-btn": "agenda-header" in source_text and "add-btn" in source_text,
+        ".modal": 'class="modal"' in source_text,
+        ".modal-form": "modal-form" in source_text,
+        ".modal-form textarea": "modal-form" in source_text and "<textarea" in source_text,
+        ".modal-form input[type='text']": "modal-form" in source_text and 'type="text"' in source_text,
+        ".today-button": "today-button" in source_text,
+        ".month-label": "month-label" in source_text,
+        ".event-card": "event-card" in source_text,
+        ".filter-chip": "filter-chip" in source_text,
+        ".filter-chip:first-child": "filter-chip" in source_text,
+        ".filter-chip.active:first-child": "filter-chip" in source_text,
+        ".filter-chip:first-child:not(.active)": "filter-chip" in source_text,
+        ".modal-footer .btn-primary": "modal-footer" in source_text and "btn-primary" in source_text,
+        ".modal-footer .btn-secondary": "modal-footer" in source_text and "btn-secondary" in source_text,
+        'button[aria-label="Next month"]': 'aria-label="Next month"' in source_text,
+        'button[aria-label="Previous month"]': 'aria-label="Previous month"' in source_text,
+    }
+    return checks.get(selector, False)
+
+
+def _preferred_selector_for_step(step: dict[str, Any], source_text: str) -> str:
+    action = str(step.get("action") or "").strip().lower()
+    label = str(step.get("label") or "").strip().lower()
+    goal = str(step.get("goal") or "").strip().lower()
+    text = str(step.get("text") or "").strip().lower()
+    success = str(step.get("successCriteria") or "").strip().lower()
+    combined = " ".join(part for part in (label, goal, text, success) if part)
+
+    candidates: list[str] = []
+
+    if action == "fill":
+        if "description" in combined:
+            candidates.extend(["#ev-desc", ".modal-form textarea"])
+        elif "title" in combined or "name" in combined:
+            candidates.extend(["#ev-title", ".modal-form input[type='text']"])
+    elif action == "click":
+        if "next month" in combined:
+            candidates.append('button[aria-label="Next month"]')
+        if "previous month" in combined or "prev month" in combined:
+            candidates.append('button[aria-label="Previous month"]')
+        if "today" in combined:
+            candidates.append(".today-button")
+        if "new event" in combined or "open event modal" in combined or "open the event creation modal" in combined:
+            candidates.append(".agenda-header .add-btn")
+        if "create event" in combined or "submit" in combined:
+            candidates.append(".modal-footer .btn-primary")
+        if "remove" in combined or "delete" in combined:
+            candidates.append(".event-card button")
+        if "work" in combined and "filter" in combined:
+            candidates.extend([".filter-chip:first-child", ".filter-chip.active:first-child", ".filter-chip:first-child:not(.active)"])
+    elif action == "assert":
+        if "agenda" in combined or "event card" in combined:
+            candidates.append(".event-card")
+        if "modal" in combined:
+            candidates.append(".modal")
+        if "calendar" in combined or "grid" in combined:
+            candidates.append(".calendar-grid")
+    elif action == "scroll":
+        candidates.extend([".calendar-grid", ".calendar"])
+    elif action == "visit":
+        candidates.extend([".calendar-grid", ".calendar"])
+
+    for selector in candidates:
+        if _source_contains_selector(source_text, selector):
+            return selector
+    return ""
+
+
+def _enrich_demo_plan_selectors(demo_plan: dict[str, Any], source_map: dict[str, str]) -> dict[str, Any]:
+    source_text = "\n".join(source_map.values())
+    if not source_text:
+        return demo_plan
+    steps = [
+        dict(step)
+        for step in _coerce_list(demo_plan.get("steps"))
+        if isinstance(step, dict)
+    ]
+    if not steps:
+        return demo_plan
+
+    enriched_steps: list[dict[str, Any]] = []
+    for step in steps:
+        current_selector = str(step.get("selector") or "").strip()
+        preferred = _preferred_selector_for_step(step, source_text)
+        if preferred:
+            if not current_selector or current_selector in {
+                "input",
+                "textarea",
+                ".event-card button",
+            }:
+                step["selector"] = preferred
+            if not str(step.get("waitForSelector") or "").strip() and preferred in {
+                ".calendar",
+                ".calendar-grid",
+                ".agenda",
+                ".event-card",
+                ".modal",
+                "#ev-title",
+                "#ev-desc",
+                ".today-button",
+                ".month-label",
+                ".filter-chip:first-child",
+                ".filter-chip.active:first-child",
+                ".filter-chip:first-child:not(.active)",
+            }:
+                step["waitForSelector"] = preferred
+        if str(step.get("selector") or "").strip() == ".modal-footer .btn-primary":
+            step["waitForSelector"] = str(step.get("waitForSelector") or ".event-card")
+        enriched_steps.append(step)
+
+    return {**demo_plan, "steps": enriched_steps}
+
+
 def _parse_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if not raw:
@@ -897,7 +1019,9 @@ def _generate_demo_plan_with_agent(
             "Allowed actions: visit, click, fill, press, wait, assert, scroll.",
             "If the UI supports interaction, include at least 4 steps and at least 2 interaction steps.",
             "Avoid a single homepage visit unless the application truly has no meaningful interaction to demonstrate.",
-            "Prefer reliable selectors or visible text. Keep the demo short and user-facing.",
+            "Prefer CSS selectors, ids, classes, or aria-label selectors over visible-text targeting when the code exposes them.",
+            "Use visible text only when a stable selector is not discoverable from the changed code.",
+            "Keep the demo short and user-facing.",
         ]
     )
     system_prompt = (
@@ -2071,6 +2195,7 @@ def handle_plan_demo(input_data: dict, node_outputs: dict) -> dict:
                 planning_error = f"{planning_error}; applied heuristic demo plan"
             else:
                 planning_error = "Applied heuristic demo plan"
+    demo_plan = _enrich_demo_plan_selectors(demo_plan, source_map)
 
     wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
     if wb_exec_id and dapr_instance_id:
