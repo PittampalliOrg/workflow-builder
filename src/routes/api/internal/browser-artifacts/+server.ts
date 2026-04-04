@@ -35,7 +35,26 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Unauthorized' }, { status: 401 });
 	}
 
-	const body = (await request.json().catch(() => ({}))) as ArtifactBody;
+	let body: ArtifactBody;
+	try {
+		body = (await request.json()) as ArtifactBody;
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : 'Invalid JSON payload';
+		const payloadTooLarge =
+			detail.includes('Payload Too Large') ||
+			detail.includes('exceeds limit') ||
+			detail.includes('request body size exceeded');
+		return json(
+			{
+				error: payloadTooLarge
+					? 'Browser artifact payload too large'
+					: 'Invalid JSON payload',
+				detail
+			},
+			{ status: payloadTooLarge ? 413 : 400 }
+		);
+	}
+
 	if (!body.workflowExecutionId || !body.workflowId || !body.nodeId) {
 		return json(
 			{ error: 'workflowExecutionId, workflowId, and nodeId are required' },
