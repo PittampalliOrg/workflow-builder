@@ -74,6 +74,24 @@
 			y: window.innerHeight / 2
 		});
 		const id = store.addNode('call', position, fn.displayName);
+		if (fn.sourceKind === 'code') {
+			const codeFunction = (definition.codeFunction as Record<string, unknown> | undefined) || {};
+			store.updateNodeData(id, {
+				taskConfig: (definition.taskConfig as Record<string, unknown>) || {},
+				codeFunction: {
+					id: (codeFunction.id as string | undefined) || '',
+					name: (codeFunction.name as string | undefined) || fn.displayName,
+					slug: (codeFunction.slug as string | undefined) || fn.name,
+					language: (codeFunction.language as string | undefined) || fn.language || 'typescript',
+					entrypoint: (codeFunction.entrypoint as string | undefined) || fn.actionName,
+					version: (codeFunction.version as string | undefined) || fn.version,
+					path: (codeFunction.path as string | undefined) || null,
+				},
+				codeFunctionDefinition: definition,
+			});
+			return;
+		}
+
 		store.updateNodeData(id, {
 			taskConfig: definition,
 			catalogFunction: {
@@ -135,7 +153,7 @@
 					<div class="rounded p-1 bg-violet-100 text-violet-600 dark:bg-violet-900 dark:text-violet-400">
 						<Blocks size={12} />
 					</div>
-					<span class="text-foreground">Integrations</span>
+					<span class="text-foreground">Functions</span>
 				</button>
 			</div>
 		{/if}

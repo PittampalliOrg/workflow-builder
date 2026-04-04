@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: code-parser
+  namespace: workflow-builder
+  labels:
+    app: code-parser
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: code-parser
+  template:
+    metadata:
+      labels:
+        app: code-parser
+    spec:
+      serviceAccountName: workflow-builder
+      imagePullSecrets:
+        - name: ghcr-pull-credentials
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: code-parser
+          image: gitea.cnoe.localtest.me/giteaadmin/code-parser:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "8080"
+            - name: RUST_LOG
+              value: info
+            - name: OTEL_SERVICE_NAME
+              value: code-parser
+          envFrom:
+            - configMapRef:
+                name: workflow-builder-otel-config
+            - secretRef:
+                name: workflow-builder-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: code-parser
+  namespace: workflow-builder
+  labels:
+    app: code-parser
+spec:
+  selector:
+    app: code-parser
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

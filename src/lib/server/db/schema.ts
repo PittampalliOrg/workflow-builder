@@ -2060,6 +2060,7 @@ export const agentProfileAppliedHistory = pgTable(
  * - http: External HTTP webhook
  */
 export type FunctionExecutionType = "builtin" | "oci" | "http";
+export type CodeFunctionLanguage = "typescript" | "python";
 
 /**
  * Function execution status
@@ -2148,6 +2149,86 @@ export const functions = pgTable("functions", {
 });
 
 /**
+ * Code functions table - stores parser-backed authored TS/Python functions.
+ */
+export const codeFunctions = pgTable("code_functions", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => generateId()),
+	name: text("name").notNull(),
+	slug: text("slug").notNull().unique(),
+	description: text("description"),
+	version: text("version").notNull().default("0.1.0"),
+	language: text("language").notNull().$type<CodeFunctionLanguage>(),
+	entrypoint: text("entrypoint").notNull().default("main"),
+	path: text("path"),
+	source: text("source").notNull(),
+	// biome-ignore lint/suspicious/noExplicitAny: map of relative file path -> source text
+	supportingFiles: jsonb("supporting_files").$type<Record<string, string>>(),
+	sourceHash: text("source_hash").notNull(),
+	// biome-ignore lint/suspicious/noExplicitAny: semantic parser payload is JSONB
+	semanticModel: jsonb("semantic_model").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated JSON Schema
+	inputSchema: jsonb("input_schema").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated semantic type payload
+	returnType: jsonb("return_type").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated import list
+	imports: jsonb("imports").$type<any[]>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated diagnostics list
+	diagnostics: jsonb("diagnostics").$type<any[]>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
+	capabilities: jsonb("capabilities").$type<any>(),
+	latestPublishedVersion: text("latest_published_version"),
+	lastPublishedAt: timestamp("last_published_at"),
+	isEnabled: boolean("is_enabled").notNull().default(true),
+	createdAt: timestamp("created_at").notNull().defaultNow(),
+	updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	createdBy: text("created_by").references(() => users.id),
+});
+
+/**
+ * Immutable published revisions for parser-backed code functions.
+ */
+export const codeFunctionRevisions = pgTable("code_function_revisions", {
+	id: text("id")
+		.primaryKey()
+		.$defaultFn(() => generateId()),
+	codeFunctionId: text("code_function_id")
+		.notNull()
+		.references(() => codeFunctions.id, { onDelete: "cascade" }),
+	version: text("version").notNull(),
+	name: text("name").notNull(),
+	slug: text("slug").notNull(),
+	description: text("description"),
+	language: text("language").notNull().$type<CodeFunctionLanguage>(),
+	entrypoint: text("entrypoint").notNull().default("main"),
+	path: text("path"),
+	source: text("source").notNull(),
+	// biome-ignore lint/suspicious/noExplicitAny: map of relative file path -> source text
+	supportingFiles: jsonb("supporting_files").$type<Record<string, string>>(),
+	sourceHash: text("source_hash").notNull(),
+	// biome-ignore lint/suspicious/noExplicitAny: semantic parser payload is JSONB
+	semanticModel: jsonb("semantic_model").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated JSON Schema
+	inputSchema: jsonb("input_schema").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated semantic type payload
+	returnType: jsonb("return_type").$type<any>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated import list
+	imports: jsonb("imports").$type<any[]>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated diagnostics list
+	diagnostics: jsonb("diagnostics").$type<any[]>(),
+	// biome-ignore lint/suspicious/noExplicitAny: parser-generated capability flags
+	capabilities: jsonb("capabilities").$type<any>(),
+	publishedAt: timestamp("published_at").notNull().defaultNow(),
+	createdBy: text("created_by").references(() => users.id),
+}, (table) => ({
+	codeFunctionVersionIdx: unique("uq_code_function_revision_version").on(
+		table.codeFunctionId,
+		table.version
+	),
+}));
+
+/**
  * Function executions table - tracks individual function invocations
  */
 export const functionExecutions = pgTable("function_executions", {
@@ -2201,6 +2282,24 @@ export const functionsRelations = relations(functions, ({ one, many }) => ({
 	executions: many(functionExecutions),
 }));
 
+export const codeFunctionsRelations = relations(codeFunctions, ({ one }) => ({
+	createdByUser: one(users, {
+		fields: [codeFunctions.createdBy],
+		references: [users.id],
+	}),
+}));
+
+export const codeFunctionRevisionsRelations = relations(codeFunctionRevisions, ({ one }) => ({
+	codeFunction: one(codeFunctions, {
+		fields: [codeFunctionRevisions.codeFunctionId],
+		references: [codeFunctions.id],
+	}),
+	createdByUser: one(users, {
+		fields: [codeFunctionRevisions.createdBy],
+		references: [users.id],
+	}),
+}));
+
 export const functionExecutionsRelations = relations(
 	functionExecutions,
 	({ one }) => ({
@@ -2218,6 +2317,10 @@ export const functionExecutionsRelations = relations(
 // Export types for functions
 export type Function = typeof functions.$inferSelect;
 export type NewFunction = typeof functions.$inferInsert;
+export type CodeFunction = typeof codeFunctions.$inferSelect;
+export type NewCodeFunction = typeof codeFunctions.$inferInsert;
+export type CodeFunctionRevision = typeof codeFunctionRevisions.$inferSelect;
+export type NewCodeFunctionRevision = typeof codeFunctionRevisions.$inferInsert;
 export type FunctionExecution = typeof functionExecutions.$inferSelect;
 export type NewFunctionExecution = typeof functionExecutions.$inferInsert;
 

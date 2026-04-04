@@ -72,12 +72,19 @@ export function getDurableAgentUrl(): string {
 	);
 }
 
+/** Get the code runtime base URL */
+export function getCodeRuntimeUrl(): string {
+	return env.CODE_RUNTIME_URL || 'http://code-runtime.workflow-builder.svc.cluster.local:8080';
+}
+
 /** Get the fn-activepieces base URL */
 export function getFnActivepiecesUrl(): string {
-	return (
-		env.FN_ACTIVEPIECES_URL ||
-		'http://fn-activepieces.workflow-builder.svc.cluster.local:8080'
-	);
+	const url = env.FN_ACTIVEPIECES_URL || 'http://fn-activepieces.workflow-builder.svc.cluster.local:8080';
+	// Ensure port is present (env var from K8s service discovery may omit it)
+	if (url.startsWith('http://') && !url.match(/:\d+$/)) {
+		return `${url}:8080`;
+	}
+	return url;
 }
 
 // ---------------------------------------------------------------------------
@@ -104,6 +111,11 @@ export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
 		{
 			id: 'fn-activepieces',
 			getBaseUrl: getFnActivepiecesUrl,
+			introspectPath: '/api/runtime/introspect',
+		},
+		{
+			id: 'code-runtime',
+			getBaseUrl: getCodeRuntimeUrl,
 			introspectPath: '/api/runtime/introspect',
 		},
 	];

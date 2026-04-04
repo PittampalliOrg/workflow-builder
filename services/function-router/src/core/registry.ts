@@ -16,6 +16,8 @@ const REGISTRY_FILE_PATH =
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
+	code: { appId: "code-runtime", type: "knative" },
+	"code/*": { appId: "code-runtime", type: "knative" },
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
@@ -30,6 +32,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  * only defines a broad "_default" mapping.
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
+	code: { appId: "code-runtime", type: "knative" },
+	"code/*": { appId: "code-runtime", type: "knative" },
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },

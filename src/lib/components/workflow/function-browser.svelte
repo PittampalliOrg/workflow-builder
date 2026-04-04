@@ -2,7 +2,7 @@
 	import { Dialog, DialogContent, DialogHeader, DialogTitle } from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Badge } from '$lib/components/ui/badge';
-	import { Loader2, Search, Blocks } from 'lucide-svelte';
+	import { Loader2, Search, Blocks, Code2 } from 'lucide-svelte';
 	import { createCatalogStore, type CatalogFunction } from '$lib/stores/catalog.svelte';
 
 	interface Props {
@@ -53,14 +53,14 @@
 		<DialogHeader>
 			<DialogTitle class="flex items-center gap-2 text-sm">
 				<Blocks size={16} />
-				Add Integration
+				Add Function
 			</DialogTitle>
 		</DialogHeader>
 
 		<div class="relative">
 			<Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
 			<Input
-				placeholder="Search integrations..."
+				placeholder="Search integrations and code functions..."
 				bind:value={query}
 				class="pl-8 text-xs"
 				autofocus
@@ -76,7 +76,7 @@
 				<p class="py-8 text-center text-xs text-muted-foreground">{catalog.error}</p>
 			{:else if groups.length === 0}
 				<p class="py-8 text-center text-xs text-muted-foreground">
-					{query ? `No integrations matching "${query}"` : 'No integrations available'}
+					{query ? `No functions matching "${query}"` : 'No functions available'}
 				</p>
 			{:else}
 				<p class="mb-2 text-[10px] text-muted-foreground">
@@ -91,7 +91,7 @@
 							</h3>
 						</div>
 						<div class="space-y-0.5">
-							{#each group.functions as fn (fn.name)}
+							{#each group.functions as fn (`${fn.pieceName}:${fn.name}:${fn.version}`)}
 								<button
 									class="flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-accent disabled:opacity-50"
 									onclick={() => handleSelect(fn)}
@@ -100,6 +100,12 @@
 									<div class="min-w-0 flex-1">
 										<div class="flex items-center gap-1.5">
 											<span class="text-xs font-medium">{fn.displayName}</span>
+											{#if fn.sourceKind === 'code'}
+												<Badge variant="secondary" class="gap-1 text-[9px]">
+													<Code2 size={10} />
+													{fn.language}
+												</Badge>
+											{/if}
 											{#if selecting === fn.name}
 												<Loader2 size={10} class="animate-spin" />
 											{/if}

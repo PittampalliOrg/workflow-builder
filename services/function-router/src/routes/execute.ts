@@ -28,6 +28,7 @@ import {
 	fetchCredentialsWithAudit,
 	fetchRawConnectionValue,
 } from "../core/credential-service.js";
+import { resolveCodeFunctionExecution } from "../core/code-functions.js";
 import {
 	logExecutionComplete,
 	logExecutionStart,
@@ -1972,6 +1973,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 					}
 				} else {
 					const isApRoute = target.appId === "fn-activepieces";
+					const isCodeRoute =
+						target.appId === "code-runtime" || pluginId === "code";
 					const parsedConnectionExternalId =
 						parseConnectionExternalIdFromAuthTemplate(body.input?.auth);
 					const connectionExternalId =
@@ -2025,163 +2028,268 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 						};
 					}
 
-					// Pre-fetch credentials
-					const credentialStartTime = Date.now();
-					let credentialsRaw: unknown | undefined;
+					if (isCodeRoute) {
+						let runtimeRequest:
+							| {
+									language: "typescript" | "python";
+									source: string;
+									entrypoint: string;
+									path: string | null;
+									supporting_files: Record<string, string>;
+									args: unknown[];
+									dependencies: string[];
+							  }
+							| undefined;
+						try {
+							runtimeRequest = (
+								await resolveCodeFunctionExecution(normalizedInput)
+							).runtimeRequest;
+						} catch (codeError) {
+							timing.executionMs = 0;
+							response = {
+								success: false,
+								error:
+									codeError instanceof Error
+										? codeError.message
+										: "Failed to resolve saved code function",
+								duration_ms: 0,
+							};
+						}
 
-					const apContext =
-						body.ap_project_id && body.ap_platform_id
-							? {
-									projectId: body.ap_project_id,
-									platformId: body.ap_platform_id,
+						if (runtimeRequest) {
+							console.log(
+								`[Execute Route] Invoking code runtime for ${functionSlug} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
+							);
+							const controller = new AbortController();
+							const timeoutId = setTimeout(
+								() => controller.abort(),
+								HTTP_TIMEOUT_MS,
+							);
+							const executionStartTime = Date.now();
+
+							try {
+								const httpResponse = await undiciFetch(
+									`${functionUrl}/execute`,
+									{
+										method: "POST",
+										headers: {
+											"Content-Type": "application/json",
+											...forwardedTraceHeaders,
+										},
+										body: JSON.stringify(runtimeRequest),
+										signal: controller.signal,
+										dispatcher: longRunningAgent,
+									},
+								);
+
+								clearTimeout(timeoutId);
+								timing.executionMs = Date.now() - executionStartTime;
+
+								const responseText = await httpResponse.text();
+								const parsed = parseJsonResponse(responseText);
+
+								if (isPlainObject(parsed)) {
+									const normalizedResponse =
+										normalizeKnativeExecuteResponse(parsed);
+									if (normalizedResponse) {
+										response = normalizedResponse;
+									} else if (httpResponse.ok) {
+										throw new Error(
+											`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
+										);
+									} else {
+										throw new Error(
+											`HTTP ${httpResponse.status}: ${responseText}`,
+										);
+									}
+								} else if (httpResponse.ok) {
+									throw new Error(
+										`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
+									);
+								} else {
+									throw new Error(`HTTP ${httpResponse.status}: ${responseText}`);
 								}
-							: undefined;
+							} catch (httpError) {
+								clearTimeout(timeoutId);
+								timing.executionMs = Date.now() - executionStartTime;
+								if (
+									httpError instanceof Error &&
+									httpError.name === "AbortError"
+								) {
+									throw new Error(
+										`Request to ${target.appId} timed out after ${HTTP_TIMEOUT_MS}ms`,
+									);
+								}
+								throw httpError;
+							}
+						}
+					} else {
+						// Pre-fetch credentials
+						const credentialStartTime = Date.now();
+						let credentialsRaw: unknown | undefined;
 
-					if (isApRoute && connectionExternalId) {
-						// For AP actions: fetch raw connection value (passes directly to context.auth)
-						credentialsRaw = await fetchRawConnectionValue(
+						const apContext =
+							body.ap_project_id && body.ap_platform_id
+								? {
+										projectId: body.ap_project_id,
+										platformId: body.ap_platform_id,
+									}
+								: undefined;
+
+						if (isApRoute && connectionExternalId) {
+							// For AP actions: fetch raw connection value (passes directly to context.auth)
+							credentialsRaw = await fetchRawConnectionValue(
+								connectionExternalId,
+								apContext,
+							);
+						}
+
+						// Always fetch env-var-mapped credentials too (for native services and as fallback)
+						const credentialResult = await fetchCredentialsWithAudit(
+							pluginId,
+							body.integrations,
+							body.db_execution_id
+								? {
+										executionId: body.db_execution_id,
+										nodeId: body.node_id,
+									}
+								: undefined,
 							connectionExternalId,
 							apContext,
 						);
-					}
+						timing.credentialFetchMs = Date.now() - credentialStartTime;
 
-					// Always fetch env-var-mapped credentials too (for native services and as fallback)
-					const credentialResult = await fetchCredentialsWithAudit(
-						pluginId,
-						body.integrations,
-						body.db_execution_id
-							? {
-									executionId: body.db_execution_id,
-									nodeId: body.node_id,
-								}
-							: undefined,
-						connectionExternalId,
-						apContext,
-					);
-					timing.credentialFetchMs = Date.now() - credentialStartTime;
-
-					console.log(
-						`[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`,
-					);
-
-					const knativeRequest: OpenFunctionRequest = {
-						step: isApRoute ? functionSlug : stepName,
-						execution_id: body.execution_id,
-						workflow_id: body.workflow_id,
-						node_id: body.node_id,
-						input: normalizedInput,
-						node_outputs: body.node_outputs,
-						credentials: credentialResult.credentials,
-						...(isApRoute && {
-							credentials_raw: credentialsRaw,
-							metadata: { pieceName: pluginId, actionName: stepName },
-						}),
-					};
-					const isObservableAgentRuntime =
-						target.appId === "openshell-langgraph-observable";
-					const observableArgs = isPlainObject(normalizedInput)
-						? (normalizedInput as Record<string, unknown>)
-						: {};
-					const observableExecutionId =
-						typeof body.db_execution_id === "string" &&
-						body.db_execution_id.trim().length > 0
-							? body.db_execution_id.trim()
-							: body.execution_id;
-					const requestBody = isObservableAgentRuntime
-						? JSON.stringify({
-								...observableArgs,
-								task:
-									typeof observableArgs.task === "string" &&
-									observableArgs.task.trim().length > 0
-										? observableArgs.task
-										: typeof observableArgs.prompt === "string" &&
-												observableArgs.prompt.trim().length > 0
-											? observableArgs.prompt
-											: typeof observableArgs.goal === "string"
-												? observableArgs.goal
-												: "",
-								prompt:
-									typeof observableArgs.prompt === "string" &&
-									observableArgs.prompt.trim().length > 0
-										? observableArgs.prompt
-										: typeof observableArgs.task === "string"
-											? observableArgs.task
-											: typeof observableArgs.goal === "string"
-												? observableArgs.goal
-												: "",
-								parentExecutionId: body.execution_id,
-								executionId: observableExecutionId,
-								dbExecutionId: body.db_execution_id ?? undefined,
-								workflowId: body.workflow_id,
-								nodeId: body.node_id,
-								nodeName: body.node_name,
-								credentials: credentialResult.credentials,
-							})
-						: JSON.stringify(knativeRequest);
-
-					console.log(
-						`[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
-					);
-					const requestPath =
-						target.appId === "openshell-langgraph-observable"
-							? "/api/run"
-							: "/execute";
-					const requestTimeoutMs = isObservableAgentRuntime
-						? resolveObservableAgentHttpTimeoutMs({
-								appId: target.appId,
-								mode: observableArgs.mode,
-								timeoutMinutes: observableArgs.timeoutMinutes,
-							})
-						: target.appId === "dapr-swe"
-							? resolveDaprSweHttpTimeoutMs({
-									timeoutMinutes: observableArgs.timeoutMinutes,
-									timeoutMs: observableArgs.timeoutMs,
-								})
-							: HTTP_TIMEOUT_MS;
-
-					// Make direct HTTP call to the Knative service
-					const controller = new AbortController();
-					const timeoutId = setTimeout(
-						() => controller.abort(),
-						requestTimeoutMs,
-					);
-
-					const executionStartTime = Date.now();
-					console.log(
-						`[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms (mode=${typeof observableArgs.mode === "string" ? observableArgs.mode : "n/a"})`,
-					);
-					try {
-						const httpResponse = await undiciFetch(
-							`${functionUrl}${requestPath}`,
-							{
-								method: "POST",
-								headers: {
-									"Content-Type": "application/json",
-									...forwardedTraceHeaders,
-								},
-								body: requestBody,
-								signal: controller.signal,
-								dispatcher: longRunningAgent,
-							},
+						console.log(
+							`[Execute Route] Credentials fetched in ${timing.credentialFetchMs}ms (source: ${credentialResult.source})`,
 						);
 
-						clearTimeout(timeoutId);
-						timing.executionMs = Date.now() - executionStartTime;
+						const knativeRequest: OpenFunctionRequest = {
+							step: isApRoute ? functionSlug : stepName,
+							execution_id: body.execution_id,
+							workflow_id: body.workflow_id,
+							node_id: body.node_id,
+							input: normalizedInput,
+							node_outputs: body.node_outputs,
+							credentials: credentialResult.credentials,
+							...(isApRoute && {
+								credentials_raw: credentialsRaw,
+								metadata: { pieceName: pluginId, actionName: stepName },
+							}),
+						};
+						const isObservableAgentRuntime =
+							target.appId === "openshell-langgraph-observable";
+						const observableArgs = isPlainObject(normalizedInput)
+							? (normalizedInput as Record<string, unknown>)
+							: {};
+						const observableExecutionId =
+							typeof body.db_execution_id === "string" &&
+							body.db_execution_id.trim().length > 0
+								? body.db_execution_id.trim()
+								: body.execution_id;
+						const requestBody = isObservableAgentRuntime
+							? JSON.stringify({
+									...observableArgs,
+									task:
+										typeof observableArgs.task === "string" &&
+										observableArgs.task.trim().length > 0
+											? observableArgs.task
+											: typeof observableArgs.prompt === "string" &&
+													observableArgs.prompt.trim().length > 0
+												? observableArgs.prompt
+												: typeof observableArgs.goal === "string"
+													? observableArgs.goal
+													: "",
+									prompt:
+										typeof observableArgs.prompt === "string" &&
+										observableArgs.prompt.trim().length > 0
+											? observableArgs.prompt
+											: typeof observableArgs.task === "string"
+												? observableArgs.task
+												: typeof observableArgs.goal === "string"
+													? observableArgs.goal
+													: "",
+									parentExecutionId: body.execution_id,
+									executionId: observableExecutionId,
+									dbExecutionId: body.db_execution_id ?? undefined,
+									workflowId: body.workflow_id,
+									nodeId: body.node_id,
+									nodeName: body.node_name,
+									credentials: credentialResult.credentials,
+								})
+							: JSON.stringify(knativeRequest);
 
-						// IMPORTANT:
-						// OpenFunctions use HTTP status codes inconsistently (some return 5xx
-						// for a handled action failure). We always try to parse the JSON
-						// response and propagate it back to the orchestrator as a normal
-						// (HTTP 200) function-router response, so the orchestrator can surface
-						// `error` instead of failing with RequestException.
-						const responseText = await httpResponse.text();
-						const parsed = parseJsonResponse(responseText);
+						console.log(
+							`[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
+						);
+						const requestPath =
+							target.appId === "openshell-langgraph-observable"
+								? "/api/run"
+								: "/execute";
+						const requestTimeoutMs = isObservableAgentRuntime
+							? resolveObservableAgentHttpTimeoutMs({
+									appId: target.appId,
+									mode: observableArgs.mode,
+									timeoutMinutes: observableArgs.timeoutMinutes,
+								})
+							: target.appId === "dapr-swe"
+								? resolveDaprSweHttpTimeoutMs({
+										timeoutMinutes: observableArgs.timeoutMinutes,
+										timeoutMs: observableArgs.timeoutMs,
+									})
+								: HTTP_TIMEOUT_MS;
 
-						if (isPlainObject(parsed)) {
-							const normalizedResponse =
-								normalizeKnativeExecuteResponse(parsed);
-							if (normalizedResponse) {
-								response = normalizedResponse;
+						// Make direct HTTP call to the Knative service
+						const controller = new AbortController();
+						const timeoutId = setTimeout(
+							() => controller.abort(),
+							requestTimeoutMs,
+						);
+
+						const executionStartTime = Date.now();
+						console.log(
+							`[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms (mode=${typeof observableArgs.mode === "string" ? observableArgs.mode : "n/a"})`,
+						);
+						try {
+							const httpResponse = await undiciFetch(
+								`${functionUrl}${requestPath}`,
+								{
+									method: "POST",
+									headers: {
+										"Content-Type": "application/json",
+										...forwardedTraceHeaders,
+									},
+									body: requestBody,
+									signal: controller.signal,
+									dispatcher: longRunningAgent,
+								},
+							);
+
+							clearTimeout(timeoutId);
+							timing.executionMs = Date.now() - executionStartTime;
+
+							// IMPORTANT:
+							// OpenFunctions use HTTP status codes inconsistently (some return 5xx
+							// for a handled action failure). We always try to parse the JSON
+							// response and propagate it back to the orchestrator as a normal
+							// (HTTP 200) function-router response, so the orchestrator can surface
+							// `error` instead of failing with RequestException.
+							const responseText = await httpResponse.text();
+							const parsed = parseJsonResponse(responseText);
+
+							if (isPlainObject(parsed)) {
+								const normalizedResponse =
+									normalizeKnativeExecuteResponse(parsed);
+								if (normalizedResponse) {
+									response = normalizedResponse;
+								} else if (httpResponse.ok) {
+									throw new Error(
+										`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
+									);
+								} else {
+									throw new Error(
+										`HTTP ${httpResponse.status}: ${responseText}`,
+									);
+								}
 							} else if (httpResponse.ok) {
 								throw new Error(
 									`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
@@ -2189,42 +2297,42 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							} else {
 								throw new Error(`HTTP ${httpResponse.status}: ${responseText}`);
 							}
-						} else if (httpResponse.ok) {
-							throw new Error(
-								`Invalid JSON response from ${target.appId}: ${responseText.slice(0, 200)}`,
-							);
-						} else {
-							throw new Error(`HTTP ${httpResponse.status}: ${responseText}`);
+						} catch (httpError) {
+							clearTimeout(timeoutId);
+							timing.executionMs = Date.now() - executionStartTime;
+							if (
+								httpError instanceof Error &&
+								httpError.name === "AbortError"
+							) {
+								throw new Error(
+									`Request to ${target.appId} timed out after ${requestTimeoutMs}ms`,
+								);
+							}
+							throw httpError;
 						}
-					} catch (httpError) {
-						clearTimeout(timeoutId);
-						timing.executionMs = Date.now() - executionStartTime;
-						if (httpError instanceof Error && httpError.name === "AbortError") {
-							throw new Error(
-								`Request to ${target.appId} timed out after ${requestTimeoutMs}ms`,
-							);
-						}
-						throw httpError;
 					}
 				}
 
+				if (!response) {
+					throw new Error(`No execution response produced for ${functionSlug}`);
+				}
+
+				const executionMs = timing.executionMs ?? 0;
+
 				// Cold start detection
 				const avgResponseTime = getResponseTimeAverage(target.appId);
-				if (
-					avgResponseTime > 0 &&
-					timing.executionMs > avgResponseTime * COLD_START_MULTIPLIER
-				) {
+				if (avgResponseTime > 0 && executionMs > avgResponseTime * COLD_START_MULTIPLIER) {
 					timing.wasColdStart = true;
-					timing.coldStartMs = timing.executionMs - avgResponseTime;
+					timing.coldStartMs = executionMs - avgResponseTime;
 					console.log(
-						`[Execute Route] Cold start detected for ${target.appId}: ${timing.executionMs}ms vs avg ${avgResponseTime}ms`,
+						`[Execute Route] Cold start detected for ${target.appId}: ${executionMs}ms vs avg ${avgResponseTime}ms`,
 					);
 				} else {
 					timing.wasColdStart = false;
 				}
 
 				// Record response time for future cold start detection
-				recordResponseTime(target.appId, timing.executionMs);
+				recordResponseTime(target.appId, executionMs);
 
 				response.routed_to = target.appId;
 			} else {

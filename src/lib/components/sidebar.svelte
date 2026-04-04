@@ -14,6 +14,7 @@
 		Sun,
 		LogOut,
 		Eye,
+		Code,
 		ChevronsUpDown,
 		Server
 	} from 'lucide-svelte';
@@ -40,6 +41,7 @@
 		{ href: '/mcp-chat', label: 'MCP Chat', icon: MessageSquare },
 		{ href: '/monitor', label: 'Monitor', icon: Activity },
 		{ href: '/runtime', label: 'Runtime', icon: Server },
+		{ href: '/code-functions', label: 'Code Functions', icon: Code },
 		{ href: '/observability', label: 'Observability', icon: Eye },
 		{ href: '/settings', label: 'Settings', icon: Settings }
 	];

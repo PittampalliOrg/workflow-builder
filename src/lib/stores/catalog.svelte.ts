@@ -9,6 +9,9 @@ export interface CatalogFunction {
 	description: string;
 	pieceName: string;
 	actionName: string;
+	sourceKind?: 'integration' | 'code';
+	language?: 'typescript' | 'python';
+	entrypoint?: string;
 }
 
 export interface CatalogGroup {

@@ -368,6 +368,10 @@ dev:
         value: "http://workflow-orchestrator.workflow-builder.svc.cluster.local:8080"
       - name: FUNCTION_RUNNER_URL
         value: "http://function-router.workflow-builder.svc.cluster.local:8080"
+      - name: CODE_PARSER_URL
+        value: "http://code-parser.workflow-builder.svc.cluster.local:8080"
+      - name: CODE_RUNTIME_URL
+        value: "http://code-runtime.workflow-builder.svc.cluster.local:8080"
       - name: OPENSHELL_AGENT_RUNTIME_API_BASE_URL
         value: ${OPENSHELL_AGENT_RUNTIME_API_BASE_URL}
       - name: USE_DAPR_SERVICE_INVOCATION

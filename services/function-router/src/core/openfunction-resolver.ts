@@ -24,6 +24,9 @@ const NAMESPACE = process.env.FUNCTIONS_NAMESPACE || "workflow-builder";
  * These are regular K8s Deployments with a ClusterIP Service.
  */
 const STANDALONE_SERVICES: Record<string, string> = {
+	"code-runtime":
+		process.env.CODE_RUNTIME_URL ||
+		"http://code-runtime.workflow-builder.svc.cluster.local:8080",
 	"openshell-agent-runtime":
 		process.env.OPENSHELL_AGENT_RUNTIME_URL ||
 		"http://openshell-agent-runtime.openshell.svc.cluster.local:8083",
