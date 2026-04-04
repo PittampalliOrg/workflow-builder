@@ -376,6 +376,24 @@ def _resolve_function_call(
                 "actionType": _action_type_from_endpoint(str(endpoint_uri)) if endpoint_uri else None,
             }
 
+    # AP piece function: auto-resolve ap_{piece}_{action} naming convention
+    # e.g., "ap_gmail_send_email" → piece=gmail, action=send-email
+    if call_value.startswith("ap_"):
+        suffix = call_value[3:]  # Remove "ap_" prefix
+        # Split on first "_" to separate piece from action
+        # e.g., "google_sheets_read_row" → piece="google-sheets", action="read-row"
+        # Handle multi-word piece names by finding the action boundary
+        # Convention: piece and action parts use underscores internally,
+        # but the original names use hyphens
+        piece_action = suffix.replace("_", "-")
+        # Route through function-router which resolves to fn-activepieces
+        return {
+            "protocol": "http",
+            "actionType": piece_action,
+            "args": with_args,
+            "functionName": call_value,
+        }
+
     # Fallback: treat as custom function name
     return {
         "protocol": "function",

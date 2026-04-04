@@ -16,6 +16,7 @@ import { executeAction } from "./executor.js";
 import { fetchOptions, type OptionsRequest } from "./options-executor.js";
 import { PIECES, listPieceNames } from "./piece-registry.js";
 import { registerPieceActivities, type ApActivityMeta } from "./dapr-activities.js";
+import { getCatalog, getCatalogFunction } from "./catalog.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
@@ -130,6 +131,40 @@ async function main() {
 		}
 		return reply.status(200).send(result);
 	});
+
+	// ---------------------------------------------------------------------------
+	// SW 1.0 Function Catalog
+	// ---------------------------------------------------------------------------
+
+	// List all available catalog functions
+	app.get("/catalog/functions", async (_request, reply) => {
+		const catalog = getCatalog();
+		return reply.status(200).send({
+			functions: catalog.map((f) => ({
+				name: f.name,
+				version: f.version,
+				displayName: f.displayName,
+				description: f.description,
+				pieceName: f.pieceName,
+				actionName: f.actionName,
+			})),
+			count: catalog.length,
+		});
+	});
+
+	// Get a specific function definition (SW 1.0 function.yaml format)
+	app.get<{ Params: { name: string; version: string } }>(
+		"/catalog/functions/:name/:version/function.yaml",
+		async (request, reply) => {
+			const fn = getCatalogFunction(request.params.name, request.params.version);
+			if (!fn) {
+				return reply.status(404).send({
+					error: `Function ${request.params.name}@${request.params.version} not found`,
+				});
+			}
+			return reply.status(200).send(fn.definition);
+		},
+	);
 
 	// Options route — fetch dynamic dropdown options for a prop
 	const OptionsRequestSchema = z.object({
