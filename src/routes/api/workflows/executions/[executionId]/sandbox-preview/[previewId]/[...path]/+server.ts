@@ -11,6 +11,48 @@ const FORWARDED_HEADERS = [
 	'cache-control'
 ];
 
+const JAVASCRIPT_CONTENT_TYPES = [
+	'text/javascript',
+	'application/javascript',
+	'application/x-javascript'
+];
+
+function rewriteHtmlBody(body: string, proxyBasePath: string): string {
+	const escapedBase = proxyBasePath.replace(/\/$/, '');
+	let rewritten = body;
+
+	// Rewrite quoted and parenthesized root-relative asset and fetch paths so the preview
+	// stays under the sandbox proxy rather than escaping to the main app origin.
+	rewritten = rewritten.replace(
+		/([("'=\s,:])\/(?!\/)/g,
+		(_, prefix: string) => `${prefix}${escapedBase}/`
+	);
+	rewritten = rewritten.replace(
+		/(url\((?:['"]?)?)\/(?!\/)/g,
+		(_, prefix: string) => `${prefix}${escapedBase}/`
+	);
+
+	return rewritten;
+}
+
+function rewriteJavascriptBody(body: string, proxyBasePath: string): string {
+	const escapedBase = proxyBasePath.replace(/\/$/, '');
+	return body
+		.replace(/\b(import\s*\(\s*["'])\/(?!\/)/g, `$1${escapedBase}/`)
+		.replace(/\b(import\s+["'])\/(?!\/)/g, `$1${escapedBase}/`)
+		.replace(/\b(from\s+["'])\/(?!\/)/g, `$1${escapedBase}/`);
+}
+
+function rewriteLocationHeader(location: string, proxyBasePath: string): string {
+	if (location.startsWith('http://') || location.startsWith('https://') || location.startsWith(proxyBasePath)) {
+		return location;
+	}
+	if (location.startsWith('/')) {
+		return `${proxyBasePath}${location}`;
+	}
+	return `${proxyBasePath}/${location.replace(/^\.?\//, '')}`;
+}
+
 async function proxyRequest({
 	request,
 	params,
@@ -22,6 +64,7 @@ async function proxyRequest({
 	}
 
 	const previewId = params.previewId;
+	const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(params.executionId)}/sandbox-preview/${encodeURIComponent(previewId)}`;
 	const restPath = params.path ? `/${params.path}` : '/';
 	const search = url.search || '';
 	const targetPath = `/api/workspaces/preview/${encodeURIComponent(previewId)}${restPath}${search}`;
@@ -45,6 +88,37 @@ async function proxyRequest({
 	if (contentType) proxiedHeaders.set('content-type', contentType);
 	const cacheControl = response.headers.get('cache-control');
 	if (cacheControl) proxiedHeaders.set('cache-control', cacheControl);
+	const location = response.headers.get('location');
+	if (location) {
+		proxiedHeaders.set('location', rewriteLocationHeader(location, proxyBasePath));
+	}
+
+	if (contentType && contentType.includes('text/html')) {
+		const originalBody = await response.text();
+		const rewrittenBody = rewriteHtmlBody(originalBody, proxyBasePath);
+		return new Response(rewrittenBody, {
+			status: response.status,
+			headers: proxiedHeaders
+		});
+	}
+
+	if (contentType && JAVASCRIPT_CONTENT_TYPES.some((type) => contentType.includes(type))) {
+		const originalBody = await response.text();
+		const rewrittenBody = rewriteJavascriptBody(originalBody, proxyBasePath);
+		return new Response(rewrittenBody, {
+			status: response.status,
+			headers: proxiedHeaders
+		});
+	}
+
+	if (contentType && contentType.includes('text/css')) {
+		const originalBody = await response.text();
+		const rewrittenBody = rewriteHtmlBody(originalBody, proxyBasePath);
+		return new Response(rewrittenBody, {
+			status: response.status,
+			headers: proxiedHeaders
+		});
+	}
 
 	return new Response(response.body, {
 		status: response.status,
