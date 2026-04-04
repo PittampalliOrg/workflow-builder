@@ -304,6 +304,21 @@ def _build_greenfield_plan_data(
     }
 
 
+def _cleanup_greenfield_artifacts(sandbox: OpenShellBackend, working_dir: str) -> None:
+    quoted_dir = shlex.quote(working_dir)
+    cleanup_cmd = (
+        f"cd {quoted_dir} && "
+        "touch .gitignore && "
+        "for entry in '.svelte-kit/' 'build/'; do "
+        "grep -qxF \"$entry\" .gitignore 2>/dev/null || printf '%s\\n' \"$entry\" >> .gitignore; "
+        "done && "
+        "rm -rf .svelte-kit build"
+    )
+    result = sandbox.execute(cleanup_cmd, timeout=60)
+    if result.exit_code != 0:
+        raise RuntimeError(result.output or "Failed to clean generated SvelteKit artifacts")
+
+
 def _resolve_scm_auth(
     input_data: dict,
     node_outputs: dict,
@@ -1396,6 +1411,12 @@ def handle_greenfield_scaffold(input_data: dict, node_outputs: dict) -> dict:
         logger.exception("Greenfield scaffold failed")
         return {"success": False, "data": {}, "error": f"Greenfield scaffold failed: {exc}"}
 
+    try:
+        _cleanup_greenfield_artifacts(sandbox, str(working_dir))
+    except Exception as exc:
+        logger.exception("Greenfield cleanup failed")
+        return {"success": False, "data": {}, "error": f"Greenfield cleanup failed: {exc}"}
+
     changed_files = _collect_changed_files(sandbox, str(working_dir))
     status = "changes_ready" if changed_files else "no_changes"
     publish_event(
@@ -1433,16 +1454,13 @@ def handle_greenfield_publish(input_data: dict, node_outputs: dict) -> dict:
             return {"success": False, "data": {}, "error": f"Missing required field: {field}"}
     if not auth:
         return {"success": False, "data": {}, "error": "Missing required field: repository credentials"}
-    if review and review.get("approved") is False:
-        return {
-            "success": True,
-            "data": {"pr_url": "", "branch": "", "status": "review_rejected", "repo_url": repo_url},
-            "error": None,
-        }
 
     base_branch = str(_resolve(input_data, node_outputs, "baseBranch") or "main").strip() or "main"
     pr_title = str(_resolve(input_data, node_outputs, "prTitle") or f"feat: bootstrap {app_name} SvelteKit app").strip()
     is_draft = False if _resolve(input_data, node_outputs, "draft") in {False, "false", "0"} else True
+    review_rejected = bool(review and review.get("approved") is False)
+    if review_rejected:
+        is_draft = True
 
     sandbox = _reconnect_sandbox(str(sandbox_id))
     import time
@@ -1485,6 +1503,7 @@ def handle_greenfield_publish(input_data: dict, node_outputs: dict) -> dict:
         app_name=app_name,
         request_summary=request_summary,
         plan=plan,
+        review=review,
         validation=validation,
     )
     try:
@@ -1507,7 +1526,13 @@ def handle_greenfield_publish(input_data: dict, node_outputs: dict) -> dict:
         publish_event("dapr-swe.greenfield.pr.created", {"repo": f"{owner}/{repo}", "pr_url": pr_url})
         return {
             "success": True,
-            "data": {"pr_url": pr_url, "branch": branch_name, "status": "success", "repo_url": repo_url},
+            "data": {
+                "pr_url": pr_url,
+                "branch": branch_name,
+                "status": "success",
+                "repo_url": repo_url,
+                "review_status": "review_rejected" if review_rejected else "approved",
+            },
             "error": None,
         }
     if pr_result["status"] == "already_exists":

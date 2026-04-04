@@ -251,6 +251,7 @@ def build_greenfield_pr_body(
     app_name: str,
     request_summary: str,
     plan: dict[str, Any],
+    review: dict[str, Any] | None = None,
     validation: dict[str, Any] | None = None,
 ) -> str:
     summary = plan.get("summary", f"Bootstrap a new SvelteKit app for {app_name}")
@@ -276,6 +277,33 @@ def build_greenfield_pr_body(
         parts.append("")
         for step in steps:
             parts.append(f"- **{step.get('title', '')}**: {step.get('description', '')}")
+        parts.append("")
+
+    if review:
+        review_status = "approved" if review.get("approved", False) else "needs follow-up"
+        parts.append("## Automated Review")
+        parts.append("")
+        parts.append(f"- Status: {review_status}")
+        feedback = str(review.get("feedback") or "").strip()
+        if feedback:
+            parts.append(f"- Summary: {feedback}")
+        suggestions = review.get("suggestions")
+        if isinstance(suggestions, list):
+            for suggestion in suggestions[:5]:
+                if not isinstance(suggestion, dict):
+                    continue
+                file_ref = str(suggestion.get("file") or "").strip()
+                message = str(suggestion.get("message") or "").strip()
+                severity = str(suggestion.get("severity") or "").strip()
+                line = suggestion.get("line")
+                label = file_ref or "repo"
+                if line not in (None, ""):
+                    label = f"{label}:{line}"
+                detail = message or "Follow-up suggested."
+                if severity:
+                    parts.append(f"- {label} [{severity}]: {detail}")
+                else:
+                    parts.append(f"- {label}: {detail}")
         parts.append("")
 
     if validation:
