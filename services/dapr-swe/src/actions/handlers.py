@@ -21,8 +21,10 @@ from src.integrations.github_app import get_github_app_installation_token
 from src.scm import (
     ScmAuth,
     build_clone_config,
+    build_greenfield_pr_body,
     build_pr_body,
     configure_git_identity_command,
+    create_repository,
     create_pull_request,
     get_gitea_auth,
     normalize_provider,
@@ -129,6 +131,21 @@ def _detect_package_manager(lockfiles: set[str]) -> str | None:
     if "yarn.lock" in lockfiles:
         return "yarn"
     return None
+
+
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    lowered = str(value).strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off", ""}:
+        return False
+    return default
 
 
 def _preview_steps_for_app(app_subdir: str) -> list[dict[str, Any]]:
@@ -239,6 +256,52 @@ def _render_validation_lines(validation: dict[str, Any]) -> list[str]:
         lines.append(f"- Error: {error}")
     lines.append("")
     return lines
+
+
+def _build_greenfield_plan_data(
+    *,
+    repo: str,
+    app_name: str,
+    request_summary: str,
+    package_manager: str,
+    include_tailwind: bool,
+    use_typescript: bool,
+) -> dict[str, Any]:
+    summary = f"Bootstrap a new SvelteKit app for {app_name} in the {repo} repository."
+    step_description_lines = [
+        "Create a production-ready greenfield SvelteKit app in the repository root.",
+        "",
+        "Implementation requirements:",
+        "1. Prefer the official Svelte scaffolding CLI in a non-interactive form.",
+        "2. If the official CLI cannot run cleanly in this environment, scaffold an equivalent SvelteKit project manually.",
+        f"3. Use {'TypeScript' if use_typescript else 'JavaScript'} for the app source.",
+        f"4. Prefer {package_manager} for package management unless the official CLI enforces another tool.",
+        "5. Keep the generated app runnable with standard scripts: dev, build, preview, and check.",
+        "6. Add a simple landing page that names the app and explains it is the initial greenfield bootstrap.",
+        "7. Update the README with local development instructions.",
+        "8. Do not create branches, commits, or pull requests inside the implementation step.",
+    ]
+    if include_tailwind:
+        step_description_lines.append("9. Include Tailwind CSS and wire it into the initial app shell.")
+    if request_summary.strip():
+        step_description_lines.extend(["", "User request:", request_summary.strip()])
+
+    return {
+        "summary": summary,
+        "steps": [
+            {
+                "title": "Scaffold the initial SvelteKit application",
+                "description": "\n".join(step_description_lines),
+                "files": [
+                    "package.json",
+                    "README.md",
+                    "src/routes/+page.svelte",
+                ],
+                "complexity": "medium",
+            }
+        ],
+        "critical_files": ["package.json", "src/routes/+page.svelte", "README.md"],
+    }
 
 
 def _resolve_scm_auth(
@@ -1172,6 +1235,294 @@ def handle_notify(input_data: dict, node_outputs: dict) -> dict:
     }
 
 
+def handle_create_repo(input_data: dict, node_outputs: dict) -> dict:
+    """Create or reuse a greenfield repository in Gitea."""
+    provider = _resolve_provider(input_data, node_outputs)
+    owner = str(_resolve(input_data, node_outputs, "owner") or "").strip()
+    repo = str(_resolve(input_data, node_outputs, "repo") or "").strip()
+    description = str(_resolve(input_data, node_outputs, "description") or "").strip()
+    app_name = str(_resolve(input_data, node_outputs, "app_name") or repo).strip() or repo
+    private = _as_bool(_resolve(input_data, node_outputs, "private"), False)
+    default_branch = str(_resolve(input_data, node_outputs, "baseBranch") or "main").strip() or "main"
+
+    if not owner or not repo:
+        return {"success": False, "data": {}, "error": "Missing required fields: owner, repo"}
+    if provider != "gitea":
+        return {"success": False, "data": {}, "error": "Greenfield SvelteKit bootstrap currently supports provider=gitea only"}
+
+    auth = _resolve_scm_auth(input_data, node_outputs, provider)
+    if not auth:
+        return {"success": False, "data": {}, "error": "No repository credentials available"}
+
+    repo_result = create_repository(
+        provider=provider,
+        owner=owner,
+        repo=repo,
+        auth=auth,
+        description=description or f"Greenfield SvelteKit app for {app_name}",
+        private=private,
+        default_branch=default_branch,
+        auto_init=True,
+        gitignore_template="Node",
+    )
+    if repo_result.get("status") not in {"created", "exists"}:
+        return {
+            "success": False,
+            "data": {},
+            "error": str(repo_result.get("error") or "Failed to create repository"),
+        }
+
+    publish_event(
+        "dapr-swe.greenfield.repo.ready",
+        {
+            "repo": f"{owner}/{repo}",
+            "status": repo_result.get("status"),
+            "repo_url": repo_result.get("repo_url", ""),
+        },
+    )
+    return {
+        "success": True,
+        "data": {
+            "provider": provider,
+            "owner": owner,
+            "repo": repo,
+            "app_name": app_name,
+            "repo_url": repo_result.get("repo_url", ""),
+            "clone_url": repo_result.get("clone_url", ""),
+            "default_branch": repo_result.get("default_branch", default_branch),
+            "status": repo_result.get("status", "created"),
+            "private": private,
+        },
+        "error": None,
+    }
+
+
+def handle_greenfield_plan(input_data: dict, node_outputs: dict) -> dict:
+    """Build a deterministic bootstrap plan for a new SvelteKit app."""
+    repo = str(_resolve(input_data, node_outputs, "repo") or "").strip()
+    if not repo:
+        return {"success": False, "data": {}, "error": "Missing required field: repo"}
+
+    app_name = str(_resolve(input_data, node_outputs, "app_name") or repo).strip() or repo
+    request_summary = str(_resolve(input_data, node_outputs, "body") or _resolve(input_data, node_outputs, "description") or "").strip()
+    package_manager = str(_resolve(input_data, node_outputs, "package_manager") or "npm").strip().lower() or "npm"
+    if package_manager not in {"npm", "pnpm", "yarn"}:
+        package_manager = "npm"
+    include_tailwind = _as_bool(_resolve(input_data, node_outputs, "include_tailwind"), False)
+    use_typescript = _as_bool(_resolve(input_data, node_outputs, "use_typescript"), True)
+
+    plan = _build_greenfield_plan_data(
+        repo=repo,
+        app_name=app_name,
+        request_summary=request_summary,
+        package_manager=package_manager,
+        include_tailwind=include_tailwind,
+        use_typescript=use_typescript,
+    )
+    return {
+        "success": True,
+        "data": {
+            "plan": plan,
+            "summary": plan["summary"],
+            "step_count": len(plan.get("steps", [])),
+            "app_name": app_name,
+            "package_manager": package_manager,
+            "include_tailwind": include_tailwind,
+            "use_typescript": use_typescript,
+        },
+        "error": None,
+    }
+
+
+def handle_greenfield_scaffold(input_data: dict, node_outputs: dict) -> dict:
+    """Scaffold a new SvelteKit app in the target repository."""
+    from src.agents.developer import run_developer
+
+    sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
+    working_dir = _resolve(input_data, node_outputs, "working_dir")
+    owner = _resolve(input_data, node_outputs, "owner")
+    repo = _resolve(input_data, node_outputs, "repo")
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
+    agents_md = _resolve(input_data, node_outputs, "agents_md") or ""
+
+    for field, val in [("sandbox_id", sandbox_id), ("working_dir", working_dir), ("owner", owner), ("repo", repo)]:
+        if not val:
+            return {"success": False, "data": {}, "error": f"Missing required field: {field}"}
+    if not plan:
+        return {"success": False, "data": {}, "error": "Missing required field: plan"}
+
+    sandbox = _reconnect_sandbox(str(sandbox_id))
+    app_name = str(_resolve(input_data, node_outputs, "app_name") or repo).strip() or str(repo)
+    request_summary = str(_resolve(input_data, node_outputs, "body") or _resolve(input_data, node_outputs, "description") or "").strip()
+    package_manager = str(_resolve(input_data, node_outputs, "package_manager") or "npm").strip().lower() or "npm"
+    include_tailwind = _as_bool(_resolve(input_data, node_outputs, "include_tailwind"), False)
+    use_typescript = _as_bool(_resolve(input_data, node_outputs, "use_typescript"), True)
+
+    issue_context = {
+        "owner": owner,
+        "repo": repo,
+        "title": f"Bootstrap a new SvelteKit app for {app_name}",
+        "body": request_summary or f"Create a new greenfield SvelteKit app called {app_name}.",
+        "working_dir": working_dir,
+        "agents_md": agents_md,
+    }
+    step = _build_full_plan_step(plan, issue_context)
+    style_line = "Include Tailwind CSS in the initial scaffold." if include_tailwind else "Use standard SvelteKit styling without Tailwind unless the scaffold adds it by default."
+    system_prompt_extra = "\n".join(
+        [
+            "This is a greenfield repository bootstrap task.",
+            "You may use the official Svelte scaffolding CLI in a non-interactive form if available.",
+            "If the official CLI fails or requires unsupported interaction, manually create an equivalent SvelteKit project structure.",
+            f"Prefer {package_manager} unless the official Svelte tooling chooses a different package manager during scaffolding.",
+            f"Use {'TypeScript' if use_typescript else 'JavaScript'} in the generated source.",
+            style_line,
+            "It is acceptable to install dependencies for this bootstrap task.",
+            "Do not create branches, commits, or pull requests in this step.",
+        ]
+    )
+    model = _resolve(input_data, node_outputs, "model")
+
+    try:
+        result = run_developer(
+            sandbox=sandbox,
+            step=step,
+            issue_context=issue_context,
+            plan=plan,
+            model_override=model,
+            max_iterations=80,
+            system_prompt_extra=system_prompt_extra,
+        )
+    except Exception as exc:
+        logger.exception("Greenfield scaffold failed")
+        return {"success": False, "data": {}, "error": f"Greenfield scaffold failed: {exc}"}
+
+    changed_files = _collect_changed_files(sandbox, str(working_dir))
+    status = "changes_ready" if changed_files else "no_changes"
+    publish_event(
+        "dapr-swe.greenfield.scaffold.completed",
+        {"repo": f"{owner}/{repo}", "status": status, "files_changed": len(changed_files)},
+    )
+    return {
+        "success": True,
+        "data": {
+            "status": status,
+            "summary": result.get("summary", ""),
+            "files_changed": changed_files,
+        },
+        "error": None,
+    }
+
+
+def handle_greenfield_publish(input_data: dict, node_outputs: dict) -> dict:
+    """Commit bootstrap changes and open a PR for a new greenfield repository."""
+    sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
+    working_dir = _resolve(input_data, node_outputs, "working_dir")
+    owner = _resolve(input_data, node_outputs, "owner")
+    repo = _resolve(input_data, node_outputs, "repo")
+    provider = _resolve_provider(input_data, node_outputs)
+    auth = _resolve_scm_auth(input_data, node_outputs, provider)
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
+    review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+    validation = _resolve_validation_summary(input_data, node_outputs)
+    app_name = str(_resolve(input_data, node_outputs, "app_name") or repo).strip() or str(repo)
+    request_summary = str(_resolve(input_data, node_outputs, "body") or _resolve(input_data, node_outputs, "description") or "").strip()
+    repo_url = str(_resolve(input_data, node_outputs, "repo_url") or "").strip()
+
+    for field, val in [("sandbox_id", sandbox_id), ("working_dir", working_dir), ("owner", owner), ("repo", repo)]:
+        if not val:
+            return {"success": False, "data": {}, "error": f"Missing required field: {field}"}
+    if not auth:
+        return {"success": False, "data": {}, "error": "Missing required field: repository credentials"}
+    if review and review.get("approved") is False:
+        return {
+            "success": True,
+            "data": {"pr_url": "", "branch": "", "status": "review_rejected", "repo_url": repo_url},
+            "error": None,
+        }
+
+    base_branch = str(_resolve(input_data, node_outputs, "baseBranch") or "main").strip() or "main"
+    pr_title = str(_resolve(input_data, node_outputs, "prTitle") or f"feat: bootstrap {app_name} SvelteKit app").strip()
+    is_draft = False if _resolve(input_data, node_outputs, "draft") in {False, "false", "0"} else True
+
+    sandbox = _reconnect_sandbox(str(sandbox_id))
+    import time
+    branch_name = f"bootstrap/sveltekit-{int(time.time())}"
+
+    changed_files = _collect_changed_files(sandbox, str(working_dir))
+    if not changed_files:
+        return {
+            "success": True,
+            "data": {"pr_url": "", "branch": branch_name, "status": "no_changes", "repo_url": repo_url},
+            "error": None,
+        }
+
+    clone = build_clone_config(provider, str(owner), str(repo), auth)
+    if provider == "gitea":
+        try:
+            patch_text = _build_staged_patch(sandbox, str(working_dir))
+        except Exception as exc:
+            return {"success": False, "data": {"branch": branch_name}, "error": f"Failed to build staged patch: {exc}"}
+        if not patch_text.strip():
+            return {
+                "success": True,
+                "data": {"pr_url": "", "branch": branch_name, "status": "no_changes", "repo_url": repo_url},
+                "error": None,
+            }
+        try:
+            _commit_and_push_gitea_from_local_clone(
+                clone_config=clone,
+                base_branch=base_branch,
+                branch_name=branch_name,
+                pr_title=pr_title,
+                patch_text=patch_text,
+            )
+        except Exception as exc:
+            return {"success": False, "data": {"branch": branch_name}, "error": f"Push failed: {exc}"}
+    else:
+        return {"success": False, "data": {}, "error": "Greenfield SvelteKit bootstrap currently supports provider=gitea only"}
+
+    pr_body = build_greenfield_pr_body(
+        app_name=app_name,
+        request_summary=request_summary,
+        plan=plan,
+        validation=validation,
+    )
+    try:
+        pr_result = create_pull_request(
+            provider=provider,
+            owner=str(owner),
+            repo=str(repo),
+            head_branch=branch_name,
+            base_branch=base_branch,
+            title=pr_title,
+            body=pr_body,
+            auth=auth,
+            draft=is_draft,
+        )
+    except Exception as exc:
+        return {"success": False, "data": {"branch": branch_name}, "error": f"SCM API request failed: {exc}"}
+
+    if pr_result["status"] == "success":
+        pr_url = pr_result.get("pr_url", "")
+        publish_event("dapr-swe.greenfield.pr.created", {"repo": f"{owner}/{repo}", "pr_url": pr_url})
+        return {
+            "success": True,
+            "data": {"pr_url": pr_url, "branch": branch_name, "status": "success", "repo_url": repo_url},
+            "error": None,
+        }
+    if pr_result["status"] == "already_exists":
+        return {
+            "success": True,
+            "data": {"pr_url": "", "branch": branch_name, "status": "already_exists", "repo_url": repo_url},
+            "error": None,
+        }
+    return {
+        "success": False,
+        "data": {"branch": branch_name, "repo_url": repo_url},
+        "error": f"PR creation failed: {pr_result.get('error') or pr_result.get('detail') or 'Unknown error'}",
+    }
+
+
 def handle_prepare_preview(input_data: dict, node_outputs: dict) -> dict:
     """Inspect the repo and determine whether screenshot validation should run."""
     sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
@@ -1492,8 +1843,12 @@ def _format_solve_task(issue_context: dict) -> str:
 # ---------------------------------------------------------------------------
 
 ACTION_HANDLERS: dict[str, Any] = {
+    "dapr-swe/create-repo": handle_create_repo,
     "dapr-swe/initialize": handle_initialize,
     "dapr-swe/solve": handle_solve,
+    "dapr-swe/greenfield-plan": handle_greenfield_plan,
+    "dapr-swe/greenfield-scaffold": handle_greenfield_scaffold,
+    "dapr-swe/greenfield-publish": handle_greenfield_publish,
     "dapr-swe/prepare-preview": handle_prepare_preview,
     "dapr-swe/report-preview": handle_report_preview,
     # Legacy handlers route to solve for backwards compat

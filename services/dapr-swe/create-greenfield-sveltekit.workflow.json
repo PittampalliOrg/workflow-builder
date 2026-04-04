@@ -1,0 +1,385 @@
+{
+  "id": "dapr-swe-greenfield-sveltekit",
+  "name": "Create Greenfield SvelteKit App",
+  "description": "Create a new Gitea repository, scaffold a greenfield SvelteKit app, capture browser evidence, and open a bootstrap PR.",
+  "visibility": "private",
+  "engineType": "dapr",
+  "specVersion": "1.0.0",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "dapr-swe-greenfield-sveltekit",
+      "version": "1.0.0",
+      "title": "Create Greenfield SvelteKit App",
+      "summary": "Repository creation, greenfield SvelteKit scaffold, review, browser validation, and bootstrap PR."
+    },
+    "use": {
+      "functions": {
+        "create_repo": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/create-repo"
+            }
+          }
+        },
+        "initialize": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/initialize"
+            }
+          }
+        },
+        "greenfield_plan": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/greenfield-plan"
+            }
+          }
+        },
+        "greenfield_scaffold": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/greenfield-scaffold"
+            }
+          }
+        },
+        "review": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/review"
+            }
+          }
+        },
+        "prepare_preview": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/prepare-preview"
+            }
+          }
+        },
+        "report_preview": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/report-preview"
+            }
+          }
+        },
+        "browser_validate": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/openshell-agent-runtime/method/browser/validate"
+            }
+          }
+        },
+        "greenfield_publish": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/greenfield-publish"
+            }
+          }
+        }
+      }
+    },
+    "do": [
+      {
+        "create_repo": {
+          "call": "create_repo",
+          "with": {
+            "provider": "${ .input.provider // \"gitea\" }",
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "app_name": "${ .input.app_name // .input.repo }",
+            "description": "${ .input.description // .input.body // \"\" }",
+            "private": "${ .input.private // false }",
+            "baseBranch": "${ .input.base_branch // .input.baseBranch // \"main\" }"
+          }
+        }
+      },
+      {
+        "initialize": {
+          "call": "initialize",
+          "with": {
+            "provider": "${ .create_repo.provider // .input.provider // \"gitea\" }",
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "issue_number": "${ .input.issue_number // \"bootstrap\" }",
+            "title": "${ .input.title // (\"Bootstrap a new SvelteKit app for \" + (.input.app_name // .input.repo)) }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "comments": "${ .input.comments // [] }",
+            "labels": "${ .input.labels // [] }",
+            "sender": "${ .input.sender // \"workflow-builder\" }",
+            "installation_id": "${ .input.installation_id // 0 }",
+            "baseBranch": "${ .create_repo.default_branch // .input.base_branch // .input.baseBranch // \"main\" }"
+          }
+        }
+      },
+      {
+        "plan": {
+          "call": "greenfield_plan",
+          "with": {
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "app_name": "${ .create_repo.app_name // .input.app_name // .input.repo }",
+            "description": "${ .input.description // .input.body // \"\" }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "package_manager": "${ .input.package_manager // \"npm\" }",
+            "include_tailwind": "${ .input.include_tailwind // false }",
+            "use_typescript": "${ .input.use_typescript // true }"
+          }
+        }
+      },
+      {
+        "scaffold": {
+          "call": "greenfield_scaffold",
+          "with": {
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "app_name": "${ .create_repo.app_name // .input.app_name // .input.repo }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "description": "${ .input.description // .input.body // \"\" }",
+            "package_manager": "${ .plan.package_manager // .input.package_manager // \"npm\" }",
+            "include_tailwind": "${ .plan.include_tailwind // .input.include_tailwind // false }",
+            "use_typescript": "${ .plan.use_typescript // .input.use_typescript // true }",
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }",
+            "agents_md": "${ .initialize.agents_md // \"\" }",
+            "model": "${ .input.model // \"\" }",
+            "plan": "${ .plan.plan }"
+          }
+        }
+      },
+      {
+        "review": {
+          "call": "review",
+          "with": {
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "title": "${ .input.title // (\"Bootstrap a new SvelteKit app for \" + (.input.app_name // .input.repo)) }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }",
+            "plan": "${ .plan.plan }"
+          }
+        }
+      },
+      {
+        "prepare_preview": {
+          "call": "prepare_preview",
+          "with": {
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }"
+          }
+        }
+      },
+      {
+        "preview_route": {
+          "switch": [
+            {
+              "should_validate": {
+                "when": "${ .prepare_preview.should_validate == true }",
+                "then": "preview_started"
+              }
+            },
+            {
+              "skip_validation": {
+                "then": "publish"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "preview_started": {
+          "call": "report_preview",
+          "with": {
+            "stage": "started",
+            "appSubdir": "${ .prepare_preview.appSubdir // \".\" }"
+          }
+        }
+      },
+      {
+        "preview_capture": {
+          "try": [
+            {
+              "validate": {
+                "call": "browser_validate",
+                "with": {
+                  "workspaceRef": "${ .prepare_preview.workspaceRef }",
+                  "dbExecutionId": "${ .runtime.dbExecutionId // \"\" }",
+                  "workflowId": "${ .runtime.workflowId }",
+                  "nodeId": "preview_capture",
+                  "nodeName": "Capture UX",
+                  "repoPath": "${ .prepare_preview.repoPath }",
+                  "installCommand": "${ .prepare_preview.installCommand // \"\" }",
+                  "devServerCommand": "${ .prepare_preview.devServerCommand // \"\" }",
+                  "baseUrl": "${ .prepare_preview.baseUrl // \"http://127.0.0.1:3009\" }",
+                  "steps": "${ .prepare_preview.steps // [] }",
+                  "captureTrace": "${ .prepare_preview.captureTrace // true }",
+                  "captureVideo": "${ .prepare_preview.captureVideo // true }",
+                  "viewportPreset": "${ .prepare_preview.viewportPreset // \"desktop\" }",
+                  "timeoutMs": 900000
+                }
+              }
+            }
+          ],
+          "output": {
+            "as": {
+              "status": "${ .[\"preview_capture/try/validate\"].result.status // (if .task.success then \"completed\" else \"failed\" end) }",
+              "artifactId": "${ .[\"preview_capture/try/validate\"].result.artifactId // \"\" }",
+              "screenshots": "${ .[\"preview_capture/try/validate\"].result.screenshots // 0 }",
+              "traceAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
+              "videoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
+              "artifact": "${ .[\"preview_capture/try/validate\"].result.artifact // null }",
+              "error": "${ .[\"preview_capture/try/validate\"].result.error // .task.error // \"\" }",
+              "phase": "${ .[\"preview_capture/try/validate\"].result.phase // \"\" }"
+            }
+          }
+        }
+      },
+      {
+        "preview_complete": {
+          "call": "report_preview",
+          "with": {
+            "stage": "completed",
+            "appSubdir": "${ .prepare_preview.appSubdir // \".\" }",
+            "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+          }
+        }
+      },
+      {
+        "publish": {
+          "call": "greenfield_publish",
+          "with": {
+            "provider": "${ .create_repo.provider // .input.provider // \"gitea\" }",
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "repo_url": "${ .create_repo.repo_url // \"\" }",
+            "app_name": "${ .create_repo.app_name // .input.app_name // .input.repo }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "description": "${ .input.description // .input.body // \"\" }",
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }",
+            "gitea_username": "${ .initialize.gitea_username // \"\" }",
+            "gitea_token": "${ .initialize.gitea_token // \"\" }",
+            "baseBranch": "${ .create_repo.default_branch // .input.base_branch // .input.baseBranch // \"main\" }",
+            "draft": "${ .input.draft // true }",
+            "plan": "${ .plan.plan }",
+            "review": "${ .review }",
+            "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+          }
+        }
+      }
+    ],
+    "output": {
+      "as": {
+        "repoUrl": "${ .create_repo.repo_url // \"\" }",
+        "cloneUrl": "${ .create_repo.clone_url // \"\" }",
+        "branch": "${ .publish.branch // \"\" }",
+        "prUrl": "${ .publish.pr_url // \"\" }",
+        "review": "${ .review }",
+        "status": "${ .publish.status // \"success\" }",
+        "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": { "x": 80, "y": 120 },
+      "data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "create_repo",
+      "type": "call",
+      "position": { "x": 280, "y": 120 },
+      "data": { "label": "Create Repo", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "initialize",
+      "type": "call",
+      "position": { "x": 500, "y": 120 },
+      "data": { "label": "Initialize", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "plan",
+      "type": "call",
+      "position": { "x": 720, "y": 120 },
+      "data": { "label": "Plan Bootstrap", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "scaffold",
+      "type": "call",
+      "position": { "x": 940, "y": 120 },
+      "data": { "label": "Scaffold App", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "review",
+      "type": "call",
+      "position": { "x": 1160, "y": 120 },
+      "data": { "label": "Review", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "prepare_preview",
+      "type": "call",
+      "position": { "x": 1380, "y": 120 },
+      "data": { "label": "Prepare Preview", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "preview_route",
+      "type": "switch",
+      "position": { "x": 1600, "y": 120 },
+      "data": { "label": "Preview?", "type": "switch", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "preview_capture",
+      "type": "try",
+      "position": { "x": 1820, "y": 40 },
+      "data": { "label": "Capture UX", "type": "try", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "publish",
+      "type": "call",
+      "position": { "x": 1820, "y": 220 },
+      "data": { "label": "Bootstrap PR", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": { "x": 2040, "y": 220 },
+      "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "e-start-create", "source": "start", "target": "create_repo" },
+    { "id": "e-create-initialize", "source": "create_repo", "target": "initialize" },
+    { "id": "e-initialize-plan", "source": "initialize", "target": "plan" },
+    { "id": "e-plan-scaffold", "source": "plan", "target": "scaffold" },
+    { "id": "e-scaffold-review", "source": "scaffold", "target": "review" },
+    { "id": "e-review-prepare", "source": "review", "target": "prepare_preview" },
+    { "id": "e-prepare-route", "source": "prepare_preview", "target": "preview_route" },
+    { "id": "e-route-preview", "source": "preview_route", "target": "preview_capture" },
+    { "id": "e-route-publish", "source": "preview_route", "target": "publish" },
+    { "id": "e-preview-publish", "source": "preview_capture", "target": "publish" },
+    { "id": "e-publish-end", "source": "publish", "target": "end" }
+  ]
+}
