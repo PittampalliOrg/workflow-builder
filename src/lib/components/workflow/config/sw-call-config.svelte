@@ -98,6 +98,7 @@
 	{/if}
 
 	{#if !isApFunction || showRawConfig}
+	<div class="space-y-4">
 	<div class="space-y-1.5">
 		<Label for="call-type">Call Type</Label>
 		<NativeSelect
@@ -198,5 +199,6 @@
 			/>
 		</div>
 	{/if}
+	</div>
 	{/if}
 </div>

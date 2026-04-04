@@ -106,7 +106,7 @@
 		</button>
 
 		{#if expanded}
-			<div class="max-h-[calc(100vh-200px)] overflow-y-auto p-1.5">
+			<div class="max-h-[calc(100vh-140px)] overflow-y-auto p-1.5">
 				{#each nodeDefinitions as def}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
@@ -126,11 +126,11 @@
 					</div>
 				{/each}
 
-				<Separator class="my-1.5" />
+				<div class="my-1.5 h-px bg-border"></div>
 
 				<button
 					onclick={() => (showFunctionBrowser = true)}
-					class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-accent"
+					class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs font-medium transition-colors hover:bg-accent"
 				>
 					<div class="rounded p-1 bg-violet-100 text-violet-600 dark:bg-violet-900 dark:text-violet-400">
 						<Blocks size={12} />

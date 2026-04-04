@@ -431,6 +431,20 @@ def _infer_heuristic_demo_plan(
 def _source_contains_selector(source_text: str, selector: str) -> bool:
     if not selector:
         return False
+    has_text_match = re.search(r':has-text\("([^"]+)"\)', selector)
+    if has_text_match:
+        needle = has_text_match.group(1)
+        prefix = selector.split(":has-text(", 1)[0]
+        if prefix in {"button", ""}:
+            return needle in source_text and "<button" in source_text
+        if prefix == ".filter-chip":
+            return needle in source_text and "filter-chip" in source_text
+        if prefix in {".calendar-grid button", ".calendar button"}:
+            return needle in source_text and ("calendar-grid" in source_text or 'class="calendar"' in source_text)
+        if prefix == ".modal button":
+            return needle in source_text and "modal" in source_text and "<button" in source_text
+        if prefix == ".event-card button":
+            return needle in source_text and "event-card" in source_text and "<button" in source_text
     checks = {
         "#ev-title": 'id="ev-title"' in source_text,
         "#ev-desc": 'id="ev-desc"' in source_text,
@@ -473,20 +487,36 @@ def _preferred_selector_for_step(step: dict[str, Any], source_text: str) -> str:
         elif "title" in combined or "name" in combined:
             candidates.extend(["#ev-title", ".modal-form input[type='text']"])
     elif action == "click":
+        day_match = re.search(r"\bday\s+(\d{1,2})\b", combined)
+        if day_match:
+            day_number = day_match.group(1)
+            candidates.extend(
+                [
+                    f'.calendar-grid button:has-text("{day_number}")',
+                    f'.calendar button:has-text("{day_number}")',
+                ]
+            )
         if "next month" in combined:
             candidates.append('button[aria-label="Next month"]')
         if "previous month" in combined or "prev month" in combined:
             candidates.append('button[aria-label="Previous month"]')
         if "today" in combined:
-            candidates.append(".today-button")
+            candidates.extend([".today-button", 'button:has-text("Today")'])
         if "new event" in combined or "open event modal" in combined or "open the event creation modal" in combined:
-            candidates.append(".agenda-header .add-btn")
+            candidates.extend([".agenda-header .add-btn", 'button:has-text("New Event")'])
         if "create event" in combined or "submit" in combined:
-            candidates.append(".modal-footer .btn-primary")
+            candidates.extend([".modal-footer .btn-primary", '.modal button:has-text("Create Event")'])
         if "remove" in combined or "delete" in combined:
-            candidates.append(".event-card button")
+            candidates.extend([".event-card button:has-text(\"Remove\")", ".event-card button"])
         if "work" in combined and "filter" in combined:
-            candidates.extend([".filter-chip:first-child", ".filter-chip.active:first-child", ".filter-chip:first-child:not(.active)"])
+            candidates.extend(
+                [
+                    '.filter-chip:has-text("Work")',
+                    ".filter-chip:first-child",
+                    ".filter-chip.active:first-child",
+                    ".filter-chip:first-child:not(.active)",
+                ]
+            )
     elif action == "assert":
         if "agenda" in combined or "event card" in combined:
             candidates.append(".event-card")
