@@ -219,6 +219,10 @@
                 "call": "browser_validate",
                 "with": {
                   "workspaceRef": "${ .prepare_preview.workspaceRef }",
+                  "dbExecutionId": "${ .runtime.dbExecutionId // \"\" }",
+                  "workflowId": "${ .runtime.workflowId }",
+                  "nodeId": "preview_capture",
+                  "nodeName": "Capture UX",
                   "repoPath": "${ .prepare_preview.repoPath }",
                   "installCommand": "${ .prepare_preview.installCommand // \"\" }",
                   "devServerCommand": "${ .prepare_preview.devServerCommand // \"\" }",
@@ -234,14 +238,14 @@
           ],
           "output": {
             "as": {
-              "status": "${ .\"preview_capture/try/validate\".data.data.result.status // .\"preview_capture/try/validate\".status // (if .task.success then \"completed\" else \"failed\" end) }",
-              "artifactId": "${ .\"preview_capture/try/validate\".data.data.result.artifactId // .\"preview_capture/try/validate\".artifactId // \"\" }",
-              "screenshots": "${ .\"preview_capture/try/validate\".data.data.result.screenshots // .\"preview_capture/try/validate\".screenshots // 0 }",
-              "traceAssetRef": "${ ((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // .\"preview_capture/try/validate\".artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
-              "videoAssetRef": "${ ((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // .\"preview_capture/try/validate\".artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
-              "artifact": "${ .\"preview_capture/try/validate\".data.data.result.artifact // .\"preview_capture/try/validate\".artifact // null }",
-              "error": "${ .\"preview_capture/try/validate\".data.data.result.error // .\"preview_capture/try/validate\".error // .task.error // \"\" }",
-              "phase": "${ .\"preview_capture/try/validate\".data.data.result.phase // .\"preview_capture/try/validate\".phase // \"\" }"
+              "status": "${ .\"preview_capture/try/validate\".status // (if .task.success then \"completed\" else \"failed\" end) }",
+              "artifactId": "${ .\"preview_capture/try/validate\".artifactId // \"\" }",
+              "screenshots": "${ .\"preview_capture/try/validate\".screenshots // 0 }",
+              "traceAssetRef": "${ ((.\"preview_capture/try/validate\".artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\" }",
+              "videoAssetRef": "${ ((.\"preview_capture/try/validate\".artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
+              "artifact": "${ .\"preview_capture/try/validate\".artifact // null }",
+              "error": "${ .\"preview_capture/try/validate\".error // .task.error // \"\" }",
+              "phase": "${ .\"preview_capture/try/validate\".phase // \"\" }"
             }
           }
         }
@@ -252,7 +256,7 @@
           "with": {
             "stage": "completed",
             "appSubdir": "${ .prepare_preview.appSubdir // \".\" }",
-            "validation": "${ if .prepare_preview.should_validate then {status:(.\"preview_capture/try/validate\".data.data.result.status // \"failed\"), artifactId:(.\"preview_capture/try/validate\".data.data.result.artifactId // \"\"), screenshots:(.\"preview_capture/try/validate\".data.data.result.screenshots // 0), traceAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\"), videoAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\"), artifact:(.\"preview_capture/try/validate\".data.data.result.artifact // null), error:(.\"preview_capture/try/validate\".data.data.result.error // \"\"), phase:(.\"preview_capture/try/validate\".data.data.result.phase // \"\")} else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+            "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
           }
         }
       },
@@ -273,7 +277,7 @@
             "gitea_token": "${ .initialize.gitea_token // \"\" }",
             "plan": "${ .plan.plan }",
             "review": "${ .review }",
-            "validation": "${ if .prepare_preview.should_validate then {status:(.\"preview_capture/try/validate\".data.data.result.status // \"failed\"), artifactId:(.\"preview_capture/try/validate\".data.data.result.artifactId // \"\"), screenshots:(.\"preview_capture/try/validate\".data.data.result.screenshots // 0), traceAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\"), videoAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\"), artifact:(.\"preview_capture/try/validate\".data.data.result.artifact // null), error:(.\"preview_capture/try/validate\".data.data.result.error // \"\"), phase:(.\"preview_capture/try/validate\".data.data.result.phase // \"\")} else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+            "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
           }
         }
       },
@@ -289,7 +293,7 @@
             "pr_url": "${ .commit_pr.pr_url // \"\" }",
             "error": "${ .commit_pr.error // \"\" }",
             "review": "${ .review }",
-            "validation": "${ if .prepare_preview.should_validate then {status:(.\"preview_capture/try/validate\".data.data.result.status // \"failed\"), artifactId:(.\"preview_capture/try/validate\".data.data.result.artifactId // \"\"), screenshots:(.\"preview_capture/try/validate\".data.data.result.screenshots // 0), traceAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\"), videoAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\"), artifact:(.\"preview_capture/try/validate\".data.data.result.artifact // null), error:(.\"preview_capture/try/validate\".data.data.result.error // \"\"), phase:(.\"preview_capture/try/validate\".data.data.result.phase // \"\")} else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+            "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
           }
         }
       }
@@ -300,7 +304,7 @@
         "prUrl": "${ .commit_pr.pr_url // \"\" }",
         "branch": "${ .commit_pr.branch // \"\" }",
         "review": "${ .review }",
-        "validation": "${ if .prepare_preview.should_validate then {status:(.\"preview_capture/try/validate\".data.data.result.status // \"failed\"), artifactId:(.\"preview_capture/try/validate\".data.data.result.artifactId // \"\"), screenshots:(.\"preview_capture/try/validate\".data.data.result.screenshots // 0), traceAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"trace\"))[0].storageRef) // \"\"), videoAssetRef:(((.\"preview_capture/try/validate\".data.data.result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\"), artifact:(.\"preview_capture/try/validate\".data.data.result.artifact // null), error:(.\"preview_capture/try/validate\".data.data.result.error // \"\"), phase:(.\"preview_capture/try/validate\".data.data.result.phase // \"\")} else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+        "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
       }
     }
   },

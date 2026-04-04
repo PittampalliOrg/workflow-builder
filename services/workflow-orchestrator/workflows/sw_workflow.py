@@ -181,6 +181,11 @@ def _build_expression_context(
         "input": tc.trigger_data,
         "state": tc.state_vars,
         "workflow": tc.workflow.model_dump(mode="json"),
+        "runtime": {
+            "executionId": tc.execution_id,
+            "dbExecutionId": tc.db_execution_id,
+            "workflowId": tc.workflow.document.name,
+        },
     }
     context.update(tc.state_vars)
     for key, output in tc.task_outputs.items():
