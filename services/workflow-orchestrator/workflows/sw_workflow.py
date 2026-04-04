@@ -105,6 +105,32 @@ def _elapsed_ms(ctx: wf.DaprWorkflowContext, start_ms: int | None) -> int:
     return max(0, current - start_ms) if current else 0
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if not normalized:
+            return default
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
+
+
+def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
+    trigger_data = tc.trigger_data if isinstance(tc.trigger_data, dict) else {}
+    keep_sandbox = _as_bool(trigger_data.get("keepSandbox"), False) or _as_bool(
+        trigger_data.get("keep_sandbox"), False
+    )
+    return not keep_sandbox
+
+
 def _parse_duration(duration: str | dict[str, Any]) -> timedelta:
     """Parse a SW 1.0 Duration into a timedelta."""
     if isinstance(duration, dict):
@@ -1264,19 +1290,31 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 }),
             )
 
-        # Workspace cleanup (matches legacy dynamic_workflow behavior)
-        try:
-            from activities.call_agent_service import cleanup_execution_workspaces
-            yield ctx.call_activity(
-                cleanup_execution_workspaces,
-                input=_freeze({
-                    "executionId": execution_id,
-                    "dbExecutionId": db_execution_id,
-                    "_otel": tc.otel_ctx,
-                }),
+        # Workspace cleanup (matches legacy dynamic_workflow behavior) unless
+        # the caller explicitly asked to keep the sandbox alive for post-run use.
+        if _should_cleanup_workspaces(tc):
+            try:
+                from activities.call_agent_service import cleanup_execution_workspaces
+
+                yield ctx.call_activity(
+                    cleanup_execution_workspaces,
+                    input=_freeze({
+                        "executionId": execution_id,
+                        "dbExecutionId": db_execution_id,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
+            except Exception as cleanup_err:
+                _log_info(
+                    ctx,
+                    "[SW Workflow] Workspace cleanup failed (non-fatal): %s",
+                    cleanup_err,
+                )
+        else:
+            _log_info(
+                ctx,
+                "[SW Workflow] Skipping workspace cleanup because keepSandbox was requested",
             )
-        except Exception as cleanup_err:
-            _log_info(ctx, "[SW Workflow] Workspace cleanup failed (non-fatal): %s", cleanup_err)
 
         return SWWorkflowOutput(
             success=True,

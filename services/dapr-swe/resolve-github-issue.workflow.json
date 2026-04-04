@@ -338,7 +338,8 @@
         "prUrl": "${ .commit_pr.pr_url // \"\" }",
         "branch": "${ .commit_pr.branch // \"\" }",
         "review": "${ .review }",
-        "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }"
+        "validation": "${ if .prepare_preview.should_validate then .preview_capture else {status:\"skipped\", error:(.prepare_preview.reason // \"Preview validation not applicable.\")} end }",
+        "sandbox": "${ if (.input.keepSandbox == true || .input.keepSandbox == \"true\" || .input.keep_sandbox == true || .input.keep_sandbox == \"true\") then {kept:true, workspaceRef:(.initialize.sandbox_id // \"\"), workingDir:(.initialize.working_dir // \"\"), provider:(.initialize.provider // .input.provider // \"\"), owner:(.input.owner // \"\"), repo:(.input.repo // \"\")} else {kept:false, workspaceRef:\"\", workingDir:\"\", provider:(.initialize.provider // .input.provider // \"\"), owner:(.input.owner // \"\"), repo:(.input.repo // \"\")} end }"
       }
     }
   },
