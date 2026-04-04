@@ -7,11 +7,11 @@ Workflow Builder is a visual workflow system that uses Dapr Workflows for durabl
 The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 
 - `workflow-builder`: SvelteKit UI and BFF
+- `workflow-builder-svelte`: alternate Svelte frontend deployment
 - `workflow-orchestrator`: Python Dapr durable workflow owner
 - `function-router`: action router
 - `openshell-agent-runtime`: canonical OpenShell workspace, browser, and standard agent runtime
-- `openshell-langgraph-observable`: specialized OpenShell LangGraph coding backend
-- `durable-agent`: durable artifact and review-data service
+- `dapr-swe`: separate distributed coding workflow runtime
 - `fn-activepieces`: default SaaS action backend
 - `postgresql`: workflow definitions, executions, artifacts, approvals, and child-run metadata
 - `redis` plus Dapr sidecars: workflow state, pub/sub, service invocation, and actor durability
@@ -66,7 +66,6 @@ Supported agent actions:
 
 - `openshell/run`
 - `openshell/session-start`
-- `openshell-langgraph-observable/run`
 
 Supported workspace/browser actions:
 
@@ -104,16 +103,15 @@ browser
         -> system/* handlers
         -> workspace/* and browser/* -> openshell-agent-runtime
         -> openshell/* -> openshell-agent-runtime
-        -> openshell-langgraph-observable/* -> openshell-langgraph-observable
+        -> dapr-swe/* -> dapr-swe
         -> _default -> fn-activepieces
 
 workflow-orchestrator
   -> dynamic_workflow for drafts
   -> versioned registered workflows for published revisions
 
-openshell-agent-runtime / openshell-langgraph-observable
-  -> OpenShell sandboxes
-  -> durable-agent artifact persistence
+openshell-agent-runtime / dapr-swe
+  -> OpenShell sandboxes or dedicated coding workers
   -> PostgreSQL-backed review surfaces
 ```
 
@@ -147,12 +145,11 @@ openshell-agent-runtime / openshell-langgraph-observable
 3. It initializes a retained Claude session in that sandbox.
 4. The result includes sandbox/session handoff metadata such as `sessionId` and `resumeCommand`.
 
-### LangGraph feature-delivery run
+### Legacy workflow compatibility
 
-1. A workflow node uses `openshell-langgraph-observable/run`.
-2. `workflow-orchestrator` starts a native child workflow against `openshell-langgraph-observable`.
-3. Planning and execution occur in OpenShell-backed sandboxes under the LangGraph runtime.
-4. The parent workflow persists normalized child-run state and review artifacts.
+1. Older saved workflows may still contain `durable/*` or `openshell-langgraph*` action types.
+2. `workflow-orchestrator` normalizes those legacy action types to `openshell/run`.
+3. New workflow definitions should use `openshell/run` directly.
 
 ### Browser validation
 
@@ -196,6 +193,7 @@ Provides:
 
 - route lookup by `actionType`
 - routing for `system/*`, `workspace/*`, `browser/*`, `openshell/*`
+- routing for `dapr-swe/*`
 - fallback routing to `fn-activepieces`
 
 ### openshell-agent-runtime
@@ -208,24 +206,6 @@ Provides:
 - browser materialization and validation
 
 It is a runtime backend, not the orchestration owner.
-
-### openshell-langgraph-observable
-
-Provides:
-
-- the specialized LangGraph plan and execute backend
-- native child workflow execution for complex coding runs
-- OpenShell sandbox-backed coding behavior
-
-### durable-agent
-
-Provides:
-
-- durable artifact persistence and readback
-- patch and snapshot storage
-- shared execution artifact services used across runtimes
-
-It is no longer an active sandbox execution backend.
 
 ## Persisted Data Model
 

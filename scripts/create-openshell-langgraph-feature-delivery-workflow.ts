@@ -1,7 +1,7 @@
 /**
- * Create or update a reusable observable OpenShell feature-delivery workflow:
- * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
- * -> openshell-langgraph-observable/run (execute) -> workspace/command (review)
+ * Create or update a reusable OpenShell feature-delivery workflow:
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (plan)
+ * -> openshell/run (execute) -> workspace/command (review)
  * -> workspace/profile (browser) -> workspace/clone (browser)
  * -> browser/materialize-change-artifact -> browser/validate -> workspace/cleanup
  *
@@ -35,7 +35,7 @@ import {
 import { resolveCanonicalWorkflowSpec } from "../lib/workflow-contract";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const DEFAULT_NAME = "OpenShell LangGraph Feature Delivery";
+const DEFAULT_NAME = "OpenShell Feature Delivery";
 const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "ai-chatbot";
 const DEFAULT_REPO_BRANCH = "main";
@@ -546,7 +546,7 @@ function buildWorkflowGraph(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "openshell-langgraph-observable/run",
+		actionType: "openshell/run",
 		engine: "langgraph-observable",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,

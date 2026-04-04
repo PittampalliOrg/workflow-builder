@@ -7,11 +7,11 @@ This document describes the current `workflow-builder` runtime.
 The current core runtime is:
 
 - `workflow-builder`
+- `workflow-builder-svelte`
 - `workflow-orchestrator`
 - `function-router`
 - `openshell-agent-runtime`
-- `openshell-langgraph-observable`
-- `durable-agent`
+- `dapr-swe`
 - `fn-activepieces`
 - `postgresql`
 
@@ -70,7 +70,7 @@ Current route contract:
 - `workspace/*` -> `openshell-agent-runtime`
 - `browser/*` -> `openshell-agent-runtime`
 - `openshell/*` -> `openshell-agent-runtime`
-- `openshell-langgraph-observable/*` -> `openshell-langgraph-observable`
+- `dapr-swe/*` -> `dapr-swe`
 - `_default` -> `fn-activepieces`
 
 ## openshell-agent-runtime
@@ -95,33 +95,13 @@ Important behavior:
 - supports retained Claude session handoff
 - runs browser validation against materialized workspace state
 
-## openshell-langgraph-observable
+## dapr-swe
 
-Specialized OpenShell LangGraph backend.
+Separate distributed coding runtime.
 
-- Port: `8003`
-- Dapr app-id: `openshell-langgraph-observable`
 - Responsibilities:
-  - specialized planning and execution for feature-delivery style coding runs
-  - native child workflow execution under the parent orchestrator
-  - OpenShell sandbox-backed coding work with richer LangGraph control flow
-
-## durable-agent
-
-Durable artifact and review-data service.
-
-- Port: `8001`
-- Dapr app-id: `durable-agent`
-- Responsibilities:
-  - persist change artifacts
-  - store and serve patches
-  - store and serve file snapshots
-  - support durable execution review APIs
-
-Important behavior:
-
-- retained as a data and artifact service
-- no longer the active sandbox execution path for agent work
+  - planner/developer/reviewer style issue workflows
+  - execution paths under the `dapr-swe/*` action family
 
 ## fn-activepieces
 

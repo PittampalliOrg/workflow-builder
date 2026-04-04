@@ -1,6 +1,6 @@
 /**
- * Create a workflow that uses the Claude planning node with workspace sandbox prep:
- * trigger -> workspace/profile -> workspace/clone -> durable/claude-plan -> durable/materialize-plan
+ * Create a workflow that uses the canonical OpenShell planning node with workspace sandbox prep:
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (plan mode)
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-claude-plan-workflow.ts --branch main
@@ -51,7 +51,7 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
-	let name = "Claude Plan Sandbox Flow";
+	let name = "OpenShell Plan Sandbox Flow";
 	let prompt = DEFAULT_PLAN_PROMPT;
 	let repositoryOwner = DEFAULT_REPO_OWNER;
 	let repositoryRepo = DEFAULT_REPO_NAME;
@@ -274,7 +274,6 @@ function buildWorkflowGraph(input: {
 	const profileId = nanoid();
 	const cloneId = nanoid();
 	const claudePlanId = nanoid();
-	const materializePlanId = nanoid();
 
 	const workspaceRefTemplate = `{{@${profileId}:Workspace Profile.workspaceRef}}`;
 	const clonePathTemplate = `{{@${cloneId}:Workspace Clone.clonePath}}`;
@@ -344,12 +343,13 @@ function buildWorkflowGraph(input: {
 			type: "action",
 			position: { x: 420, y: 0 },
 			data: {
-				label: "Claude Plan",
+				label: "OpenShell Plan",
 				description:
-					"Generate dependency DAG plan (blocked/blockedBy) via Claude Code headless planning",
+					"Generate an implementation-ready plan and wait for approval",
 				type: "action",
 				config: {
-					actionType: "durable/claude-plan",
+					actionType: "openshell/run",
+					mode: "plan_mode",
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
 					cwd: clonePathTemplate,
@@ -358,24 +358,6 @@ function buildWorkflowGraph(input: {
 					approvalTimeoutMinutes: input.approvalTimeoutMinutes,
 					executeAfterApproval: "false",
 					maxTurns: input.maxTurns,
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: materializePlanId,
-			type: "action",
-			position: { x: 720, y: 0 },
-			data: {
-				label: "Materialize Plan Files",
-				description:
-					"Write tasks.json/plan.json/metadata.json into workspace for downstream task runners",
-				type: "action",
-				config: {
-					actionType: "durable/materialize-plan",
-					artifactRef: `{{@${claudePlanId}:Claude Plan.artifactRef}}`,
-					workspaceRef: workspaceRefTemplate,
-					outputDir: `{{@${cloneId}:Workspace Clone.clonePath}}/.workflow/plans/{{@${claudePlanId}:Claude Plan.artifactRef}}`,
 				},
 				status: "idle",
 			},
@@ -404,14 +386,6 @@ function buildWorkflowGraph(input: {
 			type: "animated",
 			source: cloneId,
 			target: claudePlanId,
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: nanoid(),
-			type: "animated",
-			source: claudePlanId,
-			target: materializePlanId,
 			sourceHandle: null,
 			targetHandle: null,
 		},
@@ -467,7 +441,7 @@ async function main() {
 				id: workflowId,
 				name: args.name,
 				description:
-					"Programmatically created workflow using workspace sandbox + clone + durable/claude-plan + durable/materialize-plan",
+					"Programmatically created workflow using workspace sandbox + clone + openshell/run (plan mode)",
 				userId,
 				projectId,
 				nodes,

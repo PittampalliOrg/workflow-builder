@@ -1,6 +1,6 @@
 /**
  * Create a long-running codex edit workflow with explicit UI-visible diff outputs:
- * trigger -> workspace/profile -> workspace/clone -> durable/run (execute_direct) -> review commands
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (execute_direct) -> review commands
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-codex-long-running-edit-workflow.ts --branch dev
@@ -436,11 +436,11 @@ fi`;
 			type: "action",
 			position: { x: 320, y: 0 },
 			data: {
-				label: "Durable Agent Edit (Long Run)",
+				label: "OpenShell Edit (Long Run)",
 				description: "Long-running direct execution with required file edits",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,

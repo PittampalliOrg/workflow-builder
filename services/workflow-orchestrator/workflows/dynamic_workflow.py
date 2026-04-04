@@ -2243,43 +2243,44 @@ def process_agent_child_workflow(
     """
     Invoke the supported OpenShell-backed agent actions.
 
-    Standard OpenShell runs execute through openshell-agent-runtime. The
-    OpenShell LangGraph workflow uses a native Dapr child workflow call to the
-    openshell-langgraph-observable app.
+    The live ryzen path uses openshell-agent-runtime for coding work. Older
+    durable/langgraph action types are normalized here so saved workflows keep
+    running while new workflow definitions converge on openshell/run.
     """
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
     resolved_config = resolve_templates(config, node_outputs)
     retired_action_types = {
         "dapr-agent/run",
-        "durable/claude-plan",
-        "durable/execute-plan-dag",
-        "durable/run",
         "mastra/execute",
         "ms-agent/run",
-        "openshell-deepagent/run",
-        "openshell-durable/run",
-        "vanilla-durable/run",
+    }
+    legacy_openshell_aliases = {
+        "durable/claude-plan": "openshell/run",
+        "durable/execute-plan-dag": "openshell/run",
+        "durable/run": "openshell/run",
+        "openshell-deepagent/run": "openshell/run",
+        "openshell-durable/run": "openshell/run",
+        "openshell-langgraph/run": "openshell/run",
+        "openshell-langgraph-observable/run": "openshell/run",
+        "vanilla-durable/run": "openshell/run",
     }
     if action_type in retired_action_types:
         return {
             "success": False,
             "error": (
                 f"{action_type} has been retired as part of the OpenShell-only cutover. "
-                "Use openshell/run, openshell/session-start, or "
-                "openshell-langgraph-observable/run instead."
+                "Use openshell/run or openshell/session-start instead."
             ),
             "retired": True,
             "actionType": action_type,
         }
-    is_openshell_langgraph_agent = action_type in {
-        "openshell-langgraph/run",
-        "openshell-langgraph-observable/run",
-    }
-    is_openshell_session_start = action_type == "openshell/session-start"
-    is_openshell_plan_agent = action_type == "openshell/run"
+    canonical_action_type = legacy_openshell_aliases.get(action_type, action_type)
+    is_openshell_session_start = canonical_action_type == "openshell/session-start"
+    is_openshell_plan_agent = canonical_action_type == "openshell/run"
+    is_legacy_openshell_alias = canonical_action_type != action_type
     is_openshell_agent = is_openshell_plan_agent or is_openshell_session_start
-    uses_observable_agent_runtime = is_openshell_langgraph_agent
+    uses_observable_agent_runtime = False
     default_mode = "execute_direct" if is_openshell_session_start else "plan_mode"
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
@@ -2347,7 +2348,7 @@ def process_agent_child_workflow(
     else:
         return {
             "success": False,
-            "error": f"Unsupported agent action type: {action_type}",
+            "error": f"Unsupported agent action type: {canonical_action_type}",
             "actionType": action_type,
         }
     native_child_workflow_enabled = _is_native_child_workflow_enabled(resolved_config)
@@ -2365,7 +2366,8 @@ def process_agent_child_workflow(
     node_id = str(node.get("id") or "unknown")
 
     activity_input = {
-        "actionType": action_type,
+        "actionType": canonical_action_type,
+        "originalActionType": action_type if is_legacy_openshell_alias else None,
         "prompt": prompt,
         "cwd": resolved_config.get("cwd"),
         "model": resolved_config.get("model"),
@@ -2419,27 +2421,9 @@ def process_agent_child_workflow(
         "approvalTimeoutMinutes": approval_timeout_minutes,
         "_otel": otel_ctx,
     }
-    if is_openshell_langgraph_agent:
-        activity_input["engine"] = "langgraph"
-        activity_input["toolBackend"] = "openshell"
-        activity_input["sandboxRepoPath"] = (
-            resolved_config.get("sandboxRepoPath") or "/sandbox/repo"
-        )
-        sandbox_suffix = (
-            str(tracked_execution_id or ctx.instance_id or "").strip()
-            or f"{node_id}-{run_mode}"
-        )
-        normalized_suffix = sandbox_suffix.lower().replace("_", "-").replace("/", "-")
-        raw_sandbox_name = (
-            str(resolved_config.get("sandboxName") or "").strip()
-            or f"openshell-lg-{normalized_suffix}"
-        )
-        # OpenShell appends ~30 chars of suffix to sandbox names when
-        # creating K8s Sandbox resources; keep ours <=30 chars so the
-        # final name fits within the 63-char RFC 1123 subdomain limit.
-        activity_input["sandboxName"] = re.sub(
-            r"[^a-z0-9-]", "-", raw_sandbox_name.lower()
-        )[:30].strip("-") or "sandbox"
+    if is_legacy_openshell_alias:
+        activity_input["engine"] = resolved_config.get("engine") or "openshell"
+        activity_input["toolBackend"] = resolved_config.get("toolBackend") or "openshell"
 
     workspace_ref = str(resolved_config.get("workspaceRef") or "").strip() or None
     (
@@ -2591,7 +2575,7 @@ def process_agent_child_workflow(
         if call_activity_fn is None:
             return {
                 "success": False,
-                "error": f"{action_type} requires native child workflow execution",
+                "error": f"{canonical_action_type} requires native child workflow execution",
             }
         if is_openshell_agent:
             mode_suffix = "plan" if run_mode == "plan_mode" else "run"

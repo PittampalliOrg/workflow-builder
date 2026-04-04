@@ -16,14 +16,6 @@ const REGISTRY_FILE_PATH =
 // Fallback default registry
 const DEFAULT_REGISTRY: FunctionRegistry = {
 	"system/*": { appId: "fn-system", type: "knative" },
-	"openshell-langgraph-observable/*": {
-		appId: "openshell-langgraph-observable",
-		type: "knative",
-	},
-	"openshell-langgraph/*": {
-		appId: "openshell-langgraph-observable",
-		type: "knative",
-	},
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
@@ -38,14 +30,6 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
  * only defines a broad "_default" mapping.
  */
 const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
-	"openshell-langgraph-observable/*": {
-		appId: "openshell-langgraph-observable",
-		type: "knative",
-	},
-	"openshell-langgraph/*": {
-		appId: "openshell-langgraph-observable",
-		type: "knative",
-	},
 	"browser/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
 	"workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
@@ -72,7 +56,9 @@ export async function loadRegistry(): Promise<FunctionRegistry> {
 		try {
 			const content = await readFile(REGISTRY_FILE_PATH, "utf-8");
 			const loaded = JSON.parse(content) as FunctionRegistry;
-			// Merge builtin fallbacks on top so code-defined routes override stale ConfigMap values
+			// Merge builtin fallbacks on top so the live ConfigMap stays authoritative
+			// for supported runtimes, while core workspace/browser routes still exist in
+			// sparse local-dev registries.
 			cachedRegistry = { ...loaded, ...BUILTIN_FALLBACK_REGISTRY };
 			cacheTimestamp = now;
 			console.log(

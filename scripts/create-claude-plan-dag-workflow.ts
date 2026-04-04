@@ -1,7 +1,7 @@
 /**
- * Create a full plan-then-execute-DAG workflow:
- * trigger -> workspace/profile -> workspace/clone -> durable/claude-plan
- *   -> durable/materialize-plan -> durable/execute-plan-dag
+ * Create a full plan-then-execute workflow:
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (plan)
+ *   -> openshell/run (execute) -> commit -> pull-request
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-claude-plan-dag-workflow.ts --branch main
@@ -61,7 +61,7 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
-	let name = "Claude Plan → DAG Execute";
+	let name = "OpenShell Plan → Execute";
 	let prompt = DEFAULT_PLAN_PROMPT;
 	let repositoryOwner = DEFAULT_REPO_OWNER;
 	let repositoryRepo = DEFAULT_REPO_NAME;
@@ -273,7 +273,6 @@ function buildWorkflowGraph(input: {
 	const cloneId = nanoid();
 	const checkoutBranchId = nanoid();
 	const claudePlanId = nanoid();
-	const materializePlanId = nanoid();
 	const executeDagId = nanoid();
 	const commitId = nanoid();
 	const pullRequestId = nanoid();
@@ -384,12 +383,13 @@ function buildWorkflowGraph(input: {
 			type: "action",
 			position: { x: 720, y: 0 },
 			data: {
-				label: "Claude Plan",
+				label: "OpenShell Plan",
 				description:
-					"Generate dependency DAG plan (blocked/blockedBy) via Claude Code headless planning",
+					"Generate an implementation-ready plan and wait for approval",
 				type: "action",
 				config: {
-					actionType: "durable/claude-plan",
+					actionType: "openshell/run",
+					mode: "plan_mode",
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
 					cwd: clonePathTemplate,
@@ -403,41 +403,23 @@ function buildWorkflowGraph(input: {
 			},
 		},
 		{
-			id: materializePlanId,
+			id: executeDagId,
 			type: "action",
 			position: { x: 1020, y: 0 },
 			data: {
-				label: "Materialize Plan Files",
+				label: "Execute Approved Plan",
 				description:
-					"Write tasks.json/plan.json/metadata.json into workspace for downstream task runners",
+					"Execute the approved plan artifact in the canonical OpenShell runtime",
 				type: "action",
 				config: {
-					actionType: "durable/materialize-plan",
-					artifactRef: artifactRefTemplate,
-					workspaceRef: workspaceRefTemplate,
-					outputDir: `${clonePathTemplate}/.workflow/plans/${artifactRefTemplate}`,
-				},
-				status: "idle",
-			},
-		},
-		{
-			id: executeDagId,
-			type: "action",
-			position: { x: 1320, y: 0 },
-			data: {
-				label: "Execute Plan (DAG)",
-				description:
-					"Execute the plan as a DAG workflow — each task runs Claude Code CLI with dependency scheduling",
-				type: "action",
-				config: {
-					actionType: "durable/execute-plan-dag",
+					actionType: "openshell/run",
+					mode: "execute_direct",
 					artifactRef: artifactRefTemplate,
 					workspaceRef: workspaceRefTemplate,
 					cwd: clonePathTemplate,
 					model: input.model,
-					maxTaskRetries: input.maxTaskRetries,
-					taskTimeoutMinutes: input.taskTimeoutMinutes,
-					overallTimeoutMinutes: input.overallTimeoutMinutes,
+					timeoutMinutes: input.overallTimeoutMinutes,
+					requireFileChanges: "true",
 					cleanupWorkspace: "false",
 				},
 				status: "idle",
@@ -446,7 +428,7 @@ function buildWorkflowGraph(input: {
 		{
 			id: commitId,
 			type: "action",
-			position: { x: 1620, y: 0 },
+			position: { x: 1320, y: 0 },
 			data: {
 				label: "Commit & Push",
 				description: "Commit AI changes and push to origin",
@@ -463,7 +445,7 @@ function buildWorkflowGraph(input: {
 		{
 			id: pullRequestId,
 			type: "action",
-			position: { x: 1920, y: 0 },
+			position: { x: 1620, y: 0 },
 			data: {
 				label: "Create Pull Request",
 				description: "Create a PR in Gitea",
@@ -511,14 +493,6 @@ function buildWorkflowGraph(input: {
 			id: nanoid(),
 			type: "animated",
 			source: claudePlanId,
-			target: materializePlanId,
-			sourceHandle: null,
-			targetHandle: null,
-		},
-		{
-			id: nanoid(),
-			type: "animated",
-			source: materializePlanId,
 			target: executeDagId,
 			sourceHandle: null,
 			targetHandle: null,
@@ -593,7 +567,7 @@ async function main() {
 				id: workflowId,
 				name: args.name,
 				description:
-					"Plan-then-execute workflow: workspace/profile -> workspace/clone -> durable/claude-plan -> durable/materialize-plan -> durable/execute-plan-dag",
+					"Plan-then-execute workflow: workspace/profile -> workspace/clone -> openshell/run (plan) -> openshell/run (execute)",
 				userId,
 				projectId,
 				nodes,
@@ -619,7 +593,7 @@ async function main() {
 		console.log(`  repo: ${args.repositoryOwner}/${args.repositoryRepo}`);
 		console.log(`  branch: ${args.repositoryBranch}`);
 		console.log(
-			`  nodes: trigger -> workspace/profile -> workspace/clone -> durable/claude-plan -> durable/materialize-plan -> durable/execute-plan-dag`,
+			`  nodes: trigger -> workspace/profile -> workspace/clone -> openshell/run (plan) -> openshell/run (execute)`,
 		);
 		console.log(`  open: /workflows/${created.id}`);
 	} finally {

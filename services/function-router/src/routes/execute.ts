@@ -904,6 +904,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 		"dapr-agent",
 		"mastra",
 		"ms-agent",
+		"openshell-langgraph",
 		"openshell-deepagent",
 		"openshell-durable",
 		"vanilla-durable",
@@ -939,7 +940,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 		if (retiredAgentPrefixes.has(pluginId)) {
 			return reply.status(410).send({
 				success: false,
-				error: `The ${pluginId} runtime has been retired. Use openshell/* or openshell-langgraph-observable/* actions instead.`,
+				error: `The ${pluginId} runtime has been retired. Use openshell/* actions instead.`,
 				duration_ms: 0,
 			} as ExecuteResponse);
 		}
@@ -1662,12 +1663,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 							);
 						}
 
-						if (
-							isAgentRun &&
-							runMode === "execute_direct" &&
-							shouldWaitForUnifiedAgentCompletion &&
-							resolvedMastra?.success === true
-						) {
+							if (
+								isAgentRun &&
+								runMode === "execute_direct" &&
+								shouldWaitForAgentCompletion &&
+								resolvedMastra?.success === true
+							) {
 							const workflowId =
 								typeof resolvedMastra.workflow_id === "string"
 									? resolvedMastra.workflow_id

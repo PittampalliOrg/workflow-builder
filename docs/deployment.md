@@ -7,11 +7,11 @@ This document describes the current deployment model for `workflow-builder`.
 The active cluster shape is:
 
 - `workflow-builder`
+- `workflow-builder-svelte`
 - `workflow-orchestrator`
 - `function-router`
 - `openshell-agent-runtime`
-- `openshell-langgraph-observable`
-- `durable-agent`
+- `dapr-swe`
 - `fn-activepieces`
 - `postgresql`
 - Dapr sidecars and their Redis/pub-sub backing services
@@ -68,9 +68,8 @@ The expected live coding path is:
 1. `workflow-builder` starts a run
 2. `workflow-orchestrator` resolves draft or published execution target
 3. `function-router` routes OpenShell workspace, browser, and standard agent actions to `openshell-agent-runtime`
-4. `workflow-orchestrator` starts native child workflows for `openshell-langgraph-observable/run`
-5. `durable-agent` persists patches, snapshots, and related review artifacts
-6. the UI reads persisted artifacts back through the BFF
+4. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
+5. the UI reads persisted artifacts back through the BFF
 
 ## Validation Checklist
 
@@ -92,6 +91,10 @@ If a pod looks healthy at the app container level but the overall pod is not rea
 ### Parent workflow owns timeouts
 
 Long-running agent execution should be governed by the parent durable workflow timeout, not by ad hoc inter-service HTTP timeouts.
+
+### Multi-app child workflows are not active on ryzen
+
+Native cross-app Dapr child workflows should stay disabled until every participating workflow app shares the same workflow actor state store in the same namespace.
 
 ### Review data must be durable
 

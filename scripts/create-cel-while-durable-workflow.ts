@@ -1,7 +1,7 @@
 /**
  * Create a simple CEL-based while-loop workflow programmatically:
  * trigger -> while (CEL) -> set-state
- *            \_ durable/run (nested body)
+ *            \_ openshell/run (nested body)
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-cel-while-durable-workflow.ts
@@ -39,9 +39,9 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
 	let userEmail: string | undefined;
-	let name = "CEL While + Durable Agent Example";
+	let name = "CEL While + OpenShell Example";
 	let description =
-		"Programmatic example workflow: while(CEL) loop around a durable agent node.";
+		"Programmatic example workflow: while(CEL) loop around an OpenShell run node.";
 	let expression = "iteration < 3";
 	let prompt =
 		"You are in a loop iteration. Return one short sentence confirming completion.";
@@ -193,11 +193,11 @@ function buildWorkflowGraph(input: {
 }) {
 	const triggerId = nanoid();
 	const whileId = nanoid();
-	const durableAgentId = nanoid();
+	const openshellRunId = nanoid();
 	const afterLoopId = nanoid();
 
 	const durableConfig: Record<string, string> = {
-		actionType: "durable/run",
+		actionType: "openshell/run",
 		mode: "execute_direct",
 		agentProfileTemplateId: input.agentProfileTemplateId,
 		prompt: input.prompt,
@@ -238,13 +238,13 @@ function buildWorkflowGraph(input: {
 			},
 		},
 		{
-			id: durableAgentId,
+			id: openshellRunId,
 			type: "action",
 			parentId: whileId,
 			extent: "parent",
 			position: { x: 112, y: 88 },
 			data: {
-				label: "Durable Agent",
+				label: "OpenShell Run",
 				description: "Loop body",
 				type: "action",
 				config: durableConfig,

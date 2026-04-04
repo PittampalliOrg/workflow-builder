@@ -42,7 +42,7 @@ During active development, the most relevant services are:
 - `workflow-orchestrator`
 - `function-router`
 - `openshell-agent-runtime`
-- `openshell-langgraph-observable`
+- `dapr-swe` when you are working on the distributed coding flow
 
 ## Create and Run a Workflow
 

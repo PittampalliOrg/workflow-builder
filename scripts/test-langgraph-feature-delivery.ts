@@ -1,6 +1,6 @@
 /**
- * Execute the committed LangGraph Dapr agent smoke workflow and assert the plan
- * and execute phases complete through the Dapr agent runtime.
+ * Execute the committed OpenShell smoke workflow and assert the plan
+ * and execute phases complete through the canonical agent runtime.
  *
  * Usage:
  *   DATABASE_URL=... GENERIC_ORCHESTRATOR_URL=http://127.0.0.1:3013 \
@@ -28,7 +28,7 @@ if (!DATABASE_URL) {
 const ORCHESTRATOR_URL =
 	process.env.GENERIC_ORCHESTRATOR_URL || "http://127.0.0.1:3013";
 const WORKFLOW_ID = process.env.WORKFLOW_ID;
-const WORKFLOW_NAME = process.env.WORKFLOW_NAME || "LangGraph Dapr Agent Smoke";
+const WORKFLOW_NAME = process.env.WORKFLOW_NAME || "OpenShell Agent Smoke";
 const POLL_INTERVAL_MS = Number.parseInt(
 	process.env.POLL_INTERVAL_MS || "5000",
 	10,
@@ -88,7 +88,7 @@ async function approve(instanceId: string, eventName: string) {
 		eventName,
 		{
 			approved: true,
-			reason: "LangGraph smoke auto-approval",
+			reason: "OpenShell smoke auto-approval",
 			approvedBy: "codex",
 		},
 	);
@@ -193,7 +193,7 @@ async function pollUntilComplete(instanceId: string) {
 		}
 		await sleep(POLL_INTERVAL_MS);
 	}
-	throw new Error("Timed out waiting for LangGraph smoke workflow completion");
+	throw new Error("Timed out waiting for OpenShell smoke workflow completion");
 }
 
 async function waitForExecutionRecord(executionId: string) {
@@ -283,7 +283,7 @@ async function main() {
 			);
 		}
 		await assertArtifacts(started.workflowId, started.executionId);
-		log("LangGraph smoke workflow passed");
+		log("OpenShell smoke workflow passed");
 	} finally {
 		await sql.end({ timeout: 5 });
 	}

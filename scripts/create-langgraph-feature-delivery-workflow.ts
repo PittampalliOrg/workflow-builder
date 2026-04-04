@@ -1,7 +1,7 @@
 /**
- * Create or update a reusable LangGraph feature-delivery workflow:
- * trigger -> workspace/profile -> workspace/clone -> openshell-langgraph-observable/run (plan)
- * -> openshell-langgraph-observable/run (execute) -> workspace/command (review)
+ * Create or update a reusable OpenShell feature-delivery workflow:
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (plan)
+ * -> openshell/run (execute) -> workspace/command (review)
  *
  * The manual trigger input is treated as the user feature request.
  *
@@ -32,7 +32,7 @@ import {
 } from "../lib/workflows/apply-resource-presets";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const DEFAULT_NAME = "LangGraph Feature Delivery";
+const DEFAULT_NAME = "OpenShell Feature Delivery";
 const DEFAULT_REPO_OWNER = "PittampalliOrg";
 const DEFAULT_REPO_NAME = "workflow-builder";
 const DEFAULT_REPO_BRANCH = "main";
@@ -370,7 +370,7 @@ function buildWorkflowGraph(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "openshell-langgraph-observable/run",
+		actionType: "openshell/run",
 		engine: "langgraph",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,

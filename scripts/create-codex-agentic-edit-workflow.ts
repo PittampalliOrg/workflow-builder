@@ -1,6 +1,6 @@
 /**
  * Create a codex-focused agentic workflow:
- * trigger -> workspace/profile -> workspace/clone -> durable/run (execute_direct) -> review commands
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (execute_direct) -> review commands
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-codex-agentic-edit-workflow.ts --branch main
@@ -381,11 +381,11 @@ fi`;
 			type: "action",
 			position: { x: 320, y: 0 },
 			data: {
-				label: "Durable Agent Edit",
+				label: "OpenShell Edit",
 				description: "Execute complex code edit task",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,

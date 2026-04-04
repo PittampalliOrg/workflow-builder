@@ -5,7 +5,7 @@
  * - Upsert workflow lazxidq045szbb9ke4dny (Opencode Agent Plan Then Execute PR)
  * - Upsert workflow aicodingagent001 (AI Coding Agent)
  * - Upsert GitHub sandbox clone proof workflow
- * - Reconcile workflow_resource_refs for durable plan/execute nodes
+ * - Reconcile workflow_resource_refs for canonical OpenShell plan/execute nodes
  *
  * User/project targeting:
  * - Prefer SEED_WORKFLOW_USER_ID
@@ -44,9 +44,9 @@ const AI_CODING_AGENT_WORKFLOW_DESCRIPTION =
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_ID =
 	"2mjd2mrptkf8zaxembsbp";
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_NAME =
-	"OpenShell LangGraph Feature Delivery";
+	"OpenShell Feature Delivery";
 const OPENSHELL_LANGGRAPH_FEATURE_DELIVERY_WORKFLOW_DESCRIPTION =
-	"Reusable OpenShell LangGraph plan-first coding workflow for user-supplied feature requests.";
+	"Reusable OpenShell plan-first coding workflow for user-supplied feature requests.";
 const OPENSHELL_LANGGRAPH_BROWSER_VALIDATION_REPOSITORY_URL =
 	"https://github.com/PittampalliOrg/next-learn.git";
 const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_ID = "ghsbxcloneproof001";
@@ -56,7 +56,7 @@ const GITHUB_SANDBOX_CLONE_PROOF_WORKFLOW_DESCRIPTION =
 const GITHUB_SANDBOX_REVIEW_WORKFLOW_ID = "ghsbxreviewproof001";
 const GITHUB_SANDBOX_REVIEW_WORKFLOW_NAME = "GitHub Sandbox Project Review";
 const GITHUB_SANDBOX_REVIEW_WORKFLOW_DESCRIPTION =
-	"Reference workflow that clones PittampalliOrg/workflow-builder into a Kubernetes sandbox, prints a directory tree, and asks the durable coding agent to review and summarize the project.";
+	"Reference workflow that clones PittampalliOrg/workflow-builder into a Kubernetes sandbox, prints a directory tree, and asks the OpenShell coding agent to review and summarize the project.";
 const AGENT_SYSTEM_DEMO_WORKFLOW_ID = "agentsysdemo001";
 const AGENT_SYSTEM_DEMO_WORKFLOW_NAME = "OpenShell Feature Delivery Demo";
 const AGENT_SYSTEM_DEMO_WORKFLOW_DESCRIPTION =
@@ -492,7 +492,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 						"You are planning a repository feature delivery task for this specific codebase.\n\nUser feature request:\n{{@trigger:Manual.feature_request}}\n\nPlanning requirements:\n- Inspect the repository first and stay read-only during this step.\n- Build a concrete implementation plan for this exact repository, not a generic solution.\n- Prefer the smallest cohesive change set that satisfies the request.\n- Identify the likely files/modules to touch, tests to add or update, validation commands to run, and any important risks or assumptions.\n- If the request is underspecified, make the minimum necessary assumptions and state them explicitly.\n\nReturn only the final implementation plan for approval.",
 					profile: "feature-delivery",
 					maxTurns: "24",
-					actionType: "openshell-langgraph/run",
+					actionType: "openshell/run",
 					toolPolicy: "all",
 					agentConfig,
 					shellPolicy: "workspace-safe",
@@ -551,7 +551,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 						"Implement the approved feature plan for this repository.\n\nOriginal user feature request:\n{{@trigger:Manual.feature_request}}\n\nExecution requirements:\n- Follow the approved plan artifact as the primary source of truth.\n- Match existing repository patterns and architecture.\n- Keep the change set cohesive and avoid unrelated edits.\n- Add or update tests when behavior changes.\n- Run the provided validation commands and any targeted checks needed for the changed code.\n- If the approved plan needs a small adaptation based on repository realities, make the smallest justified adjustment and explain it clearly in the final summary.\n\nReturn a concise engineering summary that includes changed files, verification results, and residual risks.",
 					profile: "implement",
 					maxTurns: "80",
-					actionType: "openshell-langgraph/run",
+					actionType: "openshell/run",
 					toolPolicy: "all",
 					agentConfig,
 					artifactRef: `{{@${OPENSHELL_FEATURE_IDS.plan}:OpenShell LangGraph Plan.artifactRef}}`,
@@ -880,7 +880,7 @@ function buildNodes(profileVersion: number) {
 				description: "Generate plan only (no execution)",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "plan_mode",
 					model: "openai/gpt-5.4",
 					prompt:
@@ -922,7 +922,7 @@ function buildNodes(profileVersion: number) {
 				description: "Execute plan with concrete file edits",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "execute_direct",
 					model: "openai/gpt-5.4",
 					prompt:
@@ -1368,7 +1368,7 @@ fi`,
 					"Use the durable coding agent to review the repository and summarize the project.",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
 					model: "openai/gpt-5.4",

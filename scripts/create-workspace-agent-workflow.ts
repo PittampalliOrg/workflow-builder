@@ -1,6 +1,6 @@
 /**
  * Create a workflow that uses the new workspace + durable agent pattern:
- * trigger -> workspace/profile -> workspace/clone -> durable/run (plan mode)
+ * trigger -> workspace/profile -> workspace/clone -> openshell/run (plan mode)
  *
  * Usage:
  *   DATABASE_URL=... pnpm tsx scripts/create-workspace-agent-workflow.ts --repo owner/name --branch main
@@ -267,12 +267,12 @@ function buildWorkflowNodes(input: {
 			type: "action",
 			position: { x: 400, y: 0 },
 			data: {
-				label: "Durable Agent",
+				label: "OpenShell Run",
 				description:
 					"Create a plan, wait for approval, then execute in a single durable run",
 				type: "action",
 				config: {
-					actionType: "durable/run",
+					actionType: "openshell/run",
 					mode: "plan_mode",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,
