@@ -112,12 +112,17 @@ def update_execution_status(execution_id: str, phase: str, progress: int, status
     })
 
 
-def post_agent_event(execution_id: str, event_type: str, data: dict) -> None:
+def post_agent_event(
+    execution_id: str,
+    dapr_instance_id: str,
+    event_type: str,
+    data: dict,
+) -> None:
     """Post an agent event to workflow-builder for execution tracking.
 
     Best-effort — failures don't block the workflow.
     """
-    if not execution_id or not WORKFLOW_BUILDER_INTERNAL_TOKEN:
+    if not execution_id or not dapr_instance_id or not WORKFLOW_BUILDER_INTERNAL_TOKEN:
         return
     try:
         with httpx.Client(timeout=5) as client:
@@ -129,6 +134,7 @@ def post_agent_event(execution_id: str, event_type: str, data: dict) -> None:
                 },
                 json={
                     "workflowExecutionId": execution_id,
+                    "daprInstanceId": dapr_instance_id,
                     "events": [{
                         "event_type": event_type,
                         "phase": data.get("phase", ""),

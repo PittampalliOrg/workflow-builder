@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import posixpath
 import shlex
 import subprocess
 import tempfile
@@ -65,6 +66,22 @@ def _resolve(input_data: dict, node_outputs: dict, key: str, node_label: str = "
     return None
 
 
+def _resolve_execution_ids(input_data: dict, node_outputs: dict) -> tuple[str, str]:
+    """Return (db_execution_id, dapr_instance_id) when available."""
+    db_execution_id = (
+        _resolve(input_data, node_outputs, "_db_execution_id")
+        or _resolve(input_data, node_outputs, "db_execution_id")
+        or _resolve(input_data, node_outputs, "wb_execution_id")
+        or ""
+    )
+    dapr_instance_id = (
+        _resolve(input_data, node_outputs, "_execution_id")
+        or _resolve(input_data, node_outputs, "execution_id")
+        or ""
+    )
+    return str(db_execution_id).strip(), str(dapr_instance_id).strip()
+
+
 def _reconnect_sandbox(sandbox_id: str) -> OpenShellBackend:
     """Reconnect to an existing sandbox by its ID."""
     return create_openshell_sandbox(sandbox_id=sandbox_id)
@@ -83,8 +100,116 @@ def _coerce_mapping(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _coerce_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
 def _resolve_provider(input_data: dict, node_outputs: dict) -> str:
     return normalize_provider(_resolve(input_data, node_outputs, "provider"))
+
+
+def _safe_relpath(path: str, root: str) -> str:
+    rel = path.removeprefix(root).strip("/")
+    return rel or "."
+
+
+def _detect_package_manager(lockfiles: set[str]) -> str | None:
+    if "pnpm-lock.yaml" in lockfiles or "pnpm-workspace.yaml" in lockfiles:
+        return "pnpm"
+    if "package-lock.json" in lockfiles:
+        return "npm"
+    if "yarn.lock" in lockfiles:
+        return "yarn"
+    return None
+
+
+def _preview_steps_for_app(app_subdir: str) -> list[dict[str, Any]]:
+    metadata = {"appSubdir": app_subdir}
+    return [
+        {
+            "id": "home",
+            "label": "Home",
+            "url": "/",
+            "delayMs": 2500,
+            "fullPage": True,
+            "metadata": metadata,
+        }
+    ]
+
+
+def _extract_validation_summary(value: Any) -> dict[str, Any]:
+    data = _coerce_mapping(value)
+    artifact = _coerce_mapping(data.get("artifact"))
+    artifact_manifest = _coerce_mapping(artifact.get("manifestJson"))
+    assets = _coerce_list(artifact.get("assets") or artifact_manifest.get("assets") or data.get("assets"))
+    trace_assets = [
+        asset for asset in assets
+        if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == "trace"
+    ]
+    video_assets = [
+        asset for asset in assets
+        if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == "video"
+    ]
+    steps = _coerce_list(artifact.get("steps") or artifact_manifest.get("steps") or data.get("steps"))
+    screenshot_count = data.get("screenshots")
+    if not isinstance(screenshot_count, int):
+        screenshot_count = len(
+            [
+                step for step in steps
+                if isinstance(step, dict) and str(step.get("screenshotStorageRef") or "").strip()
+            ]
+        )
+    summary = {
+        "status": str(data.get("status") or artifact.get("status") or "skipped").strip() or "skipped",
+        "artifactId": str(data.get("artifactId") or artifact.get("id") or "").strip(),
+        "screenshots": int(screenshot_count or 0),
+        "traceAssetRef": str(data.get("traceAssetRef") or "").strip(),
+        "videoAssetRef": str(data.get("videoAssetRef") or "").strip(),
+        "error": str(data.get("error") or "").strip(),
+        "phase": str(data.get("phase") or "").strip(),
+        "baseUrl": str(artifact.get("baseUrl") or artifact_manifest.get("baseUrl") or data.get("baseUrl") or "").strip(),
+    }
+    if trace_assets and not summary["traceAssetRef"]:
+        summary["traceAssetRef"] = str(trace_assets[0].get("storageRef") or "").strip()
+    if video_assets and not summary["videoAssetRef"]:
+        summary["videoAssetRef"] = str(video_assets[0].get("storageRef") or "").strip()
+    if not summary["error"]:
+        summary["error"] = str(artifact.get("error") or "").strip()
+    return summary
+
+
+def _render_validation_lines(validation: dict[str, Any]) -> list[str]:
+    status = str(validation.get("status") or "skipped").strip() or "skipped"
+    lines = [
+        "## UX Validation",
+        "",
+        f"- Status: {status}",
+    ]
+    screenshots = validation.get("screenshots")
+    if isinstance(screenshots, int):
+        lines.append(f"- Screenshots: {screenshots}")
+    artifact_id = str(validation.get("artifactId") or "").strip()
+    if artifact_id:
+        lines.append(f"- Artifact: `{artifact_id}`")
+    trace_ref = str(validation.get("traceAssetRef") or "").strip()
+    if trace_ref:
+        lines.append(f"- Trace: `{trace_ref}`")
+    video_ref = str(validation.get("videoAssetRef") or "").strip()
+    if video_ref:
+        lines.append(f"- Video: `{video_ref}`")
+    error = str(validation.get("error") or "").strip()
+    if error:
+        lines.append(f"- Error: {error}")
+    lines.append("")
+    return lines
 
 
 def _resolve_scm_auth(
@@ -583,11 +708,16 @@ def handle_plan(input_data: dict, node_outputs: dict) -> dict:
         return {"success": False, "data": {}, "error": f"PlannerAgent failed: {exc}"}
 
     # Publish plan-created events
-    wb_exec_id = _resolve(input_data, node_outputs, "wb_execution_id") or ""
+    wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
     issue_ref = f"{_resolve(input_data, node_outputs, 'owner')}/{_resolve(input_data, node_outputs, 'repo')}#{_resolve(input_data, node_outputs, 'issue_number')}"
     publish_event("dapr-swe.plan.created", {"issue": issue_ref, "summary": plan.get("summary", ""), "steps": len(plan.get("steps", []))})
     update_execution_status(wb_exec_id, "planning", 25)
-    post_agent_event(wb_exec_id, "plan_created", {"phase": "planning", "summary": plan.get("summary", ""), "stepCount": len(plan.get("steps", []))})
+    post_agent_event(
+        wb_exec_id,
+        dapr_instance_id,
+        "plan_created",
+        {"phase": "planning", "summary": plan.get("summary", ""), "stepCount": len(plan.get("steps", []))},
+    )
 
     return {
         "success": True,
@@ -626,7 +756,7 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
     plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
 
     # Resolve event tracking context
-    wb_exec_id = _resolve(input_data, node_outputs, "wb_execution_id") or ""
+    wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
     issue_ref = f"{_resolve(input_data, node_outputs, 'owner')}/{_resolve(input_data, node_outputs, 'repo')}#{_resolve(input_data, node_outputs, 'issue_number')}"
 
     # Resolve optional configuration overrides from workflow-builder UI
@@ -659,7 +789,12 @@ def handle_develop(input_data: dict, node_outputs: dict) -> dict:
 
     publish_event("dapr-swe.step.completed", {"issue": issue_ref, "step_index": 0, "step_title": step.get("title", ""), "status": result.get("status", "")})
     update_execution_status(wb_exec_id, "implementing", 50)
-    post_agent_event(wb_exec_id, "step_completed", {"phase": "implementing", "stepIndex": 0, "stepTitle": step.get("title", "")})
+    post_agent_event(
+        wb_exec_id,
+        dapr_instance_id,
+        "step_completed",
+        {"phase": "implementing", "stepIndex": 0, "stepTitle": step.get("title", "")},
+    )
 
     changed_files = _collect_changed_files(
         sandbox,
@@ -740,7 +875,7 @@ def handle_review(input_data: dict, node_outputs: dict) -> dict:
         }
 
     # Publish review events
-    wb_exec_id = _resolve(input_data, node_outputs, "wb_execution_id") or ""
+    wb_exec_id, _ = _resolve_execution_ids(input_data, node_outputs)
     issue_ref = f"{_resolve(input_data, node_outputs, 'owner')}/{_resolve(input_data, node_outputs, 'repo')}#{_resolve(input_data, node_outputs, 'issue_number')}"
     update_execution_status(wb_exec_id, "reviewing", 75)
     publish_event("dapr-swe.review.completed", {"issue": issue_ref, "approved": review.get("approved", False)})
@@ -778,6 +913,7 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
     title = _resolve(input_data, node_outputs, "title") or "Untitled issue"
     plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
     review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
 
     for field, val in [("sandbox_id", sandbox_id), ("working_dir", working_dir),
                        ("owner", owner), ("repo", repo),
@@ -887,7 +1023,7 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
             }
 
     # Open PR via SCM API
-    pr_body = build_pr_body(plan, int(issue_number))
+    pr_body = build_pr_body(plan, int(issue_number), validation=validation)
     try:
         pr_result = create_pull_request(
             provider=provider,
@@ -943,6 +1079,7 @@ def handle_notify(input_data: dict, node_outputs: dict) -> dict:
     status = _resolve(input_data, node_outputs, "status") or ""
     error = _resolve(input_data, node_outputs, "error") or ""
     review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
 
     for field, val in [("owner", owner), ("repo", repo), ("issue_number", issue_number)]:
         if not val:
@@ -957,6 +1094,9 @@ def handle_notify(input_data: dict, node_outputs: dict) -> dict:
             f"Review: {'Approved' if review.get('approved') else 'Needs changes'}\n"
             f"Feedback: {review.get('feedback', 'N/A')}"
         )
+        validation_lines = _render_validation_lines(validation)
+        if validation_lines:
+            body += "\n\n" + "\n".join(validation_lines).strip()
     elif status == "no_changes":
         body = (
             "I investigated this issue and did not find any repository changes to make.\n\n"
@@ -1001,6 +1141,182 @@ def handle_notify(input_data: dict, node_outputs: dict) -> dict:
         "data": {"status": status or "completed", "pr_url": pr_url, "notified": True},
         "error": None,
     }
+
+
+def handle_prepare_preview(input_data: dict, node_outputs: dict) -> dict:
+    """Inspect the repo and determine whether screenshot validation should run."""
+    sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
+    working_dir = _resolve(input_data, node_outputs, "working_dir")
+    if not sandbox_id or not working_dir:
+        return {
+            "success": False,
+            "data": {},
+            "error": "Missing required fields: sandbox_id, working_dir",
+        }
+
+    sandbox = _reconnect_sandbox(str(sandbox_id))
+    find_result = sandbox.execute(
+        " && ".join(
+            [
+                f"cd {shlex.quote(str(working_dir))}",
+                "find . -path '*/node_modules' -prune -o -name package.json -print | sort",
+            ]
+        ),
+        timeout=20,
+    )
+    if find_result.exit_code != 0:
+        return {
+            "success": True,
+            "data": {
+                "should_validate": False,
+                "reason": "Could not inspect package manifests for preview validation.",
+            },
+            "error": None,
+        }
+
+    candidate_paths: list[str] = []
+    for raw_line in (find_result.output or "").splitlines():
+        rel_path = raw_line.strip().removeprefix("./")
+        if not rel_path:
+            continue
+        candidate_paths.append(posixpath.join(str(working_dir), rel_path))
+
+    if not candidate_paths:
+        return {
+            "success": True,
+            "data": {
+                "should_validate": False,
+                "reason": "No package.json files were found, so browser validation is not applicable.",
+            },
+            "error": None,
+        }
+
+    downloads = sandbox.download_files(candidate_paths)
+    best_candidate: dict[str, Any] | None = None
+    for download in downloads:
+        if download.error:
+            continue
+        try:
+            package_json = json.loads(download.content.decode("utf-8"))
+        except Exception:
+            continue
+        if not isinstance(package_json, dict):
+            continue
+        scripts = package_json.get("scripts") if isinstance(package_json.get("scripts"), dict) else {}
+        dependencies: dict[str, Any] = {}
+        for section in ("dependencies", "devDependencies"):
+            value = package_json.get(section)
+            if isinstance(value, dict):
+                dependencies.update(value)
+        framework_hits = sum(
+            1
+            for dep_name in (
+                "next",
+                "vite",
+                "react-scripts",
+                "@sveltejs/kit",
+                "nuxt",
+                "astro",
+            )
+            if dep_name in dependencies
+        )
+        has_dev_script = isinstance(scripts.get("dev"), str) and str(scripts.get("dev")).strip()
+        has_start_script = isinstance(scripts.get("start"), str) and str(scripts.get("start")).strip()
+        if not has_dev_script and not has_start_script and framework_hits == 0:
+            continue
+        app_dir = posixpath.dirname(download.path)
+        rel_app_dir = _safe_relpath(app_dir, str(working_dir))
+        score = 0
+        if rel_app_dir == ".":
+            score += 5
+        score += framework_hits * 3
+        if has_dev_script:
+            score += 4
+        if has_start_script:
+            score += 1
+        candidate = {
+            "repo_path": app_dir,
+            "app_subdir": rel_app_dir,
+            "score": score,
+        }
+        if not best_candidate or candidate["score"] > best_candidate["score"]:
+            best_candidate = candidate
+
+    if not best_candidate:
+        return {
+            "success": True,
+            "data": {
+                "should_validate": False,
+                "reason": "No frontend dev server entrypoint was detected for browser validation.",
+            },
+            "error": None,
+        }
+
+    lockfile_check = sandbox.execute(
+        " && ".join(
+            [
+                f"cd {shlex.quote(best_candidate['repo_path'])}",
+                "for file in pnpm-lock.yaml pnpm-workspace.yaml package-lock.json yarn.lock; do [ -f \"$file\" ] && echo \"$file\"; done",
+            ]
+        ),
+        timeout=10,
+    )
+    lockfiles = {line.strip() for line in (lockfile_check.output or "").splitlines() if line.strip()}
+    package_manager = _detect_package_manager(lockfiles)
+    install_command = ""
+    dev_server_command = ""
+    if package_manager:
+        install_command = {
+            "pnpm": "npx -y pnpm@9.15.9 install --reporter=append-only --frozen-lockfile --prefer-offline --force",
+            "yarn": "npx -y yarn@1.22.22 install --immutable",
+            "npm": "npm ci --no-audit --no-fund --loglevel=warn",
+        }.get(package_manager, "")
+
+    return {
+        "success": True,
+        "data": {
+            "should_validate": True,
+            "workspaceRef": str(sandbox_id),
+            "repoPath": best_candidate["repo_path"],
+            "appSubdir": best_candidate["app_subdir"],
+            "installCommand": install_command,
+            "devServerCommand": dev_server_command,
+            "baseUrl": "http://127.0.0.1:3009",
+            "steps": _preview_steps_for_app(best_candidate["app_subdir"]),
+            "captureTrace": True,
+            "captureVideo": True,
+            "viewportPreset": "desktop",
+            "reason": "",
+        },
+        "error": None,
+    }
+
+
+def handle_report_preview(input_data: dict, node_outputs: dict) -> dict:
+    """Publish preview lifecycle events for workflow-builder tracking."""
+    wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
+    if not wb_exec_id or not dapr_instance_id:
+        return {"success": True, "data": {"reported": False}, "error": None}
+
+    stage = str(_resolve(input_data, node_outputs, "stage") or "").strip().lower() or "completed"
+    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
+    app_subdir = str(_resolve(input_data, node_outputs, "appSubdir") or "").strip()
+    phase = "previewing"
+    progress = 82 if stage == "started" else 90
+    event_type = "preview_started" if stage == "started" else "preview_completed"
+    payload = {
+        "phase": phase,
+        "status": validation.get("status") if stage != "started" else "running",
+        "artifactId": validation.get("artifactId"),
+        "screenshots": validation.get("screenshots"),
+        "traceAssetRef": validation.get("traceAssetRef"),
+        "videoAssetRef": validation.get("videoAssetRef"),
+        "error": validation.get("error"),
+        "appSubdir": app_subdir,
+    }
+    update_execution_status(wb_exec_id, phase, progress)
+    post_agent_event(wb_exec_id, dapr_instance_id, event_type, payload)
+    return {"success": True, "data": {"reported": True, **payload}, "error": None}
 
 
 # ---------------------------------------------------------------------------
@@ -1149,6 +1465,8 @@ def _format_solve_task(issue_context: dict) -> str:
 ACTION_HANDLERS: dict[str, Any] = {
     "dapr-swe/initialize": handle_initialize,
     "dapr-swe/solve": handle_solve,
+    "dapr-swe/prepare-preview": handle_prepare_preview,
+    "dapr-swe/report-preview": handle_report_preview,
     # Legacy handlers route to solve for backwards compat
     "dapr-swe/plan": handle_plan,
     "dapr-swe/develop": handle_develop,

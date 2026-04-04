@@ -210,7 +210,15 @@ async def execute_action(request: Request) -> dict:
         or body.get("function_id")
         or (body.get("input", {}) or {}).get("actionType", "")
     )
-    input_data = body.get("input", body)  # Fall back to full body as input
+    raw_input = body.get("input", body)  # Fall back to full body as input
+    input_data = dict(raw_input) if isinstance(raw_input, dict) else {"value": raw_input}
+    # Preserve orchestrator/function-router metadata for handlers that need
+    # execution-scoped reporting or artifact association.
+    input_data.setdefault("_execution_id", body.get("execution_id") or "")
+    input_data.setdefault("_db_execution_id", body.get("db_execution_id") or "")
+    input_data.setdefault("_workflow_id", body.get("workflow_id") or "")
+    input_data.setdefault("_node_id", body.get("node_id") or "")
+    input_data.setdefault("_node_name", body.get("node_name") or "")
     node_outputs = body.get("node_outputs", {})
 
     logger.info("EXECUTE DEBUG slug=%s input_keys=%s node_output_keys=%s", function_slug, list(input_data.keys()), list(node_outputs.keys()))

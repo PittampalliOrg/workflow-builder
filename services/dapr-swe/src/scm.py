@@ -127,7 +127,12 @@ def configure_git_identity_command(working_dir: str, clone: CloneConfig) -> str:
     )
 
 
-def build_pr_body(plan: dict[str, Any], issue_number: int) -> str:
+def build_pr_body(
+    plan: dict[str, Any],
+    issue_number: int,
+    *,
+    validation: dict[str, Any] | None = None,
+) -> str:
     summary = plan.get("summary", "Automated implementation")
     steps = plan.get("steps", [])
 
@@ -145,6 +150,28 @@ def build_pr_body(plan: dict[str, Any], issue_number: int) -> str:
         parts.append("")
         for step in steps:
             parts.append(f"- **{step.get('title', '')}**: {step.get('description', '')}")
+        parts.append("")
+
+    if validation:
+        status = str(validation.get("status") or "skipped").strip() or "skipped"
+        parts.append("## UX Validation")
+        parts.append("")
+        parts.append(f"- Status: {status}")
+        screenshots = validation.get("screenshots")
+        if isinstance(screenshots, int):
+            parts.append(f"- Screenshots: {screenshots}")
+        artifact_id = str(validation.get("artifactId") or "").strip()
+        if artifact_id:
+            parts.append(f"- Artifact: `{artifact_id}`")
+        trace_ref = str(validation.get("traceAssetRef") or "").strip()
+        if trace_ref:
+            parts.append(f"- Trace: `{trace_ref}`")
+        video_ref = str(validation.get("videoAssetRef") or "").strip()
+        if video_ref:
+            parts.append(f"- Video: `{video_ref}`")
+        validation_error = str(validation.get("error") or "").strip()
+        if validation_error:
+            parts.append(f"- Error: {validation_error}")
         parts.append("")
 
     parts.append("---")

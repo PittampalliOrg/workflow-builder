@@ -25,7 +25,10 @@
 		Wrench,
 		Monitor,
 		CircleAlert,
-		Inbox
+		Inbox,
+		ImageIcon,
+		Video,
+		FileArchive
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -105,6 +108,39 @@
 	let isLoadingTrace = $state(false);
 	let traceError = $state<string | null>(null);
 	let traceFetched = $state(false);
+
+	// Browser artifacts
+	type BrowserArtifactStep = {
+		id: string;
+		label: string;
+		url: string;
+		title?: string;
+		status: string;
+		screenshotStorageRef?: string;
+		error?: string;
+	};
+	type BrowserAsset = {
+		kind: 'screenshot' | 'trace' | 'video';
+		label: string;
+		storageRef: string;
+		contentType: string;
+		fileName?: string;
+		stepId?: string;
+	};
+	type BrowserArtifact = {
+		id: string;
+		status: string;
+		createdAt: string;
+		manifestJson: {
+			baseUrl: string;
+			steps: BrowserArtifactStep[];
+			assets?: BrowserAsset[];
+			metadata?: Record<string, unknown> | null;
+		};
+	};
+	let browserArtifacts = $state<BrowserArtifact[]>([]);
+	let isLoadingBrowserArtifacts = $state(true);
+	let browserArtifactError = $state<string | null>(null);
 
 	// Active tab
 	let activeTab = $state('overview');
@@ -263,6 +299,21 @@
 		}
 	}
 
+	async function fetchBrowserArtifacts() {
+		isLoadingBrowserArtifacts = true;
+		browserArtifactError = null;
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/browser-artifacts`);
+			if (!res.ok) throw new Error('Failed to fetch browser artifacts');
+			const data = await res.json();
+			browserArtifacts = data.artifacts ?? [];
+		} catch (err) {
+			browserArtifactError = err instanceof Error ? err.message : 'Failed to fetch browser artifacts';
+		} finally {
+			isLoadingBrowserArtifacts = false;
+		}
+	}
+
 	// Fetch trace(s) — uses multi endpoint when we have multiple traceIds
 	async function fetchTrace() {
 		const ids = allTraceIds.length > 0 ? allTraceIds : traceId ? [traceId] : [];
@@ -336,6 +387,7 @@
 		loadWorkflow();
 		pollStatus();
 		fetchLogs();
+		fetchBrowserArtifacts();
 		agentStream = createAgentStream(executionId);
 	});
 
@@ -344,6 +396,7 @@
 	$effect(() => {
 		if (prevRunning && !isRunning) {
 			fetchLogs();
+			fetchBrowserArtifacts();
 			// Reset trace fetch so it re-fetches with any new traceIds
 			traceFetched = false;
 			if (activeTab === 'trace') {
@@ -418,6 +471,16 @@
 		if (us < 1_000_000) return `${(us / 1000).toFixed(1)}ms`;
 		return `${(us / 1_000_000).toFixed(2)}s`;
 	}
+
+	function browserBlobUrl(storageRef: string): string {
+		return `/api/workflows/browser-artifacts/blob?storageRef=${encodeURIComponent(storageRef)}`;
+	}
+
+	function assetForStep(artifact: BrowserArtifact, stepId: string): BrowserAsset | undefined {
+		return artifact.manifestJson.assets?.find(
+			(asset) => asset.kind === 'screenshot' && asset.stepId === stepId
+		);
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -467,6 +530,7 @@
 				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
+				<TabsTrigger value="browser">Browser</TabsTrigger>
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
 		</div>
@@ -621,7 +685,109 @@
 			{/if}
 		</TabsContent>
 
-		<!-- Tab 5: Trace -->
+		<!-- Tab 5: Browser -->
+		<TabsContent value="browser" class="flex-1 overflow-y-auto p-4">
+			<div class="mx-auto max-w-6xl space-y-4">
+				{#if isLoadingBrowserArtifacts}
+					{#each Array(2) as _}
+						<Skeleton class="h-40 w-full rounded-md" />
+					{/each}
+				{:else if browserArtifactError}
+					<Alert variant="destructive">
+						<CircleAlert class="size-4" />
+						<AlertDescription>{browserArtifactError}</AlertDescription>
+					</Alert>
+				{:else if browserArtifacts.length === 0}
+					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">
+						<ImageIcon size={24} />
+						<p class="mt-2 text-sm">No browser artifacts available</p>
+					</div>
+				{:else}
+					{#each browserArtifacts as artifact (artifact.id)}
+						<Card>
+							<CardContent class="space-y-4 p-4">
+								<div class="flex flex-wrap items-center gap-2">
+									<Badge variant="outline">{artifact.status}</Badge>
+									<span class="text-xs text-muted-foreground">
+										{new Date(artifact.createdAt).toLocaleString()}
+									</span>
+									{#if artifact.manifestJson.baseUrl}
+										<a
+											class="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+											href={artifact.manifestJson.baseUrl}
+											target="_blank"
+											rel="noreferrer"
+										>
+											<ExternalLink size={12} />
+											{artifact.manifestJson.baseUrl}
+										</a>
+									{/if}
+								</div>
+
+								<div class="flex flex-wrap gap-3">
+									{#each artifact.manifestJson.assets ?? [] as asset}
+										{#if asset.kind === 'trace' || asset.kind === 'video'}
+											<a
+												class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+												href={browserBlobUrl(asset.storageRef)}
+												target="_blank"
+												rel="noreferrer"
+											>
+												{#if asset.kind === 'trace'}
+													<FileArchive size={12} />
+												{:else}
+													<Video size={12} />
+												{/if}
+												{asset.label}
+											</a>
+										{/if}
+									{/each}
+								</div>
+
+								<div class="grid gap-4 md:grid-cols-2">
+									{#each artifact.manifestJson.steps ?? [] as step}
+										<div class="overflow-hidden rounded-lg border border-border">
+											<div class="flex items-center justify-between border-b border-border px-3 py-2">
+												<div class="min-w-0">
+													<p class="truncate text-sm font-medium">{step.label}</p>
+													<p class="truncate text-xs text-muted-foreground">{step.url}</p>
+												</div>
+												<Badge variant={step.status === 'failed' ? 'destructive' : 'outline'}>
+													{step.status}
+												</Badge>
+											</div>
+											{#if step.screenshotStorageRef || assetForStep(artifact, step.id)?.storageRef}
+												<img
+													class="w-full bg-muted object-cover"
+													src={browserBlobUrl(step.screenshotStorageRef ?? assetForStep(artifact, step.id)?.storageRef ?? '')}
+													alt={step.label}
+												/>
+											{:else}
+												<div class="flex h-40 items-center justify-center bg-muted text-xs text-muted-foreground">
+													No screenshot stored
+												</div>
+											{/if}
+											{#if step.title || step.error}
+												<div class="space-y-1 px-3 py-2 text-xs text-muted-foreground">
+													{#if step.title}
+														<p>{step.title}</p>
+													{/if}
+													{#if step.error}
+														<p class="text-red-600 dark:text-red-400">{step.error}</p>
+													{/if}
+												</div>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							</CardContent>
+						</Card>
+					{/each}
+				{/if}
+			</div>
+		</TabsContent>
+
+		<!-- Tab 6: Trace -->
 		<TabsContent value="trace" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl">
 				{#if !traceId && allTraceIds.length === 0}

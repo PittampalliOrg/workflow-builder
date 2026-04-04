@@ -89,3 +89,4 @@ class IssueContext(BaseModel):
     labels: list[str] = Field(default_factory=list)
     sender: str = ""
     installation_id: int = 0
+    base_branch: str = "main"

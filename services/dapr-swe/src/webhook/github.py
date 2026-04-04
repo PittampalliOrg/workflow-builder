@@ -11,7 +11,12 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from src.config import GITHUB_WEBHOOK_SECRET
+from src.config import (
+    GITHUB_WEBHOOK_SECRET,
+    WORKFLOW_BUILDER_BASE_URL,
+    WORKFLOW_BUILDER_INTERNAL_TOKEN,
+    WORKFLOW_BUILDER_WORKFLOW_ID,
+)
 from src.webhook.models import (
     GitHubIssueCommentEvent,
     GitHubIssueEvent,
@@ -133,6 +138,7 @@ async def _handle_issue_comment_event(payload: dict) -> dict[str, Any]:
         labels=label_names,
         sender=event.sender.login,
         installation_id=event.installation.id if event.installation else 0,
+        base_branch=event.repository.default_branch or "main",
         comments=[
             {
                 "user": event.comment.user.login if event.comment.user else "unknown",
@@ -160,6 +166,7 @@ def _build_issue_context(event: GitHubIssueEvent) -> IssueContext:
         labels=[label.name for label in event.issue.labels],
         sender=event.sender.login,
         installation_id=event.installation.id if event.installation else 0,
+        base_branch=event.repository.default_branch or "main",
     )
 
 
@@ -203,52 +210,53 @@ async def _fetch_issue_comments(
 
 
 async def _start_workflow(issue_context: IssueContext) -> dict[str, Any]:
-    """Start a Dapr Workflow for the given issue context."""
-    from dapr.ext.workflow import DaprWorkflowClient
+    """Start the stored SW 1.0 workflow for the given issue context."""
+    if not WORKFLOW_BUILDER_INTERNAL_TOKEN or not WORKFLOW_BUILDER_WORKFLOW_ID:
+        raise HTTPException(
+            status_code=503,
+            detail="workflow-builder integration is not configured",
+        )
 
-    # Deterministic instance ID based on repo + issue number
-    instance_id = (
-        f"resolve-{issue_context.owner}-{issue_context.repo}-{issue_context.issue_number}"
-    )
-
+    issue_ref = f"{issue_context.owner}/{issue_context.repo}#{issue_context.issue_number}"
     try:
-        from src.workflow.resolve_issue import resolve_issue_workflow
-
-        wf_client = DaprWorkflowClient()
-        try:
-            wf_client.schedule_new_workflow(
-                workflow=resolve_issue_workflow,
-                input=issue_context.model_dump(),
-                instance_id=instance_id,
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                f"{WORKFLOW_BUILDER_BASE_URL}/api/internal/agent/workflows/execute",
+                headers={
+                    "X-Internal-Token": WORKFLOW_BUILDER_INTERNAL_TOKEN,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "workflowId": WORKFLOW_BUILDER_WORKFLOW_ID,
+                    "triggerData": {
+                        **issue_context.model_dump(),
+                        "source": "dapr-swe-webhook",
+                        "issue": issue_ref,
+                    },
+                },
             )
-            logger.info(
-                "Started workflow %s for %s/%s#%d",
-                instance_id,
-                issue_context.owner,
-                issue_context.repo,
-                issue_context.issue_number,
+        if response.status_code not in (200, 201):
+            logger.error(
+                "workflow-builder execute failed: %s %s",
+                response.status_code,
+                response.text,
             )
-            return {
-                "status": "started",
-                "instance_id": instance_id,
-                "issue": f"{issue_context.owner}/{issue_context.repo}#{issue_context.issue_number}",
-            }
-        except Exception:
-            # Check if the workflow instance already exists
-            existing = wf_client.get_workflow_state(
-                instance_id=instance_id, fetch_payloads=False
-            )
-            if existing is None:
-                raise
-            # Instance already exists, just log and continue
-            logger.info("Workflow instance %s already exists, skipping", instance_id)
-            return {
-                "status": "already_running",
-                "instance_id": instance_id,
-                "issue": f"{issue_context.owner}/{issue_context.repo}#{issue_context.issue_number}",
-            }
+            raise HTTPException(status_code=500, detail="Failed to start workflow")
+        payload = response.json()
+        logger.info(
+            "Started stored workflow %s for %s",
+            payload.get("instanceId"),
+            issue_ref,
+        )
+        return {
+            "status": "started",
+            "instance_id": payload.get("instanceId"),
+            "execution_id": payload.get("executionId"),
+            "workflow_id": WORKFLOW_BUILDER_WORKFLOW_ID,
+            "issue": issue_ref,
+        }
     except HTTPException:
         raise
     except Exception:
-        logger.exception("Failed to start workflow %s", instance_id)
+        logger.exception("Failed to start stored workflow for %s", issue_ref)
         raise HTTPException(status_code=500, detail="Failed to start workflow")

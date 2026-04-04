@@ -218,7 +218,7 @@ def create_plan(ctx: WorkflowActivityContext, input: dict) -> dict:
         "steps": len(plan.get("steps", [])),
     })
     update_execution_status(input.get("wb_execution_id", ""), "planning", 25)
-    post_agent_event(input.get("wb_execution_id", ""), "plan_created", {
+    post_agent_event(input.get("wb_execution_id", ""), "", "plan_created", {
         "phase": "planning",
         "summary": plan.get("summary", ""),
         "stepCount": len(plan.get("steps", [])),
@@ -265,7 +265,7 @@ def implement_step(ctx: WorkflowActivityContext, input: dict) -> dict:
         "status": result.get("status", "unknown"),
     })
     update_execution_status(input.get("wb_execution_id", ""), "implementing", 40 + step_index * 10)
-    post_agent_event(input.get("wb_execution_id", ""), "step_completed", {
+    post_agent_event(input.get("wb_execution_id", ""), "", "step_completed", {
         "phase": "implementing",
         "stepIndex": step_index,
         "stepTitle": step.get("title", ""),

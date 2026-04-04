@@ -1524,6 +1524,19 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 								devServerCommand: args.devServerCommand,
 								baseUrl: args.baseUrl,
 								steps: validateSteps,
+								captureTrace: args.captureTrace,
+								captureVideo: args.captureVideo,
+								viewportPreset: args.viewportPreset,
+								metadata:
+									typeof args.metadata === "string"
+										? (() => {
+												try {
+													return JSON.parse(args.metadata);
+												} catch {
+													return undefined;
+												}
+											})()
+										: args.metadata,
 								timeoutMs: args.timeoutMs,
 								workflowId: body.workflow_id,
 								nodeId: body.node_id,
