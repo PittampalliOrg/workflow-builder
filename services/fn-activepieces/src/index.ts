@@ -260,6 +260,7 @@ async function main() {
 				name: a.name,
 				source: "service-introspection",
 				doc: `${a.displayName}: ${a.description} [AP piece: ${a.pieceName}/${a.actionName}]`,
+				sourceCode: a.sourceCode,
 			})),
 			errors: [],
 			additional: {

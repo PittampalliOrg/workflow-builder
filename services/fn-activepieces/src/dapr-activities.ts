@@ -16,6 +16,7 @@ export interface ApActivityMeta {
 	description: string;
 	pieceName: string;
 	actionName: string;
+	sourceCode: string | null;
 }
 
 interface ApActivityPayload {
@@ -37,9 +38,9 @@ export function registerPieceActivities(
 	const registered: ApActivityMeta[] = [];
 
 	for (const [pieceName, piece] of Object.entries(PIECES)) {
-		let actions: Record<string, { name: string; displayName: string; description: string }>;
+		let actions: Record<string, { name: string; displayName: string; description: string; run?: (...args: unknown[]) => unknown }>;
 		try {
-			actions = piece.actions() as Record<string, { name: string; displayName: string; description: string }>;
+			actions = piece.actions() as typeof actions;
 		} catch {
 			console.warn(`[dapr-activities] Failed to get actions for piece: ${pieceName}`);
 			continue;
@@ -71,12 +72,23 @@ export function registerPieceActivities(
 
 			runtime.registerActivity(handler);
 
+			// Extract source code from the action's run function
+			let sourceCode: string | null = null;
+			try {
+				if (typeof action.run === "function") {
+					sourceCode = action.run.toString();
+				}
+			} catch {
+				// Some bundled functions may not support toString
+			}
+
 			registered.push({
 				name: activityName,
 				displayName: action.displayName || actionName,
 				description: action.description || "",
 				pieceName,
 				actionName,
+				sourceCode,
 			});
 		}
 	}
