@@ -35,6 +35,8 @@ from src.sandbox.openshell import OpenShellBackend, create_openshell_sandbox
 
 logger = logging.getLogger(__name__)
 
+_DEMO_ACTIONS = {"visit", "click", "fill", "press", "wait", "assert", "scroll"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -154,12 +156,119 @@ def _preview_steps_for_app(app_subdir: str) -> list[dict[str, Any]]:
         {
             "id": "home",
             "label": "Home",
+            "action": "visit",
+            "goal": "Open the updated experience",
             "url": "/",
-            "delayMs": 2500,
+            "pauseMs": 2500,
             "fullPage": True,
             "metadata": metadata,
         }
     ]
+
+
+def _parse_json_object(text: str) -> dict[str, Any]:
+    raw = (text or "").strip()
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start >= 0 and end > start:
+        try:
+            parsed = json.loads(raw[start:end])
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _normalize_demo_step(raw_step: Any, index: int) -> dict[str, Any]:
+    step = raw_step if isinstance(raw_step, dict) else {}
+    action = str(step.get("action") or "").strip().lower() or "wait"
+    if action not in _DEMO_ACTIONS:
+        action = "visit" if step.get("url") or step.get("path") else "wait"
+    pause_ms = step.get("pauseMs")
+    try:
+        pause_value = int(pause_ms) if pause_ms is not None and str(pause_ms).strip() else None
+    except Exception:
+        pause_value = None
+    return {
+        "id": str(step.get("id") or f"step-{index + 1}").strip() or f"step-{index + 1}",
+        "label": str(step.get("label") or f"Step {index + 1}").strip() or f"Step {index + 1}",
+        "goal": str(step.get("goal") or "").strip(),
+        "action": action,
+        "url": str(step.get("url") or step.get("path") or "").strip(),
+        "selector": str(step.get("selector") or "").strip(),
+        "text": str(step.get("text") or "").strip(),
+        "target": str(step.get("target") or "").strip(),
+        "value": str(step.get("value") or step.get("key") or "").strip(),
+        "pauseMs": pause_value if pause_value is not None else 1500,
+        "waitForSelector": str(step.get("waitForSelector") or "").strip(),
+        "waitForText": str(step.get("waitForText") or "").strip(),
+        "successCriteria": str(step.get("successCriteria") or "").strip(),
+        "fullPage": step.get("fullPage") is not False,
+    }
+
+
+def _default_demo_plan(*, app_subdir: str = ".", summary: str = "") -> dict[str, Any]:
+    title = "Functional Demo"
+    return {
+        "captureMode": "demo",
+        "title": title,
+        "summary": summary or "Open the updated UI and capture the primary experience.",
+        "entryPath": "/",
+        "confidence": "low",
+        "steps": _preview_steps_for_app(app_subdir),
+        "fallbackSteps": [],
+    }
+
+
+def _normalize_demo_plan(raw_plan: Any, *, app_subdir: str = ".") -> dict[str, Any]:
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    normalized = _default_demo_plan(app_subdir=app_subdir, summary=str(plan.get("summary") or "").strip())
+    normalized["title"] = str(plan.get("title") or normalized["title"]).strip() or normalized["title"]
+    normalized["summary"] = str(plan.get("summary") or normalized["summary"]).strip() or normalized["summary"]
+    normalized["entryPath"] = str(plan.get("entryPath") or plan.get("entry_path") or "/").strip() or "/"
+    normalized["confidence"] = str(plan.get("confidence") or "medium").strip().lower() or "medium"
+    raw_steps = plan.get("steps")
+    if isinstance(raw_steps, list) and raw_steps:
+        normalized["steps"] = [_normalize_demo_step(step, index) for index, step in enumerate(raw_steps)]
+    raw_fallback = plan.get("fallbackSteps") or plan.get("fallback_steps")
+    if isinstance(raw_fallback, list):
+        normalized["fallbackSteps"] = [
+            _normalize_demo_step(step, index) for index, step in enumerate(raw_fallback)
+        ]
+    if not normalized["steps"]:
+        normalized["steps"] = _preview_steps_for_app(app_subdir)
+    if str(normalized["steps"][0].get("action") or "").strip() != "visit":
+        normalized["steps"].insert(
+            0,
+            _normalize_demo_step(
+                {
+                    "id": "intro",
+                    "label": "Open app",
+                    "goal": "Load the main experience",
+                    "action": "visit",
+                    "url": normalized["entryPath"],
+                    "pauseMs": 1500,
+                    "fullPage": True,
+                },
+                0,
+            ),
+        )
+    return normalized
+
+
+def _extract_validation_asset_ref(data: dict[str, Any], *, kind: str) -> str:
+    trace_assets = [
+        asset
+        for asset in _coerce_list(data.get("assets"))
+        if isinstance(asset, dict) and str(asset.get("kind") or "").strip() == kind
+    ]
+    return str(trace_assets[0].get("storageRef") or "").strip() if trace_assets else ""
 
 
 def _extract_validation_summary(value: Any) -> dict[str, Any]:
@@ -202,6 +311,10 @@ def _extract_validation_summary(value: Any) -> dict[str, Any]:
         "error": str(data.get("error") or "").strip(),
         "phase": str(data.get("phase") or "").strip(),
         "baseUrl": str(artifact.get("baseUrl") or artifact_manifest.get("baseUrl") or data.get("baseUrl") or "").strip(),
+        "captureMode": str(data.get("captureMode") or artifact_manifest.get("metadata", {}).get("captureMode") or "validation").strip() or "validation",
+        "demoTitle": str(data.get("demoTitle") or artifact_manifest.get("metadata", {}).get("demoTitle") or "").strip(),
+        "demoSummary": str(data.get("demoSummary") or artifact_manifest.get("metadata", {}).get("demoSummary") or "").strip(),
+        "stepCount": int(data.get("stepCount") or len(steps) or 0),
     }
     if trace_assets and not summary["traceAssetRef"]:
         summary["traceAssetRef"] = str(trace_assets[0].get("storageRef") or "").strip()
@@ -234,11 +347,21 @@ def _resolve_validation_summary(input_data: dict, node_outputs: dict) -> dict[st
 
 def _render_validation_lines(validation: dict[str, Any]) -> list[str]:
     status = str(validation.get("status") or "skipped").strip() or "skipped"
+    capture_mode = str(validation.get("captureMode") or "validation").strip().lower()
     lines = [
-        "## UX Validation",
+        "## Demo & UX Validation" if capture_mode == "demo" else "## UX Validation",
         "",
         f"- Status: {status}",
     ]
+    demo_title = str(validation.get("demoTitle") or "").strip()
+    if demo_title:
+        lines.append(f"- Demo: {demo_title}")
+    demo_summary = str(validation.get("demoSummary") or "").strip()
+    if demo_summary:
+        lines.append(f"- Summary: {demo_summary}")
+    step_count = validation.get("stepCount")
+    if isinstance(step_count, int) and step_count > 0:
+        lines.append(f"- Steps: {step_count}")
     screenshots = validation.get("screenshots")
     if isinstance(screenshots, int):
         lines.append(f"- Screenshots: {screenshots}")
@@ -317,6 +440,67 @@ def _cleanup_greenfield_artifacts(sandbox: OpenShellBackend, working_dir: str) -
     result = sandbox.execute(cleanup_cmd, timeout=60)
     if result.exit_code != 0:
         raise RuntimeError(result.output or "Failed to clean generated SvelteKit artifacts")
+
+
+def _generate_demo_plan_with_agent(
+    *,
+    sandbox: OpenShellBackend,
+    issue_context: dict[str, Any],
+    plan: dict[str, Any],
+    review: dict[str, Any],
+    changed_files: list[str],
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    from dapr_agents import Agent
+    from dapr_agents.agents.configs import AgentExecutionConfig
+    from src.agents.planner import make_planner_tools
+    from src.config import LLM_MODEL_ID
+    from src.llm_providers import resolve_llm_client
+
+    model = model_override or LLM_MODEL_ID
+    tools = make_planner_tools(sandbox)
+    changed_files_block = "\n".join(f"- {path}" for path in changed_files[:25]) or "- No changed files detected"
+    review_feedback = str(review.get("feedback") or "").strip() or "No automated review feedback."
+    prompt = "\n".join(
+        [
+            f"Issue: {issue_context.get('title', 'Untitled')}",
+            issue_context.get("body", ""),
+            "",
+            f"Repository: {issue_context.get('owner', '')}/{issue_context.get('repo', '')}",
+            f"Working directory: {issue_context.get('working_dir', '/sandbox')}",
+            "",
+            f"Implementation summary: {plan.get('summary', '')}",
+            "Changed files:",
+            changed_files_block,
+            "",
+            f"Automated review feedback: {review_feedback}",
+            "",
+            "Inspect the changed code and produce a deterministic browser demo plan as JSON only.",
+            "The plan must demonstrate the main functionality created, like a concise product demo.",
+            "Return an object with keys: title, summary, entryPath, confidence, steps, fallbackSteps.",
+            "Each step must be an object with: id, label, goal, action, url, selector, text, value, pauseMs, waitForSelector, waitForText, successCriteria, fullPage.",
+            "Allowed actions: visit, click, fill, press, wait, assert, scroll.",
+            "Prefer reliable selectors or visible text. Keep the demo short and user-facing.",
+        ]
+    )
+    system_prompt = (
+        "You are a product demo planner. Study the codebase using the tools and produce only valid JSON. "
+        "Your output must describe a deterministic browser walkthrough that demonstrates the implemented functionality. "
+        "Do not narrate. Do not include markdown fences."
+    )
+    import asyncio
+
+    agent = Agent(
+        name="DemoPlannerAgent",
+        role="Product Demo Planner",
+        goal="Generate a deterministic browser walkthrough plan for the changed functionality",
+        system_prompt=system_prompt,
+        llm=resolve_llm_client(model),
+        tools=tools,
+        execution=AgentExecutionConfig(max_iterations=8, tool_choice="auto"),
+    )
+    result = asyncio.run(agent.run(prompt))
+    return _parse_json_object(result.content if result else "")
 
 
 def _resolve_scm_auth(
@@ -1349,6 +1533,76 @@ def handle_greenfield_plan(input_data: dict, node_outputs: dict) -> dict:
     }
 
 
+def handle_plan_demo(input_data: dict, node_outputs: dict) -> dict:
+    """Infer a deterministic demo walkthrough for the changed functionality."""
+    sandbox_id = _resolve(input_data, node_outputs, "sandbox_id")
+    working_dir = _resolve(input_data, node_outputs, "working_dir")
+    if not sandbox_id or not working_dir:
+        return {"success": False, "data": {}, "error": "Missing required fields: sandbox_id, working_dir"}
+
+    sandbox = _reconnect_sandbox(str(sandbox_id))
+    issue_context: dict[str, Any] = {}
+    for key in ("owner", "repo", "issue_number", "title", "body", "working_dir"):
+        val = _resolve(input_data, node_outputs, key)
+        if val is not None:
+            issue_context[key] = val
+    issue_context.setdefault("working_dir", working_dir)
+
+    plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
+    review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
+    model = _resolve(input_data, node_outputs, "model")
+    changed_files = _collect_changed_files(sandbox, str(working_dir))
+    default_plan = _default_demo_plan(
+        app_subdir=".",
+        summary="Open the updated experience and demonstrate the primary functionality.",
+    )
+    try:
+        inferred = _generate_demo_plan_with_agent(
+            sandbox=sandbox,
+            issue_context=issue_context,
+            plan=plan,
+            review=review,
+            changed_files=changed_files,
+            model_override=str(model).strip() if model else None,
+        )
+        demo_plan = _normalize_demo_plan(inferred, app_subdir=".")
+        planning_error = ""
+    except Exception as exc:
+        logger.exception("Demo planner failed")
+        demo_plan = default_plan
+        planning_error = str(exc)
+
+    wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
+    if wb_exec_id and dapr_instance_id:
+        update_execution_status(wb_exec_id, "preview_planning", 79)
+        post_agent_event(
+            wb_exec_id,
+            dapr_instance_id,
+            "demo_plan_created",
+            {
+                "phase": "preview_planning",
+                "captureMode": "demo",
+                "demoTitle": demo_plan.get("title", ""),
+                "demoSummary": demo_plan.get("summary", ""),
+                "stepCount": len(_coerce_list(demo_plan.get("steps"))),
+                "confidence": demo_plan.get("confidence", ""),
+            },
+        )
+
+    return {
+        "success": True,
+        "data": {
+            "demoPlan": demo_plan,
+            "captureMode": "demo",
+            "demoTitle": demo_plan.get("title", ""),
+            "demoSummary": demo_plan.get("summary", ""),
+            "stepCount": len(_coerce_list(demo_plan.get("steps"))),
+            "planningError": planning_error,
+        },
+        "error": None,
+    }
+
+
 def handle_greenfield_scaffold(input_data: dict, node_outputs: dict) -> dict:
     """Scaffold a new SvelteKit app in the target repository."""
     from src.agents.developer import run_developer
@@ -1677,6 +1931,12 @@ def handle_prepare_preview(input_data: dict, node_outputs: dict) -> dict:
             "npm": "npm ci --no-audit --no-fund --loglevel=warn",
         }.get(package_manager, "")
 
+    demo_plan = _normalize_demo_plan(
+        _coerce_mapping(_resolve(input_data, node_outputs, "demoPlan") or _resolve(input_data, node_outputs, "demo_plan")),
+        app_subdir=best_candidate["app_subdir"],
+    )
+    steps = _coerce_list(demo_plan.get("steps")) or _preview_steps_for_app(best_candidate["app_subdir"])
+
     return {
         "success": True,
         "data": {
@@ -1687,10 +1947,15 @@ def handle_prepare_preview(input_data: dict, node_outputs: dict) -> dict:
             "installCommand": install_command,
             "devServerCommand": dev_server_command,
             "baseUrl": "http://127.0.0.1:3009",
-            "steps": _preview_steps_for_app(best_candidate["app_subdir"]),
+            "steps": steps,
             "captureTrace": True,
             "captureVideo": True,
             "viewportPreset": "desktop",
+            "captureMode": "demo" if steps else "validation",
+            "demoTitle": str(demo_plan.get("title") or "").strip(),
+            "demoSummary": str(demo_plan.get("summary") or "").strip(),
+            "demoConfidence": str(demo_plan.get("confidence") or "").strip(),
+            "stepCount": len(steps),
             "reason": "",
         },
         "error": None,
@@ -1718,6 +1983,10 @@ def handle_report_preview(input_data: dict, node_outputs: dict) -> dict:
         "videoAssetRef": validation.get("videoAssetRef"),
         "error": validation.get("error"),
         "appSubdir": app_subdir,
+        "captureMode": validation.get("captureMode") or str(_resolve(input_data, node_outputs, "captureMode") or "validation"),
+        "demoTitle": validation.get("demoTitle") or str(_resolve(input_data, node_outputs, "demoTitle") or ""),
+        "demoSummary": validation.get("demoSummary") or str(_resolve(input_data, node_outputs, "demoSummary") or ""),
+        "stepCount": validation.get("stepCount") or int(_resolve(input_data, node_outputs, "stepCount") or 0),
     }
     update_execution_status(wb_exec_id, phase, progress)
     post_agent_event(wb_exec_id, dapr_instance_id, event_type, payload)
@@ -1872,6 +2141,7 @@ ACTION_HANDLERS: dict[str, Any] = {
     "dapr-swe/initialize": handle_initialize,
     "dapr-swe/solve": handle_solve,
     "dapr-swe/greenfield-plan": handle_greenfield_plan,
+    "dapr-swe/plan-demo": handle_plan_demo,
     "dapr-swe/greenfield-scaffold": handle_greenfield_scaffold,
     "dapr-swe/greenfield-publish": handle_greenfield_publish,
     "dapr-swe/prepare-preview": handle_prepare_preview,

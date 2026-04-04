@@ -114,8 +114,12 @@
 		id: string;
 		label: string;
 		url: string;
+		action?: string;
+		goal?: string;
 		title?: string;
 		status: string;
+		pauseMs?: number;
+		successCriteria?: string;
 		screenshotStorageRef?: string;
 		error?: string;
 	};
@@ -481,6 +485,29 @@
 			(asset) => asset.kind === 'screenshot' && asset.stepId === stepId
 		);
 	}
+
+	function firstAssetByKind(
+		artifact: BrowserArtifact,
+		kind: BrowserAsset['kind']
+	): BrowserAsset | undefined {
+		return artifact.manifestJson.assets?.find((asset) => asset.kind === kind);
+	}
+
+	function metadataText(
+		artifact: BrowserArtifact,
+		key: string
+	): string {
+		const value = artifact.manifestJson.metadata?.[key];
+		return typeof value === 'string' ? value : '';
+	}
+
+	function metadataNumber(
+		artifact: BrowserArtifact,
+		key: string
+	): number | null {
+		const value = artifact.manifestJson.metadata?.[key];
+		return typeof value === 'number' && Number.isFinite(value) ? value : null;
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -744,6 +771,30 @@
 									{/each}
 								</div>
 
+								{#if metadataText(artifact, 'captureMode') === 'demo'}
+									<div class="rounded-lg border border-border bg-muted/30 p-3 text-sm">
+										<p class="font-medium">{metadataText(artifact, 'demoTitle') || 'Functional Demo'}</p>
+										{#if metadataText(artifact, 'demoSummary')}
+											<p class="mt-1 text-muted-foreground">{metadataText(artifact, 'demoSummary')}</p>
+										{/if}
+										{#if metadataNumber(artifact, 'stepCount')}
+											<p class="mt-2 text-xs text-muted-foreground">
+												{metadataNumber(artifact, 'stepCount')} scripted demo steps
+											</p>
+										{/if}
+									</div>
+								{/if}
+
+									{#if firstAssetByKind(artifact, 'video')?.storageRef}
+										<!-- svelte-ignore a11y_media_has_caption -->
+										<video
+											class="w-full overflow-hidden rounded-lg border border-border bg-black"
+											src={browserBlobUrl(firstAssetByKind(artifact, 'video')?.storageRef ?? '')}
+										controls
+										preload="metadata"
+									></video>
+								{/if}
+
 								<div class="grid gap-4 md:grid-cols-2">
 									{#each artifact.manifestJson.steps ?? [] as step}
 										<div class="overflow-hidden rounded-lg border border-border">
@@ -769,8 +820,17 @@
 											{/if}
 											{#if step.title || step.error}
 												<div class="space-y-1 px-3 py-2 text-xs text-muted-foreground">
+													{#if step.action}
+														<p class="uppercase tracking-wide">{step.action}</p>
+													{/if}
+													{#if step.goal}
+														<p>{step.goal}</p>
+													{/if}
 													{#if step.title}
 														<p>{step.title}</p>
+													{/if}
+													{#if step.successCriteria}
+														<p>Success: {step.successCriteria}</p>
 													{/if}
 													{#if step.error}
 														<p class="text-red-600 dark:text-red-400">{step.error}</p>

@@ -61,6 +61,15 @@
             }
           }
         },
+        "plan_demo": {
+          "call": "http",
+          "with": {
+            "method": "POST",
+            "endpoint": {
+              "uri": "http://dapr/v1.0/invoke/dapr-swe/method/dapr-swe/plan-demo"
+            }
+          }
+        },
         "prepare_preview": {
           "call": "http",
           "with": {
@@ -182,6 +191,22 @@
         }
       },
       {
+        "plan_demo": {
+          "call": "plan_demo",
+          "with": {
+            "owner": "${ .input.owner }",
+            "repo": "${ .input.repo }",
+            "title": "${ .input.title // (\"Bootstrap a new SvelteKit app for \" + (.input.app_name // .input.repo)) }",
+            "body": "${ .input.body // .input.description // \"\" }",
+            "sandbox_id": "${ .initialize.sandbox_id }",
+            "working_dir": "${ .initialize.working_dir }",
+            "plan": "${ .plan.plan }",
+            "review": "${ .review }",
+            "model": "${ .input.model // \"\" }"
+          }
+        }
+      },
+      {
         "prepare_preview": {
           "call": "prepare_preview",
           "with": {
@@ -236,6 +261,10 @@
                   "captureTrace": "${ .prepare_preview.captureTrace // true }",
                   "captureVideo": "${ .prepare_preview.captureVideo // true }",
                   "viewportPreset": "${ .prepare_preview.viewportPreset // \"desktop\" }",
+                  "captureMode": "${ .prepare_preview.captureMode // \"validation\" }",
+                  "demoTitle": "${ .prepare_preview.demoTitle // \"\" }",
+                  "demoSummary": "${ .prepare_preview.demoSummary // \"\" }",
+                  "stepCount": "${ .prepare_preview.stepCount // 0 }",
                   "timeoutMs": 900000
                 }
               }
@@ -250,7 +279,11 @@
               "videoAssetRef": "${ ((.[\"preview_capture/try/validate\"].result.artifact.manifestJson.assets // []) | map(select(.kind == \"video\"))[0].storageRef) // \"\" }",
               "artifact": "${ .[\"preview_capture/try/validate\"].result.artifact // null }",
               "error": "${ .[\"preview_capture/try/validate\"].result.error // .task.error // \"\" }",
-              "phase": "${ .[\"preview_capture/try/validate\"].result.phase // \"\" }"
+              "phase": "${ .[\"preview_capture/try/validate\"].result.phase // \"\" }",
+              "captureMode": "${ .[\"preview_capture/try/validate\"].result.captureMode // .prepare_preview.captureMode // \"validation\" }",
+              "demoTitle": "${ .[\"preview_capture/try/validate\"].result.demoTitle // .prepare_preview.demoTitle // \"\" }",
+              "demoSummary": "${ .[\"preview_capture/try/validate\"].result.demoSummary // .prepare_preview.demoSummary // \"\" }",
+              "stepCount": "${ .[\"preview_capture/try/validate\"].result.stepCount // .prepare_preview.stepCount // 0 }"
             }
           }
         }
@@ -339,33 +372,39 @@
       "data": { "label": "Review", "type": "call", "status": "idle", "enabled": true }
     },
     {
-      "id": "prepare_preview",
+      "id": "plan_demo",
       "type": "call",
       "position": { "x": 1380, "y": 120 },
+      "data": { "label": "Plan Demo", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "prepare_preview",
+      "type": "call",
+      "position": { "x": 1600, "y": 120 },
       "data": { "label": "Prepare Preview", "type": "call", "status": "idle", "enabled": true }
     },
     {
       "id": "preview_route",
       "type": "switch",
-      "position": { "x": 1600, "y": 120 },
+      "position": { "x": 1820, "y": 120 },
       "data": { "label": "Preview?", "type": "switch", "status": "idle", "enabled": true }
     },
     {
       "id": "preview_capture",
       "type": "try",
-      "position": { "x": 1820, "y": 40 },
+      "position": { "x": 2040, "y": 40 },
       "data": { "label": "Capture UX", "type": "try", "status": "idle", "enabled": true }
     },
     {
       "id": "publish",
       "type": "call",
-      "position": { "x": 1820, "y": 220 },
+      "position": { "x": 2040, "y": 220 },
       "data": { "label": "Bootstrap PR", "type": "call", "status": "idle", "enabled": true }
     },
     {
       "id": "end",
       "type": "end",
-      "position": { "x": 2040, "y": 220 },
+      "position": { "x": 2260, "y": 220 },
       "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
     }
   ],
@@ -375,7 +414,8 @@
     { "id": "e-initialize-plan", "source": "initialize", "target": "plan" },
     { "id": "e-plan-scaffold", "source": "plan", "target": "scaffold" },
     { "id": "e-scaffold-review", "source": "scaffold", "target": "review" },
-    { "id": "e-review-prepare", "source": "review", "target": "prepare_preview" },
+    { "id": "e-review-plan-demo", "source": "review", "target": "plan_demo" },
+    { "id": "e-plan-demo-prepare", "source": "plan_demo", "target": "prepare_preview" },
     { "id": "e-prepare-route", "source": "prepare_preview", "target": "preview_route" },
     { "id": "e-route-preview", "source": "preview_route", "target": "preview_capture" },
     { "id": "e-route-publish", "source": "preview_route", "target": "publish" },

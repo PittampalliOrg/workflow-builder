@@ -12,10 +12,14 @@ export type WorkflowBrowserCaptureStep = {
 	id: string;
 	label: string;
 	url: string;
+	action?: string;
+	goal?: string;
 	title?: string;
 	waitForSelector?: string;
 	waitForText?: string;
 	delayMs?: number;
+	pauseMs?: number;
+	successCriteria?: string;
 	capturedAt?: string;
 	status: 'completed' | 'failed';
 	screenshotStorageRef?: string;
@@ -123,6 +127,9 @@ function parseStep(input: unknown, index: number): WorkflowBrowserCaptureStep {
 				? step.label.trim()
 				: `Step ${index + 1}`,
 		url: typeof step.url === 'string' ? step.url : '',
+		action:
+			typeof step.action === 'string' && step.action.trim() ? step.action.trim() : undefined,
+		goal: typeof step.goal === 'string' && step.goal.trim() ? step.goal.trim() : undefined,
 		title: typeof step.title === 'string' && step.title.trim() ? step.title.trim() : undefined,
 		waitForSelector:
 			typeof step.waitForSelector === 'string' && step.waitForSelector.trim()
@@ -134,6 +141,12 @@ function parseStep(input: unknown, index: number): WorkflowBrowserCaptureStep {
 				: undefined,
 		delayMs:
 			typeof step.delayMs === 'number' && Number.isFinite(step.delayMs) ? step.delayMs : undefined,
+		pauseMs:
+			typeof step.pauseMs === 'number' && Number.isFinite(step.pauseMs) ? step.pauseMs : undefined,
+		successCriteria:
+			typeof step.successCriteria === 'string' && step.successCriteria.trim()
+				? step.successCriteria.trim()
+				: undefined,
 		capturedAt:
 			typeof step.capturedAt === 'string' && step.capturedAt.trim()
 				? step.capturedAt.trim()

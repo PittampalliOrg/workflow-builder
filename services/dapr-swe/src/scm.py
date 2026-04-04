@@ -221,9 +221,19 @@ def build_pr_body(
 
     if validation:
         status = str(validation.get("status") or "skipped").strip() or "skipped"
-        parts.append("## UX Validation")
+        capture_mode = str(validation.get("captureMode") or "validation").strip().lower()
+        parts.append("## Demo & UX Validation" if capture_mode == "demo" else "## UX Validation")
         parts.append("")
         parts.append(f"- Status: {status}")
+        demo_title = str(validation.get("demoTitle") or "").strip()
+        if demo_title:
+            parts.append(f"- Demo: {demo_title}")
+        demo_summary = str(validation.get("demoSummary") or "").strip()
+        if demo_summary:
+            parts.append(f"- Summary: {demo_summary}")
+        step_count = validation.get("stepCount")
+        if isinstance(step_count, int) and step_count > 0:
+            parts.append(f"- Steps: {step_count}")
         screenshots = validation.get("screenshots")
         if isinstance(screenshots, int):
             parts.append(f"- Screenshots: {screenshots}")
@@ -308,9 +318,19 @@ def build_greenfield_pr_body(
 
     if validation:
         status = str(validation.get("status") or "skipped").strip() or "skipped"
-        parts.append("## UX Validation")
+        capture_mode = str(validation.get("captureMode") or "validation").strip().lower()
+        parts.append("## Demo & UX Validation" if capture_mode == "demo" else "## UX Validation")
         parts.append("")
         parts.append(f"- Status: {status}")
+        demo_title = str(validation.get("demoTitle") or "").strip()
+        if demo_title:
+            parts.append(f"- Demo: {demo_title}")
+        demo_summary = str(validation.get("demoSummary") or "").strip()
+        if demo_summary:
+            parts.append(f"- Summary: {demo_summary}")
+        step_count = validation.get("stepCount")
+        if isinstance(step_count, int) and step_count > 0:
+            parts.append(f"- Steps: {step_count}")
         screenshots = validation.get("screenshots")
         if isinstance(screenshots, int):
             parts.append(f"- Screenshots: {screenshots}")
