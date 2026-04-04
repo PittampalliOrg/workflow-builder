@@ -35,6 +35,7 @@ export async function getExecutionSandboxPreviewInfo(
 	const [execution] = await db
 		.select({
 			id: workflowExecutions.id,
+			input: workflowExecutions.input,
 			output: workflowExecutions.output
 		})
 		.from(workflowExecutions)
@@ -43,7 +44,9 @@ export async function getExecutionSandboxPreviewInfo(
 
 	if (!execution) return null;
 
+	const input = asRecord(execution.input);
 	const output = asRecord(execution.output);
+	const triggerData = asRecord(input?.triggerData);
 	const workflowOutput = asRecord(output?.workflowOutput);
 	const outputs = asRecord(output?.outputs);
 	const initialize = asRecord(outputs?.initialize);
@@ -58,9 +61,14 @@ export async function getExecutionSandboxPreviewInfo(
 	const provider =
 		asString(workflowOutput?.sandboxProvider) ||
 		asString(initializeData?.provider);
-	const kept = asBoolean(workflowOutput?.sandboxKept) || workspaceRef.length > 0;
+	const kept =
+		asBoolean(workflowOutput?.sandboxKept) ||
+		asBoolean(triggerData?.keepSandbox) ||
+		asBoolean(triggerData?.keep_sandbox) ||
+		asBoolean(input?.keepSandbox) ||
+		asBoolean(input?.keep_sandbox);
 
-	if (!workspaceRef) return null;
+	if (!workspaceRef || !kept) return null;
 
 	return {
 		executionId,

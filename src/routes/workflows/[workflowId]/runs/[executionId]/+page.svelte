@@ -508,6 +508,24 @@
 		const value = artifact.manifestJson.metadata?.[key];
 		return typeof value === 'number' && Number.isFinite(value) ? value : null;
 	}
+
+	function asRecord(value: unknown): Record<string, unknown> | null {
+		return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+	}
+
+	const sandboxPreviewUrl = $derived.by(() => {
+		const root = asRecord(output);
+		const workflowOutput = asRecord(root?.workflowOutput);
+		if (!workflowOutput) return '';
+		const sandboxKeptValue = workflowOutput.sandboxKept;
+		const sandboxKept =
+			typeof sandboxKeptValue === 'boolean'
+				? sandboxKeptValue
+				: typeof sandboxKeptValue === 'string'
+					? ['true', '1', 'yes'].includes(sandboxKeptValue.trim().toLowerCase())
+					: false;
+		return sandboxKept ? `/workflows/runtime-preview/${encodeURIComponent(executionId)}` : '';
+	});
 </script>
 
 <div class="flex h-full flex-col">
@@ -565,6 +583,28 @@
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
+				{#if sandboxPreviewUrl}
+					<Card>
+						<CardContent class="flex flex-wrap items-center justify-between gap-3 p-4">
+							<div>
+								<p class="text-sm font-medium">Retained Sandbox Available</p>
+								<p class="text-sm text-muted-foreground">
+									This run kept its OpenShell workspace alive so you can interact with the app after completion.
+								</p>
+							</div>
+							<a
+								class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+								href={sandboxPreviewUrl}
+								target="_blank"
+								rel="noreferrer"
+							>
+								<ExternalLink size={14} />
+								Open Live Preview
+							</a>
+						</CardContent>
+					</Card>
+				{/if}
+
 				{#if input}
 					<Card>
 						<CardContent class="p-3">
