@@ -21,6 +21,7 @@ import logging
 import os
 import random
 import string
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -801,8 +802,8 @@ async def lifespan(app: FastAPI):
     wfr.start()
     logger.info("[Workflow Orchestrator] Dapr Workflow Runtime started")
 
-    # Cleanup stale workflow instances on startup to prevent cascade
-    _cleanup_stale_instances_on_startup()
+    # Cleanup stale workflow instances without blocking readiness.
+    _start_startup_cleanup_thread()
 
     yield
 
@@ -1312,6 +1313,10 @@ def _cleanup_stale_instances_on_startup() -> None:
     running workflow actors from Redis, each creating new sandbox pods.
     """
     stale_threshold_minutes = int(os.environ.get("STALE_THRESHOLD_MINUTES", "60"))
+    terminate_timeout_seconds = max(
+        1,
+        int(os.environ.get("STARTUP_CLEANUP_TERMINATE_TIMEOUT_SECONDS", "15")),
+    )
     if os.environ.get("CLEANUP_STALE_ON_STARTUP", "true").lower() != "true":
         logger.info("[Startup Cleanup] Disabled via CLEANUP_STALE_ON_STARTUP=false")
         return
@@ -1352,12 +1357,22 @@ def _cleanup_stale_instances_on_startup() -> None:
         for execution_id, dapr_instance_id in stale_rows:
             if dapr_instance_id:
                 try:
-                    client.terminate_workflow(instance_id=dapr_instance_id)
+                    _terminate_workflow_with_timeout(
+                        client,
+                        dapr_instance_id,
+                        terminate_timeout_seconds,
+                    )
                     terminated_count += 1
                     logger.info(
                         "[Startup Cleanup] Terminated Dapr instance %s (exec %s)",
                         dapr_instance_id,
                         execution_id,
+                    )
+                except TimeoutError:
+                    logger.warning(
+                        "[Startup Cleanup] Timed out terminating %s after %ss",
+                        dapr_instance_id,
+                        terminate_timeout_seconds,
                     )
                 except Exception as term_err:
                     logger.warning(
@@ -1388,6 +1403,47 @@ def _cleanup_stale_instances_on_startup() -> None:
 
     except Exception as exc:
         logger.error("[Startup Cleanup] Failed: %s", exc, exc_info=True)
+
+
+def _terminate_workflow_with_timeout(
+    client: DaprWorkflowClient,
+    instance_id: str,
+    timeout_seconds: int,
+) -> None:
+    result: dict[str, BaseException | None] = {"error": None}
+
+    def _terminate() -> None:
+        try:
+            client.terminate_workflow(instance_id=instance_id)
+        except BaseException as exc:  # pragma: no cover - surfaced after join
+            result["error"] = exc
+
+    thread = threading.Thread(
+        target=_terminate,
+        name=f"startup-cleanup-terminate-{instance_id}",
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout_seconds)
+
+    if thread.is_alive():
+        raise TimeoutError(
+            f"Timed out terminating workflow instance {instance_id} after "
+            f"{timeout_seconds}s"
+        )
+
+    if result["error"] is not None:
+        raise result["error"]
+
+
+def _start_startup_cleanup_thread() -> None:
+    thread = threading.Thread(
+        target=_cleanup_stale_instances_on_startup,
+        name="startup-cleanup",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("[Startup Cleanup] Background cleanup thread started")
 
 
 def _topological_sort(nodes: list[dict], edges: list[dict]) -> list[str]:
