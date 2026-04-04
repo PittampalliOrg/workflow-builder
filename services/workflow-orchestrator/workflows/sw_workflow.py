@@ -792,12 +792,19 @@ def _handle_try_task(
     catch_config = task_data.get("catch", {})
     task_input = _resolve_task_input(task_data, tc)
     _log_info(ctx, "[SW Workflow] try task: %s", task_name)
+    subtask_results: dict[str, Any] = {}
 
     try:
         for sub_item in try_tasks:
             for sub_name, sub_data in sub_item.items():
-                yield from _dispatch_task(ctx, f"{task_name}/try/{sub_name}", sub_data, tc)
-        result = {"success": True}
+                subtask_result = yield from _dispatch_task(
+                    ctx,
+                    f"{task_name}/try/{sub_name}",
+                    sub_data,
+                    tc,
+                )
+                subtask_results[sub_name] = _unwrap_standardized_output(subtask_result)
+        result = {"success": True, "tasks": subtask_results}
     except Exception as e:
         logger.warning("[SW Workflow] try task caught error: %s", e)
         # Execute catch tasks if defined
@@ -808,7 +815,7 @@ def _handle_try_task(
             for sub_item in catch_tasks:
                 for sub_name, sub_data in sub_item.items():
                     yield from _dispatch_task(ctx, f"{task_name}/catch/{sub_name}", sub_data, tc)
-        result = {"success": False, "error": str(e)}
+        result = {"success": False, "error": str(e), "tasks": subtask_results}
 
     try_result = _apply_task_output_definition(
         task_data,
