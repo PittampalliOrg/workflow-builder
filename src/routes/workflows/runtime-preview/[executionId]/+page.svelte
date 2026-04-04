@@ -3,20 +3,29 @@
 	import { page } from '$app/state';
 
 	let loading = $state(true);
+	let stopping = $state(false);
 	let errorMessage = $state('');
 	let previewUrl = $state('');
 	let pageUrl = $state('');
+	let workspaceRef = $state('');
+	let workingDir = $state('');
+	let provider = $state('');
+	let statusMessage = $state('');
+
+	function previewId(): string {
+		return page.url.searchParams.get('previewId') ?? page.params.executionId;
+	}
 
 	async function startPreview() {
 		loading = true;
 		errorMessage = '';
+		statusMessage = '';
 		try {
 			const executionId = page.params.executionId;
-			const previewId = page.url.searchParams.get('previewId') ?? executionId;
 			const response = await fetch(`/api/workflows/executions/${executionId}/sandbox-preview`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ previewId })
+				body: JSON.stringify({ previewId: previewId() })
 			});
 			const payload = await response.json().catch(() => ({}));
 			if (!response.ok || payload.success === false) {
@@ -30,10 +39,42 @@
 			}
 			previewUrl = payload.proxyUrl;
 			pageUrl = payload.pageUrl;
+			workspaceRef = payload.workspaceRef ?? '';
+			workingDir = payload.workingDir ?? '';
+			provider = payload.provider ?? '';
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : 'Failed to start sandbox preview';
 		} finally {
 			loading = false;
+		}
+	}
+
+	async function stopPreview() {
+		stopping = true;
+		errorMessage = '';
+		statusMessage = '';
+		try {
+			const executionId = page.params.executionId;
+			const response = await fetch(
+				`/api/workflows/executions/${executionId}/sandbox-preview?previewId=${encodeURIComponent(previewId())}`,
+				{ method: 'DELETE' }
+			);
+			const payload = await response.json().catch(() => ({}));
+			if (!response.ok || payload.success === false) {
+				throw new Error(
+					typeof payload.message === 'string'
+						? payload.message
+						: typeof payload.error === 'string'
+							? payload.error
+							: 'Failed to stop sandbox preview'
+				);
+			}
+			previewUrl = '';
+			statusMessage = 'Preview stopped';
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : 'Failed to stop sandbox preview';
+		} finally {
+			stopping = false;
 		}
 	}
 
@@ -56,14 +97,33 @@
 			<button type="button" onclick={startPreview} disabled={loading}>
 				{loading ? 'Starting…' : 'Restart Preview'}
 			</button>
+			<button type="button" onclick={stopPreview} disabled={loading || stopping || !previewUrl}>
+				{stopping ? 'Stopping…' : 'Stop Preview'}
+			</button>
 			{#if previewUrl}
 				<a href={previewUrl} target="_blank" rel="noreferrer">Open Raw Preview</a>
 			{/if}
 		</div>
 	</header>
 
+	{#if workspaceRef || workingDir}
+		<div class="preview-meta">
+			{#if workspaceRef}
+				<p><strong>Workspace:</strong> <code>{workspaceRef}</code></p>
+			{/if}
+			{#if workingDir}
+				<p><strong>Working Dir:</strong> <code>{workingDir}</code></p>
+			{/if}
+			{#if provider}
+				<p><strong>Provider:</strong> <code>{provider}</code></p>
+			{/if}
+		</div>
+	{/if}
+
 	{#if errorMessage}
 		<div class="preview-error">{errorMessage}</div>
+	{:else if statusMessage}
+		<div class="preview-status">{statusMessage}</div>
 	{:else if loading}
 		<div class="preview-loading">Starting preview…</div>
 	{:else if previewUrl}
@@ -126,6 +186,7 @@
 	}
 
 	.preview-loading,
+	.preview-status,
 	.preview-error {
 		border: 1px solid #e5e7eb;
 		border-radius: 0.75rem;
@@ -135,6 +196,30 @@
 
 	.preview-error {
 		color: #b42318;
+	}
+
+	.preview-status {
+		color: #166534;
+	}
+
+	.preview-meta {
+		display: grid;
+		gap: 0.4rem;
+		border: 1px solid #e5e7eb;
+		border-radius: 0.75rem;
+		padding: 0.9rem 1rem;
+		background: white;
+		font-size: 0.9rem;
+	}
+
+	.preview-meta p {
+		margin: 0;
+	}
+
+	.preview-meta code {
+		font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+		font-size: 0.85rem;
+		word-break: break-all;
 	}
 
 	.preview-frame {

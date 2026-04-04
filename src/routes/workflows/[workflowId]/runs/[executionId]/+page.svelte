@@ -145,6 +145,9 @@
 	let browserArtifacts = $state<BrowserArtifact[]>([]);
 	let isLoadingBrowserArtifacts = $state(true);
 	let browserArtifactError = $state<string | null>(null);
+	let previewActionPending = $state(false);
+	let previewActionMessage = $state<string | null>(null);
+	let previewActionError = $state<string | null>(null);
 
 	// Active tab
 	let activeTab = $state('overview');
@@ -526,6 +529,55 @@
 					: false;
 		return sandboxKept ? `/workflows/runtime-preview/${encodeURIComponent(executionId)}` : '';
 	});
+
+	const sandboxWorkspaceRef = $derived.by(() => {
+		const root = asRecord(output);
+		const workflowOutput = asRecord(root?.workflowOutput);
+		const value = workflowOutput?.sandboxWorkspaceRef;
+		return typeof value === 'string' ? value : '';
+	});
+
+	const sandboxWorkingDir = $derived.by(() => {
+		const root = asRecord(output);
+		const workflowOutput = asRecord(root?.workflowOutput);
+		const value = workflowOutput?.sandboxWorkingDir;
+		return typeof value === 'string' ? value : '';
+	});
+
+	const sandboxProvider = $derived.by(() => {
+		const root = asRecord(output);
+		const workflowOutput = asRecord(root?.workflowOutput);
+		const value = workflowOutput?.sandboxProvider;
+		return typeof value === 'string' ? value : '';
+	});
+
+	async function stopSandboxPreview() {
+		previewActionPending = true;
+		previewActionMessage = null;
+		previewActionError = null;
+		try {
+			const response = await fetch(
+				`/api/workflows/executions/${executionId}/sandbox-preview?previewId=${encodeURIComponent(executionId)}`,
+				{ method: 'DELETE' }
+			);
+			const payload = await response.json().catch(() => ({}));
+			if (!response.ok || payload.success === false) {
+				throw new Error(
+					typeof payload.message === 'string'
+						? payload.message
+						: typeof payload.error === 'string'
+							? payload.error
+							: 'Failed to stop sandbox preview'
+				);
+			}
+			previewActionMessage = 'Live preview stopped';
+		} catch (error) {
+			previewActionError =
+				error instanceof Error ? error.message : 'Failed to stop sandbox preview';
+		} finally {
+			previewActionPending = false;
+		}
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -585,22 +637,53 @@
 			<div class="mx-auto max-w-5xl space-y-4">
 				{#if sandboxPreviewUrl}
 					<Card>
-						<CardContent class="flex flex-wrap items-center justify-between gap-3 p-4">
-							<div>
-								<p class="text-sm font-medium">Retained Sandbox Available</p>
-								<p class="text-sm text-muted-foreground">
-									This run kept its OpenShell workspace alive so you can interact with the app after completion.
-								</p>
+						<CardContent class="space-y-3 p-4">
+							<div class="flex flex-wrap items-center justify-between gap-3">
+								<div>
+									<p class="text-sm font-medium">Retained Sandbox Available</p>
+									<p class="text-sm text-muted-foreground">
+										This run kept its OpenShell workspace alive so you can interact with the app after completion.
+									</p>
+								</div>
+								<div class="flex flex-wrap gap-2">
+									<a
+										class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
+										href={sandboxPreviewUrl}
+										target="_blank"
+										rel="noreferrer"
+									>
+										<ExternalLink size={14} />
+										Open Live Preview
+									</a>
+									<button
+										class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted disabled:cursor-progress disabled:opacity-70"
+										type="button"
+										onclick={stopSandboxPreview}
+										disabled={previewActionPending}
+									>
+										{previewActionPending ? 'Stopping…' : 'Stop Preview'}
+									</button>
+								</div>
 							</div>
-							<a
-								class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
-								href={sandboxPreviewUrl}
-								target="_blank"
-								rel="noreferrer"
-							>
-								<ExternalLink size={14} />
-								Open Live Preview
-							</a>
+
+							<div class="grid gap-2 text-sm text-muted-foreground">
+								{#if sandboxWorkspaceRef}
+									<p><span class="font-medium text-foreground">Workspace:</span> <code>{sandboxWorkspaceRef}</code></p>
+								{/if}
+								{#if sandboxWorkingDir}
+									<p><span class="font-medium text-foreground">Working Dir:</span> <code>{sandboxWorkingDir}</code></p>
+								{/if}
+								{#if sandboxProvider}
+									<p><span class="font-medium text-foreground">Provider:</span> <code>{sandboxProvider}</code></p>
+								{/if}
+							</div>
+
+							{#if previewActionMessage}
+								<p class="text-sm text-green-700 dark:text-green-400">{previewActionMessage}</p>
+							{/if}
+							{#if previewActionError}
+								<p class="text-sm text-red-600 dark:text-red-400">{previewActionError}</p>
+							{/if}
 						</CardContent>
 					</Card>
 				{/if}
