@@ -147,6 +147,15 @@ def _preview_steps_for_app(app_subdir: str) -> list[dict[str, Any]]:
 
 def _extract_validation_summary(value: Any) -> dict[str, Any]:
     data = _coerce_mapping(value)
+    for path in (("data", "data", "result"), ("data", "result"), ("result",)):
+        candidate: dict[str, Any] | None = data
+        for key in path:
+            candidate = _coerce_mapping(candidate.get(key) if candidate else None)
+            if not candidate:
+                break
+        if candidate:
+            data = candidate
+            break
     artifact = _coerce_mapping(data.get("artifact"))
     artifact_manifest = _coerce_mapping(artifact.get("manifestJson"))
     assets = _coerce_list(artifact.get("assets") or artifact_manifest.get("assets") or data.get("assets"))
@@ -183,6 +192,26 @@ def _extract_validation_summary(value: Any) -> dict[str, Any]:
         summary["videoAssetRef"] = str(video_assets[0].get("storageRef") or "").strip()
     if not summary["error"]:
         summary["error"] = str(artifact.get("error") or "").strip()
+    return summary
+
+
+def _resolve_validation_summary(input_data: dict, node_outputs: dict) -> dict[str, Any]:
+    summary = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
+    if (
+        summary.get("artifactId")
+        or int(summary.get("screenshots") or 0) > 0
+        or summary.get("traceAssetRef")
+        or summary.get("videoAssetRef")
+    ):
+        return summary
+    raw_summary = _extract_validation_summary(node_outputs.get("preview_capture/try/validate"))
+    if (
+        raw_summary.get("artifactId")
+        or int(raw_summary.get("screenshots") or 0) > 0
+        or raw_summary.get("traceAssetRef")
+        or raw_summary.get("videoAssetRef")
+    ):
+        return raw_summary
     return summary
 
 
@@ -913,7 +942,7 @@ def handle_commit_pr(input_data: dict, node_outputs: dict) -> dict:
     title = _resolve(input_data, node_outputs, "title") or "Untitled issue"
     plan = _coerce_mapping(_resolve(input_data, node_outputs, "plan"))
     review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
-    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
+    validation = _resolve_validation_summary(input_data, node_outputs)
 
     for field, val in [("sandbox_id", sandbox_id), ("working_dir", working_dir),
                        ("owner", owner), ("repo", repo),
@@ -1079,7 +1108,7 @@ def handle_notify(input_data: dict, node_outputs: dict) -> dict:
     status = _resolve(input_data, node_outputs, "status") or ""
     error = _resolve(input_data, node_outputs, "error") or ""
     review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
-    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
+    validation = _resolve_validation_summary(input_data, node_outputs)
 
     for field, val in [("owner", owner), ("repo", repo), ("issue_number", issue_number)]:
         if not val:
@@ -1299,7 +1328,7 @@ def handle_report_preview(input_data: dict, node_outputs: dict) -> dict:
         return {"success": True, "data": {"reported": False}, "error": None}
 
     stage = str(_resolve(input_data, node_outputs, "stage") or "").strip().lower() or "completed"
-    validation = _extract_validation_summary(_resolve(input_data, node_outputs, "validation"))
+    validation = _resolve_validation_summary(input_data, node_outputs)
     app_subdir = str(_resolve(input_data, node_outputs, "appSubdir") or "").strip()
     phase = "previewing"
     progress = 82 if stage == "started" else 90
