@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import posixpath
+import re
 import shlex
 import subprocess
 import tempfile
@@ -164,6 +165,267 @@ def _preview_steps_for_app(app_subdir: str) -> list[dict[str, Any]]:
             "metadata": metadata,
         }
     ]
+
+
+def _demo_interaction_count(steps: list[dict[str, Any]]) -> int:
+    return sum(
+        1
+        for step in steps
+        if str(step.get("action") or "").strip().lower() in {"click", "fill", "press", "scroll"}
+    )
+
+
+def _demo_plan_needs_enrichment(demo_plan: dict[str, Any]) -> bool:
+    steps = [
+        step
+        for step in _coerce_list(demo_plan.get("steps"))
+        if isinstance(step, dict)
+    ]
+    if len(steps) <= 1:
+        return True
+    if _demo_interaction_count(steps) == 0:
+        return True
+    first_goal = str((steps[0] if steps else {}).get("goal") or "").strip().lower()
+    return first_goal in {
+        "",
+        "open the updated experience",
+        "open the updated ui and capture the primary experience.",
+        "open the updated ui",
+    }
+
+
+def _demo_candidate_source_files(changed_files: list[str]) -> list[str]:
+    preferred_suffixes = (
+        ".svelte",
+        ".tsx",
+        ".jsx",
+        ".ts",
+        ".js",
+        ".json",
+        ".md",
+    )
+    ignored_prefixes = ("node_modules/", ".svelte-kit/", "build/")
+    candidates: list[str] = []
+    for path in changed_files:
+        normalized = str(path or "").strip().lstrip("./")
+        if not normalized or normalized.startswith(ignored_prefixes):
+            continue
+        if normalized.endswith(preferred_suffixes) and normalized not in candidates:
+            candidates.append(normalized)
+        if len(candidates) >= 12:
+            break
+    return candidates
+
+
+def _download_repo_source_text(
+    sandbox: OpenShellBackend,
+    *,
+    working_dir: str,
+    changed_files: list[str],
+) -> dict[str, str]:
+    candidate_paths = [
+        posixpath.join(working_dir, path)
+        for path in _demo_candidate_source_files(changed_files)
+    ]
+    if not candidate_paths:
+        return {}
+    source_map: dict[str, str] = {}
+    for download in sandbox.download_files(candidate_paths):
+        if download.error or not getattr(download, "content", None):
+            continue
+        rel_path = _safe_relpath(download.path, working_dir)
+        try:
+            source_map[rel_path] = download.content.decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+    return source_map
+
+
+def _infer_app_display_name(issue_context: dict[str, Any], source_text: str) -> str:
+    patterns = [
+        r"<h1[^>]*>\s*([^<]{3,80})\s*</h1>",
+        r"<title[^>]*>\s*([^<]{3,80})\s*</title>",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, source_text, flags=re.IGNORECASE)
+        if match:
+            value = re.sub(r"\s+", " ", match.group(1)).strip()
+            if value:
+                return value
+    title = str(issue_context.get("title") or "").strip()
+    body = str(issue_context.get("body") or "").strip()
+    for text in (title, body):
+        lower = text.lower()
+        if "calendar" in lower:
+            return "Calendar Demo"
+    repo = str(issue_context.get("repo") or "App").strip()
+    return repo.replace("-", " ").replace("_", " ").title()
+
+
+def _build_calendar_demo_plan(*, app_subdir: str, issue_context: dict[str, Any], source_text: str) -> dict[str, Any]:
+    app_title = _infer_app_display_name(issue_context, source_text)
+    entry_path = "/"
+    return {
+        "captureMode": "demo",
+        "title": app_title,
+        "summary": "Navigate the calendar, open the event modal, create an event, and show the updated agenda.",
+        "entryPath": entry_path,
+        "confidence": "high",
+        "steps": [
+            {
+                "id": "home",
+                "label": "Open calendar",
+                "goal": "Load the calendar experience and show the two-panel layout.",
+                "action": "visit",
+                "url": entry_path,
+                "pauseMs": 2200,
+                "waitForSelector": ".calendar",
+                "fullPage": True,
+            },
+            {
+                "id": "next-month",
+                "label": "Navigate forward",
+                "goal": "Show that the calendar can move to the next month.",
+                "action": "click",
+                "selector": 'button[aria-label="Next month"]',
+                "pauseMs": 1400,
+                "waitForSelector": ".calendar h2",
+            },
+            {
+                "id": "previous-month",
+                "label": "Return to current month",
+                "goal": "Return to the current month before demonstrating event creation.",
+                "action": "click",
+                "selector": 'button[aria-label="Previous month"]',
+                "pauseMs": 1400,
+                "waitForSelector": ".calendar h2",
+            },
+            {
+                "id": "open-modal",
+                "label": "Open event modal",
+                "goal": "Open the new-event modal from the agenda panel.",
+                "action": "click",
+                "text": "New Event",
+                "pauseMs": 1200,
+                "waitForText": "Create Event",
+            },
+            {
+                "id": "fill-title",
+                "label": "Name the event",
+                "goal": "Fill the event title field with a demo event name.",
+                "action": "fill",
+                "selector": "#ev-title",
+                "value": "Launch rehearsal",
+                "pauseMs": 900,
+            },
+            {
+                "id": "fill-description",
+                "label": "Add event details",
+                "goal": "Add a short description to show the form supports richer event details.",
+                "action": "fill",
+                "selector": "#ev-desc",
+                "value": "Confirm the new event flow in the demo calendar.",
+                "pauseMs": 900,
+            },
+            {
+                "id": "submit-event",
+                "label": "Create the event",
+                "goal": "Submit the modal and show the new event appear in the agenda.",
+                "action": "click",
+                "text": "Create Event",
+                "pauseMs": 2200,
+                "waitForText": "Launch rehearsal",
+                "successCriteria": "Launch rehearsal",
+            },
+        ],
+        "fallbackSteps": _preview_steps_for_app(app_subdir),
+    }
+
+
+def _build_modal_form_demo_plan(*, app_subdir: str, issue_context: dict[str, Any], source_text: str) -> dict[str, Any]:
+    app_title = _infer_app_display_name(issue_context, source_text)
+    return {
+        "captureMode": "demo",
+        "title": app_title,
+        "summary": "Open the primary modal flow, fill the form, and submit the new item.",
+        "entryPath": "/",
+        "confidence": "medium",
+        "steps": [
+            {
+                "id": "home",
+                "label": "Open app",
+                "goal": "Load the updated interface.",
+                "action": "visit",
+                "url": "/",
+                "pauseMs": 2000,
+                "fullPage": True,
+            },
+            {
+                "id": "open-modal",
+                "label": "Open primary flow",
+                "goal": "Open the main creation flow from the interface.",
+                "action": "click",
+                "text": "New Event" if "new event" in source_text.lower() else "Create",
+                "pauseMs": 1200,
+            },
+            {
+                "id": "fill-primary-field",
+                "label": "Enter details",
+                "goal": "Fill the main form field to demonstrate editable functionality.",
+                "action": "fill",
+                "selector": "#ev-title" if "#ev-title" in source_text else "input",
+                "value": "Workflow demo item",
+                "pauseMs": 900,
+            },
+            {
+                "id": "submit",
+                "label": "Submit",
+                "goal": "Submit the form and show the created item in the interface.",
+                "action": "click",
+                "text": "Create Event" if "create event" in source_text.lower() else "Create",
+                "pauseMs": 2000,
+            },
+        ],
+        "fallbackSteps": _preview_steps_for_app(app_subdir),
+    }
+
+
+def _infer_heuristic_demo_plan(
+    *,
+    issue_context: dict[str, Any],
+    app_subdir: str,
+    changed_files: list[str],
+    source_map: dict[str, str],
+) -> dict[str, Any] | None:
+    combined = "\n".join(source_map.values())
+    signal_text = "\n".join(
+        [
+            str(issue_context.get("title") or ""),
+            str(issue_context.get("body") or ""),
+            "\n".join(changed_files),
+            combined,
+        ]
+    ).lower()
+    if "calendar" in signal_text and (
+        "new event" in signal_text
+        or "agenda" in signal_text
+        or "day-grid" in signal_text
+        or "eventmodal" in signal_text
+    ):
+        return _build_calendar_demo_plan(
+            app_subdir=app_subdir,
+            issue_context=issue_context,
+            source_text=combined,
+        )
+    if ("modal" in signal_text or "dialog" in signal_text) and (
+        "create" in signal_text or "new " in signal_text
+    ):
+        return _build_modal_form_demo_plan(
+            app_subdir=app_subdir,
+            issue_context=issue_context,
+            source_text=combined,
+        )
+    return None
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -633,6 +895,8 @@ def _generate_demo_plan_with_agent(
             "Return an object with keys: title, summary, entryPath, confidence, steps, fallbackSteps.",
             "Each step must be an object with: id, label, goal, action, url, selector, text, value, pauseMs, waitForSelector, waitForText, successCriteria, fullPage.",
             "Allowed actions: visit, click, fill, press, wait, assert, scroll.",
+            "If the UI supports interaction, include at least 4 steps and at least 2 interaction steps.",
+            "Avoid a single homepage visit unless the application truly has no meaningful interaction to demonstrate.",
             "Prefer reliable selectors or visible text. Keep the demo short and user-facing.",
         ]
     )
@@ -1769,6 +2033,11 @@ def handle_plan_demo(input_data: dict, node_outputs: dict) -> dict:
     review = _coerce_mapping(_resolve(input_data, node_outputs, "review"))
     model = _resolve(input_data, node_outputs, "model")
     changed_files = _collect_changed_files(sandbox, str(working_dir))
+    source_map = _download_repo_source_text(
+        sandbox,
+        working_dir=str(working_dir),
+        changed_files=changed_files,
+    )
     default_plan = _default_demo_plan(
         app_subdir=".",
         summary="Open the updated experience and demonstrate the primary functionality.",
@@ -1788,6 +2057,20 @@ def handle_plan_demo(input_data: dict, node_outputs: dict) -> dict:
         logger.exception("Demo planner failed")
         demo_plan = default_plan
         planning_error = str(exc)
+
+    if _demo_plan_needs_enrichment(demo_plan):
+        heuristic_plan = _infer_heuristic_demo_plan(
+            issue_context=issue_context,
+            app_subdir=".",
+            changed_files=changed_files,
+            source_map=source_map,
+        )
+        if heuristic_plan:
+            demo_plan = _normalize_demo_plan(heuristic_plan, app_subdir=".")
+            if planning_error:
+                planning_error = f"{planning_error}; applied heuristic demo plan"
+            else:
+                planning_error = "Applied heuristic demo plan"
 
     wb_exec_id, dapr_instance_id = _resolve_execution_ids(input_data, node_outputs)
     if wb_exec_id and dapr_instance_id:
