@@ -195,7 +195,7 @@ def _normalize_demo_step(raw_step: Any, index: int) -> dict[str, Any]:
         pause_value = int(pause_ms) if pause_ms is not None and str(pause_ms).strip() else None
     except Exception:
         pause_value = None
-    return {
+    normalized = {
         "id": str(step.get("id") or f"step-{index + 1}").strip() or f"step-{index + 1}",
         "label": str(step.get("label") or f"Step {index + 1}").strip() or f"Step {index + 1}",
         "goal": str(step.get("goal") or "").strip(),
@@ -211,6 +211,23 @@ def _normalize_demo_step(raw_step: Any, index: int) -> dict[str, Any]:
         "successCriteria": str(step.get("successCriteria") or "").strip(),
         "fullPage": step.get("fullPage") is not False,
     }
+    selector = normalized["selector"]
+    text = normalized["text"]
+
+    # Normalize agent output into checks Playwright can evaluate reliably.
+    if action == "fill":
+        if selector and not normalized["waitForSelector"]:
+            normalized["waitForSelector"] = selector
+        normalized["waitForText"] = ""
+    elif action == "assert":
+        if selector and not normalized["waitForSelector"]:
+            normalized["waitForSelector"] = selector
+        if text and not normalized["waitForText"]:
+            normalized["waitForText"] = text
+    elif action == "visit":
+        if text and not normalized["waitForText"]:
+            normalized["waitForText"] = text
+    return normalized
 
 
 def _default_demo_plan(*, app_subdir: str = ".", summary: str = "") -> dict[str, Any]:
