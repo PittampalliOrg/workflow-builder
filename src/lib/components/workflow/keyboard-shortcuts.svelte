@@ -151,6 +151,13 @@
 			return;
 		}
 
+		// Cmd/Ctrl+K = Open command palette
+		if (mod && event.key === 'k') {
+			event.preventDefault();
+			window.dispatchEvent(new CustomEvent('workflow:command-palette'));
+			return;
+		}
+
 		if (event.key === 'Escape') {
 			store.selectedNodeId = null;
 			store.selectedEdgeId = null;

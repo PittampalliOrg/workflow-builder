@@ -47,11 +47,18 @@
 	import StepPalette from './step-palette.svelte';
 	import DropTarget from './drop-target.svelte';
 	import ContextMenu from './context-menu.svelte';
+	import CommandPalette from './command-palette.svelte';
 	import ExecutionDemo from './execution-demo.svelte';
 	import ExecutionTracker from './execution-tracker.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+
+	// Command palette state
+	let showCommandPalette = $state(false);
+	let commandPaletteReplaceNodeId = $state<string | null>(null);
+	let commandPaletteInsertEdgeId = $state<string | null>(null);
+	let commandPalettePosition = $state<{ x: number; y: number } | null>(null);
 
 	// Map our theme to SvelteFlow's colorMode
 	let colorMode = $derived<'light' | 'dark' | 'system'>(
@@ -92,18 +99,33 @@
 
 	function handleInsertOnEdge(event: Event) {
 		const detail = (event as CustomEvent).detail as { edgeId: string; position: { x: number; y: number } };
-		insertOnEdgeId = detail.edgeId;
-		insertOnEdgePosition = detail.position;
-		// Insert a generic 'call' node at the edge midpoint
-		store.insertNodeOnEdge(detail.edgeId, 'call', detail.position);
-		insertOnEdgeId = null;
-		insertOnEdgePosition = null;
+		// Open command palette for edge insertion
+		commandPaletteInsertEdgeId = detail.edgeId;
+		commandPalettePosition = detail.position;
+		commandPaletteReplaceNodeId = null;
+		showCommandPalette = true;
+	}
+
+	function handleOpenCommandPalette() {
+		commandPaletteReplaceNodeId = null;
+		commandPaletteInsertEdgeId = null;
+		commandPalettePosition = null;
+		showCommandPalette = true;
+	}
+
+	function handleReplaceAction(event: Event) {
+		const detail = (event as CustomEvent).detail as { nodeId: string };
+		openReplaceAction(detail.nodeId);
 	}
 
 	onMount(() => {
 		window.addEventListener('workflow:insert-on-edge', handleInsertOnEdge);
+		window.addEventListener('workflow:command-palette', handleOpenCommandPalette);
+		window.addEventListener('workflow:replace-action', handleReplaceAction);
 		return () => {
 			window.removeEventListener('workflow:insert-on-edge', handleInsertOnEdge);
+			window.removeEventListener('workflow:command-palette', handleOpenCommandPalette);
+			window.removeEventListener('workflow:replace-action', handleReplaceAction);
 		};
 	});
 
@@ -189,7 +211,6 @@
 	function insertNodeOnEdge(edgeId: string) {
 		const edge = store.edges.find((e) => e.id === edgeId);
 		if (!edge) return;
-		// Use midpoint approximation
 		const sourceNode = store.nodes.find((n) => n.id === edge.source);
 		const targetNode = store.nodes.find((n) => n.id === edge.target);
 		if (sourceNode && targetNode) {
@@ -197,9 +218,19 @@
 				x: (sourceNode.position.x + targetNode.position.x) / 2,
 				y: (sourceNode.position.y + targetNode.position.y) / 2
 			};
-			store.insertNodeOnEdge(edgeId, 'call', pos);
+			commandPaletteInsertEdgeId = edgeId;
+			commandPalettePosition = pos;
+			commandPaletteReplaceNodeId = null;
+			showCommandPalette = true;
 		}
 		edgeContextMenu = null;
+	}
+
+	function openReplaceAction(nodeId: string) {
+		commandPaletteReplaceNodeId = nodeId;
+		commandPaletteInsertEdgeId = null;
+		commandPalettePosition = null;
+		showCommandPalette = true;
 	}
 
 	function onPaneClick() {
@@ -297,3 +328,16 @@
 		</div>
 	</div>
 {/if}
+
+<CommandPalette
+	open={showCommandPalette}
+	onClose={() => {
+		showCommandPalette = false;
+		commandPaletteReplaceNodeId = null;
+		commandPaletteInsertEdgeId = null;
+		commandPalettePosition = null;
+	}}
+	replaceNodeId={commandPaletteReplaceNodeId}
+	insertOnEdgeId={commandPaletteInsertEdgeId}
+	position={commandPalettePosition}
+/>

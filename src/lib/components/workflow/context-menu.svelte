@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { Trash2, Copy, Unplug, Settings } from 'lucide-svelte';
+	import { Trash2, Copy, Unplug, Settings, Replace } from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
@@ -46,6 +46,19 @@
 		}
 		onClose();
 	}
+
+	function changeAction() {
+		if (nodeId) {
+			window.dispatchEvent(new CustomEvent('workflow:replace-action', { detail: { nodeId } }));
+		}
+		onClose();
+	}
+
+	let isCallNode = $derived.by(() => {
+		if (!nodeId) return false;
+		const node = store.nodes.find((n) => n.id === nodeId);
+		return node?.type === 'call';
+	});
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -63,6 +76,17 @@
 			<Settings size={14} />
 			Configure
 		</Button>
+		{#if isCallNode}
+			<Button
+				variant="ghost"
+				size="sm"
+				onclick={changeAction}
+				class="flex w-full items-center justify-start gap-2 rounded-sm px-2 py-1.5 text-popover-foreground"
+			>
+				<Replace size={14} />
+				Change action...
+			</Button>
+		{/if}
 		<Button
 			variant="ghost"
 			size="sm"
