@@ -1,7 +1,57 @@
 import { desc, eq, inArray } from 'drizzle-orm';
 import { db } from '$lib/server/db';
-import { appConnections, pieceMetadata } from '$lib/server/db/schema';
-import { decryptObject, type EncryptedObject } from '$lib/server/security/encryption';
+import { appConnections, pieceMetadata, platformOauthApps } from '$lib/server/db/schema';
+import { decryptObject, decryptString, encryptObject, type EncryptedObject } from '$lib/server/security/encryption';
+
+const REFRESH_THRESHOLD_SECONDS = 5 * 60;
+
+function isTokenExpired(token: Record<string, unknown>): boolean {
+	const claimedAt = typeof token.claimed_at === 'number' ? token.claimed_at : 0;
+	const expiresIn = typeof token.expires_in === 'number' ? token.expires_in : 3600;
+	if (!claimedAt) return false;
+	const now = Math.floor(Date.now() / 1000);
+	return now + REFRESH_THRESHOLD_SECONDS >= claimedAt + expiresIn;
+}
+
+function resolveClientSecret(value: unknown): string {
+	if (typeof value === 'string') {
+		try {
+			const parsed = JSON.parse(value) as EncryptedObject;
+			if (parsed && typeof parsed === 'object' && 'iv' in parsed && 'data' in parsed) return decryptString(parsed);
+		} catch { return value; }
+		return value;
+	}
+	if (value && typeof value === 'object' && !Array.isArray(value) && 'iv' in value && 'data' in value) return decryptString(value as EncryptedObject);
+	throw new Error('Cannot resolve client secret');
+}
+
+async function refreshOAuth2Token(token: Record<string, unknown>, pieceName: string): Promise<Record<string, unknown> | null> {
+	const refreshToken = token.refresh_token as string | undefined;
+	const tokenUrl = token.token_url as string | undefined;
+	if (!refreshToken || !tokenUrl) return null;
+	const candidates = [pieceName, pieceName.startsWith('@activepieces/piece-') ? pieceName : `@activepieces/piece-${pieceName}`];
+	const oauthApps = db ? await db.select().from(platformOauthApps).where(inArray(platformOauthApps.pieceName, candidates)).limit(1) : [];
+	if (oauthApps.length === 0) return null;
+	const oauthApp = oauthApps[0];
+	const clientId = (token.client_id as string) || oauthApp.clientId;
+	let clientSecret: string;
+	try { clientSecret = resolveClientSecret(oauthApp.clientSecret); } catch { return null; }
+	const authMethod = (token.authorization_method as string) || 'BODY';
+	const body: Record<string, string> = { grant_type: 'refresh_token', refresh_token: refreshToken };
+	const headers: Record<string, string> = { 'Content-Type': 'application/x-www-form-urlencoded' };
+	if (authMethod === 'HEADER') {
+		headers['Authorization'] = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`;
+	} else {
+		body.client_id = clientId;
+		body.client_secret = clientSecret;
+	}
+	try {
+		const response = await fetch(tokenUrl, { method: 'POST', headers, body: new URLSearchParams(body).toString(), signal: AbortSignal.timeout(20000) });
+		if (!response.ok) return null;
+		const data = (await response.json()) as Record<string, unknown>;
+		return { ...token, access_token: data.access_token ?? token.access_token, token_type: data.token_type ?? token.token_type, expires_in: data.expires_in ?? token.expires_in, scope: data.scope ?? token.scope, refresh_token: data.refresh_token ?? token.refresh_token, claimed_at: Math.floor(Date.now() / 1000) };
+	} catch { return null; }
+}
 
 export interface AppConnectionSummary {
 	id: string;
@@ -118,6 +168,24 @@ export async function getDecryptedAppConnection(
 
 	if (!connection) return null;
 
+	let decryptedValue = decryptObject(connection.value as EncryptedObject);
+
+	// Auto-refresh expired OAuth2 tokens
+	const isOAuth2 = connection.type === 'OAUTH2' || connection.type === 'PLATFORM_OAUTH2' || connection.type === 'CLOUD_OAUTH2';
+	if (isOAuth2 && typeof decryptedValue === 'object' && decryptedValue !== null) {
+		const tokenObj = decryptedValue as Record<string, unknown>;
+		if (isTokenExpired(tokenObj)) {
+			console.log(`[OAuth2 Refresh] Token expired for ${connection.pieceName}, refreshing...`);
+			const refreshed = await refreshOAuth2Token(tokenObj, connection.pieceName);
+			if (refreshed && db) {
+				const encrypted = encryptObject(refreshed);
+				await db.update(appConnections).set({ value: encrypted, updatedAt: new Date() }).where(eq(appConnections.id, connection.id));
+				decryptedValue = refreshed;
+				console.log(`[OAuth2 Refresh] Token refreshed for ${connection.pieceName}`);
+			}
+		}
+	}
+
 	return {
 		id: connection.id,
 		externalId: connection.externalId,
@@ -125,6 +193,6 @@ export async function getDecryptedAppConnection(
 		displayName: connection.displayName,
 		type: connection.type,
 		status: connection.status,
-		value: decryptObject(connection.value as EncryptedObject),
+		value: decryptedValue,
 	};
 }
