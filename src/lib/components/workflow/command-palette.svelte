@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
-	import { useSvelteFlow } from '@xyflow/svelte';
 	import * as Command from '$lib/components/ui/command';
 	import { Dialog, DialogContent } from '$lib/components/ui/dialog';
 	import { Badge } from '$lib/components/ui/badge';
@@ -26,7 +25,6 @@
 	let { open, onClose, replaceNodeId = null, insertOnEdgeId = null, position = null }: Props = $props();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
-	const { screenToFlowPosition } = useSvelteFlow();
 	const catalog = createActionCatalogStore();
 
 	let query = $state('');
@@ -84,7 +82,14 @@
 
 	function getDefaultPosition(): { x: number; y: number } {
 		if (position) return position;
-		return screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 });
+		// Default to center of existing nodes, or (250, 200) if no nodes
+		const nodes = store.nodes;
+		if (nodes.length > 0) {
+			const avgX = nodes.reduce((sum, n) => sum + n.position.x, 0) / nodes.length;
+			const avgY = nodes.reduce((sum, n) => sum + n.position.y, 0) / nodes.length;
+			return { x: avgX + 50, y: avgY + 100 };
+		}
+		return { x: 250, y: 200 };
 	}
 
 	function handleSelectNodeType(type: WorkflowNodeType) {
