@@ -22,7 +22,7 @@ import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const OPTIONS_TIMEOUT_MS = Number.parseInt(
-	process.env.OPTIONS_TIMEOUT_MS || "20000",
+	process.env.OPTIONS_TIMEOUT_MS || "60000",
 	10,
 );
 
