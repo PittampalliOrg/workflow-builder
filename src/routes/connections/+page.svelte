@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -335,15 +336,9 @@
 				} satisfies OAuthPendingState),
 			);
 			oauthState = payload.state;
-			const popup = openOAuthPopup(payload.authorizationUrl);
-			if (!popup) {
-				window.location.href = payload.authorizationUrl;
-				return;
-			}
-
-			const callbackPayload = await waitForOAuthResult(payload.state, popup);
-			await completeOAuth2Reconnect(payload.state, callbackPayload);
-			clearOAuthState(payload.state);
+			// Always use same-tab redirect for reliability.
+			// Popup approach is fragile (COOP, popup blockers, cross-origin redirect chains).
+			window.location.href = payload.authorizationUrl;
 		} catch (error) {
 			if (oauthState) {
 				clearOAuthState(oauthState);
@@ -390,28 +385,32 @@
 		const params = new URLSearchParams(window.location.search);
 		if (params.get('oauth2_resume') !== '1') return;
 		const state = params.get('state');
-		const codeFromUrl = params.get('code');
 		if (!state) {
 			clearOAuthQueryParams();
 			return;
 		}
 
-		// Try reading the callback result (may need a brief delay for localStorage sync)
-		let callbackPayload = readJson<OAuthCallbackPayload>(
-			`${OAUTH_CALLBACK_PREFIX}${state}`,
-		);
+		// Priority 1: Server-provided cookie data (most reliable for same-tab flow)
+		const serverData = page.data as { oauthCallback?: { code?: string; state?: string; error?: string; errorDescription?: string } | null };
+		let callbackPayload: OAuthCallbackPayload | null = null;
 
-		// Retry after a short delay if not found (race condition with redirect)
+		if (serverData?.oauthCallback?.code || serverData?.oauthCallback?.error) {
+			callbackPayload = serverData.oauthCallback as OAuthCallbackPayload;
+		}
+
+		// Priority 2: localStorage (for popup/BroadcastChannel flows)
 		if (!callbackPayload) {
-			await new Promise((r) => setTimeout(r, 500));
 			callbackPayload = readJson<OAuthCallbackPayload>(
 				`${OAUTH_CALLBACK_PREFIX}${state}`,
 			);
 		}
 
-		// Fallback: construct from URL params if code is present
-		if (!callbackPayload && codeFromUrl) {
-			callbackPayload = { code: codeFromUrl, state };
+		// Priority 3: URL params (belt-and-suspenders)
+		if (!callbackPayload) {
+			const codeFromUrl = params.get('code');
+			if (codeFromUrl) {
+				callbackPayload = { code: codeFromUrl, state };
+			}
 		}
 
 		if (!callbackPayload) {
