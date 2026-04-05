@@ -21,8 +21,16 @@
 		return '';
 	});
 
-	// Merge subtitle into data for BaseSWNode description display
+	// Extract provider icon URL from action catalog detail or catalog function
+	let providerIconUrl = $derived.by(() => {
+		const detail = data.actionCatalogDetail as Record<string, unknown> | undefined;
+		if (typeof detail?.providerIconUrl === 'string' && detail.providerIconUrl.length > 0) {
+			return detail.providerIconUrl;
+		}
+		return null;
+	});
+
 	let nodeData = $derived(subtitle ? { ...data, description: subtitle } : data);
 </script>
 
-<BaseSWNode data={nodeData} {selected} {ports} icon={Globe} iconColor="bg-amber-500/15 text-amber-400" />
+<BaseSWNode data={nodeData} {selected} {ports} icon={Globe} iconColor="bg-amber-500/15 text-amber-400" {providerIconUrl} />

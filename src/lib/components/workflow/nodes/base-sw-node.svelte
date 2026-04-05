@@ -10,10 +10,11 @@
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		icon: any;
 		iconColor: string;
+		providerIconUrl?: string | null;
 		children?: Snippet;
 	}
 
-	let { data, selected = false, ports, icon: Icon, iconColor, children }: Props = $props();
+	let { data, selected = false, ports, icon: Icon, iconColor, providerIconUrl = null, children }: Props = $props();
 
 	let status = $derived((data.status as string) || 'idle');
 	let prevStatus = $state('idle');
@@ -71,8 +72,17 @@
 
 	<!-- Centered content: icon + label + description -->
 	<div class="flex h-full flex-col items-center justify-center gap-2.5 p-4 text-center">
-		<div class="relative shrink-0 {iconColor}">
-			<Icon size={36} strokeWidth={1.5} />
+		<div class="relative shrink-0 {providerIconUrl ? '' : iconColor}">
+			{#if providerIconUrl}
+				<img
+					src={providerIconUrl}
+					alt=""
+					class="h-9 w-9 rounded-md object-contain"
+					onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+				/>
+			{:else}
+				<Icon size={36} strokeWidth={1.5} />
+			{/if}
 			{#if status === 'running'}
 				<span class="wb-node__spinner"></span>
 			{/if}
