@@ -481,6 +481,21 @@
 		}
 	});
 
+	// Re-fetch connections when user returns from creating one in another tab
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		function onVisibilityChange() {
+			if (document.visibilityState === 'visible' && authPieceName) {
+				// Reset loaded state to allow re-fetch
+				connectionsLoaded = false;
+				lastFetchedPieceName = null;
+				void loadConnections();
+			}
+		}
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+	});
+
 	$effect(() => {
 		for (const key of dynamicFieldKeys) {
 			if (shouldRefreshDynamicField(key)) {
@@ -567,24 +582,46 @@
 
 			<div class="space-y-1.5">
 				<Label class="text-xs">Selected connection</Label>
-				<Select.Root
-					type="single"
-					value={authConnection?.externalId || ''}
-					onValueChange={(value) => updateAuthConnection(value || null)}
-				>
-					<Select.Trigger class="w-full">
-						{authConnection ? authConnectionLabel : `Select ${authPieceDisplayName()}`}
-					</Select.Trigger>
-					<Select.Content>
-						{#if hasAuthConnections}
+				{#if hasAuthConnections}
+					<Select.Root
+						type="single"
+						value={authConnection?.externalId || ''}
+						onValueChange={(value) => updateAuthConnection(value || null)}
+					>
+						<Select.Trigger class="w-full">
+							{authConnection ? authConnectionLabel : `Select ${authPieceDisplayName()}`}
+						</Select.Trigger>
+						<Select.Content>
 							{#each authConnections as connection (connection.externalId)}
 								<Select.Item value={connection.externalId}>
 									{connection.displayName} ({connection.pieceName})
 								</Select.Item>
 							{/each}
-						{/if}
-					</Select.Content>
-				</Select.Root>
+						</Select.Content>
+					</Select.Root>
+				{:else if connectionsLoaded && !loadingConnections}
+					<div class="rounded-md border border-dashed border-border bg-muted/30 p-3 text-center">
+						<p class="text-[11px] text-muted-foreground">
+							No {authPieceDisplayName()} connection found
+						</p>
+						<a
+							href="/connections"
+							target="_blank"
+							rel="noopener noreferrer"
+							class="mt-2 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-[11px] font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+						>
+							+ Connect {authPieceDisplayName()}
+						</a>
+						<p class="mt-1.5 text-[9px] text-muted-foreground">
+							Opens the Connections page to set up OAuth2 or API key
+						</p>
+					</div>
+				{:else if loadingConnections}
+					<div class="flex items-center gap-2 rounded-md border border-border p-2">
+						<div class="h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+						<span class="text-[10px] text-muted-foreground">Loading connections...</span>
+					</div>
+				{/if}
 				<Input
 					value={authValueSerialized}
 					oninput={(event) => {
