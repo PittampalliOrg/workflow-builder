@@ -122,7 +122,7 @@
 				? {
 						name: action.name,
 						displayName: action.displayName,
-						pieceName: action.pieceName,
+						pieceName: action.providerId || action.pieceName,
 						actionName: action.actionName,
 				  }
 				: undefined,

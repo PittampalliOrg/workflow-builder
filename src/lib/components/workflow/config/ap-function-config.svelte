@@ -230,7 +230,7 @@
 		onChange={updateInput}
 		title="Action inputs"
 		description="These values are persisted into taskConfig.with.body.input."
-		authPieceName={catalogFunction.pieceName}
+		authPieceName={(actionDetail?.providerId as string | undefined) || catalogFunction.pieceName}
 		authLabel={authLabel}
 		authRequired={authRequired}
 		{resourceTypes}

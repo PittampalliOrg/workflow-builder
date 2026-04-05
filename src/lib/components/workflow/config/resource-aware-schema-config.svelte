@@ -364,8 +364,13 @@
 
 	const connectionTemplateExample = "{{connections['externalId']}}";
 
+	let lastFetchedPieceName = $state<string | null>(null);
+
 	async function loadConnections() {
-		if (loadingConnections || connectionsLoaded) return;
+		if (loadingConnections) return;
+		// Skip if already loaded for the same piece
+		const currentPiece = authPieceName || null;
+		if (connectionsLoaded && lastFetchedPieceName === currentPiece) return;
 		loadingConnections = true;
 		connectionsError = null;
 		try {
@@ -382,6 +387,7 @@
 			}
 			connections = payload;
 			connectionsLoaded = true;
+			lastFetchedPieceName = currentPiece;
 		} catch (error) {
 			connectionsError = error instanceof Error ? error.message : String(error);
 		} finally {
