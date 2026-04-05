@@ -78,7 +78,11 @@ export const GET: RequestHandler = async ({ url }) => {
   var shouldReturnToConnections = !window.opener && payload && payload.state;
   if (shouldReturnToConnections) {
     try { localStorage.removeItem("oauth2_same_tab_state"); } catch (e) {}
-    try { window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state)); } catch (e) {}
+    var resumeUrl = "/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state);
+    if (payload.code) {
+      resumeUrl += "&code=" + encodeURIComponent(payload.code);
+    }
+    try { window.location.replace(resumeUrl); } catch (e) {}
     return;
   }
   // Auto-close after a brief delay to let both channels deliver.

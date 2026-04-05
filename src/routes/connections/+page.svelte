@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import {
@@ -33,6 +34,27 @@
 		authType: string;
 	}
 
+	type OAuthStartResponse = {
+		authorizationUrl: string;
+		state: string;
+		codeVerifier: string;
+		redirectUrl: string;
+	};
+
+	type OAuthPendingState = {
+		connectionId: string;
+		pieceName: string;
+		codeVerifier: string;
+		redirectUrl: string;
+	};
+
+	type OAuthCallbackPayload = {
+		code?: string | null;
+		state?: string | null;
+		error?: string | null;
+		errorDescription?: string | null;
+	};
+
 	let connections: Connection[] = $state([]);
 	let pieces: Piece[] = $state([]);
 	let loading = $state(true);
@@ -64,6 +86,10 @@
 	);
 
 	let selectedPiece = $derived(pieces.find(p => p.name === formPieceName));
+
+	const OAUTH_PENDING_PREFIX = 'oauth2_pending:';
+	const OAUTH_CALLBACK_PREFIX = 'oauth2_callback_result:';
+	const OAUTH_POPUP_TIMEOUT_MS = 5 * 60 * 1000;
 
 	async function loadConnections() {
 		loading = true;
@@ -136,12 +162,277 @@
 		} finally { renaming = false; }
 	}
 
-	function reconnectOAuth2(conn: Connection) {
-		window.location.href = `/api/app-connections/oauth2/authorize?pieceName=${encodeURIComponent(conn.pieceName)}&connectionId=${encodeURIComponent(conn.id)}`;
+	function openOAuthPopup(url: string): Window | null {
+		const features = [
+			'resizable=no',
+			'toolbar=no',
+			'left=100',
+			'top=100',
+			'scrollbars=yes',
+			'menubar=no',
+			'status=no',
+			'directories=no',
+			'location=no',
+			'width=640',
+			'height=800'
+		].join(', ');
+		return window.open(url, '_blank', features);
+	}
+
+	function waitForOAuthResult(state: string, popup: Window | null): Promise<OAuthCallbackPayload> {
+		return new Promise((resolve, reject) => {
+			if (typeof window === 'undefined') {
+				reject(new Error('OAuth is only available in the browser.'));
+				return;
+			}
+
+			let finished = false;
+			let channel: BroadcastChannel | null = null;
+			let popupPoll: number | null = null;
+			let timeoutId: number | null = null;
+
+			const finish = (payload: OAuthCallbackPayload, shouldClosePopup = false) => {
+				if (finished) return;
+				finished = true;
+				cleanup();
+				if (shouldClosePopup) {
+					try {
+						popup?.close();
+					} catch {
+						// noop
+					}
+				}
+				resolve(payload);
+			};
+
+			const cleanup = () => {
+				window.removeEventListener('message', onMessage);
+				window.removeEventListener('storage', onStorage);
+				try {
+					channel?.close();
+				} catch {
+					// noop
+				}
+				if (popupPoll !== null) window.clearInterval(popupPoll);
+				if (timeoutId !== null) window.clearTimeout(timeoutId);
+			};
+
+			const readStoredPayload = () =>
+				readJson<OAuthCallbackPayload>(`${OAUTH_CALLBACK_PREFIX}${state}`);
+
+			const maybeAcceptPayload = (payload: OAuthCallbackPayload | null, shouldClosePopup = false) => {
+				if (!payload || payload.state !== state) return false;
+				finish(payload, shouldClosePopup);
+				return true;
+			};
+
+			const onMessage = (event: MessageEvent) => {
+				if (event.origin !== window.location.origin) return;
+				void maybeAcceptPayload(event.data as OAuthCallbackPayload, true);
+			};
+
+			const onStorage = (event: StorageEvent) => {
+				if (event.key !== `${OAUTH_CALLBACK_PREFIX}${state}` || !event.newValue) return;
+				try {
+					maybeAcceptPayload(JSON.parse(event.newValue) as OAuthCallbackPayload, true);
+				} catch {
+					// noop
+				}
+			};
+
+			window.addEventListener('message', onMessage);
+			window.addEventListener('storage', onStorage);
+
+			try {
+				channel = new BroadcastChannel(`${OAUTH_CALLBACK_PREFIX}${state}`);
+				channel.onmessage = (event) => {
+					maybeAcceptPayload(event.data as OAuthCallbackPayload, true);
+				};
+			} catch {
+				channel = null;
+			}
+
+				popupPoll = window.setInterval(() => {
+					if (maybeAcceptPayload(readStoredPayload(), false)) {
+						return;
+					}
+				}, 300);
+
+			timeoutId = window.setTimeout(() => {
+				cleanup();
+				reject(new Error('Timed out waiting for OAuth completion.'));
+			}, OAUTH_POPUP_TIMEOUT_MS);
+		});
+	}
+
+	async function completeOAuth2Reconnect(state: string, callbackPayload: OAuthCallbackPayload) {
+		const pendingPayload = readJson<OAuthPendingState>(`${OAUTH_PENDING_PREFIX}${state}`);
+		if (!pendingPayload) {
+			throw new Error('OAuth reconnect state was lost. Start the reconnect again.');
+		}
+
+		if (callbackPayload.error) {
+			throw new Error(callbackPayload.errorDescription || callbackPayload.error);
+		}
+		if (!callbackPayload.code) {
+			throw new Error('No authorization code was returned.');
+		}
+
+		const response = await fetch('/api/app-connections/oauth2/complete', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				connectionId: pendingPayload.connectionId,
+				pieceName: pendingPayload.pieceName,
+				code: callbackPayload.code,
+				codeVerifier: pendingPayload.codeVerifier,
+				redirectUrl: pendingPayload.redirectUrl
+			})
+		});
+
+		const payload = await response.json().catch(() => null) as
+			| { success?: boolean; message?: string; error?: string }
+			| null;
+
+		if (!response.ok || payload?.success !== true) {
+			throw new Error(payload?.message || payload?.error || `HTTP ${response.status}`);
+		}
+
+		await loadConnections();
+	}
+
+	async function reconnectOAuth2(conn: Connection) {
+		let oauthState: string | null = null;
+		try {
+			const response = await fetch('/api/app-connections/oauth2/start', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					pieceName: conn.pieceName
+				})
+			});
+
+			const payload = await response.json().catch(() => null) as
+				| (Partial<OAuthStartResponse> & { message?: string })
+				| null;
+
+			if (
+				!response.ok ||
+				!payload?.authorizationUrl ||
+				!payload?.state ||
+				!payload?.redirectUrl
+			) {
+				throw new Error(payload?.message || `HTTP ${response.status}`);
+			}
+
+			localStorage.setItem(
+				`${OAUTH_PENDING_PREFIX}${payload.state}`,
+				JSON.stringify({
+					connectionId: conn.id,
+					pieceName: conn.pieceName,
+					codeVerifier: payload.codeVerifier || '',
+					redirectUrl: payload.redirectUrl,
+				} satisfies OAuthPendingState),
+			);
+			oauthState = payload.state;
+			const popup = openOAuthPopup(payload.authorizationUrl);
+			if (!popup) {
+				window.location.href = payload.authorizationUrl;
+				return;
+			}
+
+			const callbackPayload = await waitForOAuthResult(payload.state, popup);
+			await completeOAuth2Reconnect(payload.state, callbackPayload);
+			clearOAuthState(payload.state);
+		} catch (error) {
+			if (oauthState) {
+				clearOAuthState(oauthState);
+			}
+			console.error('Failed to start OAuth2 reconnect flow:', error);
+			alert(
+				error instanceof Error
+					? error.message
+					: 'Failed to start OAuth2 reconnect flow',
+			);
+		}
 	}
 
 	function isOAuth2(type: string): boolean {
 		return type === 'OAUTH2' || type === 'PLATFORM_OAUTH2';
+	}
+
+	function clearOAuthQueryParams() {
+		if (typeof window === 'undefined') return;
+		const next = `${window.location.pathname}`;
+		window.history.replaceState({}, '', next);
+	}
+
+	function readJson<T>(key: string): T | null {
+		if (typeof window === 'undefined') return null;
+		const raw = window.localStorage.getItem(key);
+		if (!raw) return null;
+		try {
+			return JSON.parse(raw) as T;
+		} catch {
+			return null;
+		}
+	}
+
+	function clearOAuthState(state: string) {
+		if (typeof window === 'undefined') return;
+		window.localStorage.removeItem(`${OAUTH_PENDING_PREFIX}${state}`);
+		window.localStorage.removeItem(`${OAUTH_CALLBACK_PREFIX}${state}`);
+		window.localStorage.removeItem('oauth2_same_tab_state');
+	}
+
+	async function resumeOAuth2Reconnect() {
+		if (typeof window === 'undefined') return;
+		const params = new URLSearchParams(window.location.search);
+		if (params.get('oauth2_resume') !== '1') return;
+		const state = params.get('state');
+		const codeFromUrl = params.get('code');
+		if (!state) {
+			clearOAuthQueryParams();
+			return;
+		}
+
+		// Try reading the callback result (may need a brief delay for localStorage sync)
+		let callbackPayload = readJson<OAuthCallbackPayload>(
+			`${OAUTH_CALLBACK_PREFIX}${state}`,
+		);
+
+		// Retry after a short delay if not found (race condition with redirect)
+		if (!callbackPayload) {
+			await new Promise((r) => setTimeout(r, 500));
+			callbackPayload = readJson<OAuthCallbackPayload>(
+				`${OAUTH_CALLBACK_PREFIX}${state}`,
+			);
+		}
+
+		// Fallback: construct from URL params if code is present
+		if (!callbackPayload && codeFromUrl) {
+			callbackPayload = { code: codeFromUrl, state };
+		}
+
+		if (!callbackPayload) {
+			console.warn('[OAuth2 Resume] No callback result found for state:', state);
+			clearOAuthQueryParams();
+			return;
+		}
+
+		try {
+			await completeOAuth2Reconnect(state, callbackPayload);
+		} catch (error) {
+			console.error('Failed to complete OAuth2 reconnect flow:', error);
+			alert(
+				error instanceof Error
+					? error.message
+					: 'Failed to complete OAuth2 reconnect flow',
+			);
+		} finally {
+			clearOAuthState(state);
+			clearOAuthQueryParams();
+		}
 	}
 
 	function formatDate(dateStr: string): string {
@@ -161,7 +452,10 @@
 		if (pieces.length === 0) loadPieces();
 	}
 
-	$effect(() => { loadConnections(); });
+	onMount(() => {
+		void loadConnections();
+		void resumeOAuth2Reconnect();
+	});
 </script>
 
 <div class="flex h-full flex-col">
