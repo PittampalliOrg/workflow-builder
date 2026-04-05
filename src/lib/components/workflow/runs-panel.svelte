@@ -69,6 +69,13 @@
 		fetchExecutions();
 	});
 
+	// Auto-fetch when workflowId becomes available (may not be set at mount time)
+	$effect(() => {
+		if (store.workflowId && executions.length === 0 && !isLoadingList) {
+			fetchExecutions();
+		}
+	});
+
 	// Refetch when the runs tab becomes active
 	let lastActiveTab = $state('');
 	$effect(() => {

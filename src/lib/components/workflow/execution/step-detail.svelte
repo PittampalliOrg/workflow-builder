@@ -92,7 +92,7 @@
 			{#if step.error}
 				<div class="rounded-md border border-red-200 bg-red-50 px-3 py-2 dark:border-red-800 dark:bg-red-950/30">
 					<p class="text-xs font-medium text-red-600 dark:text-red-400">Error</p>
-					<pre class="mt-1 whitespace-pre-wrap break-all font-mono text-xs text-red-500">{step.error}</pre>
+					<pre class="mt-1 max-h-[30vh] overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-red-500">{step.error}</pre>
 				</div>
 			{/if}
 		</div>

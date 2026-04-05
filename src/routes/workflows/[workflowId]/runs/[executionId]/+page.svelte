@@ -755,7 +755,7 @@
 					<Alert variant="destructive">
 						<CircleAlert class="size-4" />
 						<AlertDescription>
-							<pre class="whitespace-pre-wrap break-all font-mono text-xs">{errorMessage}</pre>
+							<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-all font-mono text-xs">{errorMessage}</pre>
 						</AlertDescription>
 					</Alert>
 				{/if}

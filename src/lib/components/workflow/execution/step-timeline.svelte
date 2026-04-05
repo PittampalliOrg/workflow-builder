@@ -123,7 +123,7 @@
 						{#if step.error}
 							<CollapsibleSection title="Error" defaultOpen={true} isError>
 								<div class="rounded-md border border-red-500/20 bg-red-500/5 p-2">
-									<pre class="whitespace-pre-wrap break-all font-mono text-[10px] text-red-500">{step.error}</pre>
+									<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-red-500">{step.error}</pre>
 								</div>
 							</CollapsibleSection>
 						{/if}

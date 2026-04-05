@@ -90,7 +90,7 @@
 	</div>
 
 	{#if !isCollapsed}
-		<ScrollArea orientation="both" class="max-h-[60vh] border-t border-border px-2.5 py-1.5">
+		<ScrollArea orientation="both" class="max-h-[40vh] border-t border-border px-2.5 py-1.5">
 			<pre class="whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-foreground">{@html highlighted}</pre>
 			{#if isTruncated && !showFull}
 				<button
