@@ -12,7 +12,7 @@ let highlighterPromise: Promise<Highlighter> | null = null;
 function getHighlighter(): Promise<Highlighter> {
 	if (!highlighterPromise) {
 		highlighterPromise = createHighlighter({
-			themes: ['github-dark'],
+			themes: ['dark-plus'],
 			langs: ['python', 'typescript'],
 		});
 	}
@@ -23,7 +23,7 @@ async function highlightCode(code: string, runtime: string): Promise<string> {
 	try {
 		const h = await getHighlighter();
 		const lang = runtime.includes('python') ? 'python' : 'typescript';
-		return h.codeToHtml(code, { lang, theme: 'github-dark' });
+		return h.codeToHtml(code, { lang, theme: 'dark-plus' });
 	} catch {
 		return '';
 	}

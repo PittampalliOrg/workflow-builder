@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { workflows } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
+import { syncWorkflowConnectionRefs } from '$lib/server/workflow-connections';
 
 export const GET: RequestHandler = async ({ params }) => {
 	if (!db) {
@@ -65,6 +66,8 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 	if (!updated) {
 		return error(404, 'Workflow not found');
 	}
+
+	await syncWorkflowConnectionRefs(params.workflowId, body.nodes);
 
 	return json(updated);
 };

@@ -11,6 +11,10 @@ set -euo pipefail
 PROJECT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_PROFILE="openshell-inner-loop"
 WL_NS="workflow-builder"
+ARGO_NS="argocd"
+ARGO_APPS=(workflow-builder workflow-orchestrator function-router)
+SKIP_ANNOTATION="argocd.argoproj.io/skip-reconcile"
+REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
 
 args=("$@")
 profile="$DEFAULT_PROFILE"
@@ -51,11 +55,30 @@ fi
 printf '==> Using kube context: %s\n' "$(kubectl config current-context 2>/dev/null || echo unknown)"
 printf '==> Profile: %s\n' "$profile"
 
+for app in "${ARGO_APPS[@]}"; do
+  if kubectl get application "$app" -n "$ARGO_NS" >/dev/null 2>&1; then
+    kubectl annotate application "$app" \
+      -n "$ARGO_NS" \
+      "${SKIP_ANNOTATION}=true" \
+      --overwrite >/dev/null 2>&1 || true
+  fi
+done
+
 cd "$PROJECT_ROOT"
 set +e
 devspace dev "${args[@]}"
 status=$?
 set -e
+
+for app in "${ARGO_APPS[@]}"; do
+  kubectl annotate application "$app" \
+    -n "$ARGO_NS" \
+    "${SKIP_ANNOTATION}-" >/dev/null 2>&1 || true
+  kubectl annotate application "$app" \
+    -n "$ARGO_NS" \
+    "${REFRESH_ANNOTATION}=hard" \
+    --overwrite >/dev/null 2>&1 || true
+done
 
 if [[ "$status" -ne 0 ]]; then
   printf '==> DevSpace exited with status %s. Purging failed replacement session.\n' "$status"

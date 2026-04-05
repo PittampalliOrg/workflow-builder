@@ -7,7 +7,7 @@ import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-const serviceName = process.env.OTEL_SERVICE_NAME || 'workflow-builder-svelte';
+const serviceName = process.env.OTEL_SERVICE_NAME || 'workflow-builder';
 
 if (endpoint) {
 	const sdk = new NodeSDK({

@@ -8,6 +8,10 @@ in this package.  A function is considered an activity if it:
   2. Is a plain function (not a class)
   3. Has exactly 2 parameters (ctx, input_data)
 
+The builder can attach explicit metadata via `activities.metadata.activity_metadata`
+to classify an activity as `public-callable` while leaving the discovery fallback
+intact for internal/inspect-only activities.
+
 To add a new activity, just create a function matching that signature in any
 module under this package.  It will be registered with both the Dapr workflow
 runtime and the introspection endpoint automatically — no other file needs to
@@ -25,6 +29,7 @@ from typing import Any, Callable
 # Re-export for direct import by app.py or other consumers.
 from .execute_action import ExecuteActionInput  # noqa: F401
 from .call_agent_service import terminate_durable_runs_by_parent_execution  # noqa: F401
+from .metadata import activity_metadata, get_activity_metadata  # noqa: F401
 
 
 def _is_activity(obj: Any, module_name: str) -> bool:

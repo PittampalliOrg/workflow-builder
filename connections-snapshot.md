@@ -1,0 +1,111 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - complementary [ref=e4]:
+      - generic [ref=e5]:
+        - link "Workflow Builder" [ref=e6] [cursor=pointer]:
+          - /url: /workflows
+        - button [ref=e7]:
+          - img
+      - navigation [ref=e8]:
+        - generic [ref=e9]:
+          - link "Workflows" [ref=e10] [cursor=pointer]:
+            - /url: /workflows
+            - img [ref=e11]
+            - generic [ref=e15]: Workflows
+          - link "Connections" [ref=e16] [cursor=pointer]:
+            - /url: /connections
+            - img [ref=e17]
+            - generic [ref=e19]: Connections
+          - link "Agents" [ref=e20] [cursor=pointer]:
+            - /url: /agents
+            - img [ref=e21]
+            - generic [ref=e24]: Agents
+          - link "MCP Chat" [ref=e25] [cursor=pointer]:
+            - /url: /mcp-chat
+            - img [ref=e26]
+            - generic [ref=e28]: MCP Chat
+          - link "Monitor" [ref=e29] [cursor=pointer]:
+            - /url: /monitor
+            - img [ref=e30]
+            - generic [ref=e32]: Monitor
+          - link "Activities" [ref=e33] [cursor=pointer]:
+            - /url: /activities
+            - img [ref=e34]
+            - generic [ref=e37]: Activities
+          - link "Code Functions" [ref=e38] [cursor=pointer]:
+            - /url: /code-functions
+            - img [ref=e39]
+            - generic [ref=e42]: Code Functions
+          - link "Observability" [ref=e43] [cursor=pointer]:
+            - /url: /observability
+            - img [ref=e44]
+            - generic [ref=e47]: Observability
+          - link "Settings" [ref=e48] [cursor=pointer]:
+            - /url: /settings
+            - img [ref=e49]
+            - generic [ref=e52]: Settings
+      - separator [ref=e53]
+      - generic [ref=e55]:
+        - button "Dark mode" [ref=e56]:
+          - img [ref=e57]
+          - generic [ref=e59]: Dark mode
+        - button "vpittamp vpittamp" [ref=e76]:
+          - img "vpittamp" [ref=e77]
+          - generic [ref=e63]: vpittamp
+          - img [ref=e64]
+    - main [ref=e67]:
+      - generic [ref=e68]:
+        - generic [ref=e69]:
+          - heading "Connections" [level=1] [ref=e70]
+          - button "New Connection" [ref=e71]:
+            - img
+            - text: New Connection
+        - table [ref=e79]:
+          - rowgroup [ref=e80]:
+            - row "Name Piece Type Status Created Actions" [ref=e81]:
+              - columnheader "Name" [ref=e82]
+              - columnheader "Piece" [ref=e83]
+              - columnheader "Type" [ref=e84]
+              - columnheader "Status" [ref=e85]
+              - columnheader "Created" [ref=e86]
+              - columnheader "Actions" [ref=e87]
+          - rowgroup [ref=e88]:
+            - row "Microsoft OneDrive @activepieces/piece-microsoft-onedrive PLATFORM_OAUTH2 ACTIVE Apr 4, 2026" [ref=e89]:
+              - cell "Microsoft OneDrive" [ref=e90]
+              - cell "@activepieces/piece-microsoft-onedrive" [ref=e91]
+              - cell "PLATFORM_OAUTH2" [ref=e92]:
+                - generic [ref=e93]: PLATFORM_OAUTH2
+              - cell "ACTIVE" [ref=e94]:
+                - generic [ref=e95]: ACTIVE
+              - cell "Apr 4, 2026" [ref=e96]
+              - cell [ref=e97]:
+                - generic [ref=e98]:
+                  - button [ref=e99]:
+                    - button [ref=e100]:
+                      - img
+                  - button [ref=e101]:
+                    - button [ref=e102]:
+                      - img
+                  - button [ref=e103]:
+                    - button [ref=e104]:
+                      - img
+            - row "GitHub github PLATFORM_OAUTH2 ACTIVE Mar 10, 2026" [ref=e105]:
+              - cell "GitHub" [ref=e106]
+              - cell "github" [ref=e107]
+              - cell "PLATFORM_OAUTH2" [ref=e108]:
+                - generic [ref=e109]: PLATFORM_OAUTH2
+              - cell "ACTIVE" [ref=e110]:
+                - generic [ref=e111]: ACTIVE
+              - cell "Mar 10, 2026" [ref=e112]
+              - cell [ref=e113]:
+                - generic [ref=e114]:
+                  - button [ref=e115]:
+                    - button [ref=e116]:
+                      - img
+                  - button [ref=e117]:
+                    - button [ref=e118]:
+                      - img
+                  - button [ref=e119]:
+                    - button [ref=e120]:
+                      - img
+  - region "Notifications alt+T"

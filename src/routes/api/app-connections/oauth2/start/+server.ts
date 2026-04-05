@@ -98,7 +98,8 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 
 	// ----- Resolve redirect URL -----
 	const appUrl = await getAppUrl(url, request);
-	const redirectUrl = body.redirectUrl || `${appUrl}/redirect`;
+	const redirectUrl =
+		body.redirectUrl || `${appUrl}/api/app-connections/oauth2/callback`;
 
 	// ----- PKCE -----
 	const verifier = generatePkceVerifier();

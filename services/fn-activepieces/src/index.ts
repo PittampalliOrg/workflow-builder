@@ -16,7 +16,7 @@ import { executeAction } from "./executor.js";
 import { fetchOptions, type OptionsRequest } from "./options-executor.js";
 import { PIECES, listPieceNames } from "./piece-registry.js";
 import { registerPieceActivities, type ApActivityMeta } from "./dapr-activities.js";
-import { getCatalog, getCatalogFunction } from "./catalog.js";
+import { getCatalog, getCatalogFunction, toActionMetadata, type ActionMetadata } from "./catalog.js";
 import type { ExecuteRequest, ExecuteResponse } from "./types.js";
 
 const PORT = Number.parseInt(process.env.PORT || "8080", 10);
@@ -264,12 +264,16 @@ async function main() {
 	// ---------------------------------------------------------------------------
 
 	let registeredActivities: ApActivityMeta[] = [];
+	let registeredActivityMap = new Map<string, ApActivityMeta>();
 	const daprEnabled = process.env.DAPR_HTTP_PORT || process.env.DAPR_GRPC_PORT;
 
 	if (daprEnabled) {
 		try {
 			const runtime = new WorkflowRuntime();
 			registeredActivities = registerPieceActivities(runtime);
+			registeredActivityMap = new Map(
+				registeredActivities.map((a) => [a.name, a]),
+			);
 			await runtime.start();
 			console.log(
 				`[fn-activepieces] Registered ${registeredActivities.length} AP piece activities with Dapr`,
@@ -304,6 +308,45 @@ async function main() {
 			},
 		});
 	});
+
+	function getRegisteredActivityName(pieceName: string, actionName: string): string {
+		return `ap_${pieceName.replace(/-/g, "_")}_${actionName.replace(/-/g, "_")}`;
+	}
+
+	function buildMetadataCatalog(): ActionMetadata[] {
+		return getCatalog().map((fn) => {
+			const registeredName = getRegisteredActivityName(fn.pieceName, fn.actionName);
+			const registered = registeredActivityMap.get(registeredName) ?? null;
+			return toActionMetadata(fn, Boolean(registered), registered?.sourceCode ?? null);
+		});
+	}
+
+	app.get("/api/metadata/actions", async (_request, reply) => {
+		const actions = buildMetadataCatalog();
+		return reply.status(200).send({
+			service: "fn-activepieces",
+			runtime: "node-dapr-workflow",
+			actions,
+			count: actions.length,
+		});
+	});
+
+	app.get<{ Params: { id: string } }>(
+		"/api/metadata/actions/:id",
+		async (request, reply) => {
+			const action = buildMetadataCatalog().find((item) => item.id === request.params.id);
+			if (!action) {
+				return reply.status(404).send({
+					error: `Action ${request.params.id} not found`,
+				});
+			}
+			return reply.status(200).send({
+				service: "fn-activepieces",
+				runtime: "node-dapr-workflow",
+				action,
+			});
+		},
+	);
 
 	// Start server
 	try {

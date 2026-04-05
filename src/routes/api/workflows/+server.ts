@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
 import { workflows } from '$lib/server/db/schema';
 import { desc, eq } from 'drizzle-orm';
+import { syncWorkflowConnectionRefs } from '$lib/server/workflow-connections';
 export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!db) return json([]);
 
@@ -38,6 +39,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			userId
 		})
 		.returning();
+
+	await syncWorkflowConnectionRefs(workflow.id, body.nodes || []);
 
 	return json(workflow, { status: 201 });
 };

@@ -58,10 +58,17 @@ export function getOrchestratorUrl(): string {
 
 /** Get the function router base URL */
 export function getFunctionRouterUrl(): string {
-	return (
+	const raw =
 		env.FUNCTION_RUNNER_URL ||
-		'http://function-router.workflow-builder.svc.cluster.local:8080'
-	);
+		'http://function-router.workflow-builder.svc.cluster.local';
+
+	// The in-cluster function-router Service is exposed on port 80 and proxies to container port 8080.
+	// DevSpace/stacks have historically injected :8080 here, which bypasses the Service port and times out.
+	if (raw === 'http://function-router.workflow-builder.svc.cluster.local:8080') {
+		return 'http://function-router.workflow-builder.svc.cluster.local';
+	}
+
+	return raw;
 }
 
 /** Get the durable agent base URL */

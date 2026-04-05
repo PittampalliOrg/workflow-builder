@@ -16,6 +16,14 @@ import psycopg2
 from dapr.clients import DaprClient
 
 from core.config import config
+from .metadata import (
+    activity_metadata,
+    schema_any_object,
+    schema_boolean,
+    schema_integer,
+    schema_object,
+    schema_string,
+)
 from tracing import start_activity_span, inject_current_context
 
 logger = logging.getLogger(__name__)
@@ -26,6 +34,84 @@ SECRET_STORE_NAME = "kubernetes-secrets"
 SECRET_NAME = "workflow-builder-secrets"
 
 _database_url: str | None = None
+
+PUBLISH_EVENT_INPUT_SCHEMA = schema_object(
+    {
+        "topic": schema_string(description="Pub/sub topic to publish to.", default=WORKFLOW_EVENTS_TOPIC),
+        "eventType": schema_string(description="CloudEvent type."),
+        "data": schema_any_object(description="Event payload data."),
+        "metadata": schema_any_object(description="Additional CloudEvent extensions."),
+    },
+    required=["eventType", "data"],
+    description="Base workflow event payload.",
+)
+
+PUBLISH_EVENT_OUTPUT_SCHEMA = schema_object(
+    {
+        "success": schema_boolean(description="Whether the event was published.", default=True),
+        "topic": schema_string(description="Topic that was targeted."),
+        "eventType": schema_string(description="Event type that was published."),
+        "error": schema_string(description="Error message when publication fails."),
+    },
+    description="Result of publishing a workflow event.",
+)
+
+PUBLISH_WORKFLOW_STARTED_INPUT_SCHEMA = schema_object(
+    {
+        "workflowId": schema_string(description="Workflow identifier."),
+        "executionId": schema_string(description="Workflow execution identifier."),
+        "workflowName": schema_string(description="Human-readable workflow name."),
+    },
+    required=["workflowId", "executionId", "workflowName"],
+    description="Payload for workflow.started.",
+)
+
+PUBLISH_WORKFLOW_COMPLETED_INPUT_SCHEMA = schema_object(
+    {
+        "workflowId": schema_string(description="Workflow identifier."),
+        "executionId": schema_string(description="Workflow execution identifier."),
+        "outputs": schema_any_object(description="Workflow outputs."),
+    },
+    required=["workflowId", "executionId"],
+    description="Payload for workflow.completed.",
+)
+
+PUBLISH_WORKFLOW_FAILED_INPUT_SCHEMA = schema_object(
+    {
+        "workflowId": schema_string(description="Workflow identifier."),
+        "executionId": schema_string(description="Workflow execution identifier."),
+        "error": schema_string(description="Failure error."),
+    },
+    required=["workflowId", "executionId"],
+    description="Payload for workflow.failed.",
+)
+
+PUBLISH_PHASE_CHANGED_INPUT_SCHEMA = schema_object(
+    {
+        "workflowId": schema_string(description="Workflow identifier."),
+        "executionId": schema_string(description="Workflow execution identifier."),
+        "phase": schema_string(description="Current workflow phase."),
+        "progress": schema_integer(description="Progress percentage.", minimum=0, default=0),
+        "message": schema_string(description="Optional progress message."),
+    },
+    required=["workflowId", "executionId", "phase"],
+    description="Payload for workflow.phase.changed.",
+)
+
+PUBLISH_APPROVAL_REQUESTED_INPUT_SCHEMA = schema_object(
+    {
+        "workflowId": schema_string(description="Workflow identifier."),
+        "executionId": schema_string(description="Workflow execution identifier."),
+        "nodeId": schema_string(description="Node identifier."),
+        "nodeName": schema_string(description="Node name."),
+        "eventName": schema_string(description="Approval event name."),
+        "timeoutSeconds": schema_integer(description="Timeout in seconds.", minimum=1, default=86400),
+    },
+    required=["workflowId", "executionId", "nodeId", "nodeName", "eventName"],
+    description="Payload for workflow.approval.requested.",
+)
+
+PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA = PUBLISH_EVENT_OUTPUT_SCHEMA
 
 
 class WorkflowEventTypes:
@@ -90,6 +176,16 @@ def _persist_execution_phase(
         conn.close()
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Event",
+    description="Publish a workflow event to Dapr pub/sub.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_event",
+    input_schema=PUBLISH_EVENT_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_OUTPUT_SCHEMA,
+)
 def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Publish an event to the specified topic.
@@ -156,6 +252,16 @@ def publish_event(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
             }
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Workflow Started",
+    description="Publish the workflow.started event.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_workflow_started",
+    input_schema=PUBLISH_WORKFLOW_STARTED_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA,
+)
 def publish_workflow_started(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish a workflow started event."""
     return publish_event(ctx, {
@@ -170,6 +276,16 @@ def publish_workflow_started(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Workflow Completed",
+    description="Publish the workflow.completed event.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_workflow_completed",
+    input_schema=PUBLISH_WORKFLOW_COMPLETED_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA,
+)
 def publish_workflow_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish a workflow completed event."""
     return publish_event(ctx, {
@@ -184,6 +300,16 @@ def publish_workflow_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any
     })
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Workflow Failed",
+    description="Publish the workflow.failed event.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_workflow_failed",
+    input_schema=PUBLISH_WORKFLOW_FAILED_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA,
+)
 def publish_workflow_failed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish a workflow failed event."""
     return publish_event(ctx, {
@@ -198,6 +324,16 @@ def publish_workflow_failed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Phase Changed",
+    description="Persist and publish a workflow phase change event.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_phase_changed",
+    input_schema=PUBLISH_PHASE_CHANGED_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA,
+)
 def publish_phase_changed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish a phase change event."""
     execution_id = input_data.get("executionId")
@@ -231,6 +367,16 @@ def publish_phase_changed(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     })
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Publish Approval Requested",
+    description="Publish an approval-requested workflow event.",
+    category="events",
+    tags=("pubsub", "workflow"),
+    sw_name="publish_approval_requested",
+    input_schema=PUBLISH_APPROVAL_REQUESTED_INPUT_SCHEMA,
+    output_schema=PUBLISH_EVENT_METADATA_OUTPUT_SCHEMA,
+)
 def publish_approval_requested(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """Publish an approval requested event."""
     timeout_seconds = input_data.get("timeoutSeconds", 86400)

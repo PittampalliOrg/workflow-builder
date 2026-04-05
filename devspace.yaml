@@ -1035,6 +1035,23 @@ pipelines:
       WL_NS="workflow-builder"
       SKIP_ANNOTATION="argocd.argoproj.io/skip-reconcile"
       REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
+      WORKFLOW_BUILDER_SERVICE="workflow-builder"
+
+      route_workflow_builder_service_to_dev() {
+        kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          --type=json \
+          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"true"}]' \
+          >/dev/null 2>&1 || true
+      }
+
+      restore_workflow_builder_service_to_prod() {
+        kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          --type=json \
+          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"false"}]' \
+          >/dev/null 2>&1 || true
+      }
 
       # ── Pause ArgoCD for active apps ──
       for app in ${ARGO_APPS}; do
@@ -1051,6 +1068,8 @@ pipelines:
       # ── Cleanup on exit (Ctrl+C, error, or clean exit) ──
       cleanup() {
         echo ""
+        echo "==> Restoring workflow-builder service selector"
+        restore_workflow_builder_service_to_prod
         echo "==> Resuming ArgoCD reconciliation"
         for app in ${ARGO_APPS}; do
           kubectl annotate application "$app" \
@@ -1076,6 +1095,8 @@ pipelines:
       ensure_pull_secrets --all
       build_images --all
       create_deployments --all
+      echo "==> Routing workflow-builder service to the DevSpace replacement pod"
+      route_workflow_builder_service_to_dev
       start_dev --all
 
   deploy-ui:
@@ -1100,6 +1121,11 @@ hooks:
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${SKIP}-" 2>/dev/null || true
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${REFRESH}=hard" --overwrite 2>/dev/null || true
         done
+        kubectl patch service workflow-builder \
+          --namespace workflow-builder \
+          --type=json \
+          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"false"}]' \
+          >/dev/null 2>&1 || true
 
 # ============================================================================
 # Commands — manual ArgoCD pause/resume

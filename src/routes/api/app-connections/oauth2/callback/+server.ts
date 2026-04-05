@@ -44,58 +44,8 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 		});
 	}
 
-	const safePayload = JSON.stringify(JSON.stringify(payload));
-	const safeScopedStorageKey = JSON.stringify(
-		state && state.length > 0 ? `oauth2_callback_result:${state}` : ''
-	);
-
-	const html = `<!DOCTYPE html>
-<html>
-<head><title>Connecting...</title></head>
-<body>
-<p>Completing connection&hellip; You can close this window.</p>
-<script>
-  var payload = JSON.parse(${safePayload});
-  var scopedStorageKey = ${safeScopedStorageKey};
-  var origin = window.location.origin;
-  var delivered = false;
-  // Primary: postMessage (works when COOP doesn't block window.opener)
-  try {
-    if (window.opener) {
-      window.opener.postMessage(payload, origin);
-      delivered = true;
-    }
-  } catch (e) {
-    // COOP may block access to window.opener
-  }
-  // Extra fallback: BroadcastChannel
-  try {
-    if (payload && payload.state && typeof BroadcastChannel !== "undefined") {
-      var bc = new BroadcastChannel("oauth2_callback_result:" + payload.state);
-      bc.postMessage(payload);
-      bc.close();
-      delivered = true;
-    }
-  } catch (e) {}
-  // Fallback: localStorage
-  try {
-    if (scopedStorageKey) {
-      localStorage.setItem(scopedStorageKey, JSON.stringify(payload));
-    }
-  } catch (e) {}
-  // Same-tab fallback: redirect to connections page (cookie has the code)
-  if (!delivered && payload && payload.state) {
-    window.location.replace("/connections?oauth2_resume=1&state=" + encodeURIComponent(payload.state));
-    // return to prevent auto-close
-  } else if (payload && payload.code) {
-    setTimeout(function() { window.close(); }, 1000);
-  }
-</script>
-</body>
-</html>`;
-
-	return new Response(html, {
-		status: 200,
-		headers: { 'content-type': 'text/html; charset=utf-8' }
-	});
+	// Server-side redirect to /connections — the cookie carries the auth code.
+	// This is more reliable than client-side JavaScript redirects.
+	const resumeUrl = `/connections?oauth2_resume=1&state=${encodeURIComponent(state || '')}`;
+	redirect(302, resumeUrl);
 };

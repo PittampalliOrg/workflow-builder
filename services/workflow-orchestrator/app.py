@@ -28,12 +28,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
+from collections.abc import Callable
 
 import grpc
 import requests
 import durabletask.internal.orchestrator_service_pb2 as pb
 import durabletask.internal.orchestrator_service_pb2_grpc as pb_grpc
 from dapr.ext.workflow import DaprWorkflowClient
+from fastapi.encoders import jsonable_encoder
 from fastapi import FastAPI, HTTPException, Request
 from google.protobuf import wrappers_pb2
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,6 +46,7 @@ from workflows.dynamic_workflow import wfr, dynamic_workflow
 from workflows.ap_workflow import ap_workflow
 from workflows.sw_workflow import sw_workflow
 from activities.call_agent_service import terminate_durable_runs_by_parent_execution
+from activities.metadata import get_activity_metadata
 
 # OpenTelemetry
 from tracing import setup_tracing, inject_current_context
@@ -988,6 +991,226 @@ def _get_activity_source(fn: Any) -> str | None:
 def _get_activity_doc(fn: Any) -> str | None:
     """Return the formatted docstring of an activity function."""
     return inspect.getdoc(fn)
+
+
+def _annotation_text(annotation: object) -> str:
+    if annotation is inspect._empty:
+        return "Any"
+    if getattr(annotation, "__module__", "") == "typing":
+        return str(annotation).replace("typing.", "")
+    if isinstance(annotation, type):
+        return annotation.__name__
+    return getattr(annotation, "__name__", None) or str(annotation)
+
+
+def _activity_signature(fn: Callable[..., Any]) -> dict[str, Any]:
+    try:
+        signature = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return {"parameters": [], "returnType": None}
+
+    parameters = []
+    for param in signature.parameters.values():
+        parameters.append({
+            "name": param.name,
+            "kind": str(param.kind),
+            "annotation": _annotation_text(param.annotation),
+            "hasDefault": param.default is not inspect._empty,
+            "default": None if param.default is inspect._empty else repr(param.default),
+        })
+
+    return {
+        "parameters": parameters,
+        "returnType": _annotation_text(signature.return_annotation),
+    }
+
+
+def _activity_sw_compatibility(fn: Callable[..., Any]) -> dict[str, Any]:
+    metadata = get_activity_metadata(fn)
+    signature = _activity_signature(fn)
+    param_count = len(signature["parameters"])
+    reasons: list[str] = []
+    action_name = metadata.sw_name if metadata and metadata.sw_name else fn.__name__
+    call_target = f"workflow-orchestrator/{action_name}"
+
+    if metadata and metadata.public_callable:
+        status = "compatible"
+        projection = {
+            "functionRefName": action_name,
+            "call": call_target,
+            "inputShape": "object",
+        }
+    elif param_count == 2:
+        status = "inspect-only"
+        reasons.append("activity is discoverable but not explicitly marked public-callable")
+        projection = {
+            "functionRefName": action_name,
+            "call": call_target,
+            "inputShape": "object",
+        }
+    else:
+        status = "incompatible"
+        reasons.append("activity signature does not match the expected Dapr activity shape")
+        projection = None
+
+    return {
+        "status": status,
+        "reasons": reasons,
+        "projection": projection,
+    }
+
+
+def _orchestrator_service_url() -> str:
+    return (
+        os.environ.get("WORKFLOW_ORCHESTRATOR_URL")
+        or os.environ.get("ORCHESTRATOR_URL")
+        or f"http://workflow-orchestrator.workflow-builder.svc.cluster.local:{config.PORT}"
+    )
+
+
+def _activity_io_schema(
+    fn: Callable[..., Any],
+    metadata: Any | None,
+    *,
+    kind: str,
+) -> dict[str, Any]:
+    schema = None
+    if metadata is not None:
+        if kind == "input":
+            schema = getattr(metadata, "input_schema", None)
+        else:
+            schema = getattr(metadata, "output_schema", None)
+    if isinstance(schema, dict) and schema:
+        return schema
+    description = inspect.getdoc(fn) or None
+    return {
+        "type": "object",
+        "description": description,
+        "properties": {},
+        "additionalProperties": True,
+    }
+
+
+def _activity_execution_definition(fn: Callable[..., Any]) -> dict[str, Any]:
+    metadata = get_activity_metadata(fn)
+    action_name = metadata.sw_name if metadata and metadata.sw_name else fn.__name__
+    task_call = f"workflow-orchestrator/{action_name}"
+    endpoint_uri = f"{_orchestrator_service_url()}/api/metadata/actions/{action_name}/invoke"
+    input_schema = _activity_io_schema(fn, metadata, kind="input")
+    output_schema = _activity_io_schema(fn, metadata, kind="output")
+    description = (
+        metadata.description
+        if metadata and metadata.description
+        else (inspect.getdoc(fn) or "")
+    )
+
+    task_config = {
+        "call": task_call,
+        "with": {
+            "body": {
+                "input": {},
+                "metadata": {
+                    "service": "workflow-orchestrator",
+                    "actionId": fn.__name__,
+                    "actionName": action_name,
+                    "displayName": metadata.display_name if metadata and metadata.display_name else fn.__name__,
+                    "visibility": metadata.visibility if metadata else "inspect-only",
+                },
+            },
+        },
+        "input": {
+            "schema": {
+                "format": "json",
+                "document": input_schema,
+            },
+        },
+        "output": {
+            "schema": {
+                "format": "json",
+                "document": output_schema,
+            },
+        },
+    }
+
+    sw_definition = {
+        "call": task_call,
+        "with": task_config["with"],
+    }
+
+    return {
+        "definition": sw_definition,
+        "taskConfig": task_config,
+        "inputSchema": input_schema,
+        "outputSchema": output_schema,
+        "endpointUri": endpoint_uri,
+        "description": description,
+        "functionRefName": action_name,
+        "displayName": metadata.display_name if metadata and metadata.display_name else fn.__name__,
+        "visibility": metadata.visibility if metadata else "inspect-only",
+        "insertable": bool(metadata and metadata.public_callable),
+    }
+
+
+def _activity_metadata_payload(fn: Callable[..., Any]) -> dict[str, Any]:
+    metadata = get_activity_metadata(fn)
+    signature = _activity_signature(fn)
+    sw_compatibility = _activity_sw_compatibility(fn)
+    execution = _activity_execution_definition(fn) if metadata and metadata.public_callable else None
+    input_schema = execution["inputSchema"] if execution else _activity_io_schema(fn, metadata, kind="input")
+    output_schema = execution["outputSchema"] if execution else _activity_io_schema(fn, metadata, kind="output")
+
+    sw_payload = {
+        "functionName": execution["functionRefName"] if execution else (metadata.sw_name if metadata and metadata.sw_name else fn.__name__),
+        "definition": execution["definition"] if execution else None,
+        "taskConfig": execution["taskConfig"] if execution else None,
+        "warnings": sw_compatibility["reasons"],
+    }
+
+    if execution and sw_compatibility.get("projection"):
+        sw_compatibility["projection"] = {
+            **sw_compatibility["projection"],
+            "endpointUri": execution["endpointUri"],
+            "inputSchema": input_schema,
+        }
+
+    if metadata and metadata.public_callable and not execution:
+        sw_compatibility["reasons"].append("public-callable activity is missing executable projection metadata")
+
+    if metadata and metadata.public_callable and not metadata.input_schema:
+        sw_compatibility["reasons"].append("public-callable activity uses a generic input schema")
+
+    return {
+        "id": fn.__name__,
+        "name": execution["functionRefName"] if execution else (metadata.sw_name if metadata and metadata.sw_name else fn.__name__),
+        "displayName": execution["displayName"] if execution else (metadata.display_name if metadata and metadata.display_name else fn.__name__),
+        "description": execution["description"] if execution else (metadata.description if metadata and metadata.description else (inspect.getdoc(fn) or "")),
+        "visibility": metadata.visibility if metadata else "inspect-only",
+        "kind": "dapr-activity",
+        "service": "workflow-orchestrator",
+        "runtime": "python-dapr-workflow",
+        "registered": True,
+        "ready": True,
+        "source": {
+            "module": fn.__module__,
+            "sourceCode": _get_activity_source(fn),
+        },
+        "signature": signature,
+        "doc": _get_activity_doc(fn),
+        "tags": list(metadata.tags) if metadata else [],
+        "category": metadata.category if metadata else None,
+        "sourceKind": "activity",
+        "insertable": bool(metadata and metadata.public_callable),
+        "swCompatibility": sw_compatibility,
+        "inputSchema": input_schema,
+        "outputSchema": output_schema,
+        "definition": sw_payload["definition"],
+        "taskConfig": sw_payload["taskConfig"],
+        "functionRef": {
+            "name": sw_payload["functionName"],
+            "version": "1.0.0",
+        } if metadata and metadata.public_callable else None,
+        "sw": sw_payload,
+    }
 
 
 def _registered_workflow_descriptors() -> list[dict[str, Any]]:
@@ -2917,6 +3140,123 @@ def get_runtime_introspection():
             },
         },
     )
+
+
+@app.get("/api/metadata/actions")
+def get_activity_metadata_index():
+    """Return normalized activity metadata for the builder catalog."""
+    actions = [_activity_metadata_payload(fn) for fn in _registered_activity_functions()]
+    actions.sort(key=lambda item: str(item["displayName"]).lower())
+    return {
+        "service": "workflow-orchestrator",
+        "runtime": "python-dapr-workflow",
+        "actions": actions,
+        "count": len(actions),
+    }
+
+
+@app.get("/api/metadata/actions/{action_id}")
+def get_activity_metadata_detail(action_id: str):
+    """Return normalized metadata for one activity."""
+    for fn in _registered_activity_functions():
+        metadata = get_activity_metadata(fn)
+        if fn.__name__ == action_id or (metadata and metadata.sw_name == action_id):
+            return {
+                "service": "workflow-orchestrator",
+                "runtime": "python-dapr-workflow",
+                "action": _activity_metadata_payload(fn),
+            }
+    raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+
+
+def _invoke_public_activity(action_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    for fn in _registered_activity_functions():
+        metadata = get_activity_metadata(fn)
+        if fn.__name__ != action_id and (not metadata or metadata.sw_name != action_id):
+            continue
+
+        if not metadata or not metadata.public_callable:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Action {action_id} is inspect-only and cannot be invoked",
+            )
+
+        input_data: dict[str, Any]
+        if (
+            isinstance(payload.get("body"), dict)
+            and isinstance(payload["body"].get("input"), dict)
+        ):
+            input_data = payload["body"]["input"]  # type: ignore[index,assignment]
+        elif isinstance(payload.get("input"), dict):
+            input_data = payload["input"]  # type: ignore[assignment]
+        elif isinstance(payload.get("body"), dict):
+            input_data = payload["body"]  # type: ignore[assignment]
+        else:
+            input_data = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"metadata", "actionId", "actionName", "body", "input"}
+            }
+
+        started = time.perf_counter()
+        try:
+            result = fn(None, input_data)
+        except Exception as exc:
+            logger.exception("[Workflow Orchestrator] Activity %s failed", action_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        duration_ms = int((time.perf_counter() - started) * 1000)
+
+        return {
+            "success": True,
+            "action": _activity_metadata_payload(fn),
+            "data": jsonable_encoder(result),
+            "duration_ms": duration_ms,
+        }
+
+    raise HTTPException(status_code=404, detail=f"Action {action_id} not found")
+
+
+@app.post("/api/metadata/actions/{action_id}/invoke")
+async def invoke_activity(action_id: str, request: Request):
+    """Invoke a public-callable activity directly for safe testing."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    return _invoke_public_activity(action_id, payload)
+
+
+@app.post("/api/metadata/actions/{action_id}/test")
+async def test_activity(action_id: str, request: Request):
+    """Alias for the safe invoke endpoint used by the builder test UI."""
+    return await invoke_activity(action_id, request)
+
+
+@app.post("/execute")
+async def execute_public_activity(request: Request):
+    """OpenFunction-style executor for public-callable workflow activities."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    raw_step = payload.get("step")
+    if not isinstance(raw_step, str) or not raw_step.strip():
+        raise HTTPException(status_code=400, detail="step is required")
+
+    action_id = raw_step.strip().split("/")[-1]
+    input_payload = payload.get("input")
+    if not isinstance(input_payload, dict):
+        input_payload = {}
+
+    return _invoke_public_activity(action_id, input_payload)
 
 
 # Entry point for uvicorn

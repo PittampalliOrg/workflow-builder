@@ -24,7 +24,7 @@
 	import FunctionBrowser from './function-browser.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { WorkflowNodeType } from '$lib/stores/workflow.svelte';
-	import type { CatalogFunction } from '$lib/stores/catalog.svelte';
+	import type { ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { screenToFlowPosition } = useSvelteFlow();
@@ -68,23 +68,41 @@
 		store.addNode(type, position, label);
 	}
 
-	function onFunctionSelect(fn: CatalogFunction, definition: Record<string, unknown>) {
+	function onFunctionSelect(action: ActionCatalogItem, definition: Record<string, unknown>) {
 		const position = screenToFlowPosition({
 			x: window.innerWidth / 2,
 			y: window.innerHeight / 2
 		});
-		const id = store.addNode('call', position, fn.displayName);
-		if (fn.sourceKind === 'code') {
+		const id = store.addNode('call', position, action.displayName);
+		const actionDefinition = {
+			id: action.id,
+			name: action.name,
+			displayName: action.displayName,
+			service: action.service,
+			kind: action.kind,
+			visibility: action.visibility,
+			sourceKind: action.sourceKind,
+			version: action.version,
+			language: action.language,
+			entrypoint: action.entrypoint,
+			insertable: action.visibility === 'public-callable',
+		};
+		if (definition.sourceKind === 'code' || action.pieceName === 'code-functions') {
 			const codeFunction = (definition.codeFunction as Record<string, unknown> | undefined) || {};
 			store.updateNodeData(id, {
-				taskConfig: (definition.taskConfig as Record<string, unknown>) || {},
+				taskConfig:
+					((definition.taskConfig ||
+						(definition.sw && typeof definition.sw === 'object'
+							? (definition.sw as Record<string, unknown>).taskConfig
+							: null)) as Record<string, unknown>) || {},
+				actionDefinition,
 				codeFunction: {
 					id: (codeFunction.id as string | undefined) || '',
-					name: (codeFunction.name as string | undefined) || fn.displayName,
-					slug: (codeFunction.slug as string | undefined) || fn.name,
-					language: (codeFunction.language as string | undefined) || fn.language || 'typescript',
-					entrypoint: (codeFunction.entrypoint as string | undefined) || fn.actionName,
-					version: (codeFunction.version as string | undefined) || fn.version,
+					name: (codeFunction.name as string | undefined) || action.displayName,
+					slug: (codeFunction.slug as string | undefined) || action.name,
+					language: (codeFunction.language as string | undefined) || action.language || 'typescript',
+					entrypoint: (codeFunction.entrypoint as string | undefined) || action.actionName,
+					version: (codeFunction.version as string | undefined) || action.version || '0.1.0',
 					path: (codeFunction.path as string | undefined) || null,
 				},
 				codeFunctionDefinition: definition,
@@ -93,13 +111,22 @@
 		}
 
 		store.updateNodeData(id, {
-			taskConfig: definition,
-			catalogFunction: {
-				name: fn.name,
-				displayName: fn.displayName,
-				pieceName: fn.pieceName,
-				actionName: fn.actionName,
-			}
+			taskConfig:
+				((definition.taskConfig ||
+					(definition.sw && typeof definition.sw === 'object'
+						? (definition.sw as Record<string, unknown>).taskConfig
+						: null) ||
+					definition.definition) as Record<string, unknown>) || {},
+			actionDefinition,
+			catalogFunction: action.service === 'fn-activepieces'
+				? {
+						name: action.name,
+						displayName: action.displayName,
+						pieceName: action.pieceName,
+						actionName: action.actionName,
+				  }
+				: undefined,
+			actionCatalogDetail: definition,
 		});
 	}
 </script>
@@ -153,7 +180,7 @@
 					<div class="rounded p-1 bg-violet-100 text-violet-600 dark:bg-violet-900 dark:text-violet-400">
 						<Blocks size={12} />
 					</div>
-					<span class="text-foreground">Functions</span>
+					<span class="text-foreground">Actions</span>
 				</button>
 			</div>
 		{/if}

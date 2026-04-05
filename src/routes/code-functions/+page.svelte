@@ -513,8 +513,9 @@ def main(input: Input):
 	<title>Code Functions</title>
 </svelte:head>
 
-<div class="min-h-full bg-[radial-gradient(circle_at_top_left,rgba(110,168,254,0.18),transparent_28%),radial-gradient(circle_at_top_right,rgba(45,212,191,0.16),transparent_26%),linear-gradient(180deg,rgba(2,6,23,0.02),transparent_34%)]">
-	<div class="mx-auto flex w-full max-w-[1760px] flex-col gap-6 p-6">
+<div class="flex h-full flex-col">
+	<div class="min-h-0 flex-1 overflow-auto bg-[radial-gradient(circle_at_top_left,rgba(110,168,254,0.18),transparent_28%),radial-gradient(circle_at_top_right,rgba(45,212,191,0.16),transparent_26%),linear-gradient(180deg,rgba(2,6,23,0.02),transparent_34%)]">
+		<div class="mx-auto flex w-full max-w-[1760px] flex-col gap-6 p-6">
 		<div class="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
 			<div class="flex flex-col gap-2">
 				<div class="flex items-center gap-2">
@@ -914,4 +915,5 @@ def main(input: Input):
 			</div>
 		</div>
 	</div>
+</div>
 </div>

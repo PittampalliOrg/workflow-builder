@@ -7,6 +7,7 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import ApFunctionConfig from './ap-function-config.svelte';
 	import CodeFunctionInputEditor from './code-function-input-editor.svelte';
+	import GenericSchemaConfig from './sw-generic-schema-config.svelte';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -15,11 +16,26 @@
 
 	let { data, onUpdate }: Props = $props();
 
+	let actionDefinition = $derived(
+		(data.actionDefinition as {
+			id?: string;
+			displayName?: string;
+			service?: string;
+			kind?: string;
+			visibility?: string;
+			sourceKind?: string;
+			version?: string | null;
+			language?: string | null;
+			entrypoint?: string | null;
+		} | undefined) || null
+	);
+	let actionCatalogDetail = $derived((data.actionCatalogDetail as Record<string, unknown> | undefined) || null);
 	let isApFunction = $derived(
 		Boolean(data.catalogFunction) ||
 		Boolean((((data.taskConfig as Record<string, unknown>)?.with as Record<string, unknown>)?.body as Record<string, unknown>)?.metadata)
 	);
 	let isCodeFunction = $derived(Boolean(data.codeFunction));
+	let isGenericSwAction = $derived(Boolean(actionDefinition) && !isApFunction && !isCodeFunction);
 	let catalogFunction = $derived(
 		(data.catalogFunction as { name: string; displayName: string; pieceName: string; actionName: string } | undefined) || null
 	);
@@ -134,9 +150,37 @@
 			(
 				entry,
 			): entry is [string, { handler: string; depends_on: string[]; search: boolean }] =>
-				Array.isArray(entry),
+			Array.isArray(entry),
 		);
 		return Object.fromEntries(entries);
+	});
+	let genericActionSchema = $derived.by(() => {
+		const catalogInput = actionCatalogDetail?.inputSchema;
+		if (catalogInput && typeof catalogInput === 'object') {
+			return catalogInput as Record<string, unknown>;
+		}
+
+		const definitionInput = (actionCatalogDetail?.definition as { input?: { schema?: { document?: Record<string, unknown> } } } | undefined)
+			?.input?.schema?.document;
+		if (definitionInput && typeof definitionInput === 'object') {
+			return definitionInput;
+		}
+
+		const taskConfigValue = data.taskConfig as Record<string, unknown> | undefined;
+		const taskInput = (taskConfigValue?.input as { schema?: { document?: Record<string, unknown> } } | undefined)
+			?.schema?.document;
+		if (taskInput && typeof taskInput === 'object') {
+			return taskInput;
+		}
+
+		return null;
+	});
+	let genericInputValues = $derived.by(() => {
+		const input =
+			(((data.taskConfig as Record<string, unknown>)?.with as Record<string, unknown>)?.body as Record<string, unknown>)?.input;
+		return input && typeof input === 'object' && !Array.isArray(input)
+			? (input as Record<string, unknown>)
+			: {};
 	});
 	let showRawConfig = $state(false);
 
@@ -164,6 +208,15 @@
 	}
 
 	function updateCodeInput(values: Record<string, unknown>) {
+		updateWith({
+			body: {
+				...codeBody,
+				input: values,
+			},
+		});
+	}
+
+	function updateGenericInput(values: Record<string, unknown>) {
 		updateWith({
 			body: {
 				...codeBody,
@@ -212,6 +265,41 @@
 </script>
 
 <div class="space-y-4">
+	{#if actionDefinition}
+		<div class="rounded-lg border border-border/70 bg-muted/20 p-3">
+			<div class="flex items-center justify-between gap-3">
+				<div>
+					<p class="text-xs font-semibold">{actionDefinition.displayName || 'Action'}</p>
+					<p class="text-[10px] text-muted-foreground">
+						<span class="font-mono">{actionDefinition.service || 'unknown-service'}</span>
+						{#if actionDefinition.kind}
+							<span> · {actionDefinition.kind}</span>
+						{/if}
+						{#if actionDefinition.sourceKind}
+							<span> · {actionDefinition.sourceKind}</span>
+						{/if}
+					</p>
+				</div>
+				<div class="flex items-center gap-1.5">
+					{#if actionDefinition.visibility}
+						<Badge variant="outline" class="text-[9px]">{actionDefinition.visibility}</Badge>
+					{/if}
+					{#if actionDefinition.version}
+						<Badge variant="secondary" class="text-[9px]">{actionDefinition.version}</Badge>
+					{/if}
+					{#if actionDefinition.language}
+						<Badge variant="secondary" class="text-[9px]">{actionDefinition.language}</Badge>
+					{/if}
+				</div>
+			</div>
+			{#if actionDefinition.entrypoint}
+				<p class="mt-2 text-[10px] text-muted-foreground">
+					Entrypoint: <code>{actionDefinition.entrypoint}</code>
+				</p>
+			{/if}
+		</div>
+	{/if}
+
 	{#if isCodeFunction && codeFunction}
 		<div class="rounded-lg border border-border/70 p-3">
 			<div class="flex items-center justify-between gap-3">
@@ -257,9 +345,49 @@
 		</button>
 	{/if}
 
+	{#if isGenericSwAction && genericActionSchema}
+		<div class="rounded-lg border border-border/70 p-3">
+			<div class="flex items-center justify-between gap-3">
+				<div>
+					<p class="text-xs font-semibold">{actionDefinition?.displayName || 'Action'}</p>
+					<p class="text-[10px] text-muted-foreground">
+						Schema-driven SW-compatible inputs
+					</p>
+				</div>
+				<div class="flex items-center gap-1.5">
+					{#if actionDefinition?.visibility}
+						<Badge variant="outline" class="text-[9px]">{actionDefinition?.visibility}</Badge>
+					{/if}
+					{#if actionDefinition?.version}
+						<Badge variant="secondary" class="text-[9px]">{actionDefinition?.version}</Badge>
+					{/if}
+				</div>
+			</div>
+			{#if actionDefinition?.entrypoint}
+				<p class="mt-2 text-[10px] text-muted-foreground">
+					Entrypoint: <code>{actionDefinition?.entrypoint}</code>
+				</p>
+			{/if}
+			<GenericSchemaConfig
+				schema={genericActionSchema}
+				values={genericInputValues as Record<string, unknown>}
+				onChange={updateGenericInput}
+				title="Action inputs"
+				description="These values are persisted into taskConfig.with.body.input."
+			/>
+			<button
+				class="mt-2 text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+				onclick={() => (showRawConfig = !showRawConfig)}
+			>
+				{showRawConfig ? 'Hide' : 'Show'} raw config
+			</button>
+		</div>
+	{/if}
+
 	{#if isApFunction && catalogFunction}
 		<ApFunctionConfig
 			{catalogFunction}
+			actionDetail={actionCatalogDetail}
 			taskConfig={taskConfig}
 			{onUpdate}
 		/>
@@ -271,112 +399,112 @@
 		</button>
 	{/if}
 
-	{#if (!isApFunction && !isCodeFunction) || showRawConfig}
-	<div class="space-y-4">
-	<div class="space-y-1.5">
-		<Label for="call-type">Call Type</Label>
-		<NativeSelect
-			class="w-full"
-			id="call-type"
-			value={callType}
-			onchange={(e) => setCallType(e.currentTarget.value)}
-		>
-			<option value="http">HTTP</option>
-			<option value="grpc">gRPC</option>
-			<option value="openapi">OpenAPI</option>
-			<option value="asyncapi">AsyncAPI</option>
-		</NativeSelect>
-	</div>
-
-	{#if callType === 'http'}
-		<div class="space-y-1.5">
-			<Label for="http-method">Method</Label>
-			<NativeSelect
-				class="w-full"
-				id="http-method"
-				value={method}
-				onchange={(e) => setMethod(e.currentTarget.value)}
-			>
-				<option value="GET">GET</option>
-				<option value="POST">POST</option>
-				<option value="PUT">PUT</option>
-				<option value="PATCH">PATCH</option>
-				<option value="DELETE">DELETE</option>
-				<option value="HEAD">HEAD</option>
-				<option value="OPTIONS">OPTIONS</option>
-			</NativeSelect>
-		</div>
-
-		<div class="space-y-1.5">
-			<Label for="endpoint-uri">Endpoint URI</Label>
-			<Input
-				id="endpoint-uri"
-				type="text"
-				value={uri}
-				oninput={(e) => setUri(e.currentTarget.value)}
-				placeholder="https://api.example.com/resource"
-			/>
-		</div>
-
-		<div>
-			<div class="flex items-center justify-between">
-				<Label>Headers</Label>
-				<Button variant="ghost" size="sm" onclick={addHeader}>+ Add</Button>
+	{#if (!isApFunction && !isCodeFunction && !isGenericSwAction) || showRawConfig || (isGenericSwAction && !genericActionSchema)}
+		<div class="space-y-4">
+			<div class="space-y-1.5">
+				<Label for="call-type">Call Type</Label>
+				<NativeSelect
+					class="w-full"
+					id="call-type"
+					value={callType}
+					onchange={(e) => setCallType(e.currentTarget.value)}
+				>
+					<option value="http">HTTP</option>
+					<option value="grpc">gRPC</option>
+					<option value="openapi">OpenAPI</option>
+					<option value="asyncapi">AsyncAPI</option>
+				</NativeSelect>
 			</div>
-			<div class="mt-1 space-y-1">
-				{#each headerEntries as [key, value], i}
-					<div class="flex gap-1">
-						<Input
-							type="text"
-							value={key}
-							placeholder="Header name"
-							onchange={(e) => setHeader(key, e.currentTarget.value, value)}
-						/>
-						<Input
-							type="text"
-							value={value}
-							placeholder="Value"
-							oninput={(e) => setHeader(key, key, e.currentTarget.value)}
-						/>
-						<Button
-							variant="ghost"
-							size="icon-xs"
-							class="text-destructive hover:bg-destructive/10"
-							onclick={() => removeHeader(key)}
-						>
-							x
-						</Button>
+
+			{#if callType === 'http'}
+				<div class="space-y-1.5">
+					<Label for="http-method">Method</Label>
+					<NativeSelect
+						class="w-full"
+						id="http-method"
+						value={method}
+						onchange={(e) => setMethod(e.currentTarget.value)}
+					>
+						<option value="GET">GET</option>
+						<option value="POST">POST</option>
+						<option value="PUT">PUT</option>
+						<option value="PATCH">PATCH</option>
+						<option value="DELETE">DELETE</option>
+						<option value="HEAD">HEAD</option>
+						<option value="OPTIONS">OPTIONS</option>
+					</NativeSelect>
+				</div>
+
+				<div class="space-y-1.5">
+					<Label for="endpoint-uri">Endpoint URI</Label>
+					<Input
+						id="endpoint-uri"
+						type="text"
+						value={uri}
+						oninput={(e) => setUri(e.currentTarget.value)}
+						placeholder="https://api.example.com/resource"
+					/>
+				</div>
+
+				<div>
+					<div class="flex items-center justify-between">
+						<Label>Headers</Label>
+						<Button variant="ghost" size="sm" onclick={addHeader}>+ Add</Button>
 					</div>
-				{/each}
-			</div>
-		</div>
+					<div class="mt-1 space-y-1">
+						{#each headerEntries as [key, value], i}
+							<div class="flex gap-1">
+								<Input
+									type="text"
+									value={key}
+									placeholder="Header name"
+									onchange={(e) => setHeader(key, e.currentTarget.value, value)}
+								/>
+								<Input
+									type="text"
+									value={value}
+									placeholder="Value"
+									oninput={(e) => setHeader(key, key, e.currentTarget.value)}
+								/>
+								<Button
+									variant="ghost"
+									size="icon-xs"
+									class="text-destructive hover:bg-destructive/10"
+									onclick={() => removeHeader(key)}
+								>
+									x
+								</Button>
+							</div>
+						{/each}
+					</div>
+				</div>
 
-		<div class="space-y-1.5">
-			<Label for="request-body">Body</Label>
-			<Textarea
-				id="request-body"
-				value={body}
-				oninput={(e) => setBody(e.currentTarget.value)}
-				placeholder={'{"key": "value"}'}
-				rows={5}
-			></Textarea>
-		</div>
-	{:else}
-		<div class="space-y-1.5">
-			<Label for="call-target">Call Target</Label>
-			<Input
-				id="call-target"
-				type="text"
-				value={callType === 'grpc' ? (withConfig.service as string || '') : (withConfig.document as string || '')}
-				oninput={(e) => updateWith(callType === 'grpc' ? { service: e.currentTarget.value } : { document: e.currentTarget.value })}
-				placeholder={callType === 'grpc' ? 'service.Method' : 'path/to/spec.yaml'}
-			/>
+				<div class="space-y-1.5">
+					<Label for="request-body">Body</Label>
+					<Textarea
+						id="request-body"
+						value={body}
+						oninput={(e) => setBody(e.currentTarget.value)}
+						placeholder={'{"key": "value"}'}
+						rows={5}
+					></Textarea>
+				</div>
+			{:else}
+				<div class="space-y-1.5">
+					<Label for="call-target">Call Target</Label>
+					<Input
+						id="call-target"
+						type="text"
+						value={callType === 'grpc' ? (withConfig.service as string || '') : (withConfig.document as string || '')}
+						oninput={(e) => updateWith(callType === 'grpc' ? { service: e.currentTarget.value } : { document: e.currentTarget.value })}
+						placeholder={callType === 'grpc' ? 'service.Method' : 'path/to/spec.yaml'}
+					/>
+				</div>
+			{/if}
 		</div>
 	{/if}
-	</div>
-	{/if}
 
-	{#if isCodeFunction && showRawConfig}
+	{#if showRawConfig && (isCodeFunction || isApFunction || isGenericSwAction)}
 		<div class="space-y-2 rounded-lg border border-border/70 bg-muted/20 p-3">
 			<div class="flex items-center justify-between gap-3">
 				<Label class="text-xs font-medium">Raw taskConfig</Label>

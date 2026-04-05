@@ -17,9 +17,47 @@ from typing import Any
 
 import requests
 
+from .metadata import (
+    activity_metadata,
+    schema_any_object,
+    schema_boolean,
+    schema_integer,
+    schema_object,
+    schema_string,
+)
+
 logger = logging.getLogger(__name__)
 
+SEND_AP_CALLBACK_INPUT_SCHEMA = schema_object(
+    {
+        "callbackUrl": schema_string(description="Full Activepieces callback URL."),
+        "payload": schema_any_object(description="Callback payload."),
+    },
+    required=["callbackUrl", "payload"],
+    description="Payload for sending a flow callback to Activepieces.",
+)
 
+SEND_AP_CALLBACK_OUTPUT_SCHEMA = schema_object(
+    {
+        "success": schema_boolean(description="Whether the callback succeeded.", default=True),
+        "skipped": schema_boolean(description="Whether the callback was intentionally skipped."),
+        "error": schema_string(description="Error message when callback fails."),
+        "statusCode": schema_integer(description="HTTP status returned by the callback endpoint."),
+    },
+    description="Result of sending a callback to Activepieces.",
+)
+
+
+@activity_metadata(
+    public_callable=True,
+    display_name="Send AP Callback",
+    description="Send a flow-level callback to Activepieces.",
+    category="integrations",
+    tags=("activepieces", "callback"),
+    sw_name="send_ap_callback",
+    input_schema=SEND_AP_CALLBACK_INPUT_SCHEMA,
+    output_schema=SEND_AP_CALLBACK_OUTPUT_SCHEMA,
+)
 def send_ap_callback(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Activity: POST to AP's /api/v1/dapr/flow-run-callback.
@@ -76,6 +114,16 @@ def send_ap_callback(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@activity_metadata(
+    public_callable=True,
+    display_name="Send AP Step Update",
+    description="Send a per-step progress update to Activepieces.",
+    category="integrations",
+    tags=("activepieces", "callback"),
+    sw_name="send_ap_step_update",
+    input_schema=SEND_AP_CALLBACK_INPUT_SCHEMA,
+    output_schema=SEND_AP_CALLBACK_OUTPUT_SCHEMA,
+)
 def send_ap_step_update(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Activity: POST to AP's /api/v1/dapr/flow-run-step-update.

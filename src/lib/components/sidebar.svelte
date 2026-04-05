@@ -40,7 +40,7 @@
 		{ href: '/agents', label: 'Agents', icon: Bot },
 		{ href: '/mcp-chat', label: 'MCP Chat', icon: MessageSquare },
 		{ href: '/monitor', label: 'Monitor', icon: Activity },
-		{ href: '/runtime', label: 'Runtime', icon: Server },
+		{ href: '/activities', label: 'Activities', icon: Server },
 		{ href: '/code-functions', label: 'Code Functions', icon: Code },
 		{ href: '/observability', label: 'Observability', icon: Eye },
 		{ href: '/settings', label: 'Settings', icon: Settings }
@@ -97,14 +97,17 @@
 				{#if collapsed}
 					<Tooltip.Root>
 						<Tooltip.Trigger>
-							<a
-								href={item.href}
-								class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(item.href)
-									? 'bg-accent text-accent-foreground'
-									: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
-							>
-								<item.icon size={15} />
-							</a>
+							{#snippet child({ props })}
+								<a
+									{...props}
+									href={item.href}
+									class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(item.href)
+										? 'bg-accent text-accent-foreground'
+										: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
+								>
+									<item.icon size={15} />
+								</a>
+							{/snippet}
 						</Tooltip.Trigger>
 						<Tooltip.Content side="right">{item.label}</Tooltip.Content>
 					</Tooltip.Root>
@@ -131,16 +134,19 @@
 			{#if collapsed}
 				<Tooltip.Root>
 					<Tooltip.Trigger>
-						<button
-							onclick={toggleTheme}
-							class="flex h-8 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-						>
-							{#if ui.theme === 'dark'}
-								<Sun size={15} />
-							{:else}
-								<Moon size={15} />
-							{/if}
-						</button>
+						{#snippet child({ props })}
+							<button
+								{...props}
+								onclick={toggleTheme}
+								class="flex h-8 w-full items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+							>
+								{#if ui.theme === 'dark'}
+									<Sun size={15} />
+								{:else}
+									<Moon size={15} />
+								{/if}
+							</button>
+						{/snippet}
 					</Tooltip.Trigger>
 					<Tooltip.Content side="right">{ui.theme === 'dark' ? 'Light mode' : 'Dark mode'}</Tooltip.Content>
 				</Tooltip.Root>
@@ -161,20 +167,23 @@
 			<!-- User avatar -->
 			<DropdownMenu.Root>
 				<DropdownMenu.Trigger>
-					<button
-						class="flex h-8 w-full items-center rounded-md transition-colors hover:bg-accent/50 {collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'}"
-					>
-						<Avatar class="h-5 w-5 shrink-0">
-							{#if user?.image}
-								<AvatarImage src={user.image} alt={displayName} />
+					{#snippet child({ props })}
+						<button
+							{...props}
+							class="flex h-8 w-full items-center rounded-md transition-colors hover:bg-accent/50 {collapsed ? 'justify-center px-0' : 'gap-2.5 px-2.5'}"
+						>
+							<Avatar class="h-5 w-5 shrink-0">
+								{#if user?.image}
+									<AvatarImage src={user.image} alt={displayName} />
+								{/if}
+								<AvatarFallback class="text-[8px] font-medium">{initials}</AvatarFallback>
+							</Avatar>
+							{#if !collapsed}
+								<span class="min-w-0 flex-1 truncate text-left text-xs text-foreground">{displayName}</span>
+								<ChevronsUpDown size={11} class="shrink-0 text-muted-foreground" />
 							{/if}
-							<AvatarFallback class="text-[8px] font-medium">{initials}</AvatarFallback>
-						</Avatar>
-						{#if !collapsed}
-							<span class="min-w-0 flex-1 truncate text-left text-xs text-foreground">{displayName}</span>
-							<ChevronsUpDown size={11} class="shrink-0 text-muted-foreground" />
-						{/if}
-					</button>
+						</button>
+					{/snippet}
 				</DropdownMenu.Trigger>
 				<DropdownMenu.Content side={collapsed ? 'right' : 'top'} align="start" class="w-48">
 					{#if user?.email}
