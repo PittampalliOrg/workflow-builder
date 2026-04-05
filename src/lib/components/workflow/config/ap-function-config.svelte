@@ -39,6 +39,24 @@
 
 	let withConfig = $derived((taskConfig.with as Record<string, unknown>) || {});
 	let body = $derived((withConfig.body as Record<string, unknown>) || {});
+
+	// Resolve the actual piece name for auth connection lookup.
+	// Priority: actionDetail.providerId > body.metadata.pieceName > extract from catalogFunction.name
+	let resolvedPieceName = $derived.by(() => {
+		const fromDetail = actionDetail?.providerId;
+		if (typeof fromDetail === 'string' && fromDetail.length > 0) return fromDetail;
+		const fromMetadata = (body?.metadata as Record<string, unknown> | undefined)?.pieceName;
+		if (typeof fromMetadata === 'string' && fromMetadata.length > 0) return fromMetadata;
+		// catalogFunction.pieceName may be the category (e.g., CONTENT_AND_FILES).
+		// Extract piece name from catalogFunction.name (e.g., "microsoft-onedrive-list_folders")
+		const name = catalogFunction.name;
+		const actionName = catalogFunction.actionName;
+		if (name && actionName && name.endsWith(actionName)) {
+			const piece = name.slice(0, name.length - actionName.length - 1);
+			if (piece.length > 0) return piece;
+		}
+		return catalogFunction.pieceName;
+	});
 	let inputValues = $derived((body.input as Record<string, unknown>) || {});
 	let inputDef = $derived((taskConfig.input as Record<string, unknown>) || {});
 	let schemaDef = $derived((inputDef.schema as Record<string, unknown>) || {});
@@ -230,7 +248,7 @@
 		onChange={updateInput}
 		title="Action inputs"
 		description="These values are persisted into taskConfig.with.body.input."
-		authPieceName={(actionDetail?.providerId as string | undefined) || catalogFunction.pieceName}
+		authPieceName={resolvedPieceName}
 		authLabel={authLabel}
 		authRequired={authRequired}
 		{resourceTypes}
