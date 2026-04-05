@@ -909,7 +909,7 @@ export async function loadActionCatalogSnapshot(
 		category: item.category ?? null,
 		auth: item.auth ?? null,
 		fields: item.fields ?? null,
-		pieceName: item.kind === 'code-function' ? 'code-functions' : item.group,
+		pieceName: item.kind === 'code-function' ? 'code-functions' : (item.providerId || item.group),
 		actionName: item.entrypoint || item.slug,
 		service: item.serviceId,
 		runtime: item.serviceId === 'code-functions' ? `code-${item.language || 'runtime'}` : 'dapr',
