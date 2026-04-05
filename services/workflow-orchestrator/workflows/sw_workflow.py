@@ -377,19 +377,21 @@ def _resolve_function_call(
             }
 
     # AP piece function: auto-resolve ap_{piece}_{action} naming convention
-    # e.g., "ap_gmail_send_email" → piece=gmail, action=send-email
+    # Requires metadata.pieceName/actionName in the with args for correct routing,
+    # since underscores in the ap_ name are ambiguous (piece names can contain hyphens).
     if call_value.startswith("ap_"):
-        suffix = call_value[3:]  # Remove "ap_" prefix
-        # Split on first "_" to separate piece from action
-        # e.g., "google_sheets_read_row" → piece="google-sheets", action="read-row"
-        # Handle multi-word piece names by finding the action boundary
-        # Convention: piece and action parts use underscores internally,
-        # but the original names use hyphens
-        piece_action = suffix.replace("_", "-")
-        # Route through function-router which resolves to fn-activepieces
+        metadata = with_args.get("metadata") or with_args.get("body", {}).get("metadata", {})
+        piece_name = metadata.get("pieceName", "")
+        action_name = metadata.get("actionName", "")
+        if piece_name and action_name:
+            action_type = f"{piece_name}/{action_name}"
+        else:
+            # Fallback: best-effort conversion (may be wrong for multi-word piece names)
+            suffix = call_value[3:]
+            action_type = suffix.replace("_", "-")
         return {
             "protocol": "http",
-            "actionType": piece_action,
+            "actionType": action_type,
             "args": with_args,
             "functionName": call_value,
         }
@@ -487,6 +489,10 @@ def _handle_call_task(
         "config": resolved_config if isinstance(resolved_config, dict) else raw_config,
     }
 
+    # Extract connectionExternalId from task config if present
+    final_config = resolved_config if isinstance(resolved_config, dict) else raw_config
+    connection_external_id = final_config.pop("connectionExternalId", None) if isinstance(final_config, dict) else None
+
     result = yield ctx.call_activity(
         execute_action,
         input=_freeze({
@@ -496,6 +502,7 @@ def _handle_call_task(
             "workflowId": tc.workflow.document.name,
             "integrations": tc.integrations,
             "dbExecutionId": tc.db_execution_id,
+            "connectionExternalId": connection_external_id,
             "_otel": tc.otel_ctx,
         }),
     )
