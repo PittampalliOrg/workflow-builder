@@ -2,9 +2,11 @@
 	import {
 		BaseEdge,
 		getBezierPath,
+		EdgeLabel,
 		EdgeReconnectAnchor,
 		type EdgeProps
 	} from '@xyflow/svelte';
+	import { Plus } from 'lucide-svelte';
 
 	let {
 		id,
@@ -19,7 +21,7 @@
 		style
 	}: EdgeProps = $props();
 
-	let [edgePath] = $derived(
+	let [edgePath, labelX, labelY] = $derived(
 		getBezierPath({
 			sourceX,
 			sourceY,
@@ -29,6 +31,15 @@
 			targetPosition
 		})
 	);
+
+	function onInsertClick(event: MouseEvent) {
+		event.stopPropagation();
+		window.dispatchEvent(
+			new CustomEvent('workflow:insert-on-edge', {
+				detail: { edgeId: id, position: { x: labelX, y: labelY } }
+			})
+		);
+	}
 
 	let status = $derived((data?.status as string) || 'idle');
 	let animated = $derived((data?.animated as boolean) || false);
@@ -109,10 +120,69 @@
 	/>
 {/if}
 
+<!-- Insert button (visible on hover) -->
+{#if status === 'idle'}
+	<EdgeLabel x={labelX} y={labelY} class="!bg-transparent !p-0">
+		<button
+			class="wb-edge-insert-btn nodrag nopan"
+			onclick={onInsertClick}
+			aria-label="Insert node on edge"
+		>
+			<Plus size={14} />
+		</button>
+	</EdgeLabel>
+{/if}
+
 <EdgeReconnectAnchor type="source" />
 <EdgeReconnectAnchor type="target" />
 
 <style>
+	/* Hide EdgeLabel background when used for insert button */
+	:global(.svelte-flow__edge .svelte-flow__edge-label) {
+		background: transparent !important;
+		padding: 0 !important;
+		pointer-events: none;
+	}
+
+	:global(.svelte-flow__edge:hover .svelte-flow__edge-label) {
+		pointer-events: auto;
+	}
+
+	/* Insert button on edge hover */
+	:global(.wb-edge-insert-btn) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		border-radius: 50%;
+		border: 1.5px solid var(--border);
+		background: var(--background);
+		color: var(--muted-foreground);
+		cursor: pointer;
+		opacity: 0;
+		transition: all 0.15s ease;
+		box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+	}
+
+	:global(.wb-edge-insert-btn:hover) {
+		background: var(--primary);
+		color: var(--primary-foreground);
+		border-color: var(--primary);
+		opacity: 1;
+		transform: scale(1.15);
+	}
+
+	:global(.svelte-flow__edge:hover .wb-edge-insert-btn) {
+		opacity: 0.8;
+	}
+
+	/* Edge hover glow increase */
+	:global(.svelte-flow__edge:hover path:first-child) {
+		opacity: 0.35;
+		transition: opacity 0.15s ease;
+	}
+
 	/* Running edge: override dash to faster animation */
 	:global(.wb-edge--running path) {
 		stroke-dasharray: 8 4 !important;

@@ -17,6 +17,8 @@
 		type Node,
 		type Edge,
 	} from '@xyflow/svelte';
+	import { onMount } from 'svelte';
+	import { toast } from 'svelte-sonner';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
@@ -82,6 +84,28 @@
 
 	// Context menu state
 	let contextMenu = $state<{ x: number; y: number; nodeId: string | null } | null>(null);
+	let edgeContextMenu = $state<{ x: number; y: number; edgeId: string } | null>(null);
+
+	// Insert-on-edge: pending edge ID for inserting a node
+	let insertOnEdgeId = $state<string | null>(null);
+	let insertOnEdgePosition = $state<{ x: number; y: number } | null>(null);
+
+	function handleInsertOnEdge(event: Event) {
+		const detail = (event as CustomEvent).detail as { edgeId: string; position: { x: number; y: number } };
+		insertOnEdgeId = detail.edgeId;
+		insertOnEdgePosition = detail.position;
+		// Insert a generic 'call' node at the edge midpoint
+		store.insertNodeOnEdge(detail.edgeId, 'call', detail.position);
+		insertOnEdgeId = null;
+		insertOnEdgePosition = null;
+	}
+
+	onMount(() => {
+		window.addEventListener('workflow:insert-on-edge', handleInsertOnEdge);
+		return () => {
+			window.removeEventListener('workflow:insert-on-edge', handleInsertOnEdge);
+		};
+	});
 
 	const defaultEdgeOptions = {
 		type: 'default',
@@ -151,10 +175,38 @@
 		store.selectedNodeId = null;
 	}
 
+	function onEdgeContextMenu({ edge, event }: { edge: Edge; event: MouseEvent }) {
+		event.preventDefault();
+		edgeContextMenu = { x: event.clientX, y: event.clientY, edgeId: edge.id };
+		contextMenu = null;
+	}
+
+	function deleteEdge(edgeId: string) {
+		store.removeEdge(edgeId);
+		edgeContextMenu = null;
+	}
+
+	function insertNodeOnEdge(edgeId: string) {
+		const edge = store.edges.find((e) => e.id === edgeId);
+		if (!edge) return;
+		// Use midpoint approximation
+		const sourceNode = store.nodes.find((n) => n.id === edge.source);
+		const targetNode = store.nodes.find((n) => n.id === edge.target);
+		if (sourceNode && targetNode) {
+			const pos = {
+				x: (sourceNode.position.x + targetNode.position.x) / 2,
+				y: (sourceNode.position.y + targetNode.position.y) / 2
+			};
+			store.insertNodeOnEdge(edgeId, 'call', pos);
+		}
+		edgeContextMenu = null;
+	}
+
 	function onPaneClick() {
 		store.selectedNodeId = null;
 		store.selectedEdgeId = null;
 		contextMenu = null;
+		edgeContextMenu = null;
 	}
 
 	function onNodeDragStop() {
@@ -174,6 +226,9 @@
 		connectionMode={ConnectionMode.Strict}
 		selectionMode={SelectionMode.Partial}
 		connectionLineComponent={CustomConnectionLine}
+		connectionRadius={40}
+		clickConnect={true}
+		autoPanOnConnect={true}
 		zoomOnDoubleClick={false}
 		zoomOnPinch={true}
 		onconnect={onConnect}
@@ -183,6 +238,7 @@
 		onnodeclick={onNodeClick}
 		onnodecontextmenu={onNodeContextMenu}
 		onedgeclick={onEdgeClick}
+		onedgecontextmenu={onEdgeContextMenu}
 		onpaneclick={onPaneClick}
 		snapGrid={[16, 16]}
 		minZoom={0.2}
@@ -212,4 +268,32 @@
 		nodeId={contextMenu.nodeId}
 		onClose={() => (contextMenu = null)}
 	/>
+{/if}
+
+{#if edgeContextMenu}
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div
+		class="fixed inset-0 z-50"
+		onclick={() => (edgeContextMenu = null)}
+		oncontextmenu={(e) => { e.preventDefault(); edgeContextMenu = null; }}
+	>
+		<div
+			class="absolute rounded-md border border-border bg-popover p-1 shadow-md"
+			style="left: {edgeContextMenu.x}px; top: {edgeContextMenu.y}px;"
+		>
+			<button
+				class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent"
+				onclick={(e) => { e.stopPropagation(); insertNodeOnEdge(edgeContextMenu?.edgeId || ''); }}
+			>
+				Insert node
+			</button>
+			<button
+				class="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs text-destructive hover:bg-destructive/10"
+				onclick={(e) => { e.stopPropagation(); deleteEdge(edgeContextMenu?.edgeId || ''); }}
+			>
+				Delete edge
+			</button>
+		</div>
+	</div>
 {/if}
