@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { Copy, Check, ChevronDown, ChevronRight } from 'lucide-svelte';
-	import { ScrollArea } from '$lib/components/ui/scroll-area';
+
 
 	interface Props {
 		data: unknown;
@@ -90,7 +90,7 @@
 	</div>
 
 	{#if !isCollapsed}
-		<ScrollArea orientation="both" class="max-h-[40vh] border-t border-border px-2.5 py-1.5">
+		<div class="max-h-[40vh] overflow-auto border-t border-border px-2.5 py-1.5">
 			<pre class="whitespace-pre-wrap break-all font-mono text-[10px] leading-relaxed text-foreground">{@html highlighted}</pre>
 			{#if isTruncated && !showFull}
 				<button
@@ -100,7 +100,7 @@
 					Show more ({(formatted.length / 1000).toFixed(1)}KB)
 				</button>
 			{/if}
-		</ScrollArea>
+		</div>
 	{/if}
 </div>
 
