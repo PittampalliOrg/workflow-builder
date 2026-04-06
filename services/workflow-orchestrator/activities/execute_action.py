@@ -118,13 +118,25 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     node_name = node_label or action_type or node.get("id", "unknown")
 
     # Build the request for function-router
+    # For SW 1.0 piece/action calls, extract the nested 'input' dict as the action input
+    # (resolved_config may contain { actionType, input: {...}, metadata: {...} })
+    action_input = resolved_config
+    if isinstance(resolved_config, dict) and isinstance(resolved_config.get("input"), dict):
+        action_input = resolved_config["input"]
+
+    # Extract metadata for AP piece routing (if present in config)
+    if isinstance(resolved_config, dict) and isinstance(resolved_config.get("metadata"), dict):
+        metadata = resolved_config["metadata"]
+        if not connection_external_id:
+            connection_external_id = resolved_config.get("connectionExternalId")
+
     request_payload = {
         "function_slug": action_type,
         "execution_id": execution_id,
         "workflow_id": workflow_id,
         "node_id": node.get("id"),
         "node_name": node_name,
-        "input": resolved_config,
+        "input": action_input,
         "integration_id": config.get("integrationId"),
         "integrations": integrations,
         "db_execution_id": db_execution_id,

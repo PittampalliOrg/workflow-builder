@@ -10,12 +10,16 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import PublishBadge from './publish-badge.svelte';
 	import ExecuteDialog from './execute-dialog.svelte';
+	import WorkflowSwitcher from './workflow-switcher.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
+	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	let isPublishing = $state(false);
 	let showExecuteDialog = $state(false);
+	let switcherRef: WorkflowSwitcher | undefined = $state();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
+	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
 	async function saveWorkflow() {
 		if (!store.workflowId) return;
@@ -27,7 +31,8 @@
 				body: JSON.stringify({
 					name: store.workflowName,
 					nodes: store.nodes,
-					edges: store.edges
+					edges: store.edges,
+					spec: store.spec
 				})
 			});
 			store.isDirty = false;
@@ -49,7 +54,7 @@
 			if (res.ok) {
 				const { executionId } = await res.json();
 				store.selectedExecutionId = executionId;
-				store.showRunsPanel = true;
+				ui.openRightPanel('runs');
 			} else {
 				const err = await res.json().catch(() => ({ message: 'Execution failed' }));
 				console.error('Execute failed:', err.message);
@@ -104,9 +109,14 @@
 	}
 
 	function onKeyDown(event: KeyboardEvent) {
-		if ((event.metaKey || event.ctrlKey) && event.key === 's') {
+		const mod = event.metaKey || event.ctrlKey;
+		if (mod && event.key === 's') {
 			event.preventDefault();
 			saveWorkflow();
+		}
+		if (mod && event.key === 'p') {
+			event.preventDefault();
+			switcherRef?.toggle();
 		}
 	}
 </script>
@@ -124,15 +134,8 @@
 			</Tooltip.Trigger>
 			<Tooltip.Content>New workflow</Tooltip.Content>
 		</Tooltip.Root>
-		<div class="flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2.5 py-1">
-			<Input
-				type="text"
-				bind:value={store.workflowName}
-				class="h-5 w-auto min-w-[100px] max-w-[220px] border-none bg-transparent px-0 text-xs font-medium text-card-foreground shadow-none outline-none focus-visible:ring-0"
-				placeholder="Workflow name"
-			/>
-			<PublishBadge publishedRuntime={store.publishedRuntime} />
-		</div>
+		<WorkflowSwitcher bind:this={switcherRef} />
+		<PublishBadge publishedRuntime={store.publishedRuntime} />
 		{#if store.isDirty}
 			<Badge variant="outline" class="text-[9px] px-1.5 py-0 text-muted-foreground">Unsaved</Badge>
 		{/if}
@@ -188,8 +191,8 @@
 				<Button
 					variant="ghost"
 					size="icon"
-					onclick={() => (store.showRunsPanel = !store.showRunsPanel)}
-					class="h-7 w-7 {store.showRunsPanel ? 'bg-accent text-accent-foreground' : ''}"
+					onclick={() => ui.toggleRightPanel('runs')}
+					class="h-7 w-7 {ui.rightPanelOpen && ui.rightPanelTab === 'runs' ? 'bg-accent text-accent-foreground' : ''}"
 				>
 					<ListOrdered size={14} />
 				</Button>

@@ -23,6 +23,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import { Avatar, AvatarImage, AvatarFallback } from '$lib/components/ui/avatar';
+	import AiAssistantToggle from '$lib/components/ai-assistant/ai-assistant-toggle.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	interface Props {
@@ -130,6 +131,9 @@
 	<Separator />
 	<div class="p-2">
 		<div class="flex flex-col gap-0.5">
+			<!-- AI Assistant toggle -->
+			<AiAssistantToggle {collapsed} />
+
 			<!-- Theme toggle -->
 			{#if collapsed}
 				<Tooltip.Root>

@@ -290,8 +290,17 @@ export async function fetchRawConnectionValue(
 
 			if (response.ok) {
 				data = (await response.json()) as typeof data;
+				// Ensure type is present in the value for AP context.auth
+				if (
+					data.value &&
+					typeof data.value === "object" &&
+					!data.value.type &&
+					data.type
+				) {
+					(data.value as Record<string, unknown>).type = data.type;
+				}
 				console.log(
-					`[Credential Service] Fetched raw connection ${connectionExternalId} via AP API: type=${data.value?.type}`,
+					`[Credential Service] Fetched raw connection ${connectionExternalId} via AP API: type=${data.value?.type}, hasAccessToken=${!!data.value?.access_token}`,
 				);
 				return data.value;
 			}
@@ -318,8 +327,22 @@ export async function fetchRawConnectionValue(
 		}
 
 		data = (await response.json()) as typeof data;
+
+		// Ensure the raw value includes `type` — AP pieces need it in context.auth.
+		// The WB decrypt API returns `type` at the top level (from DB column),
+		// but the encrypted value may not include it if it was stored before
+		// the type field was added to the token value structure.
+		if (
+			data.value &&
+			typeof data.value === "object" &&
+			!data.value.type &&
+			data.type
+		) {
+			(data.value as Record<string, unknown>).type = data.type;
+		}
+
 		console.log(
-			`[Credential Service] Fetched raw connection ${connectionExternalId}: type=${data.value?.type}`,
+			`[Credential Service] Fetched raw connection ${connectionExternalId}: type=${data.value?.type}, hasAccessToken=${!!data.value?.access_token}`,
 		);
 		return data.value;
 	} catch (error) {

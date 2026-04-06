@@ -284,6 +284,13 @@ export async function executeAction(
 
 	// Resolve auth
 	const auth = resolveAuth(request);
+	const authObj = auth as Record<string, unknown> | undefined;
+	console.log(
+		`[fn-activepieces] Auth for ${pieceName}/${actionName}: ` +
+			`type=${authObj?.type ?? "null"}, ` +
+			`hasAccessToken=${!!authObj?.access_token}, ` +
+			`source=${request.credentials_raw != null ? "credentials_raw" : request.credentials ? "credentials" : "none"}`,
+	);
 
 	// If this action requires auth, fail fast with a clear message instead of
 	// letting pieces crash with "Cannot read properties of undefined".

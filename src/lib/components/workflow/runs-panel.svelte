@@ -13,6 +13,7 @@
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
 	import { createAgentStream } from '$lib/stores/agent-stream.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
+	import type { createUiStore } from '$lib/stores/ui.svelte';
 
 	interface Props {
 		embedded?: boolean;
@@ -21,6 +22,7 @@
 	let { embedded = false }: Props = $props();
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
+	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
 
 	interface Execution {
 		id: string;
@@ -79,18 +81,27 @@
 	// Refetch when the runs tab becomes active
 	let lastActiveTab = $state('');
 	$effect(() => {
-		const tab = store.activeConfigTab;
+		const tab = ui.rightPanelTab;
 		if (tab === 'runs' && lastActiveTab !== 'runs') {
 			fetchExecutions();
 		}
 		lastActiveTab = tab;
 	});
 
-	// Poll for updates when there are running executions
+	// Poll for updates when there are running executions (2s fast poll, 10s idle poll)
 	$effect(() => {
 		const hasRunning = executions.some((e) => isRunning(e.status));
-		if (!hasRunning && !store.selectedExecutionId) return;
-		const interval = setInterval(fetchExecutions, 5000);
+		const isOnRunsTab = ui.rightPanelOpen && ui.rightPanelTab === 'runs';
+
+		if (!hasRunning && !store.selectedExecutionId) {
+			// No active executions — slow poll only if runs tab is visible
+			if (!isOnRunsTab) return;
+			const interval = setInterval(fetchExecutions, 15000);
+			return () => clearInterval(interval);
+		}
+
+		// Active executions — fast poll
+		const interval = setInterval(fetchExecutions, 2000);
 		return () => clearInterval(interval);
 	});
 
@@ -99,6 +110,9 @@
 	$effect(() => {
 		const execId = store.selectedExecutionId;
 		if (!execId || execId === lastAutoExpandedId) return;
+
+		// Immediately refetch the list to pick up the new execution
+		fetchExecutions();
 
 		const found = executions.find((e) => e.id === execId);
 		if (!found) {
@@ -110,6 +124,10 @@
 			}, ...executions];
 			expandedIds.add(execId);
 			ensureAgentStream(execId);
+			lastAutoExpandedId = execId;
+		} else if (!expandedIds.has(execId)) {
+			// Execution exists but not expanded — auto-expand it
+			expandedIds.add(execId);
 			lastAutoExpandedId = execId;
 		}
 	});

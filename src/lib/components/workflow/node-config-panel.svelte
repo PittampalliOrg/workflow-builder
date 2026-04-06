@@ -7,6 +7,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Badge } from '$lib/components/ui/badge';
 	import SwCallConfig from './config/sw-call-config.svelte';
+	import SwAgentConfig from './config/sw-agent-config.svelte';
 	import SwSetConfig from './config/sw-set-config.svelte';
 	import SwSwitchConfig from './config/sw-switch-config.svelte';
 	import SwEmitConfig from './config/sw-emit-config.svelte';
@@ -31,6 +32,7 @@
 
 	const configComponents: Record<string, typeof SwCallConfig> = {
 		call: SwCallConfig,
+		agent: SwAgentConfig,
 		set: SwSetConfig,
 		switch: SwSwitchConfig,
 		emit: SwEmitConfig,

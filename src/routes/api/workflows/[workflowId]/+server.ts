@@ -52,14 +52,18 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 
 	const body = await request.json();
 
+	const updateData: Record<string, unknown> = {
+		name: body.name,
+		nodes: body.nodes,
+		edges: body.edges,
+		updatedAt: new Date(),
+	};
+	if (body.spec !== undefined) {
+		updateData.spec = body.spec;
+	}
 	const [updated] = await db
 		.update(workflows)
-		.set({
-			name: body.name,
-			nodes: body.nodes,
-			edges: body.edges,
-			updatedAt: new Date()
-		})
+		.set(updateData)
 		.where(eq(workflows.id, params.workflowId))
 		.returning();
 

@@ -396,6 +396,41 @@ def _resolve_function_call(
             "functionName": call_value,
         }
 
+    # AP piece function: piece/action slash format (e.g., "gmail/send_email")
+    # Used by the AI workflow builder and spec-first architecture.
+    # Extracts piece name and action name from the call value,
+    # and flattens body.input into top-level input for fn-activepieces.
+    if "/" in call_value and not call_value.startswith("http"):
+        parts = call_value.split("/", 1)
+        piece_name = parts[0]
+        action_name = parts[1] if len(parts) > 1 else ""
+        action_type = call_value
+
+        # Flatten: move body.input to top-level input for fn-activepieces
+        resolved_args = dict(with_args)
+        body = resolved_args.get("body", {})
+        if isinstance(body, dict):
+            body_input = body.get("input", {})
+            body_metadata = body.get("metadata", {})
+            if body_input and isinstance(body_input, dict):
+                resolved_args["input"] = body_input
+            if body_metadata and isinstance(body_metadata, dict):
+                resolved_args.setdefault("metadata", body_metadata)
+
+        # Ensure metadata has pieceName/actionName
+        metadata = resolved_args.get("metadata", {})
+        if isinstance(metadata, dict):
+            metadata.setdefault("pieceName", piece_name)
+            metadata.setdefault("actionName", action_name)
+            resolved_args["metadata"] = metadata
+
+        return {
+            "protocol": "http",
+            "actionType": action_type,
+            "args": resolved_args,
+            "functionName": call_value,
+        }
+
     # Fallback: treat as custom function name
     return {
         "protocol": "function",
@@ -475,9 +510,21 @@ def _handle_call_task(
     # Standard call: single-shot HTTP via function-router.
     # Materialize task input and call arguments through SW `${ ... }` expressions.
     task_input = _resolve_task_input(task_data, tc)
+    args = resolved.get("args", {})
+
+    # For piece/action calls: extract input fields from nested body.input or top-level input
+    # so fn-activepieces receives them as flat propsValue fields.
+    action_input = {}
+    if isinstance(args.get("input"), dict):
+        action_input = args["input"]
+    elif isinstance(args.get("body"), dict) and isinstance(args["body"].get("input"), dict):
+        action_input = args["body"]["input"]
+
     raw_config = {
         "actionType": action_type,
-        **resolved.get("args", {}),
+        "input": action_input,
+        "metadata": args.get("metadata") or (args.get("body", {}).get("metadata") if isinstance(args.get("body"), dict) else None),
+        "connectionExternalId": args.get("connectionExternalId"),
     }
     expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
     resolved_config = evaluate_structure(raw_config, expr_context)

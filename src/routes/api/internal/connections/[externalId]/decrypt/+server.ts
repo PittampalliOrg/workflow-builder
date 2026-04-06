@@ -156,9 +156,48 @@ export const GET: RequestHandler = async ({ request, params }) => {
 	}
 
 	let decryptedValue = decryptObject(connection.value as EncryptedObject);
+	const isOAuth2 = connection.type === 'OAUTH2' || connection.type === 'PLATFORM_OAUTH2' || connection.type === 'CLOUD_OAUTH2';
+
+	// Debug: log decrypted value shape for credential troubleshooting
+	const dv = decryptedValue as Record<string, unknown>;
+	const secretTextLen = typeof dv?.secret_text === 'string' ? dv.secret_text.length : 0;
+	console.log(
+		`[Decrypt API] ${externalId}: type=${connection.type}, ` +
+		`valueType=${dv?.type}, hasAccessToken=${!!dv?.access_token}, ` +
+		`accessTokenLen=${typeof dv?.access_token === 'string' ? dv.access_token.length : 'N/A'}, ` +
+		`hasRefreshToken=${!!dv?.refresh_token}, ` +
+		`claimedAt=${dv?.claimed_at}, expiresIn=${dv?.expires_in}, ` +
+		`secretTextLen=${secretTextLen}, ` +
+		`valueKeys=${Object.keys(dv || {}).join(',')}`
+	);
+
+	// Fix: if the connection type is OAuth2 but the stored value is SECRET_TEXT format,
+	// restructure it so AP pieces can use context.auth.access_token.
+	// This handles connections where the OAuth2 token was stored as { secret_text: "..." }
+	// instead of the full OAuth2 token object with access_token, refresh_token, etc.
+	if (isOAuth2 && dv?.secret_text && !dv?.access_token) {
+		const secretText = dv.secret_text as string;
+		// Try parsing as JSON in case it's a stringified OAuth2 token object
+		try {
+			const parsed = JSON.parse(secretText) as Record<string, unknown>;
+			if (parsed && typeof parsed === 'object' && parsed.access_token) {
+				console.log(`[Decrypt API] Parsed SECRET_TEXT JSON as OAuth2 for ${externalId}`);
+				decryptedValue = { ...parsed, type: parsed.type || connection.type };
+			} else {
+				// Plain access token string
+				console.log(`[Decrypt API] Using SECRET_TEXT as access_token for ${externalId}`);
+				(decryptedValue as Record<string, unknown>).access_token = secretText;
+				(decryptedValue as Record<string, unknown>).type = connection.type;
+			}
+		} catch {
+			// Not JSON — treat secret_text as the raw access token
+			console.log(`[Decrypt API] Using SECRET_TEXT as access_token for ${externalId}`);
+			(decryptedValue as Record<string, unknown>).access_token = secretText;
+			(decryptedValue as Record<string, unknown>).type = connection.type;
+		}
+	}
 
 	// Auto-refresh expired OAuth2 tokens
-	const isOAuth2 = connection.type === 'OAUTH2' || connection.type === 'PLATFORM_OAUTH2' || connection.type === 'CLOUD_OAUTH2';
 	if (isOAuth2 && typeof decryptedValue === 'object' && decryptedValue !== null) {
 		const tokenObj = decryptedValue as Record<string, unknown>;
 		if (isTokenExpired(tokenObj)) {
@@ -176,6 +215,38 @@ export const GET: RequestHandler = async ({ request, params }) => {
 			} else {
 				console.warn(`[OAuth2 Refresh] Failed to refresh token for ${connection.pieceName}`);
 			}
+		}
+	}
+
+	// For PLATFORM_OAUTH2: inject client_secret and expiry_date so AP pieces
+	// (which create their own OAuth2Client) can refresh tokens and detect expiry.
+	if (connection.type === 'PLATFORM_OAUTH2' && typeof decryptedValue === 'object' && decryptedValue !== null) {
+		const tokenObj = decryptedValue as Record<string, unknown>;
+
+		// Inject client_secret from platform_oauth_apps (not stored in the token value)
+		if (!tokenObj.client_secret && tokenObj.client_id) {
+			const candidates = expandPieceNameCandidates(connection.pieceName);
+			const oauthApps = await db
+				.select()
+				.from(platformOauthApps)
+				.where(inArray(platformOauthApps.pieceName, candidates))
+				.limit(1);
+			if (oauthApps.length > 0) {
+				try {
+					tokenObj.client_secret = resolveClientSecret(oauthApps[0].clientSecret);
+					console.log(`[Decrypt API] Injected client_secret for ${connection.pieceName}`);
+				} catch {
+					console.warn(`[Decrypt API] Failed to resolve client_secret for ${connection.pieceName}`);
+				}
+			}
+		}
+
+		// Compute expiry_date (ms since epoch) from claimed_at + expires_in.
+		// Google's OAuth2Client uses expiry_date to decide whether to refresh.
+		const claimedAt = typeof tokenObj.claimed_at === 'number' ? tokenObj.claimed_at : 0;
+		const expiresIn = typeof tokenObj.expires_in === 'number' ? tokenObj.expires_in : 3600;
+		if (claimedAt && !tokenObj.expiry_date) {
+			tokenObj.expiry_date = (claimedAt + expiresIn) * 1000; // convert to ms
 		}
 	}
 

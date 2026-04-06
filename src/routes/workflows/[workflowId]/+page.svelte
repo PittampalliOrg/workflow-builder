@@ -1,18 +1,54 @@
 <script lang="ts">
-	import { setContext } from 'svelte';
+	import { setContext, getContext, onMount } from 'svelte';
 	import { createWorkflowStore } from '$lib/stores/workflow.svelte';
+	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
+	import { applySpec } from '$lib/helpers/ai-spec-applier';
+	import type { createUiStore } from '$lib/stores/ui.svelte';
+	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
 	import WorkflowCanvas from '$lib/components/workflow/workflow-canvas.svelte';
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
-	import SidePanel from '$lib/components/workflow/side-panel.svelte';
+	import RightPanel from '$lib/components/workflow/right-panel.svelte';
 	import { page } from '$app/state';
 
 	const store = createWorkflowStore();
 	setContext('workflow', store);
 
+	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
+	const aiAssistant = getContext<ReturnType<typeof createAiAssistantStore>>('ai-assistant');
+	const buildWorkflow = getContext<ReturnType<typeof createBuildWorkflowStore>>('build-workflow');
+
 	let workflowId = $derived(page.params.workflowId);
 
-	// Show the side panel when a node is selected or runs panel is toggled
-	const showSidePanel = $derived(!!store.selectedNode || store.showRunsPanel);
+	// Context-aware tab switching: when a node is selected, open Properties tab
+	$effect(() => {
+		if (store.selectedNode) {
+			ui.openRightPanel('properties');
+		}
+	});
+
+	// Build→Runs bridge: when build agent completes, switch to Runs tab
+	$effect(() => {
+		const execId = buildWorkflow.executionId;
+		if (execId && (buildWorkflow.phase === 'complete' || buildWorkflow.phase === 'failed')) {
+			ui.openRightPanel('runs');
+		}
+	});
+
+	// Auto-apply spec from build agent → updates canvas in real-time
+	let lastAppliedSpecVersion = 0;
+	$effect(() => {
+		const version = buildWorkflow.specVersion;
+		const spec = buildWorkflow.currentSpec;
+		if (!spec || version === lastAppliedSpecVersion) return;
+		lastAppliedSpecVersion = version;
+
+		// Apply spec to store (rebuilds graph → canvas updates)
+		applySpec(store, spec).then((result) => {
+			if (result.errors.length > 0) {
+				console.warn('[Build→Canvas] Spec apply warnings:', result.errors);
+			}
+		});
+	});
 
 	// Load workflow data
 	$effect(() => {
@@ -25,7 +61,7 @@
 				return res.json();
 			})
 			.then((data) => {
-				store.loadWorkflow(data.id, data.name, data.nodes || [], data.edges || []);
+				store.loadWorkflow(data.id, data.name, data.nodes || [], data.edges || [], data.spec || null);
 			})
 			.catch((err) => {
 				console.error('Failed to load workflow:', err);
@@ -33,6 +69,54 @@
 			.finally(() => {
 				store.isLoading = false;
 			});
+	});
+
+	// Sync workflow context (spec) to AI assistant store
+	$effect(() => {
+		if (store.workflowId) {
+			aiAssistant.setWorkflowContext({
+				workflowId: store.workflowId,
+				workflowName: store.workflowName,
+				spec: store.spec,
+			});
+		}
+	});
+
+	// Load AI chat history for this workflow
+	$effect(() => {
+		if (workflowId) {
+			aiAssistant.loadHistory(workflowId);
+		}
+	});
+
+	// Handle AI spec apply event
+	async function handleApplySpec(event: Event) {
+		const detail = (event as CustomEvent).detail as {
+			spec: Record<string, unknown>;
+			messageId: string;
+		};
+		const result = await applySpec(store, detail.spec);
+		if (result.success) {
+			aiAssistant.markApplied(detail.messageId);
+			aiAssistant.dismissSpec();
+			const { toast } = await import('svelte-sonner');
+			toast.success('Spec applied to canvas');
+		}
+		if (result.errors.length > 0) {
+			console.warn('AI spec apply warnings:', result.errors);
+		}
+		if (!result.success) {
+			const { toast } = await import('svelte-sonner');
+			toast.error('Failed to apply spec: ' + result.errors.join(', '));
+		}
+	}
+
+	onMount(() => {
+		window.addEventListener('ai-assistant:apply-spec', handleApplySpec);
+		return () => {
+			window.removeEventListener('ai-assistant:apply-spec', handleApplySpec);
+			aiAssistant.clearWorkflowContext();
+		};
 	});
 </script>
 
@@ -44,8 +128,8 @@
 			<WorkflowCanvas />
 		</div>
 
-		{#if showSidePanel}
-			<SidePanel />
+		{#if ui.rightPanelOpen}
+			<RightPanel />
 		{/if}
 	</div>
 </div>

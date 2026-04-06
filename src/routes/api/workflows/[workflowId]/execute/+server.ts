@@ -44,9 +44,8 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 
-	// Validate SW 1.0 spec
 	if (!spec || !isSWWorkflow(spec)) {
-		return error(400, 'Workflow does not have a valid CNCF Serverless Workflow 1.0 spec');
+		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
 	}
 
 	// Create execution record

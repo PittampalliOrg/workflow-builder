@@ -26,6 +26,7 @@
 	import StartNode from './nodes/sw/start-node.svelte';
 	import EndNode from './nodes/sw/end-node.svelte';
 	import CallNode from './nodes/sw/call-node.svelte';
+	import AgentNode from './nodes/sw/agent-node.svelte';
 	import SetNode from './nodes/sw/set-node.svelte';
 	import SwitchNode from './nodes/sw/switch-node.svelte';
 	import WaitNode from './nodes/sw/wait-node.svelte';
@@ -69,6 +70,7 @@
 		start: StartNode,
 		end: EndNode,
 		call: CallNode,
+		agent: AgentNode,
 		set: SetNode,
 		switch: SwitchNode,
 		wait: WaitNode,
@@ -184,7 +186,7 @@
 	function onNodeDoubleClick({ node }: { node: Node; event: MouseEvent }) {
 		// Double-click opens config panel
 		store.selectedNodeId = node.id;
-		store.activeConfigTab = 'properties';
+		ui.openRightPanel('properties');
 	}
 
 	function onNodeContextMenu({ node, event }: { node: Node; event: MouseEvent }) {
@@ -233,11 +235,27 @@
 		showCommandPalette = true;
 	}
 
-	function onPaneClick() {
+	// Double-click detection for pane
+	let lastPaneClickTime = 0;
+
+	function onPaneClick({ event }: { event: MouseEvent }) {
 		store.selectedNodeId = null;
 		store.selectedEdgeId = null;
 		contextMenu = null;
 		edgeContextMenu = null;
+
+		// Detect double-click (within 400ms)
+		const now = Date.now();
+		if (now - lastPaneClickTime < 400) {
+			// Open command palette — position will default to center of nodes
+			commandPaletteReplaceNodeId = null;
+			commandPaletteInsertEdgeId = null;
+			commandPalettePosition = null;
+			showCommandPalette = true;
+			lastPaneClickTime = 0;
+		} else {
+			lastPaneClickTime = now;
+		}
 	}
 
 	function onNodeDragStop() {

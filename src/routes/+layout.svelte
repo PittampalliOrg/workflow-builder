@@ -4,6 +4,8 @@
 	import { setContext, onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { createUiStore } from '$lib/stores/ui.svelte';
+	import { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
+	import { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
 	import Sidebar from '$lib/components/sidebar.svelte';
 	import { Toaster } from '$lib/components/ui/sonner';
 
@@ -11,6 +13,12 @@
 
 	const ui = createUiStore();
 	setContext('ui', ui);
+
+	const aiAssistant = createAiAssistantStore();
+	setContext('ai-assistant', aiAssistant);
+
+	const buildWorkflow = createBuildWorkflowStore();
+	setContext('build-workflow', buildWorkflow);
 
 	let isAuthPage = $derived(page.url.pathname.startsWith('/auth'));
 
@@ -23,7 +31,23 @@
 			ui.setTheme('system');
 		}
 	});
+
+	function handleGlobalKeydown(e: KeyboardEvent) {
+		const mod = e.metaKey || e.ctrlKey;
+		// Cmd/Ctrl+Shift+A = Toggle right panel with AI tab
+		if (mod && e.shiftKey && e.key === 'a') {
+			e.preventDefault();
+			ui.toggleRightPanel('ai');
+		}
+		// Cmd/Ctrl+Shift+R = Toggle right panel with Runs tab
+		if (mod && e.shiftKey && e.key === 'r') {
+			e.preventDefault();
+			ui.toggleRightPanel('runs');
+		}
+	}
 </script>
+
+<svelte:window onkeydown={handleGlobalKeydown} />
 
 <svelte:head>
 	<title>Workflow Builder</title>
