@@ -81,25 +81,27 @@
 				{#each logs as log, index (`${log.timestamp}:${log.traceId}:${log.spanId}:${index}`)}
 					{@const key = `${log.timestamp}:${log.traceId}:${log.spanId}:${index}`}
 					<button
-						class={`grid w-full grid-cols-[108px_90px_160px_minmax(0,1fr)] gap-3 px-4 py-2 text-left transition-colors hover:bg-white/[0.04] ${selectedLogKey === key ? 'bg-amber-500/10' : ''}`}
+						class={`w-full px-4 py-3 text-left transition-colors hover:bg-white/[0.04] ${selectedLogKey === key ? 'bg-amber-500/10' : ''}`}
 						onclick={() => onSelectLog(log, key)}
 					>
-						<div class="font-mono text-[11px] text-zinc-500">{formatTimestamp(log.timestamp)}</div>
-						<div>
-							<span class={`inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] ${severityTone(log.severityText || 'info')}`}>
-								{log.severityText || 'INFO'}
-							</span>
-						</div>
-						<div class="truncate font-mono text-[11px] text-zinc-400">{log.serviceName}</div>
-						<div class="min-w-0">
-							<p class="truncate font-mono text-[12px] text-zinc-200">{log.body || '(empty log body)'}</p>
-							<div class="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
-								<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
-									{log.traceId.slice(0, 10)}
-								</Badge>
-								<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
-									{log.spanId.slice(0, 10)}
-								</Badge>
+						<div class="grid gap-2 xl:grid-cols-[108px_90px_140px_minmax(0,1fr)] xl:items-start xl:gap-3">
+							<div class="font-mono text-[11px] text-zinc-500">{formatTimestamp(log.timestamp)}</div>
+							<div>
+								<span class={`inline-flex rounded-full px-2 py-0.5 font-mono text-[10px] ${severityTone(log.severityText || 'info')}`}>
+									{log.severityText || 'INFO'}
+								</span>
+							</div>
+							<div class="truncate font-mono text-[11px] text-zinc-400">{log.serviceName}</div>
+							<div class="min-w-0">
+								<p class="break-words font-mono text-[12px] text-zinc-200">{log.body || '(empty log body)'}</p>
+								<div class="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-zinc-500">
+									<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+										{log.traceId.slice(0, 10)}
+									</Badge>
+									<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+										{log.spanId.slice(0, 10)}
+									</Badge>
+								</div>
 							</div>
 						</div>
 					</button>

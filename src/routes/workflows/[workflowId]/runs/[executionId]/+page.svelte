@@ -991,8 +991,8 @@
 		</TabsContent>
 
 		<!-- Tab 6: Trace -->
-		<TabsContent value="trace" class="flex-1 overflow-y-auto p-4">
-			<div class="mx-auto max-w-5xl">
+		<TabsContent value="trace" class="flex-1 overflow-y-auto px-4 py-4 xl:px-5 2xl:px-6">
+			<div class="w-full">
 				<InvestigationStudio
 					payload={investigationPayload}
 					isLoading={isLoadingInvestigation}

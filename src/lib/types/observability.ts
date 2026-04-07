@@ -49,6 +49,98 @@ export interface ObservabilityToolSpan extends ObservabilitySpanRef {
 	toolResultTruncated: boolean;
 }
 
+export type ObservabilityAgentDecisionType =
+	| 'tool_call'
+	| 'assistant_message'
+	| 'wait_or_approval'
+	| 'stop'
+	| 'error';
+
+export interface ObservabilityAgentDecisionToolCall {
+	name: string;
+	arguments: string | null;
+	id: string | null;
+}
+
+export interface ObservabilityAgentDecisionToolResult {
+	toolName: string;
+	statusCode: string;
+	result: unknown;
+	timestamp: string;
+	spanId: string;
+	traceId: string;
+}
+
+export interface ObservabilityAgentDecisionEvidence {
+	traceId: string;
+	spanId: string;
+	logIds: string[];
+	toolSpanIds: string[];
+}
+
+export interface ObservabilityAgentDecisionTurn {
+	id: string;
+	agentRunId: string | null;
+	turnIndex: number;
+	traceId: string;
+	spanId: string;
+	serviceName: string;
+	startedAt: string;
+	durationMs: number | null;
+	decisionType: ObservabilityAgentDecisionType;
+	decisionLabel: string;
+	modelName: string | null;
+	provider: string | null;
+	inputSummary: string | null;
+	outputSummary: string | null;
+	toolCalls: ObservabilityAgentDecisionToolCall[];
+	toolResults: ObservabilityAgentDecisionToolResult[];
+	finishReason: string | null;
+	stopReason: string | null;
+	promptTokens: number | null;
+	completionTokens: number | null;
+	totalTokens: number | null;
+	status: 'ok' | 'error';
+	evidence: ObservabilityAgentDecisionEvidence;
+}
+
+export interface ObservabilityAgentDecisionSummary {
+	totalTurns: number;
+	toolCallTurns: number;
+	assistantMessageTurns: number;
+	waitOrApprovalTurns: number;
+	stopTurns: number;
+	errorTurns: number;
+	totalToolCalls: number;
+	totalDurationMs: number;
+	totalTokens: number;
+	averageTurnLatencyMs: number;
+	stopReason: string | null;
+}
+
+export interface ObservabilityAgentDecisionDiagramNode {
+	id: string;
+	label: string;
+	type: 'state' | 'decision';
+	count: number;
+	totalDurationMs: number;
+	isTerminal?: boolean;
+}
+
+export interface ObservabilityAgentDecisionDiagramEdge {
+	id: string;
+	from: string;
+	to: string;
+	count: number;
+	totalDurationMs: number;
+	turnIds: string[];
+}
+
+export interface ObservabilityAgentDecisionDiagram {
+	nodes: ObservabilityAgentDecisionDiagramNode[];
+	edges: ObservabilityAgentDecisionDiagramEdge[];
+}
+
 export interface ObservabilityLogEntry {
 	timestamp: string;
 	traceId: string;
@@ -165,6 +257,9 @@ export interface ObservabilityInvestigationPayload {
 	logs: ObservabilityLogEntry[];
 	llmSpans: ObservabilityLlmSpan[];
 	toolSpans: ObservabilityToolSpan[];
+	agentDecisionSummary: ObservabilityAgentDecisionSummary | null;
+	agentDecisions: ObservabilityAgentDecisionTurn[];
+	agentDecisionDiagram: ObservabilityAgentDecisionDiagram | null;
 	workflowSteps: ObservabilityWorkflowStep[];
 	events: ObservabilityInvestigationEvent[];
 	issues: ObservabilityIssueMarker[];

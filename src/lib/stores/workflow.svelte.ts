@@ -38,6 +38,62 @@ export interface WorkflowNodeData extends Record<string, unknown> {
 export type WorkflowNode = Node<WorkflowNodeData>;
 export type WorkflowEdge = Edge;
 
+function cloneJsonValue<T>(value: T): T {
+  if (value === undefined) return value;
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function snapshotNode(node: WorkflowNode): WorkflowNode {
+  return {
+    id: node.id,
+    type: node.type,
+    position: { x: node.position.x, y: node.position.y },
+    data: cloneJsonValue(node.data),
+    ...(node.selected !== undefined ? { selected: node.selected } : {}),
+    ...(node.dragging !== undefined ? { dragging: node.dragging } : {}),
+    ...(node.hidden !== undefined ? { hidden: node.hidden } : {}),
+    ...(node.width !== undefined ? { width: node.width } : {}),
+    ...(node.height !== undefined ? { height: node.height } : {}),
+    ...(node.measured ? { measured: cloneJsonValue(node.measured) } : {}),
+    ...(node.sourcePosition ? { sourcePosition: node.sourcePosition } : {}),
+    ...(node.targetPosition ? { targetPosition: node.targetPosition } : {}),
+    ...(node.connectable !== undefined ? { connectable: node.connectable } : {}),
+    ...(node.deletable !== undefined ? { deletable: node.deletable } : {}),
+    ...(node.draggable !== undefined ? { draggable: node.draggable } : {}),
+    ...(node.selectable !== undefined ? { selectable: node.selectable } : {}),
+    ...(node.parentId ? { parentId: node.parentId } : {}),
+    ...(node.extent ? { extent: cloneJsonValue(node.extent) } : {}),
+    ...(node.expandParent !== undefined ? { expandParent: node.expandParent } : {}),
+    ...(node.zIndex !== undefined ? { zIndex: node.zIndex } : {}),
+    ...(node.style ? { style: cloneJsonValue(node.style) } : {}),
+    ...(node.class ? { class: node.class } : {})
+  } as WorkflowNode;
+}
+
+function snapshotEdge(edge: WorkflowEdge): WorkflowEdge {
+  return {
+    id: edge.id,
+    source: edge.source,
+    target: edge.target,
+    ...(edge.sourceHandle ? { sourceHandle: edge.sourceHandle } : {}),
+    ...(edge.targetHandle ? { targetHandle: edge.targetHandle } : {}),
+    ...(edge.type ? { type: edge.type } : {}),
+    ...(edge.label !== undefined ? { label: cloneJsonValue(edge.label) } : {}),
+    ...(edge.animated !== undefined ? { animated: edge.animated } : {}),
+    ...(edge.hidden !== undefined ? { hidden: edge.hidden } : {}),
+    ...(edge.selected !== undefined ? { selected: edge.selected } : {}),
+    ...(edge.deletable !== undefined ? { deletable: edge.deletable } : {}),
+    ...(edge.selectable !== undefined ? { selectable: edge.selectable } : {}),
+    ...(edge.focusable !== undefined ? { focusable: edge.focusable } : {}),
+    ...(edge.style ? { style: cloneJsonValue(edge.style) } : {}),
+    ...(edge.class ? { class: edge.class } : {}),
+    ...(edge.zIndex !== undefined ? { zIndex: edge.zIndex } : {}),
+    ...(edge.data ? { data: cloneJsonValue(edge.data) } : {}),
+    ...(edge.markerStart ? { markerStart: cloneJsonValue(edge.markerStart) } : {}),
+    ...(edge.markerEnd ? { markerEnd: cloneJsonValue(edge.markerEnd) } : {})
+  } as WorkflowEdge;
+}
+
 function buildDefaultNodeData(
   type: WorkflowNodeType,
   label?: string,
@@ -104,8 +160,8 @@ export function createWorkflowStore() {
 
   function _snapshot(): HistorySnapshot {
     return {
-      nodes: structuredClone(nodes),
-      edges: structuredClone(edges),
+      nodes: nodes.map(snapshotNode),
+      edges: edges.map(snapshotEdge),
     };
   }
 
@@ -186,7 +242,7 @@ export function createWorkflowStore() {
       typeof node.data?.label === "string" && node.data.label.trim().length > 0
         ? node.data.label
         : resolvedType.charAt(0).toUpperCase() + resolvedType.slice(1);
-    const nextData = structuredClone(node.data ?? {});
+    const nextData = cloneJsonValue(node.data ?? {});
 
     if (resolvedType === "agent") {
       nextData.taskConfig = normalizeAgentTaskConfig(
@@ -196,7 +252,7 @@ export function createWorkflowStore() {
     }
 
     const newNode: WorkflowNode = {
-      ...structuredClone(node),
+      ...snapshotNode(node),
       id: nextId,
       type: resolvedType,
       position: nextPosition,

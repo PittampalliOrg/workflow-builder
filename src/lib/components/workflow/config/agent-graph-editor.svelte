@@ -5,21 +5,27 @@
 		Controls,
 		MiniMap,
 		SvelteFlow,
+		type ColorMode,
+		type NodeTypes,
 		type OnConnect
 	} from '@xyflow/svelte';
+	import { onMount } from 'svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Dialog, DialogContent } from '$lib/components/ui/dialog';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
 	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import AgentLoopNode from './agent-loop-node.svelte';
 	import {
+		AGENT_GRAPH_VERSION,
 		cloneAgentGraph,
 		createDefaultAgentGraph,
 		humanizeStepType,
 		SIMPLE_AGENT_STEP_TYPES,
 		type AgentGraphDefinition,
 		type AgentGraphNode,
+		type AgentGraphEdge,
 		type AgentStepType
 	} from '$lib/types/agent-graph';
 	import Plus from '@lucide/svelte/icons/plus';
@@ -34,47 +40,89 @@
 
 	let { open, graph, onClose, onSave }: Props = $props();
 
-	let draft = $state<AgentGraphDefinition>(createDefaultAgentGraph());
+	const nodeTypes: NodeTypes = {
+		agentLoop: AgentLoopNode
+	};
+
+	function decorateNodes(nodes: AgentGraphNode[]): AgentGraphNode[] {
+		return nodes.map((node) => ({
+			...node,
+			type: 'agentLoop'
+		}));
+	}
+
+	function cloneEdges(edges: AgentGraphEdge[]): AgentGraphEdge[] {
+		return edges.map((edge) => ({ ...edge }));
+	}
+
+	let draftNodes = $state.raw<AgentGraphNode[]>(decorateNodes(createDefaultAgentGraph().nodes));
+	let draftEdges = $state.raw<AgentGraphDefinition['edges']>(cloneEdges(createDefaultAgentGraph().edges));
 	let selectedNodeId = $state<string | null>(null);
 	let newStepType = $state<AgentStepType>('tool_batch');
 	let configDraft = $state('{}');
+	let initializedForOpen = $state(false);
+	let canvasColorMode = $state<ColorMode>('light');
+
+	function syncCanvasColorMode() {
+		if (typeof document === 'undefined') return;
+		canvasColorMode = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+	}
+
+	onMount(() => {
+		syncCanvasColorMode();
+		if (typeof document === 'undefined') return;
+		const observer = new MutationObserver(() => syncCanvasColorMode());
+		observer.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ['class']
+		});
+		return () => observer.disconnect();
+	});
 
 	$effect(() => {
-		if (open) {
-			draft = cloneAgentGraph(graph);
-			selectedNodeId = draft.nodes[0]?.id ?? null;
-			configDraft = JSON.stringify(draft.nodes[0]?.data?.config || {}, null, 2);
+		if (!open) {
+			initializedForOpen = false;
+			return;
+		}
+		if (!initializedForOpen) {
+			const nextDraft = cloneAgentGraph(graph);
+			draftNodes = decorateNodes(nextDraft.nodes);
+			draftEdges = cloneEdges(nextDraft.edges);
+			selectedNodeId = nextDraft.nodes[0]?.id ?? null;
+			configDraft = JSON.stringify(nextDraft.nodes[0]?.data?.config || {}, null, 2);
+			initializedForOpen = true;
 		}
 	});
 
 	let selectedNode = $derived(
-		selectedNodeId ? draft.nodes.find((node) => node.id === selectedNodeId) ?? null : null
+		selectedNodeId ? draftNodes.find((node) => node.id === selectedNodeId) ?? null : null
 	);
 
 	$effect(() => {
 		if (selectedNode) {
-			configDraft = JSON.stringify(selectedNode.data?.config || {}, null, 2);
+			const nextConfigDraft = JSON.stringify(selectedNode.data?.config || {}, null, 2);
+			if (configDraft !== nextConfigDraft) {
+				configDraft = nextConfigDraft;
+			}
 		}
 	});
 
 	const onConnect: OnConnect = (connection) => {
 		if (!connection.source || !connection.target) return;
 		const edgeId = `${connection.source}->${connection.target}`;
-		if (draft.edges.some((edge) => edge.id === edgeId)) return;
-		draft = {
-			...draft,
-			edges: [...draft.edges, { id: edgeId, source: connection.source, target: connection.target }]
-		};
+		if (draftEdges.some((edge) => edge.id === edgeId)) return;
+		draftEdges = [...draftEdges, { id: edgeId, source: connection.source, target: connection.target }];
 	};
 
 	function addNode() {
 		const nextY =
-			draft.nodes.length > 0
-				? Math.max(...draft.nodes.map((node) => node.position.y)) + 120
+			draftNodes.length > 0
+				? Math.max(...draftNodes.map((node) => node.position.y)) + 120
 				: 80;
 		const id = crypto.randomUUID();
 		const nextNode: AgentGraphNode = {
 			id,
+			type: 'agentLoop',
 			position: { x: 120, y: nextY },
 			data: {
 				label: humanizeStepType(newStepType),
@@ -83,45 +131,35 @@
 			}
 		};
 		const nextEdges =
-			selectedNodeId && draft.nodes.some((node) => node.id === selectedNodeId)
-				? [...draft.edges, { id: `${selectedNodeId}->${id}`, source: selectedNodeId, target: id }]
-				: draft.edges;
-		draft = {
-			...draft,
-			nodes: [...draft.nodes, nextNode],
-			edges: nextEdges
-		};
+			selectedNodeId && draftNodes.some((node) => node.id === selectedNodeId)
+				? [...draftEdges, { id: `${selectedNodeId}->${id}`, source: selectedNodeId, target: id }]
+				: draftEdges;
+		draftNodes = [...draftNodes, nextNode];
+		draftEdges = nextEdges;
 		selectedNodeId = id;
 	}
 
 	function removeSelectedNode() {
 		if (!selectedNodeId) return;
-		draft = {
-			...draft,
-			nodes: draft.nodes.filter((node) => node.id !== selectedNodeId),
-			edges: draft.edges.filter(
-				(edge) => edge.source !== selectedNodeId && edge.target !== selectedNodeId
-			)
-		};
-		selectedNodeId = draft.nodes[0]?.id ?? null;
+		const removedId = selectedNodeId;
+		draftNodes = draftNodes.filter((node) => node.id !== removedId);
+		draftEdges = draftEdges.filter((edge) => edge.source !== removedId && edge.target !== removedId);
+		selectedNodeId = draftNodes[0]?.id ?? null;
 	}
 
 	function updateSelectedNode(updates: Record<string, unknown>) {
 		if (!selectedNodeId) return;
-		draft = {
-			...draft,
-			nodes: draft.nodes.map((node) =>
-				node.id === selectedNodeId
-					? {
-							...node,
-							data: {
-								...node.data,
-								...updates
-							}
+		draftNodes = draftNodes.map((node) =>
+			node.id === selectedNodeId
+				? {
+						...node,
+						data: {
+							...node.data,
+							...updates
 						}
-					: node
-			)
-		};
+					}
+				: node
+		);
 	}
 
 	function saveConfigDraft() {
@@ -132,11 +170,23 @@
 			// Keep invalid JSON local until the user fixes it.
 		}
 	}
+
+	function buildDraftGraph(): AgentGraphDefinition {
+		return cloneAgentGraph({
+			version: AGENT_GRAPH_VERSION,
+			nodes: draftNodes,
+			edges: draftEdges
+		});
+	}
 </script>
 
 <Dialog {open} onOpenChange={(value) => !value && onClose()}>
-	<DialogContent class="max-w-6xl p-0 overflow-hidden">
-		<div class="flex items-center justify-between border-b px-4 py-3">
+	<DialogContent
+		showCloseButton={false}
+		class="!h-[min(94vh,920px)] !w-[min(99vw,1600px)] !max-w-[min(99vw,1600px)] sm:!max-w-[min(99vw,1600px)] overflow-hidden p-0"
+	>
+		<div class="flex h-full min-h-0 flex-col">
+		<div class="flex shrink-0 items-center justify-between border-b px-4 py-3">
 			<div>
 				<h3 class="text-sm font-semibold">Agent Graph</h3>
 				<p class="text-xs text-muted-foreground">
@@ -145,12 +195,15 @@
 			</div>
 			<div class="flex items-center gap-2">
 				<Button variant="outline" onclick={onClose}>Cancel</Button>
-				<Button onclick={() => onSave(draft)}>Save Graph</Button>
+				<Button onclick={() => onSave(buildDraftGraph())}>Save Graph</Button>
+				<Button variant="ghost" size="icon-sm" onclick={onClose} aria-label="Close dialog">
+					×
+				</Button>
 			</div>
 		</div>
 
-		<div class="grid h-[70vh] grid-cols-[220px_1fr_280px]">
-			<div class="border-r p-3 space-y-3">
+		<div class="grid min-h-0 flex-1 grid-cols-[220px_minmax(0,1fr)_360px] 2xl:grid-cols-[240px_minmax(0,1fr)_400px]">
+			<div class="space-y-3 overflow-y-auto border-r p-3">
 				<div class="space-y-1.5">
 					<Label for="agent-step-type">Add Step</Label>
 					<NativeSelect
@@ -185,23 +238,41 @@
 				</div>
 			</div>
 
-			<div class="bg-muted/20">
+			<div class="min-w-0 bg-slate-50 dark:bg-slate-950/95">
 				<SvelteFlow
-					bind:nodes={draft.nodes}
-					bind:edges={draft.edges}
+					{nodeTypes}
+					bind:nodes={draftNodes}
+					bind:edges={draftEdges}
+					colorMode={canvasColorMode}
 					fitView
+					defaultEdgeOptions={{
+						style: {
+							stroke: 'rgba(103, 232, 249, 0.45)',
+							strokeWidth: 2
+						}
+					}}
 					onconnect={onConnect}
 					onnodeclick={({ node }) => {
 						selectedNodeId = node.id;
 					}}
 				>
 					<Controls />
-					<MiniMap />
-					<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+					<MiniMap
+						pannable
+						zoomable
+						maskColor={canvasColorMode === 'dark' ? 'rgba(2, 6, 23, 0.78)' : 'rgba(255, 255, 255, 0.74)'}
+						nodeColor={(node) => (node.id === selectedNodeId ? '#67e8f9' : '#334155')}
+					/>
+					<Background
+						variant={BackgroundVariant.Dots}
+						gap={20}
+						size={1}
+						color={canvasColorMode === 'dark' ? 'rgba(148, 163, 184, 0.18)' : 'rgba(51, 65, 85, 0.14)'}
+					/>
 				</SvelteFlow>
 			</div>
 
-			<div class="border-l p-3 space-y-3">
+			<div class="space-y-3 overflow-y-auto border-l p-3">
 				{#if selectedNode}
 					<div class="space-y-1.5">
 						<Label for="agent-node-label">Label</Label>
@@ -243,6 +314,7 @@
 					</p>
 				{/if}
 			</div>
+		</div>
 		</div>
 	</DialogContent>
 </Dialog>

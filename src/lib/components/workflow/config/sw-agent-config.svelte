@@ -7,7 +7,6 @@
 	import { Textarea } from '$lib/components/ui/textarea';
 	import AgentGraphEditor from './agent-graph-editor.svelte';
 	import {
-		cloneAgentGraph,
 		getAgentTaskBody,
 		normalizeAgentTaskConfig,
 		sanitizeAgentName,
@@ -255,6 +254,22 @@
 	</div>
 
 	<div class="rounded-md border p-3 space-y-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<p class="text-xs font-medium">Agent Loop Graph</p>
+				<p class="text-[11px] text-muted-foreground">
+					Edit the constrained single-loop graph that drives the durable agent runtime.
+				</p>
+			</div>
+			<Button variant="outline" onclick={() => (showGraphEditor = true)}>Edit Loop</Button>
+		</div>
+		<div class="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+			<Badge variant="secondary">{summarizeAgentGraph(body.agentGraph)}</Badge>
+			<span>The graph stays revisioned with the workflow definition.</span>
+		</div>
+	</div>
+
+	<div class="rounded-md border p-3 space-y-3">
 		<div class="flex items-center justify-between">
 			<div>
 				<p class="text-xs font-medium">Runtime Config Hot Reload</p>
@@ -263,7 +278,6 @@
 					still publish as revisions.
 				</p>
 			</div>
-			<Button variant="outline" onclick={() => (showGraphEditor = true)}>Edit Graph</Button>
 		</div>
 
 		<div class="grid grid-cols-2 gap-3">
@@ -310,7 +324,7 @@
 
 <AgentGraphEditor
 	open={showGraphEditor}
-	graph={cloneAgentGraph(body.agentGraph)}
+	graph={body.agentGraph}
 	onClose={() => (showGraphEditor = false)}
 	onSave={(graph) => {
 		updateBody({ agentGraph: graph });

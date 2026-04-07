@@ -62,7 +62,7 @@
 				<AlertDescription>{error}</AlertDescription>
 			</Alert>
 		{:else if payload}
-			<div class="p-6">
+			<div class="px-4 py-4 xl:px-5 2xl:px-6">
 				<InvestigationStudio
 					{payload}
 					phoenixHref={payload.summary.sessionId ? `/api/observability/phoenix/sessions/${encodeURIComponent(payload.summary.sessionId)}` : null}

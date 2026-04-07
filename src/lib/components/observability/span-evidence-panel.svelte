@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import type {
+		ObservabilityAgentDecisionTurn,
 		ObservabilityLlmMessage,
 		ObservabilityLlmSpan,
 		ObservabilityLogEntry,
@@ -12,6 +13,7 @@
 
 	interface Props {
 		span: ObservabilityTraceSpan | null;
+		selectedDecision?: ObservabilityAgentDecisionTurn | null;
 		selectedLog?: ObservabilityLogEntry | null;
 		logs?: ObservabilityLogEntry[];
 		llmSpans?: ObservabilityLlmSpan[];
@@ -20,6 +22,7 @@
 
 	let {
 		span,
+		selectedDecision = null,
 		selectedLog = null,
 		logs = [],
 		llmSpans = [],
@@ -148,6 +151,20 @@
 						<div class="grid grid-cols-[88px_1fr] gap-2"><span class="text-zinc-500">Kind</span><span>{span.spanKind ?? 'span'}</span></div>
 						<div class="grid grid-cols-[88px_1fr] gap-2"><span class="text-zinc-500">Status</span><span>{span.status}</span></div>
 					</div>
+
+					{#if selectedDecision}
+						<div class="rounded-2xl border border-cyan-500/20 bg-cyan-500/[0.08] p-3">
+							<p class="text-[11px] uppercase tracking-[0.2em] text-cyan-200">Decision</p>
+							<div class="mt-3 grid gap-2 font-mono text-[11px] text-zinc-200">
+								<div class="grid grid-cols-[96px_1fr] gap-2"><span class="text-zinc-500">Turn</span><span>{selectedDecision.turnIndex}</span></div>
+								<div class="grid grid-cols-[96px_1fr] gap-2"><span class="text-zinc-500">Type</span><span>{selectedDecision.decisionType}</span></div>
+								<div class="grid grid-cols-[96px_1fr] gap-2"><span class="text-zinc-500">Label</span><span>{selectedDecision.decisionLabel}</span></div>
+								{#if selectedDecision.stopReason}
+									<div class="grid grid-cols-[96px_1fr] gap-2"><span class="text-zinc-500">Stop</span><span>{selectedDecision.stopReason}</span></div>
+								{/if}
+							</div>
+						</div>
+					{/if}
 
 					{#if selectedLog}
 						<div class="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3">

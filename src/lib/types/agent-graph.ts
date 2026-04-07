@@ -212,7 +212,32 @@ export function normalizeAgentGraph(input: unknown): AgentGraphDefinition {
 }
 
 export function cloneAgentGraph(input: unknown): AgentGraphDefinition {
-  return structuredClone(normalizeAgentGraph(input));
+  const normalized = normalizeAgentGraph(input);
+  return {
+    version: normalized.version,
+    nodes: normalized.nodes.map((node) => ({
+      id: node.id,
+      position: {
+        x: node.position.x,
+        y: node.position.y,
+      },
+      data: {
+        label: node.data.label,
+        stepType: node.data.stepType,
+        config: isRecord(node.data.config)
+          ? JSON.parse(JSON.stringify(node.data.config))
+          : {},
+      },
+    })),
+    edges: normalized.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      ...(typeof edge.label === "string" && edge.label.trim().length > 0
+        ? { label: edge.label }
+        : {}),
+    })),
+  };
 }
 
 export function summarizeAgentGraph(input: unknown): string {

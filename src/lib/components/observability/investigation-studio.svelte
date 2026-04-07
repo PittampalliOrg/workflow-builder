@@ -1,10 +1,15 @@
 <script lang="ts">
 	import { Badge } from '$lib/components/ui/badge';
 	import type {
+		ObservabilityAgentDecisionDiagramEdge,
+		ObservabilityAgentDecisionDiagramNode,
+		ObservabilityAgentDecisionTurn,
 		ObservabilityInvestigationPayload,
 		ObservabilityLogEntry,
 		ObservabilityTraceSpan
 	} from '$lib/types/observability';
+	import AgentDecisionTimeline from '$lib/components/observability/agent-decision-timeline.svelte';
+	import AgentStateDiagram from '$lib/components/observability/agent-state-diagram.svelte';
 	import MetricsStrip from '$lib/components/observability/metrics-strip.svelte';
 	import TraceConsole from '$lib/components/observability/trace-console.svelte';
 	import CorrelatedLogPane from '$lib/components/observability/correlated-log-pane.svelte';
@@ -38,9 +43,13 @@
 	let logMode = $state<LogPaneMode>('session');
 	let selectedSpanRef = $state<{ traceId: string; spanId: string } | null>(null);
 	let selectedLogKey = $state<string | null>(null);
+	let selectedDecisionId = $state<string | null>(null);
+	let selectedDiagramNodeId = $state<string | null>(null);
+	let selectedDiagramEdgeId = $state<string | null>(null);
 	let collapsedTraceIds = $state<Set<string>>(new Set());
 	let showSummary = $state(false);
 	let collapsedPanels = $state({
+		decisions: false,
 		traceConsole: false,
 		logs: false
 	});
@@ -103,6 +112,7 @@
 	const allLogs = $derived(payload?.logs ?? []);
 	const allLlmSpans = $derived(payload?.llmSpans ?? []);
 	const allToolSpans = $derived(payload?.toolSpans ?? []);
+	const allAgentDecisions = $derived(payload?.agentDecisions ?? []);
 
 	const llmCounts = $derived.by(() => {
 		const counts: Record<string, number> = {};
@@ -224,6 +234,29 @@
 		) ?? null;
 	});
 
+	const filteredAgentDecisions = $derived.by(() => {
+		let next = allAgentDecisions;
+		if (traceFilter !== 'all') next = next.filter((decision) => decision.traceId === traceFilter);
+		if (serviceFilter !== 'all') next = next.filter((decision) => decision.serviceName === serviceFilter);
+		if (signalFilter === 'errors') next = next.filter((decision) => decision.decisionType === 'error');
+		if (signalFilter === 'tools') next = next.filter((decision) => decision.decisionType === 'tool_call');
+		if (selectedDiagramEdgeId && payload?.agentDecisionDiagram) {
+			const edge = payload.agentDecisionDiagram.edges.find((candidate) => candidate.id === selectedDiagramEdgeId);
+			if (edge) next = next.filter((decision) => edge.turnIds.includes(decision.id));
+		} else if (
+			selectedDiagramNodeId &&
+			['tool_call', 'assistant_message', 'wait_or_approval', 'stop', 'error'].includes(selectedDiagramNodeId)
+		) {
+			next = next.filter((decision) => decision.decisionType === selectedDiagramNodeId);
+		}
+		return next;
+	});
+
+	const selectedDecision = $derived.by(() => {
+		if (!selectedDecisionId) return null;
+		return allAgentDecisions.find((decision) => decision.id === selectedDecisionId) ?? null;
+	});
+
 	$effect(() => {
 		if (visibleTraceSpans.length === 0) {
 			selectedSpanRef = null;
@@ -239,6 +272,26 @@
 			const next = visibleTraceSpans[0];
 			selectedSpanRef = { traceId: next.traceId, spanId: next.spanId };
 			selectedLogKey = null;
+		}
+	});
+
+	$effect(() => {
+		if (filteredAgentDecisions.length === 0) {
+			selectedDecisionId = null;
+			return;
+		}
+		if (!selectedDecisionId || !filteredAgentDecisions.some((decision) => decision.id === selectedDecisionId)) {
+			selectedDecisionId = filteredAgentDecisions[0].id;
+		}
+	});
+
+	$effect(() => {
+		if (!selectedDecision) return;
+		if (
+			selectedSpanRef?.traceId !== selectedDecision.traceId ||
+			selectedSpanRef?.spanId !== selectedDecision.spanId
+		) {
+			selectedSpanRef = { traceId: selectedDecision.traceId, spanId: selectedDecision.spanId };
 		}
 	});
 
@@ -349,6 +402,12 @@
 			tone: 'tool' as const
 		},
 		{
+			label: 'turns',
+			value: `${allAgentDecisions.length}`,
+			meta: payload?.agentDecisionSummary?.stopReason ?? 'decision model',
+			tone: 'llm' as const
+		},
+		{
 			label: 'errors',
 			value: `${payload?.summary.errorCount ?? 0}`,
 			meta: payload?.summary.firstFailureEventId ? 'notable failures present' : 'no failures',
@@ -363,6 +422,16 @@
 
 	function selectSpan(span: ObservabilityTraceSpan) {
 		selectedSpanRef = { traceId: span.traceId, spanId: span.spanId };
+		selectedLogKey = null;
+		const matchingDecision = filteredAgentDecisions.find(
+			(decision) => decision.traceId === span.traceId && decision.spanId === span.spanId
+		);
+		if (matchingDecision) selectedDecisionId = matchingDecision.id;
+	}
+
+	function selectDecision(decision: ObservabilityAgentDecisionTurn) {
+		selectedDecisionId = decision.id;
+		selectedSpanRef = { traceId: decision.traceId, spanId: decision.spanId };
 		selectedLogKey = null;
 	}
 
@@ -380,6 +449,16 @@
 		}
 	}
 
+	function selectDiagramNode(node: ObservabilityAgentDecisionDiagramNode) {
+		selectedDiagramEdgeId = null;
+		selectedDiagramNodeId = selectedDiagramNodeId === node.id ? null : node.id;
+	}
+
+	function selectDiagramEdge(edge: ObservabilityAgentDecisionDiagramEdge) {
+		selectedDiagramNodeId = null;
+		selectedDiagramEdgeId = selectedDiagramEdgeId === edge.id ? null : edge.id;
+	}
+
 	function togglePanel(name: keyof typeof collapsedPanels) {
 		collapsedPanels = { ...collapsedPanels, [name]: !collapsedPanels[name] };
 	}
@@ -389,6 +468,8 @@
 		serviceFilter = 'all';
 		traceFilter = 'all';
 		logMode = 'session';
+		selectedDiagramNodeId = null;
+		selectedDiagramEdgeId = null;
 	}
 </script>
 
@@ -510,8 +591,71 @@
 			</div>
 		</section>
 
-		<div class="grid gap-4 2xl:grid-cols-[minmax(0,2.15fr)_480px]">
-			<div class="space-y-4">
+		<div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1.2fr)_420px]">
+			<div class="min-w-0 space-y-4">
+				<section class="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,14,18,0.98),rgba(8,8,11,0.98))] shadow-[0_14px_34px_rgba(0,0,0,0.2)]">
+					<button class="flex w-full items-center justify-between px-4 py-3 text-left" onclick={() => togglePanel('decisions')}>
+						<div>
+							<p class="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Agent decisions</p>
+							<p class="mt-1 text-sm text-zinc-300">Decision timeline and observed loop states derived from the durable-agent turns.</p>
+						</div>
+						{#if collapsedPanels.decisions}
+							<ChevronRight size={16} class="text-zinc-400" />
+						{:else}
+							<ChevronDown size={16} class="text-zinc-400" />
+						{/if}
+					</button>
+					{#if !collapsedPanels.decisions}
+						<div class="border-t border-white/10 p-4">
+							{#if payload?.agentDecisionSummary && filteredAgentDecisions.length > 0}
+								<div class="mb-4 flex flex-wrap gap-2">
+									<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+										{payload.agentDecisionSummary.totalTurns} turns
+									</Badge>
+									<Badge variant="outline" class="border-emerald-500/20 bg-emerald-500/10 font-mono text-[10px] text-emerald-100">
+										{payload.agentDecisionSummary.totalToolCalls} tool calls
+									</Badge>
+									<Badge variant="outline" class="border-cyan-500/20 bg-cyan-500/10 font-mono text-[10px] text-cyan-100">
+										{payload.agentDecisionSummary.totalTokens} tokens
+									</Badge>
+									<Badge variant="outline" class="border-white/10 bg-white/5 font-mono text-[10px] text-zinc-300">
+										avg {formatDuration(payload.agentDecisionSummary.averageTurnLatencyMs)}
+									</Badge>
+									{#if payload.agentDecisionSummary.stopReason}
+										<Badge variant="outline" class="border-white/10 bg-white/5 text-[10px] text-zinc-300">
+											stop: {payload.agentDecisionSummary.stopReason}
+										</Badge>
+									{/if}
+								</div>
+								<div class="space-y-4">
+									<div class="space-y-3">
+										<p class="text-[11px] uppercase tracking-[0.22em] text-zinc-500">Decision timeline</p>
+										<AgentDecisionTimeline
+											decisions={filteredAgentDecisions}
+											{selectedDecisionId}
+											onSelectDecision={selectDecision}
+										/>
+									</div>
+									<div class="space-y-3">
+										<p class="text-[11px] uppercase tracking-[0.22em] text-zinc-500">State diagram</p>
+										<AgentStateDiagram
+											diagram={payload.agentDecisionDiagram}
+											selectedNodeId={selectedDiagramNodeId}
+											selectedEdgeId={selectedDiagramEdgeId}
+											onSelectNode={selectDiagramNode}
+											onSelectEdge={selectDiagramEdge}
+										/>
+									</div>
+								</div>
+							{:else}
+								<div class="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-10 text-center text-sm text-zinc-500">
+									No durable-agent decisions were inferred for this execution.
+								</div>
+							{/if}
+						</div>
+					{/if}
+				</section>
+
 				<section class="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(14,14,18,0.98),rgba(8,8,11,0.98))] shadow-[0_14px_34px_rgba(0,0,0,0.2)]">
 					<button class="flex w-full items-center justify-between px-4 py-3 text-left" onclick={() => togglePanel('traceConsole')}>
 						<div>
@@ -570,9 +714,10 @@
 				</section>
 			</div>
 
-			<div class="2xl:sticky 2xl:top-4 2xl:self-start">
+			<div class="min-w-0 xl:sticky xl:top-4 xl:self-start">
 				<SpanEvidencePanel
 					span={selectedSpan}
+					selectedDecision={selectedDecision}
 					{selectedLog}
 					logs={relatedLogs}
 					llmSpans={relatedLlmSpans}

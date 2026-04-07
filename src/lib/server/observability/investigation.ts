@@ -15,6 +15,13 @@ import {
 	getTraceToolSpans
 } from '$lib/server/otel/clickhouse';
 import type {
+	ObservabilityAgentDecisionDiagram,
+	ObservabilityAgentDecisionDiagramEdge,
+	ObservabilityAgentDecisionDiagramNode,
+	ObservabilityAgentDecisionSummary,
+	ObservabilityAgentDecisionToolCall,
+	ObservabilityAgentDecisionToolResult,
+	ObservabilityAgentDecisionTurn,
 	ObservabilityInvestigationEvent,
 	ObservabilityInvestigationPayload,
 	ObservabilityIssueMarker,
@@ -85,6 +92,295 @@ function summarizeLlmSpan(span: ObservabilityLlmSpan): string | null {
 
 function summarizeToolSpan(span: ObservabilityToolSpan): string | null {
 	return clampPreview(previewText(span.toolResult, previewText(span.toolArguments, null as never)));
+}
+
+function parseTimestamp(value: string | null | undefined): number {
+	if (!value) return 0;
+	const parsed = new Date(value).getTime();
+	return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function firstNonEmptyMessage(messages: ObservabilityLlmMessage[]): string | null {
+	for (const message of messages) {
+		if (message.content?.trim()) return message.content.trim();
+	}
+	return null;
+}
+
+function flattenToolCalls(messages: ObservabilityLlmMessage[]): ObservabilityAgentDecisionToolCall[] {
+	return messages.flatMap((message) =>
+		(message.toolCalls ?? []).map((toolCall) => ({
+			name: toolCall.function?.name ?? toolCall.id,
+			arguments: toolCall.function?.arguments ?? null,
+			id: toolCall.id ?? null
+		}))
+	);
+}
+
+function summarizeDecisionOutput(span: ObservabilityLlmSpan): string | null {
+	const firstOutput = firstNonEmptyMessage(span.outputMessages);
+	if (firstOutput) return clampPreview(firstOutput, 220);
+	const toolCalls = flattenToolCalls(span.outputMessages);
+	if (toolCalls.length > 0) {
+		return clampPreview(`Tool calls: ${toolCalls.map((toolCall) => toolCall.name).join(', ')}`, 220);
+	}
+	return null;
+}
+
+function summarizeDecisionInput(span: ObservabilityLlmSpan): string | null {
+	return clampPreview(firstNonEmptyMessage(span.inputMessages), 220);
+}
+
+function inferWaitOrApproval(span: ObservabilityLlmSpan, toolCalls: ObservabilityAgentDecisionToolCall[]): boolean {
+	const combined = [
+		summarizeDecisionInput(span) ?? '',
+		summarizeDecisionOutput(span) ?? '',
+		...toolCalls.map((toolCall) => `${toolCall.name} ${toolCall.arguments ?? ''}`)
+	]
+		.join(' ')
+		.toLowerCase();
+	return ['approval', 'approve', 'wait for', 'await', 'human input'].some((term) =>
+		combined.includes(term)
+	);
+}
+
+function buildDecisionLabel(
+	decisionType: ObservabilityAgentDecisionTurn['decisionType'],
+	toolCalls: ObservabilityAgentDecisionToolCall[],
+	toolResults: ObservabilityAgentDecisionToolResult[],
+	stopReason: string | null
+): string {
+	if (decisionType === 'tool_call') {
+		if (toolCalls.length > 0) return `Called ${toolCalls.map((toolCall) => toolCall.name).join(', ')}`;
+		if (toolResults.length > 0) return `Executed ${toolResults.map((tool) => tool.toolName).join(', ')}`;
+		return 'Executed tool call';
+	}
+	if (decisionType === 'wait_or_approval') return 'Paused for approval or external input';
+	if (decisionType === 'stop') return stopReason ? `Stopped: ${stopReason}` : 'Stopped with final response';
+	if (decisionType === 'error') return 'Turn failed';
+	return 'Responded without tools';
+}
+
+function isDeclarationStopTool(name: string | null | undefined): boolean {
+	const normalized = (name ?? '').trim().toLowerCase();
+	return ['done', 'finish', 'complete', 'stop'].includes(normalized);
+}
+
+function buildAgentDecisionModel(args: {
+	traceSpans: ObservabilityTraceSpan[];
+	logs: ObservabilityLogEntry[];
+	llmSpans: ObservabilityLlmSpan[];
+	toolSpans: ObservabilityToolSpan[];
+}): {
+	summary: ObservabilityAgentDecisionSummary | null;
+	turns: ObservabilityAgentDecisionTurn[];
+	diagram: ObservabilityAgentDecisionDiagram | null;
+} {
+	const { traceSpans, logs, llmSpans, toolSpans } = args;
+	if (llmSpans.length === 0) {
+		return { summary: null, turns: [], diagram: null };
+	}
+
+	const traceSpanIndex = new Map<string, ObservabilityTraceSpan>();
+	for (const traceSpan of traceSpans) {
+		traceSpanIndex.set(`${traceSpan.traceId}:${traceSpan.spanId}`, traceSpan);
+	}
+
+	const grouped = new Map<string, ObservabilityLlmSpan[]>();
+	for (const llmSpan of llmSpans) {
+		const groupKey = llmSpan.agentRunId ?? `trace:${llmSpan.traceId}`;
+		const bucket = grouped.get(groupKey) ?? [];
+		bucket.push(llmSpan);
+		grouped.set(groupKey, bucket);
+	}
+
+	const turns: ObservabilityAgentDecisionTurn[] = [];
+
+	for (const [groupKey, groupSpans] of grouped.entries()) {
+		const orderedSpans = [...groupSpans].sort(
+			(a, b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp)
+		);
+		const orderedToolSpans = toolSpans
+			.filter((toolSpan) =>
+				groupKey.startsWith('trace:')
+					? toolSpan.traceId === orderedSpans[0]?.traceId
+					: toolSpan.agentRunId === orderedSpans[0]?.agentRunId
+			)
+			.sort((a, b) => parseTimestamp(a.timestamp) - parseTimestamp(b.timestamp));
+
+		for (const [index, llmSpan] of orderedSpans.entries()) {
+			const turnStartMs = parseTimestamp(llmSpan.timestamp);
+			const nextTurnMs =
+				index < orderedSpans.length - 1 ? parseTimestamp(orderedSpans[index + 1].timestamp) : Number.POSITIVE_INFINITY;
+			const decisionToolCalls = flattenToolCalls(llmSpan.outputMessages);
+			const associatedToolSpans = orderedToolSpans.filter((toolSpan) => {
+				const toolTime = parseTimestamp(toolSpan.timestamp);
+				if (toolTime < turnStartMs) return false;
+				return toolTime < nextTurnMs;
+			});
+			const toolResults: ObservabilityAgentDecisionToolResult[] = associatedToolSpans.map((toolSpan) => ({
+				toolName: toolSpan.toolName,
+				statusCode: toolSpan.statusCode,
+				result: toolSpan.toolResult,
+				timestamp: toolSpan.timestamp,
+				spanId: toolSpan.spanId,
+				traceId: toolSpan.traceId
+			}));
+			const turnError =
+				llmSpan.statusCode === 'STATUS_CODE_ERROR' ||
+				toolResults.some((toolResult) => toolResult.statusCode === 'STATUS_CODE_ERROR');
+			const waitOrApproval = inferWaitOrApproval(llmSpan, decisionToolCalls);
+			const isLastTurn = index === orderedSpans.length - 1;
+			const declarationStop =
+				decisionToolCalls.length > 0 &&
+				decisionToolCalls.every((toolCall) => isDeclarationStopTool(toolCall.name));
+			const stopReason =
+				declarationStop
+					? decisionToolCalls.map((toolCall) => toolCall.name).join(', ')
+					: isLastTurn && decisionToolCalls.length === 0
+						? llmSpan.finishReason ?? 'final_response'
+						: null;
+			const decisionType: ObservabilityAgentDecisionTurn['decisionType'] = turnError
+				? 'error'
+				: declarationStop
+					? 'stop'
+					: decisionToolCalls.length > 0
+					? 'tool_call'
+					: waitOrApproval
+						? 'wait_or_approval'
+						: stopReason
+							? 'stop'
+							: 'assistant_message';
+			const traceSpan = traceSpanIndex.get(`${llmSpan.traceId}:${llmSpan.spanId}`);
+			const evidenceToolSpanIds = associatedToolSpans.map((toolSpan) => `${toolSpan.traceId}:${toolSpan.spanId}`);
+			const evidenceLogs = logs
+				.map((log, logIndex) => ({ log, id: `${log.timestamp}:${log.traceId}:${log.spanId}:${logIndex}` }))
+				.filter(({ log }) => {
+					if (log.traceId === llmSpan.traceId && log.spanId === llmSpan.spanId) return true;
+					return associatedToolSpans.some(
+						(toolSpan) => log.traceId === toolSpan.traceId && log.spanId === toolSpan.spanId
+					);
+				})
+				.map(({ id }) => id);
+
+			turns.push({
+				id: `${groupKey}:turn:${index + 1}`,
+				agentRunId: llmSpan.agentRunId,
+				turnIndex: index + 1,
+				traceId: llmSpan.traceId,
+				spanId: llmSpan.spanId,
+				serviceName: llmSpan.serviceName,
+				startedAt: llmSpan.timestamp,
+				durationMs: traceSpan?.duration ?? null,
+				decisionType,
+				decisionLabel: buildDecisionLabel(decisionType, decisionToolCalls, toolResults, stopReason),
+				modelName: llmSpan.modelName,
+				provider: llmSpan.provider,
+				inputSummary: summarizeDecisionInput(llmSpan),
+				outputSummary: summarizeDecisionOutput(llmSpan),
+				toolCalls: decisionToolCalls,
+				toolResults,
+				finishReason: llmSpan.finishReason,
+				stopReason,
+				promptTokens: llmSpan.promptTokens,
+				completionTokens: llmSpan.completionTokens,
+				totalTokens: llmSpan.totalTokens,
+				status: turnError ? 'error' : 'ok',
+				evidence: {
+					traceId: llmSpan.traceId,
+					spanId: llmSpan.spanId,
+					logIds: evidenceLogs,
+					toolSpanIds: evidenceToolSpanIds
+				}
+			});
+		}
+	}
+
+	const orderedTurns = turns.sort(
+		(a, b) => parseTimestamp(a.startedAt) - parseTimestamp(b.startedAt) || a.turnIndex - b.turnIndex
+	);
+
+	const summary: ObservabilityAgentDecisionSummary = {
+		totalTurns: orderedTurns.length,
+		toolCallTurns: orderedTurns.filter((turn) => turn.decisionType === 'tool_call').length,
+		assistantMessageTurns: orderedTurns.filter((turn) => turn.decisionType === 'assistant_message').length,
+		waitOrApprovalTurns: orderedTurns.filter((turn) => turn.decisionType === 'wait_or_approval').length,
+		stopTurns: orderedTurns.filter((turn) => turn.decisionType === 'stop').length,
+		errorTurns: orderedTurns.filter((turn) => turn.decisionType === 'error').length,
+		totalToolCalls: orderedTurns.reduce((sum, turn) => sum + turn.toolCalls.length, 0),
+		totalDurationMs: orderedTurns.reduce((sum, turn) => sum + (turn.durationMs ?? 0), 0),
+		totalTokens: orderedTurns.reduce((sum, turn) => sum + (turn.totalTokens ?? 0), 0),
+		averageTurnLatencyMs:
+			orderedTurns.length > 0
+				? Math.round(orderedTurns.reduce((sum, turn) => sum + (turn.durationMs ?? 0), 0) / orderedTurns.length)
+				: 0,
+		stopReason: [...orderedTurns].reverse().find((turn) => turn.stopReason)?.stopReason ?? null
+	};
+
+	const nodeMap = new Map<string, ObservabilityAgentDecisionDiagramNode>();
+	const edgeMap = new Map<string, ObservabilityAgentDecisionDiagramEdge>();
+
+	function ensureNode(id: string, label: string, type: 'state' | 'decision', isTerminal = false) {
+		const existing = nodeMap.get(id);
+		if (existing) return existing;
+		const node: ObservabilityAgentDecisionDiagramNode = {
+			id,
+			label,
+			type,
+			count: 0,
+			totalDurationMs: 0,
+			...(isTerminal ? { isTerminal: true } : {})
+		};
+		nodeMap.set(id, node);
+		return node;
+	}
+
+	function registerEdge(from: string, to: string, turn: ObservabilityAgentDecisionTurn) {
+		const edgeId = `${from}->${to}`;
+		const existing = edgeMap.get(edgeId) ?? {
+			id: edgeId,
+			from,
+			to,
+			count: 0,
+			totalDurationMs: 0,
+			turnIds: []
+		};
+		existing.count += 1;
+		existing.totalDurationMs += turn.durationMs ?? 0;
+		existing.turnIds.push(turn.id);
+		edgeMap.set(edgeId, existing);
+	}
+
+	const startNode = ensureNode('start', 'Start', 'state');
+	const decideNode = ensureNode('decide', 'Decide', 'state');
+	const finishNode = ensureNode('finish', 'Finish', 'state', true);
+
+	for (const turn of orderedTurns) {
+		const decisionNode = ensureNode(turn.decisionType, turn.decisionType.replaceAll('_', ' '), 'decision', turn.decisionType === 'stop' || turn.decisionType === 'error');
+		decisionNode.count += 1;
+		decisionNode.totalDurationMs += turn.durationMs ?? 0;
+		decideNode.count += 1;
+		decideNode.totalDurationMs += turn.durationMs ?? 0;
+		startNode.count = 1;
+		registerEdge('decide', turn.decisionType, turn);
+		if (turn.turnIndex === 1) registerEdge('start', 'decide', turn);
+		if (turn.decisionType === 'tool_call' || turn.decisionType === 'wait_or_approval') {
+			registerEdge(turn.decisionType, 'decide', turn);
+		} else {
+			registerEdge(turn.decisionType, 'finish', turn);
+			finishNode.count += 1;
+			finishNode.totalDurationMs += turn.durationMs ?? 0;
+		}
+	}
+
+	return {
+		summary,
+		turns: orderedTurns,
+		diagram: {
+			nodes: [...nodeMap.values()],
+			edges: [...edgeMap.values()]
+		}
+	};
 }
 
 function summarizeSpan(span: ObservabilityTraceSpan): string | null {
@@ -462,6 +758,7 @@ export async function buildSessionInvestigation(sessionId: string): Promise<Obse
 
 	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
+	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	return {
 		summary: buildSummary({
 			scope: 'session',
@@ -481,6 +778,9 @@ export async function buildSessionInvestigation(sessionId: string): Promise<Obse
 		logs,
 		llmSpans,
 		toolSpans,
+		agentDecisionSummary: agentDecisionModel.summary,
+		agentDecisions: agentDecisionModel.turns,
+		agentDecisionDiagram: agentDecisionModel.diagram,
 		workflowSteps: steps,
 		events,
 		issues
@@ -520,6 +820,7 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 	const steps = sessionSteps.steps;
 	const issues = buildIssues(traceSpans, logs, steps, toolSpans);
 	const events = buildEvents({ traceSpans, logs, llmSpans, toolSpans, steps, issues });
+	const agentDecisionModel = buildAgentDecisionModel({ traceSpans, logs, llmSpans, toolSpans });
 	return {
 		summary: buildSummary({
 			scope: 'trace',
@@ -539,6 +840,9 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 		logs,
 		llmSpans,
 		toolSpans,
+		agentDecisionSummary: agentDecisionModel.summary,
+		agentDecisions: agentDecisionModel.turns,
+		agentDecisionDiagram: agentDecisionModel.diagram,
 		workflowSteps: steps,
 		events,
 		issues
