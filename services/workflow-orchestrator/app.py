@@ -49,7 +49,13 @@ from activities.call_agent_service import terminate_durable_runs_by_parent_execu
 from activities.metadata import get_activity_metadata
 
 # OpenTelemetry
-from tracing import setup_tracing, inject_current_context
+from tracing import (
+    setup_tracing,
+    inject_current_context,
+    attach_workflow_session,
+    extract_session_id,
+    workflow_session_id,
+)
 
 # Configuration from centralized config module
 PORT = config.PORT
@@ -68,10 +74,16 @@ def _otel_context_from_headers(request: Request) -> dict[str, str]:
     carrier: dict[str, str] = {}
     traceparent = request.headers.get("traceparent")
     tracestate = request.headers.get("tracestate")
+    baggage = request.headers.get("baggage")
+    workflow_session_id_header = request.headers.get("x-workflow-session-id")
     if traceparent:
         carrier["traceparent"] = traceparent
     if tracestate:
         carrier["tracestate"] = tracestate
+    if baggage:
+        carrier["baggage"] = baggage
+    if workflow_session_id_header:
+        carrier["x-workflow-session-id"] = workflow_session_id_header
     return carrier
 
 
@@ -116,6 +128,11 @@ def _merge_otel_context(request: Request | None = None) -> dict[str, str]:
         trace_id = _trace_id_from_traceparent(merged.get("traceparent"))
         if trace_id:
             merged["traceId"] = trace_id
+    session_id = extract_session_id(merged)
+    if session_id:
+        merged["sessionId"] = session_id
+        merged["session.id"] = session_id
+        merged["workflow.execution.id"] = session_id
     return merged
 
 
@@ -2255,6 +2272,18 @@ def start_workflow(request: StartWorkflowRequest, http_request: Request):
 
         # Build the input for the dynamic workflow
         otel_ctx = _merge_otel_context(http_request)
+        session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
+        if session_id:
+            otel_ctx["sessionId"] = session_id
+            otel_ctx["session.id"] = session_id
+            otel_ctx["workflow.execution.id"] = session_id
+        try:
+            from opentelemetry import trace as ot_trace
+
+            attach_workflow_session(ot_trace.get_current_span(), session_id)
+        except Exception:
+            pass
+
         workflow_input = {
             "definition": definition,
             "triggerData": trigger_data,
@@ -2405,6 +2434,7 @@ def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
 class ExecuteSWWorkflowRequest(BaseModel):
     """Request body for executing a CNCF Serverless Workflow 1.0 document."""
     workflow: dict = Field(..., description="CNCF SW 1.0 workflow JSON document")
+    workflowId: str | None = None
     triggerData: dict = Field(default_factory=dict)
     integrations: dict | None = None
     dbExecutionId: str | None = None
@@ -2431,12 +2461,26 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         # otherwise run without DB tracking (for direct API testing).
         db_execution_id = request.dbExecutionId
 
+        otel_ctx = _merge_otel_context(http_request)
+        session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
+        if session_id:
+            otel_ctx["sessionId"] = session_id
+            otel_ctx["session.id"] = session_id
+            otel_ctx["workflow.execution.id"] = session_id
+        try:
+            from opentelemetry import trace as ot_trace
+
+            attach_workflow_session(ot_trace.get_current_span(), session_id)
+        except Exception:
+            pass
+
         workflow_input = {
             "workflow": request.workflow,
+            "workflowId": request.workflowId,
             "triggerData": request.triggerData,
             "integrations": request.integrations,
             "dbExecutionId": db_execution_id,
-            "_otel": _merge_otel_context(http_request),
+            "_otel": otel_ctx,
         }
 
         import hashlib, re, time
@@ -2450,7 +2494,6 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             instance_id,
         )
 
-        otel_ctx = _merge_otel_context(http_request)
         result_id = _idempotent_schedule(
             workflow_name=SW_WORKFLOW_NAME,
             instance_id=instance_id,

@@ -31,6 +31,10 @@ import {
 	usageFromUnknown,
 } from "./loop-policy.js";
 
+type AgentWorkflowOptions = {
+	continueAsNewAfterTurns?: number;
+};
+
 /** Return type from the agent workflow, including accumulated tool history. */
 export interface AgentWorkflowResult {
 	role: "assistant";
@@ -173,6 +177,7 @@ function isContextOverflowErrorMessage(err: unknown): boolean {
 export function createAgentWorkflow(
 	activities: AgentActivities,
 	maxIterations: number,
+	options: AgentWorkflowOptions = {},
 ) {
 	return async function* agentWorkflow(
 		ctx: WorkflowContext,
@@ -191,6 +196,12 @@ export function createAgentWorkflow(
 			(metadata.triggering_workflow_instance_id as string | undefined);
 		const source = (metadata.source as string) ?? "direct";
 		const traceContext = input._otel_span_context;
+		if (traceContext && input.executionId && !traceContext["session.id"]) {
+			traceContext["session.id"] = input.executionId;
+			traceContext["sessionId"] = input.executionId;
+			traceContext["workflow.execution.id"] = input.executionId;
+			traceContext["executionId"] = input.executionId;
+		}
 
 		// Step 1 — bootstrap state entry
 		yield ctx.callActivity(activities.recordInitialEntry, {
@@ -213,12 +224,23 @@ export function createAgentWorkflow(
 					toolCalls: ToolCall[];
 			  }
 			| undefined;
-		let turn = 0;
-		const stepHistory: LoopStepRecord[] = [];
+		const resumeState = input._resume_state;
+		const continueAsNewAfterTurns =
+			options.continueAsNewAfterTurns && options.continueAsNewAfterTurns > 0
+				? Math.max(1, Math.floor(options.continueAsNewAfterTurns))
+				: 0;
+		let turn = resumeState?.completedTurns ?? 0;
+		const stepHistory: LoopStepRecord[] = Array.isArray(resumeState?.stepHistory)
+			? (resumeState.stepHistory as LoopStepRecord[])
+			: [];
 		const executableByToolName = new Map<string, boolean>();
 
 		// Accumulate all tool calls across every turn
-		const allToolCalls: AgentWorkflowResult["all_tool_calls"] = [];
+		const allToolCalls: AgentWorkflowResult["all_tool_calls"] = Array.isArray(
+			resumeState?.allToolCalls,
+		)
+			? [...resumeState.allToolCalls]
+			: [];
 
 		// Track previous turn's tool results for crash recovery repair.
 		// These are durable (stored in Dapr's event log as activity outputs).
@@ -229,19 +251,68 @@ export function createAgentWorkflow(
 					tool_call_id: string;
 					name: string;
 			  }>
-			| undefined;
+			| undefined = resumeState?.previousToolResults;
 		let previousAssistantTurn:
 			| {
 					content?: string | null;
 					toolCalls?: ToolCall[];
 			  }
-			| undefined;
-		let compactionCount = 0;
-		let contextOverflowRecovered = false;
-		let lastCompactionReason = "";
+			| undefined = resumeState?.previousAssistantTurn as
+				| { content?: string | null; toolCalls?: ToolCall[] }
+				| undefined;
+		let compactionCount = resumeState?.compactionCount ?? 0;
+		let contextOverflowRecovered =
+			resumeState?.contextOverflowRecovered === true;
+		let lastCompactionReason = resumeState?.lastCompactionReason ?? "";
+		let lastContinueAtTurn = resumeState?.lastContinueAtTurn ?? 0;
 
 		try {
-			for (turn = 1; turn <= effectiveMaxIterations; turn++) {
+			for (turn = stepHistory.length + 1; turn <= effectiveMaxIterations; turn++) {
+				const completedTurns = stepHistory.length;
+				if (
+					continueAsNewAfterTurns > 0 &&
+					completedTurns > 0 &&
+					completedTurns % continueAsNewAfterTurns === 0 &&
+					completedTurns > lastContinueAtTurn
+				) {
+					ctx.continueAsNew(
+						{
+							...input,
+							_resume_state: {
+								completedTurns,
+								lastContinueAtTurn: completedTurns,
+								stepHistory,
+								allToolCalls,
+								...(previousToolResults
+									? { previousToolResults }
+									: {}),
+								...(previousAssistantTurn
+									? { previousAssistantTurn }
+									: {}),
+								compactionCount,
+								contextOverflowRecovered,
+								...(lastCompactionReason
+									? { lastCompactionReason }
+									: {}),
+							},
+						},
+						false,
+					);
+					return {
+						role: "assistant",
+						content: null,
+						all_tool_calls: allToolCalls,
+						final_answer: "",
+						stop_reason: "continued_as_new",
+						compaction_count: compactionCount,
+						compaction_applied: compactionCount > 0,
+						context_overflow_recovered: contextOverflowRecovered,
+						...(lastCompactionReason
+							? { last_compaction_reason: lastCompactionReason }
+							: {}),
+						usage_totals: computeUsageTotals(stepHistory),
+					} satisfies AgentWorkflowResult;
+				}
 				const preStepBindings = buildCelBindings({
 					task,
 					instanceId,
@@ -263,6 +334,8 @@ export function createAgentWorkflow(
 							preserveRecentMessages:
 								loopPolicy.compactionPreserveRecentMessages,
 							minMessagesToCompact: loopPolicy.compactionMinMessagesToCompact,
+							agentGraph: input.agentGraph,
+							loopStrategyName: input.loopStrategyName,
 						} satisfies CompactConversationPayload);
 					if (checkpointResult.applied) {
 						compactionCount += 1;
@@ -290,6 +363,8 @@ export function createAgentWorkflow(
 							appendInstructions: preparedStep.appendInstructions,
 							declarationOnlyTools: preparedStep.declarationOnlyTools,
 							approvalRequiredTools: [...loopPolicy.approvalRequiredTools],
+							agentGraph: input.agentGraph,
+							loopStrategyName: input.loopStrategyName,
 						} satisfies CallLlmPayload);
 						if (overflowRetryCount > 0) {
 							contextOverflowRecovered = true;
@@ -308,6 +383,8 @@ export function createAgentWorkflow(
 										loopPolicy.compactionPreserveRecentMessages,
 									minMessagesToCompact:
 										loopPolicy.compactionMinMessagesToCompact,
+									agentGraph: input.agentGraph,
+									loopStrategyName: input.loopStrategyName,
 								} satisfies CompactConversationPayload);
 							if (compactResult.applied) {
 								compactionCount += 1;

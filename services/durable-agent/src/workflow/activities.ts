@@ -10,7 +10,7 @@
 import type { WorkflowActivityContext } from "@dapr/dapr";
 import { randomUUID } from "node:crypto";
 import type { LanguageModel } from "ai";
-import { trace, SpanKind, SpanStatusCode } from "@opentelemetry/api";
+import { context, trace, SpanKind, SpanStatusCode } from "@opentelemetry/api";
 
 import type {
 	AgentWorkflowMessage,
@@ -23,13 +23,24 @@ import type {
 	LoopToolChoice,
 } from "../types/loop-policy.js";
 import type { DaprAgentState } from "../state/dapr-state.js";
-import type { MemoryProvider } from "../memory/memory-base.js";
+import type {
+	MemoryProvider,
+	MemoryWorkingSet,
+} from "../memory/memory-base.js";
 import { callLlmAdapter, type LlmCallResult } from "../llm/ai-sdk-adapter.js";
 import {
 	runInputProcessors,
 	ProcessorAbortError,
 	type ProcessorLike,
 } from "../mastra/processor-adapter.js";
+import type { AgentLoopStrategy } from "../loop/strategy.js";
+import {
+	bindWorkflowSessionContext,
+	buildWorkflowSessionId,
+	PHOENIX_SESSION_ATTRIBUTE,
+	resolveWorkflowSessionId,
+	WORKFLOW_EXECUTION_ATTRIBUTE,
+} from "../observability/workflow-session.js";
 
 const tracer = trace.getTracer("durable-agent");
 
@@ -76,6 +87,8 @@ export interface CallLlmPayload {
 	appendInstructions?: string;
 	declarationOnlyTools?: LoopDeclarationOnlyTool[];
 	approvalRequiredTools?: string[];
+	agentGraph?: Record<string, unknown>;
+	loopStrategyName?: string;
 }
 
 export interface RunToolPayload {
@@ -102,6 +115,8 @@ export interface CompactConversationPayload {
 	preserveRecentMessages?: number;
 	minMessagesToCompact?: number;
 	maxSummaryItems?: number;
+	agentGraph?: Record<string, unknown>;
+	loopStrategyName?: string;
 }
 
 export interface CompactConversationResult {
@@ -212,6 +227,39 @@ function normalizeConversationHistory(messages: AgentWorkflowMessage[]): {
 	return { messages: normalized, removedOrphanTools, removedBrokenTurns };
 }
 
+function buildWorkingSetContext(
+	workingSet: MemoryWorkingSet | undefined,
+): string | undefined {
+	if (!workingSet) return undefined;
+	const lines: string[] = [];
+	if (workingSet.summary?.trim()) {
+		lines.push("Memory summary:");
+		lines.push(workingSet.summary.trim());
+	}
+	if (workingSet.recalledMessages?.length) {
+		lines.push("Relevant recalled memory:");
+		for (const recalled of workingSet.recalledMessages.slice(0, 5)) {
+			lines.push(
+				`- (${recalled.message.role}, score=${recalled.score}) ${recalled.message.content.slice(0, 240)}`,
+			);
+		}
+	}
+	if (lines.length === 0) return undefined;
+	return lines.join("\n");
+}
+
+function resolveLoopStrategy(
+	loopStrategies: Record<string, AgentLoopStrategy> | undefined,
+	loopStrategyName: string | undefined,
+): AgentLoopStrategy | undefined {
+	if (!loopStrategies) return undefined;
+	const requested = loopStrategyName?.trim();
+	if (requested && loopStrategies[requested]) {
+		return loopStrategies[requested];
+	}
+	return loopStrategies.default;
+}
+
 // --------------------------------------------------------------------------
 // Activity factory functions
 // --------------------------------------------------------------------------
@@ -264,6 +312,7 @@ export function createCallLlm(
 	processors?: ProcessorLike[],
 	agentName?: string,
 	resolveModelSpec?: (modelSpec: string) => LanguageModel,
+	loopStrategies?: Record<string, AgentLoopStrategy>,
 ) {
 	let turnCount = 0;
 
@@ -309,10 +358,21 @@ export function createCallLlm(
 				entry.last_message = userMsg;
 
 				// Also persist to memory
-				memory.addMessage({
+				await memory.addMessage({
 					role: "user",
 					content: payload.task,
 				});
+				if (memory.appendTurn) {
+					await memory.appendTurn({
+						instanceId: payload.instanceId,
+						messages: [
+							{
+								role: "user",
+								content: payload.task,
+							},
+						],
+					});
+				}
 			}
 		}
 
@@ -474,6 +534,29 @@ export function createCallLlm(
 			}
 		}
 
+		const loopStrategy = resolveLoopStrategy(
+			loopStrategies,
+			payload.loopStrategyName,
+		);
+		const strategyPlan = loopStrategy?.prepareTurn({
+			turn: turnCount,
+			agentGraph: payload.agentGraph,
+			appendInstructions: payload.appendInstructions,
+			activeTools: payload.activeTools,
+			approvalRequiredTools: payload.approvalRequiredTools,
+			toolChoice: payload.toolChoice,
+		});
+		const workingSet = memory.loadWorkingSet
+			? await memory.loadWorkingSet({
+					instanceId: payload.instanceId,
+					query:
+						payload.task ??
+						payload.initialTask ??
+						entry.input_value ??
+						undefined,
+				})
+			: undefined;
+		const workingSetContext = buildWorkingSetContext(workingSet);
 		let preparedMessages = processedMessages;
 		const trimMessagesTo =
 			typeof payload.trimMessagesTo === "number" &&
@@ -512,8 +595,14 @@ export function createCallLlm(
 					.map((name) => (typeof name === "string" ? name.trim() : ""))
 					.filter((name) => Boolean(name))
 			: [];
-		if (activeToolNames.length > 0) {
-			const allowed = new Set(activeToolNames);
+		const mergedActiveToolNames = [
+			...new Set([
+				...activeToolNames,
+				...((strategyPlan?.activeTools ?? []).map((name) => name.trim()).filter(Boolean)),
+			]),
+		];
+		if (mergedActiveToolNames.length > 0) {
+			const allowed = new Set(mergedActiveToolNames);
 			activeTools = {};
 			for (const [toolName, toolDef] of Object.entries(tools)) {
 				if (allowed.has(toolName)) {
@@ -529,13 +618,16 @@ export function createCallLlm(
 				)
 			: [];
 		const approvalRequiredTools = new Set(
-			Array.isArray(payload.approvalRequiredTools)
-				? payload.approvalRequiredTools
-						.map((name) =>
-							typeof name === "string" ? name.trim().toLowerCase() : "",
-						)
-						.filter((name) => Boolean(name))
-				: [],
+			[
+				...(Array.isArray(payload.approvalRequiredTools)
+					? payload.approvalRequiredTools
+					: []),
+				...(strategyPlan?.approvalRequiredTools ?? []),
+			]
+				.map((name) =>
+					typeof name === "string" ? name.trim().toLowerCase() : "",
+				)
+				.filter((name) => Boolean(name)),
 		);
 		const effectiveModel =
 			typeof payload.modelSpec === "string" &&
@@ -544,26 +636,72 @@ export function createCallLlm(
 				? resolveModelSpec(payload.modelSpec.trim())
 				: model;
 		const effectiveSystemPrompt =
-			typeof payload.appendInstructions === "string" &&
-			payload.appendInstructions.trim()
-				? `${systemPrompt}\n\n## Step Instructions\n${payload.appendInstructions.trim()}`
-				: systemPrompt;
+			[
+				systemPrompt,
+				workingSetContext ? `## Memory Context\n${workingSetContext}` : undefined,
+				typeof strategyPlan?.appendInstructions === "string" &&
+				strategyPlan.appendInstructions.trim()
+					? `## Step Instructions\n${strategyPlan.appendInstructions.trim()}`
+					: undefined,
+			]
+				.filter((part): part is string => Boolean(part && part.trim()))
+				.join("\n\n");
 
 		// Call LLM with tool declarations (no auto-execute)
 		let result: LlmCallResult;
+			const sessionId =
+				resolveWorkflowSessionId({
+					executionId:
+						typeof entry.trace_context?.executionId === "string"
+							? entry.trace_context.executionId
+							: undefined,
+					traceContext: entry.trace_context ?? undefined,
+				}) ?? buildWorkflowSessionId(payload.instanceId);
 		try {
-			result = await callLlmAdapter(
-				effectiveModel,
-				effectiveSystemPrompt,
-				preparedMessages,
-				activeTools,
+			result = await tracer.startActiveSpan(
+				"call_llm",
 				{
-					instanceId: payload.instanceId,
-					turn: turnCount,
-					agentName,
-					toolChoice: payload.toolChoice,
-					declarationOnlyTools,
-					approvalRequiredTools,
+					kind: SpanKind.INTERNAL,
+					attributes: {
+						"gen_ai.operation.name": "call_llm",
+						...(sessionId ? { [PHOENIX_SESSION_ATTRIBUTE]: sessionId } : {}),
+						...(sessionId
+							? { [WORKFLOW_EXECUTION_ATTRIBUTE]: sessionId }
+							: {}),
+					},
+				},
+				async (span) => {
+					try {
+						const sessionContext = sessionId
+							? bindWorkflowSessionContext(sessionId)
+							: context.active();
+						const llmResult = await context.with(sessionContext, () =>
+							callLlmAdapter(
+								effectiveModel,
+								effectiveSystemPrompt,
+								preparedMessages,
+								activeTools,
+								{
+									instanceId: payload.instanceId,
+									turn: turnCount,
+									agentName,
+									toolChoice: strategyPlan?.toolChoice ?? payload.toolChoice,
+									declarationOnlyTools,
+									approvalRequiredTools,
+								},
+							),
+						);
+						span.setStatus({ code: SpanStatusCode.OK });
+						return llmResult;
+					} catch (err) {
+						span.setStatus({
+							code: SpanStatusCode.ERROR,
+							message: messageFromError(err),
+						});
+						throw err;
+					} finally {
+						span.end();
+					}
 				},
 			);
 		} catch (err) {
@@ -586,10 +724,21 @@ export function createCallLlm(
 		await stateManager.saveState(state);
 
 		// Also persist to memory
-		memory.addMessage({
+		await memory.addMessage({
 			role: "assistant",
 			content: result.content ?? "",
 		});
+		if (memory.appendTurn) {
+			await memory.appendTurn({
+				instanceId: payload.instanceId,
+				messages: [
+					{
+						role: "assistant",
+						content: result.content ?? "",
+					},
+				],
+			});
+		}
 
 		console.log(
 			`[callLlm] instance=${payload.instanceId} text=${(result.content ?? "").slice(0, 80)} toolCalls=${result.tool_calls?.length ?? 0}`,
@@ -616,6 +765,7 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 		const { toolCall } = payload;
 		const fnName = toolCall.function.name;
 		const tool = tools[fnName];
+		const sessionId = buildWorkflowSessionId(payload.executionId);
 
 		if (!tool) {
 			const errMsg = `Unknown tool: ${fnName}`;
@@ -646,6 +796,10 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 					"gen_ai.operation.name": "execute_tool",
 					"gen_ai.tool.name": fnName,
 					"gen_ai.tool.call.arguments": toolCall.function.arguments,
+					...(sessionId ? { [PHOENIX_SESSION_ATTRIBUTE]: sessionId } : {}),
+					...(sessionId
+						? { [WORKFLOW_EXECUTION_ATTRIBUTE]: sessionId }
+						: {}),
 				},
 			},
 			async (span) => {
@@ -743,6 +897,12 @@ export function createSaveToolResults(
 				.map((m) => m.tool_call_id),
 		);
 
+		const persistedMessages: Array<{
+			role: string;
+			content: string;
+			name: string;
+			tool_call_id: string;
+		}> = [];
 		for (const tr of payload.toolResults) {
 			if (existingIds.has(tr.tool_call_id)) {
 				console.log(
@@ -761,6 +921,12 @@ export function createSaveToolResults(
 			};
 			entry.messages.push(msg);
 			entry.last_message = msg;
+			persistedMessages.push({
+				role: "tool",
+				content: tr.content,
+				name: tr.name,
+				tool_call_id: tr.tool_call_id,
+			});
 
 			// Record in tool_history for audit
 			const record: ToolExecutionRecord = {
@@ -772,14 +938,19 @@ export function createSaveToolResults(
 				execution_result: tr.content,
 			};
 			entry.tool_history.push(record);
+		}
 
-			// Persist to memory
-			memory.addMessage({
-				role: "tool",
-				content: tr.content,
-				name: tr.name,
-				tool_call_id: tr.tool_call_id,
-			});
+		if (persistedMessages.length > 0) {
+			if (memory.appendTurn) {
+				await memory.appendTurn({
+					instanceId: payload.instanceId,
+					messages: persistedMessages,
+				});
+			} else {
+				for (const message of persistedMessages) {
+					await memory.addMessage(message);
+				}
+			}
 		}
 
 		await stateManager.saveState(state);
@@ -837,7 +1008,11 @@ function buildCompactSummary(input: {
  * Compact historical conversation into a synthetic summary message while
  * preserving the most recent N messages verbatim.
  */
-export function createCompactConversation(stateManager: DaprAgentState) {
+export function createCompactConversation(
+	stateManager: DaprAgentState,
+	memory: MemoryProvider,
+	loopStrategies?: Record<string, AgentLoopStrategy>,
+) {
 	return async function compactConversation(
 		_ctx: WorkflowActivityContext,
 		payload: CompactConversationPayload,
@@ -857,18 +1032,34 @@ export function createCompactConversation(stateManager: DaprAgentState) {
 			}
 		}
 
+		const loopStrategy = resolveLoopStrategy(
+			loopStrategies,
+			payload.loopStrategyName,
+		);
+		const strategyCompaction = loopStrategy?.resolveCompaction?.({
+			agentGraph: payload.agentGraph,
+			preserveRecentMessages: payload.preserveRecentMessages,
+			minMessagesToCompact: payload.minMessagesToCompact,
+			maxSummaryItems: payload.maxSummaryItems,
+		});
 		const preserveRecentMessages =
-			typeof payload.preserveRecentMessages === "number"
-				? Math.max(1, Math.floor(payload.preserveRecentMessages))
-				: 8;
+			typeof strategyCompaction?.preserveRecentMessages === "number"
+				? Math.max(1, Math.floor(strategyCompaction.preserveRecentMessages))
+				: typeof payload.preserveRecentMessages === "number"
+					? Math.max(1, Math.floor(payload.preserveRecentMessages))
+					: 8;
 		const minMessagesToCompact =
-			typeof payload.minMessagesToCompact === "number"
-				? Math.max(0, Math.floor(payload.minMessagesToCompact))
-				: 6;
+			typeof strategyCompaction?.minMessagesToCompact === "number"
+				? Math.max(0, Math.floor(strategyCompaction.minMessagesToCompact))
+				: typeof payload.minMessagesToCompact === "number"
+					? Math.max(0, Math.floor(payload.minMessagesToCompact))
+					: 6;
 		const maxSummaryItems =
-			typeof payload.maxSummaryItems === "number"
-				? Math.max(1, Math.floor(payload.maxSummaryItems))
-				: 12;
+			typeof strategyCompaction?.maxSummaryItems === "number"
+				? Math.max(1, Math.floor(strategyCompaction.maxSummaryItems))
+				: typeof payload.maxSummaryItems === "number"
+					? Math.max(1, Math.floor(payload.maxSummaryItems))
+					: 12;
 		const reason = payload.reason?.trim() || "automatic";
 
 		const beforeMessages = entry.messages.length;
@@ -902,6 +1093,14 @@ export function createCompactConversation(stateManager: DaprAgentState) {
 		entry.last_message =
 			entry.messages[entry.messages.length - 1] ?? summaryMsg;
 		await stateManager.saveState(state);
+		if (memory.compact) {
+			await memory.compact({
+				instanceId: payload.instanceId,
+				summary: summaryContent,
+				preserveRecentMessages,
+				summarizedMessages: summarizedMessages.length,
+			});
+		}
 
 		const afterMessages = entry.messages.length;
 		console.log(

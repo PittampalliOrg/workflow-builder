@@ -233,6 +233,7 @@ function startWorkflowInBackground(
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					workflow: spec,
+					workflowId,
 					triggerData,
 					dbExecutionId: executionId
 				})

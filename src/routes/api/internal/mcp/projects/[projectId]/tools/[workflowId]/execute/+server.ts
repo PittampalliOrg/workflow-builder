@@ -227,11 +227,12 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const swResponse = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 		method: 'POST',
 		headers,
-		body: JSON.stringify({
-			workflow: spec,
-			triggerData,
-			dbExecutionId: execution.id
-		})
+				body: JSON.stringify({
+					workflow: spec,
+					workflowId,
+					triggerData,
+					dbExecutionId: execution.id
+				})
 	});
 
 	if (!swResponse.ok) {

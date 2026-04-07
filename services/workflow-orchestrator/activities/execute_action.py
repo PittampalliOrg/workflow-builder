@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
-from tracing import start_activity_span
+from tracing import start_activity_span, extract_session_id
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,9 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 trace_value = otel.get(trace_header)
                 if isinstance(trace_value, str) and trace_value.strip():
                     headers[trace_header] = trace_value.strip()
+            session_id = extract_session_id(otel)
+            if session_id:
+                headers["x-workflow-session-id"] = session_id
 
             resp = requests.post(
                 f"{_function_router_base_url()}/execute",

@@ -1,2 +1,2 @@
-export { initOtel, otelLogMixin } from "./otel-setup.js";
+export { initOtel, otelLogMixin, emitOtelLog } from "./otel-setup.js";
 export { extractTraceContext, injectTraceContext } from "./trace-context.js";

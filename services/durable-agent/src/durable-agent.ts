@@ -25,6 +25,10 @@ import { ConversationListMemory } from "./memory/conversation-list.js";
 import type { MemoryProvider } from "./memory/memory-base.js";
 import { createMastraMemoryAdapter } from "./mastra/memory-adapter.js";
 import type { ProcessorLike } from "./mastra/processor-adapter.js";
+import {
+	createDefaultLoopStrategies,
+	type AgentLoopStrategy,
+} from "./loop/strategy.js";
 
 import {
 	createRecordInitialEntry,
@@ -66,6 +70,7 @@ export class DurableAgent {
 	// Sub-components (composition)
 	readonly stateManager: DaprAgentState;
 	readonly memory: MemoryProvider;
+	readonly loopStrategies: Record<string, AgentLoopStrategy>;
 	readonly registry: AgentRegistry | null;
 	private orchestrationStrategy: OrchestrationStrategy | null = null;
 
@@ -127,8 +132,10 @@ export class DurableAgent {
 			stateKey,
 		);
 
-		// Memory: use Mastra Memory adapter if provided, else in-memory list
-		if (options.mastra?.memory) {
+		// Memory: explicit provider wins, then Mastra adapter, then in-memory fallback
+		if (options.memory) {
+			this.memory = options.memory;
+		} else if (options.mastra?.memory) {
 			const adapter = createMastraMemoryAdapter(options.mastra.memory);
 			this.memory = adapter ?? new ConversationListMemory();
 			if (adapter) {
@@ -137,6 +144,8 @@ export class DurableAgent {
 		} else {
 			this.memory = new ConversationListMemory();
 		}
+		this.loopStrategies =
+			options.loopStrategies ?? createDefaultLoopStrategies();
 
 		// Registry
 		if (options.registry) {
@@ -183,6 +192,7 @@ export class DurableAgent {
 			processors.length > 0 ? processors : undefined,
 			this.name,
 			options.modelResolver,
+			this.loopStrategies,
 		);
 		this.boundRunTool = createRunTool(this.tools);
 		this.boundSaveToolResults = createSaveToolResults(
@@ -191,6 +201,8 @@ export class DurableAgent {
 		);
 		this.boundCompactConversation = createCompactConversation(
 			this.stateManager,
+			this.memory,
+			this.loopStrategies,
 		);
 		this.boundFinalizeWorkflow = createFinalizeWorkflow(this.stateManager);
 
@@ -203,7 +215,10 @@ export class DurableAgent {
 			compactConversation: this.boundCompactConversation,
 			finalizeWorkflow: this.boundFinalizeWorkflow,
 		};
-		this.agentWorkflow = createAgentWorkflow(activities, this.maxIterations);
+		this.agentWorkflow = createAgentWorkflow(activities, this.maxIterations, {
+			continueAsNewAfterTurns:
+				options.execution?.continueAsNewAfterTurns,
+		});
 
 		// Create orchestration workflow if strategy is configured
 		if (this.orchestrationStrategy) {

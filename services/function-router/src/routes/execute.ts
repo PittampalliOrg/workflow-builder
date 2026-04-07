@@ -41,6 +41,11 @@ import {
 } from "../core/openfunction-resolver.js";
 import { resolveCloneRepository } from "../core/gitea-repository.js";
 import { lookupFunction } from "../core/registry.js";
+import {
+  bindWorkflowSessionContext,
+  buildWorkflowSessionId,
+  sessionIdFromHeaders,
+} from "../observability/workflow-session.js";
 import type {
   ExecuteRequest,
   ExecuteResponse,
@@ -927,6 +932,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = parseResult.data as ExecuteRequest;
+    const resolvedSessionId =
+      buildWorkflowSessionId(body.db_execution_id || body.execution_id) ||
+      sessionIdFromHeaders(request.headers);
+    if (resolvedSessionId) {
+      bindWorkflowSessionContext(resolvedSessionId);
+    }
     const functionSlug = body.function_slug || body.function_id;
 
     if (!functionSlug) {
@@ -965,6 +976,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         })
         .filter((entry) => entry[1].length > 0),
     );
+    if (resolvedSessionId) {
+      forwardedTraceHeaders["x-workflow-session-id"] = resolvedSessionId;
+    }
 
     // Initialize timing breakdown
     const timing: TimingBreakdown = {};
@@ -1204,7 +1218,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             const runMode =
               typeof args.mode === "string"
                 ? args.mode.trim().toLowerCase()
-                : "plan_mode";
+                : "execute_direct";
             const hasWorkspaceRef =
               typeof args.workspaceRef === "string" &&
               args.workspaceRef.trim().length > 0;

@@ -12,10 +12,34 @@ const DAPR_HOST = process.env.DAPR_HOST ?? "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT ?? "3500";
 const PUBSUB_NAME = process.env.PUBSUB_NAME ?? "pubsub";
 const PUBSUB_TOPIC = process.env.PUBSUB_TOPIC ?? "workflow.stream";
+const EVENT_STREAM_PUBLISH_ENABLED = ["1", "true", "yes", "on"].includes(
+	(process.env.DURABLE_EVENT_STREAM_PUBLISH_ENABLED ?? "")
+		.trim()
+		.toLowerCase(),
+);
+const LEGACY_COMPLETION_EVENTS_ENABLED = ["1", "true", "yes", "on"].includes(
+	(process.env.DURABLE_LEGACY_COMPLETION_EVENTS_ENABLED ?? "")
+		.trim()
+		.toLowerCase(),
+);
 
 const publishUrl = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/publish/${PUBSUB_NAME}/${PUBSUB_TOPIC}`;
+let eventStreamPublishingDisabledReason: string | null = null;
+
+function isMissingWorkflowInstance(body: string): boolean {
+	const normalized = body.toLowerCase();
+	return (
+		normalized.includes("no such instance exists") ||
+		normalized.includes("grpc_message:\\\"no such instance exists\\\"") ||
+		normalized.includes('details = "no such instance exists"')
+	);
+}
 
 async function publishEvent(event: AgentEvent): Promise<void> {
+	if (!EVENT_STREAM_PUBLISH_ENABLED || eventStreamPublishingDisabledReason) {
+		return;
+	}
+
 	try {
 		const resp = await fetch(publishUrl, {
 			method: "POST",
@@ -30,10 +54,23 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 			}),
 		});
 		if (!resp.ok) {
-			console.warn(`[dapr] Publish failed: ${resp.status}`);
+			const status = resp.status;
+			const body = await resp.text().catch(() => "");
+			if (status === 404 || status === 400 || status === 403) {
+				eventStreamPublishingDisabledReason = `HTTP ${status}`;
+				console.info(
+					`[dapr] Disabling best-effort event stream publishing for ${PUBSUB_NAME}/${PUBSUB_TOPIC}: ${eventStreamPublishingDisabledReason}`,
+				);
+				return;
+			}
+			console.warn(`[dapr] Publish failed: ${status}${body ? ` ${body}` : ""}`);
 		}
-	} catch {
-		// Silent fail — Dapr sidecar may not be present in local dev
+	} catch (error) {
+		eventStreamPublishingDisabledReason =
+			error instanceof Error ? error.message : String(error);
+		console.info(
+			`[dapr] Disabling best-effort event stream publishing for ${PUBSUB_NAME}/${PUBSUB_TOPIC}: ${eventStreamPublishingDisabledReason}`,
+		);
 	}
 }
 
@@ -51,6 +88,9 @@ export async function publishCompletionEvent(opts: {
 	result?: Record<string, unknown>;
 	error?: string;
 }): Promise<boolean> {
+	if (!LEGACY_COMPLETION_EVENTS_ENABLED) {
+		return false;
+	}
 	if (!opts.parentExecutionId) {
 		console.warn("[dapr] No parentExecutionId, skipping completion event");
 		return false;
@@ -82,6 +122,12 @@ export async function publishCompletionEvent(opts: {
 		});
 		if (!resp.ok) {
 			const body = await resp.text();
+			if (resp.status >= 500 && isMissingWorkflowInstance(body)) {
+				console.info(
+					`[dapr] Parent workflow ${opts.parentExecutionId} no longer exists; treating completion event "${eventName}" as terminal`,
+				);
+				return true;
+			}
 			console.warn(`[dapr] Raise event failed: ${resp.status} ${body}`);
 			return false;
 		} else {
@@ -97,6 +143,12 @@ export async function publishCompletionEvent(opts: {
 }
 
 export function startDaprPublisher(): void {
+	if (!EVENT_STREAM_PUBLISH_ENABLED) {
+		console.log(
+			`[durable-agent] Dapr publisher disabled for ${PUBSUB_NAME}/${PUBSUB_TOPIC}`,
+		);
+		return;
+	}
 	eventBus.on("event", (event: AgentEvent) => {
 		publishEvent(event);
 	});

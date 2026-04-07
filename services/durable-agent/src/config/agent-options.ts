@@ -10,6 +10,8 @@ import type { AgentRegistryConfig } from "./registry-config.js";
 import type { AgentExecutionConfig } from "./execution-config.js";
 import type { WorkflowRetryPolicy } from "./retry-config.js";
 import type { AgentObservabilityConfig } from "./observability-config.js";
+import type { MemoryProvider } from "../memory/memory-base.js";
+import type { AgentLoopStrategy } from "../loop/strategy.js";
 
 export interface DurableAgentOptions {
 	/** Agent name (unique identifier). */
@@ -28,6 +30,10 @@ export interface DurableAgentOptions {
 
 	/** Tool registry: name -> tool object with execute() + inputSchema. */
 	tools?: Record<string, DurableAgentTool>;
+	/** Optional explicit memory provider override. */
+	memory?: MemoryProvider;
+	/** Optional durable loop strategies keyed by strategy name. */
+	loopStrategies?: Record<string, AgentLoopStrategy>;
 
 	/** Dapr state store configuration. */
 	state?: AgentStateConfig;

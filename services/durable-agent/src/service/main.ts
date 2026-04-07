@@ -37,123 +37,141 @@ import { interceptConsole, eventBus } from "./event-bus.js";
 interceptConsole();
 
 import express from "express";
-import { DaprWorkflowClient } from "@dapr/dapr";
+import { DaprClient, DaprWorkflowClient } from "@dapr/dapr";
 import { nanoid } from "nanoid";
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { posix as pathPosix } from "node:path";
 import { DurableAgent } from "../durable-agent.js";
+import {
+  ConversationListMemory,
+  DaprStateMemory,
+} from "../memory/index.js";
 import { workspaceTools, listTools, executeTool, TOOL_NAMES } from "./tools.js";
 import { sandbox, filesystem } from "./sandbox-config.js";
 import {
-	workspaceSessions,
-	type BrowserCaptureStepInput,
+  workspaceSessions,
+  type BrowserCaptureStepInput,
 } from "./workspace-sessions.js";
 import {
-	publishCompletionEvent,
-	startDaprPublisher,
-	handleDaprSubscriptionEvent,
-	getDaprSubscriptions,
+  publishCompletionEvent,
+  startDaprPublisher,
+  handleDaprSubscriptionEvent,
+  getDaprSubscriptions,
 } from "./completion-publisher.js";
 import { PlanGenerationError, generatePlanFromMarkdown } from "./planner.js";
 import {
-	ClaudePlanGenerationError,
-	generateClaudeTaskPlan,
+  ClaudePlanGenerationError,
+  generateClaudeTaskPlan,
 } from "./claude-code-planner.js";
 import {
-	type ClaudeTaskPlan,
-	validateClaudeTaskPlan,
+  type ClaudeTaskPlan,
+  validateClaudeTaskPlan,
 } from "./claude-plan-schema.js";
 import { planArtifacts } from "./plan-artifacts.js";
 import {
-	createExecuteClaudeTask as createDagExecuteClaudeTaskActivity,
-	createPersistDagState as createDagPersistStateActivity,
-	type DagExecutorResult,
+  createExecuteClaudeTask as createDagExecuteClaudeTaskActivity,
+  createPersistDagState as createDagPersistStateActivity,
+  type DagExecutorResult,
 } from "./dag-executor.js";
 import { workflowRunTracker } from "./run-tracker.js";
 import type { DaprEvent } from "./types.js";
 import {
-	buildPlanModePrompt,
-	buildPlanRepairPrompt,
+  buildPlanModePrompt,
+  buildPlanRepairPrompt,
 } from "./plan-mode-prompt.js";
 import {
-	extractProposedPlanText,
-	stripProposedPlanBlocks,
+  extractProposedPlanText,
+  stripProposedPlanBlocks,
 } from "./proposed-plan-parser.js";
 import {
-	normalizeModelSpecForEnvironment,
-	normalizeOpenAiChatModel,
+  normalizeModelSpecForEnvironment,
+  normalizeOpenAiChatModel,
 } from "./model-normalization.js";
-import { hydrateRuntimeSecretsFromDapr } from "./runtime-secrets.js";
+import { hydrateRuntimeSecretsForModelSpecs } from "./runtime-secrets.js";
 
 // Mastra adapters (all optional — graceful fallback if packages not installed)
 import {
-	registerBuiltinProviders,
-	resolveModel,
-	adaptMastraTools,
-	type MastraToolLike,
+  registerBuiltinProviders,
+  resolveModel,
+  adaptMastraTools,
+  type MastraToolLike,
 } from "../mastra/index.js";
 import type { LoopPolicy } from "../types/loop-policy.js";
+import { buildLoopPolicyFromAgentGraph } from "../loop/strategy.js";
 import { discoverMcpTools } from "../mastra/mcp-client-setup.js";
 import { createMastraWorkspaceTools } from "../mastra/workspace-setup.js";
 import {
-	createProcessors,
-	type ProcessorLike,
+  createProcessors,
+  type ProcessorLike,
 } from "../mastra/processor-adapter.js";
 import { createRagTools } from "../mastra/rag-tools.js";
 import {
-	createVoiceTools,
-	type VoiceProviderLike,
+  createVoiceTools,
+  type VoiceProviderLike,
 } from "../mastra/voice-tools.js";
 import {
-	runScorers,
-	createScorers,
-	type ScorerLike,
+  runScorers,
+  createScorers,
+  type ScorerLike,
 } from "../mastra/eval-scorer.js";
+import { createOpenShellRunWorkflow } from "../workflow/openshell-run-workflow.js";
+import { buildOpenShellRunCompletion } from "./run-shaping.js";
 
 // ── Configuration ─────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || "8001", 10);
 const HOST = process.env.HOST || "0.0.0.0";
 const RUN_RECONCILE_INTERVAL_MS = parseInt(
-	process.env.DURABLE_RUN_RECONCILE_INTERVAL_MS || "15000",
-	10,
+  process.env.DURABLE_RUN_RECONCILE_INTERVAL_MS || "15000",
+  10,
 );
 const PLAN_REPAIR_ATTEMPTS = Math.max(
-	0,
-	parseInt(process.env.DURABLE_PLAN_REPAIR_ATTEMPTS || "2", 10),
+  0,
+  parseInt(process.env.DURABLE_PLAN_REPAIR_ATTEMPTS || "2", 10),
 );
 const PLAN_REPAIR_MAX_TURNS = Math.max(
-	1,
-	parseInt(process.env.DURABLE_PLAN_REPAIR_MAX_TURNS || "8", 10),
+  1,
+  parseInt(process.env.DURABLE_PLAN_REPAIR_MAX_TURNS || "8", 10),
 );
 const PLAN_TIMEOUT_SECONDS = Math.max(
-	60,
-	parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "3600", 10),
+  60,
+  parseInt(process.env.DURABLE_PLAN_TIMEOUT_SECONDS || "3600", 10),
 );
 const EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS = Math.max(
-	0,
-	parseInt(
-		process.env.DURABLE_EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS || "1",
-		10,
-	),
+  0,
+  parseInt(
+    process.env.DURABLE_EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS || "1",
+    10,
+  ),
 );
 const STARTUP_INIT_REQUIRED = ["1", "true", "yes", "on"].includes(
-	String(process.env.DURABLE_REQUIRE_STARTUP_INIT || "")
-		.trim()
-		.toLowerCase(),
+  String(process.env.DURABLE_REQUIRE_STARTUP_INIT || "")
+    .trim()
+    .toLowerCase(),
 );
 const STARTUP_INIT_RETRY_MS = Math.max(
-	5_000,
-	parseInt(process.env.DURABLE_STARTUP_INIT_RETRY_MS || "30000", 10),
+  5_000,
+  parseInt(process.env.DURABLE_STARTUP_INIT_RETRY_MS || "30000", 10),
 );
 const DURABLE_RUN_WORKFLOW_NAME =
-	process.env.DURABLE_RUN_WORKFLOW_NAME?.trim() || "durableRunWorkflowV1";
+  process.env.DURABLE_RUN_WORKFLOW_NAME?.trim() || "durableRunWorkflowV1";
+const OPENSHELL_RUN_WORKFLOW_NAME =
+  process.env.OPENSHELL_RUN_WORKFLOW_NAME?.trim() || "openshellRunWorkflowV1";
 const DURABLE_PLAN_WORKFLOW_NAME =
-	process.env.DURABLE_PLAN_WORKFLOW_NAME?.trim() || "durablePlanWorkflowV1";
+  process.env.DURABLE_PLAN_WORKFLOW_NAME?.trim() || "durablePlanWorkflowV1";
 const DAG_EXECUTOR_WORKFLOW_NAME =
-	process.env.DAG_EXECUTOR_WORKFLOW_NAME?.trim() || "dagExecutorWorkflowV1";
+  process.env.DAG_EXECUTOR_WORKFLOW_NAME?.trim() || "dagExecutorWorkflowV1";
 const DURABLE_AGENT_SERVICE_VERSION = "1.0.0";
+const DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS = Math.max(
+  0,
+  parseInt(process.env.DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS || "20", 10),
+);
+const LEGACY_COMPLETION_EVENTS_ENABLED = ["1", "true", "yes", "on"].includes(
+  String(process.env.DURABLE_LEGACY_COMPLETION_EVENTS_ENABLED || "")
+    .trim()
+    .toLowerCase(),
+);
 
 // ── Agent Config Types ────────────────────────────────────────
 
@@ -162,21 +180,29 @@ const DURABLE_AGENT_SERVICE_VERSION = "1.0.0";
  * When present in /api/run body, overrides the default agent.
  */
 type AgentConfigPayload = {
-	name: string;
-	instructions: string;
-	modelSpec: string; // "provider/model" format, e.g., "openai/gpt-4o"
-	maxTurns?: number;
-	timeoutMinutes?: number;
-	tools?: string[]; // List of tool names to enable (subset of workspace tools)
-	configuration?: {
-		storeName: string;
-		configName?: string;
-		keys?: string[];
-		metadata?: Record<string, string>;
-	};
+  name: string;
+  instructions: string;
+  modelSpec: string; // "provider/model" format, e.g., "openai/gpt-4o"
+  maxTurns?: number;
+  timeoutMinutes?: number;
+  tools?: string[]; // List of tool names to enable (subset of workspace tools)
+  memory?: {
+    backend?: "conversation_list" | "dapr_state";
+    sessionId?: string;
+    storeName?: string;
+  };
+  loop?: {
+    strategy?: "default" | "graph_v1";
+  };
+  configuration?: {
+    storeName: string;
+    configName?: string;
+    keys?: string[];
+    metadata?: Record<string, string>;
+  };
 };
 const FALLBACK_AGENT_INSTRUCTIONS =
-	"You are a concise development assistant. Execute the task directly and return useful output.";
+  "You are a concise development assistant. Execute the task directly and return useful output.";
 
 // ── Agent Setup ───────────────────────────────────────────────
 
@@ -197,131 +223,136 @@ const WORKFLOW_STATUS_FAILED = 3;
 const WORKFLOW_STATUS_TERMINATED = 5;
 
 function listRuntimeWorkflowRegistrations() {
-	return [
-		{
-			name: "agentWorkflow",
-			version: null,
-			aliases: [DURABLE_RUN_WORKFLOW_NAME],
-			isLatest: true,
-			source: "service-introspection" as const,
-		},
-		{
-			name: "durablePlanWorkflowV1",
-			version: "v1",
-			aliases: [DURABLE_PLAN_WORKFLOW_NAME],
-			isLatest: true,
-			source: "service-introspection" as const,
-		},
-		{
-			name: "dagExecutorWorkflow",
-			version: "v1",
-			aliases: [DAG_EXECUTOR_WORKFLOW_NAME],
-			isLatest: true,
-			source: "service-introspection" as const,
-		},
-	];
+  return [
+    {
+      name: "openshellRunWorkflowV1",
+      version: "v1",
+      aliases: [OPENSHELL_RUN_WORKFLOW_NAME],
+      isLatest: true,
+      source: "service-introspection" as const,
+    },
+    {
+      name: "agentWorkflow",
+      version: null,
+      aliases: [DURABLE_RUN_WORKFLOW_NAME],
+      isLatest: true,
+      source: "service-introspection" as const,
+    },
+    {
+      name: "durablePlanWorkflowV1",
+      version: "v1",
+      aliases: [DURABLE_PLAN_WORKFLOW_NAME],
+      isLatest: true,
+      source: "service-introspection" as const,
+    },
+    {
+      name: "dagExecutorWorkflow",
+      version: "v1",
+      aliases: [DAG_EXECUTOR_WORKFLOW_NAME],
+      isLatest: true,
+      source: "service-introspection" as const,
+    },
+  ];
 }
 
 // Map activity names → factory function names in activities.ts for source extraction
 const ACTIVITY_FACTORY_MAP: Record<string, string> = {
-	recordInitialEntry: "createRecordInitialEntry",
-	callLlm: "createCallLlm",
-	runTool: "createRunTool",
-	saveToolResults: "createSaveToolResults",
-	compactConversation: "createCompactConversation",
-	finalizeWorkflow: "createFinalizeWorkflow",
-	executeClaudeTask: "executeClaudeTaskActivity",
-	persistDagState: "persistDagStateActivity",
-	durablePlanActivity: "durablePlanActivity",
+  finalizeOpenShellRunResult: "finalizeOpenShellRunResultActivity",
+  recordInitialEntry: "createRecordInitialEntry",
+  callLlm: "createCallLlm",
+  runTool: "createRunTool",
+  saveToolResults: "createSaveToolResults",
+  compactConversation: "createCompactConversation",
+  finalizeWorkflow: "createFinalizeWorkflow",
+  executeClaudeTask: "executeClaudeTaskActivity",
+  persistDagState: "persistDagStateActivity",
+  durablePlanActivity: "durablePlanActivity",
 };
 
 let _activitySourceCache: Map<string, string> | null = null;
 
 function getActivitySources(): Map<string, string> {
-	if (_activitySourceCache) return _activitySourceCache;
-	_activitySourceCache = new Map();
-	try {
-		// Resolve activities.ts source relative to compiled main.js
-		const candidates = [
-			new URL("../../workflow/activities.ts", import.meta.url),
-			new URL("../workflow/activities.ts", import.meta.url),
-		];
-		let source = "";
-		for (const candidate of candidates) {
-			try {
-				source = readFileSync(candidate, "utf-8");
-				if (source) break;
-			} catch {
-				// try next
-			}
-		}
-		if (!source) return _activitySourceCache;
+  if (_activitySourceCache) return _activitySourceCache;
+  _activitySourceCache = new Map();
+  try {
+    // Resolve activities.ts source relative to compiled main.js
+    const candidates = [
+      new URL("../../workflow/activities.ts", import.meta.url),
+      new URL("../workflow/activities.ts", import.meta.url),
+    ];
+    let source = "";
+    for (const candidate of candidates) {
+      try {
+        source = readFileSync(candidate, "utf-8");
+        if (source) break;
+      } catch {
+        // try next
+      }
+    }
+    if (!source) return _activitySourceCache;
 
-		// Extract each factory function by name
-		for (const [activityName, factoryName] of Object.entries(
-			ACTIVITY_FACTORY_MAP,
-		)) {
-			const pattern = new RegExp(
-				`^(?:export\\s+)?(?:async\\s+)?function\\s+${factoryName}\\b`,
-				"m",
-			);
-			const match = pattern.exec(source);
-			if (!match) continue;
-			const startIdx = match.index;
-			// Walk braces to find the end of the function
-			let depth = 0;
-			let endIdx = startIdx;
-			let foundOpen = false;
-			for (let i = startIdx; i < source.length; i++) {
-				if (source[i] === "{") {
-					depth++;
-					foundOpen = true;
-				} else if (source[i] === "}") {
-					depth--;
-					if (foundOpen && depth === 0) {
-						endIdx = i + 1;
-						break;
-					}
-				}
-			}
-			if (endIdx > startIdx) {
-				_activitySourceCache.set(
-					activityName,
-					source.slice(startIdx, endIdx),
-				);
-			}
-		}
-	} catch {
-		// Source extraction is best-effort
-	}
-	return _activitySourceCache;
+    // Extract each factory function by name
+    for (const [activityName, factoryName] of Object.entries(
+      ACTIVITY_FACTORY_MAP,
+    )) {
+      const pattern = new RegExp(
+        `^(?:export\\s+)?(?:async\\s+)?function\\s+${factoryName}\\b`,
+        "m",
+      );
+      const match = pattern.exec(source);
+      if (!match) continue;
+      const startIdx = match.index;
+      // Walk braces to find the end of the function
+      let depth = 0;
+      let endIdx = startIdx;
+      let foundOpen = false;
+      for (let i = startIdx; i < source.length; i++) {
+        if (source[i] === "{") {
+          depth++;
+          foundOpen = true;
+        } else if (source[i] === "}") {
+          depth--;
+          if (foundOpen && depth === 0) {
+            endIdx = i + 1;
+            break;
+          }
+        }
+      }
+      if (endIdx > startIdx) {
+        _activitySourceCache.set(activityName, source.slice(startIdx, endIdx));
+      }
+    }
+  } catch {
+    // Source extraction is best-effort
+  }
+  return _activitySourceCache;
 }
 
 function listRuntimeActivityRegistrations() {
-	const sources = getActivitySources();
-	return [
-		"recordInitialEntry",
-		"callLlm",
-		"runTool",
-		"saveToolResults",
-		"compactConversation",
-		"finalizeWorkflow",
-		"executeClaudeTask",
-		"persistDagState",
-		"durablePlanActivity",
-	].map((name) => ({
-		name,
-		source: "service-introspection" as const,
-		sourceCode: sources.get(name) ?? null,
-	}));
+  const sources = getActivitySources();
+  return [
+    "recordInitialEntry",
+    "callLlm",
+    "runTool",
+    "saveToolResults",
+    "compactConversation",
+    "finalizeWorkflow",
+    "executeClaudeTask",
+    "persistDagState",
+    "durablePlanActivity",
+  ].map((name) => ({
+    name,
+    source: "service-introspection" as const,
+    sourceCode: sources.get(name) ?? null,
+  }));
 }
 
 type ActiveRun = {
-	agentWorkflowId: string;
-	daprInstanceId: string;
-	parentExecutionId: string;
-	workspaceRef?: string;
-	mode: "run" | "execute_plan" | "execute_plan_dag";
+  agentWorkflowId: string;
+  daprInstanceId: string;
+  parentExecutionId: string;
+  workspaceRef?: string;
+  mode: "run" | "execute_plan" | "execute_plan_dag";
 };
 
 const activeRuns = new Map<string, ActiveRun>();
@@ -329,8 +360,8 @@ const activeRunIdsByParent = new Map<string, Set<string>>();
 
 // Merged tools from all sources (populated in initAgent)
 let allMergedTools: Record<
-	string,
-	import("../types/tool.js").DurableAgentTool
+  string,
+  import("../types/tool.js").DurableAgentTool
 > = {};
 
 // LRU cache for per-request agent instances (keyed by config hash)
@@ -339,862 +370,948 @@ const AGENT_CACHE_MAX = 10;
 const AGENT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
 function agentConfigHash(config: AgentConfigPayload): string {
-	const normalizedInstructions = normalizeAgentInstructions(
-		config.instructions,
-	);
-	const key = JSON.stringify({
-		n: config.name,
-		i: normalizedInstructions.slice(0, 200),
-		m: config.modelSpec,
-		t: config.tools?.sort(),
-		x: config.maxTurns,
-		y: config.timeoutMinutes,
-	});
-	// Simple string hash
-	let hash = 0;
-	for (let i = 0; i < key.length; i++) {
-		hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
-	}
-	return `agent-${hash.toString(36)}`;
+  const normalizedInstructions = normalizeAgentInstructions(
+    config.instructions,
+  );
+  const key = JSON.stringify({
+    n: config.name,
+    i: normalizedInstructions.slice(0, 200),
+    m: config.modelSpec,
+    t: config.tools?.sort(),
+    x: config.maxTurns,
+    y: config.timeoutMinutes,
+    mb: config.memory?.backend,
+    ms: config.memory?.storeName,
+    mi: config.memory?.sessionId,
+    ls: config.loop?.strategy,
+  });
+  // Simple string hash
+  let hash = 0;
+  for (let i = 0; i < key.length; i++) {
+    hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0;
+  }
+  return `agent-${hash.toString(36)}`;
 }
 
 function normalizeAgentInstructions(instructions: string | undefined): string {
-	const trimmed = typeof instructions === "string" ? instructions.trim() : "";
-	return trimmed.length > 0 ? trimmed : FALLBACK_AGENT_INSTRUCTIONS;
+  const trimmed = typeof instructions === "string" ? instructions.trim() : "";
+  return trimmed.length > 0 ? trimmed : FALLBACK_AGENT_INSTRUCTIONS;
 }
 
 type AgentConfigOverrides = {
-	name?: string;
-	modelSpec?: string;
-	instructions?: string;
-	tools?: string[];
-	maxTurns?: number;
-	timeoutMinutes?: number;
-	role?: string;
-	goal?: string;
-	systemPrompt?: string;
+  name?: string;
+  modelSpec?: string;
+  instructions?: string;
+  tools?: string[];
+  maxTurns?: number;
+  timeoutMinutes?: number;
+  role?: string;
+  goal?: string;
+  systemPrompt?: string;
+  memoryBackend?: "conversation_list" | "dapr_state";
+  loopStrategy?: "default" | "graph_v1";
 };
 
 type AgentConfigStoreTarget = {
-	storeName: string;
-	keys: string[];
-	metadata: Record<string, string>;
-	cacheKey: string;
+  storeName: string;
+  keys: string[];
+  metadata: Record<string, string>;
+  cacheKey: string;
 };
 
 type AgentConfigSubscription = {
-	target: AgentConfigStoreTarget;
-	overrides?: AgentConfigOverrides;
-	subscriptionID?: string;
-	starting?: Promise<void>;
+  target: AgentConfigStoreTarget;
+  overrides?: AgentConfigOverrides;
+  subscriptionID?: string;
+  starting?: Promise<void>;
 };
 
 const DAPR_HTTP_HOST = process.env.DAPR_HOST?.trim() || "127.0.0.1";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT?.trim() || "3500";
 const MIN_DAPR_RUNTIME_VERSION =
-	process.env.MIN_DAPR_RUNTIME_VERSION?.trim() ||
-	process.env.DAPR_MIN_RUNTIME_VERSION?.trim() ||
-	"1.17.0";
+  process.env.MIN_DAPR_RUNTIME_VERSION?.trim() ||
+  process.env.DAPR_MIN_RUNTIME_VERSION?.trim() ||
+  "1.17.0";
 const ENFORCE_MIN_DAPR_VERSION = ["1", "true", "yes", "on"].includes(
-	String(
-		process.env.ENFORCE_MIN_DAPR_VERSION ||
-			process.env.DAPR_ENFORCE_MIN_VERSION ||
-			"",
-	)
-		.trim()
-		.toLowerCase(),
+  String(
+    process.env.ENFORCE_MIN_DAPR_VERSION ||
+      process.env.DAPR_ENFORCE_MIN_VERSION ||
+      "",
+  )
+    .trim()
+    .toLowerCase(),
 );
 const configStoreSubscriptions = new Map<string, AgentConfigSubscription>();
 
 function parseSemver(
-	version: string | null | undefined,
+  version: string | null | undefined,
 ): [number, number, number] {
-	const text = String(version || "")
-		.trim()
-		.replace(/^v/, "");
-	const [majorRaw = "0", minorRaw = "0", patchRaw = "0"] = text.split(".");
-	const patchDigits = (patchRaw.match(/^\d+/)?.[0] ?? "0").trim();
-	return [
-		Number.parseInt(majorRaw, 10) || 0,
-		Number.parseInt(minorRaw, 10) || 0,
-		Number.parseInt(patchDigits, 10) || 0,
-	];
+  const text = String(version || "")
+    .trim()
+    .replace(/^v/, "");
+  const [majorRaw = "0", minorRaw = "0", patchRaw = "0"] = text.split(".");
+  const patchDigits = (patchRaw.match(/^\d+/)?.[0] ?? "0").trim();
+  return [
+    Number.parseInt(majorRaw, 10) || 0,
+    Number.parseInt(minorRaw, 10) || 0,
+    Number.parseInt(patchDigits, 10) || 0,
+  ];
 }
 
 async function verifyDaprRuntimeVersion(): Promise<void> {
-	const metadataUrl = `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`;
-	try {
-		const response = await fetch(metadataUrl, {
-			method: "GET",
-			signal: AbortSignal.timeout(5_000),
-		});
-		if (!response.ok) {
-			throw new Error(`HTTP ${response.status}`);
-		}
-		const payload = (await response.json()) as {
-			runtimeVersion?: string;
-		};
-		const runtimeVersion = (payload.runtimeVersion || "").trim();
-		const [rMaj, rMin, rPatch] = parseSemver(runtimeVersion);
-		const [mMaj, mMin, mPatch] = parseSemver(MIN_DAPR_RUNTIME_VERSION);
-		const runtimeOk =
-			rMaj > mMaj ||
-			(rMaj === mMaj && (rMin > mMin || (rMin === mMin && rPatch >= mPatch)));
-		if (!runtimeOk) {
-			const message = `[durable-agent] Dapr runtime ${runtimeVersion || "<unknown>"} is below required ${MIN_DAPR_RUNTIME_VERSION}`;
-			if (ENFORCE_MIN_DAPR_VERSION) {
-				throw new Error(message);
-			}
-			console.warn(message);
-			return;
-		}
-		console.log(
-			`[durable-agent] Dapr runtime ${runtimeVersion} satisfies minimum ${MIN_DAPR_RUNTIME_VERSION}`,
-		);
-	} catch (error) {
-		const message = `[durable-agent] Failed to verify Dapr runtime version (minimum ${MIN_DAPR_RUNTIME_VERSION}): ${error}`;
-		if (ENFORCE_MIN_DAPR_VERSION) {
-			throw new Error(message);
-		}
-		console.warn(message);
-	}
+  const metadataUrl = `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`;
+  try {
+    const response = await fetch(metadataUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const payload = (await response.json()) as {
+      runtimeVersion?: string;
+    };
+    const runtimeVersion = (payload.runtimeVersion || "").trim();
+    const [rMaj, rMin, rPatch] = parseSemver(runtimeVersion);
+    const [mMaj, mMin, mPatch] = parseSemver(MIN_DAPR_RUNTIME_VERSION);
+    const runtimeOk =
+      rMaj > mMaj ||
+      (rMaj === mMaj && (rMin > mMin || (rMin === mMin && rPatch >= mPatch)));
+    if (!runtimeOk) {
+      const message = `[durable-agent] Dapr runtime ${runtimeVersion || "<unknown>"} is below required ${MIN_DAPR_RUNTIME_VERSION}`;
+      if (ENFORCE_MIN_DAPR_VERSION) {
+        throw new Error(message);
+      }
+      console.warn(message);
+      return;
+    }
+    console.log(
+      `[durable-agent] Dapr runtime ${runtimeVersion} satisfies minimum ${MIN_DAPR_RUNTIME_VERSION}`,
+    );
+  } catch (error) {
+    const message = `[durable-agent] Failed to verify Dapr runtime version (minimum ${MIN_DAPR_RUNTIME_VERSION}): ${error}`;
+    if (ENFORCE_MIN_DAPR_VERSION) {
+      throw new Error(message);
+    }
+    console.warn(message);
+  }
 }
 
 function toConfigString(value: unknown): string | undefined {
-	if (typeof value === "string") {
-		const trimmed = value.trim();
-		return trimmed.length > 0 ? trimmed : undefined;
-	}
-	if (typeof value === "number" || typeof value === "boolean") {
-		return String(value);
-	}
-	return undefined;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return undefined;
 }
 
 function toConfigNumber(value: unknown): number | undefined {
-	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
-		return Math.floor(value);
-	}
-	if (typeof value === "string") {
-		const parsed = Number.parseInt(value.trim(), 10);
-		if (Number.isFinite(parsed) && parsed > 0) {
-			return parsed;
-		}
-	}
-	return undefined;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
 }
 
 function toConfigTools(value: unknown): string[] | undefined {
-	if (Array.isArray(value)) {
-		const tools = value
-			.filter((item): item is string => typeof item === "string")
-			.map((item) => item.trim())
-			.filter(Boolean);
-		return tools.length > 0 ? [...new Set(tools)] : undefined;
-	}
-	if (typeof value === "string") {
-		const trimmed = value.trim();
-		if (!trimmed) return undefined;
-		if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
-			try {
-				return toConfigTools(JSON.parse(trimmed));
-			} catch {
-				return undefined;
-			}
-		}
-		const tools = trimmed
-			.split(",")
-			.map((item) => item.trim())
-			.filter(Boolean);
-		return tools.length > 0 ? [...new Set(tools)] : undefined;
-	}
-	if (value && typeof value === "object") {
-		const tools = Object.entries(value as Record<string, unknown>)
-			.filter(([, enabled]) => enabled === true || enabled === "true")
-			.map(([tool]) => tool.trim())
-			.filter(Boolean);
-		return tools.length > 0 ? [...new Set(tools)] : undefined;
-	}
-	return undefined;
+  if (Array.isArray(value)) {
+    const tools = value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return tools.length > 0 ? [...new Set(tools)] : undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        return toConfigTools(JSON.parse(trimmed));
+      } catch {
+        return undefined;
+      }
+    }
+    const tools = trimmed
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return tools.length > 0 ? [...new Set(tools)] : undefined;
+  }
+  if (value && typeof value === "object") {
+    const tools = Object.entries(value as Record<string, unknown>)
+      .filter(([, enabled]) => enabled === true || enabled === "true")
+      .map(([tool]) => tool.trim())
+      .filter(Boolean);
+    return tools.length > 0 ? [...new Set(tools)] : undefined;
+  }
+  return undefined;
 }
 
 function normalizeConfigKey(key: string): string {
-	return key
-		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/g, "_");
+  return key
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_");
 }
 
 function applyConfigOverride(
-	overrides: AgentConfigOverrides,
-	key: string,
-	value: unknown,
+  overrides: AgentConfigOverrides,
+  key: string,
+  value: unknown,
 ): void {
-	const normalized = normalizeConfigKey(key);
-	if (normalized === "name" || normalized === "agent_name") {
-		const parsed = toConfigString(value);
-		if (parsed) overrides.name = parsed;
-		return;
-	}
-	if (
-		normalized === "model" ||
-		normalized === "model_spec" ||
-		normalized === "modelspec" ||
-		normalized === "llm_model"
-	) {
-		const parsed = toConfigString(value);
-		if (parsed) overrides.modelSpec = parsed;
-		return;
-	}
-	if (normalized === "instructions" || normalized === "agent_instructions") {
-		const parsed = Array.isArray(value)
-			? value
-					.filter((item): item is string => typeof item === "string")
-					.map((item) => item.trim())
-					.filter(Boolean)
-					.join("\n")
-			: toConfigString(value);
-		if (parsed) overrides.instructions = parsed;
-		return;
-	}
-	if (normalized === "system_prompt" || normalized === "agent_system_prompt") {
-		const parsed = toConfigString(value);
-		if (parsed) overrides.systemPrompt = parsed;
-		return;
-	}
-	if (normalized === "role" || normalized === "agent_role") {
-		const parsed = toConfigString(value);
-		if (parsed) overrides.role = parsed;
-		return;
-	}
-	if (normalized === "goal" || normalized === "agent_goal") {
-		const parsed = toConfigString(value);
-		if (parsed) overrides.goal = parsed;
-		return;
-	}
-	if (normalized === "tools" || normalized === "agent_tools") {
-		const parsed = toConfigTools(value);
-		if (parsed) overrides.tools = parsed;
-		return;
-	}
-	if (
-		normalized === "max_turns" ||
-		normalized === "max_turn" ||
-		normalized === "max_iterations" ||
-		normalized === "maxturns"
-	) {
-		const parsed = toConfigNumber(value);
-		if (parsed) overrides.maxTurns = parsed;
-		return;
-	}
-	if (normalized === "timeout_minutes" || normalized === "timeoutminutes") {
-		const parsed = toConfigNumber(value);
-		if (parsed) overrides.timeoutMinutes = parsed;
-	}
+  const normalized = normalizeConfigKey(key);
+  if (normalized === "name" || normalized === "agent_name") {
+    const parsed = toConfigString(value);
+    if (parsed) overrides.name = parsed;
+    return;
+  }
+  if (
+    normalized === "model" ||
+    normalized === "model_spec" ||
+    normalized === "modelspec" ||
+    normalized === "llm_model"
+  ) {
+    const parsed = toConfigString(value);
+    if (parsed) overrides.modelSpec = parsed;
+    return;
+  }
+  if (normalized === "instructions" || normalized === "agent_instructions") {
+    const parsed = Array.isArray(value)
+      ? value
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean)
+          .join("\n")
+      : toConfigString(value);
+    if (parsed) overrides.instructions = parsed;
+    return;
+  }
+  if (normalized === "system_prompt" || normalized === "agent_system_prompt") {
+    const parsed = toConfigString(value);
+    if (parsed) overrides.systemPrompt = parsed;
+    return;
+  }
+  if (normalized === "role" || normalized === "agent_role") {
+    const parsed = toConfigString(value);
+    if (parsed) overrides.role = parsed;
+    return;
+  }
+  if (normalized === "goal" || normalized === "agent_goal") {
+    const parsed = toConfigString(value);
+    if (parsed) overrides.goal = parsed;
+    return;
+  }
+  if (normalized === "tools" || normalized === "agent_tools") {
+    const parsed = toConfigTools(value);
+    if (parsed) overrides.tools = parsed;
+    return;
+  }
+  if (
+    normalized === "max_turns" ||
+    normalized === "max_turn" ||
+    normalized === "max_iterations" ||
+    normalized === "maxturns"
+  ) {
+    const parsed = toConfigNumber(value);
+    if (parsed) overrides.maxTurns = parsed;
+    return;
+  }
+  if (normalized === "timeout_minutes" || normalized === "timeoutminutes") {
+    const parsed = toConfigNumber(value);
+    if (parsed) overrides.timeoutMinutes = parsed;
+    return;
+  }
+  if (normalized === "memory_backend" || normalized === "memorybackend") {
+    const parsed = toConfigString(value);
+    if (parsed === "conversation_list" || parsed === "dapr_state") {
+      overrides.memoryBackend = parsed;
+    }
+    return;
+  }
+  if (normalized === "loop_strategy" || normalized === "loopstrategy") {
+    const parsed = toConfigString(value);
+    if (parsed === "default" || parsed === "graph_v1") {
+      overrides.loopStrategy = parsed;
+    }
+  }
 }
 
 function buildConfigStoreInstructions(
-	overrides: AgentConfigOverrides | undefined,
+  overrides: AgentConfigOverrides | undefined,
 ): string | undefined {
-	if (!overrides) return undefined;
-	if (overrides.instructions) return overrides.instructions;
-	const parts = [
-		overrides.systemPrompt,
-		overrides.role ? `Role: ${overrides.role}` : undefined,
-		overrides.goal ? `Goal: ${overrides.goal}` : undefined,
-	].filter((item): item is string => Boolean(item && item.trim()));
-	if (parts.length === 0) return undefined;
-	return parts.join("\n\n");
+  if (!overrides) return undefined;
+  if (overrides.instructions) return overrides.instructions;
+  const parts = [
+    overrides.systemPrompt,
+    overrides.role ? `Role: ${overrides.role}` : undefined,
+    overrides.goal ? `Goal: ${overrides.goal}` : undefined,
+  ].filter((item): item is string => Boolean(item && item.trim()));
+  if (parts.length === 0) return undefined;
+  return parts.join("\n\n");
 }
 
 function createConfigStoreTarget(
-	configuration: AgentConfigPayload["configuration"] | undefined,
+  configuration: AgentConfigPayload["configuration"] | undefined,
 ): AgentConfigStoreTarget | undefined {
-	if (!configuration?.storeName?.trim()) {
-		return undefined;
-	}
-	const storeName = configuration.storeName.trim();
-	const configName = configuration.configName?.trim();
-	const keys = (configuration.keys || [])
-		.map((key) => key.trim())
-		.filter(Boolean);
-	const metadata = Object.fromEntries(
-		Object.entries(configuration.metadata || {})
-			.map(([key, value]) => [key.trim(), value.trim()] as const)
-			.filter(([key, value]) => Boolean(key) && Boolean(value)),
-	);
-	const effectiveKeys =
-		keys.length > 0 ? [...new Set(keys)] : configName ? [configName] : [];
-	const cacheKey = JSON.stringify({
-		storeName,
-		keys: [...effectiveKeys].sort(),
-		metadata: Object.entries(metadata).sort(([a], [b]) => a.localeCompare(b)),
-	});
-	return {
-		storeName,
-		keys: effectiveKeys,
-		metadata,
-		cacheKey,
-	};
+  if (!configuration?.storeName?.trim()) {
+    return undefined;
+  }
+  const storeName = configuration.storeName.trim();
+  const configName = configuration.configName?.trim();
+  const keys = (configuration.keys || [])
+    .map((key) => key.trim())
+    .filter(Boolean);
+  const metadata = Object.fromEntries(
+    Object.entries(configuration.metadata || {})
+      .map(([key, value]) => [key.trim(), value.trim()] as const)
+      .filter(([key, value]) => Boolean(key) && Boolean(value)),
+  );
+  const effectiveKeys =
+    keys.length > 0 ? [...new Set(keys)] : configName ? [configName] : [];
+  const cacheKey = JSON.stringify({
+    storeName,
+    keys: [...effectiveKeys].sort(),
+    metadata: Object.entries(metadata).sort(([a], [b]) => a.localeCompare(b)),
+  });
+  return {
+    storeName,
+    keys: effectiveKeys,
+    metadata,
+    cacheKey,
+  };
 }
 
 function parseConfigStoreOverrides(
-	items: Record<string, { value?: unknown }>,
+  items: Record<string, { value?: unknown }>,
 ): AgentConfigOverrides | undefined {
-	const overrides: AgentConfigOverrides = {};
-	for (const [key, rawItem] of Object.entries(items)) {
-		const rawValue = rawItem?.value;
-		if (typeof rawValue !== "string") {
-			applyConfigOverride(overrides, key, rawValue);
-			continue;
-		}
-		try {
-			const parsed = JSON.parse(rawValue);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				for (const [nestedKey, nestedValue] of Object.entries(parsed)) {
-					applyConfigOverride(overrides, nestedKey, nestedValue);
-				}
-				continue;
-			}
-			applyConfigOverride(overrides, key, parsed);
-		} catch {
-			applyConfigOverride(overrides, key, rawValue);
-		}
-	}
-	return Object.keys(overrides).length > 0 ? overrides : undefined;
+  const overrides: AgentConfigOverrides = {};
+  for (const [key, rawItem] of Object.entries(items)) {
+    const rawValue = rawItem?.value;
+    if (typeof rawValue !== "string") {
+      applyConfigOverride(overrides, key, rawValue);
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(rawValue);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [nestedKey, nestedValue] of Object.entries(parsed)) {
+          applyConfigOverride(overrides, nestedKey, nestedValue);
+        }
+        continue;
+      }
+      applyConfigOverride(overrides, key, parsed);
+    } catch {
+      applyConfigOverride(overrides, key, rawValue);
+    }
+  }
+  return Object.keys(overrides).length > 0 ? overrides : undefined;
 }
 
 function normalizeConfigStoreItems(
-	items: unknown,
+  items: unknown,
 ): Record<string, { value?: unknown }> {
-	if (Array.isArray(items)) {
-		return Object.fromEntries(
-			items.flatMap((item) => {
-				if (!item || typeof item !== "object" || Array.isArray(item)) {
-					return [];
-				}
-				const value = item as Record<string, unknown>;
-				const key = typeof value.key === "string" ? value.key.trim() : "";
-				if (!key) return [];
-				return [[key, { value: value.value }] as const];
-			}),
-		);
-	}
-	if (items && typeof items === "object" && !Array.isArray(items)) {
-		const value = items as Record<string, unknown>;
-		if (typeof value.key === "string") {
-			const key = value.key.trim();
-			if (!key) return {};
-			return { [key]: { value: value.value } };
-		}
-		return Object.fromEntries(
-			Object.entries(value).map(([key, entry]) => {
-				if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-					return [key, { value: entry }] as const;
-				}
-				const item = entry as Record<string, unknown>;
-				if (!("value" in item)) {
-					return [key, { value: entry }] as const;
-				}
-				return [key, { value: item.value }] as const;
-			}),
-		);
-	}
-	return {};
+  if (Array.isArray(items)) {
+    return Object.fromEntries(
+      items.flatMap((item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          return [];
+        }
+        const value = item as Record<string, unknown>;
+        const key = typeof value.key === "string" ? value.key.trim() : "";
+        if (!key) return [];
+        return [[key, { value: value.value }] as const];
+      }),
+    );
+  }
+  if (items && typeof items === "object" && !Array.isArray(items)) {
+    const value = items as Record<string, unknown>;
+    if (typeof value.key === "string") {
+      const key = value.key.trim();
+      if (!key) return {};
+      return { [key]: { value: value.value } };
+    }
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return [key, { value: entry }] as const;
+        }
+        const item = entry as Record<string, unknown>;
+        if (!("value" in item)) {
+          return [key, { value: entry }] as const;
+        }
+        return [key, { value: item.value }] as const;
+      }),
+    );
+  }
+  return {};
 }
 
 function applyConfigStorePush(input: {
-	storeName?: string;
-	key?: string;
-	payload: unknown;
+  storeName?: string;
+  key?: string;
+  payload: unknown;
 }): { matched: number; updated: number } {
-	const storeName = input.storeName?.trim();
-	const key = input.key?.trim();
-	const payload =
-		input.payload &&
-		typeof input.payload === "object" &&
-		!Array.isArray(input.payload)
-			? (input.payload as Record<string, unknown>)
-			: undefined;
-	const subscriptionID =
-		typeof payload?.id === "string" ? payload.id.trim() : "";
-	const items = normalizeConfigStoreItems(payload?.items ?? payload);
-	const overrides = parseConfigStoreOverrides(items);
-	if (!overrides) {
-		return { matched: 0, updated: 0 };
-	}
-	let matched = 0;
-	let updated = 0;
-	for (const subscription of configStoreSubscriptions.values()) {
-		if (
-			subscriptionID &&
-			subscription.subscriptionID &&
-			subscription.subscriptionID !== subscriptionID
-		) {
-			continue;
-		}
-		if (storeName && subscription.target.storeName !== storeName) {
-			continue;
-		}
-		if (
-			key &&
-			subscription.target.keys.length > 0 &&
-			!subscription.target.keys.includes(key)
-		) {
-			continue;
-		}
-		matched += 1;
-		const previous = JSON.stringify(subscription.overrides || {});
-		const merged = {
-			...(subscription.overrides || {}),
-			...overrides,
-		};
-		const current = JSON.stringify(merged);
-		subscription.overrides = merged;
-		if (previous !== current) {
-			updated += 1;
-		}
-	}
-	if (updated > 0) {
-		agentCache.clear();
-	}
-	if (matched > 0) {
-		console.log(
-			`[durable-agent] Dynamic config push received store=${storeName || "<unknown>"} key=${key || "<batch>"} subscription=${subscriptionID || "<none>"} matched=${matched} updated=${updated}`,
-		);
-	}
-	return { matched, updated };
+  const storeName = input.storeName?.trim();
+  const key = input.key?.trim();
+  const payload =
+    input.payload &&
+    typeof input.payload === "object" &&
+    !Array.isArray(input.payload)
+      ? (input.payload as Record<string, unknown>)
+      : undefined;
+  const subscriptionID =
+    typeof payload?.id === "string" ? payload.id.trim() : "";
+  const items = normalizeConfigStoreItems(payload?.items ?? payload);
+  const overrides = parseConfigStoreOverrides(items);
+  if (!overrides) {
+    return { matched: 0, updated: 0 };
+  }
+  let matched = 0;
+  let updated = 0;
+  for (const subscription of configStoreSubscriptions.values()) {
+    if (
+      subscriptionID &&
+      subscription.subscriptionID &&
+      subscription.subscriptionID !== subscriptionID
+    ) {
+      continue;
+    }
+    if (storeName && subscription.target.storeName !== storeName) {
+      continue;
+    }
+    if (
+      key &&
+      subscription.target.keys.length > 0 &&
+      !subscription.target.keys.includes(key)
+    ) {
+      continue;
+    }
+    matched += 1;
+    const previous = JSON.stringify(subscription.overrides || {});
+    const merged = {
+      ...(subscription.overrides || {}),
+      ...overrides,
+    };
+    const current = JSON.stringify(merged);
+    subscription.overrides = merged;
+    if (previous !== current) {
+      updated += 1;
+    }
+  }
+  if (updated > 0) {
+    agentCache.clear();
+  }
+  if (matched > 0) {
+    console.log(
+      `[durable-agent] Dynamic config push received store=${storeName || "<unknown>"} key=${key || "<batch>"} subscription=${subscriptionID || "<none>"} matched=${matched} updated=${updated}`,
+    );
+  }
+  return { matched, updated };
 }
 
 async function fetchConfigStoreOverrides(
-	target: AgentConfigStoreTarget,
+  target: AgentConfigStoreTarget,
 ): Promise<AgentConfigOverrides | undefined> {
-	const url = new URL(
-		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(target.storeName)}`,
-	);
-	for (const key of target.keys) {
-		url.searchParams.append("key", key);
-	}
-	for (const [key, value] of Object.entries(target.metadata)) {
-		url.searchParams.set(`metadata.${key}`, value);
-	}
-	const response = await fetch(url.toString(), {
-		method: "GET",
-		signal: AbortSignal.timeout(5000),
-	});
-	if (!response.ok) {
-		throw new Error(`configuration get failed (${response.status})`);
-	}
-	const payload = (await response.json()) as
-		| { items?: Record<string, { value?: unknown }> }
-		| Record<string, { value?: unknown }>;
-	const items =
-		payload &&
-		typeof payload === "object" &&
-		"items" in payload &&
-		payload.items &&
-		typeof payload.items === "object" &&
-		!Array.isArray(payload.items)
-			? (payload.items as Record<string, { value?: unknown }>)
-			: (payload as Record<string, { value?: unknown }>);
-	return parseConfigStoreOverrides(items);
+  const url = new URL(
+    `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(target.storeName)}`,
+  );
+  for (const key of target.keys) {
+    url.searchParams.append("key", key);
+  }
+  for (const [key, value] of Object.entries(target.metadata)) {
+    url.searchParams.set(`metadata.${key}`, value);
+  }
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) {
+    throw new Error(`configuration get failed (${response.status})`);
+  }
+  const payload = (await response.json()) as
+    | { items?: Record<string, { value?: unknown }> }
+    | Record<string, { value?: unknown }>;
+  const items =
+    payload &&
+    typeof payload === "object" &&
+    "items" in payload &&
+    payload.items &&
+    typeof payload.items === "object" &&
+    !Array.isArray(payload.items)
+      ? (payload.items as Record<string, { value?: unknown }>)
+      : (payload as Record<string, { value?: unknown }>);
+  return parseConfigStoreOverrides(items);
 }
 
 async function subscribeConfigStoreTarget(
-	subscription: AgentConfigSubscription,
+  subscription: AgentConfigSubscription,
 ): Promise<void> {
-	try {
-		subscription.overrides = await fetchConfigStoreOverrides(
-			subscription.target,
-		);
-	} catch (err) {
-		console.warn(
-			`[durable-agent] Failed initial config load for store '${subscription.target.storeName}':`,
-			err,
-		);
-	}
-	try {
-		const url = new URL(
-			`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(subscription.target.storeName)}/subscribe`,
-		);
-		for (const key of subscription.target.keys) {
-			url.searchParams.append("key", key);
-		}
-		for (const [key, value] of Object.entries(subscription.target.metadata)) {
-			url.searchParams.set(`metadata.${key}`, value);
-		}
-		const response = await fetch(url.toString(), {
-			method: "GET",
-			signal: AbortSignal.timeout(5000),
-		});
-		if (!response.ok) {
-			throw new Error(`configuration subscribe failed (${response.status})`);
-		}
-		const payload = (await response.json()) as { id?: unknown };
-		const subscriptionID =
-			typeof payload.id === "string" ? payload.id.trim() : "";
-		if (!subscriptionID) {
-			throw new Error("configuration subscribe returned empty id");
-		}
-		subscription.subscriptionID = subscriptionID;
-		console.log(
-			`[durable-agent] Subscribed to config store '${subscription.target.storeName}' (${subscription.target.keys.length} keys) id=${subscriptionID}`,
-		);
-	} catch (err) {
-		console.warn(
-			`[durable-agent] Failed config subscription for store '${subscription.target.storeName}':`,
-			err,
-		);
-	}
+  try {
+    subscription.overrides = await fetchConfigStoreOverrides(
+      subscription.target,
+    );
+  } catch (err) {
+    console.warn(
+      `[durable-agent] Failed initial config load for store '${subscription.target.storeName}':`,
+      err,
+    );
+  }
+  try {
+    const url = new URL(
+      `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodeURIComponent(subscription.target.storeName)}/subscribe`,
+    );
+    for (const key of subscription.target.keys) {
+      url.searchParams.append("key", key);
+    }
+    for (const [key, value] of Object.entries(subscription.target.metadata)) {
+      url.searchParams.set(`metadata.${key}`, value);
+    }
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      throw new Error(`configuration subscribe failed (${response.status})`);
+    }
+    const payload = (await response.json()) as { id?: unknown };
+    const subscriptionID =
+      typeof payload.id === "string" ? payload.id.trim() : "";
+    if (!subscriptionID) {
+      throw new Error("configuration subscribe returned empty id");
+    }
+    subscription.subscriptionID = subscriptionID;
+    console.log(
+      `[durable-agent] Subscribed to config store '${subscription.target.storeName}' (${subscription.target.keys.length} keys) id=${subscriptionID}`,
+    );
+  } catch (err) {
+    console.warn(
+      `[durable-agent] Failed config subscription for store '${subscription.target.storeName}':`,
+      err,
+    );
+  }
 }
 
 function ensureConfigStoreSubscription(
-	target: AgentConfigStoreTarget,
+  target: AgentConfigStoreTarget,
 ): AgentConfigSubscription {
-	let subscription = configStoreSubscriptions.get(target.cacheKey);
-	if (!subscription) {
-		subscription = { target };
-		configStoreSubscriptions.set(target.cacheKey, subscription);
-	}
-	if (!subscription.subscriptionID && !subscription.starting) {
-		subscription.starting = subscribeConfigStoreTarget(subscription).finally(
-			() => {
-				if (subscription) {
-					subscription.starting = undefined;
-				}
-			},
-		);
-	}
-	return subscription;
+  let subscription = configStoreSubscriptions.get(target.cacheKey);
+  if (!subscription) {
+    subscription = { target };
+    configStoreSubscriptions.set(target.cacheKey, subscription);
+  }
+  if (!subscription.subscriptionID && !subscription.starting) {
+    subscription.starting = subscribeConfigStoreTarget(subscription).finally(
+      () => {
+        if (subscription) {
+          subscription.starting = undefined;
+        }
+      },
+    );
+  }
+  return subscription;
 }
 
 async function unsubscribeConfigStoreTarget(
-	subscription: AgentConfigSubscription,
+  subscription: AgentConfigSubscription,
 ): Promise<void> {
-	if (!subscription.subscriptionID) {
-		return;
-	}
-	const encodedStore = encodeURIComponent(subscription.target.storeName);
-	const encodedID = encodeURIComponent(subscription.subscriptionID);
-	const urls = [
-		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodedStore}/${encodedID}/unsubscribe`,
-		`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0-alpha1/configuration/${encodedStore}/${encodedID}/unsubscribe`,
-	];
-	let lastError = "unknown";
-	for (const url of urls) {
-		const response = await fetch(url, {
-			method: "GET",
-			signal: AbortSignal.timeout(5000),
-		});
-		if (response.ok) {
-			return;
-		}
-		lastError = String(response.status);
-	}
-	throw new Error(`configuration unsubscribe failed (${lastError})`);
+  if (!subscription.subscriptionID) {
+    return;
+  }
+  const encodedStore = encodeURIComponent(subscription.target.storeName);
+  const encodedID = encodeURIComponent(subscription.subscriptionID);
+  const urls = [
+    `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/configuration/${encodedStore}/${encodedID}/unsubscribe`,
+    `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0-alpha1/configuration/${encodedStore}/${encodedID}/unsubscribe`,
+  ];
+  let lastError = "unknown";
+  for (const url of urls) {
+    const response = await fetch(url, {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.ok) {
+      return;
+    }
+    lastError = String(response.status);
+  }
+  throw new Error(`configuration unsubscribe failed (${lastError})`);
 }
 
 async function stopConfigStoreSubscriptions(): Promise<void> {
-	const stops = [...configStoreSubscriptions.values()].flatMap(
-		(subscription) => {
-			if (!subscription.subscriptionID) {
-				return [];
-			}
-			return [
-				Promise.resolve(unsubscribeConfigStoreTarget(subscription)).catch(
-					(err) => {
-						console.warn(
-							"[durable-agent] Failed stopping config subscription:",
-							err,
-						);
-					},
-				),
-			];
-		},
-	);
-	configStoreSubscriptions.clear();
-	await Promise.all(stops);
+  const stops = [...configStoreSubscriptions.values()].flatMap(
+    (subscription) => {
+      if (!subscription.subscriptionID) {
+        return [];
+      }
+      return [
+        Promise.resolve(unsubscribeConfigStoreTarget(subscription)).catch(
+          (err) => {
+            console.warn(
+              "[durable-agent] Failed stopping config subscription:",
+              err,
+            );
+          },
+        ),
+      ];
+    },
+  );
+  configStoreSubscriptions.clear();
+  await Promise.all(stops);
 }
 
 async function loadConfigStoreOverrides(
-	configuration: AgentConfigPayload["configuration"] | undefined,
+  configuration: AgentConfigPayload["configuration"] | undefined,
 ): Promise<AgentConfigOverrides | undefined> {
-	const target = createConfigStoreTarget(configuration);
-	if (!target) return undefined;
-	try {
-		const subscription = ensureConfigStoreSubscription(target);
-		if (subscription.overrides !== undefined) {
-			return subscription.overrides;
-		}
-		const overrides = await fetchConfigStoreOverrides(target);
-		subscription.overrides = overrides;
-		return overrides;
-	} catch (err) {
-		console.warn(
-			`[durable-agent] Failed loading config store '${target.storeName}':`,
-			err,
-		);
-		return undefined;
-	}
+  const target = createConfigStoreTarget(configuration);
+  if (!target) return undefined;
+  try {
+    const subscription = ensureConfigStoreSubscription(target);
+    if (subscription.overrides !== undefined) {
+      return subscription.overrides;
+    }
+    const overrides = await fetchConfigStoreOverrides(target);
+    subscription.overrides = overrides;
+    return overrides;
+  } catch (err) {
+    console.warn(
+      `[durable-agent] Failed loading config store '${target.storeName}':`,
+      err,
+    );
+    return undefined;
+  }
 }
 
 async function resolveRequestAgentConfig(input: {
-	body: Record<string, unknown>;
-	inlineName: string;
+  body: Record<string, unknown>;
+  inlineName: string;
 }): Promise<AgentConfigPayload | undefined> {
-	const requestConfig =
-		input.body.agentConfig && typeof input.body.agentConfig === "object"
-			? (input.body.agentConfig as AgentConfigPayload)
-			: undefined;
-	const storeOverrides = await loadConfigStoreOverrides(
-		requestConfig?.configuration,
-	);
+  const requestConfig =
+    input.body.agentConfig && typeof input.body.agentConfig === "object"
+      ? (input.body.agentConfig as AgentConfigPayload)
+      : undefined;
+  const storeOverrides = await loadConfigStoreOverrides(
+    requestConfig?.configuration,
+  );
+  const hasStructuredConfig = Boolean(requestConfig);
 
-	const inlineModel =
-		typeof input.body.model === "string" ? input.body.model.trim() : "";
-	const inlineInstructions =
-		typeof input.body.instructions === "string"
-			? input.body.instructions
-			: undefined;
-	const inlineTools = toConfigTools(input.body.tools);
+  const inlineModel =
+    typeof input.body.model === "string" ? input.body.model.trim() : "";
+  const inlineInstructions =
+    typeof input.body.instructions === "string"
+      ? input.body.instructions
+      : undefined;
+  const inlineTools = toConfigTools(input.body.tools);
 
-	const modelSpec =
-		requestConfig?.modelSpec?.trim() ||
-		storeOverrides?.modelSpec?.trim() ||
-		inlineModel ||
-		undefined;
-	if (!modelSpec) {
-		return undefined;
-	}
+  const modelSpec =
+    requestConfig?.modelSpec?.trim() ||
+    storeOverrides?.modelSpec?.trim() ||
+    inlineModel ||
+    (hasStructuredConfig ? getDefaultAgentModelSpec() : undefined);
+  if (!modelSpec) {
+    return undefined;
+  }
 
-	const toolsFromRequest = requestConfig?.tools?.length
-		? [
-				...new Set(
-					requestConfig.tools.map((tool) => tool.trim()).filter(Boolean),
-				),
-			]
-		: undefined;
-	const instructionsCandidate =
-		requestConfig?.instructions ??
-		buildConfigStoreInstructions(storeOverrides) ??
-		inlineInstructions;
-	const name =
-		requestConfig?.name?.trim() ||
-		storeOverrides?.name?.trim() ||
-		input.inlineName;
+  const toolsFromRequest = requestConfig?.tools?.length
+    ? [
+        ...new Set(
+          requestConfig.tools.map((tool) => tool.trim()).filter(Boolean),
+        ),
+      ]
+    : undefined;
+  const instructionsCandidate =
+    requestConfig?.instructions ??
+    buildConfigStoreInstructions(storeOverrides) ??
+    inlineInstructions;
+  const name =
+    requestConfig?.name?.trim() ||
+    storeOverrides?.name?.trim() ||
+    input.inlineName;
 
-	return {
-		name,
-		modelSpec,
-		instructions: normalizeAgentInstructions(instructionsCandidate),
-		...(requestConfig?.maxTurns
-			? { maxTurns: requestConfig.maxTurns }
-			: storeOverrides?.maxTurns
-				? { maxTurns: storeOverrides.maxTurns }
-				: {}),
-		...(requestConfig?.timeoutMinutes
-			? { timeoutMinutes: requestConfig.timeoutMinutes }
-			: storeOverrides?.timeoutMinutes
-				? { timeoutMinutes: storeOverrides.timeoutMinutes }
-				: {}),
-		...(toolsFromRequest
-			? { tools: toolsFromRequest }
-			: storeOverrides?.tools
-				? { tools: storeOverrides.tools }
-				: inlineTools
-					? { tools: inlineTools }
-					: {}),
-		...(requestConfig?.configuration
-			? { configuration: requestConfig.configuration }
-			: {}),
-	};
+  return {
+    name,
+    modelSpec,
+    instructions: normalizeAgentInstructions(instructionsCandidate),
+    ...(requestConfig?.maxTurns
+      ? { maxTurns: requestConfig.maxTurns }
+      : storeOverrides?.maxTurns
+        ? { maxTurns: storeOverrides.maxTurns }
+        : {}),
+    ...(requestConfig?.timeoutMinutes
+      ? { timeoutMinutes: requestConfig.timeoutMinutes }
+      : storeOverrides?.timeoutMinutes
+        ? { timeoutMinutes: storeOverrides.timeoutMinutes }
+        : {}),
+    ...(toolsFromRequest
+      ? { tools: toolsFromRequest }
+      : storeOverrides?.tools
+        ? { tools: storeOverrides.tools }
+        : inlineTools
+          ? { tools: inlineTools }
+          : {}),
+    ...(requestConfig?.configuration
+      ? { configuration: requestConfig.configuration }
+      : {}),
+    ...(requestConfig?.memory || storeOverrides?.memoryBackend
+      ? {
+          memory: {
+            ...(requestConfig?.memory ?? {}),
+            ...(storeOverrides?.memoryBackend
+              ? { backend: storeOverrides.memoryBackend }
+              : {}),
+          },
+        }
+      : {}),
+    ...(requestConfig?.loop || storeOverrides?.loopStrategy
+      ? {
+          loop: {
+            ...(requestConfig?.loop ?? {}),
+            ...(storeOverrides?.loopStrategy
+              ? { strategy: storeOverrides.loopStrategy }
+              : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 function resolveNormalizedModel(modelSpecRaw: string) {
-	return resolveModel(normalizeModelSpecForEnvironment(modelSpecRaw));
+  return resolveModel(normalizeModelSpecForEnvironment(modelSpecRaw));
+}
+
+function getDefaultAgentModelSpec(): string {
+  const configured = process.env.MASTRA_MODEL_SPEC?.trim();
+  if (configured) {
+    return normalizeModelSpecForEnvironment(configured);
+  }
+  return `openai/${normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL")}`;
+}
+
+function createMemoryProviderFromConfig(config: AgentConfigPayload) {
+  const backend = config.memory?.backend ?? "dapr_state";
+  const sessionId = config.memory?.sessionId?.trim() || config.name;
+  if (backend === "conversation_list") {
+    return new ConversationListMemory(sessionId);
+  }
+  return new DaprStateMemory(
+    new DaprClient(),
+    config.memory?.storeName?.trim() ||
+      process.env.STATE_STORE_NAME ||
+      "statestore",
+    sessionId,
+  );
+}
+
+function resolveLoopStrategyName(
+  body: Record<string, unknown>,
+  requestConfig?: AgentConfigPayload,
+): string | undefined {
+  const inlineStrategy =
+    typeof body.loopStrategyName === "string"
+      ? body.loopStrategyName.trim()
+      : typeof body.loopStrategy === "string"
+        ? body.loopStrategy.trim()
+        : "";
+  const requested = requestConfig?.loop?.strategy?.trim() || inlineStrategy;
+  if (requested === "default" || requested === "graph_v1") {
+    return requested;
+  }
+  return undefined;
 }
 
 function evictStaleAgents(): void {
-	const now = Date.now();
-	for (const [key, entry] of agentCache) {
-		if (now - entry.lastUsed > AGENT_CACHE_TTL_MS) {
-			agentCache.delete(key);
-		}
-	}
-	// If still over max, remove oldest
-	while (agentCache.size > AGENT_CACHE_MAX) {
-		let oldestKey = "";
-		let oldestTime = Infinity;
-		for (const [key, entry] of agentCache) {
-			if (entry.lastUsed < oldestTime) {
-				oldestTime = entry.lastUsed;
-				oldestKey = key;
-			}
-		}
-		if (oldestKey) agentCache.delete(oldestKey);
-	}
+  const now = Date.now();
+  for (const [key, entry] of agentCache) {
+    if (now - entry.lastUsed > AGENT_CACHE_TTL_MS) {
+      agentCache.delete(key);
+    }
+  }
+  // If still over max, remove oldest
+  while (agentCache.size > AGENT_CACHE_MAX) {
+    let oldestKey = "";
+    let oldestTime = Infinity;
+    for (const [key, entry] of agentCache) {
+      if (entry.lastUsed < oldestTime) {
+        oldestTime = entry.lastUsed;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) agentCache.delete(oldestKey);
+  }
 }
 
 /**
  * Create a DurableAgent from per-request config, or return cached instance.
  */
 async function getOrCreateConfiguredAgent(
-	config: AgentConfigPayload,
+  config: AgentConfigPayload,
 ): Promise<DurableAgent> {
-	const normalizedConfig: AgentConfigPayload = {
-		...config,
-		instructions: normalizeAgentInstructions(config.instructions),
-	};
-	const hash = agentConfigHash(normalizedConfig);
-	const cached = agentCache.get(hash);
-	if (cached) {
-		cached.lastUsed = Date.now();
-		return cached.agent;
-	}
+  const normalizedConfig: AgentConfigPayload = {
+    ...config,
+    instructions: normalizeAgentInstructions(config.instructions),
+  };
+  const hash = agentConfigHash(normalizedConfig);
+  const cached = agentCache.get(hash);
+  if (cached) {
+    cached.lastUsed = Date.now();
+    return cached.agent;
+  }
 
-	evictStaleAgents();
+  evictStaleAgents();
 
-	// Resolve model
-	const effectiveModelSpec = normalizeModelSpecForEnvironment(
-		normalizedConfig.modelSpec,
-	);
-	const model = resolveModel(effectiveModelSpec);
+  // Resolve model
+  const effectiveModelSpec = normalizeModelSpecForEnvironment(
+    normalizedConfig.modelSpec,
+  );
+  const model = resolveModel(effectiveModelSpec);
 
-	// Filter tools if specified
-	let tools = allMergedTools;
-	if (normalizedConfig.tools && normalizedConfig.tools.length > 0) {
-		const allowed = new Set(normalizedConfig.tools);
-		tools = {};
-		for (const [name, tool] of Object.entries(allMergedTools)) {
-			if (allowed.has(name)) {
-				tools[name] = tool;
-			}
-		}
-	}
+  // Filter tools if specified
+  let tools = allMergedTools;
+  if (normalizedConfig.tools && normalizedConfig.tools.length > 0) {
+    const allowed = new Set(normalizedConfig.tools);
+    tools = {};
+    for (const [name, tool] of Object.entries(allMergedTools)) {
+      if (allowed.has(name)) {
+        tools[name] = tool;
+      }
+    }
+  }
 
-	console.log(
-		`[durable-agent] Creating configured agent: name=${config.name} model=${effectiveModelSpec} tools=${Object.keys(tools).length}`,
-	);
+  console.log(
+    `[durable-agent] Creating configured agent: name=${config.name} model=${effectiveModelSpec} tools=${Object.keys(tools).length}`,
+  );
 
-	const configuredAgent = new DurableAgent({
-		name: normalizedConfig.name,
-		role: "Configured agent",
-		goal: "Execute task according to custom instructions",
-		instructions: normalizedConfig.instructions,
-		model,
-		modelResolver: resolveNormalizedModel,
-		tools,
-		state: {
-			storeName: process.env.STATE_STORE_NAME || "statestore",
-		},
-		execution: {
-			maxIterations: normalizedConfig.maxTurns ?? 50,
-		},
-	});
+  const configuredAgent = new DurableAgent({
+    name: normalizedConfig.name,
+    role: "Configured agent",
+    goal: "Execute task according to custom instructions",
+    instructions: normalizedConfig.instructions,
+    model,
+    modelResolver: resolveNormalizedModel,
+    tools,
+    memory: createMemoryProviderFromConfig(normalizedConfig),
+    state: {
+      storeName: process.env.STATE_STORE_NAME || "statestore",
+    },
+    execution: {
+      maxIterations: normalizedConfig.maxTurns ?? 50,
+      continueAsNewAfterTurns: DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS,
+    },
+  });
 
-	await configuredAgent.start();
+  await configuredAgent.start();
 
-	agentCache.set(hash, { agent: configuredAgent, lastUsed: Date.now() });
-	return configuredAgent;
+  agentCache.set(hash, { agent: configuredAgent, lastUsed: Date.now() });
+  return configuredAgent;
 }
 
 async function initAgent(): Promise<void> {
-	if (initialized) return;
-	if (initializingPromise) {
-		await initializingPromise;
-		return;
-	}
+  if (initialized) return;
+  if (initializingPromise) {
+    await initializingPromise;
+    return;
+  }
 
-	initializingPromise = (async () => {
-		try {
-			await verifyDaprRuntimeVersion();
-			await hydrateRuntimeSecretsFromDapr();
-			// Fail fast at startup if durable change persistence is misconfigured.
-			await workspaceSessions.ensureChangeArtifactPersistence();
+  initializingPromise = (async () => {
+    try {
+      await verifyDaprRuntimeVersion();
+      const startupModelSpecRaw = process.env.MASTRA_MODEL_SPEC?.trim();
+      const startupModelSpec = startupModelSpecRaw
+        ? startupModelSpecRaw
+        : process.env.AI_MODEL?.trim()
+          ? `openai/${process.env.AI_MODEL.trim()}`
+          : undefined;
+      await hydrateRuntimeSecretsForModelSpecs([startupModelSpec]);
+      // Fail fast at startup if durable change persistence is misconfigured.
+      await workspaceSessions.ensureChangeArtifactPersistence();
 
-			// Register built-in model providers (openai)
-			registerBuiltinProviders();
+      // Register built-in model providers (openai)
+      registerBuiltinProviders();
 
-			// The shared sandbox is only required for direct non-workspace command
-			// execution paths. Keep the durable artifact and workflow APIs
-			// available even if SandboxClaim provisioning is temporarily unhealthy.
-			try {
-				await ensureSharedSandboxStarted();
-			} catch (error) {
-				console.warn(
-					"[durable-agent] Shared sandbox unavailable during startup; continuing with lazy initialization:",
-					error instanceof Error ? error.message : String(error),
-				);
-			}
+      // The shared sandbox is only required for legacy direct non-workspace
+      // command execution paths. Do not block workflow replay/recovery on it.
+      void ensureSharedSandboxStarted().catch((error) => {
+        console.warn(
+          "[durable-agent] Shared sandbox unavailable during startup; continuing with lazy initialization:",
+          error instanceof Error ? error.message : String(error),
+        );
+      });
 
-			// Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
-			const modelSpecRaw = process.env.MASTRA_MODEL_SPEC;
-			const modelSpec = modelSpecRaw
-				? normalizeModelSpecForEnvironment(modelSpecRaw)
-				: undefined;
-			const model = modelSpec
-				? resolveModel(modelSpec)
-				: resolveModel(
-						`openai/${normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL")}`,
-					);
+      // Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
+      const modelSpecRaw = process.env.MASTRA_MODEL_SPEC;
+      const modelSpec = modelSpecRaw
+        ? normalizeModelSpecForEnvironment(modelSpecRaw)
+        : undefined;
+      const model = modelSpec
+        ? resolveModel(modelSpec)
+        : resolveModel(
+            `openai/${normalizeOpenAiChatModel(process.env.AI_MODEL || "", "AI_MODEL")}`,
+          );
 
-			if (modelSpecRaw) {
-				console.log(
-					`[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpecRaw} -> ${modelSpec}`,
-				);
-			}
+      if (modelSpecRaw) {
+        console.log(
+          `[durable-agent] Model resolved from MASTRA_MODEL_SPEC: ${modelSpecRaw} -> ${modelSpec}`,
+        );
+      }
 
-			// Merge all tool sources into the module-level record (used by agent factory too)
-			const mergedTools: Record<
-				string,
-				import("../types/tool.js").DurableAgentTool
-			> = {
-				...workspaceTools,
-			};
+      // Merge all tool sources into the module-level record (used by agent factory too)
+      const mergedTools: Record<
+        string,
+        import("../types/tool.js").DurableAgentTool
+      > = {
+        ...workspaceTools,
+      };
 
-			// Mastra workspace tools (if MASTRA_WORKSPACE=true)
-			if (process.env.MASTRA_WORKSPACE === "true") {
-				const wsTools = await createMastraWorkspaceTools(filesystem, sandbox);
-				Object.assign(mergedTools, wsTools);
-			}
+      // Mastra workspace tools (if MASTRA_WORKSPACE=true)
+      if (process.env.MASTRA_WORKSPACE === "true") {
+        const wsTools = await createMastraWorkspaceTools(filesystem, sandbox);
+        Object.assign(mergedTools, wsTools);
+      }
 
-			// MCP tools (if MCP_SERVERS env var set)
-			if (process.env.MCP_SERVERS) {
-				const mcp = await discoverMcpTools();
-				Object.assign(mergedTools, mcp.tools);
-				mcpDisconnect = mcp.disconnect;
-			}
+      // MCP tools (if MCP_SERVERS env var set)
+      if (process.env.MCP_SERVERS) {
+        const mcp = await discoverMcpTools();
+        Object.assign(mergedTools, mcp.tools);
+        mcpDisconnect = mcp.disconnect;
+      }
 
-			// RAG tools (if MASTRA_RAG_TOOLS env var set)
-			if (process.env.MASTRA_RAG_TOOLS) {
-				const ragTools = await createRagTools();
-				Object.assign(mergedTools, ragTools);
-			}
+      // RAG tools (if MASTRA_RAG_TOOLS env var set)
+      if (process.env.MASTRA_RAG_TOOLS) {
+        const ragTools = await createRagTools();
+        Object.assign(mergedTools, ragTools);
+      }
 
-			// Processors (if MASTRA_PROCESSORS env var set)
-			let processors: ProcessorLike[] = [];
-			if (process.env.MASTRA_PROCESSORS) {
-				processors = await createProcessors(process.env.MASTRA_PROCESSORS);
-			}
+      // Processors (if MASTRA_PROCESSORS env var set)
+      let processors: ProcessorLike[] = [];
+      if (process.env.MASTRA_PROCESSORS) {
+        processors = await createProcessors(process.env.MASTRA_PROCESSORS);
+      }
 
-			// Scorers (if MASTRA_SCORERS env var set) — run post-workflow
-			if (process.env.MASTRA_SCORERS) {
-				scorers = await createScorers(process.env.MASTRA_SCORERS);
-			}
+      // Scorers (if MASTRA_SCORERS env var set) — run post-workflow
+      if (process.env.MASTRA_SCORERS) {
+        scorers = await createScorers(process.env.MASTRA_SCORERS);
+      }
 
-			console.log(
-				`[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
-			);
+      console.log(
+        `[durable-agent] Merged tools (${Object.keys(mergedTools).length}): ${Object.keys(mergedTools).join(", ")}`,
+      );
 
-			// Store merged tools for agent factory (per-request config agents)
-			allMergedTools = mergedTools;
+      // Store merged tools for agent factory (per-request config agents)
+      allMergedTools = mergedTools;
 
-			// Create durable agent with all tool sources and optional Mastra integrations
-			agent = new DurableAgent({
-				name: "durable-dev-agent",
-				role: "Development assistant",
-				goal: "Help users with file operations, code editing, and command execution",
-				instructions: `You are a development assistant with access to workspace tools.
+      // Create durable agent with all tool sources and optional Mastra integrations
+      agent = new DurableAgent({
+        name: "durable-dev-agent",
+        role: "Development assistant",
+        goal: "Help users with file operations, code editing, and command execution",
+        instructions: `You are a development assistant with access to workspace tools.
 
 Use workspace tools to help users with file operations and command execution:
 - Read, write, and edit files in the workspace
@@ -1202,156 +1319,175 @@ Use workspace tools to help users with file operations and command execution:
 - Execute shell commands
 - Create and delete files and directories
 
-Be concise and direct. Use the appropriate tool for each task.`,
-				model,
-				modelResolver: resolveNormalizedModel,
-				tools: mergedTools,
-				state: {
-					storeName: process.env.STATE_STORE_NAME || "statestore",
-				},
-				execution: {
-					maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
-				},
-				mastra: {
-					processors: processors.length > 0 ? processors : undefined,
-				},
-			});
+        Be concise and direct. Use the appropriate tool for each task.`,
+        model,
+        modelResolver: resolveNormalizedModel,
+        tools: mergedTools,
+        memory: new DaprStateMemory(
+          new DaprClient(),
+          process.env.STATE_STORE_NAME || "statestore",
+          "durable-dev-agent",
+        ),
+        state: {
+          storeName: process.env.STATE_STORE_NAME || "statestore",
+        },
+        execution: {
+          maxIterations: parseInt(process.env.MAX_ITERATIONS || "50", 10),
+          continueAsNewAfterTurns: DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS,
+        },
+        mastra: {
+          processors: processors.length > 0 ? processors : undefined,
+        },
+      });
 
-			// Create shared runtime, register agent + DAG executor, then start
-			const { WorkflowRuntime } = await import("@dapr/dapr");
-			const sharedRuntime = new WorkflowRuntime();
-			agent.register(sharedRuntime);
+      // Create shared runtime, register agent + DAG executor, then start
+      const { WorkflowRuntime } = await import("@dapr/dapr");
+      const sharedRuntime = new WorkflowRuntime();
+      agent.register(sharedRuntime);
+      const finalizeOpenShellRunResultActivity =
+        createFinalizeOpenShellRunResultActivity();
+      const openshellRunWorkflow = createOpenShellRunWorkflow(
+        DURABLE_RUN_WORKFLOW_NAME,
+        {
+          finalizeOpenShellRunResult: finalizeOpenShellRunResultActivity,
+        },
+      );
 
-			// Register DAG executor workflow + activities on the same runtime
-			const { createDagExecutorWorkflow } = await import("./dag-executor.js");
-			const dagExecutor = createDagExecutorWorkflow({
-				workspaceSessions,
-				planArtifacts,
-			});
-			sharedRuntime.registerWorkflow(dagExecutor.implementation);
-			sharedRuntime.registerWorkflowWithName(
-				DURABLE_RUN_WORKFLOW_NAME,
-				agent.agentWorkflow,
-			);
-			sharedRuntime.registerWorkflowWithName(
-				DAG_EXECUTOR_WORKFLOW_NAME,
-				dagExecutor.implementation,
-			);
-			sharedRuntime.registerActivity(
-				createDagExecuteClaudeTaskActivity({ workspaceSessions }),
-			);
-			sharedRuntime.registerActivity(
-				createDagPersistStateActivity({ planArtifacts }),
-			);
-			sharedRuntime.registerActivity(async function durablePlanActivity() {
-				console.log(
-					"[durable-agent] Executing dummy durablePlanActivity to satisfy legacy workflow replay",
-				);
-				return {};
-			});
-			sharedRuntime.registerWorkflow(async function* durablePlanWorkflow() {
-				console.log(
-					"[durable-agent] Executing dummy durablePlanWorkflow to satisfy legacy workflow replay",
-				);
-				yield undefined;
-				return {};
-			});
-			sharedRuntime.registerWorkflowWithName(
-				DURABLE_PLAN_WORKFLOW_NAME,
-				async function* durablePlanWorkflowV1() {
-					console.log(
-						"[durable-agent] Executing dummy durablePlanWorkflowV1 to satisfy versioned workflow replay",
-					);
-					yield undefined;
-					return {};
-				},
-			);
+      // Register DAG executor workflow + activities on the same runtime
+      const { createDagExecutorWorkflow } = await import("./dag-executor.js");
+      const dagExecutor = createDagExecutorWorkflow({
+        workspaceSessions,
+        planArtifacts,
+      });
+      sharedRuntime.registerWorkflow(dagExecutor.implementation);
+      sharedRuntime.registerWorkflowWithName(
+        DURABLE_RUN_WORKFLOW_NAME,
+        agent.agentWorkflow,
+      );
+      sharedRuntime.registerWorkflowWithName(
+        OPENSHELL_RUN_WORKFLOW_NAME,
+        openshellRunWorkflow,
+      );
+      sharedRuntime.registerWorkflowWithName(
+        DAG_EXECUTOR_WORKFLOW_NAME,
+        dagExecutor.implementation,
+      );
+      sharedRuntime.registerActivity(finalizeOpenShellRunResultActivity);
+      sharedRuntime.registerActivity(
+        createDagExecuteClaudeTaskActivity({ workspaceSessions }),
+      );
+      sharedRuntime.registerActivity(
+        createDagPersistStateActivity({ planArtifacts }),
+      );
+      sharedRuntime.registerActivity(async function durablePlanActivity() {
+        console.log(
+          "[durable-agent] Executing dummy durablePlanActivity to satisfy legacy workflow replay",
+        );
+        return {};
+      });
+      sharedRuntime.registerWorkflow(async function* durablePlanWorkflow() {
+        console.log(
+          "[durable-agent] Executing dummy durablePlanWorkflow to satisfy legacy workflow replay",
+        );
+        yield undefined;
+        return {};
+      });
+      sharedRuntime.registerWorkflowWithName(
+        DURABLE_PLAN_WORKFLOW_NAME,
+        async function* durablePlanWorkflowV1() {
+          console.log(
+            "[durable-agent] Executing dummy durablePlanWorkflowV1 to satisfy versioned workflow replay",
+          );
+          yield undefined;
+          return {};
+        },
+      );
 
-			await sharedRuntime.start();
-			console.log(
-				"[durable-agent] Shared runtime started (agent + DAG executor)",
-			);
+      await sharedRuntime.start();
+      console.log(
+        "[durable-agent] Shared runtime started (agent + DAG executor)",
+      );
 
-			// Create workflow client for scheduling
-			workflowClient = new DaprWorkflowClient();
+      // Create workflow client for scheduling
+      workflowClient = new DaprWorkflowClient();
 
-			initialized = true;
-			if (!reconcileLoopStarted) {
-				reconcileLoopStarted = true;
-				void reconcileUnpublishedRuns();
-				const timer = setInterval(() => {
-					void reconcileUnpublishedRuns();
-				}, RUN_RECONCILE_INTERVAL_MS);
-				timer.unref();
-			}
-			console.log(
-				"[durable-agent] Agent initialized and workflow runtime started",
-			);
-		} catch (err) {
-			initialized = false;
-			workflowClient = null;
-			try {
-				if (agent) {
-					await agent.stop();
-				}
-			} catch {
-				/* best effort */
-			}
-			agent = null;
-			try {
-				await sandbox.destroy();
-			} catch {
-				/* best effort */
-			}
-			sharedSandboxStarted = false;
-			throw err;
-		} finally {
-			initializingPromise = null;
-		}
-	})();
+      initialized = true;
+      if (LEGACY_COMPLETION_EVENTS_ENABLED && !reconcileLoopStarted) {
+        reconcileLoopStarted = true;
+        void reconcileUnpublishedRuns();
+        const timer = setInterval(() => {
+          void reconcileUnpublishedRuns();
+        }, RUN_RECONCILE_INTERVAL_MS);
+        timer.unref();
+      }
+      console.log(
+        "[durable-agent] Agent initialized and workflow runtime started",
+      );
+    } catch (err) {
+      initialized = false;
+      workflowClient = null;
+      try {
+        if (agent) {
+          await agent.stop();
+        }
+      } catch {
+        /* best effort */
+      }
+      agent = null;
+      try {
+        await sandbox.destroy();
+      } catch {
+        /* best effort */
+      }
+      sharedSandboxStarted = false;
+      throw err;
+    } finally {
+      initializingPromise = null;
+    }
+  })();
 
-	await initializingPromise;
+  await initializingPromise;
 }
 
 function scheduleStartupInitRetry(): void {
-	if (initialized || startupInitRetryTimer) {
-		return;
-	}
-	startupInitRetryTimer = setInterval(() => {
-		if (initialized) {
-			if (startupInitRetryTimer) {
-				clearInterval(startupInitRetryTimer);
-				startupInitRetryTimer = null;
-			}
-			return;
-		}
-		void (async () => {
-			try {
-				await initAgent();
-				console.log(
-					"[durable-agent] Startup retry succeeded (workflow runtime ready)",
-				);
-				if (startupInitRetryTimer) {
-					clearInterval(startupInitRetryTimer);
-					startupInitRetryTimer = null;
-				}
-			} catch (err) {
-				console.warn(
-					"[durable-agent] Startup retry initialization failed:",
-					err instanceof Error ? err.message : String(err),
-				);
-			}
-		})();
-	}, STARTUP_INIT_RETRY_MS);
-	startupInitRetryTimer.unref();
+  if (initialized || startupInitRetryTimer) {
+    return;
+  }
+  startupInitRetryTimer = setInterval(() => {
+    if (initialized) {
+      if (startupInitRetryTimer) {
+        clearInterval(startupInitRetryTimer);
+        startupInitRetryTimer = null;
+      }
+      return;
+    }
+    void (async () => {
+      try {
+        await initAgent();
+        console.log(
+          "[durable-agent] Startup retry succeeded (workflow runtime ready)",
+        );
+        if (startupInitRetryTimer) {
+          clearInterval(startupInitRetryTimer);
+          startupInitRetryTimer = null;
+        }
+      } catch (err) {
+        console.warn(
+          "[durable-agent] Startup retry initialization failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    })();
+  }, STARTUP_INIT_RETRY_MS);
+  startupInitRetryTimer.unref();
 }
 
 async function ensureSharedSandboxStarted(): Promise<void> {
-	if (sharedSandboxStarted) {
-		return;
-	}
-	await sandbox.start();
-	sharedSandboxStarted = true;
+  if (sharedSandboxStarted) {
+    return;
+  }
+  await sandbox.start();
+  sharedSandboxStarted = true;
 }
 
 // ── File Change Extraction ────────────────────────────────────
@@ -1359,374 +1495,381 @@ async function ensureSharedSandboxStarted(): Promise<void> {
 type ToolCallRecord = { name: string; args: any; result: any };
 
 type FileChange = {
-	path: string;
-	operation: "created" | "modified" | "deleted";
-	content?: string;
+  path: string;
+  operation: "created" | "modified" | "deleted";
+  content?: string;
 };
 
 type ChangeSummaryOutput = {
-	changed: boolean;
-	files: Array<{ path: string; op: string }>;
-	stats: {
-		files: number;
-		additions: number;
-		deletions: number;
-	};
-	patchRef?: string;
-	patchSha256?: string;
-	patchBytes?: number;
-	truncatedInlinePatch?: boolean;
-	inlinePatchPreview?: string;
-	truncatedArtifact?: boolean;
-	artifactOriginalBytes?: number;
-	baseRevision?: string;
-	headRevision?: string;
+  changed: boolean;
+  files: Array<{ path: string; op: string }>;
+  stats: {
+    files: number;
+    additions: number;
+    deletions: number;
+  };
+  patchRef?: string;
+  patchSha256?: string;
+  patchBytes?: number;
+  truncatedInlinePatch?: boolean;
+  inlinePatchPreview?: string;
+  truncatedArtifact?: boolean;
+  artifactOriginalBytes?: number;
+  baseRevision?: string;
+  headRevision?: string;
 };
 
 type PlanModePolicy = {
-	readOnlyExpected: boolean;
-	promptEnforced: boolean;
-	usedMutatingTools: boolean;
-	mutatingTools: string[];
-	mutatingToolCalls: number;
-	totalToolCalls: number;
+  readOnlyExpected: boolean;
+  promptEnforced: boolean;
+  usedMutatingTools: boolean;
+  mutatingTools: string[];
+  mutatingToolCalls: number;
+  totalToolCalls: number;
 };
 
 function sha256Hex(content: string): string {
-	return createHash("sha256").update(content).digest("hex");
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function parseOptionalBoolean(input: unknown): boolean | undefined {
-	if (typeof input === "boolean") return input;
-	if (typeof input !== "string") return undefined;
-	const normalized = input.trim().toLowerCase();
-	if (normalized === "true") return true;
-	if (normalized === "false") return false;
-	return undefined;
+  if (typeof input === "boolean") return input;
+  if (typeof input !== "string") return undefined;
+  const normalized = input.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return undefined;
 }
 
 function parseOptionalLoopPolicy(input: unknown): LoopPolicy | undefined {
-	if (!input) return undefined;
-	if (typeof input === "string") {
-		const trimmed = input.trim();
-		if (!trimmed) return undefined;
-		try {
-			const parsed = JSON.parse(trimmed);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				return parsed as LoopPolicy;
-			}
-			return undefined;
-		} catch (err) {
-			console.warn("[durable-agent] Invalid loopPolicy JSON:", err);
-			return undefined;
-		}
-	}
-	if (typeof input === "object" && !Array.isArray(input)) {
-		return input as LoopPolicy;
-	}
-	return undefined;
+  if (!input) return undefined;
+  if (typeof input === "string") {
+    const trimmed = input.trim();
+    if (!trimmed) return undefined;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as LoopPolicy;
+      }
+      return undefined;
+    } catch (err) {
+      console.warn("[durable-agent] Invalid loopPolicy JSON:", err);
+      return undefined;
+    }
+  }
+  if (typeof input === "object" && !Array.isArray(input)) {
+    return input as LoopPolicy;
+  }
+  return undefined;
 }
 
 type ContextPolicyPreset = "off" | "conservative" | "balanced" | "aggressive";
 
 function parseContextPolicyPreset(
-	input: unknown,
+  input: unknown,
 ): ContextPolicyPreset | undefined {
-	if (typeof input !== "string") return undefined;
-	const normalized = input.trim().toLowerCase();
-	if (
-		normalized === "off" ||
-		normalized === "conservative" ||
-		normalized === "balanced" ||
-		normalized === "aggressive"
-	) {
-		return normalized;
-	}
-	return undefined;
+  if (typeof input !== "string") return undefined;
+  const normalized = input.trim().toLowerCase();
+  if (
+    normalized === "off" ||
+    normalized === "conservative" ||
+    normalized === "balanced" ||
+    normalized === "aggressive"
+  ) {
+    return normalized;
+  }
+  return undefined;
 }
 
 function createLoopPolicyPreset(
-	preset: ContextPolicyPreset,
+  preset: ContextPolicyPreset,
 ): LoopPolicy | undefined {
-	if (preset === "off") return undefined;
-	if (preset === "conservative") {
-		return {
-			prepareStep: {
-				trimMessagesTo: 96,
-				truncateToolResultChars: 6000,
-				appendInstructions:
-					"Be concise and avoid repeating previously completed analysis.",
-				rules: [
-					{ fromStep: 8, trimMessagesTo: 72, truncateToolResultChars: 4000 },
-				],
-			},
-			compaction: {
-				enabled: true,
-				maxAutoRetries: 1,
-				preserveRecentMessages: 10,
-				minMessagesToCompact: 8,
-				checkpointEverySteps: 10,
-			},
-		};
-	}
-	if (preset === "aggressive") {
-		return {
-			prepareStep: {
-				trimMessagesTo: 36,
-				truncateToolResultChars: 1800,
-				appendInstructions:
-					"Respond concisely and avoid repeating previous outputs or large snippets.",
-				rules: [
-					{ fromStep: 4, trimMessagesTo: 24, truncateToolResultChars: 1000 },
-				],
-			},
-			compaction: {
-				enabled: true,
-				maxAutoRetries: 1,
-				preserveRecentMessages: 6,
-				minMessagesToCompact: 4,
-				checkpointEverySteps: 4,
-			},
-		};
-	}
-	// balanced default
-	return {
-		prepareStep: {
-			trimMessagesTo: 64,
-			truncateToolResultChars: 4000,
-			appendInstructions:
-				"Be concise and avoid repeating prior context unless needed for correctness.",
-			rules: [
-				{ fromStep: 6, trimMessagesTo: 40, truncateToolResultChars: 2500 },
-			],
-		},
-		compaction: {
-			enabled: true,
-			maxAutoRetries: 1,
-			preserveRecentMessages: 8,
-			minMessagesToCompact: 6,
-			checkpointEverySteps: 8,
-		},
-	};
+  if (preset === "off") return undefined;
+  if (preset === "conservative") {
+    return {
+      prepareStep: {
+        trimMessagesTo: 96,
+        truncateToolResultChars: 6000,
+        appendInstructions:
+          "Be concise and avoid repeating previously completed analysis.",
+        rules: [
+          { fromStep: 8, trimMessagesTo: 72, truncateToolResultChars: 4000 },
+        ],
+      },
+      compaction: {
+        enabled: true,
+        maxAutoRetries: 1,
+        preserveRecentMessages: 10,
+        minMessagesToCompact: 8,
+        checkpointEverySteps: 10,
+      },
+    };
+  }
+  if (preset === "aggressive") {
+    return {
+      prepareStep: {
+        trimMessagesTo: 36,
+        truncateToolResultChars: 1800,
+        appendInstructions:
+          "Respond concisely and avoid repeating previous outputs or large snippets.",
+        rules: [
+          { fromStep: 4, trimMessagesTo: 24, truncateToolResultChars: 1000 },
+        ],
+      },
+      compaction: {
+        enabled: true,
+        maxAutoRetries: 1,
+        preserveRecentMessages: 6,
+        minMessagesToCompact: 4,
+        checkpointEverySteps: 4,
+      },
+    };
+  }
+  // balanced default
+  return {
+    prepareStep: {
+      trimMessagesTo: 64,
+      truncateToolResultChars: 4000,
+      appendInstructions:
+        "Be concise and avoid repeating prior context unless needed for correctness.",
+      rules: [
+        { fromStep: 6, trimMessagesTo: 40, truncateToolResultChars: 2500 },
+      ],
+    },
+    compaction: {
+      enabled: true,
+      maxAutoRetries: 1,
+      preserveRecentMessages: 8,
+      minMessagesToCompact: 6,
+      checkpointEverySteps: 8,
+    },
+  };
 }
 
 function mergeLoopPolicies(
-	base: LoopPolicy | undefined,
-	override: LoopPolicy | undefined,
+  base: LoopPolicy | undefined,
+  override: LoopPolicy | undefined,
 ): LoopPolicy | undefined {
-	if (!base) return override;
-	if (!override) return base;
-	return {
-		...base,
-		...override,
-		prepareStep: {
-			...(base.prepareStep ?? {}),
-			...(override.prepareStep ?? {}),
-			rules: [
-				...(base.prepareStep?.rules ?? []),
-				...(override.prepareStep?.rules ?? []),
-			],
-		},
-		doneTool: {
-			...(base.doneTool ?? {}),
-			...(override.doneTool ?? {}),
-		},
-		compaction: {
-			...(base.compaction ?? {}),
-			...(override.compaction ?? {}),
-		},
-	};
+  if (!base) return override;
+  if (!override) return base;
+  return {
+    ...base,
+    ...override,
+    prepareStep: {
+      ...(base.prepareStep ?? {}),
+      ...(override.prepareStep ?? {}),
+      rules: [
+        ...(base.prepareStep?.rules ?? []),
+        ...(override.prepareStep?.rules ?? []),
+      ],
+    },
+    doneTool: {
+      ...(base.doneTool ?? {}),
+      ...(override.doneTool ?? {}),
+    },
+    compaction: {
+      ...(base.compaction ?? {}),
+      ...(override.compaction ?? {}),
+    },
+  };
 }
 
 function resolveLoopPolicyFromRequest(
-	body: Record<string, unknown>,
+  body: Record<string, unknown>,
+  agentGraph?: Record<string, unknown>,
 ): LoopPolicy | undefined {
-	const preset = parseContextPolicyPreset(body.contextPolicyPreset);
-	const presetPolicy = preset ? createLoopPolicyPreset(preset) : undefined;
-	const explicitPolicy = parseOptionalLoopPolicy(body.loopPolicy);
-	return mergeLoopPolicies(presetPolicy, explicitPolicy);
+  const preset = parseContextPolicyPreset(body.contextPolicyPreset);
+  const presetPolicy = preset ? createLoopPolicyPreset(preset) : undefined;
+  const graphPolicy = buildLoopPolicyFromAgentGraph(agentGraph);
+  const explicitPolicy = parseOptionalLoopPolicy(body.loopPolicy);
+  return mergeLoopPolicies(
+    mergeLoopPolicies(presetPolicy, graphPolicy),
+    explicitPolicy,
+  );
 }
 
 function trackActiveRun(input: ActiveRun): void {
-	activeRuns.set(input.agentWorkflowId, input);
-	if (!input.parentExecutionId) return;
-	let set = activeRunIdsByParent.get(input.parentExecutionId);
-	if (!set) {
-		set = new Set<string>();
-		activeRunIdsByParent.set(input.parentExecutionId, set);
-	}
-	set.add(input.agentWorkflowId);
+  activeRuns.set(input.agentWorkflowId, input);
+  if (!input.parentExecutionId) return;
+  let set = activeRunIdsByParent.get(input.parentExecutionId);
+  if (!set) {
+    set = new Set<string>();
+    activeRunIdsByParent.set(input.parentExecutionId, set);
+  }
+  set.add(input.agentWorkflowId);
 }
 
 function untrackActiveRun(agentWorkflowId: string): void {
-	const run = activeRuns.get(agentWorkflowId);
-	if (!run) return;
-	activeRuns.delete(agentWorkflowId);
-	if (!run.parentExecutionId) return;
-	const set = activeRunIdsByParent.get(run.parentExecutionId);
-	if (!set) return;
-	set.delete(agentWorkflowId);
-	if (set.size === 0) {
-		activeRunIdsByParent.delete(run.parentExecutionId);
-	}
+  const run = activeRuns.get(agentWorkflowId);
+  if (!run) return;
+  activeRuns.delete(agentWorkflowId);
+  if (!run.parentExecutionId) return;
+  const set = activeRunIdsByParent.get(run.parentExecutionId);
+  if (!set) return;
+  set.delete(agentWorkflowId);
+  if (set.size === 0) {
+    activeRunIdsByParent.delete(run.parentExecutionId);
+  }
 }
 
 async function resolveActiveRun(input: {
-	agentWorkflowId?: string;
-	daprInstanceId?: string;
-	parentExecutionId?: string;
+  agentWorkflowId?: string;
+  daprInstanceId?: string;
+  parentExecutionId?: string;
 }): Promise<ActiveRun | undefined> {
-	const agentWorkflowId = String(input.agentWorkflowId || "").trim();
-	if (agentWorkflowId) {
-		const tracked = activeRuns.get(agentWorkflowId);
-		if (tracked) return tracked;
-		const fromDb = await workflowRunTracker.getById(agentWorkflowId);
-		if (fromDb) {
-			return {
-				agentWorkflowId: fromDb.agentWorkflowId,
-				daprInstanceId: fromDb.daprInstanceId,
-				parentExecutionId: fromDb.parentExecutionId,
-				workspaceRef: fromDb.workspaceRef,
-				mode: fromDb.mode === "execute_plan" ? "execute_plan" : "run",
-			};
-		}
-	}
+  const agentWorkflowId = String(input.agentWorkflowId || "").trim();
+  if (agentWorkflowId) {
+    const tracked = activeRuns.get(agentWorkflowId);
+    if (tracked) return tracked;
+    const fromDb = await workflowRunTracker.getById(agentWorkflowId);
+    if (fromDb) {
+      return {
+        agentWorkflowId: fromDb.agentWorkflowId,
+        daprInstanceId: fromDb.daprInstanceId,
+        parentExecutionId: fromDb.parentExecutionId,
+        workspaceRef: fromDb.workspaceRef,
+        mode: fromDb.mode === "execute_plan" ? "execute_plan" : "run",
+      };
+    }
+  }
 
-	const daprInstanceId = String(input.daprInstanceId || "").trim();
-	if (daprInstanceId) {
-		for (const run of activeRuns.values()) {
-			if (run.daprInstanceId === daprInstanceId) return run;
-		}
-	}
+  const daprInstanceId = String(input.daprInstanceId || "").trim();
+  if (daprInstanceId) {
+    for (const run of activeRuns.values()) {
+      if (run.daprInstanceId === daprInstanceId) return run;
+    }
+  }
 
-	const parentExecutionId = String(input.parentExecutionId || "").trim();
-	if (!parentExecutionId) return undefined;
-	const ids = activeRunIdsByParent.get(parentExecutionId);
-	if (!ids || ids.size === 0) return undefined;
-	const first = [...ids][0];
-	return activeRuns.get(first);
+  const parentExecutionId = String(input.parentExecutionId || "").trim();
+  if (!parentExecutionId) return undefined;
+  const ids = activeRunIdsByParent.get(parentExecutionId);
+  if (!ids || ids.size === 0) return undefined;
+  const first = [...ids][0];
+  return activeRuns.get(first);
 }
 
 function activeRunsForParent(parentExecutionId: string): ActiveRun[] {
-	const ids = activeRunIdsByParent.get(parentExecutionId);
-	if (!ids || ids.size === 0) return [];
-	return [...ids]
-		.map((id) => activeRuns.get(id))
-		.filter((item): item is ActiveRun => Boolean(item));
+  const ids = activeRunIdsByParent.get(parentExecutionId);
+  if (!ids || ids.size === 0) return [];
+  return [...ids]
+    .map((id) => activeRuns.get(id))
+    .filter((item): item is ActiveRun => Boolean(item));
 }
 
 async function terminateDaprInstance(input: {
-	daprInstanceId: string;
-	reason: string;
+  daprInstanceId: string;
+  reason: string;
 }): Promise<{ success: boolean; error?: string; alreadyStopped?: boolean }> {
-	const instanceId = String(input.daprInstanceId || "").trim();
-	if (!instanceId)
-		return { success: false, error: "daprInstanceId is required" };
-	if (!workflowClient)
-		return { success: false, error: "workflow runtime unavailable" };
+  const instanceId = String(input.daprInstanceId || "").trim();
+  if (!instanceId)
+    return { success: false, error: "daprInstanceId is required" };
+  if (!workflowClient)
+    return { success: false, error: "workflow runtime unavailable" };
 
-	try {
-		const state = await workflowClient.getWorkflowState(instanceId, true);
-		const status = state?.runtimeStatus;
-		if (
-			status === WORKFLOW_STATUS_COMPLETED ||
-			status === WORKFLOW_STATUS_FAILED ||
-			status === WORKFLOW_STATUS_TERMINATED
-		) {
-			return { success: true, alreadyStopped: true };
-		}
-		const client = workflowClient as unknown as {
-			terminateWorkflow?: (
-				instanceId: string,
-				output?: string,
-			) => Promise<void>;
-		};
-		if (!client.terminateWorkflow) {
-			return {
-				success: false,
-				error: "DaprWorkflowClient.terminateWorkflow unavailable",
-			};
-		}
-		await client.terminateWorkflow(instanceId, input.reason);
-		return { success: true };
-	} catch (err) {
-		return {
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		};
-	}
+  try {
+    const state = await workflowClient.getWorkflowState(instanceId, true);
+    const status = state?.runtimeStatus;
+    if (
+      status === WORKFLOW_STATUS_COMPLETED ||
+      status === WORKFLOW_STATUS_FAILED ||
+      status === WORKFLOW_STATUS_TERMINATED
+    ) {
+      return { success: true, alreadyStopped: true };
+    }
+    const client = workflowClient as unknown as {
+      terminateWorkflow?: (
+        instanceId: string,
+        output?: string,
+      ) => Promise<void>;
+    };
+    if (!client.terminateWorkflow) {
+      return {
+        success: false,
+        error: "DaprWorkflowClient.terminateWorkflow unavailable",
+      };
+    }
+    await client.terminateWorkflow(instanceId, input.reason);
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
 }
 
 function isMutatingToolName(name: string): boolean {
-	const normalized = name.trim().toLowerCase();
-	if (!normalized) return false;
-	return (
-		normalized === "write_file" ||
-		normalized === "edit_file" ||
-		normalized === "delete_file" ||
-		normalized === "mkdir" ||
-		normalized === "execute_command" ||
-		normalized === "clone" ||
-		normalized.endsWith("write_file") ||
-		normalized.endsWith("edit_file") ||
-		normalized.endsWith("delete_file") ||
-		normalized.endsWith("mkdir") ||
-		normalized.endsWith("execute_command")
-	);
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized === "write_file" ||
+    normalized === "edit_file" ||
+    normalized === "delete_file" ||
+    normalized === "mkdir" ||
+    normalized === "execute_command" ||
+    normalized === "clone" ||
+    normalized.endsWith("write_file") ||
+    normalized.endsWith("edit_file") ||
+    normalized.endsWith("delete_file") ||
+    normalized.endsWith("mkdir") ||
+    normalized.endsWith("execute_command")
+  );
 }
 
 function buildPlanModePolicy(toolCalls: ToolCallRecord[]): PlanModePolicy {
-	const mutatingTools = [
-		...new Set(toolCalls.map((tc) => tc.name).filter(isMutatingToolName)),
-	].sort();
-	return {
-		readOnlyExpected: true,
-		promptEnforced: true,
-		usedMutatingTools: mutatingTools.length > 0,
-		mutatingTools,
-		mutatingToolCalls: toolCalls.filter((tc) => isMutatingToolName(tc.name))
-			.length,
-		totalToolCalls: toolCalls.length,
-	};
+  const mutatingTools = [
+    ...new Set(toolCalls.map((tc) => tc.name).filter(isMutatingToolName)),
+  ].sort();
+  return {
+    readOnlyExpected: true,
+    promptEnforced: true,
+    usedMutatingTools: mutatingTools.length > 0,
+    mutatingTools,
+    mutatingToolCalls: toolCalls.filter((tc) => isMutatingToolName(tc.name))
+      .length,
+    totalToolCalls: toolCalls.length,
+  };
 }
 
 function stopConditionImpliesFileChanges(stopCondition: string): boolean {
-	const normalized = stopCondition.toLowerCase();
-	const requiresChangeTerms = [
-		"file changes",
-		"files are updated",
-		"code changes",
-		"files updated",
-		"changes are complete",
-		"edited files",
-		"modified files",
-		"apply changes",
-		"write files",
-		"edit files",
-	];
-	return requiresChangeTerms.some((term) => normalized.includes(term));
+  const normalized = stopCondition.toLowerCase();
+  const requiresChangeTerms = [
+    "file changes",
+    "files are updated",
+    "code changes",
+    "files updated",
+    "changes are complete",
+    "edited files",
+    "modified files",
+    "apply changes",
+    "write files",
+    "edit files",
+  ];
+  return requiresChangeTerms.some((term) => normalized.includes(term));
 }
 
 function buildRunPrompt(
-	basePrompt: string,
-	stopCondition: string | undefined,
-	requireFileChanges: boolean,
-	cwd?: string,
+  basePrompt: string,
+  stopCondition: string | undefined,
+  requireFileChanges: boolean,
+  cwd?: string,
+  agentGraph?: unknown,
 ): string {
-	const normalizedCwd = cwd?.trim();
-	const normalizedStopCondition = stopCondition?.trim();
-	const cwdContext = normalizedCwd
-		? `Repository root: ${normalizedCwd}\nAlways operate relative to this repository root for file and directory paths.\n\n`
-		: "";
-	if (!normalizedStopCondition) {
-		return `${cwdContext}${basePrompt}`;
-	}
+  const normalizedCwd = cwd?.trim();
+  const normalizedStopCondition = stopCondition?.trim();
+  const graphContext = buildAgentGraphPromptContext(agentGraph);
+  const cwdContext = normalizedCwd
+    ? `Repository root: ${normalizedCwd}\nAlways operate relative to this repository root for file and directory paths.\n\n`
+    : "";
+  if (!normalizedStopCondition) {
+    return `${cwdContext}${graphContext}${basePrompt}`;
+  }
 
-	const fileChangeGuard = requireFileChanges
-		? "\n\nCRITICAL: You must make real file mutations (write/edit/delete/mkdir) before finalizing. Do not stop at analysis or directory listing."
-		: "";
+  const fileChangeGuard = requireFileChanges
+    ? "\n\nCRITICAL: You must make real file mutations (write/edit/delete/mkdir) before finalizing. Do not stop at analysis or directory listing."
+    : "";
 
-	return `${cwdContext}${basePrompt}
+  return `${cwdContext}${graphContext}${basePrompt}
 
 ## Stop Condition
 ${normalizedStopCondition}
@@ -1734,41 +1877,98 @@ ${normalizedStopCondition}
 Execute autonomously until the stop condition is satisfied. Do not ask for confirmation before proceeding.${fileChangeGuard}`;
 }
 
+function buildAgentGraphPromptContext(agentGraph: unknown): string {
+  if (
+    !agentGraph ||
+    typeof agentGraph !== "object" ||
+    Array.isArray(agentGraph)
+  ) {
+    return "";
+  }
+  const graph = agentGraph as {
+    version?: unknown;
+    nodes?: unknown;
+    edges?: unknown;
+  };
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  if (nodes.length === 0) return "";
+  const steps = nodes
+    .slice(0, 12)
+    .map((node, index) => {
+      if (!node || typeof node !== "object" || Array.isArray(node)) {
+        return `- Step ${index + 1}`;
+      }
+      const data =
+        typeof (node as { data?: unknown }).data === "object" &&
+        (node as { data?: unknown }).data &&
+        !Array.isArray((node as { data?: unknown }).data)
+          ? ((node as { data?: Record<string, unknown> }).data as Record<
+              string,
+              unknown
+            >)
+          : {};
+      const stepType =
+        typeof data.stepType === "string"
+          ? data.stepType
+          : typeof data.kind === "string"
+            ? data.kind
+            : "step";
+      const label =
+        typeof data.label === "string" && data.label.trim().length > 0
+          ? data.label.trim()
+          : `Step ${index + 1}`;
+      return `- ${label} [${stepType}]`;
+    })
+    .join("\n");
+  const edgeCount = Array.isArray(graph.edges) ? graph.edges.length : 0;
+  const version =
+    typeof graph.version === "string" && graph.version.trim().length > 0
+      ? graph.version.trim()
+      : "v1";
+  return `## Durable Agent Graph
+Use this graph as the durable control loop for planning, tools, memory, approvals, and completion.
+Graph version: ${version}
+Graph topology: ${nodes.length} steps, ${edgeCount} edges
+${steps}
+
+`;
+}
+
 function didRunMutateFiles(
-	fileChanges: FileChange[],
-	changeSummary?: ChangeSummaryOutput,
+  fileChanges: FileChange[],
+  changeSummary?: ChangeSummaryOutput,
 ): boolean {
-	if (fileChanges.length > 0) return true;
-	return Boolean(changeSummary?.changed || changeSummary?.files.length);
+  if (fileChanges.length > 0) return true;
+  return Boolean(changeSummary?.changed || changeSummary?.files.length);
 }
 
 function buildSnapshotRefs(
-	fileChanges: FileChange[],
-	changeSummary?: ChangeSummaryOutput,
+  fileChanges: FileChange[],
+  changeSummary?: ChangeSummaryOutput,
 ): string[] {
-	const refs = new Set<string>();
-	for (const file of changeSummary?.files ?? []) {
-		const path = file.path?.trim();
-		if (path) {
-			refs.add(path);
-		}
-	}
-	for (const file of fileChanges) {
-		const path = file.path?.trim();
-		if (path) {
-			refs.add(path);
-		}
-	}
-	return Array.from(refs).sort((a, b) => a.localeCompare(b));
+  const refs = new Set<string>();
+  for (const file of changeSummary?.files ?? []) {
+    const path = file.path?.trim();
+    if (path) {
+      refs.add(path);
+    }
+  }
+  for (const file of fileChanges) {
+    const path = file.path?.trim();
+    if (path) {
+      refs.add(path);
+    }
+  }
+  return Array.from(refs).sort((a, b) => a.localeCompare(b));
 }
 
 function buildNoFileChangeRepairPrompt(
-	basePrompt: string,
-	previousText: string,
-	attempt: number,
+  basePrompt: string,
+  previousText: string,
+  attempt: number,
 ): string {
-	const priorResponse = previousText.trim();
-	return `${basePrompt}
+  const priorResponse = previousText.trim();
+  return `${basePrompt}
 
 ## Repair Attempt ${attempt}
 The previous execution attempt was invalid because it completed without any write/edit/delete file operations.
@@ -1784,45 +1984,45 @@ ${priorResponse || "<empty>"}`;
 }
 
 function planHasExecutableTasks(plan: ClaudeTaskPlan): boolean {
-	return plan.tasks.length > 0;
+  return plan.tasks.length > 0;
 }
 
 function buildPlanExecutionText(plan: ClaudeTaskPlan): string {
-	return plan.tasks
-		.map((task, index) => {
-			const deps =
-				task.blockedBy.length > 0
-					? ` [blockedBy: ${task.blockedBy.join(", ")}]`
-					: "";
-			const toolPrefix =
-				typeof task.tool === "string" && task.tool.trim().length > 0
-					? `[${task.tool.trim()}] `
-					: "";
-			const why = task.reasoning ? ` — ${task.reasoning}` : "";
-			return `${index + 1}. ${toolPrefix}(${task.id}) ${task.subject}: ${task.description}${why}${deps}`;
-		})
-		.join("\n");
+  return plan.tasks
+    .map((task, index) => {
+      const deps =
+        task.blockedBy.length > 0
+          ? ` [blockedBy: ${task.blockedBy.join(", ")}]`
+          : "";
+      const toolPrefix =
+        typeof task.tool === "string" && task.tool.trim().length > 0
+          ? `[${task.tool.trim()}] `
+          : "";
+      const why = task.reasoning ? ` — ${task.reasoning}` : "";
+      return `${index + 1}. ${toolPrefix}(${task.id}) ${task.subject}: ${task.description}${why}${deps}`;
+    })
+    .join("\n");
 }
 
 function planTaskImpliesFileMutation(tool: string): boolean {
-	const normalized = tool.trim().toLowerCase();
-	if (!normalized) return false;
-	return (
-		normalized === "write_file" ||
-		normalized === "edit_file" ||
-		normalized === "delete_file" ||
-		normalized === "mkdir" ||
-		normalized.endsWith("write_file") ||
-		normalized.endsWith("edit_file") ||
-		normalized.endsWith("delete_file") ||
-		normalized.endsWith("mkdir")
-	);
+  const normalized = tool.trim().toLowerCase();
+  if (!normalized) return false;
+  return (
+    normalized === "write_file" ||
+    normalized === "edit_file" ||
+    normalized === "delete_file" ||
+    normalized === "mkdir" ||
+    normalized.endsWith("write_file") ||
+    normalized.endsWith("edit_file") ||
+    normalized.endsWith("delete_file") ||
+    normalized.endsWith("mkdir")
+  );
 }
 
 function planLikelyRequiresFileChanges(plan: ClaudeTaskPlan): boolean {
-	return plan.tasks.some((task) =>
-		planTaskImpliesFileMutation(typeof task.tool === "string" ? task.tool : ""),
-	);
+  return plan.tasks.some((task) =>
+    planTaskImpliesFileMutation(typeof task.tool === "string" ? task.tool : ""),
+  );
 }
 
 /**
@@ -1832,358 +2032,493 @@ function planLikelyRequiresFileChanges(plan: ClaudeTaskPlan): boolean {
  * and `tool_calls` (from the final message only, usually empty).
  */
 function extractToolCalls(
-	result: Record<string, unknown> | undefined,
+  result: Record<string, unknown> | undefined,
 ): ToolCallRecord[] {
-	if (!result) return [];
+  if (!result) return [];
 
-	const toolCalls: ToolCallRecord[] = [];
+  const toolCalls: ToolCallRecord[] = [];
 
-	// Primary: use all_tool_calls accumulated across all turns
-	const allTc = result.all_tool_calls;
-	if (Array.isArray(allTc) && allTc.length > 0) {
-		for (const tc of allTc) {
-			toolCalls.push({
-				name: (tc as any).tool_name || (tc as any).name || "",
-				args: (tc as any).tool_args || (tc as any).args || {},
-				result: (tc as any).execution_result || (tc as any).result || null,
-			});
-		}
-		return toolCalls;
-	}
+  // Primary: use all_tool_calls accumulated across all turns
+  const allTc = result.all_tool_calls;
+  if (Array.isArray(allTc) && allTc.length > 0) {
+    for (const tc of allTc) {
+      toolCalls.push({
+        name: (tc as any).tool_name || (tc as any).name || "",
+        args: (tc as any).tool_args || (tc as any).args || {},
+        result: (tc as any).execution_result || (tc as any).result || null,
+      });
+    }
+    return toolCalls;
+  }
 
-	// Fallback: check tool_calls on the result (legacy / final message only)
-	const legacyTc = result.tool_calls;
-	if (Array.isArray(legacyTc)) {
-		for (const tc of legacyTc) {
-			toolCalls.push({
-				name: (tc as any).tool_name || (tc as any).name || "",
-				args: (tc as any).tool_args || (tc as any).args || {},
-				result: (tc as any).execution_result || (tc as any).result || null,
-			});
-		}
-	}
+  // Fallback: check tool_calls on the result (legacy / final message only)
+  const legacyTc = result.tool_calls;
+  if (Array.isArray(legacyTc)) {
+    for (const tc of legacyTc) {
+      toolCalls.push({
+        name: (tc as any).tool_name || (tc as any).name || "",
+        args: (tc as any).tool_args || (tc as any).args || {},
+        result: (tc as any).execution_result || (tc as any).result || null,
+      });
+    }
+  }
 
-	return toolCalls;
+  return toolCalls;
 }
 
 function extractFileChanges(
-	toolCalls: Array<{ name: string; args: any; result: any }>,
+  toolCalls: Array<{ name: string; args: any; result: any }>,
 ): FileChange[] {
-	const changes: FileChange[] = [];
-	const seen = new Map<string, number>();
+  const changes: FileChange[] = [];
+  const seen = new Map<string, number>();
 
-	for (const tc of toolCalls) {
-		const name = tc.name;
-		const args = tc.args ?? {};
+  for (const tc of toolCalls) {
+    const name = tc.name;
+    const args = tc.args ?? {};
 
-		if (name === "write_file" || name.endsWith("write_file")) {
-			const path = String(args.path ?? args.filePath ?? "");
-			if (!path) continue;
-			const change: FileChange = {
-				path,
-				operation: "created",
-				content: args.content != null ? String(args.content) : undefined,
-			};
-			if (seen.has(path)) {
-				changes[seen.get(path)!] = change;
-			} else {
-				seen.set(path, changes.length);
-				changes.push(change);
-			}
-		} else if (name === "edit_file" || name.endsWith("edit_file")) {
-			const path = String(args.path ?? args.filePath ?? "");
-			if (!path) continue;
-			const change: FileChange = { path, operation: "modified" };
-			if (seen.has(path)) {
-				changes[seen.get(path)!] = change;
-			} else {
-				seen.set(path, changes.length);
-				changes.push(change);
-			}
-		} else if (
-			name === "delete_file" ||
-			name === "delete" ||
-			name.endsWith("delete")
-		) {
-			const path = String(args.path ?? args.filePath ?? "");
-			if (!path) continue;
-			if (seen.has(path)) {
-				changes[seen.get(path)!] = { path, operation: "deleted" };
-			} else {
-				seen.set(path, changes.length);
-				changes.push({ path, operation: "deleted" });
-			}
-		}
-	}
+    if (name === "write_file" || name.endsWith("write_file")) {
+      const path = String(args.path ?? args.filePath ?? "");
+      if (!path) continue;
+      const change: FileChange = {
+        path,
+        operation: "created",
+        content: args.content != null ? String(args.content) : undefined,
+      };
+      if (seen.has(path)) {
+        changes[seen.get(path)!] = change;
+      } else {
+        seen.set(path, changes.length);
+        changes.push(change);
+      }
+    } else if (name === "edit_file" || name.endsWith("edit_file")) {
+      const path = String(args.path ?? args.filePath ?? "");
+      if (!path) continue;
+      const change: FileChange = { path, operation: "modified" };
+      if (seen.has(path)) {
+        changes[seen.get(path)!] = change;
+      } else {
+        seen.set(path, changes.length);
+        changes.push(change);
+      }
+    } else if (
+      name === "delete_file" ||
+      name === "delete" ||
+      name.endsWith("delete")
+    ) {
+      const path = String(args.path ?? args.filePath ?? "");
+      if (!path) continue;
+      if (seen.has(path)) {
+        changes[seen.get(path)!] = { path, operation: "deleted" };
+      } else {
+        seen.set(path, changes.length);
+        changes.push({ path, operation: "deleted" });
+      }
+    }
+  }
 
-	return changes;
+  return changes;
 }
 
 async function buildAgentChangeSummary(
-	executionId: string,
-	durableInstanceId: string,
+  executionId: string,
+  durableInstanceId: string,
 ): Promise<ChangeSummaryOutput> {
-	const { patch, changeSets } = await workspaceSessions.getExecutionPatch(
-		executionId,
-		{
-			durableInstanceId,
-		},
-	);
-	const files = changeSets.flatMap((set) =>
-		set.files.map((file) => ({
-			path: file.path,
-			op:
-				file.status === "A"
-					? "created"
-					: file.status === "D"
-						? "deleted"
-						: file.status === "R"
-							? "renamed"
-							: "modified",
-		})),
-	);
-	const additions = changeSets.reduce((sum, set) => sum + set.additions, 0);
-	const deletions = changeSets.reduce((sum, set) => sum + set.deletions, 0);
-	const patchBytes = Buffer.byteLength(patch, "utf8");
-	const previewLimit = parseInt(
-		process.env.WORKSPACE_INLINE_PATCH_PREVIEW_BYTES || "16384",
-		10,
-	);
+  const { patch, changeSets } = await workspaceSessions.getExecutionPatch(
+    executionId,
+    {
+      durableInstanceId,
+    },
+  );
+  const files = changeSets.flatMap((set) =>
+    set.files.map((file) => ({
+      path: file.path,
+      op:
+        file.status === "A"
+          ? "created"
+          : file.status === "D"
+            ? "deleted"
+            : file.status === "R"
+              ? "renamed"
+              : "modified",
+    })),
+  );
+  const additions = changeSets.reduce((sum, set) => sum + set.additions, 0);
+  const deletions = changeSets.reduce((sum, set) => sum + set.deletions, 0);
+  const patchBytes = Buffer.byteLength(patch, "utf8");
+  const previewLimit = parseInt(
+    process.env.WORKSPACE_INLINE_PATCH_PREVIEW_BYTES || "16384",
+    10,
+  );
 
-	return {
-		changed: changeSets.length > 0,
-		files,
-		stats: {
-			files: files.length,
-			additions,
-			deletions,
-		},
-		patchRef:
-			changeSets.length > 0
-				? `/api/workspaces/executions/${executionId}/patch?durableInstanceId=${durableInstanceId}`
-				: undefined,
-		patchSha256: undefined,
-		patchBytes: patchBytes > 0 ? patchBytes : undefined,
-		truncatedInlinePatch: patch.length > previewLimit,
-		inlinePatchPreview: patch ? patch.slice(0, previewLimit) : undefined,
-		baseRevision: changeSets[0]?.baseRevision,
-		headRevision: changeSets.at(-1)?.headRevision,
-	};
+  return {
+    changed: changeSets.length > 0,
+    files,
+    stats: {
+      files: files.length,
+      additions,
+      deletions,
+    },
+    patchRef:
+      changeSets.length > 0
+        ? `/api/workspaces/executions/${executionId}/patch?durableInstanceId=${durableInstanceId}`
+        : undefined,
+    patchSha256: undefined,
+    patchBytes: patchBytes > 0 ? patchBytes : undefined,
+    truncatedInlinePatch: patch.length > previewLimit,
+    inlinePatchPreview: patch ? patch.slice(0, previewLimit) : undefined,
+    baseRevision: changeSets[0]?.baseRevision,
+    headRevision: changeSets.at(-1)?.headRevision,
+  };
+}
+
+function createFinalizeOpenShellRunResultActivity() {
+  return async function finalizeOpenShellRunResultActivity(
+    _ctx: unknown,
+    payload: {
+      instanceId: string;
+      loopInstanceId: string;
+      runPrompt: string;
+      workspaceRef?: string;
+      executionId?: string;
+      requireFileChanges: boolean;
+      traceContext?: Record<string, unknown>;
+      completion: {
+        success: boolean;
+        result?: Record<string, unknown>;
+        error?: string;
+      };
+    },
+  ): Promise<{
+    success: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  }> {
+    return buildOpenShellRunCompletion(
+      {
+        completion: payload.completion,
+        runPrompt: payload.runPrompt,
+        instanceId: payload.loopInstanceId,
+        executionId: payload.executionId,
+        workspaceRef: payload.workspaceRef,
+        requireFileChanges: payload.requireFileChanges,
+        traceContext: payload.traceContext,
+      },
+      {
+        scorers,
+        runScorers,
+        buildAgentChangeSummary,
+      },
+    );
+  };
 }
 
 // ── Wait for Dapr Workflow Completion ─────────────────────────
 
 async function waitForWorkflowCompletion(
-	instanceId: string,
-	timeoutSeconds = 30 * 60,
+  instanceId: string,
+  timeoutSeconds = 30 * 60,
 ): Promise<{
-	success: boolean;
-	result?: Record<string, unknown>;
-	error?: string;
+  success: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
 }> {
-	console.log(
-		`[durable-agent] Waiting for workflow completion: ${instanceId} (timeout=${timeoutSeconds}s)`,
-	);
+  console.log(
+    `[durable-agent] Waiting for workflow completion: ${instanceId} (timeout=${timeoutSeconds}s)`,
+  );
 
-	try {
-		// Use Dapr SDK's built-in wait (more reliable than custom polling)
-		const state = await workflowClient!.waitForWorkflowCompletion(
-			instanceId,
-			true, // fetchPayloads
-			timeoutSeconds,
-		);
+  try {
+    // Use Dapr SDK's built-in wait (more reliable than custom polling)
+    const state = await workflowClient!.waitForWorkflowCompletion(
+      instanceId,
+      true, // fetchPayloads
+      timeoutSeconds,
+    );
 
-		if (!state) {
-			console.warn(`[durable-agent] Workflow state not found: ${instanceId}`);
-			return { success: false, error: "Workflow state not found" };
-		}
+    if (!state) {
+      console.warn(`[durable-agent] Workflow state not found: ${instanceId}`);
+      return { success: false, error: "Workflow state not found" };
+    }
 
-		// WorkflowRuntimeStatus enum: RUNNING=0, COMPLETED=1, FAILED=3, TERMINATED=5
-		const statusNum = state.runtimeStatus;
-		console.log(
-			`[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`,
-		);
+    // WorkflowRuntimeStatus enum: RUNNING=0, COMPLETED=1, FAILED=3, TERMINATED=5
+    const statusNum = state.runtimeStatus;
+    console.log(
+      `[durable-agent] Workflow ${instanceId} finished with status: ${statusNum}`,
+    );
 
-		if (statusNum === WORKFLOW_STATUS_COMPLETED) {
-			// COMPLETED
-			let result: Record<string, unknown> = {};
-			if (state.serializedOutput) {
-				try {
-					result = JSON.parse(state.serializedOutput);
-				} catch {
-					result = { raw: state.serializedOutput };
-				}
-			}
-			return { success: true, result };
-		}
+    if (statusNum === WORKFLOW_STATUS_COMPLETED) {
+      // COMPLETED
+      let result: Record<string, unknown> = {};
+      if (state.serializedOutput) {
+        try {
+          result = JSON.parse(state.serializedOutput);
+        } catch {
+          result = { raw: state.serializedOutput };
+        }
+      }
+      return { success: true, result };
+    }
 
-		if (
-			statusNum === WORKFLOW_STATUS_FAILED ||
-			statusNum === WORKFLOW_STATUS_TERMINATED
-		) {
-			// FAILED or TERMINATED
-			let error = "Workflow failed";
-			if ((state as any).failureDetails?.message) {
-				error = (state as any).failureDetails.message;
-			}
-			return { success: false, error };
-		}
+    if (
+      statusNum === WORKFLOW_STATUS_FAILED ||
+      statusNum === WORKFLOW_STATUS_TERMINATED
+    ) {
+      // FAILED or TERMINATED
+      let error = "Workflow failed";
+      if ((state as any).failureDetails?.message) {
+        error = (state as any).failureDetails.message;
+      }
+      return { success: false, error };
+    }
 
-		return { success: false, error: `Unexpected status: ${statusNum}` };
-	} catch (err) {
-		console.error(`[durable-agent] waitForWorkflowCompletion error: ${err}`);
-		return { success: false, error: String(err) };
-	}
+    return { success: false, error: `Unexpected status: ${statusNum}` };
+  } catch (err) {
+    console.error(`[durable-agent] waitForWorkflowCompletion error: ${err}`);
+    return { success: false, error: String(err) };
+  }
 }
 
 type PlanningAttemptResult = {
-	instanceId: string;
-	completion: {
-		success: boolean;
-		result?: Record<string, unknown>;
-		error?: string;
-	};
-	toolCalls: ToolCallRecord[];
-	planningText: string;
+  instanceId: string;
+  completion: {
+    success: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  };
+  toolCalls: ToolCallRecord[];
+  planningText: string;
 };
 
 async function runPlanningAttempt(input: {
-	activeAgent: DurableAgent;
-	task: string;
-	maxIterations: number;
-	workspaceRef?: string;
-	timeoutSeconds?: number;
-	loopPolicy?: LoopPolicy;
+  activeAgent: DurableAgent;
+  task: string;
+  maxIterations: number;
+  workspaceRef?: string;
+  timeoutSeconds?: number;
+  loopPolicy?: LoopPolicy;
+  agentGraph?: Record<string, unknown>;
+  loopStrategyName?: string;
 }): Promise<PlanningAttemptResult> {
-	const instanceId = await workflowClient!.scheduleNewWorkflow(
-		input.activeAgent.agentWorkflow,
-		{
-			task: input.task,
-			maxIterations: input.maxIterations,
-			...(input.loopPolicy ? { loopPolicy: input.loopPolicy } : {}),
-		},
-	);
-	if (input.workspaceRef) {
-		await workspaceSessions.bindDurableInstance(instanceId, input.workspaceRef);
-	}
+  const instanceId = await workflowClient!.scheduleNewWorkflow(
+    input.activeAgent.agentWorkflow,
+    {
+      task: input.task,
+      maxIterations: input.maxIterations,
+      ...(input.loopPolicy ? { loopPolicy: input.loopPolicy } : {}),
+      ...(input.agentGraph ? { agentGraph: input.agentGraph } : {}),
+      ...(input.loopStrategyName
+        ? { loopStrategyName: input.loopStrategyName }
+        : {}),
+    },
+  );
+  if (input.workspaceRef) {
+    await workspaceSessions.bindDurableInstance(instanceId, input.workspaceRef);
+  }
 
-	let completion: {
-		success: boolean;
-		result?: Record<string, unknown>;
-		error?: string;
-	};
-	try {
-		completion = await waitForWorkflowCompletion(
-			instanceId,
-			input.timeoutSeconds ?? PLAN_TIMEOUT_SECONDS,
-		);
-	} finally {
-		workspaceSessions.unbindDurableInstance(instanceId);
-	}
+  let completion: {
+    success: boolean;
+    result?: Record<string, unknown>;
+    error?: string;
+  };
+  try {
+    completion = await waitForWorkflowCompletion(
+      instanceId,
+      input.timeoutSeconds ?? PLAN_TIMEOUT_SECONDS,
+    );
+  } finally {
+    workspaceSessions.unbindDurableInstance(instanceId);
+  }
 
-	const toolCalls = extractToolCalls(completion.result);
-	const planningText =
-		(completion.result?.final_answer as string) ??
-		(completion.result?.last_message as string) ??
-		(completion.result?.content as string) ??
-		"";
+  const toolCalls = extractToolCalls(completion.result);
+  const planningText =
+    (completion.result?.final_answer as string) ??
+    (completion.result?.last_message as string) ??
+    (completion.result?.content as string) ??
+    "";
 
-	return {
-		instanceId,
-		completion,
-		toolCalls,
-		planningText,
-	};
+  return {
+    instanceId,
+    completion,
+    toolCalls,
+    planningText,
+  };
 }
 
 async function getWorkflowCompletionSnapshot(instanceId: string): Promise<{
-	done: boolean;
-	success: boolean;
-	result?: Record<string, unknown>;
-	error?: string;
+  done: boolean;
+  success: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
 }> {
-	try {
-		const state = await workflowClient!.getWorkflowState(instanceId, true);
-		if (!state) {
-			return { done: true, success: false, error: "Workflow state not found" };
-		}
-		const statusNum = state.runtimeStatus;
-		if (statusNum === WORKFLOW_STATUS_COMPLETED) {
-			let result: Record<string, unknown> = {};
-			if (state.serializedOutput) {
-				try {
-					result = JSON.parse(state.serializedOutput);
-				} catch {
-					result = { raw: state.serializedOutput };
-				}
-			}
-			return { done: true, success: true, result };
-		}
-		if (
-			statusNum === WORKFLOW_STATUS_FAILED ||
-			statusNum === WORKFLOW_STATUS_TERMINATED
-		) {
-			let error = "Workflow failed";
-			if ((state as any).failureDetails?.message) {
-				error = (state as any).failureDetails.message;
-			}
-			return { done: true, success: false, error };
-		}
-		return { done: false, success: false };
-	} catch (err) {
-		return { done: false, success: false, error: String(err) };
-	}
+  try {
+    const state = await workflowClient!.getWorkflowState(instanceId, true);
+    if (!state) {
+      return { done: true, success: false, error: "Workflow state not found" };
+    }
+    const statusNum = state.runtimeStatus;
+    if (statusNum === WORKFLOW_STATUS_COMPLETED) {
+      let result: Record<string, unknown> = {};
+      if (state.serializedOutput) {
+        try {
+          result = JSON.parse(state.serializedOutput);
+        } catch {
+          result = { raw: state.serializedOutput };
+        }
+      }
+      return { done: true, success: true, result };
+    }
+    if (
+      statusNum === WORKFLOW_STATUS_FAILED ||
+      statusNum === WORKFLOW_STATUS_TERMINATED
+    ) {
+      let error = "Workflow failed";
+      if ((state as any).failureDetails?.message) {
+        error = (state as any).failureDetails.message;
+      }
+      return { done: true, success: false, error };
+    }
+    return { done: false, success: false };
+  } catch (err) {
+    return { done: false, success: false, error: String(err) };
+  }
+}
+
+async function finalizeWorkflowRun(input: {
+  instanceId: string;
+  trackedRunId: string;
+  agentWorkflowId: string;
+  parentExecutionId: string;
+  workspaceRef?: string;
+  executionId: string;
+  workflowId: string;
+  nodeId: string;
+  runPrompt: string;
+  requireFileChanges: boolean;
+  shouldPublishCompletionEvent: boolean;
+  shouldTrackRun: boolean;
+}): Promise<{
+  success: boolean;
+  result?: Record<string, unknown>;
+  error?: string;
+}> {
+  try {
+    const completion = await waitForWorkflowCompletion(input.instanceId);
+    const finalized = await buildOpenShellRunCompletion(
+      {
+        completion,
+        runPrompt: input.runPrompt,
+        instanceId: input.instanceId,
+        executionId: input.executionId,
+        workspaceRef: input.workspaceRef,
+        requireFileChanges: input.requireFileChanges,
+      },
+      {
+        scorers,
+        runScorers,
+        buildAgentChangeSummary,
+      },
+    );
+
+    if (input.shouldTrackRun) {
+      await workflowRunTracker.markCompleted({
+        id: input.trackedRunId,
+        success: finalized.success,
+        result: finalized.result,
+        error: finalized.error,
+      });
+    }
+
+    if (input.shouldPublishCompletionEvent) {
+      const published = await publishCompletionEvent({
+        agentWorkflowId: input.agentWorkflowId,
+        parentExecutionId: input.parentExecutionId,
+        success: finalized.success,
+        result: finalized.result,
+        error: finalized.error,
+      });
+      if (published && input.shouldTrackRun) {
+        await workflowRunTracker.markEventPublished(input.trackedRunId);
+      }
+    }
+
+    return finalized;
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[durable-agent] Background run failed: ${errorMsg}`);
+    if (input.shouldTrackRun) {
+      await workflowRunTracker.markCompleted({
+        id: input.trackedRunId,
+        success: false,
+        error: errorMsg,
+      });
+    }
+    if (input.shouldPublishCompletionEvent) {
+      const published = await publishCompletionEvent({
+        agentWorkflowId: input.agentWorkflowId,
+        parentExecutionId: input.parentExecutionId,
+        success: false,
+        error: errorMsg,
+      });
+      if (published && input.shouldTrackRun) {
+        await workflowRunTracker.markEventPublished(input.trackedRunId);
+      }
+    }
+    return { success: false, error: errorMsg };
+  } finally {
+    workspaceSessions.unbindDurableInstance(input.instanceId);
+    untrackActiveRun(input.agentWorkflowId);
+  }
 }
 
 async function reconcileUnpublishedRuns(): Promise<void> {
-	if (reconcilingRuns) return;
-	reconcilingRuns = true;
-	try {
-		const pending = await workflowRunTracker.listPending(50);
-		for (const run of pending) {
-			try {
-				let success = run.status === "completed";
-				let error = run.error;
-				let result = run.result;
-				if (!result && !error) {
-					const snapshot = await getWorkflowCompletionSnapshot(
-						run.daprInstanceId,
-					);
-					if (!snapshot.done) {
-						await workflowRunTracker.markReconciled(run.id);
-						continue;
-					}
-					success = snapshot.success;
-					error = snapshot.error;
-					result = snapshot.result;
-					await workflowRunTracker.markCompleted({
-						id: run.id,
-						success,
-						result,
-						error,
-					});
-				}
+  if (!LEGACY_COMPLETION_EVENTS_ENABLED) return;
+  if (reconcilingRuns) return;
+  reconcilingRuns = true;
+  try {
+    const pending = await workflowRunTracker.listPending(50);
+    for (const run of pending) {
+      try {
+        let success = run.status === "completed";
+        let error = run.error;
+        let result = run.result;
+        if (!result && !error) {
+          const snapshot = await getWorkflowCompletionSnapshot(
+            run.daprInstanceId,
+          );
+          if (!snapshot.done) {
+            await workflowRunTracker.markReconciled(run.id);
+            continue;
+          }
+          success = snapshot.success;
+          error = snapshot.error;
+          result = snapshot.result;
+          await workflowRunTracker.markCompleted({
+            id: run.id,
+            success,
+            result,
+            error,
+          });
+        }
 
-				const published = await publishCompletionEvent({
-					agentWorkflowId: run.agentWorkflowId,
-					parentExecutionId: run.parentExecutionId,
-					success,
-					result,
-					error,
-				});
-				if (published) {
-					await workflowRunTracker.markEventPublished(run.id);
-				}
-				await workflowRunTracker.markReconciled(run.id);
-			} catch (err) {
-				console.warn(`[durable-agent] reconcile run ${run.id} failed:`, err);
-			}
-		}
-	} catch (err) {
-		console.warn("[durable-agent] reconcileUnpublishedRuns failed:", err);
-	} finally {
-		reconcilingRuns = false;
-	}
+        const published = await publishCompletionEvent({
+          agentWorkflowId: run.agentWorkflowId,
+          parentExecutionId: run.parentExecutionId,
+          success,
+          result,
+          error,
+        });
+        if (published) {
+          await workflowRunTracker.markEventPublished(run.id);
+        }
+        await workflowRunTracker.markReconciled(run.id);
+      } catch (err) {
+        console.warn(`[durable-agent] reconcile run ${run.id} failed:`, err);
+      }
+    }
+  } catch (err) {
+    console.warn("[durable-agent] reconcileUnpublishedRuns failed:", err);
+  } finally {
+    reconcilingRuns = false;
+  }
 }
 
 // ── Express Server ────────────────────────────────────────────
@@ -2192,2517 +2527,2498 @@ const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 app.post("/configuration", (req, res) => {
-	try {
-		const result = applyConfigStorePush({ payload: req.body });
-		res.json({ ok: true, ...result });
-	} catch (err) {
-		res.status(400).json({
-			ok: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+  try {
+    const result = applyConfigStorePush({ payload: req.body });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/configuration/:storeName", (req, res) => {
-	try {
-		const result = applyConfigStorePush({
-			storeName: req.params.storeName,
-			payload: req.body,
-		});
-		res.json({ ok: true, ...result });
-	} catch (err) {
-		res.status(400).json({
-			ok: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+  try {
+    const result = applyConfigStorePush({
+      storeName: req.params.storeName,
+      payload: req.body,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/configuration/:storeName/:key", (req, res) => {
-	try {
-		const result = applyConfigStorePush({
-			storeName: req.params.storeName,
-			key: req.params.key,
-			payload: req.body,
-		});
-		res.json({ ok: true, ...result });
-	} catch (err) {
-		res.status(400).json({
-			ok: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+  try {
+    const result = applyConfigStorePush({
+      storeName: req.params.storeName,
+      key: req.params.key,
+      payload: req.body,
+    });
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    res.status(400).json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 // Health check
 app.get("/api/health", (_req, res) => {
-	const state = eventBus.getState();
-	const workspaceStats = workspaceSessions.getStats();
-	res.json({
-		service: "durable-agent",
-		agentStatus: state.status,
-		agentTools: TOOL_NAMES,
-		totalRuns: state.totalRuns,
-		totalTokens: state.totalTokens,
-		activeWorkspaces: workspaceStats.activeWorkspaces,
-		mappedWorkspaceInstances: workspaceStats.mappedInstances,
-		initialized,
-	});
+  const state = eventBus.getState();
+  const workspaceStats = workspaceSessions.getStats();
+  res.json({
+    service: "durable-agent",
+    agentStatus: state.status,
+    agentTools: TOOL_NAMES,
+    totalRuns: state.totalRuns,
+    totalTokens: state.totalTokens,
+    activeWorkspaces: workspaceStats.activeWorkspaces,
+    mappedWorkspaceInstances: workspaceStats.mappedInstances,
+    initialized,
+  });
 });
 
 // Readiness check (only ready after agent/runtime initialization)
 app.get("/api/ready", (_req, res) => {
-	if (!initialized) {
-		res.status(503).json({
-			service: "durable-agent",
-			ready: false,
-			initialized,
-		});
-		return;
-	}
-	res.json({
-		service: "durable-agent",
-		ready: true,
-		initialized,
-	});
+  if (!initialized) {
+    res.status(503).json({
+      service: "durable-agent",
+      ready: false,
+      initialized,
+    });
+    return;
+  }
+  res.json({
+    service: "durable-agent",
+    ready: true,
+    initialized,
+  });
 });
 
 app.get("/api/runtime/introspect", async (_req, res) => {
-	const healthResponse = {
-		daprHost: DAPR_HTTP_HOST,
-		daprHttpPort: DAPR_HTTP_PORT,
-		minRuntimeVersion: MIN_DAPR_RUNTIME_VERSION,
-	};
-	let runtimeStatus: Record<string, unknown> = {
-		...healthResponse,
-		initialized,
-	};
-	const errors: string[] = [];
+  const healthResponse = {
+    daprHost: DAPR_HTTP_HOST,
+    daprHttpPort: DAPR_HTTP_PORT,
+    minRuntimeVersion: MIN_DAPR_RUNTIME_VERSION,
+  };
+  let runtimeStatus: Record<string, unknown> = {
+    ...healthResponse,
+    initialized,
+  };
+  const errors: string[] = [];
 
-	try {
-		const metadataResponse = await fetch(
-			`http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`,
-			{
-				method: "GET",
-				signal: AbortSignal.timeout(3000),
-			},
-		);
-		if (metadataResponse.ok) {
-			const payload = (await metadataResponse.json()) as Record<
-				string,
-				unknown
-			>;
-			runtimeStatus = {
-				...runtimeStatus,
-				appId: payload.id,
-				runtimeVersion: payload.runtimeVersion,
-				extended: payload,
-			};
-		} else {
-			errors.push(`metadata probe failed with HTTP ${metadataResponse.status}`);
-		}
-	} catch (error) {
-		errors.push(
-			error instanceof Error
-				? error.message
-				: `metadata probe failed: ${String(error)}`,
-		);
-	}
+  try {
+    const metadataResponse = await fetch(
+      `http://${DAPR_HTTP_HOST}:${DAPR_HTTP_PORT}/v1.0/metadata`,
+      {
+        method: "GET",
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (metadataResponse.ok) {
+      const payload = (await metadataResponse.json()) as Record<
+        string,
+        unknown
+      >;
+      runtimeStatus = {
+        ...runtimeStatus,
+        appId: payload.id,
+        runtimeVersion: payload.runtimeVersion,
+        extended: payload,
+      };
+    } else {
+      errors.push(`metadata probe failed with HTTP ${metadataResponse.status}`);
+    }
+  } catch (error) {
+    errors.push(
+      error instanceof Error
+        ? error.message
+        : `metadata probe failed: ${String(error)}`,
+    );
+  }
 
-	res.json({
-		service: "durable-agent",
-		version: DURABLE_AGENT_SERVICE_VERSION,
-		runtime: "node-dapr-workflow",
-		ready: initialized,
-		runtimeStatus,
-		features: [
-			"agent-workflow",
-			"dag-executor",
-			"workspace-tools",
-			"plan-execution",
-			"change-artifacts",
-			"browser-artifacts",
-		],
-		registeredWorkflows: listRuntimeWorkflowRegistrations(),
-		registeredActivities: listRuntimeActivityRegistrations(),
-		errors,
-		registry: {
-			enabled: Boolean(agent?.registry),
-			storeName: agent?.registry
-				? process.env.STATE_STORE_NAME || "statestore"
-				: null,
-			teamName: agent?.registry ? "default" : null,
-			registeredAgents: agent?.registry
-				? await agent.registry
-						.getAgentsMetadata()
-						.then((entries) =>
-							Object.entries(entries).map(([name, meta]) => ({
-								name,
-								metadata: meta as Record<string, unknown>,
-							})),
-						)
-						.catch(() => [])
-				: [],
-		},
-		additional: {
-			toolNames: TOOL_NAMES,
-			activeRuns: activeRuns.size,
-			workspaceBindings: workspaceSessions.getStats().mappedInstances,
-			pubsubName: process.env.PUBSUB_NAME || "pubsub",
-			stateStoreName: process.env.STATE_STORE_NAME || "statestore",
-			orchestratorAppId:
-				process.env.ORCHESTRATOR_APP_ID || "workflow-orchestrator",
-			startupInitRequired: STARTUP_INIT_REQUIRED,
-			startupInitRetryMs: STARTUP_INIT_RETRY_MS,
-		},
-	});
+  res.json({
+    service: "durable-agent",
+    version: DURABLE_AGENT_SERVICE_VERSION,
+    runtime: "node-dapr-workflow",
+    ready: initialized,
+    runtimeStatus,
+    features: [
+      "agent-workflow",
+      "durable-agent-graph",
+      "config-hot-reload",
+      "loop-strategies",
+      "memory-backends",
+      "dag-executor",
+      "workspace-tools",
+      "plan-execution",
+      "change-artifacts",
+      "browser-artifacts",
+    ],
+    registeredWorkflows: listRuntimeWorkflowRegistrations(),
+    registeredActivities: listRuntimeActivityRegistrations(),
+    errors,
+    registry: {
+      enabled: Boolean(agent?.registry),
+      storeName: agent?.registry
+        ? process.env.STATE_STORE_NAME || "statestore"
+        : null,
+      teamName: agent?.registry ? "default" : null,
+      registeredAgents: agent?.registry
+        ? await agent.registry
+            .getAgentsMetadata()
+            .then((entries) =>
+              Object.entries(entries).map(([name, meta]) => ({
+                name,
+                metadata: meta as Record<string, unknown>,
+              })),
+            )
+            .catch(() => [])
+        : [],
+    },
+    additional: {
+      toolNames: TOOL_NAMES,
+      supportedLoopStrategies: ["default", "graph_v1"],
+      supportedMemoryBackends: ["conversation_list", "dapr_state"],
+      activeRuns: activeRuns.size,
+      workspaceBindings: workspaceSessions.getStats().mappedInstances,
+      pubsubName: process.env.PUBSUB_NAME || "pubsub",
+      stateStoreName: process.env.STATE_STORE_NAME || "statestore",
+      legacyCompletionEventsEnabled: LEGACY_COMPLETION_EVENTS_ENABLED,
+      orchestratorAppId:
+        process.env.ORCHESTRATOR_APP_ID || "workflow-orchestrator",
+      startupInitRequired: STARTUP_INIT_REQUIRED,
+      startupInitRetryMs: STARTUP_INIT_RETRY_MS,
+    },
+  });
 });
 
 // List available tools
 app.get("/api/tools", (_req, res) => {
-	res.json({ success: true, tools: listTools() });
+  res.json({ success: true, tools: listTools() });
 });
 
 // Execute a workspace tool directly
 app.post("/api/tools/:toolId", async (req, res) => {
-	const toolId = decodeURIComponent(req.params.toolId);
-	try {
-		await initAgent();
-		const args = (req.body?.args as Record<string, unknown>) ?? req.body ?? {};
-		const result = await executeTool(toolId, args);
-		res.json({ success: true, toolId, result });
-	} catch (err) {
-		const errorMsg = err instanceof Error ? err.message : String(err);
-		console.error(`[durable-agent] Tool ${toolId} failed: ${errorMsg}`);
-		res.status(400).json({ success: false, toolId, error: errorMsg });
-	}
+  const toolId = decodeURIComponent(req.params.toolId);
+  try {
+    await initAgent();
+    const args = (req.body?.args as Record<string, unknown>) ?? req.body ?? {};
+    const result = await executeTool(toolId, args);
+    res.json({ success: true, toolId, result });
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[durable-agent] Tool ${toolId} failed: ${errorMsg}`);
+    res.status(400).json({ success: false, toolId, error: errorMsg });
+  }
 });
 
 app.post("/api/workspaces/profile", async (req, res) => {
-	try {
-		const executionIdRaw = req.body?.executionId ?? req.body?.dbExecutionId;
-		const executionId =
-			typeof executionIdRaw === "string" ? executionIdRaw.trim() : "";
-		if (!executionId) {
-			res
-				.status(400)
-				.json({ success: false, error: "executionId is required" });
-			return;
-		}
+  try {
+    const executionIdRaw = req.body?.executionId ?? req.body?.dbExecutionId;
+    const executionId =
+      typeof executionIdRaw === "string" ? executionIdRaw.trim() : "";
+    if (!executionId) {
+      res
+        .status(400)
+        .json({ success: false, error: "executionId is required" });
+      return;
+    }
 
-		const profile = await workspaceSessions.createOrGetProfile({
-			executionId,
-			name: typeof req.body?.name === "string" ? req.body.name : undefined,
-			rootPath:
-				typeof req.body?.rootPath === "string" ? req.body.rootPath : undefined,
-			enabledTools: Array.isArray(req.body?.enabledTools)
-				? req.body.enabledTools
-				: typeof req.body?.enabledTools === "string" &&
-						req.body.enabledTools.trim()
-					? (() => {
-							try {
-								const parsed = JSON.parse(req.body.enabledTools);
-								return Array.isArray(parsed) ? parsed : undefined;
-							} catch {
-								return undefined;
-							}
-						})()
-					: undefined,
-			requireReadBeforeWrite:
-				req.body?.requireReadBeforeWrite === true ||
-				req.body?.requireReadBeforeWrite === "true",
-			commandTimeoutMs:
-				typeof req.body?.commandTimeoutMs === "number"
-					? req.body.commandTimeoutMs
-					: typeof req.body?.commandTimeoutMs === "string" &&
-							req.body.commandTimeoutMs.trim()
-						? parseInt(req.body.commandTimeoutMs, 10)
-						: undefined,
-			sandboxTemplate:
-				typeof req.body?.sandboxTemplate === "string"
-					? req.body.sandboxTemplate.trim()
-					: undefined,
-		});
+    const profile = await workspaceSessions.createOrGetProfile({
+      executionId,
+      name: typeof req.body?.name === "string" ? req.body.name : undefined,
+      rootPath:
+        typeof req.body?.rootPath === "string" ? req.body.rootPath : undefined,
+      enabledTools: Array.isArray(req.body?.enabledTools)
+        ? req.body.enabledTools
+        : typeof req.body?.enabledTools === "string" &&
+            req.body.enabledTools.trim()
+          ? (() => {
+              try {
+                const parsed = JSON.parse(req.body.enabledTools);
+                return Array.isArray(parsed) ? parsed : undefined;
+              } catch {
+                return undefined;
+              }
+            })()
+          : undefined,
+      requireReadBeforeWrite:
+        req.body?.requireReadBeforeWrite === true ||
+        req.body?.requireReadBeforeWrite === "true",
+      commandTimeoutMs:
+        typeof req.body?.commandTimeoutMs === "number"
+          ? req.body.commandTimeoutMs
+          : typeof req.body?.commandTimeoutMs === "string" &&
+              req.body.commandTimeoutMs.trim()
+            ? parseInt(req.body.commandTimeoutMs, 10)
+            : undefined,
+      sandboxTemplate:
+        typeof req.body?.sandboxTemplate === "string"
+          ? req.body.sandboxTemplate.trim()
+          : undefined,
+    });
 
-		res.json({ success: true, ...profile });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: true, ...profile });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/workspaces/clone", async (req, res) => {
-	try {
-		const repositoryUrl =
-			typeof req.body?.repositoryUrl === "string" ? req.body.repositoryUrl : "";
-		const repositoryOwner =
-			typeof req.body?.repositoryOwner === "string"
-				? req.body.repositoryOwner
-				: "";
-		const repositoryRepo =
-			typeof req.body?.repositoryRepo === "string"
-				? req.body.repositoryRepo
-				: "";
-		const repositoryBranch =
-			typeof req.body?.repositoryBranch === "string"
-				? req.body.repositoryBranch
-				: "";
-		const repositoryUsername =
-			typeof req.body?.repositoryUsername === "string"
-				? req.body.repositoryUsername
-				: "";
-		if (
-			!repositoryBranch.trim() ||
-			(!repositoryUrl.trim() &&
-				(!repositoryOwner.trim() || !repositoryRepo.trim()))
-		) {
-			res.status(400).json({
-				success: false,
-				error:
-					"repositoryBranch and either repositoryUrl or repositoryOwner/repositoryRepo are required",
-			});
-			return;
-		}
-		const result = await workspaceSessions.cloneRepository({
-			workspaceRef:
-				typeof req.body?.workspaceRef === "string"
-					? req.body.workspaceRef
-					: undefined,
-			executionId:
-				typeof req.body?.executionId === "string"
-					? req.body.executionId
-					: typeof req.body?.dbExecutionId === "string"
-						? req.body.dbExecutionId
-						: undefined,
-			durableInstanceId:
-				typeof req.body?.durableInstanceId === "string"
-					? req.body.durableInstanceId
-					: typeof req.body?.__durable_instance_id === "string"
-						? req.body.__durable_instance_id
-						: undefined,
-			repositoryUrl,
-			repositoryOwner,
-			repositoryRepo,
-			repositoryBranch,
-			repositoryUsername,
-			targetDir:
-				typeof req.body?.targetDir === "string"
-					? req.body.targetDir
-					: undefined,
-			repositoryToken:
-				typeof req.body?.repositoryToken === "string"
-					? req.body.repositoryToken
-					: undefined,
-			githubToken:
-				typeof req.body?.githubToken === "string"
-					? req.body.githubToken
-					: undefined,
-			timeoutMs:
-				typeof req.body?.timeoutMs === "number"
-					? req.body.timeoutMs
-					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
-						? parseInt(req.body.timeoutMs, 10)
-						: undefined,
-		});
+  try {
+    const repositoryUrl =
+      typeof req.body?.repositoryUrl === "string" ? req.body.repositoryUrl : "";
+    const repositoryOwner =
+      typeof req.body?.repositoryOwner === "string"
+        ? req.body.repositoryOwner
+        : "";
+    const repositoryRepo =
+      typeof req.body?.repositoryRepo === "string"
+        ? req.body.repositoryRepo
+        : "";
+    const repositoryBranch =
+      typeof req.body?.repositoryBranch === "string"
+        ? req.body.repositoryBranch
+        : "";
+    const repositoryUsername =
+      typeof req.body?.repositoryUsername === "string"
+        ? req.body.repositoryUsername
+        : "";
+    if (
+      !repositoryBranch.trim() ||
+      (!repositoryUrl.trim() &&
+        (!repositoryOwner.trim() || !repositoryRepo.trim()))
+    ) {
+      res.status(400).json({
+        success: false,
+        error:
+          "repositoryBranch and either repositoryUrl or repositoryOwner/repositoryRepo are required",
+      });
+      return;
+    }
+    const result = await workspaceSessions.cloneRepository({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      durableInstanceId:
+        typeof req.body?.durableInstanceId === "string"
+          ? req.body.durableInstanceId
+          : typeof req.body?.__durable_instance_id === "string"
+            ? req.body.__durable_instance_id
+            : undefined,
+      repositoryUrl,
+      repositoryOwner,
+      repositoryRepo,
+      repositoryBranch,
+      repositoryUsername,
+      targetDir:
+        typeof req.body?.targetDir === "string"
+          ? req.body.targetDir
+          : undefined,
+      repositoryToken:
+        typeof req.body?.repositoryToken === "string"
+          ? req.body.repositoryToken
+          : undefined,
+      githubToken:
+        typeof req.body?.githubToken === "string"
+          ? req.body.githubToken
+          : undefined,
+      timeoutMs:
+        typeof req.body?.timeoutMs === "number"
+          ? req.body.timeoutMs
+          : typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+            ? parseInt(req.body.timeoutMs, 10)
+            : undefined,
+    });
 
-		res.json({ success: result.success, result });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: result.success, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/workspaces/command", async (req, res) => {
-	try {
-		const command =
-			typeof req.body?.command === "string" ? req.body.command : "";
-		if (!command.trim()) {
-			res.status(400).json({ success: false, error: "command is required" });
-			return;
-		}
+  try {
+    const command =
+      typeof req.body?.command === "string" ? req.body.command : "";
+    if (!command.trim()) {
+      res.status(400).json({ success: false, error: "command is required" });
+      return;
+    }
 
-		const result = await workspaceSessions.executeCommand({
-			workspaceRef:
-				typeof req.body?.workspaceRef === "string"
-					? req.body.workspaceRef
-					: undefined,
-			executionId:
-				typeof req.body?.executionId === "string"
-					? req.body.executionId
-					: typeof req.body?.dbExecutionId === "string"
-						? req.body.dbExecutionId
-						: undefined,
-			durableInstanceId:
-				typeof req.body?.durableInstanceId === "string"
-					? req.body.durableInstanceId
-					: typeof req.body?.__durable_instance_id === "string"
-						? req.body.__durable_instance_id
-						: undefined,
-			command,
-			timeoutMs:
-				typeof req.body?.timeoutMs === "number"
-					? req.body.timeoutMs
-					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
-						? parseInt(req.body.timeoutMs, 10)
-						: undefined,
-		});
+    const result = await workspaceSessions.executeCommand({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      durableInstanceId:
+        typeof req.body?.durableInstanceId === "string"
+          ? req.body.durableInstanceId
+          : typeof req.body?.__durable_instance_id === "string"
+            ? req.body.__durable_instance_id
+            : undefined,
+      command,
+      timeoutMs:
+        typeof req.body?.timeoutMs === "number"
+          ? req.body.timeoutMs
+          : typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+            ? parseInt(req.body.timeoutMs, 10)
+            : undefined,
+    });
 
-		res.json({ success: result.success, result });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: result.success, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/workspaces/file", async (req, res) => {
-	try {
-		const operationRaw = req.body?.operation;
-		const operation =
-			typeof operationRaw === "string" ? operationRaw.trim() : "";
-		if (
-			![
-				"read_file",
-				"write_file",
-				"edit_file",
-				"list_files",
-				"delete_file",
-				"mkdir",
-				"file_stat",
-			].includes(operation)
-		) {
-			res.status(400).json({
-				success: false,
-				error:
-					"operation is required and must be one of read_file, write_file, edit_file, list_files, delete_file, mkdir, file_stat",
-			});
-			return;
-		}
+  try {
+    const operationRaw = req.body?.operation;
+    const operation =
+      typeof operationRaw === "string" ? operationRaw.trim() : "";
+    if (
+      ![
+        "read_file",
+        "write_file",
+        "edit_file",
+        "list_files",
+        "delete_file",
+        "mkdir",
+        "file_stat",
+      ].includes(operation)
+    ) {
+      res.status(400).json({
+        success: false,
+        error:
+          "operation is required and must be one of read_file, write_file, edit_file, list_files, delete_file, mkdir, file_stat",
+      });
+      return;
+    }
 
-		const result = await workspaceSessions.executeFileOperation({
-			workspaceRef:
-				typeof req.body?.workspaceRef === "string"
-					? req.body.workspaceRef
-					: undefined,
-			executionId:
-				typeof req.body?.executionId === "string"
-					? req.body.executionId
-					: typeof req.body?.dbExecutionId === "string"
-						? req.body.dbExecutionId
-						: undefined,
-			durableInstanceId:
-				typeof req.body?.durableInstanceId === "string"
-					? req.body.durableInstanceId
-					: typeof req.body?.__durable_instance_id === "string"
-						? req.body.__durable_instance_id
-						: undefined,
-			operation: operation as
-				| "read_file"
-				| "write_file"
-				| "edit_file"
-				| "list_files"
-				| "delete_file"
-				| "mkdir"
-				| "file_stat",
-			path: typeof req.body?.path === "string" ? req.body.path : undefined,
-			content:
-				typeof req.body?.content === "string" ? req.body.content : undefined,
-			old_string:
-				typeof req.body?.old_string === "string"
-					? req.body.old_string
-					: undefined,
-			new_string:
-				typeof req.body?.new_string === "string"
-					? req.body.new_string
-					: undefined,
-		});
+    const result = await workspaceSessions.executeFileOperation({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      durableInstanceId:
+        typeof req.body?.durableInstanceId === "string"
+          ? req.body.durableInstanceId
+          : typeof req.body?.__durable_instance_id === "string"
+            ? req.body.__durable_instance_id
+            : undefined,
+      operation: operation as
+        | "read_file"
+        | "write_file"
+        | "edit_file"
+        | "list_files"
+        | "delete_file"
+        | "mkdir"
+        | "file_stat",
+      path: typeof req.body?.path === "string" ? req.body.path : undefined,
+      content:
+        typeof req.body?.content === "string" ? req.body.content : undefined,
+      old_string:
+        typeof req.body?.old_string === "string"
+          ? req.body.old_string
+          : undefined,
+      new_string:
+        typeof req.body?.new_string === "string"
+          ? req.body.new_string
+          : undefined,
+    });
 
-		res.json({ success: true, result });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/workspaces/cleanup", async (req, res) => {
-	try {
-		const workspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
-		const executionId =
-			typeof req.body?.executionId === "string"
-				? req.body.executionId.trim()
-				: "";
-		const dbExecutionId =
-			typeof req.body?.dbExecutionId === "string"
-				? req.body.dbExecutionId.trim()
-				: "";
+  try {
+    const workspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
+    const executionId =
+      typeof req.body?.executionId === "string"
+        ? req.body.executionId.trim()
+        : "";
+    const dbExecutionId =
+      typeof req.body?.dbExecutionId === "string"
+        ? req.body.dbExecutionId.trim()
+        : "";
 
-		if (!workspaceRef && !executionId && !dbExecutionId) {
-			res.status(400).json({
-				success: false,
-				error: "workspaceRef, executionId, or dbExecutionId is required",
-			});
-			return;
-		}
+    if (!workspaceRef && !executionId && !dbExecutionId) {
+      res.status(400).json({
+        success: false,
+        error: "workspaceRef, executionId, or dbExecutionId is required",
+      });
+      return;
+    }
 
-		const cleanedRefs: string[] = [];
-		if (workspaceRef) {
-			const cleaned =
-				await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
-			if (cleaned) cleanedRefs.push(workspaceRef);
-		}
-		if (executionId) {
-			const refs = await workspaceSessions.cleanupByExecutionId(executionId);
-			for (const ref of refs) cleanedRefs.push(ref);
-		}
-		if (dbExecutionId && dbExecutionId !== executionId) {
-			const refs = await workspaceSessions.cleanupByExecutionId(dbExecutionId);
-			for (const ref of refs) cleanedRefs.push(ref);
-		}
+    const cleanedRefs: string[] = [];
+    if (workspaceRef) {
+      const cleaned =
+        await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+      if (cleaned) cleanedRefs.push(workspaceRef);
+    }
+    if (executionId) {
+      const refs = await workspaceSessions.cleanupByExecutionId(executionId);
+      for (const ref of refs) cleanedRefs.push(ref);
+    }
+    if (dbExecutionId && dbExecutionId !== executionId) {
+      const refs = await workspaceSessions.cleanupByExecutionId(dbExecutionId);
+      for (const ref of refs) cleanedRefs.push(ref);
+    }
 
-		res.json({
-			success: true,
-			cleanedWorkspaceRefs: [...new Set(cleanedRefs)],
-		});
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      cleanedWorkspaceRefs: [...new Set(cleanedRefs)],
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/browser/materialize-change-artifact", async (req, res) => {
-	try {
-		const result = await workspaceSessions.materializeChangeArtifact({
-			workspaceRef:
-				typeof req.body?.workspaceRef === "string"
-					? req.body.workspaceRef
-					: undefined,
-			executionId:
-				typeof req.body?.executionId === "string"
-					? req.body.executionId
-					: typeof req.body?.dbExecutionId === "string"
-						? req.body.dbExecutionId
-						: undefined,
-			sourceExecutionId:
-				typeof req.body?.sourceExecutionId === "string"
-					? req.body.sourceExecutionId
-					: undefined,
-			durableInstanceId:
-				typeof req.body?.durableInstanceId === "string"
-					? req.body.durableInstanceId
-					: typeof req.body?.__durable_instance_id === "string"
-						? req.body.__durable_instance_id
-						: undefined,
-			preferredOperation:
-				typeof req.body?.preferredOperation === "string"
-					? req.body.preferredOperation
-					: undefined,
-		});
+  try {
+    const result = await workspaceSessions.materializeChangeArtifact({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      sourceExecutionId:
+        typeof req.body?.sourceExecutionId === "string"
+          ? req.body.sourceExecutionId
+          : undefined,
+      durableInstanceId:
+        typeof req.body?.durableInstanceId === "string"
+          ? req.body.durableInstanceId
+          : typeof req.body?.__durable_instance_id === "string"
+            ? req.body.__durable_instance_id
+            : undefined,
+      preferredOperation:
+        typeof req.body?.preferredOperation === "string"
+          ? req.body.preferredOperation
+          : undefined,
+    });
 
-		res.json({ success: true, result });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/browser/capture-flow", async (req, res) => {
-	try {
-		const baseUrl =
-			typeof req.body?.baseUrl === "string" ? req.body.baseUrl : "";
-		if (!baseUrl.trim()) {
-			res.status(400).json({ success: false, error: "baseUrl is required" });
-			return;
-		}
+  try {
+    const baseUrl =
+      typeof req.body?.baseUrl === "string" ? req.body.baseUrl : "";
+    if (!baseUrl.trim()) {
+      res.status(400).json({ success: false, error: "baseUrl is required" });
+      return;
+    }
 
-		const workflowId =
-			typeof req.body?.workflowId === "string" ? req.body.workflowId : "";
-		const nodeId = typeof req.body?.nodeId === "string" ? req.body.nodeId : "";
-		if (!workflowId.trim() || !nodeId.trim()) {
-			res
-				.status(400)
-				.json({ success: false, error: "workflowId and nodeId are required" });
-			return;
-		}
+    const workflowId =
+      typeof req.body?.workflowId === "string" ? req.body.workflowId : "";
+    const nodeId = typeof req.body?.nodeId === "string" ? req.body.nodeId : "";
+    if (!workflowId.trim() || !nodeId.trim()) {
+      res
+        .status(400)
+        .json({ success: false, error: "workflowId and nodeId are required" });
+      return;
+    }
 
-		const rawSteps = Array.isArray(req.body?.steps)
-			? req.body.steps
-			: typeof req.body?.steps === "string" && req.body.steps.trim()
-				? (() => {
-						try {
-							const parsed = JSON.parse(req.body.steps);
-							return Array.isArray(parsed) ? parsed : [];
-						} catch {
-							return [];
-						}
-					})()
-				: [];
-		if (rawSteps.length === 0) {
-			res
-				.status(400)
-				.json({ success: false, error: "steps must be a non-empty array" });
-			return;
-		}
+    const rawSteps = Array.isArray(req.body?.steps)
+      ? req.body.steps
+      : typeof req.body?.steps === "string" && req.body.steps.trim()
+        ? (() => {
+            try {
+              const parsed = JSON.parse(req.body.steps);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })()
+        : [];
+    if (rawSteps.length === 0) {
+      res
+        .status(400)
+        .json({ success: false, error: "steps must be a non-empty array" });
+      return;
+    }
 
-		const steps: BrowserCaptureStepInput[] = rawSteps
-			.filter(
-				(step: unknown): step is Record<string, unknown> =>
-					Boolean(step) && typeof step === "object",
-			)
-			.map((step: Record<string, unknown>) => ({
-				id: typeof step.id === "string" ? step.id : undefined,
-				label: typeof step.label === "string" ? step.label : undefined,
-				path: typeof step.path === "string" ? step.path : undefined,
-				url: typeof step.url === "string" ? step.url : undefined,
-				waitForSelector:
-					typeof step.waitForSelector === "string"
-						? step.waitForSelector
-						: undefined,
-				waitForText:
-					typeof step.waitForText === "string" ? step.waitForText : undefined,
-				delayMs:
-					typeof step.delayMs === "number"
-						? step.delayMs
-						: typeof step.delayMs === "string" && step.delayMs.trim()
-							? parseInt(step.delayMs, 10)
-							: undefined,
-				fullPage:
-					typeof step.fullPage === "boolean" ? step.fullPage : undefined,
-			}));
+    const steps: BrowserCaptureStepInput[] = rawSteps
+      .filter(
+        (step: unknown): step is Record<string, unknown> =>
+          Boolean(step) && typeof step === "object",
+      )
+      .map((step: Record<string, unknown>) => ({
+        id: typeof step.id === "string" ? step.id : undefined,
+        label: typeof step.label === "string" ? step.label : undefined,
+        path: typeof step.path === "string" ? step.path : undefined,
+        url: typeof step.url === "string" ? step.url : undefined,
+        waitForSelector:
+          typeof step.waitForSelector === "string"
+            ? step.waitForSelector
+            : undefined,
+        waitForText:
+          typeof step.waitForText === "string" ? step.waitForText : undefined,
+        delayMs:
+          typeof step.delayMs === "number"
+            ? step.delayMs
+            : typeof step.delayMs === "string" && step.delayMs.trim()
+              ? parseInt(step.delayMs, 10)
+              : undefined,
+        fullPage:
+          typeof step.fullPage === "boolean" ? step.fullPage : undefined,
+      }));
 
-		const result = await workspaceSessions.captureBrowserFlow({
-			workspaceRef:
-				typeof req.body?.workspaceRef === "string"
-					? req.body.workspaceRef
-					: undefined,
-			executionId:
-				typeof req.body?.executionId === "string"
-					? req.body.executionId
-					: typeof req.body?.dbExecutionId === "string"
-						? req.body.dbExecutionId
-						: undefined,
-			workflowId,
-			nodeId,
-			baseUrl,
-			steps,
-			timeoutMs:
-				typeof req.body?.timeoutMs === "number"
-					? req.body.timeoutMs
-					: typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
-						? parseInt(req.body.timeoutMs, 10)
-						: undefined,
-			metadata:
-				req.body?.metadata && typeof req.body.metadata === "object"
-					? (req.body.metadata as Record<string, unknown>)
-					: undefined,
-		});
+    const result = await workspaceSessions.captureBrowserFlow({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      workflowId,
+      nodeId,
+      baseUrl,
+      steps,
+      timeoutMs:
+        typeof req.body?.timeoutMs === "number"
+          ? req.body.timeoutMs
+          : typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+            ? parseInt(req.body.timeoutMs, 10)
+            : undefined,
+      metadata:
+        req.body?.metadata && typeof req.body.metadata === "object"
+          ? (req.body.metadata as Record<string, unknown>)
+          : undefined,
+    });
 
-		res.json({ success: true, result });
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({ success: true, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.get("/api/workspaces/changes/:changeSetId", async (req, res) => {
-	try {
-		const changeSetId =
-			typeof req.params.changeSetId === "string"
-				? req.params.changeSetId.trim()
-				: "";
-		if (!changeSetId) {
-			res
-				.status(400)
-				.json({ success: false, error: "changeSetId is required" });
-			return;
-		}
+  try {
+    const changeSetId =
+      typeof req.params.changeSetId === "string"
+        ? req.params.changeSetId.trim()
+        : "";
+    if (!changeSetId) {
+      res
+        .status(400)
+        .json({ success: false, error: "changeSetId is required" });
+      return;
+    }
 
-		const artifact = await workspaceSessions.getChangeArtifact(changeSetId);
-		if (!artifact) {
-			res
-				.status(404)
-				.json({ success: false, error: "Change artifact not found" });
-			return;
-		}
+    const artifact = await workspaceSessions.getChangeArtifact(changeSetId);
+    if (!artifact) {
+      res
+        .status(404)
+        .json({ success: false, error: "Change artifact not found" });
+      return;
+    }
 
-		res.json({
-			success: true,
-			metadata: artifact.metadata,
-			patch: artifact.patch,
-		});
-	} catch (err) {
-		res.status(500).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      metadata: artifact.metadata,
+      patch: artifact.patch,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.get("/api/workspaces/executions/:executionId/changes", async (req, res) => {
-	try {
-		const executionId =
-			typeof req.params.executionId === "string"
-				? req.params.executionId.trim()
-				: "";
-		if (!executionId) {
-			res
-				.status(400)
-				.json({ success: false, error: "executionId is required" });
-			return;
-		}
+  try {
+    const executionId =
+      typeof req.params.executionId === "string"
+        ? req.params.executionId.trim()
+        : "";
+    if (!executionId) {
+      res
+        .status(400)
+        .json({ success: false, error: "executionId is required" });
+      return;
+    }
 
-		const changes =
-			await workspaceSessions.listChangeArtifactsByExecutionId(executionId);
-		res.json({
-			success: true,
-			executionId,
-			count: changes.length,
-			changes,
-		});
-	} catch (err) {
-		res.status(500).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    const changes =
+      await workspaceSessions.listChangeArtifactsByExecutionId(executionId);
+    res.json({
+      success: true,
+      executionId,
+      count: changes.length,
+      changes,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post(
-	"/api/workspaces/executions/:executionId/change-artifacts",
-	async (req, res) => {
-		try {
-			const executionId =
-				typeof req.params.executionId === "string"
-					? req.params.executionId.trim()
-					: "";
-			if (!executionId) {
-				res
-					.status(400)
-					.json({ success: false, error: "executionId is required" });
-				return;
-			}
+  "/api/workspaces/executions/:executionId/change-artifacts",
+  async (req, res) => {
+    try {
+      const executionId =
+        typeof req.params.executionId === "string"
+          ? req.params.executionId.trim()
+          : "";
+      if (!executionId) {
+        res
+          .status(400)
+          .json({ success: false, error: "executionId is required" });
+        return;
+      }
 
-			const body =
-				req.body && typeof req.body === "object"
-					? (req.body as Record<string, unknown>)
-					: {};
-			const workspaceRef =
-				typeof body.workspaceRef === "string" ? body.workspaceRef.trim() : "";
-			const operation =
-				typeof body.operation === "string" ? body.operation.trim() : "";
-			const patch = typeof body.patch === "string" ? body.patch : "";
-			const sequence =
-				typeof body.sequence === "number" && Number.isFinite(body.sequence)
-					? body.sequence
-					: 1;
-			const durableInstanceId =
-				typeof body.durableInstanceId === "string"
-					? body.durableInstanceId.trim()
-					: undefined;
-			const includeInExecutionPatch =
-				typeof body.includeInExecutionPatch === "boolean"
-					? body.includeInExecutionPatch
-					: true;
-			const baseRevision =
-				typeof body.baseRevision === "string"
-					? body.baseRevision.trim()
-					: undefined;
-			const headRevision =
-				typeof body.headRevision === "string"
-					? body.headRevision.trim()
-					: undefined;
+      const body =
+        req.body && typeof req.body === "object"
+          ? (req.body as Record<string, unknown>)
+          : {};
+      const workspaceRef =
+        typeof body.workspaceRef === "string" ? body.workspaceRef.trim() : "";
+      const operation =
+        typeof body.operation === "string" ? body.operation.trim() : "";
+      const patch = typeof body.patch === "string" ? body.patch : "";
+      const sequence =
+        typeof body.sequence === "number" && Number.isFinite(body.sequence)
+          ? body.sequence
+          : 1;
+      const durableInstanceId =
+        typeof body.durableInstanceId === "string"
+          ? body.durableInstanceId.trim()
+          : undefined;
+      const includeInExecutionPatch =
+        typeof body.includeInExecutionPatch === "boolean"
+          ? body.includeInExecutionPatch
+          : true;
+      const baseRevision =
+        typeof body.baseRevision === "string"
+          ? body.baseRevision.trim()
+          : undefined;
+      const headRevision =
+        typeof body.headRevision === "string"
+          ? body.headRevision.trim()
+          : undefined;
 
-			if (!workspaceRef) {
-				res
-					.status(400)
-					.json({ success: false, error: "workspaceRef is required" });
-				return;
-			}
+      if (!workspaceRef) {
+        res
+          .status(400)
+          .json({ success: false, error: "workspaceRef is required" });
+        return;
+      }
 
-			if (!operation) {
-				res
-					.status(400)
-					.json({ success: false, error: "operation is required" });
-				return;
-			}
+      if (!operation) {
+        res
+          .status(400)
+          .json({ success: false, error: "operation is required" });
+        return;
+      }
 
-			const files = Array.isArray(body.files)
-				? body.files
-						.filter(
-							(entry): entry is Record<string, unknown> =>
-								Boolean(entry) && typeof entry === "object",
-						)
-						.map((entry) => ({
-							path: typeof entry.path === "string" ? entry.path.trim() : "",
-							status:
-								entry.status === "A" ||
-								entry.status === "M" ||
-								entry.status === "D" ||
-								entry.status === "R"
-									? entry.status
-									: ("M" as "A" | "M" | "D" | "R"),
-							...(typeof entry.oldPath === "string" && entry.oldPath.trim()
-								? { oldPath: entry.oldPath.trim() }
-								: {}),
-						}))
-						.filter((entry) => entry.path.length > 0)
-				: [];
+      const files = Array.isArray(body.files)
+        ? body.files
+            .filter(
+              (entry): entry is Record<string, unknown> =>
+                Boolean(entry) && typeof entry === "object",
+            )
+            .map((entry) => ({
+              path: typeof entry.path === "string" ? entry.path.trim() : "",
+              status:
+                entry.status === "A" ||
+                entry.status === "M" ||
+                entry.status === "D" ||
+                entry.status === "R"
+                  ? entry.status
+                  : ("M" as "A" | "M" | "D" | "R"),
+              ...(typeof entry.oldPath === "string" && entry.oldPath.trim()
+                ? { oldPath: entry.oldPath.trim() }
+                : {}),
+            }))
+            .filter((entry) => entry.path.length > 0)
+        : [];
 
-			const fileSnapshots = Array.isArray(body.fileSnapshots)
-				? body.fileSnapshots
-						.filter(
-							(entry): entry is Record<string, unknown> =>
-								Boolean(entry) && typeof entry === "object",
-						)
-						.map((entry) => ({
-							path: typeof entry.path === "string" ? entry.path.trim() : "",
-							status:
-								entry.status === "A" ||
-								entry.status === "M" ||
-								entry.status === "D" ||
-								entry.status === "R"
-									? entry.status
-									: ("M" as "A" | "M" | "D" | "R"),
-							oldPath:
-								typeof entry.oldPath === "string" && entry.oldPath.trim()
-									? entry.oldPath.trim()
-									: undefined,
-							isBinary: Boolean(entry.isBinary),
-							language:
-								typeof entry.language === "string" && entry.language.trim()
-									? entry.language.trim()
-									: undefined,
-							oldContent:
-								typeof entry.oldContent === "string" ||
-								entry.oldContent === null
-									? (entry.oldContent as string | null)
-									: undefined,
-							newContent:
-								typeof entry.newContent === "string" ||
-								entry.newContent === null
-									? (entry.newContent as string | null)
-									: undefined,
-						}))
-						.filter((entry) => entry.path.length > 0)
-				: [];
+      const fileSnapshots = Array.isArray(body.fileSnapshots)
+        ? body.fileSnapshots
+            .filter(
+              (entry): entry is Record<string, unknown> =>
+                Boolean(entry) && typeof entry === "object",
+            )
+            .map((entry) => ({
+              path: typeof entry.path === "string" ? entry.path.trim() : "",
+              status:
+                entry.status === "A" ||
+                entry.status === "M" ||
+                entry.status === "D" ||
+                entry.status === "R"
+                  ? entry.status
+                  : ("M" as "A" | "M" | "D" | "R"),
+              oldPath:
+                typeof entry.oldPath === "string" && entry.oldPath.trim()
+                  ? entry.oldPath.trim()
+                  : undefined,
+              isBinary: Boolean(entry.isBinary),
+              language:
+                typeof entry.language === "string" && entry.language.trim()
+                  ? entry.language.trim()
+                  : undefined,
+              oldContent:
+                typeof entry.oldContent === "string" ||
+                entry.oldContent === null
+                  ? (entry.oldContent as string | null)
+                  : undefined,
+              newContent:
+                typeof entry.newContent === "string" ||
+                entry.newContent === null
+                  ? (entry.newContent as string | null)
+                  : undefined,
+            }))
+            .filter((entry) => entry.path.length > 0)
+        : [];
 
-			const additions =
-				typeof body.additions === "number" && Number.isFinite(body.additions)
-					? body.additions
-					: 0;
-			const deletions =
-				typeof body.deletions === "number" && Number.isFinite(body.deletions)
-					? body.deletions
-					: 0;
+      const additions =
+        typeof body.additions === "number" && Number.isFinite(body.additions)
+          ? body.additions
+          : 0;
+      const deletions =
+        typeof body.deletions === "number" && Number.isFinite(body.deletions)
+          ? body.deletions
+          : 0;
 
-			if (!patch.trim() && files.length === 0 && fileSnapshots.length === 0) {
-				res.status(400).json({
-					success: false,
-					error: "patch, files, or fileSnapshots is required",
-				});
-				return;
-			}
+      if (!patch.trim() && files.length === 0 && fileSnapshots.length === 0) {
+        res.status(400).json({
+          success: false,
+          error: "patch, files, or fileSnapshots is required",
+        });
+        return;
+      }
 
-			const change = await workspaceSessions.persistExecutionChangeArtifact({
-				executionId,
-				workspaceRef,
-				operation,
-				sequence,
-				patch,
-				files,
-				additions,
-				deletions,
-				durableInstanceId,
-				includeInExecutionPatch,
-				baseRevision,
-				headRevision,
-				fileSnapshots,
-			});
+      const change = await workspaceSessions.persistExecutionChangeArtifact({
+        executionId,
+        workspaceRef,
+        operation,
+        sequence,
+        patch,
+        files,
+        additions,
+        deletions,
+        durableInstanceId,
+        includeInExecutionPatch,
+        baseRevision,
+        headRevision,
+        fileSnapshots,
+      });
 
-			res.json({
-				success: true,
-				executionId,
-				change,
-			});
-		} catch (err) {
-			res.status(500).json({
-				success: false,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	},
+      res.json({
+        success: true,
+        executionId,
+        change,
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
 );
 
 app.get("/api/workspaces/executions/:executionId/patch", async (req, res) => {
-	try {
-		const executionId =
-			typeof req.params.executionId === "string"
-				? req.params.executionId.trim()
-				: "";
-		if (!executionId) {
-			res
-				.status(400)
-				.json({ success: false, error: "executionId is required" });
-			return;
-		}
+  try {
+    const executionId =
+      typeof req.params.executionId === "string"
+        ? req.params.executionId.trim()
+        : "";
+    if (!executionId) {
+      res
+        .status(400)
+        .json({ success: false, error: "executionId is required" });
+      return;
+    }
 
-		const durableInstanceId =
-			typeof req.query?.durableInstanceId === "string"
-				? req.query.durableInstanceId.trim()
-				: undefined;
-		const combined = await workspaceSessions.getExecutionPatch(executionId, {
-			durableInstanceId,
-		});
+    const durableInstanceId =
+      typeof req.query?.durableInstanceId === "string"
+        ? req.query.durableInstanceId.trim()
+        : undefined;
+    const combined = await workspaceSessions.getExecutionPatch(executionId, {
+      durableInstanceId,
+    });
 
-		if (req.query?.format === "raw") {
-			res.setHeader("Content-Type", "text/plain; charset=utf-8");
-			res.send(combined.patch);
-			return;
-		}
+    if (req.query?.format === "raw") {
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      res.send(combined.patch);
+      return;
+    }
 
-		res.json({
-			success: true,
-			executionId,
-			durableInstanceId,
-			patch: combined.patch,
-			changeSets: combined.changeSets,
-		});
-	} catch (err) {
-		res.status(500).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      executionId,
+      durableInstanceId,
+      patch: combined.patch,
+      changeSets: combined.changeSets,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.get(
-	"/api/workspaces/executions/:executionId/files/snapshot",
-	async (req, res) => {
-		try {
-			const executionId =
-				typeof req.params.executionId === "string"
-					? req.params.executionId.trim()
-					: "";
-			if (!executionId) {
-				res
-					.status(400)
-					.json({ success: false, error: "executionId is required" });
-				return;
-			}
+  "/api/workspaces/executions/:executionId/files/snapshot",
+  async (req, res) => {
+    try {
+      const executionId =
+        typeof req.params.executionId === "string"
+          ? req.params.executionId.trim()
+          : "";
+      if (!executionId) {
+        res
+          .status(400)
+          .json({ success: false, error: "executionId is required" });
+        return;
+      }
 
-			const filePath =
-				typeof req.query?.path === "string" ? req.query.path.trim() : "";
-			if (!filePath) {
-				res.status(400).json({ success: false, error: "path is required" });
-				return;
-			}
+      const filePath =
+        typeof req.query?.path === "string" ? req.query.path.trim() : "";
+      if (!filePath) {
+        res.status(400).json({ success: false, error: "path is required" });
+        return;
+      }
 
-			const durableInstanceId =
-				typeof req.query?.durableInstanceId === "string"
-					? req.query.durableInstanceId.trim()
-					: undefined;
-			let snapshot = await workspaceSessions.getExecutionFileSnapshot(
-				executionId,
-				filePath,
-				{
-					durableInstanceId,
-				},
-			);
-			if (!snapshot && durableInstanceId) {
-				snapshot = await workspaceSessions.getExecutionFileSnapshot(
-					executionId,
-					filePath,
-				);
-			}
-			if (!snapshot) {
-				res.status(404).json({
-					success: false,
-					error: "File snapshot not found for execution",
-				});
-				return;
-			}
+      const durableInstanceId =
+        typeof req.query?.durableInstanceId === "string"
+          ? req.query.durableInstanceId.trim()
+          : undefined;
+      let snapshot = await workspaceSessions.getExecutionFileSnapshot(
+        executionId,
+        filePath,
+        {
+          durableInstanceId,
+        },
+      );
+      if (!snapshot && durableInstanceId) {
+        snapshot = await workspaceSessions.getExecutionFileSnapshot(
+          executionId,
+          filePath,
+        );
+      }
+      if (!snapshot) {
+        res.status(404).json({
+          success: false,
+          error: "File snapshot not found for execution",
+        });
+        return;
+      }
 
-			res.json({
-				success: true,
-				executionId,
-				path: filePath,
-				durableInstanceId,
-				snapshot,
-			});
-		} catch (err) {
-			res.status(500).json({
-				success: false,
-				error: err instanceof Error ? err.message : String(err),
-			});
-		}
-	},
+      res.json({
+        success: true,
+        executionId,
+        path: filePath,
+        durableInstanceId,
+        snapshot,
+      });
+    } catch (err) {
+      res.status(500).json({
+        success: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  },
 );
 
 // Agent run endpoint (fire-and-forget)
-app.post("/api/run", async (req, res) => {
-	try {
-		const prompt = req.body?.prompt as string;
-		if (!prompt) {
-			res.status(400).json({ success: false, error: "prompt is required" });
-			return;
-		}
+app.post(["/api/run", "/api/run-sandboxed"], async (req, res) => {
+  try {
+    const prompt = req.body?.prompt as string;
+    if (!prompt) {
+      res.status(400).json({ success: false, error: "prompt is required" });
+      return;
+    }
 
-		await initAgent();
+    await initAgent();
 
-		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
-		const executionIdRaw =
-			(req.body?.executionId as string) ??
-			(req.body?.dbExecutionId as string) ??
-			parentExecutionId;
-		const executionId = String(executionIdRaw || "").trim();
-		const nodeId = (req.body?.nodeId as string) ?? "";
-		const workflowId =
-			typeof req.body?.workflowId === "string"
-				? req.body.workflowId.trim()
-				: "";
-		const agentWorkflowId = `durable-run-${nanoid(12)}`;
-		const requestedWorkspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
-		const workspaceRef =
-			requestedWorkspaceRef ||
-			(executionId
-				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-						executionId,
-					)) || ""
-				: "");
-		const stopCondition =
-			typeof req.body?.stopCondition === "string"
-				? req.body.stopCondition.trim()
-				: "";
-		const loopPolicy = resolveLoopPolicyFromRequest(
-			(req.body as Record<string, unknown>) ?? {},
-		);
-		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
-		const explicitRequireFileChanges = parseOptionalBoolean(
-			req.body?.requireFileChanges,
-		);
-		const requireFileChanges =
-			explicitRequireFileChanges ??
-			(Boolean(workspaceRef) &&
-				Boolean(stopCondition) &&
-				stopConditionImpliesFileChanges(stopCondition));
-		const runPrompt = buildRunPrompt(
-			prompt,
-			stopCondition,
-			requireFileChanges,
-			cwd,
-		);
-		if (workspaceRef) {
-			const session =
-				await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
-			if (!session) {
-				res.status(400).json({
-					success: false,
-					error: `workspaceRef not found: ${workspaceRef}`,
-				});
-				return;
-			}
-		}
+    const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
+    const executionIdRaw =
+      (req.body?.executionId as string) ??
+      (req.body?.dbExecutionId as string) ??
+      parentExecutionId;
+    const executionId = String(executionIdRaw || "").trim();
+    const waitForCompletion =
+      parseOptionalBoolean(req.body?.waitForCompletion) ?? false;
+    const orchestratorManaged =
+      parseOptionalBoolean(req.body?.orchestratorManaged) ?? false;
+    const nodeId = (req.body?.nodeId as string) ?? "";
+    const workflowId =
+      typeof req.body?.workflowId === "string"
+        ? req.body.workflowId.trim()
+        : "";
+    const agentWorkflowId = `durable-run-${nanoid(12)}`;
+    const requestedWorkspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
+    const workspaceRef =
+      requestedWorkspaceRef ||
+      (executionId
+        ? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+            executionId,
+          )) || ""
+        : "");
+    const agentGraph =
+      req.body?.agentGraph &&
+      typeof req.body.agentGraph === "object" &&
+      !Array.isArray(req.body.agentGraph)
+        ? (req.body.agentGraph as Record<string, unknown>)
+        : undefined;
+    const stopCondition =
+      typeof req.body?.stopCondition === "string"
+        ? req.body.stopCondition.trim()
+        : "";
+    const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+    const explicitRequireFileChanges = parseOptionalBoolean(
+      req.body?.requireFileChanges,
+    );
+    const requireFileChanges =
+      explicitRequireFileChanges ??
+      (Boolean(workspaceRef) &&
+        Boolean(stopCondition) &&
+        stopConditionImpliesFileChanges(stopCondition));
+    const runPrompt = buildRunPrompt(
+      prompt,
+      stopCondition,
+      requireFileChanges,
+      cwd,
+      agentGraph,
+    );
+    if (workspaceRef) {
+      const session =
+        await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
+      if (!session) {
+        res.status(400).json({
+          success: false,
+          error: `workspaceRef not found: ${workspaceRef}`,
+        });
+        return;
+      }
+    }
 
-		// Set workflow context on eventBus
-		eventBus.setWorkflowContext({
-			workflowId: agentWorkflowId,
-			nodeId,
-			stepIndex: 0,
-		});
+    // Set workflow context on eventBus
+    eventBus.setWorkflowContext({
+      workflowId: agentWorkflowId,
+      nodeId,
+      stepIndex: 0,
+    });
 
-		console.log(
-			`[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${runPrompt.slice(0, 80)}"`,
-		);
+    console.log(
+      `[durable-agent] /api/run: agentWorkflowId=${agentWorkflowId} prompt="${runPrompt.slice(0, 80)}"`,
+    );
 
-		const requestAgentConfig = await resolveRequestAgentConfig({
-			body: req.body as Record<string, unknown>,
-			inlineName: "inline-agent",
-		});
-		const maxTurns = req.body?.maxTurns
-			? parseInt(String(req.body.maxTurns), 10)
-			: requestAgentConfig?.maxTurns;
+    const requestAgentConfig = await resolveRequestAgentConfig({
+      body: req.body as Record<string, unknown>,
+      inlineName: "inline-agent",
+    });
+    const loopStrategyName = resolveLoopStrategyName(
+      (req.body as Record<string, unknown>) ?? {},
+      requestAgentConfig,
+    );
+    const loopPolicy = resolveLoopPolicyFromRequest(
+      (req.body as Record<string, unknown>) ?? {},
+      agentGraph,
+    );
+    const maxTurns = req.body?.maxTurns
+      ? parseInt(String(req.body.maxTurns), 10)
+      : requestAgentConfig?.maxTurns;
 
-		let activeAgent = agent!;
-		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
-			try {
-				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
-				console.log(
-					`[durable-agent] Using configured agent: ${requestAgentConfig.name}`,
-				);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(
-					`[durable-agent] Failed to create configured agent: ${message}`,
-					err,
-				);
-				res.status(422).json({
-					success: false,
-					error: {
-						code: "CONFIGURED_AGENT_INIT_FAILED",
-						message,
-						details: {
-							agentName: requestAgentConfig.name,
-							modelSpec: requestAgentConfig.modelSpec,
-						},
-					},
-				});
-				return;
-			}
-		}
+    let activeAgent = agent!;
+    if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
+      try {
+        activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
+        console.log(
+          `[durable-agent] Using configured agent: ${requestAgentConfig.name}`,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[durable-agent] Failed to create configured agent: ${message}`,
+          err,
+        );
+        res.status(422).json({
+          success: false,
+          error: {
+            code: "CONFIGURED_AGENT_INIT_FAILED",
+            message,
+            details: {
+              agentName: requestAgentConfig.name,
+              modelSpec: requestAgentConfig.modelSpec,
+            },
+          },
+        });
+        return;
+      }
+    }
 
-		// Schedule the durable agent workflow
-		const instanceId = await workflowClient!.scheduleNewWorkflow(
-			activeAgent.agentWorkflow,
-			{
-				task: runPrompt,
-				...(maxTurns ? { maxIterations: maxTurns } : {}),
-				...(loopPolicy ? { loopPolicy } : {}),
-			},
-		);
-		if (workspaceRef) {
-			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
-		}
-		trackActiveRun({
-			agentWorkflowId,
-			daprInstanceId: instanceId,
-			parentExecutionId,
-			workspaceRef: workspaceRef || undefined,
-			mode: "run",
-		});
+    // Schedule the durable agent workflow
+    const instanceId = await workflowClient!.scheduleNewWorkflow(
+      activeAgent.agentWorkflow,
+      {
+        task: runPrompt,
+        ...(maxTurns ? { maxIterations: maxTurns } : {}),
+        ...(loopPolicy ? { loopPolicy } : {}),
+        ...(agentGraph ? { agentGraph } : {}),
+        ...(loopStrategyName ? { loopStrategyName } : {}),
+      },
+    );
+    if (workspaceRef) {
+      await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+    }
+    trackActiveRun({
+      agentWorkflowId,
+      daprInstanceId: instanceId,
+      parentExecutionId,
+      workspaceRef: workspaceRef || undefined,
+      mode: "run",
+    });
 
-		console.log(
-			`[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
-		);
-		const trackedRunId = agentWorkflowId;
-		if (executionId && workflowId && nodeId) {
-			await workflowRunTracker.trackScheduled({
-				id: trackedRunId,
-				workflowExecutionId: executionId,
-				workflowId,
-				nodeId,
-				mode: "run",
-				agentWorkflowId,
-				daprInstanceId: instanceId,
-				parentExecutionId,
-				workspaceRef: workspaceRef || undefined,
-			});
-		}
+    console.log(
+      `[durable-agent] Scheduled Dapr workflow: instance=${instanceId} maxTurns=${maxTurns ?? "default"}`,
+    );
+    const trackedRunId = agentWorkflowId;
+    const shouldTrackRun = !orchestratorManaged && Boolean(executionId && workflowId && nodeId);
+    if (shouldTrackRun) {
+      await workflowRunTracker.trackScheduled({
+        id: trackedRunId,
+        workflowExecutionId: executionId,
+        workflowId,
+        nodeId,
+        mode: "run",
+        agentWorkflowId,
+        daprInstanceId: instanceId,
+        parentExecutionId,
+        workspaceRef: workspaceRef || undefined,
+      });
+    }
 
-		// Fire-and-forget: wait for completion in background, then publish
-		(async () => {
-			console.log(
-				`[durable-agent] Background: starting completion wait for ${instanceId} (parent=${parentExecutionId})`,
-			);
-			try {
-				const completion = await waitForWorkflowCompletion(instanceId);
+    const finalizeInput = {
+      instanceId,
+      trackedRunId,
+      agentWorkflowId,
+      parentExecutionId,
+      workspaceRef: workspaceRef || undefined,
+      executionId,
+      workflowId,
+      nodeId,
+      runPrompt,
+      requireFileChanges,
+      shouldPublishCompletionEvent:
+        LEGACY_COMPLETION_EVENTS_ENABLED && !waitForCompletion,
+      shouldTrackRun,
+    };
 
-				// Extract tool calls from all turns
-				const toolCalls = extractToolCalls(completion.result);
-				const fileChanges = extractFileChanges(toolCalls);
-				const changeSummary =
-					workspaceRef && executionId
-						? await buildAgentChangeSummary(executionId, instanceId)
-						: undefined;
-				const snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
-				const hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
-				const fileChangeGuardViolation =
-					requireFileChanges && completion.success && !hasFileMutations
-						? "Stop condition requires file changes, but this run completed without write/edit/delete operations."
-						: undefined;
+    if (waitForCompletion) {
+      const completion = await finalizeWorkflowRun(finalizeInput);
+      res.json({
+        success: completion.success,
+        workflow_id: agentWorkflowId,
+        dapr_instance_id: instanceId,
+        status: completion.success ? "completed" : "failed",
+        ...(workspaceRef ? { workspaceRef } : {}),
+        ...(completion.result ? completion.result : {}),
+        ...(completion.result ? { result: completion.result } : {}),
+        ...(completion.error ? { error: completion.error } : {}),
+      });
+      return;
+    }
 
-				// Extract text from the final message
-				const text =
-					(completion.result?.final_answer as string) ??
-					(completion.result?.last_message as string) ??
-					(completion.result?.content as string) ??
-					JSON.stringify(completion.result ?? {});
+    // Fire-and-forget: wait for completion in background, then publish
+    (async () => {
+      console.log(
+        `[durable-agent] Background: starting completion wait for ${instanceId} (parent=${parentExecutionId})`,
+      );
+      await finalizeWorkflowRun(finalizeInput);
+    })();
 
-				// Run post-workflow scorers (outside Dapr generator)
-				let evalResults: unknown[] | undefined;
-				if (
-					scorers.length > 0 &&
-					completion.success &&
-					!fileChangeGuardViolation
-				) {
-					evalResults = await runScorers(scorers, runPrompt, text, instanceId);
-				}
-				const completionSuccess =
-					completion.success && !fileChangeGuardViolation;
-				const completionResult = {
-					text,
-					toolCalls,
-					staticToolCalls:
-						(completion.result?.static_tool_calls as unknown[]) ?? undefined,
-					loopStopReason:
-						(typeof completion.result?.stop_reason === "string"
-							? completion.result.stop_reason
-							: undefined) ?? undefined,
-					loopStopCondition: completion.result?.stop_condition,
-					requiresApproval: completion.result?.requires_approval,
-					usageTotals: completion.result?.usage_totals,
-					compactionApplied:
-						completion.result?.compaction_applied === true ||
-						((completion.result?.compaction_count as number | undefined) ?? 0) >
-							0,
-					compactionCount:
-						typeof completion.result?.compaction_count === "number"
-							? completion.result.compaction_count
-							: 0,
-					contextOverflowRecovered:
-						completion.result?.context_overflow_recovered === true,
-					lastCompactionReason:
-						typeof completion.result?.last_compaction_reason === "string"
-							? completion.result.last_compaction_reason
-							: undefined,
-					fileChanges,
-					snapshotRefs,
-					patch: changeSummary?.inlinePatchPreview,
-					patchRef: changeSummary?.patchRef,
-					changeSummary,
-					daprInstanceId: instanceId,
-					...(evalResults ? { evalResults } : {}),
-				};
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: completionSuccess,
-						result: completionResult,
-						error: fileChangeGuardViolation || completion.error,
-					});
-				}
-
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: completionSuccess,
-					result: completionResult,
-					error: fileChangeGuardViolation || completion.error,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-			} catch (err) {
-				const errorMsg = err instanceof Error ? err.message : String(err);
-				console.error(`[durable-agent] Background run failed: ${errorMsg}`);
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: false,
-						error: errorMsg,
-					});
-				}
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: false,
-					error: errorMsg,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-			} finally {
-				workspaceSessions.unbindDurableInstance(instanceId);
-				untrackActiveRun(agentWorkflowId);
-			}
-		})();
-
-		// Return immediately
-		res.json({
-			success: true,
-			workflow_id: agentWorkflowId,
-			dapr_instance_id: instanceId,
-			...(workspaceRef ? { workspaceRef } : {}),
-		});
-	} catch (err) {
-		res.status(400).json({ success: false, error: String(err) });
-	}
+    // Return immediately
+    res.json({
+      success: true,
+      workflow_id: agentWorkflowId,
+      dapr_instance_id: instanceId,
+      ...(workspaceRef ? { workspaceRef } : {}),
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: String(err) });
+  }
 });
 
 app.post("/api/run/:workflowId/terminate", async (req, res) => {
-	try {
-		await initAgent();
+  try {
+    await initAgent();
 
-		const workflowId =
-			typeof req.params.workflowId === "string"
-				? req.params.workflowId.trim()
-				: "";
-		if (!workflowId) {
-			res.status(400).json({ success: false, error: "workflowId is required" });
-			return;
-		}
+    const workflowId =
+      typeof req.params.workflowId === "string"
+        ? req.params.workflowId.trim()
+        : "";
+    if (!workflowId) {
+      res.status(400).json({ success: false, error: "workflowId is required" });
+      return;
+    }
 
-		const reason =
-			typeof req.body?.reason === "string" && req.body.reason.trim()
-				? req.body.reason.trim()
-				: "terminated via durable-agent API";
-		const cleanupWorkspace =
-			parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
-		const daprInstanceIdHint =
-			typeof req.body?.daprInstanceId === "string"
-				? req.body.daprInstanceId.trim()
-				: "";
-		const parentExecutionIdHint =
-			typeof req.body?.parentExecutionId === "string"
-				? req.body.parentExecutionId.trim()
-				: "";
-		const workspaceRefHint =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
+    const reason =
+      typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim()
+        : "terminated via durable-agent API";
+    const cleanupWorkspace =
+      parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
+    const daprInstanceIdHint =
+      typeof req.body?.daprInstanceId === "string"
+        ? req.body.daprInstanceId.trim()
+        : "";
+    const parentExecutionIdHint =
+      typeof req.body?.parentExecutionId === "string"
+        ? req.body.parentExecutionId.trim()
+        : "";
+    const workspaceRefHint =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
 
-		const run = await resolveActiveRun({
-			agentWorkflowId: workflowId,
-			daprInstanceId: daprInstanceIdHint,
-			parentExecutionId: parentExecutionIdHint,
-		});
-		const daprInstanceId = run?.daprInstanceId || daprInstanceIdHint;
-		if (!daprInstanceId) {
-			res.status(404).json({
-				success: false,
-				error: "Run not found",
-				workflow_id: workflowId,
-			});
-			return;
-		}
+    const run = await resolveActiveRun({
+      agentWorkflowId: workflowId,
+      daprInstanceId: daprInstanceIdHint,
+      parentExecutionId: parentExecutionIdHint,
+    });
+    const daprInstanceId = run?.daprInstanceId || daprInstanceIdHint;
+    if (!daprInstanceId) {
+      res.status(404).json({
+        success: false,
+        error: "Run not found",
+        workflow_id: workflowId,
+      });
+      return;
+    }
 
-		const terminated = await terminateDaprInstance({
-			daprInstanceId,
-			reason,
-		});
-		if (!terminated.success) {
-			res.status(503).json({
-				success: false,
-				error: terminated.error || "Failed to terminate run",
-				workflow_id: workflowId,
-				dapr_instance_id: daprInstanceId,
-			});
-			return;
-		}
+    const terminated = await terminateDaprInstance({
+      daprInstanceId,
+      reason,
+    });
+    if (!terminated.success) {
+      res.status(503).json({
+        success: false,
+        error: terminated.error || "Failed to terminate run",
+        workflow_id: workflowId,
+        dapr_instance_id: daprInstanceId,
+      });
+      return;
+    }
 
-		const workspaceRef = run?.workspaceRef || workspaceRefHint;
-		let cleanedWorkspace = false;
-		if (cleanupWorkspace && workspaceRef) {
-			cleanedWorkspace =
-				await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
-		}
-		untrackActiveRun(run?.agentWorkflowId || workflowId);
+    const workspaceRef = run?.workspaceRef || workspaceRefHint;
+    let cleanedWorkspace = false;
+    if (cleanupWorkspace && workspaceRef) {
+      cleanedWorkspace =
+        await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+    }
+    untrackActiveRun(run?.agentWorkflowId || workflowId);
 
-		res.json({
-			success: true,
-			workflow_id: workflowId,
-			dapr_instance_id: daprInstanceId,
-			alreadyStopped: terminated.alreadyStopped === true,
-			cleanedWorkspace,
-			workspaceRef: workspaceRef || undefined,
-		});
-	} catch (err) {
-		res.status(500).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      workflow_id: workflowId,
+      dapr_instance_id: daprInstanceId,
+      alreadyStopped: terminated.alreadyStopped === true,
+      cleanedWorkspace,
+      workspaceRef: workspaceRef || undefined,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 app.post("/api/runs/terminate-by-parent", async (req, res) => {
-	try {
-		await initAgent();
+  try {
+    await initAgent();
 
-		const parentExecutionId =
-			typeof req.body?.parentExecutionId === "string"
-				? req.body.parentExecutionId.trim()
-				: "";
-		if (!parentExecutionId) {
-			res.status(400).json({
-				success: false,
-				error: "parentExecutionId is required",
-			});
-			return;
-		}
+    const parentExecutionId =
+      typeof req.body?.parentExecutionId === "string"
+        ? req.body.parentExecutionId.trim()
+        : "";
+    if (!parentExecutionId) {
+      res.status(400).json({
+        success: false,
+        error: "parentExecutionId is required",
+      });
+      return;
+    }
 
-		const reason =
-			typeof req.body?.reason === "string" && req.body.reason.trim()
-				? req.body.reason.trim()
-				: "terminated due to parent workflow termination";
-		const cleanupWorkspace =
-			parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
+    const reason =
+      typeof req.body?.reason === "string" && req.body.reason.trim()
+        ? req.body.reason.trim()
+        : "terminated due to parent workflow termination";
+    const cleanupWorkspace =
+      parseOptionalBoolean(req.body?.cleanupWorkspace) ?? true;
 
-		const fromMemory = activeRunsForParent(parentExecutionId);
-		const fromDb = await workflowRunTracker.listScheduledByParentExecutionId(
-			parentExecutionId,
-			100,
-		);
-		const merged = new Map<string, ActiveRun>();
-		for (const run of fromMemory) {
-			merged.set(run.agentWorkflowId, run);
-		}
-		for (const run of fromDb) {
-			if (merged.has(run.agentWorkflowId)) continue;
-			merged.set(run.agentWorkflowId, {
-				agentWorkflowId: run.agentWorkflowId,
-				daprInstanceId: run.daprInstanceId,
-				parentExecutionId: run.parentExecutionId,
-				workspaceRef: run.workspaceRef,
-				mode: run.mode === "execute_plan" ? "execute_plan" : "run",
-			});
-		}
-		const runs = [...merged.values()];
-		const results: Array<{
-			workflow_id: string;
-			dapr_instance_id: string;
-			success: boolean;
-			alreadyStopped?: boolean;
-			cleanedWorkspace?: boolean;
-			workspaceRef?: string;
-			error?: string;
-		}> = [];
-		for (const run of runs) {
-			const terminated = await terminateDaprInstance({
-				daprInstanceId: run.daprInstanceId,
-				reason,
-			});
-			let cleanedWorkspace = false;
-			if (cleanupWorkspace && run.workspaceRef) {
-				cleanedWorkspace = await workspaceSessions.cleanupByWorkspaceRef(
-					run.workspaceRef,
-				);
-			}
-			untrackActiveRun(run.agentWorkflowId);
-			results.push({
-				workflow_id: run.agentWorkflowId,
-				dapr_instance_id: run.daprInstanceId,
-				success: terminated.success,
-				alreadyStopped: terminated.alreadyStopped,
-				cleanedWorkspace,
-				workspaceRef: run.workspaceRef,
-				error: terminated.error,
-			});
-		}
+    const fromMemory = activeRunsForParent(parentExecutionId);
+    const fromDb = await workflowRunTracker.listScheduledByParentExecutionId(
+      parentExecutionId,
+      100,
+    );
+    const merged = new Map<string, ActiveRun>();
+    for (const run of fromMemory) {
+      merged.set(run.agentWorkflowId, run);
+    }
+    for (const run of fromDb) {
+      if (merged.has(run.agentWorkflowId)) continue;
+      merged.set(run.agentWorkflowId, {
+        agentWorkflowId: run.agentWorkflowId,
+        daprInstanceId: run.daprInstanceId,
+        parentExecutionId: run.parentExecutionId,
+        workspaceRef: run.workspaceRef,
+        mode: run.mode === "execute_plan" ? "execute_plan" : "run",
+      });
+    }
+    const runs = [...merged.values()];
+    const results: Array<{
+      workflow_id: string;
+      dapr_instance_id: string;
+      success: boolean;
+      alreadyStopped?: boolean;
+      cleanedWorkspace?: boolean;
+      workspaceRef?: string;
+      error?: string;
+    }> = [];
+    for (const run of runs) {
+      const terminated = await terminateDaprInstance({
+        daprInstanceId: run.daprInstanceId,
+        reason,
+      });
+      let cleanedWorkspace = false;
+      if (cleanupWorkspace && run.workspaceRef) {
+        cleanedWorkspace = await workspaceSessions.cleanupByWorkspaceRef(
+          run.workspaceRef,
+        );
+      }
+      untrackActiveRun(run.agentWorkflowId);
+      results.push({
+        workflow_id: run.agentWorkflowId,
+        dapr_instance_id: run.daprInstanceId,
+        success: terminated.success,
+        alreadyStopped: terminated.alreadyStopped,
+        cleanedWorkspace,
+        workspaceRef: run.workspaceRef,
+        error: terminated.error,
+      });
+    }
 
-		res.json({
-			success: true,
-			parentExecutionId,
-			total: runs.length,
-			terminated: results.filter((item) => item.success).length,
-			failed: results.filter((item) => !item.success).length,
-			results,
-		});
-	} catch (err) {
-		res.status(500).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      parentExecutionId,
+      total: runs.length,
+      terminated: results.filter((item) => item.success).length,
+      failed: results.filter((item) => !item.success).length,
+      results,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 // Plan endpoint (synchronous)
 app.post("/api/plan", async (req, res) => {
-	try {
-		const prompt =
-			typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
-		if (!prompt) {
-			res.status(400).json({ success: false, error: "prompt is required" });
-			return;
-		}
+  try {
+    const prompt =
+      typeof req.body?.prompt === "string" ? req.body.prompt.trim() : "";
+    if (!prompt) {
+      res.status(400).json({ success: false, error: "prompt is required" });
+      return;
+    }
 
-		await initAgent();
+    await initAgent();
 
-		const executionIdRaw =
-			(req.body?.executionId as string) ??
-			(req.body?.dbExecutionId as string) ??
-			(req.body?.parentExecutionId as string) ??
-			"";
-		const executionId = String(executionIdRaw || "").trim();
-		const workflowId =
-			typeof req.body?.workflowId === "string"
-				? req.body.workflowId.trim()
-				: "";
-		const nodeId =
-			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
-		const parentExecutionId =
-			typeof req.body?.parentExecutionId === "string"
-				? req.body.parentExecutionId.trim()
-				: "";
-		let cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
-		const requestedWorkspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
-		const workspaceRef =
-			requestedWorkspaceRef ||
-			(executionId
-				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-						executionId,
-					)) || ""
-				: "");
-		const session = workspaceRef
-			? await workspaceSessions.getByWorkspaceRefDurable(workspaceRef)
-			: null;
-		if (workspaceRef && !session) {
-			res.status(400).json({
-				success: false,
-				error: `workspaceRef not found: ${workspaceRef}`,
-			});
-			return;
-		}
-		if (!cwd && session) {
-			cwd = session.clonePath || session.rootPath;
-		}
-		const planningBackendRaw =
-			typeof req.body?.planningBackend === "string"
-				? req.body.planningBackend.trim().toLowerCase()
-				: "";
-		const planningBackend = planningBackendRaw;
+    const executionIdRaw =
+      (req.body?.executionId as string) ??
+      (req.body?.dbExecutionId as string) ??
+      (req.body?.parentExecutionId as string) ??
+      "";
+    const executionId = String(executionIdRaw || "").trim();
+    const workflowId =
+      typeof req.body?.workflowId === "string"
+        ? req.body.workflowId.trim()
+        : "";
+    const nodeId =
+      typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+    const parentExecutionId =
+      typeof req.body?.parentExecutionId === "string"
+        ? req.body.parentExecutionId.trim()
+        : "";
+    let cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+    const requestedWorkspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
+    const workspaceRef =
+      requestedWorkspaceRef ||
+      (executionId
+        ? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+            executionId,
+          )) || ""
+        : "");
+    const session = workspaceRef
+      ? await workspaceSessions.getByWorkspaceRefDurable(workspaceRef)
+      : null;
+    if (workspaceRef && !session) {
+      res.status(400).json({
+        success: false,
+        error: `workspaceRef not found: ${workspaceRef}`,
+      });
+      return;
+    }
+    if (!cwd && session) {
+      cwd = session.clonePath || session.rootPath;
+    }
+    const planningBackendRaw =
+      typeof req.body?.planningBackend === "string"
+        ? req.body.planningBackend.trim().toLowerCase()
+        : "";
+    const planningBackend = planningBackendRaw;
 
-		if (planningBackend === "claude_code_v1") {
-			const timeoutMinutesRaw = req.body?.timeoutMinutes;
-			let timeoutMinutes = 10;
-			if (timeoutMinutesRaw != null) {
-				const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
-				if (Number.isFinite(parsed) && parsed > 0) {
-					timeoutMinutes = parsed;
-				}
-			}
-			const timeoutMs = Math.min(
-				Math.max(timeoutMinutes * 60_000, 60_000),
-				60 * 60_000,
-			);
-			const planningModel =
-				typeof req.body?.model === "string" && req.body.model.trim()
-					? req.body.model.trim()
-					: undefined;
-			const envOverrides: Record<string, string> = {};
-			if (
-				typeof process.env.ANTHROPIC_API_KEY === "string" &&
-				process.env.ANTHROPIC_API_KEY.trim()
-			) {
-				envOverrides.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY.trim();
-			}
-			if (
-				typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" &&
-				process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()
-			) {
-				envOverrides.CLAUDE_CODE_OAUTH_TOKEN =
-					process.env.CLAUDE_CODE_OAUTH_TOKEN.trim();
-			}
+    if (planningBackend === "claude_code_v1") {
+      const timeoutMinutesRaw = req.body?.timeoutMinutes;
+      let timeoutMinutes = 10;
+      if (timeoutMinutesRaw != null) {
+        const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
+        if (Number.isFinite(parsed) && parsed > 0) {
+          timeoutMinutes = parsed;
+        }
+      }
+      const timeoutMs = Math.min(
+        Math.max(timeoutMinutes * 60_000, 60_000),
+        60 * 60_000,
+      );
+      const planningModel =
+        typeof req.body?.model === "string" && req.body.model.trim()
+          ? req.body.model.trim()
+          : undefined;
+      const envOverrides: Record<string, string> = {};
+      if (
+        typeof process.env.ANTHROPIC_API_KEY === "string" &&
+        process.env.ANTHROPIC_API_KEY.trim()
+      ) {
+        envOverrides.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY.trim();
+      }
+      if (
+        typeof process.env.CLAUDE_CODE_OAUTH_TOKEN === "string" &&
+        process.env.CLAUDE_CODE_OAUTH_TOKEN.trim()
+      ) {
+        envOverrides.CLAUDE_CODE_OAUTH_TOKEN =
+          process.env.CLAUDE_CODE_OAUTH_TOKEN.trim();
+      }
 
-			eventBus.emitEvent("planning_started", {
-				prompt,
-				backend: "claude_code_v1",
-			});
-			const { plan, meta: generationMeta } = await generateClaudeTaskPlan({
-				userPrompt: prompt,
-				repositoryRoot: cwd || undefined,
-				model: planningModel,
-				timeoutMs,
-				executeCommand: async (command, commandTimeoutMs) => {
-					if (workspaceRef) {
-						const result = await workspaceSessions.executeCommand({
-							workspaceRef,
-							executionId,
-							command,
-							timeoutMs: commandTimeoutMs,
-							env:
-								Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
-						});
-						return {
-							stdout: result.stdout,
-							stderr: result.stderr,
-							exitCode: result.exitCode,
-							success: result.success,
-						};
-					}
-					await ensureSharedSandboxStarted();
-					const result = await sandbox.executeCommand("sh", ["-c", command], {
-						timeout: commandTimeoutMs,
-						cwd: cwd || undefined,
-						env:
-							Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
-					});
-					return {
-						stdout: result.stdout,
-						stderr: result.stderr,
-						exitCode: result.exitCode,
-						success: result.success,
-					};
-				},
-			});
+      eventBus.emitEvent("planning_started", {
+        prompt,
+        backend: "claude_code_v1",
+      });
+      const { plan, meta: generationMeta } = await generateClaudeTaskPlan({
+        userPrompt: prompt,
+        repositoryRoot: cwd || undefined,
+        model: planningModel,
+        timeoutMs,
+        executeCommand: async (command, commandTimeoutMs) => {
+          if (workspaceRef) {
+            const result = await workspaceSessions.executeCommand({
+              workspaceRef,
+              executionId,
+              command,
+              timeoutMs: commandTimeoutMs,
+              env:
+                Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+            });
+            return {
+              stdout: result.stdout,
+              stderr: result.stderr,
+              exitCode: result.exitCode,
+              success: result.success,
+            };
+          }
+          await ensureSharedSandboxStarted();
+          const result = await sandbox.executeCommand("sh", ["-c", command], {
+            timeout: commandTimeoutMs,
+            cwd: cwd || undefined,
+            env:
+              Object.keys(envOverrides).length > 0 ? envOverrides : undefined,
+          });
+          return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.exitCode,
+            success: result.success,
+          };
+        },
+      });
 
-			if (!executionId || !workflowId || !nodeId) {
-				res.status(400).json({
-					success: false,
-					error: {
-						code: "PLAN_ARTIFACT_CONTEXT_REQUIRED",
-						message:
-							"executionId, workflowId, and nodeId are required for claude plan artifact persistence",
-					},
-				});
-				return;
-			}
+      if (!executionId || !workflowId || !nodeId) {
+        res.status(400).json({
+          success: false,
+          error: {
+            code: "PLAN_ARTIFACT_CONTEXT_REQUIRED",
+            message:
+              "executionId, workflowId, and nodeId are required for claude plan artifact persistence",
+          },
+        });
+        return;
+      }
 
-			let artifactRef: string;
-			try {
-				const artifact = await planArtifacts.save({
-					workflowExecutionId: executionId,
-					workflowId,
-					nodeId,
-					workspaceRef: workspaceRef || undefined,
-					clonePath: cwd || undefined,
-					goal: plan.goal,
-					plan: plan as unknown as Record<string, unknown>,
-					sourcePrompt: prompt,
-					artifactType: plan.artifactType,
-					metadata: {
-						planningBackend: "claude_code_v1",
-						generationMeta,
-						parentExecutionId: parentExecutionId || undefined,
-					},
-				});
-				artifactRef = artifact.artifactRef;
-			} catch (persistErr) {
-				res.status(500).json({
-					success: false,
-					error: {
-						code: "PLAN_ARTIFACT_PERSIST_FAILED",
-						message:
-							persistErr instanceof Error
-								? persistErr.message
-								: String(persistErr),
-					},
-				});
-				return;
-			}
+      let artifactRef: string;
+      try {
+        const artifact = await planArtifacts.save({
+          workflowExecutionId: executionId,
+          workflowId,
+          nodeId,
+          workspaceRef: workspaceRef || undefined,
+          clonePath: cwd || undefined,
+          goal: plan.goal,
+          plan: plan as unknown as Record<string, unknown>,
+          sourcePrompt: prompt,
+          artifactType: plan.artifactType,
+          metadata: {
+            planningBackend: "claude_code_v1",
+            generationMeta,
+            parentExecutionId: parentExecutionId || undefined,
+          },
+        });
+        artifactRef = artifact.artifactRef;
+      } catch (persistErr) {
+        res.status(500).json({
+          success: false,
+          error: {
+            code: "PLAN_ARTIFACT_PERSIST_FAILED",
+            message:
+              persistErr instanceof Error
+                ? persistErr.message
+                : String(persistErr),
+          },
+        });
+        return;
+      }
 
-			eventBus.emitEvent("planning_completed", {
-				goal: plan.goal,
-				stepCount: plan.tasks.length,
-				estimatedToolCalls: plan.estimated_tool_calls,
-				backend: "claude_code_v1",
-			});
-			res.json({
-				success: true,
-				plan,
-				artifactRef,
-				schemaVersion: "claude_task_graph_v1",
-				storageBackend: "workflow_plan_artifacts",
-				generationMeta,
-				tasks: plan.tasks,
-				...(workspaceRef ? { workspaceRef } : {}),
-			});
-			return;
-		}
+      eventBus.emitEvent("planning_completed", {
+        goal: plan.goal,
+        stepCount: plan.tasks.length,
+        estimatedToolCalls: plan.estimated_tool_calls,
+        backend: "claude_code_v1",
+      });
+      res.json({
+        success: true,
+        plan,
+        artifactRef,
+        schemaVersion: "claude_task_graph_v1",
+        storageBackend: "workflow_plan_artifacts",
+        generationMeta,
+        tasks: plan.tasks,
+        ...(workspaceRef ? { workspaceRef } : {}),
+      });
+      return;
+    }
 
-		const requestAgentConfig = await resolveRequestAgentConfig({
-			body: req.body as Record<string, unknown>,
-			inlineName: "inline-plan-agent",
-		});
-		const maxTurnsRaw = req.body?.maxTurns ?? requestAgentConfig?.maxTurns;
-		let planningMaxTurns = 24;
-		if (maxTurnsRaw != null) {
-			const parsed = Number.parseInt(String(maxTurnsRaw), 10);
-			if (Number.isFinite(parsed) && parsed > 0) {
-				planningMaxTurns = parsed;
-			}
-		}
-		const timeoutMinutesRaw =
-			req.body?.timeoutMinutes ?? requestAgentConfig?.timeoutMinutes;
-		let planningTimeoutSeconds = PLAN_TIMEOUT_SECONDS;
-		if (timeoutMinutesRaw != null) {
-			const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
-			if (Number.isFinite(parsed) && parsed > 0) {
-				planningTimeoutSeconds = Math.min(
-					Math.max(parsed * 60 + 30, 90),
-					4 * 60 * 60,
-				);
-			}
-		}
-		const loopPolicy = resolveLoopPolicyFromRequest(
-			(req.body as Record<string, unknown>) ?? {},
-		);
-		const repositoryRootForPrompt = cwd && existsSync(cwd) ? cwd : undefined;
-		if (cwd && !repositoryRootForPrompt) {
-			console.warn(
-				`[durable-agent] Plan mode cwd does not exist locally, omitting repositoryRoot from prompt: ${cwd}`,
-			);
-		}
+    const requestAgentConfig = await resolveRequestAgentConfig({
+      body: req.body as Record<string, unknown>,
+      inlineName: "inline-plan-agent",
+    });
+    const agentGraph =
+      req.body?.agentGraph &&
+      typeof req.body.agentGraph === "object" &&
+      !Array.isArray(req.body.agentGraph)
+        ? (req.body.agentGraph as Record<string, unknown>)
+        : undefined;
+    const loopStrategyName = resolveLoopStrategyName(
+      (req.body as Record<string, unknown>) ?? {},
+      requestAgentConfig,
+    );
+    const maxTurnsRaw = req.body?.maxTurns ?? requestAgentConfig?.maxTurns;
+    let planningMaxTurns = 24;
+    if (maxTurnsRaw != null) {
+      const parsed = Number.parseInt(String(maxTurnsRaw), 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        planningMaxTurns = parsed;
+      }
+    }
+    const timeoutMinutesRaw =
+      req.body?.timeoutMinutes ?? requestAgentConfig?.timeoutMinutes;
+    let planningTimeoutSeconds = PLAN_TIMEOUT_SECONDS;
+    if (timeoutMinutesRaw != null) {
+      const parsed = Number.parseInt(String(timeoutMinutesRaw), 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        planningTimeoutSeconds = Math.min(
+          Math.max(parsed * 60 + 30, 90),
+          4 * 60 * 60,
+        );
+      }
+    }
+    const loopPolicy = resolveLoopPolicyFromRequest(
+      (req.body as Record<string, unknown>) ?? {},
+      agentGraph,
+    );
+    const repositoryRootForPrompt = cwd && existsSync(cwd) ? cwd : undefined;
+    if (cwd && !repositoryRootForPrompt) {
+      console.warn(
+        `[durable-agent] Plan mode cwd does not exist locally, omitting repositoryRoot from prompt: ${cwd}`,
+      );
+    }
 
-		// Resolve agent: prefer merged request/config-store settings, else default.
-		let activeAgent = agent!;
-		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
-			try {
-				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(
-					`[durable-agent] Failed to create configured planning agent: ${message}`,
-					err,
-				);
-				res.status(422).json({
-					success: false,
-					error: {
-						code: "CONFIGURED_PLANNING_AGENT_INIT_FAILED",
-						message,
-						details: {
-							agentName: requestAgentConfig.name,
-							modelSpec: requestAgentConfig.modelSpec,
-						},
-					},
-				});
-				return;
-			}
-		}
+    // Resolve agent: prefer merged request/config-store settings, else default.
+    let activeAgent = agent!;
+    if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
+      try {
+        activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[durable-agent] Failed to create configured planning agent: ${message}`,
+          err,
+        );
+        res.status(422).json({
+          success: false,
+          error: {
+            code: "CONFIGURED_PLANNING_AGENT_INIT_FAILED",
+            message,
+            details: {
+              agentName: requestAgentConfig.name,
+              modelSpec: requestAgentConfig.modelSpec,
+            },
+          },
+        });
+        return;
+      }
+    }
 
-		const planningPrompt = buildPlanModePrompt({
-			userPrompt: prompt,
-			repositoryRoot: repositoryRootForPrompt,
-		});
-		eventBus.emitEvent("planning_started", { prompt, planningMaxTurns });
+    const planningPrompt = buildPlanModePrompt({
+      userPrompt: prompt,
+      repositoryRoot: repositoryRootForPrompt,
+    });
+    eventBus.emitEvent("planning_started", { prompt, planningMaxTurns });
 
-		const planningInstanceIds: string[] = [];
-		const planningTexts: string[] = [];
-		const toolCalls: ToolCallRecord[] = [];
+    const planningInstanceIds: string[] = [];
+    const planningTexts: string[] = [];
+    const toolCalls: ToolCallRecord[] = [];
 
-		const initialPlanningAttempt = await runPlanningAttempt({
-			activeAgent,
-			task: planningPrompt.prompt,
-			maxIterations: planningMaxTurns,
-			workspaceRef: workspaceRef || undefined,
-			timeoutSeconds: planningTimeoutSeconds,
-			loopPolicy,
-		});
-		planningInstanceIds.push(initialPlanningAttempt.instanceId);
+    const initialPlanningAttempt = await runPlanningAttempt({
+      activeAgent,
+      task: planningPrompt.prompt,
+      maxIterations: planningMaxTurns,
+      workspaceRef: workspaceRef || undefined,
+      timeoutSeconds: planningTimeoutSeconds,
+      loopPolicy,
+      agentGraph,
+      loopStrategyName,
+    });
+    planningInstanceIds.push(initialPlanningAttempt.instanceId);
 
-		if (!initialPlanningAttempt.completion.success) {
-			res.status(500).json({
-				success: false,
-				error:
-					initialPlanningAttempt.completion.error || "Plan mode run failed",
-			});
-			return;
-		}
+    if (!initialPlanningAttempt.completion.success) {
+      res.status(500).json({
+        success: false,
+        error:
+          initialPlanningAttempt.completion.error || "Plan mode run failed",
+      });
+      return;
+    }
 
-		toolCalls.push(...initialPlanningAttempt.toolCalls);
-		planningTexts.push(initialPlanningAttempt.planningText);
+    toolCalls.push(...initialPlanningAttempt.toolCalls);
+    planningTexts.push(initialPlanningAttempt.planningText);
 
-		let planningText = initialPlanningAttempt.planningText;
-		const initialExtractedPlan = extractProposedPlanText(planningText);
-		let extractedPlan = initialExtractedPlan;
-		let repairAttemptsUsed = 0;
+    let planningText = initialPlanningAttempt.planningText;
+    const initialExtractedPlan = extractProposedPlanText(planningText);
+    let extractedPlan = initialExtractedPlan;
+    let repairAttemptsUsed = 0;
 
-		while (
-			!extractedPlan?.trim() &&
-			repairAttemptsUsed < PLAN_REPAIR_ATTEMPTS
-		) {
-			repairAttemptsUsed += 1;
-			const repairPrompt = buildPlanRepairPrompt({
-				userPrompt: prompt,
-				priorResponse: planningText,
-				attempt: repairAttemptsUsed,
-				repositoryRoot: repositoryRootForPrompt,
-				promptProfile: planningPrompt.profile,
-			});
-			const repairAttempt = await runPlanningAttempt({
-				activeAgent,
-				task: repairPrompt.prompt,
-				maxIterations: PLAN_REPAIR_MAX_TURNS,
-				workspaceRef: workspaceRef || undefined,
-				timeoutSeconds: planningTimeoutSeconds,
-				loopPolicy,
-			});
-			planningInstanceIds.push(repairAttempt.instanceId);
-			if (!repairAttempt.completion.success) {
-				res.status(500).json({
-					success: false,
-					error: {
-						code: "PLAN_MODE_REPAIR_FAILED",
-						message:
-							repairAttempt.completion.error ||
-							"Plan mode repair attempt failed",
-						details: {
-							promptProfile: planningPrompt.profile,
-							repairAttempt: repairAttemptsUsed,
-							planningInstanceIds,
-						},
-					},
-				});
-				return;
-			}
-			toolCalls.push(...repairAttempt.toolCalls);
-			planningText = repairAttempt.planningText;
-			planningTexts.push(planningText);
-			extractedPlan = extractProposedPlanText(planningText);
-		}
+    while (
+      !extractedPlan?.trim() &&
+      repairAttemptsUsed < PLAN_REPAIR_ATTEMPTS
+    ) {
+      repairAttemptsUsed += 1;
+      const repairPrompt = buildPlanRepairPrompt({
+        userPrompt: prompt,
+        priorResponse: planningText,
+        attempt: repairAttemptsUsed,
+        repositoryRoot: repositoryRootForPrompt,
+        promptProfile: planningPrompt.profile,
+      });
+      const repairAttempt = await runPlanningAttempt({
+        activeAgent,
+        task: repairPrompt.prompt,
+        maxIterations: PLAN_REPAIR_MAX_TURNS,
+        workspaceRef: workspaceRef || undefined,
+        timeoutSeconds: planningTimeoutSeconds,
+        loopPolicy,
+        agentGraph,
+        loopStrategyName,
+      });
+      planningInstanceIds.push(repairAttempt.instanceId);
+      if (!repairAttempt.completion.success) {
+        res.status(500).json({
+          success: false,
+          error: {
+            code: "PLAN_MODE_REPAIR_FAILED",
+            message:
+              repairAttempt.completion.error ||
+              "Plan mode repair attempt failed",
+            details: {
+              promptProfile: planningPrompt.profile,
+              repairAttempt: repairAttemptsUsed,
+              planningInstanceIds,
+            },
+          },
+        });
+        return;
+      }
+      toolCalls.push(...repairAttempt.toolCalls);
+      planningText = repairAttempt.planningText;
+      planningTexts.push(planningText);
+      extractedPlan = extractProposedPlanText(planningText);
+    }
 
-		const planPolicy = buildPlanModePolicy(toolCalls);
-		const planningTranscript =
-			planningTexts.length > 0 ? planningTexts.join("\n\n") : planningText;
-		const planEnvelope = {
-			hasProposedPlanBlock: Boolean(extractedPlan),
-			extracted: Boolean(extractedPlan?.trim()),
-			fallbackUsed: false,
-			repairAttemptsUsed,
-			repairAttemptsConfigured: PLAN_REPAIR_ATTEMPTS,
-			repaired: repairAttemptsUsed > 0 && Boolean(extractedPlan?.trim()),
-			initialAttemptHasProposedPlanBlock: Boolean(initialExtractedPlan),
-			initialAttemptExtracted: Boolean(initialExtractedPlan?.trim()),
-			attempts: planningInstanceIds.length,
-		};
-		if (!extractedPlan?.trim()) {
-			res.status(422).json({
-				success: false,
-				error: {
-					code: "PLAN_MODE_PROPOSED_PLAN_REQUIRED",
-					message:
-						"Plan mode response must include a non-empty <proposed_plan>...</proposed_plan> block",
-					details: {
-						promptProfile: planningPrompt.profile,
-						planEnvelope,
-						planningInstanceIds,
-					},
-				},
-			});
-			return;
-		}
-		const planMarkdown = extractedPlan.trim();
-		const planWarnings: string[] = [];
-		if (repairAttemptsUsed > 0) {
-			planWarnings.push(
-				`Recovered required <proposed_plan> block via ${repairAttemptsUsed} repair attempt${repairAttemptsUsed === 1 ? "" : "s"}`,
-			);
-		}
-		const planningNarrative =
-			stripProposedPlanBlocks(planningTranscript).trim();
+    const planPolicy = buildPlanModePolicy(toolCalls);
+    const planningTranscript =
+      planningTexts.length > 0 ? planningTexts.join("\n\n") : planningText;
+    const planEnvelope = {
+      hasProposedPlanBlock: Boolean(extractedPlan),
+      extracted: Boolean(extractedPlan?.trim()),
+      fallbackUsed: false,
+      repairAttemptsUsed,
+      repairAttemptsConfigured: PLAN_REPAIR_ATTEMPTS,
+      repaired: repairAttemptsUsed > 0 && Boolean(extractedPlan?.trim()),
+      initialAttemptHasProposedPlanBlock: Boolean(initialExtractedPlan),
+      initialAttemptExtracted: Boolean(initialExtractedPlan?.trim()),
+      attempts: planningInstanceIds.length,
+    };
+    if (!extractedPlan?.trim()) {
+      res.status(422).json({
+        success: false,
+        error: {
+          code: "PLAN_MODE_PROPOSED_PLAN_REQUIRED",
+          message:
+            "Plan mode response must include a non-empty <proposed_plan>...</proposed_plan> block",
+          details: {
+            promptProfile: planningPrompt.profile,
+            planEnvelope,
+            planningInstanceIds,
+          },
+        },
+      });
+      return;
+    }
+    const planMarkdown = extractedPlan.trim();
+    const planWarnings: string[] = [];
+    if (repairAttemptsUsed > 0) {
+      planWarnings.push(
+        `Recovered required <proposed_plan> block via ${repairAttemptsUsed} repair attempt${repairAttemptsUsed === 1 ? "" : "s"}`,
+      );
+    }
+    const planningNarrative =
+      stripProposedPlanBlocks(planningTranscript).trim();
 
-		const { plan, meta: generationMeta } = await generatePlanFromMarkdown({
-			userPrompt: prompt,
-			planMarkdown,
-		});
-		let artifactRef: string | undefined;
-		if (executionId && workflowId && nodeId) {
-			try {
-				const artifact = await planArtifacts.save({
-					workflowExecutionId: executionId,
-					workflowId,
-					nodeId,
-					workspaceRef: workspaceRef || undefined,
-					clonePath: cwd || undefined,
-					goal: plan.goal,
-					plan: plan as unknown as Record<string, unknown>,
-					planMarkdown,
-					sourcePrompt: prompt,
-					metadata: {
-						repositoryRoot: cwd || undefined,
-						artifactType:
-							(plan as { artifactType?: string }).artifactType ||
-							"task_graph_v1",
-						generationMeta,
-						planPolicy,
-						promptProfile: planningPrompt.profile,
-						planEnvelope,
-						planWarnings,
-						planningNarrative: planningNarrative || undefined,
-						planningInstanceIds,
-						parentExecutionId: parentExecutionId || undefined,
-					},
-				});
-				artifactRef = artifact.artifactRef;
-			} catch (err) {
-				console.error(
-					`[durable-agent] Failed to persist plan artifact for execution=${executionId}:`,
-					err,
-				);
-			}
-		}
+    const { plan, meta: generationMeta } = await generatePlanFromMarkdown({
+      userPrompt: prompt,
+      planMarkdown,
+    });
+    let artifactRef: string | undefined;
+    if (executionId && workflowId && nodeId) {
+      try {
+        const artifact = await planArtifacts.save({
+          workflowExecutionId: executionId,
+          workflowId,
+          nodeId,
+          workspaceRef: workspaceRef || undefined,
+          clonePath: cwd || undefined,
+          goal: plan.goal,
+          plan: plan as unknown as Record<string, unknown>,
+          planMarkdown,
+          sourcePrompt: prompt,
+          metadata: {
+            repositoryRoot: cwd || undefined,
+            artifactType:
+              (plan as { artifactType?: string }).artifactType ||
+              "task_graph_v1",
+            generationMeta,
+            planPolicy,
+            promptProfile: planningPrompt.profile,
+            planEnvelope,
+            planWarnings,
+            planningNarrative: planningNarrative || undefined,
+            planningInstanceIds,
+            parentExecutionId: parentExecutionId || undefined,
+          },
+        });
+        artifactRef = artifact.artifactRef;
+      } catch (err) {
+        console.error(
+          `[durable-agent] Failed to persist plan artifact for execution=${executionId}:`,
+          err,
+        );
+      }
+    }
 
-		eventBus.emitEvent("planning_completed", {
-			goal: plan.goal,
-			stepCount:
-				Array.isArray((plan as { tasks?: unknown[] }).tasks) &&
-				(plan as { tasks?: unknown[] }).tasks
-					? (plan as { tasks?: unknown[] }).tasks?.length
-					: plan.steps.length,
-			estimatedToolCalls: plan.estimated_tool_calls,
-			toolCalls: toolCalls.length,
-		});
+    eventBus.emitEvent("planning_completed", {
+      goal: plan.goal,
+      stepCount:
+        Array.isArray((plan as { tasks?: unknown[] }).tasks) &&
+        (plan as { tasks?: unknown[] }).tasks
+          ? (plan as { tasks?: unknown[] }).tasks?.length
+          : plan.steps.length,
+      estimatedToolCalls: plan.estimated_tool_calls,
+      toolCalls: toolCalls.length,
+    });
 
-		res.json({
-			success: true,
-			plan,
-			artifactRef,
-			schemaVersion: "task_graph_v1",
-			storageBackend: "workflow_plan_artifacts",
-			generationMeta,
-			planMarkdown,
-			planPolicy,
-			promptProfile: planningPrompt.profile,
-			planEnvelope,
-			planWarnings,
-			toolCalls,
-			tasks: (plan as { tasks?: unknown[] }).tasks ?? [],
-			...(workspaceRef ? { workspaceRef } : {}),
-			daprPlanningInstanceId: planningInstanceIds[0],
-			daprPlanningInstanceIds: planningInstanceIds,
-		});
-	} catch (err) {
-		if (err instanceof ClaudePlanGenerationError) {
-			res.status(422).json({
-				success: false,
-				error: {
-					code: err.code,
-					message: err.message,
-					details: err.details,
-				},
-			});
-			return;
-		}
-		if (err instanceof PlanGenerationError) {
-			res.status(422).json({
-				success: false,
-				error: {
-					code: err.code,
-					message: err.message,
-					attempts: err.attempts,
-					strategy: err.strategy,
-					details: err.details,
-				},
-			});
-			return;
-		}
-		res.status(500).json({ success: false, error: String(err) });
-	}
+    res.json({
+      success: true,
+      plan,
+      artifactRef,
+      schemaVersion: "task_graph_v1",
+      storageBackend: "workflow_plan_artifacts",
+      generationMeta,
+      planMarkdown,
+      planPolicy,
+      promptProfile: planningPrompt.profile,
+      planEnvelope,
+      planWarnings,
+      toolCalls,
+      tasks: (plan as { tasks?: unknown[] }).tasks ?? [],
+      ...(workspaceRef ? { workspaceRef } : {}),
+      daprPlanningInstanceId: planningInstanceIds[0],
+      daprPlanningInstanceIds: planningInstanceIds,
+    });
+  } catch (err) {
+    if (err instanceof ClaudePlanGenerationError) {
+      res.status(422).json({
+        success: false,
+        error: {
+          code: err.code,
+          message: err.message,
+          details: err.details,
+        },
+      });
+      return;
+    }
+    if (err instanceof PlanGenerationError) {
+      res.status(422).json({
+        success: false,
+        error: {
+          code: err.code,
+          message: err.message,
+          attempts: err.attempts,
+          strategy: err.strategy,
+          details: err.details,
+        },
+      });
+      return;
+    }
+    res.status(500).json({ success: false, error: String(err) });
+  }
 });
 
 app.post("/api/plan/materialize", async (req, res) => {
-	try {
-		const artifactRef =
-			typeof req.body?.artifactRef === "string"
-				? req.body.artifactRef.trim()
-				: "";
-		if (!artifactRef) {
-			res.status(400).json({
-				success: false,
-				error: "artifactRef is required",
-			});
-			return;
-		}
+  try {
+    const artifactRef =
+      typeof req.body?.artifactRef === "string"
+        ? req.body.artifactRef.trim()
+        : "";
+    if (!artifactRef) {
+      res.status(400).json({
+        success: false,
+        error: "artifactRef is required",
+      });
+      return;
+    }
 
-		const executionId =
-			typeof req.body?.executionId === "string"
-				? req.body.executionId.trim()
-				: typeof req.body?.dbExecutionId === "string"
-					? req.body.dbExecutionId.trim()
-					: "";
-		const workflowId =
-			typeof req.body?.workflowId === "string"
-				? req.body.workflowId.trim()
-				: "";
-		const nodeId =
-			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
-		let workspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
-		if (!workspaceRef && executionId) {
-			workspaceRef =
-				(await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-					executionId,
-				)) || "";
-		}
-		if (!workspaceRef) {
-			res.status(400).json({
-				success: false,
-				error: "workspaceRef is required",
-			});
-			return;
-		}
+    const executionId =
+      typeof req.body?.executionId === "string"
+        ? req.body.executionId.trim()
+        : typeof req.body?.dbExecutionId === "string"
+          ? req.body.dbExecutionId.trim()
+          : "";
+    const workflowId =
+      typeof req.body?.workflowId === "string"
+        ? req.body.workflowId.trim()
+        : "";
+    const nodeId =
+      typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+    let workspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
+    if (!workspaceRef && executionId) {
+      workspaceRef =
+        (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+          executionId,
+        )) || "";
+    }
+    if (!workspaceRef) {
+      res.status(400).json({
+        success: false,
+        error: "workspaceRef is required",
+      });
+      return;
+    }
 
-		const session =
-			await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
-		if (!session) {
-			res.status(400).json({
-				success: false,
-				error: `workspaceRef not found: ${workspaceRef}`,
-			});
-			return;
-		}
+    const session =
+      await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
+    if (!session) {
+      res.status(400).json({
+        success: false,
+        error: `workspaceRef not found: ${workspaceRef}`,
+      });
+      return;
+    }
 
-		const artifact = await planArtifacts.get(artifactRef);
-		if (!artifact) {
-			res.status(404).json({
-				success: false,
-				error: `Plan artifact not found: ${artifactRef}`,
-			});
-			return;
-		}
+    const artifact = await planArtifacts.get(artifactRef);
+    if (!artifact) {
+      res.status(404).json({
+        success: false,
+        error: `Plan artifact not found: ${artifactRef}`,
+      });
+      return;
+    }
 
-		const parsedPlan = validateClaudeTaskPlan(artifact.plan);
-		if (!parsedPlan.success) {
-			res.status(422).json({
-				success: false,
-				error: {
-					code: "INVALID_PLAN_ARTIFACT_SCHEMA",
-					message:
-						"Stored plan artifact does not match claude_task_graph_v1 schema",
-					details: parsedPlan.issues,
-				},
-			});
-			return;
-		}
-		const plan = parsedPlan.plan;
+    const parsedPlan = validateClaudeTaskPlan(artifact.plan);
+    if (!parsedPlan.success) {
+      res.status(422).json({
+        success: false,
+        error: {
+          code: "INVALID_PLAN_ARTIFACT_SCHEMA",
+          message:
+            "Stored plan artifact does not match claude_task_graph_v1 schema",
+          details: parsedPlan.issues,
+        },
+      });
+      return;
+    }
+    const plan = parsedPlan.plan;
 
-		const cloneRoot =
-			session.clonePath || artifact.clonePath || session.rootPath;
-		const requestedOutputDir =
-			typeof req.body?.outputDir === "string" ? req.body.outputDir.trim() : "";
-		const outputDir = requestedOutputDir
-			? requestedOutputDir.startsWith("/")
-				? pathPosix.normalize(requestedOutputDir)
-				: pathPosix.normalize(pathPosix.join(cloneRoot, requestedOutputDir))
-			: pathPosix.normalize(
-					pathPosix.join(cloneRoot, ".workflow/plans", artifactRef),
-				);
+    const cloneRoot =
+      session.clonePath || artifact.clonePath || session.rootPath;
+    const requestedOutputDir =
+      typeof req.body?.outputDir === "string" ? req.body.outputDir.trim() : "";
+    const outputDir = requestedOutputDir
+      ? requestedOutputDir.startsWith("/")
+        ? pathPosix.normalize(requestedOutputDir)
+        : pathPosix.normalize(pathPosix.join(cloneRoot, requestedOutputDir))
+      : pathPosix.normalize(
+          pathPosix.join(cloneRoot, ".workflow/plans", artifactRef),
+        );
 
-		const tasksJsonPath = pathPosix.join(outputDir, "tasks.json");
-		const planJsonPath = pathPosix.join(outputDir, "plan.json");
-		const metadataPath = pathPosix.join(outputDir, "metadata.json");
+    const tasksJsonPath = pathPosix.join(outputDir, "tasks.json");
+    const planJsonPath = pathPosix.join(outputDir, "plan.json");
+    const metadataPath = pathPosix.join(outputDir, "metadata.json");
 
-		const tasksJson = `${JSON.stringify(plan.tasks, null, 2)}\n`;
-		const planJson = `${JSON.stringify(plan, null, 2)}\n`;
-		const tasksJsonSha256 = sha256Hex(tasksJson);
-		const planJsonSha256 = sha256Hex(planJson);
-		const metadata = {
-			artifactRef,
-			artifactType: plan.artifactType,
-			schemaVersion: "claude_task_graph_v1",
-			storageBackend: "workflow_plan_artifacts",
-			goal: plan.goal,
-			estimatedToolCalls: plan.estimated_tool_calls,
-			taskCount: plan.tasks.length,
-			workflowExecutionId: artifact.workflowExecutionId,
-			workflowId: workflowId || artifact.workflowId,
-			nodeId: nodeId || artifact.nodeId,
-			workspaceRef,
-			outputDir,
-			files: {
-				tasksJsonPath,
-				planJsonPath,
-				metadataPath,
-			},
-			hashes: {
-				tasksJsonSha256,
-				planJsonSha256,
-			},
-			materializedAt: new Date().toISOString(),
-		};
-		const metadataJson = `${JSON.stringify(metadata, null, 2)}\n`;
-		const metadataJsonSha256 = sha256Hex(metadataJson);
+    const tasksJson = `${JSON.stringify(plan.tasks, null, 2)}\n`;
+    const planJson = `${JSON.stringify(plan, null, 2)}\n`;
+    const tasksJsonSha256 = sha256Hex(tasksJson);
+    const planJsonSha256 = sha256Hex(planJson);
+    const metadata = {
+      artifactRef,
+      artifactType: plan.artifactType,
+      schemaVersion: "claude_task_graph_v1",
+      storageBackend: "workflow_plan_artifacts",
+      goal: plan.goal,
+      estimatedToolCalls: plan.estimated_tool_calls,
+      taskCount: plan.tasks.length,
+      workflowExecutionId: artifact.workflowExecutionId,
+      workflowId: workflowId || artifact.workflowId,
+      nodeId: nodeId || artifact.nodeId,
+      workspaceRef,
+      outputDir,
+      files: {
+        tasksJsonPath,
+        planJsonPath,
+        metadataPath,
+      },
+      hashes: {
+        tasksJsonSha256,
+        planJsonSha256,
+      },
+      materializedAt: new Date().toISOString(),
+    };
+    const metadataJson = `${JSON.stringify(metadata, null, 2)}\n`;
+    const metadataJsonSha256 = sha256Hex(metadataJson);
 
-		await workspaceSessions.executeFileOperation({
-			workspaceRef,
-			executionId: executionId || undefined,
-			operation: "write_file",
-			path: tasksJsonPath,
-			content: tasksJson,
-		});
-		await workspaceSessions.executeFileOperation({
-			workspaceRef,
-			executionId: executionId || undefined,
-			operation: "write_file",
-			path: planJsonPath,
-			content: planJson,
-		});
-		await workspaceSessions.executeFileOperation({
-			workspaceRef,
-			executionId: executionId || undefined,
-			operation: "write_file",
-			path: metadataPath,
-			content: metadataJson,
-		});
+    await workspaceSessions.executeFileOperation({
+      workspaceRef,
+      executionId: executionId || undefined,
+      operation: "write_file",
+      path: tasksJsonPath,
+      content: tasksJson,
+    });
+    await workspaceSessions.executeFileOperation({
+      workspaceRef,
+      executionId: executionId || undefined,
+      operation: "write_file",
+      path: planJsonPath,
+      content: planJson,
+    });
+    await workspaceSessions.executeFileOperation({
+      workspaceRef,
+      executionId: executionId || undefined,
+      operation: "write_file",
+      path: metadataPath,
+      content: metadataJson,
+    });
 
-		res.json({
-			success: true,
-			artifactRef,
-			schemaVersion: "claude_task_graph_v1",
-			storageBackend: "workflow_plan_artifacts",
-			workspaceRef,
-			result: {
-				artifactRef,
-				goal: plan.goal,
-				taskCount: plan.tasks.length,
-				outputDir,
-				tasksJsonPath,
-				planJsonPath,
-				metadataPath,
-				hashes: {
-					tasksJsonSha256,
-					planJsonSha256,
-					metadataJsonSha256,
-				},
-			},
-		});
-	} catch (err) {
-		res.status(400).json({
-			success: false,
-			error: err instanceof Error ? err.message : String(err),
-		});
-	}
+    res.json({
+      success: true,
+      artifactRef,
+      schemaVersion: "claude_task_graph_v1",
+      storageBackend: "workflow_plan_artifacts",
+      workspaceRef,
+      result: {
+        artifactRef,
+        goal: plan.goal,
+        taskCount: plan.tasks.length,
+        outputDir,
+        tasksJsonPath,
+        planJsonPath,
+        metadataPath,
+        hashes: {
+          tasksJsonSha256,
+          planJsonSha256,
+          metadataJsonSha256,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 // Execute plan endpoint (fire-and-forget)
 app.post("/api/execute-plan", async (req, res) => {
-	try {
-		let planInput = req.body?.plan as unknown;
-		const artifactRefRaw =
-			typeof req.body?.artifactRef === "string" ? req.body.artifactRef : "";
-		const artifactRef = artifactRefRaw.trim();
-		const cwd = (req.body?.cwd as string) ?? "";
-		const prompt = (req.body?.prompt as string) ?? "";
-		const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
-		const executionIdRaw =
-			(req.body?.executionId as string) ??
-			(req.body?.dbExecutionId as string) ??
-			parentExecutionId;
-		const executionId = String(executionIdRaw || "").trim();
-		const workflowId =
-			typeof req.body?.workflowId === "string"
-				? req.body.workflowId.trim()
-				: "";
-		const nodeId =
-			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
-		const cleanupWorkspaceRequested = parseOptionalBoolean(
-			req.body?.cleanupWorkspace,
-		);
-		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
-		const loopPolicy = resolveLoopPolicyFromRequest(
-			(req.body as Record<string, unknown>) ?? {},
-		);
-		const agentWorkflowId = `durable-exec-${nanoid(12)}`;
-		const requestedWorkspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
-		let workspaceRef =
-			requestedWorkspaceRef ||
-			(executionId
-				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-						executionId,
-					)) || ""
-				: "");
-		let resolvedCwd = cwd.trim();
-		if (!planInput && artifactRef) {
-			const artifact = await planArtifacts.get(artifactRef);
-			if (!artifact) {
-				res.status(404).json({
-					success: false,
-					error: `Plan artifact not found: ${artifactRef}`,
-				});
-				return;
-			}
-			const artifactPlan = artifact.plan as unknown;
-			if (artifactPlan && typeof artifactPlan === "object") {
-				planInput = artifactPlan;
-			}
-			if (!workspaceRef && artifact.workspaceRef) {
-				workspaceRef = artifact.workspaceRef;
-			}
-			if (!resolvedCwd && artifact.clonePath) {
-				resolvedCwd = artifact.clonePath;
-			}
-		}
-		if (
-			workspaceRef &&
-			!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))
-		) {
-			res.status(400).json({
-				success: false,
-				error: `workspaceRef not found: ${workspaceRef}`,
-			});
-			return;
-		}
+  try {
+    let planInput = req.body?.plan as unknown;
+    const artifactRefRaw =
+      typeof req.body?.artifactRef === "string" ? req.body.artifactRef : "";
+    const artifactRef = artifactRefRaw.trim();
+    const cwd = (req.body?.cwd as string) ?? "";
+    const prompt = (req.body?.prompt as string) ?? "";
+    const parentExecutionId = (req.body?.parentExecutionId as string) ?? "";
+    const executionIdRaw =
+      (req.body?.executionId as string) ??
+      (req.body?.dbExecutionId as string) ??
+      parentExecutionId;
+    const executionId = String(executionIdRaw || "").trim();
+    const workflowId =
+      typeof req.body?.workflowId === "string"
+        ? req.body.workflowId.trim()
+        : "";
+    const nodeId =
+      typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+    const cleanupWorkspaceRequested = parseOptionalBoolean(
+      req.body?.cleanupWorkspace,
+    );
+    const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
+    const agentGraph =
+      req.body?.agentGraph &&
+      typeof req.body.agentGraph === "object" &&
+      !Array.isArray(req.body.agentGraph)
+        ? (req.body.agentGraph as Record<string, unknown>)
+        : undefined;
+    const loopPolicy = resolveLoopPolicyFromRequest(
+      (req.body as Record<string, unknown>) ?? {},
+      agentGraph,
+    );
+    const agentWorkflowId = `durable-exec-${nanoid(12)}`;
+    const requestedWorkspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
+    let workspaceRef =
+      requestedWorkspaceRef ||
+      (executionId
+        ? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+            executionId,
+          )) || ""
+        : "");
+    let resolvedCwd = cwd.trim();
+    if (!planInput && artifactRef) {
+      const artifact = await planArtifacts.get(artifactRef);
+      if (!artifact) {
+        res.status(404).json({
+          success: false,
+          error: `Plan artifact not found: ${artifactRef}`,
+        });
+        return;
+      }
+      const artifactPlan = artifact.plan as unknown;
+      if (artifactPlan && typeof artifactPlan === "object") {
+        planInput = artifactPlan;
+      }
+      if (!workspaceRef && artifact.workspaceRef) {
+        workspaceRef = artifact.workspaceRef;
+      }
+      if (!resolvedCwd && artifact.clonePath) {
+        resolvedCwd = artifact.clonePath;
+      }
+    }
+    if (
+      workspaceRef &&
+      !(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))
+    ) {
+      res.status(400).json({
+        success: false,
+        error: `workspaceRef not found: ${workspaceRef}`,
+      });
+      return;
+    }
 
-		const parsedPlan = validateClaudeTaskPlan(planInput);
-		if (!parsedPlan.success) {
-			res.status(400).json({
-				success: false,
-				error: {
-					code: "INVALID_PLAN_SCHEMA",
-					message:
-						"Plan must match claude_task_graph_v1 schema with non-empty tasks",
-					details: parsedPlan.issues,
-				},
-			});
-			return;
-		}
-		const plan: ClaudeTaskPlan = parsedPlan.plan;
-		if (!planHasExecutableTasks(plan)) {
-			res.status(400).json({
-				success: false,
-				error: {
-					code: "INVALID_PLAN_SCHEMA",
-					message: "Plan must contain executable tasks",
-				},
-			});
-			return;
-		}
-		const stopCondition =
-			typeof req.body?.stopCondition === "string"
-				? req.body.stopCondition.trim()
-				: "";
-		const explicitRequireFileChanges = parseOptionalBoolean(
-			req.body?.requireFileChanges,
-		);
-		const stopConditionRequiresFileChanges =
-			Boolean(stopCondition) && stopConditionImpliesFileChanges(stopCondition);
-		if (
-			explicitRequireFileChanges === false &&
-			stopConditionRequiresFileChanges
-		) {
-			res.status(400).json({
-				success: false,
-				error: {
-					code: "INVALID_EXECUTE_PLAN_CONFIG",
-					message:
-						"requireFileChanges=false conflicts with a stopCondition that requires modified files",
-					details: {
-						stopCondition,
-					},
-				},
-			});
-			return;
-		}
-		const requireFileChanges =
-			explicitRequireFileChanges ??
-			(planLikelyRequiresFileChanges(plan) || stopConditionRequiresFileChanges);
-		if (artifactRef) {
-			await planArtifacts.markStatus(artifactRef, "approved");
-		}
+    const parsedPlan = validateClaudeTaskPlan(planInput);
+    if (!parsedPlan.success) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_PLAN_SCHEMA",
+          message:
+            "Plan must match claude_task_graph_v1 schema with non-empty tasks",
+          details: parsedPlan.issues,
+        },
+      });
+      return;
+    }
+    const plan: ClaudeTaskPlan = parsedPlan.plan;
+    if (!planHasExecutableTasks(plan)) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_PLAN_SCHEMA",
+          message: "Plan must contain executable tasks",
+        },
+      });
+      return;
+    }
+    const stopCondition =
+      typeof req.body?.stopCondition === "string"
+        ? req.body.stopCondition.trim()
+        : "";
+    const explicitRequireFileChanges = parseOptionalBoolean(
+      req.body?.requireFileChanges,
+    );
+    const stopConditionRequiresFileChanges =
+      Boolean(stopCondition) && stopConditionImpliesFileChanges(stopCondition);
+    if (
+      explicitRequireFileChanges === false &&
+      stopConditionRequiresFileChanges
+    ) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_EXECUTE_PLAN_CONFIG",
+          message:
+            "requireFileChanges=false conflicts with a stopCondition that requires modified files",
+          details: {
+            stopCondition,
+          },
+        },
+      });
+      return;
+    }
+    const requireFileChanges =
+      explicitRequireFileChanges ??
+      (planLikelyRequiresFileChanges(plan) || stopConditionRequiresFileChanges);
+    if (artifactRef) {
+      await planArtifacts.markStatus(artifactRef, "approved");
+    }
 
-		await initAgent();
-		const requestAgentConfig = await resolveRequestAgentConfig({
-			body: req.body as Record<string, unknown>,
-			inlineName: "inline-execute-plan-agent",
-		});
-		let activeAgent = agent!;
-		if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
-			try {
-				activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
-			} catch (err) {
-				const message = err instanceof Error ? err.message : String(err);
-				console.error(
-					`[durable-agent] Failed to create configured execute-plan agent: ${message}`,
-					err,
-				);
-				res.status(422).json({
-					success: false,
-					error: {
-						code: "CONFIGURED_EXECUTE_PLAN_AGENT_INIT_FAILED",
-						message,
-						details: {
-							agentName: requestAgentConfig.name,
-							modelSpec: requestAgentConfig.modelSpec,
-						},
-					},
-				});
-				return;
-			}
-		}
+    await initAgent();
+    const requestAgentConfig = await resolveRequestAgentConfig({
+      body: req.body as Record<string, unknown>,
+      inlineName: "inline-execute-plan-agent",
+    });
+    const loopStrategyName = resolveLoopStrategyName(
+      (req.body as Record<string, unknown>) ?? {},
+      requestAgentConfig,
+    );
+    let activeAgent = agent!;
+    if (requestAgentConfig?.name && requestAgentConfig?.modelSpec) {
+      try {
+        activeAgent = await getOrCreateConfiguredAgent(requestAgentConfig);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          `[durable-agent] Failed to create configured execute-plan agent: ${message}`,
+          err,
+        );
+        res.status(422).json({
+          success: false,
+          error: {
+            code: "CONFIGURED_EXECUTE_PLAN_AGENT_INIT_FAILED",
+            message,
+            details: {
+              agentName: requestAgentConfig.name,
+              modelSpec: requestAgentConfig.modelSpec,
+            },
+          },
+        });
+        return;
+      }
+    }
 
-		eventBus.setWorkflowContext({
-			workflowId: agentWorkflowId,
-			nodeId: (req.body?.nodeId as string) ?? "",
-			stepIndex: 0,
-		});
+    eventBus.setWorkflowContext({
+      workflowId: agentWorkflowId,
+      nodeId: (req.body?.nodeId as string) ?? "",
+      stepIndex: 0,
+    });
 
-		// Build execution prompt with plan injected
-		const planText = buildPlanExecutionText(plan);
-		const cwdContext = resolvedCwd
-			? `Working directory: ${resolvedCwd}\n\n`
-			: "";
-		const executionBasePrompt = `${cwdContext}You are now in EXECUTION MODE.\nDo not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: Execute all applicable steps with tools. If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. If a step fails, record the error and proceed with the next step.`;
-		const executionPrompt = buildRunPrompt(
-			executionBasePrompt,
-			stopCondition,
-			requireFileChanges,
-			undefined,
-		);
+    // Build execution prompt with plan injected
+    const planText = buildPlanExecutionText(plan);
+    const cwdContext = resolvedCwd
+      ? `Working directory: ${resolvedCwd}\n\n`
+      : "";
+    const executionBasePrompt = `${cwdContext}You are now in EXECUTION MODE.\nDo not ask for more planning or approval. Do not ask clarifying questions. Execute immediately.\n\n## Task\n${prompt || plan.goal}\n\n## Execution Plan\nFollow this plan step-by-step:\n${planText}\n\nIMPORTANT: Execute all applicable steps with tools. If a planned path is missing or inaccurate, locate the correct file(s) in this repository and continue. If a step fails, record the error and proceed with the next step.`;
+    const executionPrompt = buildRunPrompt(
+      executionBasePrompt,
+      stopCondition,
+      requireFileChanges,
+      undefined,
+    );
 
-		// Per-request maxTurns override
-		const maxTurns = req.body?.maxTurns
-			? parseInt(String(req.body.maxTurns), 10)
-			: requestAgentConfig?.maxTurns;
+    // Per-request maxTurns override
+    const maxTurns = req.body?.maxTurns
+      ? parseInt(String(req.body.maxTurns), 10)
+      : requestAgentConfig?.maxTurns;
 
-		// Schedule workflow
-		const instanceId = await workflowClient!.scheduleNewWorkflow(
-			activeAgent.agentWorkflow,
-			{
-				task: executionPrompt,
-				...(maxTurns ? { maxIterations: maxTurns } : {}),
-				...(loopPolicy ? { loopPolicy } : {}),
-			},
-		);
-		if (workspaceRef) {
-			await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
-		}
-		trackActiveRun({
-			agentWorkflowId,
-			daprInstanceId: instanceId,
-			parentExecutionId,
-			workspaceRef: workspaceRef || undefined,
-			mode: "execute_plan",
-		});
-		const trackedRunId = agentWorkflowId;
-		if (executionId && workflowId && nodeId) {
-			await workflowRunTracker.trackScheduled({
-				id: trackedRunId,
-				workflowExecutionId: executionId,
-				workflowId,
-				nodeId,
-				mode: "execute_plan",
-				agentWorkflowId,
-				daprInstanceId: instanceId,
-				parentExecutionId,
-				workspaceRef: workspaceRef || undefined,
-				artifactRef: artifactRef || undefined,
-			});
-		}
+    // Schedule workflow
+    const instanceId = await workflowClient!.scheduleNewWorkflow(
+      activeAgent.agentWorkflow,
+      {
+        task: executionPrompt,
+        ...(maxTurns ? { maxIterations: maxTurns } : {}),
+        ...(loopPolicy ? { loopPolicy } : {}),
+        ...(agentGraph ? { agentGraph } : {}),
+        ...(loopStrategyName ? { loopStrategyName } : {}),
+      },
+    );
+    if (workspaceRef) {
+      await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+    }
+    trackActiveRun({
+      agentWorkflowId,
+      daprInstanceId: instanceId,
+      parentExecutionId,
+      workspaceRef: workspaceRef || undefined,
+      mode: "execute_plan",
+    });
+    const trackedRunId = agentWorkflowId;
+    if (executionId && workflowId && nodeId) {
+      await workflowRunTracker.trackScheduled({
+        id: trackedRunId,
+        workflowExecutionId: executionId,
+        workflowId,
+        nodeId,
+        mode: "execute_plan",
+        agentWorkflowId,
+        daprInstanceId: instanceId,
+        parentExecutionId,
+        workspaceRef: workspaceRef || undefined,
+        artifactRef: artifactRef || undefined,
+      });
+    }
 
-		// Fire-and-forget
-		(async () => {
-			try {
-				const attemptInstanceIds = [instanceId];
-				let finalInstanceId = instanceId;
-				let completion = await waitForWorkflowCompletion(instanceId);
-				let toolCalls = extractToolCalls(completion.result);
-				let fileChanges = extractFileChanges(toolCalls);
-				let changeSummary =
-					workspaceRef && executionId
-						? await buildAgentChangeSummary(executionId, finalInstanceId)
-						: undefined;
-				let snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
-				let hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
-				let text =
-					(completion.result?.final_answer as string) ??
-					(completion.result?.last_message as string) ??
-					(completion.result?.content as string) ??
-					JSON.stringify(completion.result ?? {});
-				let fileChangeGuardViolation =
-					requireFileChanges && completion.success && !hasFileMutations
-						? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
-						: undefined;
-				let repairAttempts = 0;
+    // Fire-and-forget
+    (async () => {
+      try {
+        const attemptInstanceIds = [instanceId];
+        let finalInstanceId = instanceId;
+        let completion = await waitForWorkflowCompletion(instanceId);
+        let toolCalls = extractToolCalls(completion.result);
+        let fileChanges = extractFileChanges(toolCalls);
+        let changeSummary =
+          workspaceRef && executionId
+            ? await buildAgentChangeSummary(executionId, finalInstanceId)
+            : undefined;
+        let snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
+        let hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+        let text =
+          (completion.result?.final_answer as string) ??
+          (completion.result?.last_message as string) ??
+          (completion.result?.content as string) ??
+          JSON.stringify(completion.result ?? {});
+        let fileChangeGuardViolation =
+          requireFileChanges && completion.success && !hasFileMutations
+            ? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
+            : undefined;
+        let repairAttempts = 0;
 
-				while (
-					fileChangeGuardViolation &&
-					repairAttempts < EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS
-				) {
-					repairAttempts += 1;
-					const repairPrompt = buildNoFileChangeRepairPrompt(
-						executionPrompt,
-						text,
-						repairAttempts,
-					);
-					const repairInstanceId = await workflowClient!.scheduleNewWorkflow(
-						activeAgent.agentWorkflow,
-						{
-							task: repairPrompt,
-							...(maxTurns ? { maxIterations: maxTurns } : {}),
-							...(loopPolicy ? { loopPolicy } : {}),
-						},
-					);
-					finalInstanceId = repairInstanceId;
-					attemptInstanceIds.push(repairInstanceId);
-					if (workspaceRef) {
-						await workspaceSessions.bindDurableInstance(
-							repairInstanceId,
-							workspaceRef,
-						);
-					}
-					trackActiveRun({
-						agentWorkflowId,
-						daprInstanceId: repairInstanceId,
-						parentExecutionId,
-						workspaceRef: workspaceRef || undefined,
-						mode: "execute_plan",
-					});
-					console.warn(
-						`[durable-agent] Execute-plan repair attempt ${repairAttempts} scheduled for ${repairInstanceId} after no file mutations in ${attemptInstanceIds.at(-2)}`,
-					);
-					completion = await waitForWorkflowCompletion(repairInstanceId);
-					toolCalls = extractToolCalls(completion.result);
-					fileChanges = extractFileChanges(toolCalls);
-					changeSummary =
-						workspaceRef && executionId
-							? await buildAgentChangeSummary(executionId, finalInstanceId)
-							: undefined;
-					snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
-					hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
-					text =
-						(completion.result?.final_answer as string) ??
-						(completion.result?.last_message as string) ??
-						(completion.result?.content as string) ??
-						JSON.stringify(completion.result ?? {});
-					fileChangeGuardViolation =
-						requireFileChanges && completion.success && !hasFileMutations
-							? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
-							: undefined;
-				}
+        while (
+          fileChangeGuardViolation &&
+          repairAttempts < EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS
+        ) {
+          repairAttempts += 1;
+          const repairPrompt = buildNoFileChangeRepairPrompt(
+            executionPrompt,
+            text,
+            repairAttempts,
+          );
+          const repairInstanceId = await workflowClient!.scheduleNewWorkflow(
+            activeAgent.agentWorkflow,
+            {
+              task: repairPrompt,
+              ...(maxTurns ? { maxIterations: maxTurns } : {}),
+              ...(loopPolicy ? { loopPolicy } : {}),
+              ...(agentGraph ? { agentGraph } : {}),
+              ...(loopStrategyName ? { loopStrategyName } : {}),
+            },
+          );
+          finalInstanceId = repairInstanceId;
+          attemptInstanceIds.push(repairInstanceId);
+          if (workspaceRef) {
+            await workspaceSessions.bindDurableInstance(
+              repairInstanceId,
+              workspaceRef,
+            );
+          }
+          trackActiveRun({
+            agentWorkflowId,
+            daprInstanceId: repairInstanceId,
+            parentExecutionId,
+            workspaceRef: workspaceRef || undefined,
+            mode: "execute_plan",
+          });
+          console.warn(
+            `[durable-agent] Execute-plan repair attempt ${repairAttempts} scheduled for ${repairInstanceId} after no file mutations in ${attemptInstanceIds.at(-2)}`,
+          );
+          completion = await waitForWorkflowCompletion(repairInstanceId);
+          toolCalls = extractToolCalls(completion.result);
+          fileChanges = extractFileChanges(toolCalls);
+          changeSummary =
+            workspaceRef && executionId
+              ? await buildAgentChangeSummary(executionId, finalInstanceId)
+              : undefined;
+          snapshotRefs = buildSnapshotRefs(fileChanges, changeSummary);
+          hasFileMutations = didRunMutateFiles(fileChanges, changeSummary);
+          text =
+            (completion.result?.final_answer as string) ??
+            (completion.result?.last_message as string) ??
+            (completion.result?.content as string) ??
+            JSON.stringify(completion.result ?? {});
+          fileChangeGuardViolation =
+            requireFileChanges && completion.success && !hasFileMutations
+              ? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
+              : undefined;
+        }
 
-				let cleanup: {
-					requested: boolean;
-					performed: boolean;
-					success: boolean;
-					workspaceRef?: string;
-					error?: string;
-				} = {
-					requested: cleanupWorkspace,
-					performed: false,
-					success: !cleanupWorkspace || !workspaceRef,
-				};
-				if (cleanupWorkspace && workspaceRef) {
-					try {
-						const cleaned =
-							await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
-						cleanup = {
-							requested: true,
-							performed: true,
-							success: cleaned,
-							workspaceRef,
-						};
-					} catch (cleanupErr) {
-						cleanup = {
-							requested: true,
-							performed: true,
-							success: false,
-							workspaceRef,
-							error:
-								cleanupErr instanceof Error
-									? cleanupErr.message
-									: String(cleanupErr),
-						};
-					}
-				}
-				const completionResult = {
-					text,
-					toolCalls,
-					staticToolCalls:
-						(completion.result?.static_tool_calls as unknown[]) ?? undefined,
-					loopStopReason:
-						(typeof completion.result?.stop_reason === "string"
-							? completion.result.stop_reason
-							: undefined) ?? undefined,
-					loopStopCondition: completion.result?.stop_condition,
-					requiresApproval: completion.result?.requires_approval,
-					usageTotals: completion.result?.usage_totals,
-					compactionApplied:
-						completion.result?.compaction_applied === true ||
-						((completion.result?.compaction_count as number | undefined) ?? 0) >
-							0,
-					compactionCount:
-						typeof completion.result?.compaction_count === "number"
-							? completion.result.compaction_count
-							: 0,
-					contextOverflowRecovered:
-						completion.result?.context_overflow_recovered === true,
-					lastCompactionReason:
-						typeof completion.result?.last_compaction_reason === "string"
-							? completion.result.last_compaction_reason
-							: undefined,
-					fileChanges,
-					snapshotRefs,
-					patch: changeSummary?.inlinePatchPreview,
-					patchRef: changeSummary?.patchRef,
-					changeSummary,
-					requireFileChanges,
-					hasFileMutations,
-					repairAttempts,
-					attemptInstanceIds,
-					plan,
-					artifactRef: artifactRef || undefined,
-					daprInstanceId: finalInstanceId,
-					cleanup,
-				};
-				const completionSuccess =
-					completion.success && !fileChangeGuardViolation;
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: completionSuccess,
-						result: completionResult,
-						error: fileChangeGuardViolation || completion.error,
-					});
-				}
+        let cleanup: {
+          requested: boolean;
+          performed: boolean;
+          success: boolean;
+          workspaceRef?: string;
+          error?: string;
+        } = {
+          requested: cleanupWorkspace,
+          performed: false,
+          success: !cleanupWorkspace || !workspaceRef,
+        };
+        if (cleanupWorkspace && workspaceRef) {
+          try {
+            const cleaned =
+              await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+            cleanup = {
+              requested: true,
+              performed: true,
+              success: cleaned,
+              workspaceRef,
+            };
+          } catch (cleanupErr) {
+            cleanup = {
+              requested: true,
+              performed: true,
+              success: false,
+              workspaceRef,
+              error:
+                cleanupErr instanceof Error
+                  ? cleanupErr.message
+                  : String(cleanupErr),
+            };
+          }
+        }
+        const completionResult = {
+          text,
+          toolCalls,
+          staticToolCalls:
+            (completion.result?.static_tool_calls as unknown[]) ?? undefined,
+          loopStopReason:
+            (typeof completion.result?.stop_reason === "string"
+              ? completion.result.stop_reason
+              : undefined) ?? undefined,
+          loopStopCondition: completion.result?.stop_condition,
+          requiresApproval: completion.result?.requires_approval,
+          usageTotals: completion.result?.usage_totals,
+          compactionApplied:
+            completion.result?.compaction_applied === true ||
+            ((completion.result?.compaction_count as number | undefined) ?? 0) >
+              0,
+          compactionCount:
+            typeof completion.result?.compaction_count === "number"
+              ? completion.result.compaction_count
+              : 0,
+          contextOverflowRecovered:
+            completion.result?.context_overflow_recovered === true,
+          lastCompactionReason:
+            typeof completion.result?.last_compaction_reason === "string"
+              ? completion.result.last_compaction_reason
+              : undefined,
+          fileChanges,
+          snapshotRefs,
+          patch: changeSummary?.inlinePatchPreview,
+          patchRef: changeSummary?.patchRef,
+          changeSummary,
+          requireFileChanges,
+          hasFileMutations,
+          repairAttempts,
+          attemptInstanceIds,
+          plan,
+          artifactRef: artifactRef || undefined,
+          daprInstanceId: finalInstanceId,
+          cleanup,
+        };
+        const completionSuccess =
+          completion.success && !fileChangeGuardViolation;
+        if (executionId && workflowId && nodeId) {
+          await workflowRunTracker.markCompleted({
+            id: trackedRunId,
+            success: completionSuccess,
+            result: completionResult,
+            error: fileChangeGuardViolation || completion.error,
+          });
+        }
 
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: completionSuccess,
-					result: completionResult,
-					error: fileChangeGuardViolation || completion.error,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-				if (artifactRef) {
-					await planArtifacts.markStatus(
-						artifactRef,
-						completionSuccess ? "executed" : "failed",
-					);
-				}
-			} catch (err) {
-				const errorMsg = err instanceof Error ? err.message : String(err);
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: false,
-						error: errorMsg,
-					});
-				}
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: false,
-					error: errorMsg,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-				if (artifactRef) {
-					await planArtifacts.markStatus(artifactRef, "failed");
-				}
-			} finally {
-				workspaceSessions.unbindDurableInstance(instanceId);
-				untrackActiveRun(agentWorkflowId);
-			}
-		})();
+        if (LEGACY_COMPLETION_EVENTS_ENABLED) {
+          const published = await publishCompletionEvent({
+            agentWorkflowId,
+            parentExecutionId,
+            success: completionSuccess,
+            result: completionResult,
+            error: fileChangeGuardViolation || completion.error,
+          });
+          if (published && executionId && workflowId && nodeId) {
+            await workflowRunTracker.markEventPublished(trackedRunId);
+          }
+        }
+        if (artifactRef) {
+          await planArtifacts.markStatus(
+            artifactRef,
+            completionSuccess ? "executed" : "failed",
+          );
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (executionId && workflowId && nodeId) {
+          await workflowRunTracker.markCompleted({
+            id: trackedRunId,
+            success: false,
+            error: errorMsg,
+          });
+        }
+        if (LEGACY_COMPLETION_EVENTS_ENABLED) {
+          const published = await publishCompletionEvent({
+            agentWorkflowId,
+            parentExecutionId,
+            success: false,
+            error: errorMsg,
+          });
+          if (published && executionId && workflowId && nodeId) {
+            await workflowRunTracker.markEventPublished(trackedRunId);
+          }
+        }
+        if (artifactRef) {
+          await planArtifacts.markStatus(artifactRef, "failed");
+        }
+      } finally {
+        workspaceSessions.unbindDurableInstance(instanceId);
+        untrackActiveRun(agentWorkflowId);
+      }
+    })();
 
-		res.json({
-			success: true,
-			workflow_id: agentWorkflowId,
-			dapr_instance_id: instanceId,
-			cleanupWorkspace,
-			...(artifactRef ? { artifactRef } : {}),
-			...(workspaceRef ? { workspaceRef } : {}),
-		});
-	} catch (err) {
-		res.status(400).json({ success: false, error: String(err) });
-	}
+    res.json({
+      success: true,
+      workflow_id: agentWorkflowId,
+      dapr_instance_id: instanceId,
+      cleanupWorkspace,
+      ...(artifactRef ? { artifactRef } : {}),
+      ...(workspaceRef ? { workspaceRef } : {}),
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: String(err) });
+  }
 });
 
 // ── Execute Plan DAG ──────────────────────────────────────────
@@ -4710,332 +5026,336 @@ app.post("/api/execute-plan", async (req, res) => {
 // Claude Code CLI activities. Each task is dependency-scheduled.
 
 app.post("/api/execute-plan-dag", async (req, res) => {
-	try {
-		const artifactRef =
-			typeof req.body?.artifactRef === "string"
-				? req.body.artifactRef.trim()
-				: "";
-		const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
-		const model =
-			typeof req.body?.model === "string" && req.body.model.trim()
-				? req.body.model.trim()
-				: undefined;
-		const maxTaskRetries =
-			typeof req.body?.maxTaskRetries === "number"
-				? Math.max(0, Math.floor(req.body.maxTaskRetries))
-				: 1;
-		const taskTimeoutMinutes =
-			typeof req.body?.taskTimeoutMinutes === "number"
-				? Math.max(1, Math.floor(req.body.taskTimeoutMinutes))
-				: 15;
-		const overallTimeoutMinutes =
-			typeof req.body?.overallTimeoutMinutes === "number"
-				? Math.max(1, Math.floor(req.body.overallTimeoutMinutes))
-				: 120;
-		const parentExecutionId =
-			typeof req.body?.parentExecutionId === "string"
-				? req.body.parentExecutionId.trim()
-				: "";
-		const executionId =
-			typeof req.body?.executionId === "string"
-				? req.body.executionId.trim()
-				: typeof req.body?.dbExecutionId === "string"
-					? req.body.dbExecutionId.trim()
-					: "";
-		const workflowId =
-			typeof req.body?.workflowId === "string"
-				? req.body.workflowId.trim()
-				: "";
-		const nodeId =
-			typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
-		const cleanupWorkspaceRequested = parseOptionalBoolean(
-			req.body?.cleanupWorkspace,
-		);
-		const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
+  try {
+    const artifactRef =
+      typeof req.body?.artifactRef === "string"
+        ? req.body.artifactRef.trim()
+        : "";
+    const cwd = typeof req.body?.cwd === "string" ? req.body.cwd.trim() : "";
+    const model =
+      typeof req.body?.model === "string" && req.body.model.trim()
+        ? req.body.model.trim()
+        : undefined;
+    const maxTaskRetries =
+      typeof req.body?.maxTaskRetries === "number"
+        ? Math.max(0, Math.floor(req.body.maxTaskRetries))
+        : 1;
+    const taskTimeoutMinutes =
+      typeof req.body?.taskTimeoutMinutes === "number"
+        ? Math.max(1, Math.floor(req.body.taskTimeoutMinutes))
+        : 15;
+    const overallTimeoutMinutes =
+      typeof req.body?.overallTimeoutMinutes === "number"
+        ? Math.max(1, Math.floor(req.body.overallTimeoutMinutes))
+        : 120;
+    const parentExecutionId =
+      typeof req.body?.parentExecutionId === "string"
+        ? req.body.parentExecutionId.trim()
+        : "";
+    const executionId =
+      typeof req.body?.executionId === "string"
+        ? req.body.executionId.trim()
+        : typeof req.body?.dbExecutionId === "string"
+          ? req.body.dbExecutionId.trim()
+          : "";
+    const workflowId =
+      typeof req.body?.workflowId === "string"
+        ? req.body.workflowId.trim()
+        : "";
+    const nodeId =
+      typeof req.body?.nodeId === "string" ? req.body.nodeId.trim() : "";
+    const cleanupWorkspaceRequested = parseOptionalBoolean(
+      req.body?.cleanupWorkspace,
+    );
+    const cleanupWorkspace = cleanupWorkspaceRequested ?? true;
 
-		const requestedWorkspaceRef =
-			typeof req.body?.workspaceRef === "string"
-				? req.body.workspaceRef.trim()
-				: "";
+    const requestedWorkspaceRef =
+      typeof req.body?.workspaceRef === "string"
+        ? req.body.workspaceRef.trim()
+        : "";
 
-		let planInput = req.body?.plan as unknown;
-		let workspaceRef =
-			requestedWorkspaceRef ||
-			(executionId
-				? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-						executionId,
-					)) || ""
-				: "");
-		let resolvedCwd = cwd;
+    let planInput = req.body?.plan as unknown;
+    let workspaceRef =
+      requestedWorkspaceRef ||
+      (executionId
+        ? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
+            executionId,
+          )) || ""
+        : "");
+    let resolvedCwd = cwd;
 
-		// Load plan from artifact if not provided inline
-		if (!planInput && artifactRef) {
-			const artifact = await planArtifacts.get(artifactRef);
-			if (!artifact) {
-				res.status(404).json({
-					success: false,
-					error: `Plan artifact not found: ${artifactRef}`,
-				});
-				return;
-			}
-			if (artifact.plan && typeof artifact.plan === "object") {
-				planInput = artifact.plan;
-			}
-			if (!workspaceRef && artifact.workspaceRef) {
-				workspaceRef = artifact.workspaceRef;
-			}
-			if (!resolvedCwd && artifact.clonePath) {
-				resolvedCwd = artifact.clonePath;
-			}
-		}
+    // Load plan from artifact if not provided inline
+    if (!planInput && artifactRef) {
+      const artifact = await planArtifacts.get(artifactRef);
+      if (!artifact) {
+        res.status(404).json({
+          success: false,
+          error: `Plan artifact not found: ${artifactRef}`,
+        });
+        return;
+      }
+      if (artifact.plan && typeof artifact.plan === "object") {
+        planInput = artifact.plan;
+      }
+      if (!workspaceRef && artifact.workspaceRef) {
+        workspaceRef = artifact.workspaceRef;
+      }
+      if (!resolvedCwd && artifact.clonePath) {
+        resolvedCwd = artifact.clonePath;
+      }
+    }
 
-		if (!workspaceRef) {
-			res.status(400).json({
-				success: false,
-				error: "workspaceRef is required for DAG execution",
-			});
-			return;
-		}
-		if (!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))) {
-			res.status(400).json({
-				success: false,
-				error: `workspaceRef not found: ${workspaceRef}`,
-			});
-			return;
-		}
+    if (!workspaceRef) {
+      res.status(400).json({
+        success: false,
+        error: "workspaceRef is required for DAG execution",
+      });
+      return;
+    }
+    if (!(await workspaceSessions.getByWorkspaceRefDurable(workspaceRef))) {
+      res.status(400).json({
+        success: false,
+        error: `workspaceRef not found: ${workspaceRef}`,
+      });
+      return;
+    }
 
-		const parsedPlan = validateClaudeTaskPlan(planInput);
-		if (!parsedPlan.success) {
-			res.status(400).json({
-				success: false,
-				error: {
-					code: "INVALID_PLAN_SCHEMA",
-					message:
-						"Plan must match claude_task_graph_v1 schema with non-empty tasks",
-					details: parsedPlan.issues,
-				},
-			});
-			return;
-		}
-		const plan: ClaudeTaskPlan = parsedPlan.plan;
-		if (!planHasExecutableTasks(plan)) {
-			res.status(400).json({
-				success: false,
-				error: {
-					code: "INVALID_PLAN_SCHEMA",
-					message: "Plan must contain executable tasks",
-				},
-			});
-			return;
-		}
+    const parsedPlan = validateClaudeTaskPlan(planInput);
+    if (!parsedPlan.success) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_PLAN_SCHEMA",
+          message:
+            "Plan must match claude_task_graph_v1 schema with non-empty tasks",
+          details: parsedPlan.issues,
+        },
+      });
+      return;
+    }
+    const plan: ClaudeTaskPlan = parsedPlan.plan;
+    if (!planHasExecutableTasks(plan)) {
+      res.status(400).json({
+        success: false,
+        error: {
+          code: "INVALID_PLAN_SCHEMA",
+          message: "Plan must contain executable tasks",
+        },
+      });
+      return;
+    }
 
-		if (artifactRef) {
-			await planArtifacts.markStatus(artifactRef, "approved");
-			await planArtifacts.markStatus(artifactRef, "executing");
-		}
+    if (artifactRef) {
+      await planArtifacts.markStatus(artifactRef, "approved");
+      await planArtifacts.markStatus(artifactRef, "executing");
+    }
 
-		await initAgent();
+    await initAgent();
 
-		const agentWorkflowId = `dag-exec-${nanoid(12)}`;
-		const { createDagExecutorWorkflow } = await import("./dag-executor.js");
-		const dagExecutor = createDagExecutorWorkflow({
-			workspaceSessions,
-			planArtifacts,
-		});
+    const agentWorkflowId = `dag-exec-${nanoid(12)}`;
+    const { createDagExecutorWorkflow } = await import("./dag-executor.js");
+    const dagExecutor = createDagExecutorWorkflow({
+      workspaceSessions,
+      planArtifacts,
+    });
 
-		const instanceId = await workflowClient!.scheduleNewWorkflow(
-			dagExecutor.implementation,
-			{
-				plan,
-				artifactRef,
-				workspaceRef,
-				cwd: resolvedCwd,
-				goal: plan.goal,
-				model,
-				maxTaskRetries,
-				taskTimeoutMs: taskTimeoutMinutes * 60 * 1000,
-				overallTimeoutMs: overallTimeoutMinutes * 60 * 1000,
-				executionId,
-				workflowId,
-				nodeId,
-			},
-		);
+    const instanceId = await workflowClient!.scheduleNewWorkflow(
+      dagExecutor.implementation,
+      {
+        plan,
+        artifactRef,
+        workspaceRef,
+        cwd: resolvedCwd,
+        goal: plan.goal,
+        model,
+        maxTaskRetries,
+        taskTimeoutMs: taskTimeoutMinutes * 60 * 1000,
+        overallTimeoutMs: overallTimeoutMinutes * 60 * 1000,
+        executionId,
+        workflowId,
+        nodeId,
+      },
+    );
 
-		await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
-		trackActiveRun({
-			agentWorkflowId,
-			daprInstanceId: instanceId,
-			parentExecutionId,
-			workspaceRef: workspaceRef || undefined,
-			mode: "execute_plan_dag",
-		});
-		const trackedRunId = agentWorkflowId;
-		if (executionId && workflowId && nodeId) {
-			await workflowRunTracker.trackScheduled({
-				id: trackedRunId,
-				workflowExecutionId: executionId,
-				workflowId,
-				nodeId,
-				mode: "execute_plan_dag",
-				agentWorkflowId,
-				daprInstanceId: instanceId,
-				parentExecutionId,
-				workspaceRef: workspaceRef || undefined,
-				artifactRef: artifactRef || undefined,
-			});
-		}
+    await workspaceSessions.bindDurableInstance(instanceId, workspaceRef);
+    trackActiveRun({
+      agentWorkflowId,
+      daprInstanceId: instanceId,
+      parentExecutionId,
+      workspaceRef: workspaceRef || undefined,
+      mode: "execute_plan_dag",
+    });
+    const trackedRunId = agentWorkflowId;
+    if (executionId && workflowId && nodeId) {
+      await workflowRunTracker.trackScheduled({
+        id: trackedRunId,
+        workflowExecutionId: executionId,
+        workflowId,
+        nodeId,
+        mode: "execute_plan_dag",
+        agentWorkflowId,
+        daprInstanceId: instanceId,
+        parentExecutionId,
+        workspaceRef: workspaceRef || undefined,
+        artifactRef: artifactRef || undefined,
+      });
+    }
 
-		// Fire-and-forget: wait for DAG workflow completion, then publish event
-		(async () => {
-			try {
-				const completion = await waitForWorkflowCompletion(instanceId);
-				const dagResult = (completion.result ??
-					{}) as Partial<DagExecutorResult>;
+    // Fire-and-forget: wait for DAG workflow completion, then publish event
+    (async () => {
+      try {
+        const completion = await waitForWorkflowCompletion(instanceId);
+        const dagResult = (completion.result ??
+          {}) as Partial<DagExecutorResult>;
 
-				const changeSummary =
-					workspaceRef && executionId
-						? await buildAgentChangeSummary(executionId, instanceId)
-						: undefined;
-				const snapshotRefs = buildSnapshotRefs([], changeSummary);
+        const changeSummary =
+          workspaceRef && executionId
+            ? await buildAgentChangeSummary(executionId, instanceId)
+            : undefined;
+        const snapshotRefs = buildSnapshotRefs([], changeSummary);
 
-				let cleanup: {
-					requested: boolean;
-					performed: boolean;
-					success: boolean;
-					workspaceRef?: string;
-					error?: string;
-				} = {
-					requested: cleanupWorkspace,
-					performed: false,
-					success: !cleanupWorkspace || !workspaceRef,
-				};
-				if (cleanupWorkspace && workspaceRef) {
-					try {
-						const cleaned =
-							await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
-						cleanup = {
-							requested: true,
-							performed: true,
-							success: cleaned,
-							workspaceRef,
-						};
-					} catch (cleanupErr) {
-						cleanup = {
-							requested: true,
-							performed: true,
-							success: false,
-							workspaceRef,
-							error:
-								cleanupErr instanceof Error
-									? cleanupErr.message
-									: String(cleanupErr),
-						};
-					}
-				}
+        let cleanup: {
+          requested: boolean;
+          performed: boolean;
+          success: boolean;
+          workspaceRef?: string;
+          error?: string;
+        } = {
+          requested: cleanupWorkspace,
+          performed: false,
+          success: !cleanupWorkspace || !workspaceRef,
+        };
+        if (cleanupWorkspace && workspaceRef) {
+          try {
+            const cleaned =
+              await workspaceSessions.cleanupByWorkspaceRef(workspaceRef);
+            cleanup = {
+              requested: true,
+              performed: true,
+              success: cleaned,
+              workspaceRef,
+            };
+          } catch (cleanupErr) {
+            cleanup = {
+              requested: true,
+              performed: true,
+              success: false,
+              workspaceRef,
+              error:
+                cleanupErr instanceof Error
+                  ? cleanupErr.message
+                  : String(cleanupErr),
+            };
+          }
+        }
 
-				const completionResult = {
-					text: dagResult.terminationReason ?? "DAG execution completed",
-					completedTasks: dagResult.completedTasks ?? 0,
-					failedTasks: dagResult.failedTasks ?? 0,
-					skippedTasks: dagResult.skippedTasks ?? 0,
-					totalTasks: dagResult.totalTasks ?? 0,
-					taskResults: dagResult.taskResults ?? {},
-					terminationReason: dagResult.terminationReason ?? "unknown",
-					changeSummary,
-					snapshotRefs,
-					artifactRef: artifactRef || undefined,
-					daprInstanceId: instanceId,
-					cleanup,
-				};
-				const completionSuccess =
-					completion.success && (dagResult.success ?? false);
+        const completionResult = {
+          text: dagResult.terminationReason ?? "DAG execution completed",
+          completedTasks: dagResult.completedTasks ?? 0,
+          failedTasks: dagResult.failedTasks ?? 0,
+          skippedTasks: dagResult.skippedTasks ?? 0,
+          totalTasks: dagResult.totalTasks ?? 0,
+          taskResults: dagResult.taskResults ?? {},
+          terminationReason: dagResult.terminationReason ?? "unknown",
+          changeSummary,
+          snapshotRefs,
+          artifactRef: artifactRef || undefined,
+          daprInstanceId: instanceId,
+          cleanup,
+        };
+        const completionSuccess =
+          completion.success && (dagResult.success ?? false);
 
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: completionSuccess,
-						result: completionResult,
-						error: completion.error,
-					});
-				}
+        if (executionId && workflowId && nodeId) {
+          await workflowRunTracker.markCompleted({
+            id: trackedRunId,
+            success: completionSuccess,
+            result: completionResult,
+            error: completion.error,
+          });
+        }
 
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: completionSuccess,
-					result: completionResult,
-					error: completion.error,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-				if (artifactRef) {
-					await planArtifacts.markStatus(
-						artifactRef,
-						completionSuccess ? "executed" : "failed",
-					);
-				}
-			} catch (err) {
-				const errorMsg = err instanceof Error ? err.message : String(err);
-				if (executionId && workflowId && nodeId) {
-					await workflowRunTracker.markCompleted({
-						id: trackedRunId,
-						success: false,
-						error: errorMsg,
-					});
-				}
-				const published = await publishCompletionEvent({
-					agentWorkflowId,
-					parentExecutionId,
-					success: false,
-					error: errorMsg,
-				});
-				if (published && executionId && workflowId && nodeId) {
-					await workflowRunTracker.markEventPublished(trackedRunId);
-				}
-				if (artifactRef) {
-					await planArtifacts.markStatus(artifactRef, "failed");
-				}
-			} finally {
-				workspaceSessions.unbindDurableInstance(instanceId);
-				untrackActiveRun(agentWorkflowId);
-			}
-		})();
+        if (LEGACY_COMPLETION_EVENTS_ENABLED) {
+          const published = await publishCompletionEvent({
+            agentWorkflowId,
+            parentExecutionId,
+            success: completionSuccess,
+            result: completionResult,
+            error: completion.error,
+          });
+          if (published && executionId && workflowId && nodeId) {
+            await workflowRunTracker.markEventPublished(trackedRunId);
+          }
+        }
+        if (artifactRef) {
+          await planArtifacts.markStatus(
+            artifactRef,
+            completionSuccess ? "executed" : "failed",
+          );
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        if (executionId && workflowId && nodeId) {
+          await workflowRunTracker.markCompleted({
+            id: trackedRunId,
+            success: false,
+            error: errorMsg,
+          });
+        }
+        if (LEGACY_COMPLETION_EVENTS_ENABLED) {
+          const published = await publishCompletionEvent({
+            agentWorkflowId,
+            parentExecutionId,
+            success: false,
+            error: errorMsg,
+          });
+          if (published && executionId && workflowId && nodeId) {
+            await workflowRunTracker.markEventPublished(trackedRunId);
+          }
+        }
+        if (artifactRef) {
+          await planArtifacts.markStatus(artifactRef, "failed");
+        }
+      } finally {
+        workspaceSessions.unbindDurableInstance(instanceId);
+        untrackActiveRun(agentWorkflowId);
+      }
+    })();
 
-		res.json({
-			success: true,
-			workflow_id: agentWorkflowId,
-			dapr_instance_id: instanceId,
-			cleanupWorkspace,
-			...(artifactRef ? { artifactRef } : {}),
-			...(workspaceRef ? { workspaceRef } : {}),
-		});
-	} catch (err) {
-		res.status(400).json({ success: false, error: String(err) });
-	}
+    res.json({
+      success: true,
+      workflow_id: agentWorkflowId,
+      dapr_instance_id: instanceId,
+      cleanupWorkspace,
+      ...(artifactRef ? { artifactRef } : {}),
+      ...(workspaceRef ? { workspaceRef } : {}),
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: String(err) });
+  }
 });
 
 // Dapr subscription discovery
 app.get("/api/dapr/subscribe", (_req, res) => {
-	res.json(getDaprSubscriptions());
+  res.json(getDaprSubscriptions());
 });
 
 // Dapr event delivery
 app.post("/api/dapr/sub", (req, res) => {
-	try {
-		const body = req.body as Record<string, unknown>;
-		handleDaprSubscriptionEvent({
-			id: (body.id as string) ?? "",
-			source: (body.source as string) ?? "",
-			type: (body.type as string) ?? "",
-			specversion: (body.specversion as string) ?? "1.0",
-			datacontenttype: (body.datacontenttype as string) ?? "application/json",
-			data: (body.data as Record<string, unknown>) ?? {},
-		} as DaprEvent);
-		res.json({ status: "SUCCESS" });
-	} catch (err) {
-		res.status(400).json({ error: String(err) });
-	}
+  try {
+    const body = req.body as Record<string, unknown>;
+    handleDaprSubscriptionEvent({
+      id: (body.id as string) ?? "",
+      source: (body.source as string) ?? "",
+      type: (body.type as string) ?? "",
+      specversion: (body.specversion as string) ?? "1.0",
+      datacontenttype: (body.datacontenttype as string) ?? "application/json",
+      data: (body.data as Record<string, unknown>) ?? {},
+    } as DaprEvent);
+    res.json({ status: "SUCCESS" });
+  } catch (err) {
+    res.status(400).json({ error: String(err) });
+  }
 });
 
 // ── Startup ───────────────────────────────────────────────────
@@ -5045,95 +5365,98 @@ startDaprPublisher();
 
 // Graceful shutdown
 async function shutdown(signal: string) {
-	console.log(`[durable-agent] Received ${signal}, shutting down...`);
-	try {
-		if (mcpDisconnect) await mcpDisconnect();
-		await stopConfigStoreSubscriptions();
-		await workspaceSessions.destroyAll();
-		if (agent) await agent.stop();
-		await sandbox.destroy();
-		sharedSandboxStarted = false;
-	} catch (err) {
-		console.error("[durable-agent] Shutdown error:", err);
-	}
-	process.exit(0);
+  console.log(`[durable-agent] Received ${signal}, shutting down...`);
+  try {
+    if (mcpDisconnect) await mcpDisconnect();
+    await stopConfigStoreSubscriptions();
+    await workspaceSessions.destroyAll();
+    if (agent) await agent.stop();
+    await sandbox.destroy();
+    sharedSandboxStarted = false;
+  } catch (err) {
+    console.error("[durable-agent] Shutdown error:", err);
+  }
+  process.exit(0);
 }
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
 app.listen(PORT, HOST, async () => {
-	console.log(`[durable-agent] Server listening on http://${HOST}:${PORT}`);
-	console.log(
-		`[durable-agent]   POST /api/run          — start agent workflow`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/run/:workflowId/terminate — terminate a durable run`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/runs/terminate-by-parent — terminate active runs for a parent workflow`,
-	);
-	console.log(`[durable-agent]   POST /api/plan         — generate plan`);
-	console.log(
-		`[durable-agent]   POST /api/plan/materialize — materialize plan files in workspace`,
-	);
-	console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);
-	console.log(
-		`[durable-agent]   POST /api/execute-plan-dag — execute plan as DAG workflow`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/tools/:id    — direct tool execution`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/workspaces/profile — create workspace profile`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/workspaces/clone   — clone repository in workspace`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/workspaces/command — execute command in workspace`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/workspaces/file    — file operation in workspace`,
-	);
-	console.log(
-		`[durable-agent]   POST /api/workspaces/cleanup — cleanup workspace sessions`,
-	);
-	console.log(
-		`[durable-agent]   GET  /api/workspaces/changes/:changeSetId — fetch patch artifact`,
-	);
-	console.log(
-		`[durable-agent]   GET  /api/workspaces/executions/:executionId/changes — list patch artifacts`,
-	);
-	console.log(
-		`[durable-agent]   GET  /api/workspaces/executions/:executionId/patch — export combined patch`,
-	);
-	console.log(
-		`[durable-agent]   GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — fetch aggregated file snapshot`,
-	);
-	console.log(`[durable-agent]   GET  /api/health       — health check`);
-	console.log(
-		`[durable-agent]   GET  /api/ready        — readiness check (initialized runtime)`,
-	);
+  console.log(`[durable-agent] Server listening on http://${HOST}:${PORT}`);
+  console.log(
+    `[durable-agent]   POST /api/run          — start agent workflow`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/run-sandboxed — start agent workflow with sandbox affinity`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/run/:workflowId/terminate — terminate a durable run`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/runs/terminate-by-parent — terminate active runs for a parent workflow`,
+  );
+  console.log(`[durable-agent]   POST /api/plan         — generate plan`);
+  console.log(
+    `[durable-agent]   POST /api/plan/materialize — materialize plan files in workspace`,
+  );
+  console.log(`[durable-agent]   POST /api/execute-plan  — execute plan`);
+  console.log(
+    `[durable-agent]   POST /api/execute-plan-dag — execute plan as DAG workflow`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/tools/:id    — direct tool execution`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/profile — create workspace profile`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/clone   — clone repository in workspace`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/command — execute command in workspace`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/file    — file operation in workspace`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/cleanup — cleanup workspace sessions`,
+  );
+  console.log(
+    `[durable-agent]   GET  /api/workspaces/changes/:changeSetId — fetch patch artifact`,
+  );
+  console.log(
+    `[durable-agent]   GET  /api/workspaces/executions/:executionId/changes — list patch artifacts`,
+  );
+  console.log(
+    `[durable-agent]   GET  /api/workspaces/executions/:executionId/patch — export combined patch`,
+  );
+  console.log(
+    `[durable-agent]   GET  /api/workspaces/executions/:executionId/files/snapshot?path=<file> — fetch aggregated file snapshot`,
+  );
+  console.log(`[durable-agent]   GET  /api/health       — health check`);
+  console.log(
+    `[durable-agent]   GET  /api/ready        — readiness check (initialized runtime)`,
+  );
 
-	// Initialize agent eagerly at startup so the Dapr workflow runtime starts
-	// immediately. This is required for crash recovery: pending workflows in
-	// the Dapr event log need the runtime to be running to replay.
-	try {
-		await initAgent();
-		console.log(
-			"[durable-agent] Agent initialized at startup (workflow runtime ready for replay)",
-		);
-	} catch (err) {
-		console.error("[durable-agent] Startup initialization failed:", err);
-		if (STARTUP_INIT_REQUIRED) {
-			console.error(
-				"[durable-agent] Failing fast because DURABLE_REQUIRE_STARTUP_INIT=true.",
-			);
-			process.exit(1);
-		}
-		console.warn(
-			`[durable-agent] Continuing without eager initialization. Retrying in background every ${STARTUP_INIT_RETRY_MS}ms.`,
-		);
-		scheduleStartupInitRetry();
-	}
+  // Initialize agent eagerly at startup so the Dapr workflow runtime starts
+  // immediately. This is required for crash recovery: pending workflows in
+  // the Dapr event log need the runtime to be running to replay.
+  try {
+    await initAgent();
+    console.log(
+      "[durable-agent] Agent initialized at startup (workflow runtime ready for replay)",
+    );
+  } catch (err) {
+    console.error("[durable-agent] Startup initialization failed:", err);
+    if (STARTUP_INIT_REQUIRED) {
+      console.error(
+        "[durable-agent] Failing fast because DURABLE_REQUIRE_STARTUP_INIT=true.",
+      );
+      process.exit(1);
+    }
+    console.warn(
+      `[durable-agent] Continuing without eager initialization. Retrying in background every ${STARTUP_INIT_RETRY_MS}ms.`,
+    );
+    scheduleStartupInitRetry();
+  }
 });

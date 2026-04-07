@@ -3,6 +3,7 @@ import {
 	diag,
 	DiagConsoleLogger,
 	DiagLogLevel,
+	propagation,
 	trace,
 } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
@@ -22,6 +23,24 @@ type OtelGlobal = {
 };
 
 const OTEL_GLOBAL_KEY = "__workflow_builder_otel__";
+let activeServiceName = "function-router";
+const OTEL_CONSOLE_BRIDGE_KEY = "__workflow_builder_function_router_console_otel__";
+type OtelLogger = {
+	emit(record: {
+		severityText: string;
+		body: string;
+		attributes?: Record<string, string>;
+	}): void;
+};
+let otelLogsApi: { getLogger(name: string): OtelLogger } | null = null;
+
+void import("@opentelemetry/api-logs")
+	.then((mod) => {
+		otelLogsApi = mod.logs;
+	})
+	.catch(() => {
+		otelLogsApi = null;
+	});
 
 function getOtelGlobal(): OtelGlobal {
 	const g = globalThis as unknown as Record<string, unknown>;
@@ -81,6 +100,7 @@ function buildOtlpSignalUrl(
 export function initOtel(serviceName: string): void {
 	const g = getOtelGlobal();
 	if (g.started) return;
+	activeServiceName = serviceName;
 
 	const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
 	if (!endpoint) {
@@ -88,6 +108,8 @@ export function initOtel(serviceName: string): void {
 		g.started = true;
 		return;
 	}
+
+	process.env.OTEL_LOGS_EXPORTER ??= "otlp";
 
 	const diagLevel = process.env.OTEL_DIAGNOSTIC_LOG_LEVEL?.toLowerCase();
 	if (diagLevel) {
@@ -136,6 +158,7 @@ export function initOtel(serviceName: string): void {
 	});
 
 	sdk.start();
+	installConsoleOtelBridge();
 	g.sdk = sdk;
 	g.started = true;
 
@@ -154,8 +177,75 @@ export function initOtel(serviceName: string): void {
 export function otelLogMixin(): Record<string, string> {
 	const span = trace.getSpan(context.active());
 	const sc = span?.spanContext();
-	if (!sc) return {};
-	return { trace_id: sc.traceId, span_id: sc.spanId };
+	const baggage = propagation.getBaggage(context.active());
+	const sessionId = baggage?.getEntry("session.id")?.value ?? baggage?.getEntry("sessionId")?.value;
+	const workflowExecutionId =
+		baggage?.getEntry("workflow.execution.id")?.value ??
+		baggage?.getEntry("workflow.execution_id")?.value;
+	return {
+		...(sc ? { trace_id: sc.traceId, span_id: sc.spanId } : {}),
+		...(sessionId ? { "session.id": sessionId } : {}),
+		...(workflowExecutionId ? { "workflow.execution.id": workflowExecutionId } : {}),
+	};
+}
+
+function normalizeConsoleArgs(args: unknown[]): string {
+	return args
+		.map((value) => {
+			if (typeof value === "string") return value;
+			try {
+				return JSON.stringify(value);
+			} catch {
+				return String(value);
+			}
+		})
+		.join(" ");
+}
+
+function emitOtelLog(
+	severityText: "INFO" | "WARN" | "ERROR",
+	args: unknown[],
+): void {
+	if (!otelLogsApi) return;
+	try {
+		otelLogsApi.getLogger(activeServiceName).emit({
+			severityText,
+			body: normalizeConsoleArgs(args),
+			attributes: otelLogMixin(),
+		});
+	} catch {
+		// Ignore observability failures.
+	}
+}
+
+function installConsoleOtelBridge(): void {
+	const g = globalThis as Record<string, unknown>;
+	if (g[OTEL_CONSOLE_BRIDGE_KEY]) return;
+	g[OTEL_CONSOLE_BRIDGE_KEY] = true;
+
+	const originals = {
+		log: console.log,
+		info: console.info,
+		warn: console.warn,
+		error: console.error,
+	};
+
+	console.log = (...args: unknown[]) => {
+		originals.log(...args);
+		emitOtelLog("INFO", args);
+	};
+	console.info = (...args: unknown[]) => {
+		originals.info(...args);
+		emitOtelLog("INFO", args);
+	};
+	console.warn = (...args: unknown[]) => {
+		originals.warn(...args);
+		emitOtelLog("WARN", args);
+	};
+	console.error = (...args: unknown[]) => {
+		originals.error(...args);
+		emitOtelLog("ERROR", args);
+	};
 }
 
 initOtel("function-router");

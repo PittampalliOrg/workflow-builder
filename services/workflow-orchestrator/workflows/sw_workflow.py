@@ -30,6 +30,7 @@ from typing import Any
 
 import dapr.ext.workflow as wf
 
+from core.config import config
 from core.sw_types import (
     TaskType,
     Workflow,
@@ -210,7 +211,7 @@ def _build_expression_context(
         "runtime": {
             "executionId": tc.execution_id,
             "dbExecutionId": tc.db_execution_id,
-            "workflowId": tc.workflow.document.name,
+            "workflowId": tc.workflow_id,
         },
     }
     context.update(tc.state_vars)
@@ -218,7 +219,14 @@ def _build_expression_context(
         if key == "__trigger__":
             continue
         if isinstance(output, dict):
-            context[key] = _unwrap_standardized_output(output.get("data", output))
+            normalized_output = _unwrap_standardized_output(output.get("data", output))
+            if isinstance(normalized_output, dict) and "result" not in normalized_output:
+                context[key] = {
+                    **normalized_output,
+                    "result": normalized_output,
+                }
+            else:
+                context[key] = normalized_output
     if has_task_input:
         context["input"] = task_input
         context["taskInput"] = task_input
@@ -300,12 +308,14 @@ class TaskContext:
     def __init__(
         self,
         workflow: Workflow,
+        workflow_id: str | None,
         trigger_data: dict[str, Any],
         execution_id: str,
         db_execution_id: str | None,
         integrations: dict[str, dict[str, str]] | None,
     ):
         self.workflow = workflow
+        self.workflow_id = str(workflow_id or workflow.document.name)
         self.trigger_data = trigger_data
         self.execution_id = execution_id
         self.db_execution_id = db_execution_id
@@ -331,6 +341,7 @@ class TaskContext:
         }
         self.state_vars: dict[str, Any] = {}
         self.completed_tasks: set[str] = set()
+        self.task_execution_counts: dict[str, int] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -447,6 +458,332 @@ _AGENT_ACTION_TYPES = {
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
 }
+_NATIVE_DURABLE_AGENT_ACTION_TYPES = {
+    "openshell/run",
+}
+_NATIVE_DURABLE_AGENT_WORKFLOW_NAME = "openshellRunWorkflowV1"
+
+
+def _parse_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+    return None
+
+
+def _stop_condition_implies_file_changes(stop_condition: str) -> bool:
+    normalized = stop_condition.lower()
+    requires_change_terms = [
+        "file changes",
+        "files are updated",
+        "code changes",
+        "files updated",
+        "changes are complete",
+        "edited files",
+        "modified files",
+        "apply changes",
+        "write files",
+        "edit files",
+    ]
+    return any(term in normalized for term in requires_change_terms)
+
+
+def _build_agent_graph_prompt_context(agent_graph: Any) -> str:
+    if not isinstance(agent_graph, dict):
+        return ""
+    nodes = agent_graph.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return ""
+    steps: list[str] = []
+    for index, node in enumerate(nodes[:12]):
+        if not isinstance(node, dict):
+            steps.append(f"- Step {index + 1}")
+            continue
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        step_type = "step"
+        if isinstance(data.get("stepType"), str) and data.get("stepType").strip():
+            step_type = data.get("stepType").strip()
+        elif isinstance(data.get("kind"), str) and data.get("kind").strip():
+            step_type = data.get("kind").strip()
+        label = (
+            data.get("label").strip()
+            if isinstance(data.get("label"), str) and data.get("label").strip()
+            else f"Step {index + 1}"
+        )
+        steps.append(f"- {label} [{step_type}]")
+    edge_count = (
+        len(agent_graph.get("edges"))
+        if isinstance(agent_graph.get("edges"), list)
+        else 0
+    )
+    version = (
+        agent_graph.get("version").strip()
+        if isinstance(agent_graph.get("version"), str)
+        and agent_graph.get("version").strip()
+        else "v1"
+    )
+    return (
+        "## Durable Agent Graph\n"
+        "Use this graph as the durable control loop for planning, tools, memory, approvals, and completion.\n"
+        f"Graph version: {version}\n"
+        f"Graph topology: {len(nodes)} steps, {edge_count} edges\n"
+        + "\n".join(steps)
+        + "\n\n"
+    )
+
+
+def _build_native_run_prompt(
+    base_prompt: str,
+    stop_condition: str | None,
+    require_file_changes: bool,
+    cwd: str | None = None,
+    agent_graph: Any = None,
+) -> str:
+    normalized_cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
+    normalized_stop_condition = (
+        stop_condition.strip()
+        if isinstance(stop_condition, str) and stop_condition.strip()
+        else None
+    )
+    graph_context = _build_agent_graph_prompt_context(agent_graph)
+    cwd_context = (
+        f"Repository root: {normalized_cwd}\n"
+        "Always operate relative to this repository root for file and directory paths.\n\n"
+        if normalized_cwd
+        else ""
+    )
+    if not normalized_stop_condition:
+        return f"{cwd_context}{graph_context}{base_prompt}"
+
+    file_change_guard = (
+        "\n\nCRITICAL: You must make real file mutations (write/edit/delete/mkdir) "
+        "before finalizing. Do not stop at analysis or directory listing."
+        if require_file_changes
+        else ""
+    )
+    return (
+        f"{cwd_context}{graph_context}{base_prompt}\n\n"
+        "## Stop Condition\n"
+        f"{normalized_stop_condition}\n\n"
+        "Execute autonomously until the stop condition is satisfied. "
+        f"Do not ask for confirmation before proceeding.{file_change_guard}"
+    )
+
+
+def _next_task_execution_count(tc: "TaskContext", task_name: str) -> int:
+    current = tc.task_execution_counts.get(task_name, 0)
+    tc.task_execution_counts[task_name] = current + 1
+    return current
+
+
+def _run_native_durable_agent_child_workflow(
+    ctx: wf.DaprWorkflowContext,
+    task_name: str,
+    action_type: str,
+    resolved_args: dict[str, Any],
+    tc: "TaskContext",
+):
+    flattened_args = dict(resolved_args or {})
+    body_args = flattened_args.get("body")
+    if isinstance(body_args, dict):
+        flattened_args = {
+            **body_args,
+            **{k: v for k, v in flattened_args.items() if k != "body"},
+        }
+
+    prompt = ""
+    for key in ("prompt", "task"):
+        value = flattened_args.get(key)
+        if isinstance(value, str) and value.strip():
+            prompt = value.strip()
+            break
+    if not prompt:
+        raise RuntimeError(f"Agent action missing prompt/task: {task_name}")
+
+    child_execution_index = _next_task_execution_count(tc, task_name)
+    child_instance_id = (
+        f"{ctx.instance_id}__durable-agent__{task_name}__run__{child_execution_index}"
+    )
+
+    timeout_minutes = max(
+        1,
+        _parse_optional_int(flattened_args.get("timeoutMinutes")) or 30,
+    )
+    stop_condition = (
+        flattened_args.get("stopCondition").strip()
+        if isinstance(flattened_args.get("stopCondition"), str)
+        and flattened_args.get("stopCondition").strip()
+        else ""
+    )
+    explicit_require_file_changes = None
+    if "requireFileChanges" in flattened_args:
+        explicit_require_file_changes = _as_bool(
+            flattened_args.get("requireFileChanges"),
+            default=False,
+        )
+    require_file_changes = (
+        explicit_require_file_changes
+        if explicit_require_file_changes is not None
+        else bool(stop_condition)
+        and _stop_condition_implies_file_changes(stop_condition)
+    )
+    cwd = (
+        flattened_args.get("cwd").strip()
+        if isinstance(flattened_args.get("cwd"), str)
+        and flattened_args.get("cwd").strip()
+        else None
+    )
+    agent_graph = flattened_args.get("agentGraph")
+    agent_config = (
+        flattened_args.get("agentConfig")
+        if isinstance(flattened_args.get("agentConfig"), dict)
+        else None
+    )
+    loop_config = agent_config.get("loop") if isinstance(agent_config, dict) else None
+    loop_strategy_name = (
+        flattened_args.get("loopStrategyName").strip()
+        if isinstance(flattened_args.get("loopStrategyName"), str)
+        and flattened_args.get("loopStrategyName").strip()
+        else loop_config.get("strategy").strip()
+        if isinstance(loop_config, dict)
+        and isinstance(loop_config.get("strategy"), str)
+        and loop_config.get("strategy").strip()
+        else None
+    )
+    run_prompt = _build_native_run_prompt(
+        prompt,
+        stop_condition or None,
+        require_file_changes,
+        cwd,
+        agent_graph,
+    )
+    child_input = {
+        "task": run_prompt,
+        "prompt": prompt,
+        "workflow_instance_id": ctx.instance_id,
+        "parentExecutionId": ctx.instance_id,
+        "executionId": tc.db_execution_id or tc.execution_id,
+        "workflowId": tc.workflow_id,
+        "nodeId": task_name,
+        "workspaceRef": flattened_args.get("workspaceRef"),
+        "stopCondition": stop_condition or None,
+        "cwd": cwd,
+        "requireFileChanges": require_file_changes,
+        "timeoutMinutes": timeout_minutes,
+        "agentConfig": agent_config,
+        "agentGraph": agent_graph if isinstance(agent_graph, dict) else None,
+        "loopPolicy": flattened_args.get("loopPolicy")
+        if isinstance(flattened_args.get("loopPolicy"), dict)
+        else None,
+        "loopStrategyName": loop_strategy_name,
+        "maxIterations": _parse_optional_int(flattened_args.get("maxTurns")),
+        "_message_metadata": {
+            "source": action_type,
+            "triggering_workflow_instance_id": ctx.instance_id,
+        },
+        "_otel_span_context": tc.otel_ctx,
+    }
+
+    if tc.db_execution_id:
+        try:
+            from activities.track_agent_run import track_agent_run_scheduled
+
+            yield ctx.call_activity(
+                track_agent_run_scheduled,
+                input=_freeze(
+                    {
+                        "id": child_instance_id,
+                        "workflowExecutionId": tc.db_execution_id,
+                        "workflowId": tc.workflow_id,
+                        "nodeId": task_name,
+                        "mode": "run",
+                        "agentWorkflowId": child_instance_id,
+                        "daprInstanceId": child_instance_id,
+                        "parentExecutionId": ctx.instance_id,
+                        "workspaceRef": flattened_args.get("workspaceRef"),
+                        "_otel": tc.otel_ctx,
+                    }
+                ),
+            )
+        except Exception as track_err:
+            logger.warning(
+                "[SW Workflow] Failed to persist scheduled durable child row for %s: %s",
+                child_instance_id,
+                track_err,
+            )
+
+    if tc.db_execution_id:
+        try:
+            from activities.track_agent_run import track_agent_run_running
+
+            yield ctx.call_activity(
+                track_agent_run_running,
+                input=_freeze(
+                    {
+                        "id": child_instance_id,
+                        "result": {
+                            "agentWorkflowId": child_instance_id,
+                            "daprInstanceId": child_instance_id,
+                            "status": "running",
+                        },
+                        "_otel": tc.otel_ctx,
+                    }
+                ),
+            )
+        except Exception as track_err:
+            logger.warning(
+                "[SW Workflow] Failed to persist running durable child row for %s: %s",
+                child_instance_id,
+                track_err,
+            )
+
+    child_result = yield ctx.call_child_workflow(
+        _NATIVE_DURABLE_AGENT_WORKFLOW_NAME,
+        input=_freeze(child_input),
+        instance_id=child_instance_id,
+        app_id=config.DURABLE_AGENT_APP_ID,
+    )
+
+    child_result = (
+        child_result if isinstance(child_result, dict) else {"content": str(child_result)}
+    )
+    success = bool(child_result.get("success", True))
+    if tc.db_execution_id:
+        try:
+            from activities.track_agent_run import track_agent_run_completed
+
+            yield ctx.call_activity(
+                track_agent_run_completed,
+                input=_freeze(
+                    {
+                        "id": child_instance_id,
+                        "success": success,
+                        "result": child_result,
+                        "error": child_result.get("error"),
+                        "_otel": tc.otel_ctx,
+                    }
+                ),
+            )
+        except Exception as track_err:
+            logger.warning(
+                "[SW Workflow] Failed to persist completion durable child row for %s: %s",
+                child_instance_id,
+                track_err,
+            )
+    return child_result
 
 
 def _handle_call_task(
@@ -471,9 +808,44 @@ def _handle_call_task(
 
     _log_info(ctx, "[SW Workflow] call task: %s (action=%s)", task_name, action_type)
 
-    # Agent actions: delegate to legacy child workflow orchestrator
+    # Agent actions: prefer native durable child workflows when available
     if action_type in _AGENT_ACTION_TYPES:
+        if action_type in _NATIVE_DURABLE_AGENT_ACTION_TYPES:
+            task_input = _resolve_task_input(task_data, tc)
+            native_args = resolved.get("args", {}) or {}
+            expr_context = _build_expression_context(
+                tc,
+                task_input=task_input,
+                has_task_input=True,
+            )
+            resolved_native_args = evaluate_structure(native_args, expr_context)
+            if not isinstance(resolved_native_args, dict):
+                resolved_native_args = native_args if isinstance(native_args, dict) else {}
+            result = yield from _run_native_durable_agent_child_workflow(
+                ctx,
+                task_name,
+                action_type,
+                resolved_native_args,
+                tc,
+            )
+            _store_task_output(tc, task_name, action_type, result)
+            tc.completed_tasks.add(task_name)
+
+            if isinstance(result, dict) and not result.get("success", True):
+                raise RuntimeError(result.get("error") or f"Agent action failed: {task_name}")
+
+            return result
+
         from workflows.dynamic_workflow import process_agent_child_workflow
+
+        resolved_args = dict(resolved.get("args", {}) or {})
+        body_args = resolved_args.get("body")
+        flattened_args = dict(resolved_args)
+        if isinstance(body_args, dict):
+            flattened_args = {
+                **body_args,
+                **{k: v for k, v in resolved_args.items() if k != "body"},
+            }
 
         node_compat = {
             "id": task_name,
@@ -481,7 +853,7 @@ def _handle_call_task(
             "label": task_name,
             "config": {
                 "actionType": action_type,
-                **resolved.get("args", {}),
+                **flattened_args,
             },
         }
 
@@ -494,7 +866,7 @@ def _handle_call_task(
             integrations=tc.integrations,
             db_execution_id=tc.db_execution_id,
             connection_external_id=None,
-            workflow_id=tc.workflow.document.name,
+            workflow_id=tc.workflow_id,
             execution_id=tc.execution_id,
             otel_ctx=tc.otel_ctx,
         )
@@ -510,24 +882,35 @@ def _handle_call_task(
     # Standard call: single-shot HTTP via function-router.
     # Materialize task input and call arguments through SW `${ ... }` expressions.
     task_input = _resolve_task_input(task_data, tc)
-    args = resolved.get("args", {})
-
-    # For piece/action calls: extract input fields from nested body.input or top-level input
-    # so fn-activepieces receives them as flat propsValue fields.
-    action_input = {}
-    if isinstance(args.get("input"), dict):
-        action_input = args["input"]
-    elif isinstance(args.get("body"), dict) and isinstance(args["body"].get("input"), dict):
-        action_input = args["body"]["input"]
+    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
+    resolved_args = evaluate_structure(resolved.get("args", {}) or {}, expr_context)
+    if not isinstance(resolved_args, dict):
+        resolved_args = {}
 
     raw_config = {
         "actionType": action_type,
-        "input": action_input,
-        "metadata": args.get("metadata") or (args.get("body", {}).get("metadata") if isinstance(args.get("body"), dict) else None),
-        "connectionExternalId": args.get("connectionExternalId"),
+        **resolved_args,
     }
-    expr_context = _build_expression_context(tc, task_input=task_input, has_task_input=True)
-    resolved_config = evaluate_structure(raw_config, expr_context)
+
+    # For piece/action calls: extract input fields from nested body.input or top-level input
+    # so fn-activepieces receives them as flat propsValue fields while preserving
+    # the original resolved arguments for generic OpenShell/function-router actions.
+    action_input = {}
+    if isinstance(resolved_args.get("input"), dict):
+        action_input = resolved_args["input"]
+    elif isinstance(resolved_args.get("body"), dict) and isinstance(
+        resolved_args["body"].get("input"), dict
+    ):
+        action_input = resolved_args["body"]["input"]
+    if action_input:
+        raw_config["input"] = action_input
+
+    if not raw_config.get("metadata") and isinstance(resolved_args.get("body"), dict):
+        body_metadata = resolved_args["body"].get("metadata")
+        if body_metadata is not None:
+            raw_config["metadata"] = body_metadata
+
+    resolved_config = raw_config
 
     node_compat = {
         "id": task_name,
@@ -546,7 +929,7 @@ def _handle_call_task(
             "node": node_compat,
             "nodeOutputs": tc.task_outputs,
             "executionId": tc.execution_id,
-            "workflowId": tc.workflow.document.name,
+            "workflowId": tc.workflow_id,
             "integrations": tc.integrations,
             "dbExecutionId": tc.db_execution_id,
             "connectionExternalId": connection_external_id,
@@ -951,6 +1334,26 @@ def _handle_run_task(
         # Check if this is an agent workflow that needs the full orchestration
         agent_action_type = child_input.get("actionType", "")
         if agent_action_type in _AGENT_ACTION_TYPES:
+            if agent_action_type in _NATIVE_DURABLE_AGENT_ACTION_TYPES:
+                result = yield from _run_native_durable_agent_child_workflow(
+                    ctx,
+                    task_name,
+                    agent_action_type,
+                    child_input,
+                    tc,
+                )
+                run_result = _apply_task_output_definition(
+                    task_data,
+                    tc,
+                    task_input=task_input,
+                    raw_output=result,
+                )
+                _store_task_output(tc, task_name, agent_action_type, run_result)
+                tc.completed_tasks.add(task_name)
+                if isinstance(result, dict) and not result.get("success", True):
+                    raise RuntimeError(result.get("error") or f"Agent action failed: {task_name}")
+                return result
+
             from workflows.dynamic_workflow import process_agent_child_workflow
 
             _log_info(ctx, "[SW Workflow] Running agent workflow: %s (%s)", child_wf_name, agent_action_type)
@@ -972,7 +1375,7 @@ def _handle_run_task(
                 integrations=tc.integrations,
                 db_execution_id=tc.db_execution_id,
                 connection_external_id=None,
-                workflow_id=tc.workflow.document.name,
+                workflow_id=tc.workflow_id,
                 execution_id=tc.execution_id,
                 otel_ctx=tc.otel_ctx,
             )
@@ -1022,7 +1425,7 @@ def _handle_run_task(
                 "node": node_compat,
                 "nodeOutputs": tc.task_outputs,
                 "executionId": tc.execution_id,
-                "workflowId": tc.workflow.document.name,
+                "workflowId": tc.workflow_id,
                 "dbExecutionId": tc.db_execution_id,
                 "_otel": tc.otel_ctx,
             }),
@@ -1053,7 +1456,7 @@ def _handle_run_task(
             "node": node_compat,
             "nodeOutputs": tc.task_outputs,
             "executionId": tc.execution_id,
-            "workflowId": tc.workflow.document.name,
+            "workflowId": tc.workflow_id,
             "dbExecutionId": tc.db_execution_id,
             "_otel": tc.otel_ctx,
         }),
@@ -1196,6 +1599,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
     # Parse input
     workflow_data = input_data.get("workflow", {})
+    workflow_id = input_data.get("workflowId")
     trigger_data = input_data.get("triggerData", {})
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
@@ -1218,6 +1622,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     # Initialize task context
     tc = TaskContext(
         workflow=workflow,
+        workflow_id=workflow_id,
         trigger_data=trigger_data,
         execution_id=execution_id,
         db_execution_id=db_execution_id,

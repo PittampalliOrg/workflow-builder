@@ -812,6 +812,10 @@ export async function listActionCatalog(userId?: string | null): Promise<ActionC
 		name: item.name,
 		displayName: item.displayName,
 		description: item.description,
+		providerId: item.providerId ?? null,
+		providerLabel: item.providerLabel ?? null,
+		providerIconUrl: item.providerIconUrl ?? null,
+		category: item.category ?? null,
 		serviceId: item.serviceId,
 		kind: item.kind,
 		visibility: item.visibility,
@@ -824,6 +828,7 @@ export async function listActionCatalog(userId?: string | null): Promise<ActionC
 		insertable: item.insertable,
 		tags: item.tags,
 		runtime: item.runtime,
+		inputSchema: item.inputSchema ?? null,
 	}));
 }
 

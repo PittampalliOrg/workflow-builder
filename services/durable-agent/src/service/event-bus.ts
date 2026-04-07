@@ -7,6 +7,7 @@
 
 import { EventEmitter } from "node:events";
 import { nanoid } from "nanoid";
+import { emitOtelLog } from "../observability/otel-setup.js";
 import type {
 	AgentEvent,
 	AgentEventType,
@@ -119,17 +120,21 @@ export function interceptConsole(): void {
 	console.log = (...args: unknown[]) => {
 		origLog(...args);
 		eventBus.addLog("log", args.map(String).join(" "));
+		emitOtelLog("INFO", args);
 	};
 	console.warn = (...args: unknown[]) => {
 		origWarn(...args);
 		eventBus.addLog("warn", args.map(String).join(" "));
+		emitOtelLog("WARN", args);
 	};
 	console.error = (...args: unknown[]) => {
 		origError(...args);
 		eventBus.addLog("error", args.map(String).join(" "));
+		emitOtelLog("ERROR", args);
 	};
 	console.info = (...args: unknown[]) => {
 		origInfo(...args);
 		eventBus.addLog("info", args.map(String).join(" "));
+		emitOtelLog("INFO", args);
 	};
 }

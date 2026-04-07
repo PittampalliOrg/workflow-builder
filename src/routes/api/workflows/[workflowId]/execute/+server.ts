@@ -4,6 +4,10 @@ import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import {
+	buildWorkflowSessionId,
+	injectWorkflowSessionHeaders
+} from '$lib/server/observability/workflow-session';
 
 /**
  * POST /api/workflows/[workflowId]/execute
@@ -69,19 +73,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	// Send to orchestrator's SW 1.0 endpoint
 	const orchestratorUrl = getOrchestratorUrl();
+	const sessionId = buildWorkflowSessionId(execution.id);
 
 	try {
-		const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-		for (const h of ['traceparent', 'tracestate', 'baggage']) {
-			const v = request.headers.get(h);
-			if (v) headers[h] = v;
-		}
+		const headers = sessionId
+			? injectWorkflowSessionHeaders({ 'Content-Type': 'application/json' }, sessionId)
+			: { 'Content-Type': 'application/json' };
 
 		const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 			method: 'POST',
 			headers,
 			body: JSON.stringify({
 				workflow: spec,
+				workflowId,
 				triggerData,
 				dbExecutionId: execution.id
 			})

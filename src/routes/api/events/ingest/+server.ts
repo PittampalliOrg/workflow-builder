@@ -168,6 +168,7 @@ export const POST: RequestHandler = async ({ request, url }) => {
 			},
 			body: JSON.stringify({
 				workflow: spec,
+				workflowId: workflow.id,
 				triggerData: resolved.input,
 				dbExecutionId: execution.id
 			})

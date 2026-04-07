@@ -41,6 +41,7 @@
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
+	import OTelLogList from '$lib/components/observability/otel-log-list.svelte';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
 	import EndNode from '$lib/components/workflow/nodes/sw/end-node.svelte';
@@ -101,13 +102,35 @@
 		startTime: string;
 		duration: number;
 		status: 'ok' | 'error';
+		statusCode?: string;
+		statusMessage?: string;
+		spanKind?: string;
+		attributes?: Record<string, unknown>;
+		resourceAttributes?: Record<string, unknown>;
 		depth: number;
 	}
+	type TraceFilterMode = 'all' | 'llm';
 	let traceSpans = $state<Span[]>([]);
 	let traceTotalDuration = $state(0);
 	let isLoadingTrace = $state(false);
 	let traceError = $state<string | null>(null);
 	let traceFetched = $state(false);
+	let traceFilter = $state<TraceFilterMode>('all');
+	let traceDetailTab = $state<'spans' | 'logs'>('spans');
+	let selectedTraceSpanId = $state<string | null>(null);
+	interface ObservabilityLogEntry {
+		timestamp: string;
+		traceId: string;
+		spanId: string;
+		serviceName: string;
+		severityText: string;
+		body: string;
+		resourceAttributes: Record<string, unknown>;
+		logAttributes: Record<string, unknown>;
+	}
+	let observabilityLogs = $state<ObservabilityLogEntry[]>([]);
+	let isLoadingObservabilityLogs = $state(true);
+	let observabilityLogsError = $state<string | null>(null);
 
 	// Browser artifacts
 	type BrowserArtifactStep = {
@@ -202,32 +225,72 @@
 		return `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 	});
 
-	const traceServices = $derived([...new Set(traceSpans.map(s => s.serviceName))]);
+	function isLlmRelatedSpan(span: Span): boolean {
+		const operation = span.operationName.toLowerCase();
+		const service = span.serviceName.toLowerCase();
+		const spanKind = span.spanKind?.toLowerCase() ?? '';
+		const directSignals = [
+			'chatcompletion',
+			'responses',
+			'callllm',
+			'generatetext',
+			'streamtext',
+			'agent.run',
+			'gen_ai',
+			'openai',
+			'anthropic',
+			'llm'
+		];
+		if (directSignals.some((signal) => operation.includes(signal) || service.includes(signal) || spanKind.includes(signal))) {
+			return true;
+		}
 
-	// Pick the best traceId for Phoenix link — prefer one with LLM agent spans (dapr-swe)
-	const phoenixTraceId = $derived.by(() => {
-		// Find a traceId that has dapr-swe spans with ChatCompletion or agent spans
-		const agentSpan = traceSpans.find(
-			s => s.serviceName === 'dapr-swe' && s.traceId &&
-				(s.operationName.includes('ChatCompletion') ||
-				 s.operationName.includes('Agent.run') ||
-				 s.operationName.includes('dapr-swe.execute'))
-		);
-		if (agentSpan?.traceId) return agentSpan.traceId;
-		// Fallback: any dapr-swe span
-		const anySwe = traceSpans.find(s => s.serviceName === 'dapr-swe' && s.traceId);
-		if (anySwe?.traceId) return anySwe.traceId;
-		// Fallback: orchestrator traceId
-		return traceId ?? allTraceIds[0] ?? null;
+		const records = [span.attributes, span.resourceAttributes].filter(Boolean) as Record<string, unknown>[];
+		for (const record of records) {
+			for (const [key, rawValue] of Object.entries(record)) {
+				const normalizedKey = key.toLowerCase();
+				const normalizedValue =
+					typeof rawValue === 'string'
+						? rawValue.toLowerCase()
+						: JSON.stringify(rawValue).toLowerCase();
+				if (
+					normalizedKey.startsWith('gen_ai.') ||
+					normalizedKey.includes('llm') ||
+					normalizedKey.includes('model') ||
+					normalizedValue.includes('gen_ai') ||
+					normalizedValue.includes('llm') ||
+					normalizedValue.includes('openai') ||
+					normalizedValue.includes('anthropic')
+				) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	const llmTraceSpans = $derived(traceSpans.filter(isLlmRelatedSpan));
+	const filteredTraceSpans = $derived(traceFilter === 'llm' ? llmTraceSpans : traceSpans);
+	const traceServices = $derived([...new Set(filteredTraceSpans.map(s => s.serviceName))]);
+	const selectedTraceSpan = $derived.by(() => {
+		if (!selectedTraceSpanId) return null;
+		const match = traceSpans.find((span) => span.spanId === selectedTraceSpanId);
+		if (!match) return null;
+		return {
+			traceId: match.traceId ?? traceId ?? '',
+			spanId: match.spanId,
+			label: match.operationName
+		};
 	});
 
-	// Group traces by primary service for per-trace Phoenix links
+	// Group traces by primary service for local inspection
 	const tracesByService = $derived.by(() => {
 		const map = new Map<string, { traceId: string; service: string; spanCount: number; hasLlm: boolean }>();
 		for (const s of traceSpans) {
 			if (!s.traceId) continue;
 			const existing = map.get(s.traceId);
-			const isLlm = s.operationName.includes('ChatCompletion') || s.operationName.includes('Agent');
+			const isLlm = isLlmRelatedSpan(s);
 			if (existing) {
 				existing.spanCount++;
 				if (isLlm) existing.hasLlm = true;
@@ -331,6 +394,25 @@
 		}
 	}
 
+	async function fetchObservabilityLogs() {
+		isLoadingObservabilityLogs = true;
+		observabilityLogsError = null;
+		try {
+			const res = await fetch(`/api/observability/sessions/${encodeURIComponent(executionId)}/logs`);
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			const data = await res.json();
+			if (data.error) {
+				observabilityLogsError = data.error;
+			} else {
+				observabilityLogs = data.logs ?? [];
+			}
+		} catch (err) {
+			observabilityLogsError = err instanceof Error ? err.message : 'Failed to load observability logs';
+		} finally {
+			isLoadingObservabilityLogs = false;
+		}
+	}
+
 	// Fetch trace(s) — uses multi endpoint when we have multiple traceIds
 	async function fetchTrace() {
 		const ids = allTraceIds.length > 0 ? allTraceIds : traceId ? [traceId] : [];
@@ -404,6 +486,7 @@
 		loadWorkflow();
 		pollStatus();
 		fetchLogs();
+		fetchObservabilityLogs();
 		fetchBrowserArtifacts();
 		agentStream = createAgentStream(executionId);
 	});
@@ -413,6 +496,7 @@
 	$effect(() => {
 		if (prevRunning && !isRunning) {
 			fetchLogs();
+			fetchObservabilityLogs();
 			fetchBrowserArtifacts();
 			// Reset trace fetch so it re-fetches with any new traceIds
 			traceFetched = false;
@@ -655,7 +739,6 @@
 			{executionId}
 			instanceId={instanceId ?? undefined}
 			traceId={traceId ?? undefined}
-			phoenixTraceId={phoenixTraceId ?? undefined}
 		/>
 
 		{#if agentStream?.isConnected}
@@ -1089,12 +1172,31 @@
 					<div class="mb-4 space-y-2">
 						<div class="flex items-center justify-between">
 							<div class="text-sm text-muted-foreground">
-								{traceSpans.length} spans &middot; {formatSpanDuration(traceTotalDuration)}
+								{filteredTraceSpans.length} of {traceSpans.length} spans &middot; {formatSpanDuration(traceTotalDuration)}
 								{#if allTraceIds.length > 1}
 									&middot; {allTraceIds.length} traces correlated
 								{/if}
 							</div>
-							<div class="flex items-center gap-1">
+							<div class="flex items-center gap-2">
+								<div class="flex items-center rounded-md border border-border p-0.5">
+									<button
+										class={`rounded px-2 py-1 text-xs transition-colors ${traceFilter === 'all' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+										onclick={() => {
+											traceFilter = 'all';
+										}}
+									>
+										All
+									</button>
+									<button
+										class={`rounded px-2 py-1 text-xs transition-colors ${traceFilter === 'llm' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
+										onclick={() => {
+											traceFilter = 'llm';
+										}}
+									>
+										LLM
+										<span class="ml-1 text-[10px] text-muted-foreground">{llmTraceSpans.length}</span>
+									</button>
+								</div>
 								<button
 									class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors"
 									onclick={() => { traceFetched = false; fetchTrace(); }}
@@ -1110,17 +1212,15 @@
 										Full Trace
 									</button>
 								{/if}
-								{#if phoenixTraceId}
-									<a
-										href="https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDo0/traces/{phoenixTraceId}"
-										target="_blank"
-										rel="noopener noreferrer"
-										class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors text-orange-400"
-									>
-										<ExternalLink size={12} />
-										Phoenix
-									</a>
-								{/if}
+								<a
+									href={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
+									target="_blank"
+									rel="noopener noreferrer"
+									class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors text-orange-400"
+								>
+									<ExternalLink size={12} />
+									Phoenix
+								</a>
 							</div>
 						</div>
 
@@ -1148,14 +1248,6 @@
 											{#if t.hasLlm}
 												<Badge variant="default" class="text-[9px] px-1 py-0 shrink-0">LLM</Badge>
 											{/if}
-											<a
-												href="https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDo0/traces/{t.traceId}"
-												target="_blank"
-												rel="noopener noreferrer"
-												class="text-orange-400 hover:underline shrink-0 text-[10px]"
-											>
-												Phoenix
-											</a>
 											<button
 												class="text-primary hover:underline shrink-0 text-[10px]"
 												onclick={() => goto(`/observability/${t.traceId}`)}
@@ -1169,23 +1261,53 @@
 						{/if}
 					</div>
 
-					<!-- Span waterfall -->
-					<div class="space-y-0.5">
-						{#each traceSpans as span (span.spanId)}
-							<div
-								class="flex items-center gap-2 rounded px-2 py-1.5 hover:bg-muted/30 transition-colors"
-								style="padding-left: {(span.depth ?? 0) * 20 + 8}px"
-							>
-								{#if span.status === 'error'}
-									<XCircle size={12} class="shrink-0 text-red-500" />
+					<div class="mt-4">
+						<Tabs value={traceDetailTab} onValueChange={(value) => (traceDetailTab = value as 'spans' | 'logs')}>
+							<TabsList>
+								<TabsTrigger value="spans">Spans</TabsTrigger>
+								<TabsTrigger value="logs">Logs</TabsTrigger>
+							</TabsList>
+
+							<TabsContent value="spans" class="mt-4">
+								{#if filteredTraceSpans.length > 0}
+									<div class="space-y-0.5">
+										{#each filteredTraceSpans as span (span.spanId)}
+											<button
+												class={`flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors ${selectedTraceSpanId === span.spanId ? 'bg-muted/60' : 'hover:bg-muted/30'}`}
+												style="padding-left: {(span.depth ?? 0) * 20 + 8}px"
+												onclick={() => {
+													selectedTraceSpanId = selectedTraceSpanId === span.spanId ? null : span.spanId;
+												}}
+											>
+												{#if span.status === 'error'}
+													<XCircle size={12} class="shrink-0 text-red-500" />
+												{:else}
+													<CheckCircle2 size={12} class="shrink-0 text-green-500" />
+												{/if}
+												<span class="flex-1 truncate text-xs font-medium">{span.operationName}</span>
+												<Badge variant="outline" class="shrink-0 text-[10px]">{span.serviceName}</Badge>
+												<span class="shrink-0 text-xs text-muted-foreground">{formatSpanDuration(span.duration)}</span>
+											</button>
+										{/each}
+									</div>
 								{:else}
-									<CheckCircle2 size={12} class="shrink-0 text-green-500" />
+									<div class="flex flex-col items-center justify-center py-10 text-muted-foreground">
+										<MessageSquare size={20} />
+										<p class="mt-2 text-sm">No LLM-related spans found in this trace set</p>
+									</div>
 								{/if}
-								<span class="flex-1 truncate text-xs font-medium">{span.operationName}</span>
-								<Badge variant="outline" class="shrink-0 text-[10px]">{span.serviceName}</Badge>
-								<span class="shrink-0 text-xs text-muted-foreground">{formatSpanDuration(span.duration)}</span>
-							</div>
-						{/each}
+							</TabsContent>
+
+							<TabsContent value="logs" class="mt-4">
+								<OTelLogList
+									logs={observabilityLogs}
+									isLoading={isLoadingObservabilityLogs}
+									error={observabilityLogsError}
+									selectedSpan={selectedTraceSpan}
+									emptyMessage="No observability logs found for this workflow execution."
+								/>
+							</TabsContent>
+						</Tabs>
 					</div>
 				{:else}
 					<div class="flex flex-col items-center justify-center py-12 text-muted-foreground">

@@ -10,13 +10,10 @@
 		executionId: string;
 		instanceId?: string;
 		traceId?: string;
-		phoenixTraceId?: string;
 		workflowName?: string;
 	}
 
-	let { status, duration, startedAt, executionId, instanceId, traceId, phoenixTraceId, workflowName }: Props = $props();
-
-	const effectivePhoenixTraceId = $derived(phoenixTraceId ?? traceId);
+	let { status, duration, startedAt, executionId, instanceId, traceId, workflowName }: Props = $props();
 
 	let copyFeedback = $state(false);
 
@@ -109,8 +106,8 @@
 		</code>
 	{/if}
 
-	{#if traceId}
-		<div class="ml-auto flex items-center gap-1">
+	<div class="ml-auto flex items-center gap-1">
+		{#if traceId}
 			<button
 				class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors"
 				onclick={() => goto(`/observability/${traceId}`)}
@@ -118,18 +115,16 @@
 				<ExternalLink size={12} />
 				View Trace
 			</button>
-			{#if effectivePhoenixTraceId}
-				<a
-					href="https://phoenix-ryzen.tail286401.ts.net/projects/UHJvamVjdDo0/traces/{effectivePhoenixTraceId}"
-					target="_blank"
-					rel="noopener noreferrer"
-					class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors text-orange-400"
-					title="View in Arize Phoenix"
-				>
-					<ExternalLink size={12} />
-					Phoenix
-				</a>
-			{/if}
-		</div>
-	{/if}
+		{/if}
+		<a
+			href={`/api/observability/phoenix/sessions/${encodeURIComponent(executionId)}`}
+			target="_blank"
+			rel="noopener noreferrer"
+			class="flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted transition-colors text-orange-400"
+			title="View workflow session in Arize Phoenix"
+		>
+			<ExternalLink size={12} />
+			Phoenix
+		</a>
+	</div>
 </div>

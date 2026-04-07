@@ -5,6 +5,17 @@ export const CLICKHOUSE_USER = env.CLICKHOUSE_USER ?? 'default';
 export const CLICKHOUSE_PASSWORD = env.CLICKHOUSE_PASSWORD ?? 'otel_dev_password';
 export const CLICKHOUSE_DB = env.CLICKHOUSE_DB ?? 'otel';
 
+export interface ObservabilityLogEntry {
+	timestamp: string;
+	traceId: string;
+	spanId: string;
+	serviceName: string;
+	severityText: string;
+	body: string;
+	resourceAttributes: Record<string, unknown>;
+	logAttributes: Record<string, unknown>;
+}
+
 export async function queryClickHouse(sql: string): Promise<Record<string, unknown>[]> {
 	const res = await fetch(
 		`${CLICKHOUSE_URL}/?user=${encodeURIComponent(CLICKHOUSE_USER)}&password=${encodeURIComponent(CLICKHOUSE_PASSWORD)}`,
@@ -14,6 +25,96 @@ export async function queryClickHouse(sql: string): Promise<Record<string, unkno
 	const text = await res.text();
 	if (!text.trim()) return [];
 	return text.trim().split('\n').map((line) => JSON.parse(line));
+}
+
+export function escapeClickHouseString(value: string): string {
+	return value.replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+export function sanitizeTraceIds(traceIds: string[]): string[] {
+	return traceIds
+		.filter((id) => typeof id === 'string' && /^[a-f0-9]+$/i.test(id.trim()))
+		.map((id) => id.trim());
+}
+
+export function mapObservabilityLog(row: Record<string, unknown>): ObservabilityLogEntry {
+	return {
+		timestamp: row.Timestamp as string,
+		traceId: (row.TraceId as string) ?? '',
+		spanId: (row.SpanId as string) ?? '',
+		serviceName: (row.ServiceName as string) ?? 'unknown',
+		severityText: (row.SeverityText as string) ?? 'info',
+		body: (row.Body as string) ?? '',
+		resourceAttributes: (row.ResourceAttributes as Record<string, unknown>) ?? {},
+		logAttributes: (row.LogAttributes as Record<string, unknown>) ?? {}
+	};
+}
+
+async function queryObservabilityLogs(whereClause: string): Promise<ObservabilityLogEntry[]> {
+	const rows = await queryClickHouse(`
+		SELECT
+			Timestamp,
+			TraceId,
+			SpanId,
+			ServiceName,
+			SeverityText,
+			Body,
+			ResourceAttributes,
+			LogAttributes
+		FROM ${CLICKHOUSE_DB}.otel_logs
+		${whereClause}
+		ORDER BY Timestamp ASC
+	`);
+	return rows.map(mapObservabilityLog);
+}
+
+async function getSessionTraceIds(sessionId: string): Promise<string[]> {
+	const escaped = escapeClickHouseString(sessionId.trim());
+	if (!escaped) return [];
+	const rows = await queryClickHouse(`
+		SELECT DISTINCT TraceId
+		FROM ${CLICKHOUSE_DB}.otel_traces
+		WHERE
+			(mapContains(SpanAttributes, 'session.id') AND SpanAttributes['session.id'] = '${escaped}')
+			OR (mapContains(ResourceAttributes, 'session.id') AND ResourceAttributes['session.id'] = '${escaped}')
+			OR (mapContains(SpanAttributes, 'workflow.execution.id') AND SpanAttributes['workflow.execution.id'] = '${escaped}')
+			OR (mapContains(ResourceAttributes, 'workflow.execution.id') AND ResourceAttributes['workflow.execution.id'] = '${escaped}')
+		ORDER BY TraceId
+	`);
+	return sanitizeTraceIds(rows.map((row) => String(row.TraceId ?? '')));
+}
+
+export async function getTraceLogs(traceId: string): Promise<ObservabilityLogEntry[]> {
+	return queryObservabilityLogs(
+		`WHERE TraceId = '${escapeClickHouseString(traceId)}'`
+	);
+}
+
+export async function getMultiTraceLogs(traceIds: string[]): Promise<ObservabilityLogEntry[]> {
+	const sanitized = sanitizeTraceIds(traceIds);
+	if (sanitized.length === 0) return [];
+	const inClause = sanitized.map((id) => `'${escapeClickHouseString(id)}'`).join(', ');
+	return queryObservabilityLogs(`WHERE TraceId IN (${inClause})`);
+}
+
+export async function getSessionLogs(sessionId: string): Promise<ObservabilityLogEntry[]> {
+	const escaped = escapeClickHouseString(sessionId.trim());
+	if (!escaped) return [];
+	const traceIds = await getSessionTraceIds(sessionId);
+	const traceClause =
+		traceIds.length > 0
+			? ` OR TraceId IN (${traceIds.map((id) => `'${escapeClickHouseString(id)}'`).join(', ')})`
+			: '';
+	return queryObservabilityLogs(`
+		WHERE
+			(
+				(mapContains(LogAttributes, 'session.id') AND LogAttributes['session.id'] = '${escaped}')
+				OR (mapContains(ResourceAttributes, 'session.id') AND ResourceAttributes['session.id'] = '${escaped}')
+				OR (mapContains(LogAttributes, 'workflow.execution.id') AND LogAttributes['workflow.execution.id'] = '${escaped}')
+				OR (mapContains(ResourceAttributes, 'workflow.execution.id') AND ResourceAttributes['workflow.execution.id'] = '${escaped}')
+				${traceClause}
+			)
+	`);
 }
 
 /**

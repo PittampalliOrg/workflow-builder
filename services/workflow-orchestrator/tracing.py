@@ -12,6 +12,8 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 _TRACING_INITIALIZED = False
+PHOENIX_SESSION_ATTRIBUTE = "session.id"
+WORKFLOW_EXECUTION_ATTRIBUTE = "workflow.execution.id"
 
 
 def _parse_headers(value: str | None) -> dict[str, str] | None:
@@ -30,6 +32,22 @@ def _parse_headers(value: str | None) -> dict[str, str] | None:
         if k:
             out[k] = v
     return out or None
+
+
+def _parse_baggage_header(value: str | None) -> dict[str, str]:
+    if not value:
+        return {}
+    out: dict[str, str] = {}
+    for part in value.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        key = k.strip()
+        value_part = v.strip()
+        if key:
+            out[key] = value_part
+    return out
 
 
 def _otlp_endpoint_for(signal: str) -> str:
@@ -91,6 +109,7 @@ class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             from opentelemetry import trace as ot_trace
+            from opentelemetry import baggage as ot_baggage
 
             span = ot_trace.get_current_span()
             if span:
@@ -98,12 +117,21 @@ class TraceContextFilter(logging.Filter):
                 if ctx and ctx.trace_id:
                     record.trace_id = f"{ctx.trace_id:032x}"
                     record.span_id = f"{ctx.span_id:016x}"
+            session_id = workflow_session_id(
+                ot_baggage.get_baggage(PHOENIX_SESSION_ATTRIBUTE)
+                or ot_baggage.get_baggage("sessionId")
+                or ot_baggage.get_baggage("session_id")
+                or ot_baggage.get_baggage(WORKFLOW_EXECUTION_ATTRIBUTE)
+            )
+            if session_id:
+                record.__dict__[PHOENIX_SESSION_ATTRIBUTE] = session_id
+                record.__dict__[WORKFLOW_EXECUTION_ATTRIBUTE] = session_id
         except Exception:
             pass
         return True
 
 
-def setup_logging_json() -> None:
+def setup_logging_json(otel_handler: logging.Handler | None = None) -> None:
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
@@ -112,6 +140,9 @@ def setup_logging_json() -> None:
     handler.setFormatter(JsonTraceFormatter())
     handler.addFilter(TraceContextFilter())
     root.addHandler(handler)
+    if otel_handler is not None:
+        otel_handler.addFilter(TraceContextFilter())
+        root.addHandler(otel_handler)
 
 
 def setup_tracing(service_name: str, app: Any | None = None) -> bool:
@@ -132,8 +163,12 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
 
     try:
         from opentelemetry import metrics, trace
+        from opentelemetry import _logs as ot_logs
         from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
             OTLPMetricExporter,
+        )
+        from opentelemetry.exporter.otlp.proto.http._log_exporter import (
+            OTLPLogExporter,
         )
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
             OTLPSpanExporter,
@@ -142,6 +177,8 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
         from opentelemetry.instrumentation.logging import LoggingInstrumentor
         from opentelemetry.instrumentation.requests import RequestsInstrumentor
+        from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+        from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
         from opentelemetry.sdk.metrics import MeterProvider
         from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
         from opentelemetry.sdk.resources import Resource
@@ -179,6 +216,21 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
     meter_provider = MeterProvider(resource=resource, metric_readers=[metric_reader])
     metrics.set_meter_provider(meter_provider)
 
+    logger_provider = LoggerProvider(resource=resource)
+    logger_provider.add_log_record_processor(
+        BatchLogRecordProcessor(
+            OTLPLogExporter(
+                endpoint=_otlp_endpoint_for("logs"),
+                headers=headers,
+            )
+        )
+    )
+    ot_logs.set_logger_provider(logger_provider)
+    otel_handler = LoggingHandler(
+        level=logging.NOTSET,
+        logger_provider=logger_provider,
+    )
+
     # Auto instrumentation for inbound/outbound HTTP.
     RequestsInstrumentor().instrument()
     HTTPXClientInstrumentor().instrument()
@@ -189,7 +241,7 @@ def setup_tracing(service_name: str, app: Any | None = None) -> bool:
         except Exception as e:
             logger.debug(f"[Tracing] FastAPI instrumentation failed: {e}")
 
-    setup_logging_json()
+    setup_logging_json(otel_handler)
 
     _TRACING_INITIALIZED = True
     logger.info("[Tracing] OpenTelemetry enabled (OTLP HTTP)")
@@ -207,7 +259,9 @@ def inject_current_context() -> dict[str, str]:
         inject(carrier)
         # We only care about w3c headers today.
         filtered = {
-            k: v for k, v in carrier.items() if k in ("traceparent", "tracestate")
+            k: v
+            for k, v in carrier.items()
+            if k in ("traceparent", "tracestate", "baggage")
         }
         if filtered.get("traceparent"):
             return filtered
@@ -223,6 +277,44 @@ def inject_current_context() -> dict[str, str]:
         return filtered
     except Exception:
         return {}
+
+
+def workflow_session_id(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def extract_session_id(carrier: dict[str, Any] | None) -> str | None:
+    if not isinstance(carrier, dict):
+        return None
+    explicit = workflow_session_id(
+        carrier.get("sessionId")
+        or carrier.get("session_id")
+        or carrier.get(PHOENIX_SESSION_ATTRIBUTE)
+        or carrier.get("x-workflow-session-id")
+    )
+    if explicit:
+        return explicit
+    baggage = carrier.get("baggage")
+    if isinstance(baggage, str):
+        baggage_map = _parse_baggage_header(baggage)
+        return workflow_session_id(
+            baggage_map.get(PHOENIX_SESSION_ATTRIBUTE)
+            or baggage_map.get(WORKFLOW_EXECUTION_ATTRIBUTE)
+        )
+    return None
+
+
+def attach_workflow_session(span: Any, session_id: str | None) -> None:
+    if not span or not session_id:
+        return
+    try:
+        span.set_attribute(PHOENIX_SESSION_ATTRIBUTE, session_id)
+        span.set_attribute(WORKFLOW_EXECUTION_ATTRIBUTE, session_id)
+    except Exception:
+        pass
 
 
 def _extract_context(carrier: dict[str, str] | None):
@@ -251,6 +343,7 @@ def start_activity_span(
         return
 
     with tracer.start_as_current_span(name, context=parent_ctx) as span:
+        attach_workflow_session(span, extract_session_id(carrier))
         if attributes:
             for k, v in attributes.items():
                 if v is None:

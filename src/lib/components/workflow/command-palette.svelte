@@ -6,7 +6,7 @@
 	import * as Avatar from '$lib/components/ui/avatar';
 	import {
 		Play, Square, Globe, Variable, GitBranch, Clock, Send, Headphones,
-		Repeat, GitFork, Shield, Zap, OctagonAlert, Layers, Search
+		Repeat, GitFork, Shield, Zap, OctagonAlert, Layers, Search, Bot
 	} from 'lucide-svelte';
 	import { createActionCatalogStore, type ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
 	import type { createWorkflowStore, WorkflowNodeType } from '$lib/stores/workflow.svelte';
@@ -31,6 +31,7 @@
 
 	const nodeTypes: { type: WorkflowNodeType; label: string; icon: typeof Play; group: string }[] = [
 		{ type: 'call', label: 'Call', icon: Globe, group: 'Steps' },
+		{ type: 'agent', label: 'OpenShell Agent', icon: Bot, group: 'Steps' },
 		{ type: 'set', label: 'Set Variable', icon: Variable, group: 'Steps' },
 		{ type: 'switch', label: 'Switch / Branch', icon: GitBranch, group: 'Steps' },
 		{ type: 'wait', label: 'Wait / Delay', icon: Clock, group: 'Steps' },
@@ -79,6 +80,10 @@
 			.map(([group, items]) => ({ group, items }))
 			.sort((a, b) => a.group.localeCompare(b.group));
 	});
+
+	let totalItemCount = $derived(catalog.items.length);
+	let catalogError = $derived(catalog.error);
+	let partialErrors = $derived(catalog.partialErrors);
 
 	function getDefaultPosition(): { x: number; y: number } {
 		if (position) return position;
@@ -168,7 +173,7 @@
 </script>
 
 <Dialog {open} onOpenChange={(v) => { if (!v) onClose(); }}>
-	<DialogContent class="max-w-2xl max-h-[70vh] flex flex-col p-0 gap-0 overflow-hidden">
+	<DialogContent class="max-w-4xl max-h-[70vh] flex flex-col p-0 gap-0 overflow-hidden">
 		<Command.Root class="flex-1 flex flex-col" shouldFilter={false}>
 			<div class="flex items-center border-b px-3">
 				<Search size={14} class="shrink-0 text-muted-foreground" />
@@ -218,6 +223,11 @@
 					<div class="flex items-center justify-center py-6 text-sm text-muted-foreground">
 						Loading integrations...
 					</div>
+				{:else if catalogError && totalItemCount === 0}
+					<div class="flex flex-col items-center justify-center py-6 text-sm text-muted-foreground gap-1">
+						<span>Could not load integrations</span>
+						<span class="text-[10px] opacity-60">{catalogError}</span>
+					</div>
 				{:else if catalogGroups.length > 0}
 					{#each catalogGroups as group (group.group)}
 						<Command.Group heading={group.group}>
@@ -260,15 +270,24 @@
 				{/if}
 			</Command.List>
 
-			<div class="border-t px-3 py-2 text-[10px] text-muted-foreground">
-				{#if replaceNodeId}
-					Replacing action — edges and position will be preserved
-				{:else if insertOnEdgeId}
-					Inserting on edge — node will be placed between connected nodes
-				{:else}
-					<kbd class="rounded border px-1 py-0.5 text-[9px]">⌘K</kbd> to open &middot;
-					<kbd class="rounded border px-1 py-0.5 text-[9px]">↑↓</kbd> to navigate &middot;
-					<kbd class="rounded border px-1 py-0.5 text-[9px]">↵</kbd> to select
+			<div class="border-t px-3 py-2 text-[10px] text-muted-foreground flex items-center justify-between">
+				<span>
+					{#if replaceNodeId}
+						Replacing action — edges and position will be preserved
+					{:else if insertOnEdgeId}
+						Inserting on edge — node will be placed between connected nodes
+					{:else}
+						<kbd class="rounded border px-1 py-0.5 text-[9px]">⌘K</kbd> to open &middot;
+						<kbd class="rounded border px-1 py-0.5 text-[9px]">↑↓</kbd> to navigate &middot;
+						<kbd class="rounded border px-1 py-0.5 text-[9px]">↵</kbd> to select
+					{/if}
+				</span>
+				{#if totalItemCount > 0}
+					<span class="opacity-60">{totalItemCount} actions</span>
+				{:else if partialErrors.length > 0}
+					<span class="text-yellow-600 dark:text-yellow-400 opacity-80">
+						{partialErrors.length} service{partialErrors.length > 1 ? 's' : ''} unavailable
+					</span>
 				{/if}
 			</div>
 		</Command.Root>

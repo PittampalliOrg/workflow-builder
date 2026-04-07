@@ -43,7 +43,10 @@
 		const task = doArray.find((e) => Object.keys(e)[0] === taskName);
 		if (task) {
 			const def = task[taskName] as Record<string, unknown>;
-			return (typeof def?.call === 'string' && def.call !== 'durable/run') || def?.call === '';
+			return (
+				typeof def?.call === 'string' &&
+				!['durable/run', 'openshell/run'].includes(def.call)
+			) || def?.call === '';
 		}
 		// Fallback: check node data
 		const data = store.selectedNode.data as Record<string, unknown>;

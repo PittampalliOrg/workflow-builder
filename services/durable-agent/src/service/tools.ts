@@ -40,6 +40,62 @@ function getDurableInstanceId(
 		: undefined;
 }
 
+function getWorkspaceRef(args: Record<string, unknown>): string | undefined {
+	return typeof args.workspaceRef === "string" && args.workspaceRef.trim()
+		? args.workspaceRef.trim()
+		: undefined;
+}
+
+function getExecutionId(args: Record<string, unknown>): string | undefined {
+	return typeof args.executionId === "string" && args.executionId.trim()
+		? args.executionId.trim()
+		: undefined;
+}
+
+const OPEN_SHELL_RUNTIME_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL?.trim() ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
+
+async function proxyOpenShellWorkspaceCommand(input: {
+	workspaceRef: string;
+	command: string;
+	executionId?: string;
+	timeoutMs?: number;
+}): Promise<Record<string, unknown>> {
+	const response = await fetch(
+		`${OPEN_SHELL_RUNTIME_BASE_URL}/api/workspaces/command`,
+		{
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				workspaceRef: input.workspaceRef,
+				command: input.command,
+				...(input.executionId ? { executionId: input.executionId } : {}),
+				...(typeof input.timeoutMs === "number"
+					? { timeoutMs: input.timeoutMs }
+					: {}),
+			}),
+		},
+	);
+	const text = await response.text();
+	let parsed: unknown = undefined;
+	if (text.trim()) {
+		try {
+			parsed = JSON.parse(text);
+		} catch {
+			parsed = { raw: text };
+		}
+	}
+	if (!response.ok) {
+		throw new Error(
+			`OpenShell workspace command failed (${response.status}): ${typeof parsed === "object" && parsed ? JSON.stringify(parsed) : text}`,
+		);
+	}
+	return typeof parsed === "object" && parsed ? (parsed as Record<string, unknown>) : {};
+}
+
 /** Escape a string for safe use inside single-quoted shell arguments. */
 function shellEscape(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
@@ -311,6 +367,15 @@ export const workspaceTools: Record<string, DurableAgentTool> = {
 					workspaceRef: session.workspaceRef,
 					durableInstanceId: getDurableInstanceId(args),
 					command,
+				});
+			}
+			const workspaceRef = getWorkspaceRef(args);
+			if (workspaceRef) {
+				return proxyOpenShellWorkspaceCommand({
+					workspaceRef,
+					executionId: getExecutionId(args),
+					command,
+					timeoutMs: 30_000,
 				});
 			}
 			return executeCommandViaSandbox(command, { timeout: 30_000 });

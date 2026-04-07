@@ -18,11 +18,7 @@
 	}
 
 	function handleDuplicate() {
-		const node = store.nodes.find((n) => n.id === nodeId);
-		if (!node) return;
-
-		const offset = { x: node.position.x + 50, y: node.position.y + 50 };
-		store.addNode(node.data.type, offset, node.data.label);
+		store.duplicateNode(nodeId);
 	}
 
 	function handleDelete() {

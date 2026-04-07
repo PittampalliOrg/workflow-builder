@@ -22,13 +22,7 @@
 
 	function duplicateNode() {
 		if (!nodeId) return;
-		const node = store.nodes.find((n) => n.id === nodeId);
-		if (!node) return;
-		store.addNode(
-			node.type as any,
-			{ x: node.position.x + 50, y: node.position.y + 50 },
-			(node.data as { label?: string }).label
-		);
+		store.duplicateNode(nodeId);
 		onClose();
 	}
 
@@ -57,7 +51,9 @@
 	let isCallNode = $derived.by(() => {
 		if (!nodeId) return false;
 		const node = store.nodes.find((n) => n.id === nodeId);
-		return node?.type === 'call';
+		if (!node || node.type !== 'call') return false;
+		const call = node.data?.taskConfig?.call;
+		return typeof call === 'string' ? !['durable/run', 'openshell/run'].includes(call) : true;
 	});
 </script>
 

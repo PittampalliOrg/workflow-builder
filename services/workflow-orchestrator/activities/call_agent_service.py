@@ -558,6 +558,135 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             return {"success": False, "error": str(e)}
 
 
+def _should_use_durable_openshell_runtime(input_data: dict) -> bool:
+    action_type = str(input_data.get("actionType") or "").strip().lower()
+    if action_type == "openshell/session-start":
+        return False
+
+    agent_graph = input_data.get("agentGraph")
+    if isinstance(agent_graph, dict) and len(agent_graph) > 0:
+        return True
+
+    agent_config = input_data.get("agentConfig")
+    if not isinstance(agent_config, dict):
+        return False
+
+    loop_config = agent_config.get("loop")
+    if not isinstance(loop_config, dict):
+        return False
+
+    strategy = str(loop_config.get("strategy") or "").strip().lower()
+    return strategy == "graph_v1"
+
+
+def _call_durable_agent_via_openshell(ctx, input_data: dict) -> dict:
+    workspace_ref = str(input_data.get("workspaceRef") or "").strip()
+    run_route = "api/run-sandboxed" if workspace_ref else "api/run"
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": str(input_data.get("actionType") or "openshell/run"),
+        "workflow.instance_id": input_data.get("parentExecutionId") or "",
+        "workflow.db_execution_id": input_data.get("executionId") or "",
+        "workflow.id": input_data.get("workflowId") or "",
+        "node.id": input_data.get("nodeId") or "",
+        "node.name": input_data.get("nodeName") or "",
+    }
+
+    with start_activity_span(
+        "activity.call_openshell_durable_agent_run",
+        otel,
+        attrs,
+    ):
+        try:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 30)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+            if timeout_minutes <= 0:
+                timeout_minutes = 30
+            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
+
+            payload = {
+                "prompt": input_data.get("prompt") or "",
+                "mode": input_data.get("mode") or "execute_direct",
+                "cwd": input_data.get("sandboxRepoPath") or input_data.get("cwd"),
+                "model": input_data.get("model"),
+                "maxTurns": input_data.get("maxTurns"),
+                "timeoutMinutes": timeout_minutes,
+                "stopCondition": input_data.get("stopCondition"),
+                "requireFileChanges": input_data.get("requireFileChanges"),
+                "cleanupWorkspace": input_data.get("cleanupWorkspace"),
+                "instructions": input_data.get("instructions"),
+                "tools": input_data.get("tools"),
+                "agentGraph": input_data.get("agentGraph"),
+                "agentConfig": input_data.get("agentConfig"),
+                "loopPolicy": input_data.get("loopPolicy"),
+                "workspaceRef": workspace_ref or None,
+                "parentExecutionId": input_data.get("parentExecutionId"),
+                "executionId": input_data.get("executionId"),
+                "workflowId": input_data.get("workflowId"),
+                "nodeId": input_data.get("nodeId"),
+                "nodeName": input_data.get("nodeName"),
+                "waitForCompletion": True,
+                "orchestratorManaged": True,
+            }
+            data = _dapr_invoke_or_raise(
+                DURABLE_AGENT_APP_ID,
+                run_route,
+                payload,
+                timeout=request_timeout_seconds,
+                service_label="OpenShell durable agent run",
+            )
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            text = (
+                str(data.get("text") or "").strip()
+                or str(result.get("text") or "").strip()
+                or str(result.get("content") or "").strip()
+            )
+            compact_result = {
+                "success": bool(data.get("success", False)),
+                "agentWorkflowId": data.get("workflow_id"),
+                "daprInstanceId": data.get("dapr_instance_id"),
+                "childWorkflowName": "openshell-run",
+                "childAppId": DURABLE_AGENT_APP_ID,
+                "sandboxName": workspace_ref or input_data.get("sandboxName"),
+                "provider": input_data.get("provider"),
+                "engine": "durable-agent",
+                "text": text,
+                "content": text,
+                "result": result,
+            }
+            for field_name in (
+                "loopStopReason",
+                "loopStopCondition",
+                "requiresApproval",
+                "usageTotals",
+                "compactionApplied",
+                "compactionCount",
+                "contextOverflowRecovered",
+                "lastCompactionReason",
+                "fileChanges",
+                "snapshotRefs",
+                "patch",
+                "patchRef",
+                "changeSummary",
+                "evalResults",
+                "traceId",
+            ):
+                field_value = data.get(field_name)
+                if field_value is None:
+                    field_value = result.get(field_name)
+                if field_value is not None:
+                    compact_result[field_name] = field_value
+            if data.get("error"):
+                compact_result["error"] = data.get("error")
+            return compact_result
+        except Exception as e:
+            logger.error(f"[Call OpenShell Durable Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
 def call_openshell_agent_run(ctx, input_data: dict) -> dict:
     """
     Run an OpenShell sandboxed Claude-style coding task synchronously.
@@ -582,6 +711,8 @@ def call_openshell_agent_run(ctx, input_data: dict) -> dict:
         try:
             action_type = str(input_data.get("actionType") or "openshell/run").strip()
             is_session_start = action_type == "openshell/session-start"
+            if _should_use_durable_openshell_runtime(input_data):
+                return _call_durable_agent_via_openshell(ctx, input_data)
             timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
             try:
                 timeout_minutes = int(timeout_minutes_raw or 30)
