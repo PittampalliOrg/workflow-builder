@@ -193,6 +193,7 @@ export class DurableAgent {
 			this.name,
 			options.modelResolver,
 			this.loopStrategies,
+			options.mastra?.modelSpec,
 		);
 		this.boundRunTool = createRunTool(this.tools);
 		this.boundSaveToolResults = createSaveToolResults(

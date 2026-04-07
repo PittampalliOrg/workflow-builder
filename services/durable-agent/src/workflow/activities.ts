@@ -41,6 +41,10 @@ import {
 	resolveWorkflowSessionId,
 	WORKFLOW_EXECUTION_ATTRIBUTE,
 } from "../observability/workflow-session.js";
+import {
+	applyLlmSpanAttributes,
+	applyToolSpanAttributes,
+} from "../observability/llm-telemetry.js";
 
 const tracer = trace.getTracer("durable-agent");
 
@@ -313,6 +317,7 @@ export function createCallLlm(
 	agentName?: string,
 	resolveModelSpec?: (modelSpec: string) => LanguageModel,
 	loopStrategies?: Record<string, AgentLoopStrategy>,
+	defaultModelSpec?: string,
 ) {
 	let turnCount = 0;
 
@@ -691,6 +696,27 @@ export function createCallLlm(
 								},
 							),
 						);
+						applyLlmSpanAttributes({
+							span,
+							modelSpec:
+								typeof payload.modelSpec === "string"
+									? payload.modelSpec.trim()
+									: undefined,
+							defaultModelSpec,
+							inputMessages: preparedMessages,
+							outputContent: llmResult.content,
+							outputToolCalls: llmResult.tool_calls,
+							systemPrompt: effectiveSystemPrompt,
+							toolChoice: strategyPlan?.toolChoice ?? payload.toolChoice,
+							activeToolNames: Object.keys(activeTools),
+							declarationOnlyTools,
+							approvalRequiredTools,
+							appendInstructions: strategyPlan?.appendInstructions,
+							finishReason: llmResult.finish_reason,
+							usage: llmResult.usage,
+							agentRunId: payload.instanceId,
+							turn: turnCount,
+						});
 						span.setStatus({ code: SpanStatusCode.OK });
 						return llmResult;
 					} catch (err) {
@@ -830,6 +856,13 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 				let result: unknown;
 				try {
 					result = await tool.execute!(enrichedArgs);
+					applyToolSpanAttributes({
+						span,
+						toolName: fnName,
+						toolArguments: args,
+						toolResult: result,
+						agentRunId: payload.instanceId,
+					});
 					span.setAttribute(
 						"gen_ai.tool.call.result",
 						JSON.stringify(result).slice(0, 4096),
@@ -837,6 +870,13 @@ export function createRunTool(tools: Record<string, DurableAgentTool>) {
 					span.setStatus({ code: SpanStatusCode.OK });
 				} catch (err) {
 					result = { error: String(err) };
+					applyToolSpanAttributes({
+						span,
+						toolName: fnName,
+						toolArguments: args,
+						toolResult: result,
+						agentRunId: payload.instanceId,
+					});
 					span.setStatus({
 						code: SpanStatusCode.ERROR,
 						message: String(err),

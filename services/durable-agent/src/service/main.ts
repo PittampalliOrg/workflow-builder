@@ -1204,6 +1204,9 @@ async function getOrCreateConfiguredAgent(
       maxIterations: normalizedConfig.maxTurns ?? 50,
       continueAsNewAfterTurns: DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS,
     },
+    mastra: {
+      modelSpec: effectiveModelSpec,
+    },
   });
 
   await configuredAgent.start();
@@ -1336,6 +1339,7 @@ Use workspace tools to help users with file operations and command execution:
           continueAsNewAfterTurns: DURABLE_RUN_CONTINUE_AS_NEW_AFTER_TURNS,
         },
         mastra: {
+          modelSpec: modelSpec,
           processors: processors.length > 0 ? processors : undefined,
         },
       });
