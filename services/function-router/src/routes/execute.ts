@@ -1031,6 +1031,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
+          target.appId === "claude-code-agent" ||
           target.appId === "openshell-agent-runtime";
 
         if (isBuiltinRuntime) {

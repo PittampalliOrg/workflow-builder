@@ -1363,6 +1363,53 @@ commands:
         - name: buildah-cache
           persistentVolumeClaim:
             claimName: buildah-cache-workflow-builder
+    ---
+    apiVersion: tekton.dev/v1
+    kind: PipelineRun
+    metadata:
+      generateName: devspace-claude-code-agent-dev-image-
+      namespace: workflow-builder-builds
+    spec:
+      timeouts:
+        pipeline: 2h0m0s
+      taskRunTemplate:
+        serviceAccountName: workflow-builder-build-trigger
+      pipelineSpec:
+        params:
+          - name: git_url
+            type: string
+          - name: git_sha
+            type: string
+        workspaces:
+          - name: buildah-cache
+        tasks:
+          - name: build-and-push
+            retries: 1
+            taskRef:
+              name: workflow-builder-image-build-push
+            workspaces:
+              - name: buildah-cache
+                workspace: buildah-cache
+            params:
+              - name: git_url
+                value: \$(params.git_url)
+              - name: git_revision
+                value: \$(params.git_sha)
+              - name: context_dir
+                value: .
+              - name: dockerfile
+                value: Dockerfile
+              - name: image
+                value: gitea-ryzen.tail286401.ts.net/giteaadmin/claude-code-agent:git-\$(params.git_sha)
+      params:
+        - name: git_url
+          value: https://gitea-ryzen.tail286401.ts.net/giteaadmin/claude-code-src.git
+        - name: git_sha
+          value: ${GIT_SHA}
+      workspaces:
+        - name: buildah-cache
+          persistentVolumeClaim:
+            claimName: buildah-cache-workflow-builder
     EOF
     echo "==> PipelineRuns created in namespace workflow-builder-builds"
     echo "    Watch with: kubectl get pipelineruns -n workflow-builder-builds -w"
