@@ -7,18 +7,25 @@ import {
 	trace,
 } from "@opentelemetry/api";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import {
 	defaultResource,
 	resourceFromAttributes,
 } from "@opentelemetry/resources";
+import {
+	BatchLogRecordProcessor,
+	LoggerProvider,
+} from "@opentelemetry/sdk-logs";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import { logs as otelLogsApi } from "@opentelemetry/api-logs";
 
 type OtelGlobal = {
 	sdk?: NodeSDK;
+	logsProvider?: LoggerProvider;
 	started?: boolean;
 };
 
@@ -32,15 +39,7 @@ type OtelLogger = {
 		attributes?: Record<string, string>;
 	}): void;
 };
-let otelLogsApi: { getLogger(name: string): OtelLogger } | null = null;
-
-void import("@opentelemetry/api-logs")
-	.then((mod) => {
-		otelLogsApi = mod.logs;
-	})
-	.catch(() => {
-		otelLogsApi = null;
-	});
+const otelLogsBridge = otelLogsApi;
 
 function getOtelGlobal(): OtelGlobal {
 	const g = globalThis as unknown as Record<string, unknown>;
@@ -89,7 +88,7 @@ function parseResourceAttributes(
 
 function buildOtlpSignalUrl(
 	base: string,
-	signal: "traces" | "metrics",
+	signal: "traces" | "metrics" | "logs",
 ): string {
 	const trimmed = base.replace(/\/+$/, "");
 	// If caller already provided /v1/<signal>, keep it.
@@ -157,14 +156,33 @@ export function initOtel(serviceName: string): void {
 		],
 	});
 
+	const logsProvider = new LoggerProvider({
+		resource,
+		processors: [
+			new BatchLogRecordProcessor(
+			new OTLPLogExporter({
+				url: buildOtlpSignalUrl(endpoint, "logs"),
+				headers,
+			}),
+			),
+		],
+	});
+	otelLogsBridge.setGlobalLoggerProvider(logsProvider);
+
 	sdk.start();
 	installConsoleOtelBridge();
 	g.sdk = sdk;
+	g.logsProvider = logsProvider;
 	g.started = true;
 
 	const shutdown = async () => {
 		try {
 			await sdk.shutdown();
+		} catch {
+			// ignore
+		}
+		try {
+			await logsProvider.shutdown();
 		} catch {
 			// ignore
 		}
@@ -206,9 +224,8 @@ function emitOtelLog(
 	severityText: "INFO" | "WARN" | "ERROR",
 	args: unknown[],
 ): void {
-	if (!otelLogsApi) return;
 	try {
-		otelLogsApi.getLogger(activeServiceName).emit({
+		otelLogsBridge.getLogger(activeServiceName).emit({
 			severityText,
 			body: normalizeConsoleArgs(args),
 			attributes: otelLogMixin(),
