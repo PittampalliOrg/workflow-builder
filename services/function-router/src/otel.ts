@@ -6,6 +6,7 @@ import {
 	propagation,
 	trace,
 } from "@opentelemetry/api";
+import { inspect } from "node:util";
 import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
@@ -211,6 +212,16 @@ function normalizeConsoleArgs(args: unknown[]): string {
 	return args
 		.map((value) => {
 			if (typeof value === "string") return value;
+			if (value && typeof value === "object") {
+				const maybeMsg =
+					"msg" in value && typeof value.msg === "string" ? value.msg : null;
+				if (maybeMsg) return maybeMsg;
+				try {
+					return JSON.stringify(value, getCircularReplacer());
+				} catch {
+					return inspect(value, { depth: 4, breakLength: 120 });
+				}
+			}
 			try {
 				return JSON.stringify(value);
 			} catch {
@@ -218,6 +229,17 @@ function normalizeConsoleArgs(args: unknown[]): string {
 			}
 		})
 		.join(" ");
+}
+
+function getCircularReplacer(): (_key: string, value: unknown) => unknown {
+	const seen = new WeakSet<object>();
+	return (_key, value) => {
+		if (value && typeof value === "object") {
+			if (seen.has(value)) return "[Circular]";
+			seen.add(value);
+		}
+		return value;
+	};
 }
 
 function emitOtelLog(
