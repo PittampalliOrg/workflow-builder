@@ -218,6 +218,24 @@ function emitOtelLog(
 	}
 }
 
+function normalizePinoLevel(level: number): "INFO" | "WARN" | "ERROR" {
+	if (level >= 50) return "ERROR";
+	if (level >= 40) return "WARN";
+	return "INFO";
+}
+
+export const otelPinoHooks = {
+	logMethod(
+		this: unknown,
+		args: unknown[],
+		method: (...methodArgs: unknown[]) => void,
+		level: number,
+	): void {
+		emitOtelLog(normalizePinoLevel(level), args);
+		method.apply(this, args);
+	},
+};
+
 function installConsoleOtelBridge(): void {
 	const g = globalThis as Record<string, unknown>;
 	if (g[OTEL_CONSOLE_BRIDGE_KEY]) return;

@@ -1,4 +1,4 @@
-import { otelLogMixin } from "./otel.js";
+import { otelLogMixin, otelPinoHooks } from "./otel.js";
 
 import { setGlobalDispatcher, Agent, Pool } from "undici";
 
@@ -34,6 +34,7 @@ async function main() {
 		logger: {
 			level: process.env.LOG_LEVEL || "info",
 			mixin: otelLogMixin,
+			hooks: otelPinoHooks,
 		},
 		bodyLimit: 104857600, // 100MB
 		connectionTimeout: 0,
