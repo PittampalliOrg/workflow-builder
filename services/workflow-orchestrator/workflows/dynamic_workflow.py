@@ -2376,6 +2376,8 @@ def process_agent_child_workflow(
         True
         if uses_observable_agent_runtime
         else False
+        if is_claude_agent
+        else False
         if is_openshell_agent
         else native_child_workflow_enabled and run_mode == "execute_direct"
     )
