@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
@@ -64,6 +65,20 @@ export const POST: RequestHandler = async ({ request, url }) => {
 
 	if (!db) {
 		return json({ error: 'Database not configured' }, { status: 503 });
+	}
+	try {
+		await assertExecutionReadModelColumns();
+	} catch (schemaError) {
+		console.error('[EventIngest] execution read-model schema check failed:', schemaError);
+		return json(
+			{
+				error:
+					schemaError instanceof Error
+						? schemaError.message
+						: 'Execution read-model migration is required'
+			},
+			{ status: 503 }
+		);
 	}
 
 	// 2. Parse query params
@@ -147,10 +162,12 @@ export const POST: RequestHandler = async ({ request, url }) => {
 				workflowId: workflow.id,
 				userId: workflow.userId,
 				status: 'running',
+				phase: 'running',
+				progress: 0,
 				input: resolved.input,
 				executionIrVersion: 'sw-1.0.0'
 			})
-			.returning();
+			.returning({ id: workflowExecutions.id });
 	} catch (dbErr) {
 		console.error('[EventIngest] DB insert failed:', dbErr);
 		return json({ error: 'Failed to create execution record' }, { status: 500 });
@@ -200,7 +217,8 @@ export const POST: RequestHandler = async ({ request, url }) => {
 			.set({
 				daprInstanceId: result.instanceId,
 				phase: 'running',
-				progress: 0
+				progress: 0,
+				workflowSessionId: execution.id
 			})
 			.where(eq(workflowExecutions.id, execution.id));
 

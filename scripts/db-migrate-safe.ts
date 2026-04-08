@@ -62,7 +62,7 @@ async function main() {
 		return;
 	}
 
-	const status = run("pnpm", ["db:migrate:drizzle"]);
+	const status = run("pnpm", ["db:migrate"]);
 	process.exit(status);
 }
 

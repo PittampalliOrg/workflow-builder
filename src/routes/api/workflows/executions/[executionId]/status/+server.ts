@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflowExecutions } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { extractExecutionTraceIds, findCorrelatedTraceIds } from '$lib/server/otel/clickhouse';
@@ -17,6 +18,17 @@ export const GET: RequestHandler = async ({ params }) => {
 
 	// Try DB first for the execution record
 	if (db) {
+		try {
+			await assertExecutionReadModelColumns();
+		} catch (schemaError) {
+			console.error('[ExecutionStatus] execution read-model schema check failed:', schemaError);
+			return error(
+				503,
+				schemaError instanceof Error
+					? schemaError.message
+					: 'Execution read-model migration is required'
+			);
+		}
 		const [execution] = await db
 			.select()
 			.from(workflowExecutions)
@@ -26,9 +38,14 @@ export const GET: RequestHandler = async ({ params }) => {
 		if (execution) {
 			let liveStatus = null;
 
-			// Always query orchestrator when we have a Dapr instance ID
-			// (needed for traceId even after completion)
-			if (execution.daprInstanceId) {
+			const shouldRefreshRuntime =
+				Boolean(execution.daprInstanceId) &&
+				(execution.status === 'running' ||
+					execution.status === 'pending' ||
+					!execution.primaryTraceId ||
+					!execution.currentNodeId);
+
+			if (shouldRefreshRuntime && execution.daprInstanceId) {
 				try {
 					const orchestratorUrl = getOrchestratorUrl();
 					const res = await daprFetch(
@@ -45,7 +62,10 @@ export const GET: RequestHandler = async ({ params }) => {
 			// Extract per-step outputs and traceId from DB output
 			const dbOutput = execution.output as Record<string, unknown> | null;
 			const stepOutputs = dbOutput?.outputs as Record<string, unknown> | undefined;
-			const dbTraceId = (dbOutput as Record<string, unknown>)?.traceId as string | undefined;
+			const executionRecord = execution as Record<string, unknown>;
+			const dbTraceId =
+				(typeof executionRecord.primaryTraceId === 'string' ? executionRecord.primaryTraceId : undefined) ??
+				((dbOutput as Record<string, unknown>)?.traceId as string | undefined);
 			const allTraceIds = extractExecutionTraceIds(execution.output);
 
 			// Parse step outputs into normalized steps array
@@ -64,6 +84,10 @@ export const GET: RequestHandler = async ({ params }) => {
 						};
 					})
 				: [];
+
+			if (typeof executionRecord.primaryTraceId === 'string' && !allTraceIds.includes(executionRecord.primaryTraceId)) {
+				allTraceIds.unshift(executionRecord.primaryTraceId);
+			}
 
 			// Merge live traceId into allTraceIds if present
 			if (liveStatus?.traceId && !allTraceIds.includes(liveStatus.traceId)) {
@@ -90,8 +114,22 @@ export const GET: RequestHandler = async ({ params }) => {
 				status: execution.status,
 				phase: (execution as Record<string, unknown>).phase ?? null,
 				progress: (execution as Record<string, unknown>).progress ?? null,
+				currentNodeId:
+					(typeof executionRecord.currentNodeId === 'string' ? executionRecord.currentNodeId : null),
+				currentNodeName:
+					(typeof executionRecord.currentNodeName === 'string' ? executionRecord.currentNodeName : null),
 				input: execution.input,
 				output: execution.output,
+				summaryOutput:
+					(executionRecord.summaryOutput as Record<string, unknown> | null | undefined) ?? null,
+				sessionId:
+					(typeof executionRecord.workflowSessionId === 'string'
+						? executionRecord.workflowSessionId
+						: null),
+				lastAgentEventId:
+					(typeof executionRecord.lastAgentEventId === 'number'
+						? executionRecord.lastAgentEventId
+						: 0),
 				steps,
 				startedAt: execution.startedAt?.toISOString() ?? null,
 				completedAt: execution.completedAt?.toISOString() ?? null,
@@ -100,8 +138,6 @@ export const GET: RequestHandler = async ({ params }) => {
 				...(liveStatus
 					? {
 							runtimeStatus: liveStatus.runtimeStatus,
-							currentNodeId: liveStatus.currentNodeId ?? null,
-							currentNodeName: liveStatus.currentNodeName ?? null,
 							nodeStatuses: liveStatus.nodeStatuses ?? [],
 							traceId: liveStatus.traceId ?? null,
 							outputs: liveStatus.outputs ?? null

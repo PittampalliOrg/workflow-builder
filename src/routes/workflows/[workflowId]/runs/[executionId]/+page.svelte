@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onDestroy, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 	import {
 		SvelteFlow,
 		MiniMap,
@@ -37,11 +37,12 @@
 	import * as Breadcrumb from '$lib/components/ui/breadcrumb';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import { Card, CardContent } from '$lib/components/ui/card';
-	import { createAgentStream, type AgentStreamEvent } from '$lib/stores/agent-stream.svelte';
+	import { createExecutionStream } from '$lib/stores/execution-stream.svelte';
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
+	import type { ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
@@ -156,8 +157,8 @@
 	let isLoadingWorkflow = $state(true);
 	let isLoadingStatus = $state(true);
 
-	// Agent stream
-	let agentStream = $state<ReturnType<typeof createAgentStream> | null>(null);
+	// Execution stream
+	let executionStream = $state<ReturnType<typeof createExecutionStream> | null>(null);
 	let timelineRef = $state<HTMLDivElement | null>(null);
 
 	const nodeTypes: NodeTypes = {
@@ -211,76 +212,6 @@
 		}
 	}
 
-	// Poll execution status
-	async function pollStatus() {
-		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/status`);
-			if (!res.ok) throw new Error('Failed to fetch status');
-			const data = await res.json();
-			executionStatus = data.status ?? data.runtimeStatus ?? 'unknown';
-			startTime = data.startedAt ?? data.createdAt ?? startTime;
-			endTime = data.completedAt ?? endTime;
-			output = data.output ?? output;
-			input = data.input ?? input;
-			errorMessage = data.error ?? errorMessage;
-			instanceId = data.instanceId ?? instanceId;
-			traceId = data.traceId ?? traceId;
-
-			// Collect all traceIds from status response
-			if (Array.isArray(data.traceIds)) {
-				const merged = new Set([...allTraceIds, ...data.traceIds]);
-				if (data.traceId) merged.add(data.traceId);
-				allTraceIds = Array.from(merged);
-			} else if (data.traceId && !allTraceIds.includes(data.traceId)) {
-				allTraceIds = [...allTraceIds, data.traceId];
-			}
-
-			if (data.nodeStatuses) {
-				nodeStatuses = data.nodeStatuses;
-			}
-		} catch {
-			// Ignore poll errors
-		} finally {
-			isLoadingStatus = false;
-		}
-	}
-
-	// Fetch logs
-	async function fetchLogs() {
-		isLoadingLogs = true;
-		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/logs`);
-			if (!res.ok) throw new Error('Failed to fetch logs');
-			const data = await res.json();
-			logs = data.logs ?? [];
-			if (data.traceId && !traceId) traceId = data.traceId;
-			// Merge traceIds from logs endpoint
-			if (Array.isArray(data.traceIds) && data.traceIds.length > 0) {
-				const merged = new Set([...allTraceIds, ...data.traceIds]);
-				allTraceIds = Array.from(merged);
-			}
-		} catch {
-			// Ignore
-		} finally {
-			isLoadingLogs = false;
-		}
-	}
-
-	async function fetchBrowserArtifacts() {
-		isLoadingBrowserArtifacts = true;
-		browserArtifactError = null;
-		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/browser-artifacts`);
-			if (!res.ok) throw new Error('Failed to fetch browser artifacts');
-			const data = await res.json();
-			browserArtifacts = data.artifacts ?? [];
-		} catch (err) {
-			browserArtifactError = err instanceof Error ? err.message : 'Failed to fetch browser artifacts';
-		} finally {
-			isLoadingBrowserArtifacts = false;
-		}
-	}
-
 	async function fetchInvestigation() {
 		if (investigationFetched) return;
 		investigationFetched = true;
@@ -324,7 +255,7 @@
 
 	// Auto-scroll timeline to bottom
 	$effect(() => {
-		if (agentStream && agentStream.events.length > 0 && timelineRef) {
+		if (executionStream && executionStream.events.length > 0 && timelineRef) {
 			timelineRef.scrollTop = timelineRef.scrollHeight;
 		}
 	});
@@ -332,18 +263,45 @@
 	// Initialize
 	$effect(() => {
 		loadWorkflow();
-		pollStatus();
-		fetchLogs();
-		fetchBrowserArtifacts();
-		agentStream = createAgentStream(executionId);
+		executionStream?.dispose?.();
+		executionStream = createExecutionStream(executionId);
+		return () => executionStream?.dispose?.();
 	});
 
-	// Re-fetch logs and reset trace when execution completes (new traceIds may appear)
+	$effect(() => {
+		const snapshot = executionStream?.snapshot;
+		if (!snapshot) return;
+
+		executionStatus = snapshot.status ?? 'unknown';
+		startTime = snapshot.startedAt ?? startTime;
+		endTime = snapshot.completedAt ?? endTime;
+		output = (snapshot.output as Record<string, unknown> | null) ?? output;
+		input = snapshot.input ?? input;
+		errorMessage = snapshot.error ?? errorMessage;
+		instanceId = snapshot.instanceId ?? instanceId;
+		traceId = snapshot.traceId ?? traceId;
+		allTraceIds = Array.isArray(snapshot.traceIds) ? snapshot.traceIds : allTraceIds;
+		nodeStatuses = snapshot.nodeStatuses ?? nodeStatuses;
+		logs = (snapshot.steps as StepLog[]) ?? logs;
+		browserArtifacts = (snapshot.browserArtifacts as BrowserArtifact[]) ?? browserArtifacts;
+		browserArtifactError = executionStream?.error ?? null;
+		isLoadingStatus = false;
+		isLoadingLogs = false;
+		isLoadingBrowserArtifacts = false;
+	});
+
+	$effect(() => {
+		if (executionStream?.error && !executionStream.snapshot) {
+			browserArtifactError = executionStream.error;
+			isLoadingStatus = false;
+			isLoadingLogs = false;
+			isLoadingBrowserArtifacts = false;
+		}
+	});
+
 	let prevRunning = $state(true);
 	$effect(() => {
 		if (prevRunning && !isRunning) {
-			fetchLogs();
-			fetchBrowserArtifacts();
 			investigationFetched = false;
 			if (activeTab === 'trace') {
 				fetchInvestigation();
@@ -352,27 +310,13 @@
 		prevRunning = isRunning;
 	});
 
-	// Set up polling interval when running
-	let pollInterval: ReturnType<typeof setInterval> | null = null;
-
-	$effect(() => {
-		if (isRunning) {
-			pollInterval = setInterval(pollStatus, 3000);
-		} else if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = null;
-		}
-	});
-
-	onDestroy(() => {
-		if (pollInterval) clearInterval(pollInterval);
-	});
-
 	function eventIcon(type: string) {
 		switch (type) {
 			case 'tool_call_start':
 			case 'tool_call_end':
+			case 'tool_call_error':
 				return Wrench;
+			case 'llm_start':
 			case 'llm_token':
 			case 'llm_complete':
 				return MessageSquare;
@@ -387,12 +331,16 @@
 		}
 	}
 
-	function eventLabel(event: AgentStreamEvent): string {
+	function eventLabel(event: ExecutionTimelineEvent): string {
 		switch (event.type) {
 			case 'tool_call_start':
 				return `Tool: ${(event.data.toolName as string) ?? (event.data.name as string) ?? 'unknown'}`;
+			case 'tool_call_error':
+				return `Tool failed: ${(event.data.toolName as string) ?? (event.data.name as string) ?? 'unknown'}`;
 			case 'tool_call_end':
 				return 'Tool completed';
+			case 'llm_start':
+				return `Model: ${(event.data.model as string) ?? (event.data.modelName as string) ?? 'started'}`;
 			case 'llm_token':
 				return `Token: ${((event.data.token as string) ?? '').slice(0, 80)}`;
 			case 'llm_complete':
@@ -586,7 +534,7 @@
 			traceId={traceId ?? undefined}
 		/>
 
-		{#if agentStream?.isConnected}
+		{#if executionStream?.isConnected}
 			<span class="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
 				<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
 				Live
@@ -723,24 +671,24 @@
 		<!-- Tab 3: Timeline -->
 		<TabsContent value="timeline" class="flex-1 overflow-hidden">
 			<div class="flex h-full flex-col">
-				{#if agentStream?.currentPhase}
+				{#if executionStream?.currentPhase}
 					<div class="border-b border-border px-4 py-2 bg-muted/50">
 						<span class="text-xs text-muted-foreground">Phase:</span>
-						<span class="text-xs font-medium ml-1">{agentStream.currentPhase}</span>
+						<span class="text-xs font-medium ml-1">{executionStream.currentPhase}</span>
 					</div>
 				{/if}
 
-				{#if agentStream?.activeToolName}
+				{#if executionStream?.activeToolName}
 					<div class="border-b border-border px-4 py-2 bg-yellow-50 dark:bg-yellow-950/20">
 						<span class="text-xs text-muted-foreground">Active tool:</span>
-						<span class="text-xs font-medium ml-1">{agentStream.activeToolName}</span>
+						<span class="text-xs font-medium ml-1">{executionStream.activeToolName}</span>
 					</div>
 				{/if}
 
 				<div class="flex-1 overflow-y-auto" bind:this={timelineRef}>
-					{#if agentStream && agentStream.events.length > 0}
+					{#if executionStream && executionStream.events.length > 0}
 						<div class="divide-y divide-border">
-							{#each agentStream.events as event, i (i)}
+							{#each executionStream.events as event, i (i)}
 								{@const Icon = eventIcon(event.type)}
 								<div class="flex gap-3 px-4 py-2.5 hover:bg-muted/30 transition-colors">
 									<div class="mt-0.5 shrink-0">
@@ -765,10 +713,10 @@
 								</div>
 							{/each}
 						</div>
-					{:else if agentStream?.error}
+					{:else if executionStream?.error}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<XCircle size={20} class="text-red-500" />
-							<p class="text-sm">{agentStream.error}</p>
+							<p class="text-sm">{executionStream.error}</p>
 						</div>
 					{:else if isRunning}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">

@@ -169,6 +169,20 @@
 			"when": 1774321392671,
 			"tag": "0023_chunky_charles_xavier",
 			"breakpoints": true
+		},
+		{
+			"idx": 24,
+			"version": "7",
+			"when": 1775666406000,
+			"tag": "0024_execution_read_model",
+			"breakpoints": true
+		},
+		{
+			"idx": 25,
+			"version": "7",
+			"when": 1775671800000,
+			"tag": "0025_code_functions",
+			"breakpoints": true
 		}
 	]
 }

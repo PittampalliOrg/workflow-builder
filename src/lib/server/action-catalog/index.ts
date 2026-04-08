@@ -84,6 +84,7 @@ let cachedRemoteActions:
 	  }
 	| null = null;
 let hasWarnedMissingCodeFunctionsTable = false;
+let hasMissingCodeFunctionsTable = false;
 
 type RemoteServiceDescriptor = {
 	serviceId: 'workflow-orchestrator' | 'fn-activepieces';
@@ -730,6 +731,7 @@ function buildCodeFunctionDetail(detail: CodeFunctionDetail): ActionCatalogDetai
 
 async function loadCodeFunctionActions(userId?: string | null): Promise<ActionCatalogDetail[]> {
 	if (!userId) return [];
+	if (hasMissingCodeFunctionsTable) return [];
 	try {
 		const summaries = await listCodeFunctions(userId);
 		const items = await Promise.all(
@@ -744,7 +746,19 @@ async function loadCodeFunctionActions(userId?: string | null): Promise<ActionCa
 		return items.filter((item): item is ActionCatalogDetail => item !== null);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		if (message.includes('relation "code_functions" does not exist')) {
+		const cause = error instanceof Error ? error.cause : null;
+		const causeCode =
+			typeof cause === 'object' &&
+			cause !== null &&
+			'code' in cause &&
+			typeof cause.code === 'string'
+				? cause.code
+				: null;
+		const missingCodeFunctionsTable =
+			causeCode === '42P01' &&
+			message.includes('code_functions');
+		if (missingCodeFunctionsTable) {
+			hasMissingCodeFunctionsTable = true;
 			if (!hasWarnedMissingCodeFunctionsTable) {
 				console.warn(
 					'[action-catalog] code_functions table is unavailable in this environment; omitting saved code functions from the catalog.',

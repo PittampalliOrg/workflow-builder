@@ -2,6 +2,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { eq, desc } from 'drizzle-orm';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
@@ -161,6 +162,23 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (!db) {
 		return json({ error: 'Database not configured' }, { status: 503 });
 	}
+	try {
+		await assertExecutionReadModelColumns();
+	} catch (schemaError) {
+		console.error(
+			'[internal/agent/workflows/execute] execution read-model schema check failed:',
+			schemaError
+		);
+		return json(
+			{
+				error:
+					schemaError instanceof Error
+						? schemaError.message
+						: 'Execution read-model migration is required'
+			},
+			{ status: 503 }
+		);
+	}
 
 	const body = (await request.json().catch(() => ({}))) as ExecuteBody;
 
@@ -188,7 +206,7 @@ export const POST: RequestHandler = async ({ request }) => {
 				input: triggerData,
 				executionIrVersion: 'sw-1.0.0'
 			})
-			.returning();
+			.returning({ id: workflowExecutions.id });
 
 		// 2. Start workflow via orchestrator
 		const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
@@ -271,7 +289,8 @@ export const POST: RequestHandler = async ({ request }) => {
 				.set({
 					daprInstanceId: instanceId,
 					phase: 'running',
-					progress: 0
+					progress: 0,
+					workflowSessionId: execution.id
 				})
 				.where(eq(workflowExecutions.id, execution.id));
 		}

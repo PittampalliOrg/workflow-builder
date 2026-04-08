@@ -3,20 +3,48 @@ import {
 	listExecutionAgentEvents,
 	loadExecutionReadModel
 } from '$lib/server/execution-read-model';
+import type { ExecutionReadModel } from '$lib/types/execution-stream';
 
 const LOOP_INTERVAL_MS = 1000;
 const SNAPSHOT_INTERVAL_MS = 2000;
 const HEARTBEAT_INTERVAL_MS = 15000;
 
-export const GET: RequestHandler = async ({ params }) => {
+function stableStringify(value: unknown): string {
+	return JSON.stringify(value) ?? 'null';
+}
+
+function snapshotKey(model: ExecutionReadModel) {
+	return stableStringify({
+		status: model.status,
+		runtimeStatus: model.runtimeStatus,
+		phase: model.phase,
+		progress: model.progress,
+		currentNodeId: model.currentNodeId,
+		currentNodeName: model.currentNodeName,
+		traceId: model.traceId,
+		traceIds: model.traceIds,
+		error: model.error,
+		startedAt: model.startedAt,
+		completedAt: model.completedAt,
+		nodeStatuses: model.nodeStatuses,
+		steps: model.steps,
+		browserArtifacts: model.browserArtifacts,
+		output: model.output,
+		summaryOutput: model.summaryOutput
+	});
+}
+
+export const GET: RequestHandler = async ({ params, url }) => {
+	const cursorParam = Number.parseInt(url.searchParams.get('cursor') ?? '0', 10);
+	const requestedCursor = Number.isFinite(cursorParam) && cursorParam > 0 ? cursorParam : 0;
 	const executionId = params.executionId;
 	let cancelled = false;
 
 	const stream = new ReadableStream({
 		async start(controller) {
 			const encoder = new TextEncoder();
-			let lastAgentEventId = 0;
-			let lastStatus = 'running';
+			let lastAgentEventId = requestedCursor;
+			let lastSnapshotHash = '';
 			let lastSnapshotAt = 0;
 			let lastHeartbeatAt = 0;
 
@@ -37,6 +65,7 @@ export const GET: RequestHandler = async ({ params }) => {
 					refreshRuntime: true,
 					includeAgentEvents: true
 				});
+
 				if (!initial) {
 					send('run_error', {
 						type: 'run_error',
@@ -47,39 +76,16 @@ export const GET: RequestHandler = async ({ params }) => {
 					return;
 				}
 
-				lastStatus = initial.status;
-				lastAgentEventId = initial.lastAgentEventId;
+				lastAgentEventId = Math.max(lastAgentEventId, initial.lastAgentEventId);
+				lastSnapshotHash = snapshotKey(initial);
 				lastSnapshotAt = Date.now();
 				lastHeartbeatAt = Date.now();
 
-				send('status', {
-					type: 'status',
-					data: {
-						status: initial.status,
-						phase: initial.phase,
-						progress: initial.progress,
-						currentNodeId: initial.currentNodeId,
-						currentNodeName: initial.currentNodeName
-					},
-					timestamp: new Date().toISOString()
-				});
+				send('snapshot', initial);
 
 				for (const event of initial.agentEvents) {
-					send(event.type, event, event.id);
-				}
-
-				if (initial.status === 'success' || initial.status === 'error' || initial.status === 'cancelled') {
-					send(initial.status === 'error' ? 'run_error' : 'run_complete', {
-						type: initial.status === 'error' ? 'run_error' : 'run_complete',
-						data: {
-							status: initial.status,
-							error: initial.error,
-							outputs: initial.summaryOutput ?? initial.output ?? null
-						},
-						timestamp: new Date().toISOString()
-					});
-					controller.close();
-					return;
+					if (event.id <= requestedCursor) continue;
+					send('agent_event', event, event.id);
 				}
 
 				while (!cancelled) {
@@ -90,7 +96,7 @@ export const GET: RequestHandler = async ({ params }) => {
 					const nextEvents = await listExecutionAgentEvents(executionId, lastAgentEventId);
 					for (const event of nextEvents) {
 						lastAgentEventId = Math.max(lastAgentEventId, event.id);
-						send(event.type, event, event.id);
+						send('agent_event', event, event.id);
 					}
 
 					if (now - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
@@ -98,47 +104,43 @@ export const GET: RequestHandler = async ({ params }) => {
 							refreshRuntime: true,
 							includeAgentEvents: false
 						});
-						if (!snapshot) break;
-
-						send('status', {
-							type: 'status',
-							data: {
-								status: snapshot.status,
-								phase: snapshot.phase,
-								progress: snapshot.progress,
-								currentNodeId: snapshot.currentNodeId,
-								currentNodeName: snapshot.currentNodeName
-							},
-							timestamp: new Date().toISOString()
-						});
-
-						if (snapshot.status !== lastStatus) {
-							lastStatus = snapshot.status;
-							if (
-								snapshot.status === 'success' ||
-								snapshot.status === 'error' ||
-								snapshot.status === 'cancelled'
-							) {
-								send(snapshot.status === 'error' ? 'run_error' : 'run_complete', {
-									type: snapshot.status === 'error' ? 'run_error' : 'run_complete',
-									data: {
-										status: snapshot.status,
-										error: snapshot.error,
-										outputs: snapshot.summaryOutput ?? snapshot.output ?? null
-									},
-									timestamp: new Date().toISOString()
-								});
-								break;
-							}
+						if (!snapshot) {
+							send('run_error', {
+								type: 'run_error',
+								data: { error: 'Execution not found' },
+								timestamp: new Date().toISOString()
+							});
+							break;
 						}
 
+						const nextHash = snapshotKey(snapshot);
+						if (nextHash !== lastSnapshotHash) {
+							lastSnapshotHash = nextHash;
+							send('snapshot', snapshot);
+						}
 						lastSnapshotAt = now;
+
+						if (
+							snapshot.status === 'success' ||
+							snapshot.status === 'error' ||
+							snapshot.status === 'cancelled'
+						) {
+							send('terminal', {
+								executionId: snapshot.executionId,
+								status: snapshot.status,
+								completedAt: snapshot.completedAt,
+								error: snapshot.error,
+								lastAgentEventId
+							});
+							break;
+						}
 					}
 
 					if (now - lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
 						send('heartbeat', {
 							type: 'heartbeat',
-							timestamp: new Date().toISOString()
+							timestamp: new Date().toISOString(),
+							cursor: lastAgentEventId
 						});
 						lastHeartbeatAt = now;
 					}

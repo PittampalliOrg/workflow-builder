@@ -419,6 +419,12 @@ export const workflowExecutions = pgTable(
 		daprInstanceId: text("dapr_instance_id"), // Dapr workflow instance ID for correlation
 		phase: text("phase"), // Current phase from Dapr custom status
 		progress: integer("progress"), // 0-100 progress percentage
+		currentNodeId: text("current_node_id"),
+		currentNodeName: text("current_node_name"),
+		primaryTraceId: text("primary_trace_id"),
+		workflowSessionId: text("workflow_session_id"),
+		summaryOutput: jsonb("summary_output").$type<Record<string, unknown> | null>(),
+		lastAgentEventId: integer("last_agent_event_id"),
 		errorStackTrace: text("error_stack_trace"),
 		rerunOfExecutionId: text("rerun_of_execution_id"),
 		rerunSourceInstanceId: text("rerun_source_instance_id"),
@@ -428,6 +434,20 @@ export const workflowExecutions = pgTable(
 		duration: text("duration"), // Duration in milliseconds
 	},
 	(table) => ({
+		workflowStartedIdx: index("idx_workflow_executions_workflow_started").on(
+			table.workflowId,
+			table.startedAt,
+		),
+		statusStartedIdx: index("idx_workflow_executions_status_started").on(
+			table.status,
+			table.startedAt,
+		),
+		daprInstanceIdx: index("idx_workflow_executions_dapr_instance").on(
+			table.daprInstanceId,
+		),
+		sessionIdx: index("idx_workflow_executions_session").on(
+			table.workflowSessionId,
+		),
 		rerunOfExecutionFk: foreignKey({
 			columns: [table.rerunOfExecutionId],
 			foreignColumns: [table.id],
@@ -810,37 +830,50 @@ export const workflowAiToolMessages = pgTable(
 );
 
 // Workflow execution logs to track individual node executions
-export const workflowExecutionLogs = pgTable("workflow_execution_logs", {
-	id: text("id")
-		.primaryKey()
-		.$defaultFn(() => generateId()),
-	executionId: text("execution_id")
-		.notNull()
-		.references(() => workflowExecutions.id),
-	nodeId: text("node_id").notNull(),
-	nodeName: text("node_name").notNull(),
-	nodeType: text("node_type").notNull(),
-	activityName: text("activity_name"), // Function slug (actionType) like "openai/generate-text"
-	status: text("status")
-		.notNull()
-		.$type<"pending" | "running" | "success" | "error">(),
-	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
-	input: jsonb("input").$type<any>(),
-	// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
-	output: jsonb("output").$type<any>(),
-	error: text("error"),
-	startedAt: timestamp("started_at").notNull().defaultNow(),
-	completedAt: timestamp("completed_at"),
-	duration: text("duration"), // Duration in milliseconds
-	timestamp: timestamp("timestamp").notNull().defaultNow(),
-	// Timing breakdown columns (Phase 5 enhancement)
-	credentialFetchMs: integer("credential_fetch_ms"),
-	routingMs: integer("routing_ms"),
-	coldStartMs: integer("cold_start_ms"),
-	executionMs: integer("execution_ms"),
-	routedTo: text("routed_to"), // Service that handled execution (e.g., "fn-openai")
-	wasColdStart: boolean("was_cold_start"),
-});
+export const workflowExecutionLogs = pgTable(
+	"workflow_execution_logs",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		executionId: text("execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id),
+		nodeId: text("node_id").notNull(),
+		nodeName: text("node_name").notNull(),
+		nodeType: text("node_type").notNull(),
+		activityName: text("activity_name"), // Function slug (actionType) like "openai/generate-text"
+		status: text("status")
+			.notNull()
+			.$type<"pending" | "running" | "success" | "error">(),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+		input: jsonb("input").$type<any>(),
+		// biome-ignore lint/suspicious/noExplicitAny: JSONB type - structure validated at application level
+		output: jsonb("output").$type<any>(),
+		error: text("error"),
+		startedAt: timestamp("started_at").notNull().defaultNow(),
+		completedAt: timestamp("completed_at"),
+		duration: text("duration"), // Duration in milliseconds
+		timestamp: timestamp("timestamp").notNull().defaultNow(),
+		// Timing breakdown columns (Phase 5 enhancement)
+		credentialFetchMs: integer("credential_fetch_ms"),
+		routingMs: integer("routing_ms"),
+		coldStartMs: integer("cold_start_ms"),
+		executionMs: integer("execution_ms"),
+		routedTo: text("routed_to"), // Service that handled execution (e.g., "fn-openai")
+		wasColdStart: boolean("was_cold_start"),
+	},
+	(table) => ({
+		executionStartedIdx: index("idx_workflow_execution_logs_execution_started").on(
+			table.executionId,
+			table.startedAt,
+		),
+		executionNodeIdx: index("idx_workflow_execution_logs_execution_node").on(
+			table.executionId,
+			table.nodeId,
+		),
+	}),
+);
 
 // ============================================================================
 // Credential Access Logs (Compliance/Debugging)

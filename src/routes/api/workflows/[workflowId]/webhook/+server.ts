@@ -3,6 +3,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { eq, and } from 'drizzle-orm';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflows, workflowExecutions, apiKeys } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 
@@ -110,6 +111,20 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		if (!db) {
 			return corsJson({ error: 'Database not configured' }, 503);
 		}
+		try {
+			await assertExecutionReadModelColumns();
+		} catch (schemaError) {
+			console.error('[Webhook] execution read-model schema check failed:', schemaError);
+			return corsJson(
+				{
+					error:
+						schemaError instanceof Error
+							? schemaError.message
+							: 'Execution read-model migration is required'
+				},
+				503
+			);
+		}
 
 		// 1. Look up the workflow
 		const [workflow] = await db
@@ -187,6 +202,8 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					workflowId,
 					userId: workflow.userId,
 					status: 'running',
+					phase: 'running',
+					progress: 0,
 					input: body as Record<string, unknown>,
 					executionIrVersion: 'sw-1.0.0'
 				})
@@ -201,7 +218,13 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		// 8. Start workflow via orchestrator (fire-and-forget — return immediately)
 		const orchestratorUrl = getOrchestratorUrl();
 
-		startWorkflowInBackground(orchestratorUrl, execution.id, spec, body as Record<string, unknown>);
+		startWorkflowInBackground(
+			orchestratorUrl,
+			workflowId,
+			execution.id,
+			spec,
+			body as Record<string, unknown>
+		);
 
 		return corsJson({
 			executionId: execution.id,
@@ -222,6 +245,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 function startWorkflowInBackground(
 	orchestratorUrl: string,
+	workflowId: string,
 	executionId: string,
 	spec: Record<string, unknown>,
 	triggerData: Record<string, unknown>
@@ -248,7 +272,10 @@ function startWorkflowInBackground(
 
 			await db!
 				.update(workflowExecutions)
-				.set({ daprInstanceId: result.instanceId })
+				.set({
+					daprInstanceId: result.instanceId,
+					workflowSessionId: executionId
+				})
 				.where(eq(workflowExecutions.id, executionId));
 
 			console.log('[Webhook] SW workflow started:', result.instanceId);

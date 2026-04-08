@@ -161,6 +161,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         """
                         UPDATE workflow_executions
                         SET output = %s,
+                            summary_output = %s,
                             status = %s,
                             phase = %s,
                             progress = %s,
@@ -171,6 +172,7 @@ def persist_results_to_db(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         """,
                         (
                             json.dumps(final_output),
+                            json.dumps(summary_fields) if summary_fields else None,
                             status,
                             phase,
                             progress,

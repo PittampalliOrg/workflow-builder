@@ -702,6 +702,7 @@ async def lifespan(app: FastAPI):
     # Initialize OpenTelemetry (opt-in via OTEL_EXPORTER_OTLP_ENDPOINT).
     setup_tracing("workflow-orchestrator", app)
     _check_min_dapr_runtime_version()
+    _assert_execution_read_model_columns()
 
     # Register all activities from the canonical ACTIVITIES list.
     # To add a new activity, update activities/__init__.py — no changes needed here.
@@ -1280,6 +1281,47 @@ def _get_database_url() -> str:
         raise RuntimeError(f"Failed to fetch DATABASE_URL: {e}")
 
 
+def _assert_execution_read_model_columns() -> None:
+    """Fail startup unless the execution read-model cutover migration is applied."""
+    import psycopg2
+
+    required_columns = {
+        "current_node_id",
+        "current_node_name",
+        "primary_trace_id",
+        "workflow_session_id",
+        "summary_output",
+        "last_agent_event_id",
+    }
+
+    db_url = _get_database_url()
+    conn = psycopg2.connect(db_url)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'workflow_executions'
+                  AND column_name = ANY(%s)
+                """,
+                (list(required_columns),),
+            )
+            existing = {row[0] for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+    missing = sorted(required_columns - existing)
+    if missing:
+        raise RuntimeError(
+            "Execution read-model schema cutover is incomplete. "
+            "Missing workflow_executions columns: "
+            f"{', '.join(missing)}. Apply atlas/migrations/20260408120000_add_execution_read_model_columns.sql "
+            "or drizzle/0024_execution_read_model.sql before starting workflow-orchestrator."
+        )
+
+
 def _fetch_workflow_from_db(workflow_id: str) -> dict[str, Any]:
     """Fetch a workflow definition from the database by ID."""
     import psycopg2
@@ -1387,9 +1429,9 @@ def _create_workflow_execution(
             cur.execute(
                 """
                 INSERT INTO workflow_executions (
-                    id, workflow_id, user_id, status, input, phase, progress
+                    id, workflow_id, user_id, status, input, phase, progress, workflow_session_id
                 )
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s, %s)
                 """,
                 (
                     execution_id,
@@ -1399,6 +1441,7 @@ def _create_workflow_execution(
                     json.dumps(trigger_data or {}),
                     "running",
                     0,
+                    execution_id,
                 ),
             )
         conn.commit()
@@ -1421,10 +1464,10 @@ def _mark_workflow_execution_started(
             cur.execute(
                 """
                 UPDATE workflow_executions
-                SET dapr_instance_id = %s, phase = %s, progress = %s
+                SET dapr_instance_id = %s, phase = %s, progress = %s, workflow_session_id = COALESCE(workflow_session_id, %s)
                 WHERE id = %s
                 """,
-                (dapr_instance_id, "running", 0, execution_id),
+                (dapr_instance_id, "running", 0, execution_id, execution_id),
             )
         conn.commit()
     finally:
@@ -2457,9 +2500,25 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
         sw_workflow_doc = SWWorkflowModel.model_validate(request.workflow)
         workflow_name = sw_workflow_doc.document.name
 
-        # Create DB execution row if a dbExecutionId is provided,
-        # otherwise run without DB tracking (for direct API testing).
         db_execution_id = request.dbExecutionId
+        if not db_execution_id:
+            workflow_id = str(request.workflowId or "").strip()
+            if not workflow_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "workflowId is required when dbExecutionId is omitted. "
+                        "The workflow orchestrator now requires a persisted "
+                        "workflow_executions row for every SW execution."
+                    ),
+                )
+
+            workflow_record = _fetch_workflow_from_db(workflow_id)
+            db_execution_id = _create_workflow_execution(
+                workflow_id=workflow_record["id"],
+                user_id=workflow_record["userId"],
+                trigger_data=request.triggerData,
+            )
 
         otel_ctx = _merge_otel_context(http_request)
         session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
@@ -2483,10 +2542,9 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
             "_otel": otel_ctx,
         }
 
-        import hashlib, re, time
-        run_hash = hashlib.md5(f"{workflow_name}-{time.time()}".encode()).hexdigest()[:12]
+        import re
         safe_name = re.sub(r'[^a-z0-9-]', '-', workflow_name.lower()).strip('-')[:40]
-        instance_id = f"sw-{safe_name}-{run_hash}"
+        instance_id = f"sw-{safe_name}-exec-{db_execution_id}"
 
         logger.info(
             "[SW Workflow] Starting: %s (%s)",

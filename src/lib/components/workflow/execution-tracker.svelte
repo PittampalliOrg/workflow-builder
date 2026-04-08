@@ -8,12 +8,14 @@
 	 */
 	import { useSvelteFlow } from '@xyflow/svelte';
 	import { getContext } from 'svelte';
+	import { createExecutionStream } from '$lib/stores/execution-stream.svelte';
+	import type { ExecutionReadModel } from '$lib/types/execution-stream';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { setCenter, updateNodeData, getNodes } = useSvelteFlow();
 
-	let pollInterval: ReturnType<typeof setInterval> | null = null;
+	let executionStream = $state<ReturnType<typeof createExecutionStream> | null>(null);
 	let lastExecutionId = '';
 	let lastActiveNodeId = '';
 
@@ -58,49 +60,23 @@
 		})) as typeof store.edges;
 	}
 
-	function processStatusResponse(data: Record<string, unknown>) {
-		const status = data.status as string | undefined;
-		const currentNodeName = data.currentNodeName as string | null;
-		const currentNodeIdVal = data.currentNodeId as string | null;
+	function processSnapshot(snapshot: ExecutionReadModel) {
+		resetAllStatuses();
 
-		// Process completed step outputs
-		const outputs =
-			(data.outputs as Record<string, Record<string, unknown>> | undefined) ??
-			((data.output as Record<string, unknown>)?.outputs as Record<string, Record<string, unknown>> | undefined);
-
-		if (outputs) {
-			for (const [stepName, stepOutput] of Object.entries(outputs)) {
-				const nodeId = stepNameToNodeId(stepName);
-				if (!nodeId) continue;
-
-				const stepData = stepOutput.data as Record<string, unknown> | undefined;
-				if (!stepData) continue;
-
-				const success = stepData.success;
-				const hasError = stepData.error;
-
-				if (hasError || success === false) {
-					setNodeStatus(nodeId, 'error');
-					setEdgeStatus('source', nodeId, 'error');
-				} else if (success === true || Object.keys(stepData).length > 0) {
-					setNodeStatus(nodeId, 'success');
-					setEdgeStatus('source', nodeId, 'success');
-				}
+		for (const [stepName, status] of Object.entries(snapshot.nodeStatuses ?? {})) {
+			const nodeId = stepNameToNodeId(stepName);
+			if (!nodeId) continue;
+			setNodeStatus(nodeId, status);
+			if (status === 'running') {
+				setEdgeStatus('target', nodeId, 'running');
+			} else {
+				setEdgeStatus('source', nodeId, status);
 			}
 		}
 
 		// Highlight current active node
-		const activeStepName = currentNodeName || currentNodeIdVal;
+		const activeStepName = snapshot.currentNodeName || snapshot.currentNodeId;
 		if (activeStepName && activeStepName !== lastActiveNodeId) {
-			// Clear previous active node's running status (it completed)
-			if (lastActiveNodeId) {
-				const prevId = stepNameToNodeId(lastActiveNodeId);
-				if (prevId) {
-					setNodeStatus(prevId, 'success');
-					setEdgeStatus('source', prevId, 'success');
-				}
-			}
-
 			const activeId = stepNameToNodeId(activeStepName);
 			if (activeId) {
 				setNodeStatus(activeId, 'running');
@@ -121,59 +97,27 @@
 		}
 
 		// Start node always succeeds once execution begins
-		if (status === 'running' || status === 'success' || status === 'error') {
+		if (snapshot.status === 'running' || snapshot.status === 'success' || snapshot.status === 'error') {
 			const startNode = getNodes().find((n) => n.type === 'start');
 			if (startNode) setNodeStatus(startNode.id, 'success');
 		}
 
 		// Terminal state: mark end node
-		if (status === 'success') {
+		if (snapshot.status === 'success') {
 			const endNode = getNodes().find((n) => n.type === 'end');
 			if (endNode) setNodeStatus(endNode.id, 'success');
 		}
 	}
 
-	async function pollStatus(executionId: string) {
-		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/status`);
-			if (!res.ok) return;
-
-			const data = await res.json();
-			processStatusResponse(data);
-
-			// Terminal?
-			const status = data.status as string;
-			if (status === 'success' || status === 'error' || status === 'cancelled') {
-				stopTracking();
-				// Final update from output
-				if (data.output) {
-					processStatusResponse(data.output);
-				}
-			}
-		} catch {
-			// ignore
-		}
-	}
-
 	function startTracking(executionId: string) {
-		stopTracking();
+		executionStream?.dispose?.();
 		lastActiveNodeId = '';
 		resetAllStatuses();
 
 		// Immediately set start node to running
 		const startNode = getNodes().find((n) => n.type === 'start');
 		if (startNode) setNodeStatus(startNode.id, 'running');
-
-		// First poll immediately, then every 2s
-		pollStatus(executionId);
-		pollInterval = setInterval(() => pollStatus(executionId), 2000);
-	}
-
-	function stopTracking() {
-		if (pollInterval) {
-			clearInterval(pollInterval);
-			pollInterval = null;
-		}
+		executionStream = createExecutionStream(executionId);
 	}
 
 	// Watch for new execution
@@ -183,9 +127,13 @@
 			lastExecutionId = execId;
 			startTracking(execId);
 		}
+		return () => executionStream?.dispose?.();
 	});
 
 	$effect(() => {
-		return () => stopTracking();
+		const snapshot = executionStream?.snapshot;
+		if (snapshot) {
+			processSnapshot(snapshot);
+		}
 	});
 </script>

@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { and, eq, isNull, or, inArray } from 'drizzle-orm';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
 	appConnections,
 	projects,
@@ -131,6 +132,20 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	}
 
 	if (!db) return error(503, 'Database not configured');
+	try {
+		await assertExecutionReadModelColumns();
+	} catch (schemaError) {
+		console.error(
+			'[MCP Execute] execution read-model schema check failed:',
+			schemaError
+		);
+		return error(
+			503,
+			schemaError instanceof Error
+				? schemaError.message
+				: 'Execution read-model migration is required'
+		);
+	}
 
 	const { projectId, workflowId } = params;
 	const body = (await request.json().catch(() => ({}))) as Body;
@@ -209,11 +224,13 @@ export const POST: RequestHandler = async ({ request, params }) => {
 			workflowId: workflow.id,
 			userId: workflow.userId,
 			status: 'running',
+			phase: 'running',
+			progress: 0,
 			input: triggerData,
 			executionIrVersion: 'sw-1.0',
 			executionIr: { spec, triggerData }
 		})
-		.returning();
+		.returning({ id: workflowExecutions.id });
 
 	// Dispatch to orchestrator
 	const orchestratorUrl = getOrchestratorUrl();
@@ -250,7 +267,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	// Update execution with Dapr instance ID
 	await db
 		.update(workflowExecutions)
-		.set({ daprInstanceId: result.instanceId })
+		.set({
+			daprInstanceId: result.instanceId,
+			workflowSessionId: execution.id
+		})
 		.where(eq(workflowExecutions.id, execution.id));
 
 	// Link MCP run to the execution

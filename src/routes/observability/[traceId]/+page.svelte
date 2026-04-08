@@ -51,7 +51,7 @@
 		</Breadcrumb.Root>
 	</header>
 
-	<div class="flex-1 overflow-auto">
+	<div class="flex-1 overflow-hidden">
 		{#if isLoading}
 			<div class="flex items-center justify-center p-12">
 				<Loader2 size={24} class="animate-spin text-muted-foreground" />
@@ -62,13 +62,11 @@
 				<AlertDescription>{error}</AlertDescription>
 			</Alert>
 		{:else if payload}
-			<div class="px-4 py-4 xl:px-5 2xl:px-6">
-				<InvestigationStudio
-					{payload}
-					phoenixHref={payload.summary.sessionId ? `/api/observability/phoenix/sessions/${encodeURIComponent(payload.summary.sessionId)}` : null}
-					onRefresh={loadInvestigation}
-				/>
-			</div>
+			<InvestigationStudio
+				{payload}
+				phoenixHref={payload.summary.sessionId ? `/api/observability/phoenix/sessions/${encodeURIComponent(payload.summary.sessionId)}` : null}
+				onRefresh={loadInvestigation}
+			/>
 		{/if}
 	</div>
 </div>

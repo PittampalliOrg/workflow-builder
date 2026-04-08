@@ -3,7 +3,9 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
+	workflowExecutions,
 	workflowAgentEvents,
 	workflowAgentRuns,
 	type WorkflowAgentEventType
@@ -72,6 +74,20 @@ export const POST: RequestHandler = async ({ request }) => {
 
 	if (!db) {
 		return json({ error: 'Database not configured' }, { status: 503 });
+	}
+	try {
+		await assertExecutionReadModelColumns();
+	} catch (schemaError) {
+		console.error('[agent-events] execution read-model schema check failed:', schemaError);
+		return json(
+			{
+				error:
+					schemaError instanceof Error
+						? schemaError.message
+						: 'Execution read-model migration is required'
+			},
+			{ status: 503 }
+		);
 	}
 
 	let body: AgentEventsIngestBody;
@@ -153,6 +169,33 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 
 	if (inserted.length > 0) {
+		const latestInserted = inserted.at(-1)!;
+		const nextTraceId =
+			preparedEvents
+				.map(({ event }) =>
+					typeof event.meta?.traceId === 'string'
+						? event.meta.traceId
+						: typeof event.meta?.trace_id === 'string'
+							? event.meta.trace_id
+							: null
+				)
+				.reverse()
+				.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? null;
+		const nextPhase =
+			preparedEvents
+				.map(({ event }) => event.phase ?? null)
+				.reverse()
+				.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ?? null;
+
+		await db
+			.update(workflowExecutions)
+			.set({
+				lastAgentEventId: latestInserted.eventId,
+				primaryTraceId: nextTraceId ?? undefined,
+				phase: nextPhase ?? undefined
+			})
+			.where(eq(workflowExecutions.id, workflowExecutionId));
+
 		console.info(
 			`[agent-events] persisted count=${inserted.length} execution=${workflowExecutionId} instance=${daprInstanceId} range=${inserted[0]?.eventId ?? 'n/a'}-${inserted.at(-1)?.eventId ?? 'n/a'}`
 		);

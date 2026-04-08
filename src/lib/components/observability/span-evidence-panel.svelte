@@ -18,6 +18,8 @@
 		logs?: ObservabilityLogEntry[];
 		llmSpans?: ObservabilityLlmSpan[];
 		toolSpans?: ObservabilityToolSpan[];
+		/** When set, hides the internal tab bar and uses this tab instead */
+		externalTab?: EvidenceTab | null;
 	}
 
 	let {
@@ -26,20 +28,20 @@
 		selectedLog = null,
 		logs = [],
 		llmSpans = [],
-		toolSpans = []
+		toolSpans = [],
+		externalTab = null
 	}: Props = $props();
 
-	let activeTab = $state<EvidenceTab>('overview');
+	let internalTab = $state<EvidenceTab>('overview');
+	const activeTab = $derived(externalTab ?? internalTab);
 
 	$effect(() => {
-		if (!span) {
-			activeTab = 'overview';
-			return;
-		}
-		if (llmSpans.length > 0) activeTab = 'llm';
-		else if (toolSpans.length > 0) activeTab = 'tools';
-		else if (logs.length > 0) activeTab = 'logs';
-		else activeTab = 'overview';
+		if (externalTab) return; // skip if controlled externally
+		if (!span) { internalTab = 'overview'; return; }
+		if (llmSpans.length > 0) internalTab = 'llm';
+		else if (toolSpans.length > 0) internalTab = 'tools';
+		else if (logs.length > 0) internalTab = 'logs';
+		else internalTab = 'overview';
 	});
 
 	function formatTimestamp(value: string | null | undefined): string {
@@ -89,7 +91,7 @@
 	}
 </script>
 
-<aside class="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(15,15,19,0.98),rgba(9,9,12,0.98))] shadow-[0_14px_38px_rgba(0,0,0,0.24)]">
+<aside class="{externalTab ? '' : 'rounded-[24px] border border-white/10 shadow-[0_14px_38px_rgba(0,0,0,0.24)]'} bg-[linear-gradient(180deg,rgba(15,15,19,0.98),rgba(9,9,12,0.98))]">
 	{#if !span}
 		<div class="flex min-h-[640px] flex-col items-center justify-center px-6 py-10 text-center">
 			<p class="font-mono text-sm text-zinc-200">No span selected</p>
@@ -128,20 +130,22 @@
 			</p>
 		</div>
 
-		<div class="border-b border-white/10 px-3 py-2">
-			<div class="flex flex-wrap items-center gap-2">
-				{#each ['overview', 'logs', 'llm', 'tools', 'raw'] as tab}
-					<button
-						class={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${activeTab === tab ? 'bg-white/10 text-zinc-50' : 'text-zinc-400 hover:text-zinc-200'}`}
-						onclick={() => (activeTab = tab as EvidenceTab)}
-					>
-						{tab}
-					</button>
-				{/each}
+		{#if !externalTab}
+			<div class="border-b border-white/10 px-3 py-2">
+				<div class="flex flex-wrap items-center gap-2">
+					{#each ['overview', 'logs', 'llm', 'tools', 'raw'] as tab}
+						<button
+							class={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${activeTab === tab ? 'bg-white/10 text-zinc-50' : 'text-zinc-400 hover:text-zinc-200'}`}
+							onclick={() => (internalTab = tab as EvidenceTab)}
+						>
+							{tab}
+						</button>
+					{/each}
+				</div>
 			</div>
-		</div>
+		{/if}
 
-		<div class="max-h-[640px] overflow-auto px-4 py-4">
+		<div class="{externalTab ? '' : 'max-h-[640px]'} overflow-auto px-4 py-4">
 			{#if activeTab === 'overview'}
 				<div class="space-y-4">
 					<div class="grid gap-2 rounded-2xl border border-white/10 bg-white/[0.03] p-3 font-mono text-[11px] text-zinc-300">

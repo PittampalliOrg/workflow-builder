@@ -300,6 +300,12 @@ function buildAgentDecisionModel(args: {
 		(a, b) => parseTimestamp(a.startedAt) - parseTimestamp(b.startedAt) || a.turnIndex - b.turnIndex
 	);
 
+	// Reassign sequential turnIndex across all groups so the UI shows 1, 2, 3, ...
+	for (let i = 0; i < orderedTurns.length; i++) {
+		orderedTurns[i].turnIndex = i + 1;
+		orderedTurns[i].id = `global:turn:${i + 1}`;
+	}
+
 	const summary: ObservabilityAgentDecisionSummary = {
 		totalTurns: orderedTurns.length,
 		toolCallTurns: orderedTurns.filter((turn) => turn.decisionType === 'tool_call').length,
@@ -788,7 +794,7 @@ export async function buildSessionInvestigation(sessionId: string): Promise<Obse
 }
 
 export async function buildTraceInvestigation(traceId: string): Promise<ObservabilityInvestigationPayload> {
-	const [traceSpans, traceLogs, traceLlmSpans, traceToolSpans] = await Promise.all([
+	const [traceSpansOriginal, traceLogs, traceLlmSpans, traceToolSpans] = await Promise.all([
 		getTraceSpans(traceId),
 		getTraceLogs(traceId),
 		getTraceLlmSpans(traceId),
@@ -796,24 +802,27 @@ export async function buildTraceInvestigation(traceId: string): Promise<Observab
 	]);
 
 	const sessionId =
-		traceSpans.find((span) => typeof span.attributes?.['session.id'] === 'string')?.attributes?.['session.id']?.toString() ??
+		traceSpansOriginal.find((span) => typeof span.attributes?.['session.id'] === 'string')?.attributes?.['session.id']?.toString() ??
 		traceLlmSpans[0]?.sessionId ??
 		traceToolSpans[0]?.sessionId ??
 		null;
 	const sessionExtras: [
+		ObservabilityTraceSpan[],
 		ObservabilityLogEntry[],
 		ObservabilityLlmSpan[],
 		ObservabilityToolSpan[],
 		{ steps: ObservabilityWorkflowStep[]; status: string | null; startedAt: string | null; completedAt: string | null }
 	] = sessionId
 		? await Promise.all([
+				getSessionTraceSpans(sessionId),
 				getSessionLogs(sessionId),
 				getSessionLlmSpans(sessionId),
 				getSessionToolSpans(sessionId),
 				getWorkflowSteps(sessionId)
 			])
-		: [[], [], [], { steps: [], status: null, startedAt: null, completedAt: null }];
-	const [sessionLogs, sessionLlmSpans, sessionToolSpans, sessionSteps] = sessionExtras;
+		: [[], [], [], [], { steps: [], status: null, startedAt: null, completedAt: null }];
+	const [sessionTraceSpans, sessionLogs, sessionLlmSpans, sessionToolSpans, sessionSteps] = sessionExtras;
+	const traceSpans = dedupeByKey([...traceSpansOriginal, ...sessionTraceSpans], (span) => `${span.traceId}-${span.spanId}`);
 	const logs = dedupeByKey([...traceLogs, ...sessionLogs], (log) => `${log.timestamp}-${log.traceId}-${log.spanId}-${log.body}`);
 	const llmSpans = dedupeByKey([...traceLlmSpans, ...sessionLlmSpans], (span) => `${span.traceId}-${span.spanId}`);
 	const toolSpans = dedupeByKey([...traceToolSpans, ...sessionToolSpans], (span) => `${span.traceId}-${span.spanId}`);

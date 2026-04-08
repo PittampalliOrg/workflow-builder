@@ -2,6 +2,7 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { db } from '$lib/server/db';
+import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
 	workflowExecutions,
 	workflowAgentEvents,
@@ -103,11 +104,29 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	if (!db) {
 		return error(503, 'Database not configured');
 	}
+	try {
+		await assertExecutionReadModelColumns();
+	} catch (schemaError) {
+		console.error(
+			'[agent/workflows/executions/events] execution read-model schema check failed:',
+			schemaError
+		);
+		return error(
+			503,
+			schemaError instanceof Error
+				? schemaError.message
+				: 'Execution read-model migration is required'
+		);
+	}
 
 	const { executionId } = params;
 
 	const [execution] = await db
-		.select({ id: workflowExecutions.id })
+		.select({
+			id: workflowExecutions.id,
+			phase: workflowExecutions.phase,
+			primaryTraceId: workflowExecutions.primaryTraceId
+		})
 		.from(workflowExecutions)
 		.where(eq(workflowExecutions.id, executionId))
 		.limit(1);
@@ -176,7 +195,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	}
 
 	// Persist events with conflict-safe upsert (idempotent)
-	await db
+	const inserted = await db
 		.insert(workflowAgentEvents)
 		.values(normalized)
 		.onConflictDoNothing({
@@ -185,11 +204,41 @@ export const POST: RequestHandler = async ({ request, params }) => {
 				workflowAgentEvents.daprInstanceId,
 				workflowAgentEvents.sourceEventId
 			]
+		})
+		.returning({
+			eventId: workflowAgentEvents.eventId,
+			traceId: workflowAgentEvents.traceId,
+			phase: workflowAgentEvents.phase
 		});
+
+	const latestInserted = inserted.at(-1);
+	if (latestInserted) {
+		const nextTraceId =
+			inserted
+				.map((row) => row.traceId)
+				.reverse()
+				.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ??
+			execution.primaryTraceId;
+		const nextPhase =
+			inserted
+				.map((row) => row.phase)
+				.reverse()
+				.find((value): value is string => typeof value === 'string' && value.trim().length > 0) ??
+			execution.phase;
+
+		await db
+			.update(workflowExecutions)
+			.set({
+				lastAgentEventId: latestInserted.eventId,
+				primaryTraceId: nextTraceId ?? undefined,
+				phase: nextPhase ?? undefined
+			})
+			.where(eq(workflowExecutions.id, executionId));
+	}
 
 	return json({
 		success: true,
 		executionId,
-		persisted: normalized.length
+		persisted: inserted.length
 	});
 };

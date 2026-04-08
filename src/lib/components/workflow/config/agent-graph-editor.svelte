@@ -246,10 +246,7 @@
 					colorMode={canvasColorMode}
 					fitView
 					defaultEdgeOptions={{
-						style: {
-							stroke: 'rgba(103, 232, 249, 0.45)',
-							strokeWidth: 2
-						}
+						style: 'stroke: rgba(103, 232, 249, 0.45); stroke-width: 2;'
 					}}
 					onconnect={onConnect}
 					onnodeclick={({ node }) => {
@@ -267,7 +264,6 @@
 						variant={BackgroundVariant.Dots}
 						gap={20}
 						size={1}
-						color={canvasColorMode === 'dark' ? 'rgba(148, 163, 184, 0.18)' : 'rgba(51, 65, 85, 0.14)'}
 					/>
 				</SvelteFlow>
 			</div>
