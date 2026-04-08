@@ -3996,6 +3996,12 @@ def process_agent_child_workflow(
             **(planned_payload or {}),
         }
 
+    if is_claude_agent:
+        return {
+            **(planned_payload or {}),
+            **start_result,
+        }
+
     logger.info(
         f"[Agent Workflow] Started bridged agent run: {agent_workflow_id}. Waiting for completion event..."
     )
