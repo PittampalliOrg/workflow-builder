@@ -52,13 +52,13 @@ export const GET: RequestHandler = async ({ params, url }) => {
 			function send(event: string, data: unknown, id?: string | number) {
 				if (cancelled) return;
 				const payload = typeof data === 'string' ? data : JSON.stringify(data);
-				const lines = [
-					id == null ? null : `id: ${id}`,
-					`event: ${event}`,
-					`data: ${payload}`,
-					''
-				].filter(Boolean);
-				controller.enqueue(encoder.encode(`${lines.join('\n')}\n`));
+				const lines: string[] = [];
+				if (id != null) lines.push(`id: ${id}`);
+				lines.push(`event: ${event}`);
+				for (const line of payload.split('\n')) {
+					lines.push(`data: ${line}`);
+				}
+				controller.enqueue(encoder.encode(`${lines.join('\n')}\n\n`));
 			}
 
 			// Force proxy chains to flush the stream promptly instead of buffering the
