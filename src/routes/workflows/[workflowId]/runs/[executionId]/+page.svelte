@@ -255,7 +255,7 @@
 
 	// Auto-scroll timeline to bottom
 	$effect(() => {
-		if (executionStream?.state.events.length && timelineRef) {
+		if (executionStream?.events.length && timelineRef) {
 			timelineRef.scrollTop = timelineRef.scrollHeight;
 		}
 	});
@@ -286,8 +286,7 @@
 
 	$effect(() => {
 		const stream = executionStream;
-		const streamState = stream?.state;
-		const snapshot = streamState?.snapshot;
+		const snapshot = stream?.snapshot;
 		if (!snapshot) return;
 
 		const previousOutput = untrack(() => output);
@@ -316,16 +315,15 @@
 		logs = (snapshot.steps as StepLog[]) ?? previousLogs;
 		browserArtifacts =
 			(snapshot.browserArtifacts as BrowserArtifact[]) ?? previousBrowserArtifacts;
-		browserArtifactError = streamState?.error ?? null;
+		browserArtifactError = stream?.error ?? null;
 		isLoadingStatus = false;
 		isLoadingLogs = false;
 		isLoadingBrowserArtifacts = false;
 	});
 
 	$effect(() => {
-		const streamState = executionStream?.state;
-		if (streamState?.error && !streamState.snapshot) {
-			browserArtifactError = streamState.error;
+		if (executionStream?.error && !executionStream.snapshot) {
+			browserArtifactError = executionStream.error;
 			isLoadingStatus = false;
 			isLoadingLogs = false;
 			isLoadingBrowserArtifacts = false;
@@ -567,7 +565,7 @@
 			traceId={traceId ?? undefined}
 		/>
 
-		{#if executionStream?.state.isConnected}
+		{#if executionStream?.isConnected}
 			<span class="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
 				<span class="h-2 w-2 rounded-full bg-green-500 animate-pulse"></span>
 				Live
@@ -704,24 +702,24 @@
 		<!-- Tab 3: Timeline -->
 		<TabsContent value="timeline" class="flex-1 overflow-hidden">
 			<div class="flex h-full flex-col">
-				{#if executionStream?.state.currentPhase}
+				{#if executionStream?.currentPhase}
 					<div class="border-b border-border px-4 py-2 bg-muted/50">
 						<span class="text-xs text-muted-foreground">Phase:</span>
-						<span class="text-xs font-medium ml-1">{executionStream.state.currentPhase}</span>
+						<span class="text-xs font-medium ml-1">{executionStream.currentPhase}</span>
 					</div>
 				{/if}
 
-				{#if executionStream?.state.activeToolName}
+				{#if executionStream?.activeToolName}
 					<div class="border-b border-border px-4 py-2 bg-yellow-50 dark:bg-yellow-950/20">
 						<span class="text-xs text-muted-foreground">Active tool:</span>
-						<span class="text-xs font-medium ml-1">{executionStream.state.activeToolName}</span>
+						<span class="text-xs font-medium ml-1">{executionStream.activeToolName}</span>
 					</div>
 				{/if}
 
 				<div class="flex-1 overflow-y-auto" bind:this={timelineRef}>
-					{#if executionStream?.state.events.length}
+					{#if executionStream && executionStream.events.length > 0}
 						<div class="divide-y divide-border">
-							{#each executionStream.state.events as event, i (i)}
+							{#each executionStream.events as event, i (i)}
 								{@const Icon = eventIcon(event.type)}
 								<div class="flex gap-3 px-4 py-2.5 hover:bg-muted/30 transition-colors">
 									<div class="mt-0.5 shrink-0">
@@ -746,10 +744,10 @@
 								</div>
 							{/each}
 						</div>
-					{:else if executionStream?.state.error}
+					{:else if executionStream?.error}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<XCircle size={20} class="text-red-500" />
-							<p class="text-sm">{executionStream.state.error}</p>
+							<p class="text-sm">{executionStream.error}</p>
 						</div>
 					{:else if isRunning}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
