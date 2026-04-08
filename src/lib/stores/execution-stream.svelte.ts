@@ -17,7 +17,7 @@ export type ExecutionStreamStore = Readable<ExecutionStreamState> & {
 	dispose: () => void;
 };
 
-function createInitialState(): ExecutionStreamState {
+export function createInitialExecutionStreamState(): ExecutionStreamState {
 	return {
 		isConnected: false,
 		error: null,
@@ -29,7 +29,7 @@ function createInitialState(): ExecutionStreamState {
 }
 
 export function createExecutionStream(executionId: string) {
-	const { subscribe, update } = writable<ExecutionStreamState>(createInitialState());
+	const { subscribe, update } = writable<ExecutionStreamState>(createInitialExecutionStreamState());
 
 	function patchState(mutator: (state: ExecutionStreamState) => ExecutionStreamState) {
 		update((state) => mutator(state));

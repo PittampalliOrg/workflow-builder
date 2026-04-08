@@ -10,7 +10,9 @@
 	import { getContext } from 'svelte';
 	import {
 		createExecutionStream,
-		type ExecutionStreamStore
+		createInitialExecutionStreamState,
+		type ExecutionStreamStore,
+		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
 	import type { ExecutionReadModel } from '$lib/types/execution-stream';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
@@ -18,7 +20,9 @@
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { setCenter, updateNodeData, getNodes } = useSvelteFlow();
 
-	let executionStream: ExecutionStreamStore = createExecutionStream('');
+	let executionStream: ExecutionStreamStore | null = null;
+	let executionState = $state<ExecutionStreamState>(createInitialExecutionStreamState());
+	let stopExecutionStream = () => {};
 	let lastExecutionId = '';
 	let lastActiveNodeId = '';
 
@@ -113,14 +117,19 @@
 	}
 
 	function startTracking(executionId: string) {
-		executionStream.dispose();
+		stopExecutionStream();
+		executionStream?.dispose();
 		lastActiveNodeId = '';
+		executionState = createInitialExecutionStreamState();
 		resetAllStatuses();
 
 		// Immediately set start node to running
 		const startNode = getNodes().find((n) => n.type === 'start');
 		if (startNode) setNodeStatus(startNode.id, 'running');
 		executionStream = createExecutionStream(executionId);
+		stopExecutionStream = executionStream.subscribe((state) => {
+			executionState = state;
+		});
 	}
 
 	// Watch for new execution
@@ -130,11 +139,16 @@
 			lastExecutionId = execId;
 			startTracking(execId);
 		}
-		return () => executionStream.dispose();
+		return () => {
+			stopExecutionStream();
+			stopExecutionStream = () => {};
+			executionStream?.dispose();
+			executionStream = null;
+		};
 	});
 
 	$effect(() => {
-		const snapshot = $executionStream.snapshot;
+		const snapshot = executionState.snapshot;
 		if (snapshot) {
 			processSnapshot(snapshot);
 		}

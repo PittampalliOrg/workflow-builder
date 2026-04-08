@@ -39,7 +39,9 @@
 	import { Card, CardContent } from '$lib/components/ui/card';
 	import {
 		createExecutionStream,
-		type ExecutionStreamStore
+		createInitialExecutionStreamState,
+		type ExecutionStreamStore,
+		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
@@ -143,10 +145,9 @@
 	let isLoadingWorkflow = $state(true);
 
 	// Execution stream
-	let executionStream: ExecutionStreamStore = createExecutionStream('');
+	let executionStream: ExecutionStreamStore | null = null;
+	let executionState = $state<ExecutionStreamState>(createInitialExecutionStreamState());
 	let timelineRef = $state<HTMLDivElement | null>(null);
-
-	const executionState = $derived($executionStream);
 	const snapshot = $derived(executionState.snapshot);
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
 	const startTime = $derived(snapshot?.startedAt ?? null);
@@ -274,13 +275,21 @@
 		loadWorkflow();
 
 		const previousStream = untrack(() => executionStream);
-		previousStream.dispose();
+		previousStream?.dispose();
+		executionState = createInitialExecutionStreamState();
 
 		const stream = createExecutionStream(nextExecutionId);
 		executionStream = stream;
+		const unsubscribe = stream.subscribe((state) => {
+			executionState = state;
+		});
 
 		return () => {
+			unsubscribe();
 			stream.dispose();
+			if (executionStream === stream) {
+				executionStream = null;
+			}
 		};
 	});
 
