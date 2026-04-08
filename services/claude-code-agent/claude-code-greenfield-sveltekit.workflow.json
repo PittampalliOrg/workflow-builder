@@ -84,7 +84,7 @@
             "name": "greenfield-preview",
             "rootPath": "/sandbox",
             "enabledTools": ["Bash", "Read", "Write"],
-            "timeoutMs": 120000,
+            "timeoutMs": 450000,
             "commandTimeoutMs": 360000,
             "sandboxTemplate": "openshell-browser"
           }
