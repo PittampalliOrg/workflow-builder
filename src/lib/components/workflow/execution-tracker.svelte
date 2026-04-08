@@ -8,14 +8,17 @@
 	 */
 	import { useSvelteFlow } from '@xyflow/svelte';
 	import { getContext } from 'svelte';
-	import { createExecutionStream } from '$lib/stores/execution-stream.svelte';
+	import {
+		createExecutionStream,
+		type ExecutionStreamStore
+	} from '$lib/stores/execution-stream.svelte';
 	import type { ExecutionReadModel } from '$lib/types/execution-stream';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { setCenter, updateNodeData, getNodes } = useSvelteFlow();
 
-	let executionStream = $state<ReturnType<typeof createExecutionStream> | null>(null);
+	let executionStream = $state<ExecutionStreamStore>(createExecutionStream(''));
 	let lastExecutionId = '';
 	let lastActiveNodeId = '';
 
@@ -110,7 +113,7 @@
 	}
 
 	function startTracking(executionId: string) {
-		executionStream?.dispose?.();
+		executionStream.dispose();
 		lastActiveNodeId = '';
 		resetAllStatuses();
 
@@ -127,11 +130,11 @@
 			lastExecutionId = execId;
 			startTracking(execId);
 		}
-		return () => executionStream?.dispose?.();
+		return () => executionStream.dispose();
 	});
 
 	$effect(() => {
-		const snapshot = executionStream?.snapshot;
+		const snapshot = $executionStream.snapshot;
 		if (snapshot) {
 			processSnapshot(snapshot);
 		}
