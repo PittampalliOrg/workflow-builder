@@ -262,32 +262,60 @@
 
 	// Initialize
 	$effect(() => {
+		const nextExecutionId = executionId;
 		loadWorkflow();
-		executionStream?.dispose?.();
-		executionStream = createExecutionStream(executionId);
-		return () => executionStream?.dispose?.();
+
+		const previousStream = untrack(() => executionStream);
+		previousStream?.dispose?.();
+
+		if (!nextExecutionId) {
+			executionStream = null;
+			return;
+		}
+
+		const stream = createExecutionStream(nextExecutionId);
+		executionStream = stream;
+
+		return () => {
+			stream.dispose();
+			if (untrack(() => executionStream) === stream) {
+				executionStream = null;
+			}
+		};
 	});
 
 	$effect(() => {
-		const snapshot = executionStream?.snapshot;
+		const stream = executionStream;
+		const snapshot = stream?.snapshot;
 		if (!snapshot) return;
 
+		const previousOutput = untrack(() => output);
+		const previousInput = untrack(() => input);
+		const previousError = untrack(() => errorMessage);
+		const previousInstanceId = untrack(() => instanceId);
+		const previousTraceId = untrack(() => traceId);
+		const previousTraceIds = untrack(() => allTraceIds);
+		const previousNodeStatuses = untrack(() => nodeStatuses);
+		const previousLogs = untrack(() => logs);
+		const previousBrowserArtifacts = untrack(() => browserArtifacts);
+
 		executionStatus = snapshot.status ?? 'unknown';
-		startTime = snapshot.startedAt ?? startTime;
-		endTime = snapshot.completedAt ?? endTime;
+		if (snapshot.startedAt != null) startTime = snapshot.startedAt;
+		if (snapshot.completedAt != null) endTime = snapshot.completedAt;
 		output =
 			(snapshot.output as Record<string, unknown> | null) ??
 			(snapshot.summaryOutput as Record<string, unknown> | null) ??
-			output;
-		input = snapshot.input ?? input;
-		errorMessage = snapshot.error ?? errorMessage;
-		instanceId = snapshot.instanceId ?? instanceId;
-		traceId = snapshot.traceId ?? traceId;
-		allTraceIds = Array.isArray(snapshot.traceIds) ? snapshot.traceIds : allTraceIds;
-		nodeStatuses = snapshot.nodeStatuses ?? nodeStatuses;
-		logs = (snapshot.steps as StepLog[]) ?? logs;
-		browserArtifacts = (snapshot.browserArtifacts as BrowserArtifact[]) ?? browserArtifacts;
-		browserArtifactError = executionStream?.error ?? null;
+			previousOutput;
+		input = (snapshot.input as Record<string, unknown> | null) ?? previousInput;
+		errorMessage = snapshot.error ?? previousError;
+		instanceId = snapshot.instanceId ?? previousInstanceId;
+		traceId = snapshot.traceId ?? previousTraceId;
+		allTraceIds = Array.isArray(snapshot.traceIds) ? snapshot.traceIds : previousTraceIds;
+		nodeStatuses = snapshot.nodeStatuses ?? previousNodeStatuses;
+		logs = (snapshot.steps as StepLog[]) ?? previousLogs;
+		browserArtifacts =
+			(snapshot.browserArtifacts as BrowserArtifact[]) ?? previousBrowserArtifacts;
+		browserArtifactError = stream?.error ?? null;
 		isLoadingStatus = false;
 		isLoadingLogs = false;
 		isLoadingBrowserArtifacts = false;
