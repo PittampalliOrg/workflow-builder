@@ -131,7 +131,7 @@
 	});
 
 	$effect(() => {
-		const snapshot = executionStream?.snapshot;
+		const snapshot = executionStream?.state.snapshot;
 		if (snapshot) {
 			processSnapshot(snapshot);
 		}

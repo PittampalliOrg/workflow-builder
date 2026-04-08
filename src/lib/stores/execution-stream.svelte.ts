@@ -5,54 +5,56 @@ import type {
 } from '$lib/types/execution-stream';
 
 export function createExecutionStream(executionId: string) {
-	let isConnected = $state(false);
-	let error = $state<string | null>(null);
-	let snapshot = $state<ExecutionReadModel | null>(null);
-	let events = $state<ExecutionTimelineEvent[]>([]);
-	let activeToolName = $state<string | null>(null);
-	let currentPhase = $state<string | null>(null);
+	const state = $state({
+		isConnected: false,
+		error: null as string | null,
+		snapshot: null as ExecutionReadModel | null,
+		events: [] as ExecutionTimelineEvent[],
+		activeToolName: null as string | null,
+		currentPhase: null as string | null
+	});
 	let es: EventSource | null = null;
 
 	function pushEvent(event: ExecutionTimelineEvent) {
-		if (events.some((entry) => entry.id === event.id)) return;
-		events = [...events, event].slice(-200);
+		if (state.events.some((entry) => entry.id === event.id)) return;
+		state.events = [...state.events, event].slice(-200);
 		switch (event.type) {
 			case 'tool_call_start':
-				activeToolName =
+				state.activeToolName =
 					(typeof event.data.toolName === 'string' && event.data.toolName) ||
 					(typeof event.data.name === 'string' && event.data.name) ||
-					activeToolName;
+					state.activeToolName;
 				break;
 			case 'tool_call_end':
 			case 'tool_call_error':
-				activeToolName = null;
+				state.activeToolName = null;
 				break;
 		}
 
 		if (typeof event.data.phase === 'string' && event.data.phase.trim()) {
-			currentPhase = event.data.phase;
+			state.currentPhase = event.data.phase;
 		}
 	}
 
 	function mergeSnapshot(next: Partial<ExecutionReadModel>) {
-		if (!snapshot) {
-			snapshot = next as ExecutionReadModel;
+		if (!state.snapshot) {
+			state.snapshot = next as ExecutionReadModel;
 		} else {
-			snapshot = {
-				...snapshot,
+			state.snapshot = {
+				...state.snapshot,
 				...next,
-				nodeStatuses: next.nodeStatuses ?? snapshot.nodeStatuses,
-				steps: next.steps ?? snapshot.steps,
-				browserArtifacts: next.browserArtifacts ?? snapshot.browserArtifacts,
-				traceIds: next.traceIds ?? snapshot.traceIds,
-				agentEvents: next.agentEvents ?? snapshot.agentEvents
+				nodeStatuses: next.nodeStatuses ?? state.snapshot.nodeStatuses,
+				steps: next.steps ?? state.snapshot.steps,
+				browserArtifacts: next.browserArtifacts ?? state.snapshot.browserArtifacts,
+				traceIds: next.traceIds ?? state.snapshot.traceIds,
+				agentEvents: next.agentEvents ?? state.snapshot.agentEvents
 			} as ExecutionReadModel;
 		}
 
-		if (snapshot?.agentEvents?.length) {
-			events = snapshot.agentEvents;
+		if (state.snapshot?.agentEvents?.length) {
+			state.events = state.snapshot.agentEvents;
 		}
-		currentPhase = snapshot?.phase ?? currentPhase;
+		state.currentPhase = state.snapshot?.phase ?? state.currentPhase;
 	}
 
 	function connect() {
@@ -60,13 +62,13 @@ export function createExecutionStream(executionId: string) {
 		es = new EventSource(`/api/workflows/executions/${executionId}/stream`);
 
 		es.onopen = () => {
-			isConnected = true;
-			error = null;
+			state.isConnected = true;
+			state.error = null;
 		};
 
 		es.onerror = () => {
-			isConnected = false;
-			error = 'Connection lost';
+			state.isConnected = false;
+			state.error = 'Connection lost';
 		};
 
 		es.addEventListener('snapshot', (raw) => {
@@ -74,7 +76,7 @@ export function createExecutionStream(executionId: string) {
 				const data = JSON.parse((raw as MessageEvent).data) as ExecutionReadModel;
 				mergeSnapshot(data);
 			} catch {
-				error = 'Failed to parse execution snapshot';
+				state.error = 'Failed to parse execution snapshot';
 			}
 		});
 
@@ -83,13 +85,13 @@ export function createExecutionStream(executionId: string) {
 				const data = JSON.parse((raw as MessageEvent).data) as ExecutionTimelineEvent;
 				pushEvent(data);
 			} catch {
-				error = 'Failed to parse execution event';
+				state.error = 'Failed to parse execution event';
 			}
 		});
 
 		es.addEventListener('terminal', () => {
-			isConnected = false;
-			activeToolName = null;
+			state.isConnected = false;
+			state.activeToolName = null;
 		});
 
 		es.addEventListener('run_error', (raw) => {
@@ -97,9 +99,9 @@ export function createExecutionStream(executionId: string) {
 				const payload = JSON.parse((raw as MessageEvent).data) as {
 					data?: { error?: string };
 				};
-				error = payload.data?.error ?? 'Execution stream failed';
+				state.error = payload.data?.error ?? 'Execution stream failed';
 			} catch {
-				error = 'Execution stream failed';
+				state.error = 'Execution stream failed';
 			}
 		});
 	}
@@ -107,37 +109,20 @@ export function createExecutionStream(executionId: string) {
 	connect();
 
 	return {
-		get isConnected() {
-			return isConnected;
-		},
-		get error() {
-			return error;
-		},
-		get snapshot() {
-			return snapshot;
-		},
-		get events() {
-			return events;
-		},
-		get activeToolName() {
-			return activeToolName;
-		},
-		get currentPhase() {
-			return currentPhase;
-		},
+		state,
 		get status() {
-			return snapshot?.status ?? 'running';
+			return state.snapshot?.status ?? 'running';
 		},
 		get steps(): ExecutionStepLog[] {
-			return snapshot?.steps ?? [];
+			return state.snapshot?.steps ?? [];
 		},
 		get browserArtifacts() {
-			return snapshot?.browserArtifacts ?? [];
+			return state.snapshot?.browserArtifacts ?? [];
 		},
 		dispose() {
 			es?.close();
 			es = null;
-			isConnected = false;
+			state.isConnected = false;
 		}
 	};
 }
