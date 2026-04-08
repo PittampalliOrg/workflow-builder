@@ -35,9 +35,12 @@ function snapshotKey(model: ExecutionReadModel) {
 	});
 }
 
-export const GET: RequestHandler = async ({ params, url }) => {
+export const GET: RequestHandler = async ({ params, request, url }) => {
 	const cursorParam = Number.parseInt(url.searchParams.get('cursor') ?? '0', 10);
-	const requestedCursor = Number.isFinite(cursorParam) && cursorParam > 0 ? cursorParam : 0;
+	const headerCursor = Number.parseInt(request.headers.get('last-event-id') ?? '0', 10);
+	const requestedCursor = [cursorParam, headerCursor].find(
+		(value) => Number.isFinite(value) && value > 0
+	) ?? 0;
 	const executionId = params.executionId;
 	let cancelled = false;
 

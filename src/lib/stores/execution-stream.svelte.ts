@@ -11,6 +11,8 @@ export interface ExecutionStreamState {
 	events: ExecutionTimelineEvent[];
 	activeToolName: string | null;
 	currentPhase: string | null;
+	isLlmStreaming: boolean;
+	llmTokenBuffer: string;
 }
 
 export type ExecutionStreamStore = Readable<ExecutionStreamState> & {
@@ -24,7 +26,9 @@ export function createInitialExecutionStreamState(): ExecutionStreamState {
 		snapshot: null,
 		events: [],
 		activeToolName: null,
-		currentPhase: null
+		currentPhase: null,
+		isLlmStreaming: false,
+		llmTokenBuffer: ''
 	};
 }
 
@@ -41,7 +45,9 @@ export function createExecutionStream(executionId: string) {
 		patchState((state) => ({
 			...state,
 			isConnected: false,
-			activeToolName: null
+			activeToolName: null,
+			isLlmStreaming: false,
+			llmTokenBuffer: ''
 		}));
 	}
 
@@ -50,12 +56,15 @@ export function createExecutionStream(executionId: string) {
 		dispose
 	};
 	let es: EventSource | null = null;
+	let terminal = false;
 
 	function pushEvent(event: ExecutionTimelineEvent) {
 		patchState((state) => {
 			if (state.events.some((entry) => entry.id === event.id)) return state;
 
 			let activeToolName = state.activeToolName;
+			let isLlmStreaming = state.isLlmStreaming;
+			let llmTokenBuffer = state.llmTokenBuffer;
 			switch (event.type) {
 				case 'tool_call_start':
 					activeToolName =
@@ -66,6 +75,21 @@ export function createExecutionStream(executionId: string) {
 				case 'tool_call_end':
 				case 'tool_call_error':
 					activeToolName = null;
+					break;
+				case 'llm_start':
+					isLlmStreaming = true;
+					llmTokenBuffer = '';
+					break;
+				case 'llm_token':
+					isLlmStreaming = true;
+					llmTokenBuffer +=
+						(typeof event.data.token === 'string' && event.data.token) ||
+						(typeof event.data.text === 'string' && event.data.text) ||
+						'';
+					break;
+				case 'llm_complete':
+					isLlmStreaming = false;
+					llmTokenBuffer = '';
 					break;
 			}
 
@@ -78,7 +102,9 @@ export function createExecutionStream(executionId: string) {
 				...state,
 				events: [...state.events, event].slice(-200),
 				activeToolName,
-				currentPhase
+				currentPhase,
+				isLlmStreaming,
+				llmTokenBuffer: llmTokenBuffer.slice(-4000)
 			};
 		});
 	}
@@ -109,6 +135,7 @@ export function createExecutionStream(executionId: string) {
 	function connect() {
 		if (typeof window === 'undefined' || !executionId) return;
 		es = new EventSource(`/api/workflows/executions/${executionId}/stream`);
+		terminal = false;
 
 		es.onopen = () => {
 			patchState((state) => ({
@@ -119,6 +146,7 @@ export function createExecutionStream(executionId: string) {
 		};
 
 		es.onerror = () => {
+			if (terminal || !es) return;
 			patchState((state) => ({
 				...state,
 				isConnected: false,
@@ -151,10 +179,15 @@ export function createExecutionStream(executionId: string) {
 		});
 
 		es.addEventListener('terminal', () => {
+			terminal = true;
+			es?.close();
+			es = null;
 			patchState((state) => ({
 				...state,
 				isConnected: false,
-				activeToolName: null
+				activeToolName: null,
+				isLlmStreaming: false,
+				llmTokenBuffer: ''
 			}));
 		});
 
@@ -165,14 +198,19 @@ export function createExecutionStream(executionId: string) {
 				};
 				patchState((state) => ({
 					...state,
-					error: payload.data?.error ?? 'Execution stream failed'
+					error: payload.data?.error ?? 'Execution stream failed',
+					isConnected: false
 				}));
 			} catch {
 				patchState((state) => ({
 					...state,
-					error: 'Execution stream failed'
+					error: 'Execution stream failed',
+					isConnected: false
 				}));
 			}
+			terminal = true;
+			es?.close();
+			es = null;
 		});
 	}
 

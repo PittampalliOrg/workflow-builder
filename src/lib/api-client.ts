@@ -65,22 +65,32 @@ export interface ExecutionNodeStatus {
 
 export interface ExecutionStatusResponse {
 	executionId: string;
-	instanceId?: string;
+	instanceId: string | null;
 	workflowId: string;
 	status: ExecutionStatus;
 	runtimeStatus: string | null;
 	phase: string | null;
 	progress: number | null;
-	message: string | null;
 	currentNodeId: string | null;
 	currentNodeName: string | null;
-	approvalEventName: string | null;
 	traceId?: string | null;
-	nodeStatuses: ExecutionNodeStatus[];
-	outputs?: unknown;
+	traceIds: string[];
+	sessionId: string | null;
+	nodeStatuses: Record<string, string>;
+	input: Record<string, unknown> | null;
+	output: unknown;
+	summaryOutput: Record<string, unknown> | null;
+	browserArtifacts: Array<Record<string, unknown>>;
+	agentEvents: Array<{
+		id: number;
+		type: string;
+		data: Record<string, unknown>;
+		timestamp: string;
+	}>;
+	lastAgentEventId: number;
 	error: string | null;
-	startedAt: string;
-	completedAt?: string | null;
+	startedAt: string | null;
+	completedAt: string | null;
 }
 
 export interface AppConnection {

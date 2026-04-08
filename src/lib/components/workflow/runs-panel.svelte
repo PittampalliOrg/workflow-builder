@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getContext, onMount } from 'svelte';
+	import { getContext, onDestroy, onMount } from 'svelte';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import {
 		X, Check, Loader2, CheckCircle2, XCircle, Clock,
@@ -9,9 +9,13 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Card } from '$lib/components/ui/card';
 	import { formatDistanceToNow } from 'date-fns';
-	import ExecutionStatusBadge from '$lib/components/workflow/execution/execution-status-badge.svelte';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
-	import { createAgentStream } from '$lib/stores/agent-stream.svelte';
+	import {
+		createExecutionStream,
+		createInitialExecutionStreamState,
+		type ExecutionStreamStore,
+		type ExecutionStreamState
+	} from '$lib/stores/execution-stream.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
@@ -49,7 +53,9 @@
 	let expandedIds = new SvelteSet<string>();
 	let executionLogs = new SvelteMap<string, StepLog[]>();
 	let loadingLogs = new SvelteSet<string>();
-	let agentStreams = new SvelteMap<string, ReturnType<typeof createAgentStream>>();
+	let executionStreams = new SvelteMap<string, ExecutionStreamStore>();
+	let executionStreamStates = new SvelteMap<string, ExecutionStreamState>();
+	let executionStreamStops = new SvelteMap<string, () => void>();
 
 	// Fetch executions list
 	async function fetchExecutions() {
@@ -123,19 +129,40 @@
 				startedAt: new Date().toISOString()
 			}, ...executions];
 			expandedIds.add(execId);
-			ensureAgentStream(execId);
+			ensureExecutionStream(execId);
 			lastAutoExpandedId = execId;
 		} else if (!expandedIds.has(execId)) {
 			// Execution exists but not expanded — auto-expand it
 			expandedIds.add(execId);
+			const existing = executions.find((execution) => execution.id === execId);
+			if (existing && isRunning(existing.status)) {
+				ensureExecutionStream(execId);
+			}
 			lastAutoExpandedId = execId;
 		}
 	});
 
-	function ensureAgentStream(execId: string) {
-		if (!agentStreams.has(execId)) {
-			agentStreams.set(execId, createAgentStream(execId));
-		}
+	function stopExecutionStream(execId: string) {
+		executionStreamStops.get(execId)?.();
+		executionStreamStops.delete(execId);
+		executionStreams.get(execId)?.dispose();
+		executionStreams.delete(execId);
+		executionStreamStates.delete(execId);
+	}
+
+	function ensureExecutionStream(execId: string) {
+		if (executionStreams.has(execId)) return;
+		executionStreamStates.set(execId, createInitialExecutionStreamState());
+		const stream = createExecutionStream(execId);
+		const unsubscribe = stream.subscribe((state) => {
+			executionStreamStates.set(execId, state);
+		});
+		executionStreams.set(execId, stream);
+		executionStreamStops.set(execId, unsubscribe);
+	}
+
+	function streamState(execId: string): ExecutionStreamState {
+		return executionStreamStates.get(execId) ?? createInitialExecutionStreamState();
 	}
 
 	async function fetchLogsForExecution(execId: string) {
@@ -161,12 +188,13 @@
 	function toggleExpand(exec: Execution) {
 		if (expandedIds.has(exec.id)) {
 			expandedIds.delete(exec.id);
+			stopExecutionStream(exec.id);
 		} else {
 			expandedIds.add(exec.id);
 			store.selectedExecutionId = exec.id;
 			fetchLogsForExecution(exec.id);
 			if (isRunning(exec.status)) {
-				ensureAgentStream(exec.id);
+				ensureExecutionStream(exec.id);
 			}
 		}
 	}
@@ -177,6 +205,15 @@
 			if (!isRunning(exec.status) && expandedIds.has(exec.id) && !executionLogs.has(exec.id)) {
 				fetchLogsForExecution(exec.id);
 			}
+			if (!isRunning(exec.status) && executionStreams.has(exec.id)) {
+				stopExecutionStream(exec.id);
+			}
+		}
+	});
+
+	onDestroy(() => {
+		for (const execId of executionStreams.keys()) {
+			stopExecutionStream(execId);
 		}
 	});
 
@@ -250,7 +287,7 @@
 					{@const execId = exec.id}
 					{@const isExpanded = expandedIds.has(execId)}
 					{@const logs = executionLogs.get(execId) ?? null}
-					{@const stream = agentStreams.get(execId) ?? null}
+					{@const stream = streamState(execId)}
 					{@const isLogsLoading = loadingLogs.has(execId)}
 
 					<Card class="overflow-hidden transition-all {store.selectedExecutionId === exec.id ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : ''}">
@@ -306,7 +343,7 @@
 						{#if isExpanded}
 							<div class="border-t bg-muted/10">
 								<!-- Agent stream inline (for running executions) -->
-								{#if isRunning(exec.status) && stream}
+								{#if isRunning(exec.status)}
 									<div class="space-y-2 p-3">
 										{#if !stream.currentPhase && !stream.activeToolName && stream.events.length === 0 && !stream.error}
 											<div class="flex items-center gap-2 py-2 text-xs text-muted-foreground">
