@@ -61,6 +61,10 @@ export const GET: RequestHandler = async ({ params, url }) => {
 				controller.enqueue(encoder.encode(`${lines.join('\n')}\n`));
 			}
 
+			// Force proxy chains to flush the stream promptly instead of buffering the
+			// first meaningful event until enough data accumulates.
+			controller.enqueue(encoder.encode(`: ${' '.repeat(2048)}\n\n`));
+
 			try {
 				const initial = await loadExecutionReadModel(executionId, {
 					refreshRuntime: true,
@@ -175,8 +179,9 @@ export const GET: RequestHandler = async ({ params, url }) => {
 	return new Response(stream, {
 		headers: {
 			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-cache',
-			Connection: 'keep-alive'
+			'Cache-Control': 'no-cache, no-transform',
+			Connection: 'keep-alive',
+			'X-Accel-Buffering': 'no'
 		}
 	});
 };
