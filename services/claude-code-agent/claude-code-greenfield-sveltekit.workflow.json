@@ -126,7 +126,73 @@
             "installCommand": "npm install --prefer-offline",
             "baseUrl": "http://127.0.0.1:3009",
             "steps": [
-              {"id": "home", "label": "Home Page", "path": "/", "waitForSelector": "body", "waitForText": "{{trigger.headline}}", "delayMs": 5000}
+              {
+                "id": "hero-intro",
+                "label": "Hero Reveal",
+                "action": "visit",
+                "path": "/",
+                "goal": "Open the landing page and hold on the cinematic hero.",
+                "waitForSelector": ".hero",
+                "waitForText": "{{trigger.headline}}",
+                "pauseMs": 1800,
+                "fullPage": false
+              },
+              {
+                "id": "stealth-mode",
+                "label": "Stealth Mode",
+                "action": "click",
+                "path": "/",
+                "selector": "button:has-text('Stealth')",
+                "goal": "Switch to the stealth presentation mode and show the alternate metrics.",
+                "waitForText": "Mask Integrity",
+                "pauseMs": 1400,
+                "fullPage": false
+              },
+              {
+                "id": "clearance-slider",
+                "label": "Clearance Boost",
+                "action": "fill",
+                "path": "/",
+                "selector": "input[type='range']",
+                "value": "91",
+                "goal": "Raise the clearance slider to show live state change in the hero.",
+                "waitForText": "91%",
+                "pauseMs": 1200,
+                "fullPage": false
+              },
+              {
+                "id": "broadcast-mode",
+                "label": "Broadcast Mode",
+                "action": "click",
+                "path": "/",
+                "selector": "button:has-text('Broadcast')",
+                "goal": "Pivot to the high-energy broadcast mode for the most dramatic metric palette.",
+                "waitForText": "Live Scenes",
+                "pauseMs": 1400,
+                "fullPage": false
+              },
+              {
+                "id": "metrics-grid",
+                "label": "Metrics Grid",
+                "action": "scroll",
+                "path": "/",
+                "selector": ".metrics",
+                "goal": "Frame the metrics cards as a clean product proof moment.",
+                "waitForSelector": ".metrics .card",
+                "pauseMs": 1400,
+                "fullPage": true
+              },
+              {
+                "id": "launch-reset",
+                "label": "Launch Reset",
+                "action": "click",
+                "path": "/",
+                "selector": "button:has-text('Launch')",
+                "goal": "Return to the default launch state to close the demo loop cleanly.",
+                "waitForText": "Signal Uptime",
+                "pauseMs": 1400,
+                "fullPage": false
+              }
             ],
             "captureVideo": true,
             "captureTrace": true,
@@ -134,6 +200,56 @@
             "captureMode": "demo",
             "demoTitle": "{{trigger.app_name}}",
             "demoSummary": "{{trigger.ui_brief}}",
+            "annotationPlan": {
+              "title": "{{trigger.app_name}}",
+              "summary": "{{trigger.ui_brief}}",
+              "style": "feature-walkthrough",
+              "captions": [
+                {
+                  "id": "intro",
+                  "stepId": "hero-intro",
+                  "kind": "title",
+                  "title": "{{trigger.app_name}}",
+                  "body": "{{trigger.headline}}",
+                  "durationMs": 3200
+                },
+                {
+                  "id": "caption-stealth",
+                  "stepId": "stealth-mode",
+                  "kind": "feature",
+                  "title": "Mode Switching",
+                  "body": "Switching modes instantly reframes the dashboard for a different launch scenario.",
+                  "durationMs": 2600
+                },
+                {
+                  "id": "caption-clearance",
+                  "stepId": "clearance-slider",
+                  "kind": "feature",
+                  "title": "Live Controls",
+                  "body": "The clearance control gives the viewer an immediate sense of interactivity and state change.",
+                  "durationMs": 2400
+                },
+                {
+                  "id": "caption-broadcast",
+                  "stepId": "broadcast-mode",
+                  "kind": "feature",
+                  "title": "High-Energy View",
+                  "body": "Broadcast mode turns the page into a bold reveal moment with punchier metrics and color.",
+                  "durationMs": 2600
+                },
+                {
+                  "id": "caption-metrics",
+                  "stepId": "metrics-grid",
+                  "kind": "feature",
+                  "title": "Visual Proof",
+                  "body": "The metrics grid gives the video a strong proof frame with clear data beats and motion.",
+                  "durationMs": 2500
+                }
+              ]
+            },
+            "annotationStyle": "feature-walkthrough",
+            "renderAnnotatedVideo": true,
+            "renderCaptions": true,
             "timeoutMs": 600000
           }
         }
@@ -142,7 +258,7 @@
         "claude_create_pr": {
           "call": "claude/run",
           "with": {
-            "prompt": "Report the workflow completion.\n\n1. cd /tmp/{{trigger.repo}}\n2. Show the latest commits: git log --oneline -5\n3. Show the repo URL: echo 'Repo: https://gitea-ryzen.tail286401.ts.net/{{trigger.owner}}/{{trigger.repo}}'\n4. Summarize what was built for this brief: {{trigger.ui_brief}}\n\nIMPORTANT: Always cd to /tmp/{{trigger.repo}} first.",
+            "prompt": "Report the workflow completion.\n\n1. cd /tmp/{{trigger.repo}}\n2. Show the latest commits: git log --oneline -5\n3. Show the repo URL: echo 'Repo: https://gitea-ryzen.tail286401.ts.net/{{trigger.owner}}/{{trigger.repo}}'\n4. Summarize what was built for this brief: {{trigger.ui_brief}}\n5. Mention that browser capture ran in demo mode with annotated video and captions enabled.\n\nIMPORTANT: Always cd to /tmp/{{trigger.repo}} first.",
             "mode": "execute_direct",
             "tools": ["Bash", "Read"],
             "maxTurns": 4,
