@@ -143,7 +143,7 @@
 	let isLoadingWorkflow = $state(true);
 
 	// Execution stream
-	let executionStream = $state<ExecutionStreamStore>(createExecutionStream(''));
+	let executionStream: ExecutionStreamStore = createExecutionStream('');
 	let timelineRef = $state<HTMLDivElement | null>(null);
 
 	const executionState = $derived($executionStream);

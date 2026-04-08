@@ -18,7 +18,7 @@
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { setCenter, updateNodeData, getNodes } = useSvelteFlow();
 
-	let executionStream = $state<ExecutionStreamStore>(createExecutionStream(''));
+	let executionStream: ExecutionStreamStore = createExecutionStream('');
 	let lastExecutionId = '';
 	let lastActiveNodeId = '';
 
