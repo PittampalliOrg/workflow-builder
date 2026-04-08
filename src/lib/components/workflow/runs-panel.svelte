@@ -256,6 +256,13 @@
 	function formatTime(iso: string): string {
 		return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 	}
+
+	function activeStepLabel(stream: ExecutionStreamState): string | null {
+		const currentNodeName = stream.snapshot?.currentNodeName?.trim();
+		if (currentNodeName) return currentNodeName;
+		const currentNodeId = stream.snapshot?.currentNodeId?.trim();
+		return currentNodeId || null;
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -345,10 +352,16 @@
 								<!-- Agent stream inline (for running executions) -->
 								{#if isRunning(exec.status)}
 									<div class="space-y-2 p-3">
+										{#if activeStepLabel(stream)}
+											<div class="flex items-center gap-1.5 text-xs">
+												<span class="text-muted-foreground">Current step:</span>
+												<span class="font-medium">{activeStepLabel(stream)}</span>
+											</div>
+										{/if}
 										{#if !stream.currentPhase && !stream.activeToolName && stream.events.length === 0 && !stream.error}
 											<div class="flex items-center gap-2 py-2 text-xs text-muted-foreground">
 												<Loader2 size={12} class="animate-spin" />
-												<span>Waiting for events...</span>
+												<span>Live status is updating. No agent events have been emitted yet.</span>
 											</div>
 										{/if}
 										{#if stream.currentPhase}

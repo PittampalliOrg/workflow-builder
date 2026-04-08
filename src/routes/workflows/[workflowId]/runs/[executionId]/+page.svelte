@@ -171,6 +171,9 @@
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
 	const isLoadingLogs = $derived(isLoadingStatus);
 	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
+	const activeNodeLabel = $derived(
+		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
+	);
 
 	const nodeTypes: NodeTypes = {
 		start: StartNode,
@@ -715,7 +718,14 @@
 					{:else if isRunning}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<Loader2 size={20} class="animate-spin" />
-							<p class="text-sm">Waiting for events...</p>
+							<p class="text-sm">Live status is updating from the execution stream.</p>
+							{#if activeNodeLabel}
+								<p class="text-xs">Current step: {activeNodeLabel}</p>
+							{/if}
+							{#if executionState.currentPhase}
+								<p class="text-xs">Phase: {executionState.currentPhase}</p>
+							{/if}
+							<p class="text-xs">Agent events will appear here when this workflow emits them.</p>
 						</div>
 					{:else}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
