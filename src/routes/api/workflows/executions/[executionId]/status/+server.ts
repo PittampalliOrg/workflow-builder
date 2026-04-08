@@ -1,156 +1,45 @@
-import { json, error } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import {
+	loadExecutionReadModel,
+	serializeExecutionReadModel
+} from '$lib/server/execution-read-model';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
-import { db } from '$lib/server/db';
-import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
-import { workflowExecutions } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
-import { extractExecutionTraceIds, findCorrelatedTraceIds } from '$lib/server/otel/clickhouse';
 
 /**
  * GET /api/workflows/executions/[executionId]/status
  *
- * Returns execution status. First checks the DB execution record,
- * then optionally queries the orchestrator for live Dapr status.
+ * Returns the execution read model using the same shaping logic as the
+ * realtime stream endpoint. This keeps the legacy status route aligned with
+ * the new SSE-backed run page.
  */
 export const GET: RequestHandler = async ({ params }) => {
 	const { executionId } = params;
 
-	// Try DB first for the execution record
-	if (db) {
-		try {
-			await assertExecutionReadModelColumns();
-		} catch (schemaError) {
-			console.error('[ExecutionStatus] execution read-model schema check failed:', schemaError);
-			return error(
-				503,
-				schemaError instanceof Error
-					? schemaError.message
-					: 'Execution read-model migration is required'
+	try {
+		const model = await loadExecutionReadModel(executionId, {
+			refreshRuntime: true,
+			includeAgentEvents: false
+		});
+
+		if (model) {
+			return json(
+				serializeExecutionReadModel(model, {
+					compact: false,
+					includeAgentEvents: false
+				})
 			);
 		}
-		const [execution] = await db
-			.select()
-			.from(workflowExecutions)
-			.where(eq(workflowExecutions.id, executionId))
-			.limit(1);
-
-		if (execution) {
-			let liveStatus = null;
-
-			const shouldRefreshRuntime =
-				Boolean(execution.daprInstanceId) &&
-				(execution.status === 'running' ||
-					execution.status === 'pending' ||
-					!execution.primaryTraceId ||
-					!execution.currentNodeId);
-
-			if (shouldRefreshRuntime && execution.daprInstanceId) {
-				try {
-					const orchestratorUrl = getOrchestratorUrl();
-					const res = await daprFetch(
-						`${orchestratorUrl}/api/v2/workflows/${execution.daprInstanceId}/status`
-					);
-					if (res.ok) {
-						liveStatus = await res.json();
-					}
-				} catch {
-					// Orchestrator not reachable — return DB status
-				}
-			}
-
-			// Extract per-step outputs and traceId from DB output
-			const dbOutput = execution.output as Record<string, unknown> | null;
-			const stepOutputs = dbOutput?.outputs as Record<string, unknown> | undefined;
-			const executionRecord = execution as Record<string, unknown>;
-			const dbTraceId =
-				(typeof executionRecord.primaryTraceId === 'string' ? executionRecord.primaryTraceId : undefined) ??
-				((dbOutput as Record<string, unknown>)?.traceId as string | undefined);
-			const allTraceIds = extractExecutionTraceIds(execution.output);
-
-			// Parse step outputs into normalized steps array
-			const steps = stepOutputs
-				? Object.entries(stepOutputs).map(([name, val]) => {
-						const v = val as Record<string, unknown>;
-						const d = v.data as Record<string, unknown> | undefined;
-						return {
-							stepName: name,
-							label: (v.label as string) || name,
-							actionType: (v.actionType as string) || '',
-							status: d?.success === false || d?.error ? 'error' : d?.success === true ? 'success' : 'unknown',
-							durationMs: (d?.duration_ms as number) ?? null,
-							error: (d?.error as string) ?? null,
-							data: d ?? null
-						};
-					})
-				: [];
-
-			if (typeof executionRecord.primaryTraceId === 'string' && !allTraceIds.includes(executionRecord.primaryTraceId)) {
-				allTraceIds.unshift(executionRecord.primaryTraceId);
-			}
-
-			// Merge live traceId into allTraceIds if present
-			if (liveStatus?.traceId && !allTraceIds.includes(liveStatus.traceId)) {
-				allTraceIds.unshift(liveStatus.traceId);
-			}
-
-			// For completed executions, also find correlated traces by time window
-			// (dapr-swe, function-router don't propagate trace context through Dapr boundaries)
-			if (execution.startedAt && (execution.status === 'success' || execution.status === 'error')) {
-				const correlated = await findCorrelatedTraceIds(
-					execution.startedAt,
-					execution.completedAt,
-					allTraceIds
-				);
-				for (const id of correlated) {
-					if (!allTraceIds.includes(id)) allTraceIds.push(id);
-				}
-			}
-
-			return json({
-				executionId: execution.id,
-				instanceId: execution.daprInstanceId,
-				workflowId: execution.workflowId,
-				status: execution.status,
-				phase: (execution as Record<string, unknown>).phase ?? null,
-				progress: (execution as Record<string, unknown>).progress ?? null,
-				currentNodeId:
-					(typeof executionRecord.currentNodeId === 'string' ? executionRecord.currentNodeId : null),
-				currentNodeName:
-					(typeof executionRecord.currentNodeName === 'string' ? executionRecord.currentNodeName : null),
-				input: execution.input,
-				output: execution.output,
-				summaryOutput:
-					(executionRecord.summaryOutput as Record<string, unknown> | null | undefined) ?? null,
-				sessionId:
-					(typeof executionRecord.workflowSessionId === 'string'
-						? executionRecord.workflowSessionId
-						: null),
-				lastAgentEventId:
-					(typeof executionRecord.lastAgentEventId === 'number'
-						? executionRecord.lastAgentEventId
-						: 0),
-				steps,
-				startedAt: execution.startedAt?.toISOString() ?? null,
-				completedAt: execution.completedAt?.toISOString() ?? null,
-				traceIds: allTraceIds,
-				// Merge live status if available
-				...(liveStatus
-					? {
-							runtimeStatus: liveStatus.runtimeStatus,
-							nodeStatuses: liveStatus.nodeStatuses ?? [],
-							traceId: liveStatus.traceId ?? null,
-							outputs: liveStatus.outputs ?? null
-						}
-					: {
-							traceId: dbTraceId ?? null,
-							outputs: stepOutputs ?? null
-						})
-			});
-		}
+	} catch (readModelError) {
+		console.error('[ExecutionStatus] execution read-model load failed:', readModelError);
+		return error(
+			503,
+			readModelError instanceof Error
+				? readModelError.message
+				: 'Execution read-model migration is required'
+		);
 	}
 
-	// Fallback: try orchestrator directly with executionId as instanceId
 	const orchestratorUrl = getOrchestratorUrl();
 	const response = await daprFetch(`${orchestratorUrl}/api/v2/workflows/${executionId}/status`);
 
@@ -158,24 +47,39 @@ export const GET: RequestHandler = async ({ params }) => {
 		return error(404, 'Execution not found');
 	}
 
-	const status = await response.json();
+	const status = (await response.json()) as Record<string, unknown>;
 
 	return json({
 		executionId,
-		instanceId: status.instanceId ?? executionId,
-		workflowId: status.workflowId ?? null,
-		status: mapRuntimeStatus(status.runtimeStatus ?? status.status ?? 'UNKNOWN'),
-		runtimeStatus: status.runtimeStatus ?? null,
-		phase: status.phase ?? null,
-		progress: status.progress ?? null,
-		currentNodeId: status.currentNodeId ?? null,
-		currentNodeName: status.currentNodeName ?? null,
-		nodeStatuses: status.nodeStatuses ?? [],
-		traceId: status.traceId ?? null,
-		outputs: status.outputs ?? null,
-		error: status.error ?? null,
-		startedAt: status.startedAt ?? null,
-		completedAt: status.completedAt ?? null
+		instanceId: typeof status.instanceId === 'string' ? status.instanceId : executionId,
+		workflowId: typeof status.workflowId === 'string' ? status.workflowId : null,
+		status: mapRuntimeStatus(
+			typeof status.runtimeStatus === 'string'
+				? status.runtimeStatus
+				: typeof status.status === 'string'
+					? status.status
+					: 'UNKNOWN'
+		),
+		runtimeStatus: typeof status.runtimeStatus === 'string' ? status.runtimeStatus : null,
+		phase: typeof status.phase === 'string' ? status.phase : null,
+		progress: typeof status.progress === 'number' ? status.progress : null,
+		currentNodeId: typeof status.currentNodeId === 'string' ? status.currentNodeId : null,
+		currentNodeName:
+			typeof status.currentNodeName === 'string' ? status.currentNodeName : null,
+		nodeStatuses: Array.isArray(status.nodeStatuses) ? status.nodeStatuses : [],
+		traceId: typeof status.traceId === 'string' ? status.traceId : null,
+		traceIds: typeof status.traceId === 'string' ? [status.traceId] : [],
+		sessionId: null,
+		input: null,
+		output: status.outputs ?? null,
+		summaryOutput: null,
+		error: typeof status.error === 'string' ? status.error : null,
+		startedAt: typeof status.startedAt === 'string' ? status.startedAt : null,
+		completedAt: typeof status.completedAt === 'string' ? status.completedAt : null,
+		steps: [],
+		browserArtifacts: [],
+		agentEvents: [],
+		lastAgentEventId: 0
 	});
 };
 

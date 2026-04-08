@@ -259,6 +259,35 @@ function patchStatusIsTerminal(status: ExecutionStatus) {
 	return status === 'success' || status === 'error' || status === 'cancelled';
 }
 
+type SerializeExecutionReadModelOptions = {
+	compact?: boolean;
+	includeAgentEvents?: boolean;
+};
+
+function compactStepLog(step: ExecutionStepLog): ExecutionStepLog {
+	return {
+		...step,
+		input: null,
+		output: null
+	};
+}
+
+export function serializeExecutionReadModel(
+	model: ExecutionReadModel,
+	options?: SerializeExecutionReadModelOptions
+): ExecutionReadModel {
+	const includeAgentEvents = options?.includeAgentEvents ?? false;
+	const compact = options?.compact ?? false;
+	const shouldCompact = compact && !patchStatusIsTerminal(model.status);
+
+	return {
+		...model,
+		output: shouldCompact ? model.summaryOutput ?? null : model.output,
+		steps: shouldCompact ? model.steps.map((step) => compactStepLog(step)) : model.steps,
+		agentEvents: includeAgentEvents ? model.agentEvents : []
+	};
+}
+
 async function readExecutionRow(executionId: string) {
 	if (!db) return null;
 	await assertExecutionReadModelColumns();

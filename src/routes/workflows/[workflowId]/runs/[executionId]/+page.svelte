@@ -275,7 +275,10 @@
 		executionStatus = snapshot.status ?? 'unknown';
 		startTime = snapshot.startedAt ?? startTime;
 		endTime = snapshot.completedAt ?? endTime;
-		output = (snapshot.output as Record<string, unknown> | null) ?? output;
+		output =
+			(snapshot.output as Record<string, unknown> | null) ??
+			(snapshot.summaryOutput as Record<string, unknown> | null) ??
+			output;
 		input = snapshot.input ?? input;
 		errorMessage = snapshot.error ?? errorMessage;
 		instanceId = snapshot.instanceId ?? instanceId;

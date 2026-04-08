@@ -1,7 +1,8 @@
 import type { RequestHandler } from './$types';
 import {
 	listExecutionAgentEvents,
-	loadExecutionReadModel
+	loadExecutionReadModel,
+	serializeExecutionReadModel
 } from '$lib/server/execution-read-model';
 import type { ExecutionReadModel } from '$lib/types/execution-stream';
 
@@ -76,12 +77,17 @@ export const GET: RequestHandler = async ({ params, url }) => {
 					return;
 				}
 
+				const initialSnapshot = serializeExecutionReadModel(initial, {
+					compact: true,
+					includeAgentEvents: false
+				});
+
 				lastAgentEventId = Math.max(lastAgentEventId, initial.lastAgentEventId);
-				lastSnapshotHash = snapshotKey(initial);
+				lastSnapshotHash = snapshotKey(initialSnapshot);
 				lastSnapshotAt = Date.now();
 				lastHeartbeatAt = Date.now();
 
-				send('snapshot', initial);
+				send('snapshot', initialSnapshot);
 
 				for (const event of initial.agentEvents) {
 					if (event.id <= requestedCursor) continue;
@@ -113,10 +119,14 @@ export const GET: RequestHandler = async ({ params, url }) => {
 							break;
 						}
 
-						const nextHash = snapshotKey(snapshot);
+						const serializedSnapshot = serializeExecutionReadModel(snapshot, {
+							compact: true,
+							includeAgentEvents: false
+						});
+						const nextHash = snapshotKey(serializedSnapshot);
 						if (nextHash !== lastSnapshotHash) {
 							lastSnapshotHash = nextHash;
-							send('snapshot', snapshot);
+							send('snapshot', serializedSnapshot);
 						}
 						lastSnapshotAt = now;
 
