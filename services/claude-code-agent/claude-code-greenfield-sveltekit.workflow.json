@@ -1,0 +1,183 @@
+{
+  "id": "claude-code-greenfield-sveltekit",
+  "name": "Claude Code Greenfield SvelteKit",
+  "description": "Create a new Gitea repo, scaffold a SvelteKit app, review the code, capture browser evidence, and open a PR — fully powered by Claude Code agent.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "claude-code-greenfield-sveltekit",
+      "version": "1.0.0",
+      "title": "Claude Code Greenfield SvelteKit",
+      "summary": "Repo creation, SvelteKit scaffold, review, browser preview, and PR — all via Claude Code agent."
+    },
+    "do": [
+      {
+        "claude_setup": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Set up a repository for a SvelteKit application.\n\nRepository owner: ${ .input.owner // \"giteaadmin\" }\nRepository name: ${ .input.repo // \"launch-day-dashboard-demo\" }\nDescription: ${ .input.description // \"A polished SvelteKit demo built by Claude Code\" }\n\n1. Check if the repo exists:\n   curl -sf 'http://gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/${ .input.owner // \"giteaadmin\" }/${ .input.repo // \"launch-day-dashboard-demo\" }' -H 'Authorization: token '\"${GITEA_TOKEN}\"''\n   If 404, create it:\n   curl -X POST 'http://gitea-http.gitea.svc.cluster.local:3000/api/v1/user/repos' -H 'Content-Type: application/json' -H 'Authorization: token '\"${GITEA_TOKEN}\"'' -d '{\"name\": \"${ .input.repo // \"launch-day-dashboard-demo\" }\", \"description\": \"${ .input.description // \"A polished SvelteKit demo built by Claude Code\" }\", \"private\": false, \"auto_init\": true}'\n\n2. Clone the repo (fresh):\n   rm -rf /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }\n   git clone http://giteaadmin:${GITEA_TOKEN}@gitea-http.gitea.svc.cluster.local:3000/${ .input.owner // \"giteaadmin\" }/${ .input.repo // \"launch-day-dashboard-demo\" }.git /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }\n\n3. Configure git:\n   cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && git config user.email 'claude@agent.local' && git config user.name 'Claude Code Agent'\n4. If the repo is empty (no commits), create an initial commit:\n   echo '# ${ .input.repo // \"launch-day-dashboard-demo\" }' > README.md && git add README.md && git commit -m 'Initial commit' && git push origin main\n\nIMPORTANT: Always cd to /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } first.",
+            "mode": "execute_direct",
+            "maxTurns": 6,
+            "timeoutMinutes": 5,
+            "agentConfig": {
+              "name": "claude-setup",
+              "instructions": "You are setting up a new Git repository. Use curl for API calls and git for repo operations.",
+              "tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+            }
+          }
+        }
+      },
+      {
+        "claude_scaffold": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Scaffold a SvelteKit app at /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } using npx.\n\nApp name: ${ .input.app_name // .input.repo // \"Launch Day Dashboard\" }\nHeadline: ${ .input.headline // \"Launch Day Dashboard\" }\nUI brief: ${ .input.ui_brief // \"Create a bold, cinematic landing page with animated metric cards, a segmented mode switch, and a large call-to-action that looks great in a screen recording.\" }\n\nYou MUST do ALL of these steps in order:\n\n1. Save existing .git directory:\n   cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && mv .git /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }-git-backup\n\n2. Scaffold using the official SvelteKit CLI (non-interactive):\n   cd /tmp && npx sv create ${ .input.repo // \"launch-day-dashboard-demo\" } --template minimal --types ts --no-install --no-add-ons\n\n3. Restore .git:\n   rm -rf /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }/.git && mv /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }-git-backup /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }/.git\n\n4. Create a .gitignore with: node_modules, .svelte-kit, build\n\n5. Replace src/routes/+page.svelte with a polished single-screen demo page for ${ .input.app_name // .input.repo // \"Launch Day Dashboard\" }.\n   Requirements:\n   - prominent headline exactly: ${ .input.headline // \"Launch Day Dashboard\" }\n   - 3 visually distinct metric cards\n   - one obvious interactive control using Svelte 5 $state (counter, segmented switch, or toggle)\n   - a strong CTA button\n   - styling that feels premium on video, not default starter styling\n   - keep everything self-contained with no external APIs\n\n6. Run: cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && npm install && npm run build\n\n7. CRITICAL - commit and push:\n   cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && git add -A && git status && git commit -m 'feat: scaffold SvelteKit demo app' && git push origin main --force\n\n8. Verify: git log --oneline -3\n\nIf npx sv create fails, use 'npx create-svelte@latest ${ .input.repo // \"launch-day-dashboard-demo\" }' with --template skeleton instead.\nDo NOT skip step 7. The commit and push are REQUIRED.",
+            "mode": "execute_direct",
+            "maxTurns": 15,
+            "timeoutMinutes": 15,
+            "agentConfig": {
+              "name": "claude-scaffolder",
+              "instructions": "You are scaffolding a SvelteKit application. Create files, install dependencies, verify the build passes, then COMMIT AND PUSH to git. The commit+push is the most important part - do not skip it.",
+              "tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+            }
+          }
+        }
+      },
+      {
+        "claude_commit_push": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Ensure the scaffolded SvelteKit code is committed and pushed to the remote.\n\nRun these commands in a SINGLE bash call:\n\ncd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && git add -A && git status && git diff --cached --stat && git commit -m 'feat: scaffold SvelteKit demo app' --allow-empty && git push origin main --force && git log --oneline -3 && echo 'PUSH COMPLETE'\n\nIf 'nothing to commit' appears, that's fine - still force push:\ncd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && git push origin main --force && echo 'PUSH COMPLETE'\n\nVerify the remote has the files:\ncurl -s 'http://gitea-http.gitea.svc.cluster.local:3000/api/v1/repos/${ .input.owner // \"giteaadmin\" }/${ .input.repo // \"launch-day-dashboard-demo\" }/contents/' -H 'Authorization: token 89c4068bdf972389a23557227817bd99750ca225' | head -c 200",
+            "mode": "execute_direct",
+            "maxTurns": 4,
+            "timeoutMinutes": 3,
+            "agentConfig": {
+              "name": "claude-commit-push",
+              "instructions": "You MUST commit any uncommitted changes and force push to the remote. Run the commands exactly as given. Do not skip the push.",
+              "tools": ["Bash"]
+            }
+          }
+        }
+      },
+      {
+        "claude_review": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Review the scaffolded SvelteKit code at /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }.\n\n1. Read package.json to check dependencies\n2. Read src/routes/+page.svelte to confirm the page matches this brief: ${ .input.ui_brief // \"Create a bold, cinematic landing page with animated metric cards, a segmented mode switch, and a large call-to-action that looks great in a screen recording.\" }\n3. Verify the build passes: cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } && npm run build\n4. Check git log to confirm pushed commits: git log --oneline -5\n5. Produce a brief review summary\n\nDo NOT modify any files.",
+            "mode": "execute_direct",
+            "maxTurns": 6,
+            "timeoutMinutes": 5,
+            "agentConfig": {
+              "name": "claude-reviewer",
+              "instructions": "You are reviewing code. Read files, check the build, and produce a summary. Do NOT modify files.",
+              "tools": ["Bash", "Read", "Glob", "Grep"]
+            }
+          }
+        }
+      },
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "greenfield-preview",
+            "rootPath": "/sandbox",
+            "enabledTools": ["Bash", "Read", "Write"],
+            "timeoutMs": 120000,
+            "commandTimeoutMs": 360000,
+            "sandboxTemplate": "openshell-browser"
+          }
+        }
+      },
+      {
+        "workspace_clone": {
+          "call": "workspace/clone",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "targetDir": "${ .input.repo // \"launch-day-dashboard-demo\" }",
+            "repositoryUrl": "http://gitea-http.gitea.svc.cluster.local:3000/${ .input.owner // \"giteaadmin\" }/${ .input.repo // \"launch-day-dashboard-demo\" }.git",
+            "repositoryOwner": "${ .input.owner // \"giteaadmin\" }",
+            "repositoryRepo": "${ .input.repo // \"launch-day-dashboard-demo\" }",
+            "repositoryBranch": "main",
+            "repositoryUsername": "giteaadmin",
+            "repositoryToken": "89c4068bdf972389a23557227817bd99750ca225"
+          }
+        }
+      },
+      {
+        "workspace_install_and_serve": {
+          "call": "workspace/command",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "command": "cd /sandbox/${ .input.repo // \"launch-day-dashboard-demo\" } && ls -la && npm install --prefer-offline 2>&1 && echo install-done",
+            "timeoutMs": 300000
+          }
+        }
+      },
+      {
+        "browser_capture": {
+          "call": "browser/validate",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "repoPath": "${ .input.repo // \"launch-day-dashboard-demo\" }",
+            "installCommand": "npm install --prefer-offline",
+            "devServerCommand": "",
+            "baseUrl": "http://127.0.0.1:3009",
+            "steps": [
+              {"id": "home", "label": "Home Page", "path": "/", "waitForSelector": "body", "waitForText": "${ .input.headline // \"Launch Day Dashboard\" }", "delayMs": 5000}
+            ],
+            "captureVideo": true,
+            "captureTrace": true,
+            "viewportPreset": "desktop",
+            "captureMode": "demo",
+            "demoTitle": "${ .input.app_name // .input.repo // \"Launch Day Dashboard\" }",
+            "demoSummary": "${ .input.ui_brief // \"A polished one-page SvelteKit demo designed to look strong in a captured walkthrough.\" }",
+            "timeoutMs": 600000
+          }
+        }
+      },
+      {
+        "claude_create_pr": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Report the workflow completion.\n\n1. cd /tmp/${ .input.repo // \"launch-day-dashboard-demo\" }\n2. Show the latest commits: git log --oneline -5\n3. Show the repo URL: echo 'Repo: https://gitea-ryzen.tail286401.ts.net/${ .input.owner // \"giteaadmin\" }/${ .input.repo // \"launch-day-dashboard-demo\" }'\n4. Summarize what was built for this brief: ${ .input.ui_brief // \"A polished one-page SvelteKit demo designed to look strong in a captured walkthrough.\" }\n\nIMPORTANT: Always cd to /tmp/${ .input.repo // \"launch-day-dashboard-demo\" } first.",
+            "mode": "execute_direct",
+            "maxTurns": 4,
+            "timeoutMinutes": 5,
+            "agentConfig": {
+              "name": "claude-pr-creator",
+              "instructions": "You are reporting workflow completion.",
+              "tools": ["Bash", "Read"]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    { "id": "start", "type": "start", "position": { "x": 240, "y": 20 }, "data": { "label": "Start", "type": "start", "status": "idle", "enabled": true } },
+    { "id": "claude_setup", "type": "call", "position": { "x": 240, "y": 140 }, "data": { "label": "Setup Repo", "type": "agent", "status": "idle", "enabled": true } },
+    { "id": "claude_scaffold", "type": "call", "position": { "x": 240, "y": 260 }, "data": { "label": "Scaffold App", "type": "agent", "status": "idle", "enabled": true } },
+    { "id": "claude_commit_push", "type": "call", "position": { "x": 240, "y": 380 }, "data": { "label": "Commit & Push", "type": "agent", "status": "idle", "enabled": true } },
+    { "id": "claude_review", "type": "call", "position": { "x": 240, "y": 500 }, "data": { "label": "Review Code", "type": "agent", "status": "idle", "enabled": true } },
+    { "id": "workspace_profile", "type": "call", "position": { "x": 240, "y": 620 }, "data": { "label": "Workspace", "type": "call", "status": "idle", "enabled": true } },
+    { "id": "workspace_clone", "type": "call", "position": { "x": 240, "y": 740 }, "data": { "label": "Clone", "type": "call", "status": "idle", "enabled": true } },
+    { "id": "workspace_install_and_serve", "type": "call", "position": { "x": 240, "y": 830 }, "data": { "label": "Install", "type": "call", "status": "idle", "enabled": true } },
+    { "id": "browser_capture", "type": "call", "position": { "x": 240, "y": 920 }, "data": { "label": "Capture", "type": "call", "status": "idle", "enabled": true } },
+    { "id": "claude_create_pr", "type": "call", "position": { "x": 240, "y": 1010 }, "data": { "label": "Create PR", "type": "agent", "status": "idle", "enabled": true } },
+    { "id": "end", "type": "end", "position": { "x": 240, "y": 1100 }, "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true } }
+  ],
+  "edges": [
+    { "id": "e1", "source": "start", "target": "claude_setup" },
+    { "id": "e2", "source": "claude_setup", "target": "claude_scaffold" },
+    { "id": "e3", "source": "claude_scaffold", "target": "claude_commit_push" },
+    { "id": "e4", "source": "claude_commit_push", "target": "claude_review" },
+    { "id": "e5", "source": "claude_review", "target": "workspace_profile" },
+    { "id": "e6", "source": "workspace_profile", "target": "workspace_clone" },
+    { "id": "e7", "source": "workspace_clone", "target": "workspace_install_and_serve" },
+    { "id": "e8", "source": "workspace_install_and_serve", "target": "browser_capture" },
+    { "id": "e9", "source": "browser_capture", "target": "claude_create_pr" },
+    { "id": "e10", "source": "claude_create_pr", "target": "end" }
+  ]
+}
