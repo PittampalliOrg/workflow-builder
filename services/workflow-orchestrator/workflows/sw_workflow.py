@@ -453,6 +453,7 @@ def _resolve_function_call(
 # Agent action types that require multi-turn child workflow execution
 # (not single-shot HTTP calls through function-router)
 _AGENT_ACTION_TYPES = {
+    "claude/run",
     "openshell/run",
     "openshell/session-start",
     "openshell-langgraph/run",

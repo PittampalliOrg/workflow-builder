@@ -15,8 +15,6 @@ type IncomingAgentEvent = {
 	id?: string;
 	ts?: string;
 	type?: string;
-	agentRunId?: string | null;
-	runId?: string | null;
 	phase?: string | null;
 	toolName?: string | null;
 	sandboxName?: string | null;
@@ -27,11 +25,12 @@ type IncomingAgentEvent = {
 
 const ALLOWED_EVENT_TYPES = new Set<WorkflowAgentEventType>([
 	'run_started',
-	'model_start',
-	'model_complete',
-	'tool_start',
-	'tool_complete',
-	'tool_error',
+	'turn_started',
+	'llm_start',
+	'llm_complete',
+	'tool_call_start',
+	'tool_call_end',
+	'tool_call_error',
 	'sandbox_output',
 	'sandbox_output_partial',
 	'sandbox_heartbeat',
@@ -53,8 +52,8 @@ function normalizeIncomingEvent(
 	event: IncomingAgentEvent,
 	workflowExecutionId: string,
 	input: {
-		workflowAgentRunId: string | null;
-		parentExecutionId: string | null;
+		workflowAgentRunId: string;
+		parentExecutionId: string;
 		daprInstanceId: string;
 		seqStart: number;
 		index: number;
@@ -137,33 +136,65 @@ export const POST: RequestHandler = async ({ request, params }) => {
 
 	const body = (await request.json().catch(() => ({}))) as {
 		agentRunId?: string | null;
+		workflowId?: string | null;
+		nodeId?: string | null;
+		nodeName?: string | null;
 		daprInstanceId?: string | null;
-		parentExecutionId?: string | null;
 		events?: IncomingAgentEvent[];
 	};
 	const events = Array.isArray(body.events) ? body.events : [];
-	const daprInstanceId = String(
-		body.daprInstanceId ??
-			body.agentRunId ??
-			events.find((e) => typeof e.runId === 'string')?.runId ??
-			''
-	).trim();
+	const agentRunId = String(body.agentRunId ?? '').trim();
+	const workflowId = String(body.workflowId ?? '').trim();
+	const nodeId = String(body.nodeId ?? '').trim();
+	const daprInstanceId = String(body.daprInstanceId ?? '').trim();
 
-	if (!daprInstanceId) {
-		return json({ error: 'Missing daprInstanceId for agent events' }, { status: 400 });
+	if (!agentRunId || !workflowId || !nodeId || !daprInstanceId) {
+		return json(
+			{
+				error:
+					'Missing required agent event envelope fields: agentRunId, workflowId, nodeId, daprInstanceId'
+			},
+			{ status: 400 }
+		);
 	}
 
-	// Look up the agent run record for this execution + instance
+	// Canonical cutover path: events must resolve through a known agent run row.
 	const [agentRun] = await db
-		.select({ id: workflowAgentRuns.id, parentExecutionId: workflowAgentRuns.parentExecutionId })
+		.select({
+			id: workflowAgentRuns.id,
+			parentExecutionId: workflowAgentRuns.parentExecutionId,
+			workflowId: workflowAgentRuns.workflowId,
+			nodeId: workflowAgentRuns.nodeId,
+			daprInstanceId: workflowAgentRuns.daprInstanceId
+		})
 		.from(workflowAgentRuns)
-		.where(
-			and(
-				eq(workflowAgentRuns.workflowExecutionId, executionId),
-				eq(workflowAgentRuns.daprInstanceId, daprInstanceId)
-			)
-		)
+		.where(and(eq(workflowAgentRuns.workflowExecutionId, executionId), eq(workflowAgentRuns.id, agentRunId)))
 		.limit(1);
+
+	if (!agentRun) {
+		return json(
+			{ error: `Agent run not found for execution ${executionId}: ${agentRunId}` },
+			{ status: 404 }
+		);
+	}
+	if (agentRun.workflowId !== workflowId || agentRun.nodeId !== nodeId) {
+		return json(
+			{
+				error:
+					'Agent event envelope workflowId/nodeId does not match the registered agent run'
+			},
+			{ status: 409 }
+		);
+	}
+	if (agentRun.daprInstanceId !== daprInstanceId) {
+		return json(
+			{
+				error:
+					'Agent event envelope daprInstanceId does not match the registered agent run'
+			},
+			{ status: 409 }
+		);
+	}
 
 	// Get the current max sequence number for this execution + instance
 	const [seqRow] = await db
@@ -180,9 +211,8 @@ export const POST: RequestHandler = async ({ request, params }) => {
 	const normalized = events
 		.map((event, index) =>
 			normalizeIncomingEvent(event, executionId, {
-				workflowAgentRunId: agentRun?.id ?? null,
-				parentExecutionId:
-					agentRun?.parentExecutionId ?? body.parentExecutionId ?? null,
+				workflowAgentRunId: agentRun.id,
+				parentExecutionId: agentRun.parentExecutionId,
 				daprInstanceId,
 				seqStart,
 				index

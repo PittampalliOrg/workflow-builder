@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+CLAUDE_AGENT_APP_ID = config.CLAUDE_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 OPENSHELL_LANGGRAPH_APP_ID = config.OPENSHELL_LANGGRAPH_APP_ID
 OPENSHELL_AGENT_RUNTIME_BASE_URL = (
@@ -555,6 +556,128 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             )
         except Exception as e:
             logger.error(f"[Call Durable Agent Run] Failed: {e}")
+            return {"success": False, "error": str(e)}
+
+
+def call_claude_code_agent_run(ctx, input_data: dict) -> dict:
+    """
+    Run a Claude durable workflow as a tracked child agent run.
+
+    Required input_data:
+      - prompt: str
+      - agentRunId: str
+      - workflowExecutionId: str
+      - parentExecutionId: str
+      - workflowId: str
+      - nodeId: str
+      - nodeName: str
+    """
+    workspace_ref = str(input_data.get("workspaceRef") or "").strip()
+    run_route = "api/run-sandboxed" if workspace_ref else "api/run"
+    agent_run_id = str(input_data.get("agentRunId") or "").strip()
+    workflow_execution_id = str(input_data.get("workflowExecutionId") or "").strip()
+    parent_execution_id = str(input_data.get("parentExecutionId") or "").strip()
+    workflow_id = str(input_data.get("workflowId") or "").strip()
+    node_id = str(input_data.get("nodeId") or "").strip()
+    node_name = str(input_data.get("nodeName") or node_id).strip()
+    prompt = str(input_data.get("prompt") or "").strip()
+    if not all(
+        [
+            agent_run_id,
+            workflow_execution_id,
+            parent_execution_id,
+            workflow_id,
+            node_id,
+            node_name,
+            prompt,
+        ]
+    ):
+        return {
+            "success": False,
+            "error": (
+                "Claude run requires prompt, agentRunId, workflowExecutionId, "
+                "parentExecutionId, workflowId, nodeId, and nodeName"
+            ),
+        }
+
+    otel = input_data.get("_otel") or {}
+    attrs = {
+        "action.type": "claude/run",
+        "workflow.instance_id": parent_execution_id,
+        "workflow.db_execution_id": workflow_execution_id,
+        "workflow.id": workflow_id,
+        "node.id": node_id,
+        "node.name": node_name,
+        "agent.run_id": agent_run_id,
+    }
+
+    with start_activity_span("activity.call_claude_code_agent_run", otel, attrs):
+        try:
+            timeout_minutes_raw = input_data.get("timeoutMinutes", 30)
+            try:
+                timeout_minutes = int(timeout_minutes_raw or 30)
+            except (TypeError, ValueError):
+                timeout_minutes = 30
+            if timeout_minutes <= 0:
+                timeout_minutes = 30
+            request_timeout_seconds = min(max(timeout_minutes * 60 + 30, 90), 7200)
+
+            payload = {
+                "prompt": prompt,
+                "cwd": input_data.get("cwd"),
+                "model": input_data.get("model"),
+                "maxTurns": input_data.get("maxTurns"),
+                "timeoutMinutes": timeout_minutes,
+                "instructions": input_data.get("instructions"),
+                "tools": input_data.get("tools"),
+                "agentConfig": input_data.get("agentConfig"),
+                "loopPolicy": input_data.get("loopPolicy"),
+                "agentGraph": input_data.get("agentGraph"),
+                "workspaceRef": workspace_ref or None,
+                "waitForCompletion": True,
+                "workflow_instance_id": agent_run_id,
+                "agentRunId": agent_run_id,
+                "workflowExecutionId": workflow_execution_id,
+                "executionId": workflow_execution_id,
+                "dbExecutionId": workflow_execution_id,
+                "workflowId": workflow_id,
+                "nodeId": node_id,
+                "nodeName": node_name,
+                "parentExecutionId": parent_execution_id,
+                "orchestratorManaged": True,
+            }
+            data = _dapr_invoke_or_raise(
+                CLAUDE_AGENT_APP_ID,
+                run_route,
+                payload,
+                timeout=request_timeout_seconds,
+                service_label="Claude code agent run",
+            )
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            content = (
+                str(data.get("output") or "").strip()
+                or str(data.get("content") or "").strip()
+                or str(result.get("output") or "").strip()
+                or str(result.get("content") or "").strip()
+            )
+            compact_result = {
+                "success": bool(data.get("success", False)),
+                "agentWorkflowId": data.get("workflow_id") or agent_run_id,
+                "daprInstanceId": data.get("dapr_instance_id") or agent_run_id,
+                "childWorkflowName": "claudeCodeRunWorkflowV1",
+                "childAppId": CLAUDE_AGENT_APP_ID,
+                "content": content or None,
+                "result": result,
+            }
+            for field_name in ("traceId", "status", "error", "messages", "tool_history"):
+                field_value = data.get(field_name)
+                if field_value is None:
+                    field_value = result.get(field_name)
+                if field_value is not None:
+                    compact_result[field_name] = field_value
+            return compact_result
+        except Exception as e:
+            logger.error(f"[Call Claude Code Agent Run] Failed: {e}")
             return {"success": False, "error": str(e)}
 
 

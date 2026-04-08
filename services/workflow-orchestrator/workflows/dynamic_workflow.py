@@ -2241,11 +2241,13 @@ def process_agent_child_workflow(
     otel_ctx: dict | None = None,
 ):
     """
-    Invoke the supported OpenShell-backed agent actions.
+    Invoke supported tracked agent actions.
 
-    The live ryzen path uses openshell-agent-runtime for coding work. Older
-    durable/langgraph action types are normalized here so saved workflows keep
-    running while new workflow definitions converge on openshell/run.
+    OpenShell remains supported for planning/execution, while Claude now uses
+    the same tracked child-run lifecycle instead of the generic function call
+    path. Older durable/langgraph action types are normalized here so saved
+    workflows keep running while new workflow definitions converge on current
+    agent action types.
     """
     config = node.get("config") or {}
     otel_ctx = otel_ctx or {}
@@ -2276,16 +2278,23 @@ def process_agent_child_workflow(
             "actionType": action_type,
         }
     canonical_action_type = legacy_openshell_aliases.get(action_type, action_type)
+    is_claude_agent = canonical_action_type == "claude/run"
     is_openshell_session_start = canonical_action_type == "openshell/session-start"
     is_openshell_plan_agent = canonical_action_type == "openshell/run"
     is_legacy_openshell_alias = canonical_action_type != action_type
     is_openshell_agent = is_openshell_plan_agent or is_openshell_session_start
     uses_observable_agent_runtime = False
-    default_mode = "execute_direct" if is_openshell_session_start else "plan_mode"
+    default_mode = (
+        "execute_direct"
+        if is_openshell_session_start or is_claude_agent
+        else "plan_mode"
+    )
     mode = str(resolved_config.get("mode", default_mode) or default_mode).strip().lower()
     if mode not in ("plan_mode", "execute_direct"):
         mode = "execute_direct"
-    if is_openshell_session_start:
+    if is_openshell_session_start or is_claude_agent:
+        mode = "execute_direct"
+    if is_claude_agent and mode != "execute_direct":
         mode = "execute_direct"
 
     configured_artifact_ref = resolved_config.get("artifactRef")
@@ -2337,7 +2346,18 @@ def process_agent_child_workflow(
     except (TypeError, ValueError):
         max_turns = None
 
-    if is_openshell_agent:
+    if is_claude_agent:
+        if artifact_ref:
+            return {
+                "success": False,
+                "error": "claude/run does not support artifactRef/plan execution. Use direct execution only.",
+                "actionType": canonical_action_type,
+            }
+        run_mode = "execute_direct"
+        from activities.call_agent_service import call_claude_code_agent_run
+
+        call_activity_fn = call_claude_code_agent_run
+    elif is_openshell_agent:
         run_mode = "plan_mode" if mode == "plan_mode" else "execute_direct"
         from activities.call_agent_service import call_openshell_agent_run
 
@@ -2569,6 +2589,7 @@ def process_agent_child_workflow(
             )
 
     openshell_run_id: str | None = None
+    claude_run_id: str | None = None
     if use_native_child_workflow:
         start_result: dict[str, Any] = {"success": True}
     else:
@@ -2577,7 +2598,63 @@ def process_agent_child_workflow(
                 "success": False,
                 "error": f"{canonical_action_type} requires native child workflow execution",
             }
-        if is_openshell_agent:
+        if is_claude_agent:
+            claude_execution_index = _next_node_execution_count(
+                node_execution_counts,
+                node_id,
+            )
+            claude_run_id = (
+                f"{ctx.instance_id}__claude__{node_id}__run__{claude_execution_index}"
+            )
+            activity_input["agentRunId"] = claude_run_id
+            activity_input["workflowExecutionId"] = tracked_execution_id
+            if db_execution_id:
+                try:
+                    from activities.track_agent_run import track_agent_run_scheduled
+
+                    yield ctx.call_activity(
+                        track_agent_run_scheduled,
+                        input={
+                            "id": claude_run_id,
+                            "workflowExecutionId": db_execution_id,
+                            "workflowId": workflow_id,
+                            "nodeId": node_id,
+                            "mode": "run",
+                            "agentWorkflowId": claude_run_id,
+                            "daprInstanceId": claude_run_id,
+                            "parentExecutionId": ctx.instance_id,
+                            "workspaceRef": resolved_config.get("workspaceRef"),
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist Claude scheduled row for %s: %s",
+                        claude_run_id,
+                        track_err,
+                    )
+                try:
+                    from activities.track_agent_run import track_agent_run_running
+
+                    yield ctx.call_activity(
+                        track_agent_run_running,
+                        input={
+                            "id": claude_run_id,
+                            "result": {
+                                "agentWorkflowId": claude_run_id,
+                                "daprInstanceId": claude_run_id,
+                                "status": "running",
+                            },
+                            "_otel": otel_ctx,
+                        },
+                    )
+                except Exception as track_err:
+                    logger.warning(
+                        "[Agent Workflow] Failed to persist Claude running row for %s: %s",
+                        claude_run_id,
+                        track_err,
+                    )
+        elif is_openshell_agent:
             mode_suffix = "plan" if run_mode == "plan_mode" else "run"
             openshell_execution_index = _next_node_execution_count(
                 node_execution_counts,
@@ -2624,14 +2701,15 @@ def process_agent_child_workflow(
                 if isinstance(start_result, dict)
                 else {"success": False, "error": "Failed to start agent"}
             )
-            if db_execution_id and is_openshell_agent and openshell_run_id:
+            failed_run_id = claude_run_id if is_claude_agent else openshell_run_id
+            if db_execution_id and failed_run_id:
                 try:
                     from activities.track_agent_run import track_agent_run_completed
 
                     yield ctx.call_activity(
                         track_agent_run_completed,
                         input={
-                            "id": openshell_run_id,
+                            "id": failed_run_id,
                             "success": False,
                             "result": failure_payload,
                             "error": failure_payload.get("error"),
@@ -2640,11 +2718,32 @@ def process_agent_child_workflow(
                     )
                 except Exception as track_err:
                     logger.warning(
-                        "[Agent Workflow] Failed to persist OpenShell failed row for %s: %s",
-                        openshell_run_id,
+                        "[Agent Workflow] Failed to persist agent failed row for %s: %s",
+                        failed_run_id,
                         track_err,
                     )
             return failure_payload
+
+        if db_execution_id and is_claude_agent and claude_run_id:
+            try:
+                from activities.track_agent_run import track_agent_run_completed
+
+                yield ctx.call_activity(
+                    track_agent_run_completed,
+                    input={
+                        "id": claude_run_id,
+                        "success": bool(start_result.get("success", False)),
+                        "result": start_result,
+                        "error": start_result.get("error"),
+                        "_otel": otel_ctx,
+                    },
+                )
+            except Exception as track_err:
+                logger.warning(
+                    "[Agent Workflow] Failed to persist Claude completion row for %s: %s",
+                    claude_run_id,
+                    track_err,
+                )
 
     planned_payload: dict[str, Any] | None = None
     if run_mode == "plan_mode" and not use_native_child_workflow:

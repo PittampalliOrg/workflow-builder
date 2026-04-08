@@ -53,6 +53,7 @@ class OrchestratorConfig:
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     PRIMARY_AGENT_RUNTIME: str = "openshell"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    CLAUDE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     OPENSHELL_LANGGRAPH_APP_ID: str = "openshell-langgraph-observable"
     OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME: str = "dapr.langgraph.OpenShellLanggraphObservable.workflow"
@@ -100,6 +101,7 @@ class OrchestratorConfig:
                 "FUNCTION_ROUTER_APP_ID",
                 "PRIMARY_AGENT_RUNTIME",
                 "DURABLE_AGENT_APP_ID",
+                "CLAUDE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
                 "OPENSHELL_LANGGRAPH_APP_ID",
                 "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME",
@@ -160,6 +162,7 @@ class OrchestratorConfig:
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "PRIMARY_AGENT_RUNTIME": ("PRIMARY_AGENT_RUNTIME", "openshell"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "CLAUDE_AGENT_APP_ID": ("CLAUDE_AGENT_APP_ID", "claude-code-agent"),
             "OPENSHELL_AGENT_APP_ID": (
                 "OPENSHELL_AGENT_APP_ID",
                 "openshell-agent-runtime.openshell",
