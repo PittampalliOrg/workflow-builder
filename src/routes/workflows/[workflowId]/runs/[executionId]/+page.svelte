@@ -68,8 +68,8 @@
 	let executionId = $derived(page.params.executionId ?? '');
 
 	// Workflow canvas data
-	let nodes = $state<Node[]>([]);
-	let edges = $state<Edge[]>([]);
+	let workflowNodes = $state<Node[]>([]);
+	let workflowEdges = $state<Edge[]>([]);
 
 	// Logs
 	interface StepLog {
@@ -211,8 +211,8 @@
 			const res = await fetch(`/api/workflows/${workflowId}`);
 			if (!res.ok) throw new Error('Failed to load workflow');
 			const data = await res.json();
-			nodes = data.nodes ?? [];
-			edges = data.edges ?? [];
+			workflowNodes = data.nodes ?? [];
+			workflowEdges = data.edges ?? [];
 		} catch {
 			// Leave canvas empty on error
 		} finally {
@@ -247,19 +247,19 @@
 		}
 	});
 
-	// Apply node statuses to canvas nodes
-	$effect(() => {
-		const statuses = nodeStatuses;
-		if (Object.keys(statuses).length === 0) return;
-		const currentNodes = untrack(() => nodes);
-		nodes = currentNodes.map((n) => {
-			const status = statuses[n.id];
-			if (status && n.data.status !== status) {
-				return { ...n, data: { ...n.data, status } };
-			}
-			return n;
-		});
-	});
+	const canvasNodes = $derived.by(() =>
+		workflowNodes.map((node) => {
+			const status = nodeStatuses[node.id];
+			if (!status || node.data.status === status) return node;
+			return {
+				...node,
+				data: {
+					...node.data,
+					status
+				}
+			};
+		})
+	);
 
 	// Auto-scroll timeline to bottom
 	$effect(() => {
@@ -726,8 +726,8 @@
 				</div>
 			{:else}
 				<SvelteFlow
-					bind:nodes
-					bind:edges
+					nodes={canvasNodes}
+					edges={workflowEdges}
 					{nodeTypes}
 					colorMode={document.documentElement.classList.contains('dark') ? 'dark' : 'light'}
 					nodesDraggable={false}
