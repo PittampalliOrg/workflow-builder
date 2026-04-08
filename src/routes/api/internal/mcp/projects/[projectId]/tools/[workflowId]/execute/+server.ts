@@ -16,6 +16,7 @@ import {
 	attachMcpRunExecution
 } from '$lib/server/db/mcp';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 
 type Body = {
 	toolName?: string;
@@ -216,6 +217,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		},
 		...input
 	};
+	const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+	if (missingTriggerFields.length > 0) {
+		return error(400, `Missing required workflow input fields: ${missingTriggerFields.join(', ')}`);
+	}
 
 	// Create execution record
 	const [execution] = await db

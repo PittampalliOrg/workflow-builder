@@ -6,6 +6,7 @@ import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflows, workflowExecutions, apiKeys } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 
 // ---------------------------------------------------------------------------
 // CORS headers — webhook callers may be cross-origin
@@ -192,6 +193,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 		// 6. Parse request body (empty body is fine)
 		const body = await request.json().catch(() => ({}));
+		const triggerData = body as Record<string, unknown>;
+		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+		if (missingTriggerFields.length > 0) {
+			return corsJson(
+				{
+					error: `Missing required workflow input fields: ${missingTriggerFields.join(', ')}`
+				},
+				400
+			);
+		}
 
 		// 7. Create execution record
 		let execution;
@@ -204,7 +215,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 					status: 'running',
 					phase: 'running',
 					progress: 0,
-					input: body as Record<string, unknown>,
+					input: triggerData,
 					executionIrVersion: 'sw-1.0.0'
 				})
 				.returning();

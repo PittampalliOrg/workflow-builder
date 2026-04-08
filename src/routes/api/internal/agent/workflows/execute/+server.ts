@@ -6,6 +6,7 @@ import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-m
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -192,6 +193,18 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	const triggerData = body.triggerData ?? {};
+	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
+	if (spec && isSWWorkflow(spec)) {
+		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+		if (missingTriggerFields.length > 0) {
+			return json(
+				{
+					error: `Missing required workflow input fields: ${missingTriggerFields.join(', ')}`
+				},
+				{ status: 400 }
+			);
+		}
+	}
 
 	try {
 		// 1. Create execution record
@@ -209,7 +222,6 @@ export const POST: RequestHandler = async ({ request }) => {
 			.returning({ id: workflowExecutions.id });
 
 		// 2. Start workflow via orchestrator
-		const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 		const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
 
 		let instanceId: string | undefined;

@@ -5,6 +5,7 @@ import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import {
 	buildWorkflowSessionId,
 	injectWorkflowSessionHeaders
@@ -60,6 +61,14 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	if (!spec || !isSWWorkflow(spec)) {
 		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
+	}
+
+	const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
+	if (missingTriggerFields.length > 0) {
+		return error(
+			400,
+			`Missing required workflow input fields: ${missingTriggerFields.join(', ')}`
+		);
 	}
 
 	// Create execution record

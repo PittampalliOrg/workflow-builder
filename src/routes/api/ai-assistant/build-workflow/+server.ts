@@ -16,6 +16,7 @@ import { workflows } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
+import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 // Tools available for future ReAct-style planning (not yet wired to generateText)
 // import { createWorkflowTools } from '$lib/server/ai-assistant/tools';
 
@@ -155,6 +156,19 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 							updatedAt: new Date(),
 						})
 						.where(eq(workflows.id, workflowId));
+
+					const missingTriggerFields = getMissingRequiredTriggerFields(spec, {});
+					if (missingTriggerFields.length > 0) {
+						const message = `Generated workflow requires trigger inputs before execution: ${missingTriggerFields.join(', ')}`;
+						emit('status', { phase: 'error', message });
+						conversationMessages.push({
+							role: 'user',
+							content:
+								`${message}. Either remove those trigger placeholders, provide defaults, ` +
+								'or avoid generating a spec that cannot be executed without external input.'
+						});
+						continue;
+					}
 
 					// Execute
 					emit('status', { phase: 'executing', message: 'Executing workflow...' });
