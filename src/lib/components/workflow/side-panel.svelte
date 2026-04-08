@@ -6,7 +6,7 @@
 	import { getContext } from 'svelte';
 	import { PanelRightClose } from 'lucide-svelte';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Button } from '$lib/components/ui/button';
+	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import NodeConfigPanel from './node-config-panel.svelte';
@@ -122,15 +122,11 @@
 		{/if}
 
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={closePanel}
-					class="h-7 w-7"
-				>
-					<PanelRightClose size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+				onclick={closePanel}
+			>
+				<PanelRightClose size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Close panel</Tooltip.Content>
 		</Tooltip.Root>

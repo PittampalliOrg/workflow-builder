@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
 	import { Info, ChevronDown, ChevronRight, Plug, Zap, Trash2 } from 'lucide-svelte';
-	import { Button } from '$lib/components/ui/button';
+	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
@@ -69,15 +69,11 @@
 
 		{#if assistant.messages.length > 0}
 			<Tooltip.Root>
-				<Tooltip.Trigger>
-					<Button
-						variant="ghost"
-						size="icon"
-						class="h-6 w-6 mr-1 text-muted-foreground hover:text-destructive"
-						onclick={() => assistant.clearHistory()}
-					>
-						<Trash2 size={10} />
-					</Button>
+				<Tooltip.Trigger
+					class={`${buttonVariants({ variant: 'ghost', size: 'icon-xs' })} mr-1 text-muted-foreground hover:text-destructive`}
+					onclick={() => assistant.clearHistory()}
+				>
+					<Trash2 size={10} />
 				</Tooltip.Trigger>
 				<Tooltip.Content>Clear chat</Tooltip.Content>
 			</Tooltip.Root>

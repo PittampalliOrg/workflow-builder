@@ -72,16 +72,11 @@
 </script>
 
 <Popover.Root bind:open>
-	<Popover.Trigger>
-		<button
-			class="flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2.5 py-1 hover:bg-accent/50 transition-colors"
-			type="button"
-		>
-			<span class="text-xs font-medium text-card-foreground truncate max-w-[200px]">
-				{store.workflowName || 'Untitled'}
-			</span>
-			<ChevronsUpDown size={12} class="shrink-0 text-muted-foreground" />
-		</button>
+	<Popover.Trigger class="flex items-center gap-1.5 rounded-md border border-border/50 bg-background/50 px-2.5 py-1 hover:bg-accent/50 transition-colors">
+		<span class="text-xs font-medium text-card-foreground truncate max-w-[200px]">
+			{store.workflowName || 'Untitled'}
+		</span>
+		<ChevronsUpDown size={12} class="shrink-0 text-muted-foreground" />
 	</Popover.Trigger>
 
 	<Popover.Content class="w-[300px] p-0" align="start" sideOffset={8}>

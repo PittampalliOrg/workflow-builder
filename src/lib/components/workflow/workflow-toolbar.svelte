@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { Save, Play, Undo2, Redo2, Map, ListOrdered, BookMarked, FilePlus } from 'lucide-svelte';
 	import { toast } from 'svelte-sonner';
-	import { Button } from '$lib/components/ui/button';
+	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Separator } from '$lib/components/ui/separator';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -127,10 +127,11 @@
 	<!-- Left: new + workflow name container -->
 	<div class="flex items-center gap-2">
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button variant="ghost" size="icon" onclick={handleNewWorkflow} class="h-7 w-7 shrink-0">
-					<FilePlus size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+				onclick={handleNewWorkflow}
+			>
+				<FilePlus size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>New workflow</Tooltip.Content>
 		</Tooltip.Root>
@@ -143,30 +144,22 @@
 
 	<div class="flex items-center gap-1">
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={() => store.undo()}
-					disabled={!store.canUndo}
-					class="h-7 w-7"
-				>
-					<Undo2 size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+				onclick={() => store.undo()}
+				disabled={!store.canUndo}
+			>
+				<Undo2 size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Undo (Ctrl+Z)</Tooltip.Content>
 		</Tooltip.Root>
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={() => store.redo()}
-					disabled={!store.canRedo}
-					class="h-7 w-7"
-				>
-					<Redo2 size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+				onclick={() => store.redo()}
+				disabled={!store.canRedo}
+			>
+				<Redo2 size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Redo (Ctrl+Shift+Z)</Tooltip.Content>
 		</Tooltip.Root>
@@ -174,28 +167,20 @@
 		<Separator orientation="vertical" class="mx-1 h-3.5" />
 
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={() => (store.showMinimap = !store.showMinimap)}
-					class="h-7 w-7 {store.showMinimap ? 'bg-accent text-accent-foreground' : ''}"
-				>
-					<Map size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={`${buttonVariants({ variant: 'ghost', size: 'icon-sm' })} ${store.showMinimap ? 'bg-accent text-accent-foreground' : ''}`}
+				onclick={() => (store.showMinimap = !store.showMinimap)}
+			>
+				<Map size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Toggle minimap</Tooltip.Content>
 		</Tooltip.Root>
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={() => ui.toggleRightPanel('runs')}
-					class="h-7 w-7 {ui.rightPanelOpen && ui.rightPanelTab === 'runs' ? 'bg-accent text-accent-foreground' : ''}"
-				>
-					<ListOrdered size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={`${buttonVariants({ variant: 'ghost', size: 'icon-sm' })} ${ui.rightPanelOpen && ui.rightPanelTab === 'runs' ? 'bg-accent text-accent-foreground' : ''}`}
+				onclick={() => ui.toggleRightPanel('runs')}
+			>
+				<ListOrdered size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Toggle runs panel</Tooltip.Content>
 		</Tooltip.Root>

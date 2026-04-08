@@ -7,7 +7,7 @@
 	import { slide } from 'svelte/transition';
 	import { PanelRightClose, Settings2, Code2, Sparkles, Play } from 'lucide-svelte';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
-	import { Button } from '$lib/components/ui/button';
+	import { buttonVariants } from '$lib/components/ui/button';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import type { createUiStore, RightPanelTab } from '$lib/stores/ui.svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
@@ -146,15 +146,11 @@
 		</span>
 
 		<Tooltip.Root>
-			<Tooltip.Trigger>
-				<Button
-					variant="ghost"
-					size="icon"
-					onclick={() => ui.closeRightPanel()}
-					class="h-7 w-7"
-				>
-					<PanelRightClose size={14} />
-				</Button>
+			<Tooltip.Trigger
+				class={buttonVariants({ variant: 'ghost', size: 'icon-sm' })}
+				onclick={() => ui.closeRightPanel()}
+			>
+				<PanelRightClose size={14} />
 			</Tooltip.Trigger>
 			<Tooltip.Content>Close panel</Tooltip.Content>
 		</Tooltip.Root>
