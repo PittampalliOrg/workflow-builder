@@ -68,18 +68,6 @@
 	let nodes = $state<Node[]>([]);
 	let edges = $state<Edge[]>([]);
 
-	// Execution status
-	let executionStatus = $state<string>('unknown');
-	let startTime = $state<string | null>(null);
-	let endTime = $state<string | null>(null);
-	let nodeStatuses = $state<Record<string, string>>({});
-	let output = $state<Record<string, unknown> | null>(null);
-	let input = $state<Record<string, unknown> | null>(null);
-	let errorMessage = $state<string | null>(null);
-	let instanceId = $state<string | null>(null);
-	let traceId = $state<string | null>(null);
-	let allTraceIds = $state<string[]>([]);
-
 	// Logs
 	interface StepLog {
 		stepName: string;
@@ -91,8 +79,6 @@
 		error: string | null;
 		durationMs: number | null;
 	}
-	let logs = $state<StepLog[]>([]);
-	let isLoadingLogs = $state(true);
 
 	// Investigation / observability studio
 	let investigationPayload = $state<ObservabilityInvestigationPayload | null>(null);
@@ -143,9 +129,6 @@
 			metadata?: Record<string, unknown> | null;
 		};
 	};
-	let browserArtifacts = $state<BrowserArtifact[]>([]);
-	let isLoadingBrowserArtifacts = $state(true);
-	let browserArtifactError = $state<string | null>(null);
 	let previewActionPending = $state(false);
 	let previewActionMessage = $state<string | null>(null);
 	let previewActionError = $state<string | null>(null);
@@ -155,11 +138,34 @@
 
 	// Loading
 	let isLoadingWorkflow = $state(true);
-	let isLoadingStatus = $state(true);
 
 	// Execution stream
 	let executionStream = $state<ReturnType<typeof createExecutionStream> | null>(null);
 	let timelineRef = $state<HTMLDivElement | null>(null);
+
+	const snapshot = $derived(executionStream?.snapshot ?? null);
+	const executionStatus = $derived(snapshot?.status ?? 'unknown');
+	const startTime = $derived(snapshot?.startedAt ?? null);
+	const endTime = $derived(snapshot?.completedAt ?? null);
+	const nodeStatuses = $derived(snapshot?.nodeStatuses ?? {});
+	const output = $derived(
+		(snapshot?.output as Record<string, unknown> | null) ??
+			(snapshot?.summaryOutput as Record<string, unknown> | null) ??
+			null
+	);
+	const input = $derived((snapshot?.input as Record<string, unknown> | null) ?? null);
+	const errorMessage = $derived(snapshot?.error ?? null);
+	const instanceId = $derived(snapshot?.instanceId ?? null);
+	const traceId = $derived(snapshot?.traceId ?? null);
+	const allTraceIds = $derived(Array.isArray(snapshot?.traceIds) ? snapshot.traceIds : []);
+	const logs = $derived((snapshot?.steps as StepLog[] | undefined) ?? []);
+	const browserArtifacts = $derived(
+		(snapshot?.browserArtifacts as BrowserArtifact[] | undefined) ?? []
+	);
+	const browserArtifactError = $derived(executionStream?.error ?? null);
+	const isLoadingStatus = $derived(!snapshot && !executionStream?.error);
+	const isLoadingLogs = $derived(isLoadingStatus);
+	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
 
 	const nodeTypes: NodeTypes = {
 		start: StartNode,
@@ -179,9 +185,7 @@
 		default: DefaultNode
 	} satisfies NodeTypes;
 
-	const isRunning = $derived(
-		executionStatus === 'RUNNING' || executionStatus === 'running' || executionStatus === 'PENDING'
-	);
+	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
 
 	const duration = $derived.by(() => {
 		if (!startTime) return null;
@@ -282,52 +286,6 @@
 				executionStream = null;
 			}
 		};
-	});
-
-	$effect(() => {
-		const stream = executionStream;
-		const snapshot = stream?.snapshot;
-		if (!snapshot) return;
-
-		const previousOutput = untrack(() => output);
-		const previousInput = untrack(() => input);
-		const previousError = untrack(() => errorMessage);
-		const previousInstanceId = untrack(() => instanceId);
-		const previousTraceId = untrack(() => traceId);
-		const previousTraceIds = untrack(() => allTraceIds);
-		const previousNodeStatuses = untrack(() => nodeStatuses);
-		const previousLogs = untrack(() => logs);
-		const previousBrowserArtifacts = untrack(() => browserArtifacts);
-
-		executionStatus = snapshot.status ?? 'unknown';
-		if (snapshot.startedAt != null) startTime = snapshot.startedAt;
-		if (snapshot.completedAt != null) endTime = snapshot.completedAt;
-		output =
-			(snapshot.output as Record<string, unknown> | null) ??
-			(snapshot.summaryOutput as Record<string, unknown> | null) ??
-			previousOutput;
-		input = (snapshot.input as Record<string, unknown> | null) ?? previousInput;
-		errorMessage = snapshot.error ?? previousError;
-		instanceId = snapshot.instanceId ?? previousInstanceId;
-		traceId = snapshot.traceId ?? previousTraceId;
-		allTraceIds = Array.isArray(snapshot.traceIds) ? snapshot.traceIds : previousTraceIds;
-		nodeStatuses = snapshot.nodeStatuses ?? previousNodeStatuses;
-		logs = (snapshot.steps as StepLog[]) ?? previousLogs;
-		browserArtifacts =
-			(snapshot.browserArtifacts as BrowserArtifact[]) ?? previousBrowserArtifacts;
-		browserArtifactError = stream?.error ?? null;
-		isLoadingStatus = false;
-		isLoadingLogs = false;
-		isLoadingBrowserArtifacts = false;
-	});
-
-	$effect(() => {
-		if (executionStream?.error && !executionStream.snapshot) {
-			browserArtifactError = executionStream.error;
-			isLoadingStatus = false;
-			isLoadingLogs = false;
-			isLoadingBrowserArtifacts = false;
-		}
 	});
 
 	let prevRunning = $state(true);
