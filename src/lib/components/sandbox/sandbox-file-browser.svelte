@@ -10,9 +10,11 @@
 		ChevronDown,
 		RefreshCw,
 		Loader2,
-		ArrowLeft
+		ArrowLeft,
+		Pencil
 	} from 'lucide-svelte';
 	import SandboxCodeViewer from './sandbox-code-viewer.svelte';
+	import SandboxFileEditor from './sandbox-file-editor.svelte';
 
 	interface Props {
 		sandboxName: string;
@@ -31,6 +33,7 @@
 	let loading = $state(true);
 	let expandedDirs = $state<Set<string>>(new Set());
 	let selectedFile = $state<string | null>(null);
+	let editMode = $state(false);
 	let fileContent = $state<string | null>(null);
 	let fileLoading = $state(false);
 
@@ -167,18 +170,33 @@
 	<!-- File viewer panel -->
 	<div class="flex-1 overflow-auto">
 		{#if selectedFile}
-			<div class="flex items-center gap-2 border-b border-border px-4 py-2">
-				<button onclick={() => (selectedFile = null)} class="text-muted-foreground hover:text-foreground">
-					<ArrowLeft class="h-3.5 w-3.5" />
-				</button>
-				<span class="truncate font-mono text-xs text-muted-foreground">{selectedFile}</span>
-			</div>
-			{#if fileLoading}
-				<div class="flex items-center justify-center py-12">
-					<Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
+			{#if editMode && fileContent !== null && selectedFile}
+				<SandboxFileEditor
+					{sandboxName}
+					filePath={selectedFile}
+					initialContent={fileContent}
+					onClose={() => (editMode = false)}
+					onSaved={() => { editMode = false; openFile(selectedFile!); }}
+				/>
+			{:else}
+				<div class="flex items-center gap-2 border-b border-border px-4 py-2">
+					<button onclick={() => { selectedFile = null; editMode = false; }} class="text-muted-foreground hover:text-foreground">
+						<ArrowLeft class="h-3.5 w-3.5" />
+					</button>
+					<span class="flex-1 truncate font-mono text-xs text-muted-foreground">{selectedFile}</span>
+					{#if fileContent !== null}
+						<button onclick={() => (editMode = true)} class="text-muted-foreground hover:text-foreground" title="Edit file">
+							<Pencil class="h-3.5 w-3.5" />
+						</button>
+					{/if}
 				</div>
-			{:else if fileContent !== null}
-				<SandboxCodeViewer code={fileContent} filename={selectedFile ?? undefined} />
+				{#if fileLoading}
+					<div class="flex items-center justify-center py-12">
+						<Loader2 class="h-5 w-5 animate-spin text-muted-foreground" />
+					</div>
+				{:else if fileContent !== null}
+					<SandboxCodeViewer code={fileContent} filename={selectedFile ?? undefined} />
+				{/if}
 			{/if}
 		{:else}
 			<div class="flex items-center justify-center py-12 text-sm text-muted-foreground">

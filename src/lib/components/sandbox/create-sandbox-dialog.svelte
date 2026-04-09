@@ -6,13 +6,21 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import { Loader2, Plus, X } from 'lucide-svelte';
 
+	interface SandboxDefaults {
+		name?: string;
+		providers?: string[];
+		image?: string;
+		gpu?: boolean;
+	}
+
 	interface Props {
 		open: boolean;
 		onOpenChange: (open: boolean) => void;
 		onCreated?: () => void;
+		defaults?: SandboxDefaults;
 	}
 
-	let { open = $bindable(), onOpenChange, onCreated }: Props = $props();
+	let { open = $bindable(), onOpenChange, onCreated, defaults }: Props = $props();
 
 	let name = $state('');
 	let selectedProviders = $state<string[]>(['claude']);
@@ -23,6 +31,23 @@
 	let initialCommand = $state('');
 	let creating = $state(false);
 	let error = $state<string | null>(null);
+
+	// Apply defaults when dialog opens (e.g., from clone)
+	$effect(() => {
+		if (open && defaults) {
+			if (defaults.name) name = defaults.name;
+			if (defaults.providers) selectedProviders = [...defaults.providers];
+			if (defaults.image) {
+				if (['default', 'claude', 'codex'].includes(defaults.image)) {
+					image = defaults.image;
+				} else {
+					image = 'custom';
+					customImage = defaults.image;
+				}
+			}
+			if (defaults.gpu) gpuEnabled = defaults.gpu;
+		}
+	});
 
 	const PROVIDERS = [
 		{ id: 'claude', label: 'Claude', color: 'bg-orange-500/15 text-orange-600' },

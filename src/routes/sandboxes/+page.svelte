@@ -267,6 +267,10 @@
 				<RefreshCw class="h-3.5 w-3.5" />
 			</Button>
 
+			<Button variant="outline" size="sm" href="/sandboxes/dashboard">
+				Dashboard
+			</Button>
+
 			<Button size="sm" onclick={() => (createOpen = true)}>
 				<Plus class="mr-1 h-4 w-4" />
 				New Sandbox

@@ -2,13 +2,16 @@
 	import { page } from '$app/state';
 	import { Button } from '$lib/components/ui/button';
 	import * as Tabs from '$lib/components/ui/tabs';
-	import { ArrowLeft, Trash2, Loader2, Container, RefreshCw } from 'lucide-svelte';
+	import { ArrowLeft, Trash2, Loader2, Container, RefreshCw, CopyPlus } from 'lucide-svelte';
+	import CreateSandboxDialog from '$lib/components/sandbox/create-sandbox-dialog.svelte';
 	import { createSandboxDetailStream } from '$lib/stores/sandbox-detail-stream.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
 	import SandboxLogViewer from '$lib/components/sandbox/sandbox-log-viewer.svelte';
 	import SandboxActivityLog from '$lib/components/sandbox/sandbox-activity-log.svelte';
 	import SandboxPhaseTimeline from '$lib/components/sandbox/sandbox-phase-timeline.svelte';
-	import SandboxTerminal from '$lib/components/sandbox/sandbox-terminal.svelte';
+	import SandboxLifecycleTimeline from '$lib/components/sandbox/sandbox-lifecycle-timeline.svelte';
+	import SandboxProcesses from '$lib/components/sandbox/sandbox-processes.svelte';
+	import SandboxTerminalTabs from '$lib/components/sandbox/sandbox-terminal-tabs.svelte';
 	import SandboxInfoCard from '$lib/components/sandbox/sandbox-info-card.svelte';
 	import SandboxFileBrowser from '$lib/components/sandbox/sandbox-file-browser.svelte';
 	import { goto } from '$app/navigation';
@@ -18,6 +21,12 @@
 
 	let deleting = $state(false);
 	let activeTab = $state('logs');
+	let cloneDialogOpen = $state(false);
+
+	const cloneDefaults = $derived.by(() => ({
+		name: `${sandboxName}-clone-${Math.floor(Date.now() / 1000)}`,
+		providers: stream.status?.provider ? [stream.status.provider] : ['claude']
+	}));
 
 	async function deleteSandbox() {
 		deleting = true;
@@ -77,6 +86,14 @@
 			{#if stream.status?.createdAt}
 				<span class="text-xs text-muted-foreground">{formatAge(stream.status.createdAt)}</span>
 			{/if}
+			<Button
+				variant="outline"
+				size="sm"
+				onclick={() => (cloneDialogOpen = true)}
+			>
+				<CopyPlus class="mr-1 h-3.5 w-3.5" />
+				Clone
+			</Button>
 			<Button
 				variant="outline"
 				size="sm"
@@ -185,11 +202,23 @@
 				</Tabs.Content>
 
 				<Tabs.Content value="info" class="flex-1 overflow-auto p-6 pt-3">
-					<SandboxInfoCard {sandboxName} />
+					<div class="space-y-6">
+						{#if stream.status?.createdAt}
+							<div class="rounded-lg border border-border p-4">
+								<h3 class="mb-3 text-sm font-semibold">Lifecycle</h3>
+								<SandboxLifecycleTimeline
+									createdAt={stream.status.createdAt}
+									phase={stream.status.phase}
+								/>
+							</div>
+						{/if}
+						<SandboxProcesses {sandboxName} />
+						<SandboxInfoCard {sandboxName} />
+					</div>
 				</Tabs.Content>
 
-				<Tabs.Content value="terminal" class="flex-1 overflow-hidden p-6 pt-3">
-					<SandboxTerminal {sandboxName} />
+				<Tabs.Content value="terminal" class="flex-1 overflow-hidden">
+					<SandboxTerminalTabs {sandboxName} />
 				</Tabs.Content>
 			</Tabs.Root>
 		{/if}
@@ -208,3 +237,10 @@
 		</svelte:boundary>
 	</div>
 </div>
+
+<CreateSandboxDialog
+	bind:open={cloneDialogOpen}
+	onOpenChange={(v) => (cloneDialogOpen = v)}
+	defaults={cloneDefaults}
+	onCreated={() => goto('/sandboxes')}
+/>
