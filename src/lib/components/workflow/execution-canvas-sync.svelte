@@ -11,6 +11,7 @@
 		snapshot: ExecutionReadModel | null;
 		edges: Edge[];
 		setEdges: (edges: Edge[]) => void;
+		managedNodeIds?: string[] | null;
 		onAutoCenter?: () => void;
 		showPanel?: boolean;
 	}
@@ -19,6 +20,7 @@
 		snapshot,
 		edges,
 		setEdges,
+		managedNodeIds = null,
 		onAutoCenter,
 		showPanel = true
 	}: Props = $props();
@@ -61,7 +63,9 @@
 	}
 
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
+		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
 		for (const node of getNodes()) {
+			if (managed && !managed.has(node.id)) continue;
 			const nextStatus = statuses[node.id] ?? 'idle';
 			if ((node.data?.status as string | undefined) === nextStatus) continue;
 			updateNodeData(node.id, { status: nextStatus });
@@ -95,8 +99,12 @@
 
 		const nodes = getNodes();
 		if (nodes.length === 0) return;
+		const managedNodes =
+			managedNodeIds && managedNodeIds.length > 0
+				? nodes.filter((node) => managedNodeIds.includes(node.id))
+				: nodes;
 
-		const canvasState = buildExecutionCanvasState(snapshot, nodes, edges);
+		const canvasState = buildExecutionCanvasState(snapshot, managedNodes, edges);
 		applyNodeStatuses(canvasState.nodeStatuses);
 		applyEdgeStatuses(canvasState.edgeStatuses);
 

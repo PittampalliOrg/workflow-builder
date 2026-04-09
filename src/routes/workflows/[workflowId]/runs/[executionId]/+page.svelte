@@ -52,6 +52,7 @@
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
+	import { buildAgentCanvasSubflows } from '$lib/utils/agent-subflow';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
 	import EndNode from '$lib/components/workflow/nodes/sw/end-node.svelte';
@@ -191,6 +192,17 @@
 			agentRuns[0] ??
 			null
 	);
+	const agentCanvasSubflows = $derived.by(() =>
+		buildAgentCanvasSubflows(
+			workflowNodes,
+			agentRuns,
+			executionState.events,
+			selectedAgentRunId
+		)
+	);
+	const canvasNodes = $derived.by(() => [...workflowNodes, ...agentCanvasSubflows.nodes]);
+	const canvasEdges = $derived.by(() => [...workflowEdges, ...agentCanvasSubflows.edges]);
+	const workflowNodeIds = $derived.by(() => workflowNodes.map((node) => node.id));
 
 	const nodeTypes: NodeTypes = {
 		start: StartNode,
@@ -520,7 +532,6 @@
 		const match = agentRuns.find((run) => run.nodeId === nodeId);
 		if (!match) return;
 		selectedAgentRunId = match.id;
-		activeTab = 'agents';
 	}
 </script>
 
@@ -769,8 +780,8 @@
 				</div>
 			{:else}
 				<SvelteFlow
-					nodes={workflowNodes}
-					edges={workflowEdges}
+					nodes={canvasNodes}
+					edges={canvasEdges}
 					{nodeTypes}
 					{edgeTypes}
 					colorMode={document.documentElement.classList.contains('dark') ? 'dark' : 'light'}
@@ -788,6 +799,7 @@
 						setEdges={(edges) => {
 							workflowEdges = edges;
 						}}
+						managedNodeIds={workflowNodeIds}
 					/>
 					<Controls />
 					<MiniMap zoomable pannable />
@@ -1004,6 +1016,24 @@
 					}}
 				/>
 			</div>
-		</TabsContent>
-	</Tabs>
+	</TabsContent>
+</Tabs>
 </div>
+
+<style>
+	:global(.svelte-flow__node.agent-subflow-group) {
+		border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+		border-radius: 20px;
+		background:
+			linear-gradient(180deg, color-mix(in srgb, var(--muted) 58%, transparent), transparent 38%),
+			color-mix(in srgb, var(--card) 92%, transparent);
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 42%, transparent);
+	}
+
+	:global(.svelte-flow__node.agent-subflow-group.agent-subflow-group-selected) {
+		box-shadow:
+			inset 0 0 0 1px color-mix(in srgb, var(--primary) 42%, transparent),
+			0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent),
+			0 20px 40px color-mix(in srgb, black 12%, transparent);
+	}
+</style>

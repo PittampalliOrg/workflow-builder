@@ -1,5 +1,6 @@
 import type { Edge, Node } from '@xyflow/svelte';
 import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
+import type { WorkflowNodeData, NodeStatus } from '$lib/stores/workflow.svelte';
 
 type AgentLoopNodeData = {
 	label: string;
@@ -9,6 +10,21 @@ type AgentLoopNodeData = {
 
 export type AgentLoopNode = Node<AgentLoopNodeData>;
 export type AgentLoopEdge = Edge;
+export type AgentCanvasNode = Node<WorkflowNodeData>;
+export type AgentCanvasEdge = Edge;
+
+function asWorkflowNodeStatus(status: AgentLoopNodeData['status']): NodeStatus {
+	switch (status) {
+		case 'running':
+			return 'running';
+		case 'success':
+			return 'success';
+		case 'error':
+			return 'error';
+		default:
+			return 'idle';
+	}
+}
 
 function asString(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -31,7 +47,7 @@ function nodeStatusForRun(
 		case 'running':
 			return 'running';
 		case 'scheduled':
-			return 'pending';
+			return 'idle';
 		default:
 			return 'idle';
 	}
@@ -192,6 +208,113 @@ export function buildAgentLoopGraph(
 			target: statusId,
 			type: 'animated'
 		});
+	}
+
+	return { nodes, edges };
+}
+
+function parentNodeSize(node: Node): { width: number; height: number } {
+	return {
+		width: node.measured?.width ?? node.width ?? 220,
+		height: node.measured?.height ?? node.height ?? 96
+	};
+}
+
+function groupClass(runId: string, selectedRunId: string | null): string {
+	return `agent-subflow-group${selectedRunId === runId ? ' agent-subflow-group-selected' : ''}`;
+}
+
+export function buildAgentCanvasSubflows(
+	workflowNodes: Node[],
+	agentRuns: ExecutionAgentRun[],
+	events: ExecutionTimelineEvent[],
+	selectedRunId: string | null
+): { nodes: AgentCanvasNode[]; edges: AgentCanvasEdge[] } {
+	const nodes: AgentCanvasNode[] = [];
+	const edges: AgentCanvasEdge[] = [];
+
+	for (const run of agentRuns) {
+		const workflowNode = workflowNodes.find((node) => node.id === run.nodeId);
+		if (!workflowNode) continue;
+
+		const graph = buildAgentLoopGraph(run, events);
+		if (graph.nodes.length === 0) continue;
+
+		const { width: parentWidth, height: parentHeight } = parentNodeSize(workflowNode);
+		const paddingX = 24;
+		const paddingTop = 24;
+		const paddingBottom = 24;
+		const maxX = Math.max(...graph.nodes.map((node) => node.position.x)) + 180;
+		const maxY = Math.max(...graph.nodes.map((node) => node.position.y)) + 96;
+		const groupWidth = Math.max(420, maxX + paddingX * 2);
+		const groupHeight = Math.max(220, maxY + paddingTop + paddingBottom);
+		const groupId = `agent-group:${run.id}`;
+
+		nodes.push({
+			id: groupId,
+			type: 'group',
+			position: {
+				x: workflowNode.position.x + parentWidth + 140,
+				y: workflowNode.position.y - Math.max(40, (groupHeight - parentHeight) / 3)
+			},
+			draggable: false,
+			selectable: false,
+			connectable: false,
+			class: groupClass(run.id, selectedRunId),
+			style: `width:${groupWidth}px;height:${groupHeight}px;`,
+			data: {
+				label: `${run.nodeId} child run`,
+				description: `${run.mode} · ${run.status}`,
+				status: asWorkflowNodeStatus(nodeStatusForRun(run.status)),
+				type: 'run'
+			}
+		});
+
+		for (const node of graph.nodes) {
+			nodes.push({
+				id: `agent:${run.id}:${node.id}`,
+				type: 'default',
+				parentId: groupId,
+				extent: 'parent',
+				position: {
+					x: node.position.x + paddingX,
+					y: node.position.y + paddingTop
+				},
+				draggable: false,
+				selectable: false,
+				connectable: false,
+				data: {
+					label: node.data.label,
+					description: node.data.description,
+					status: asWorkflowNodeStatus(node.data.status),
+					type: 'run'
+				}
+			});
+		}
+
+		const rootChildId = `agent:${run.id}:${graph.nodes[0]?.id}`;
+		edges.push({
+			id: `${workflowNode.id}->${rootChildId}`,
+			source: workflowNode.id,
+			target: rootChildId,
+			type: 'animated',
+			selectable: false,
+			focusable: false,
+			data: {
+				status: run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'running'
+			}
+		});
+
+		for (const edge of graph.edges) {
+			edges.push({
+				...edge,
+				id: `agent:${run.id}:${edge.id}`,
+				source: `agent:${run.id}:${edge.source}`,
+				target: `agent:${run.id}:${edge.target}`,
+				selectable: false,
+				focusable: false
+			});
+		}
 	}
 
 	return { nodes, edges };
