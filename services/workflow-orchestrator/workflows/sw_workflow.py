@@ -45,6 +45,7 @@ from core.sw_expressions import (
     resolve_input_definition,
     resolve_output_definition,
 )
+from core.template_resolver import resolve_templates
 from activities.execute_action import execute_action
 from activities.persist_state import persist_state
 from activities.publish_event import publish_phase_changed
@@ -857,6 +858,30 @@ def _run_native_durable_agent_child_workflow(
     return child_result
 
 
+def _resolve_native_agent_args(
+    tc: "TaskContext",
+    task_input: Any,
+    native_args: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve legacy templates and SW expressions for native agent actions."""
+    if not isinstance(native_args, dict):
+        return {}
+    template_resolved_args = resolve_templates(native_args, tc.task_outputs)
+    if not isinstance(template_resolved_args, dict):
+        template_resolved_args = native_args
+    expr_context = _build_expression_context(
+        tc,
+        task_input=task_input,
+        has_task_input=True,
+    )
+    resolved_native_args = evaluate_structure(template_resolved_args, expr_context)
+    if not isinstance(resolved_native_args, dict):
+        resolved_native_args = (
+            template_resolved_args if isinstance(template_resolved_args, dict) else {}
+        )
+    return resolved_native_args
+
+
 def _handle_call_task(
     ctx: wf.DaprWorkflowContext,
     task_name: str,
@@ -884,14 +909,11 @@ def _handle_call_task(
         if action_type in _NATIVE_DURABLE_AGENT_ACTION_TYPES:
             task_input = _resolve_task_input(task_data, tc)
             native_args = resolved.get("args", {}) or {}
-            expr_context = _build_expression_context(
+            resolved_native_args = _resolve_native_agent_args(
                 tc,
-                task_input=task_input,
-                has_task_input=True,
+                task_input,
+                native_args,
             )
-            resolved_native_args = evaluate_structure(native_args, expr_context)
-            if not isinstance(resolved_native_args, dict):
-                resolved_native_args = native_args if isinstance(native_args, dict) else {}
             result = yield from _run_native_durable_agent_child_workflow(
                 ctx,
                 task_name,

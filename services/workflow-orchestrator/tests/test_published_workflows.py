@@ -123,6 +123,7 @@ if "fastapi" not in sys.modules:
     fastapi_module = types.ModuleType("fastapi")
     fastapi_middleware_module = types.ModuleType("fastapi.middleware")
     cors_module = types.ModuleType("fastapi.middleware.cors")
+    encoders_module = types.ModuleType("fastapi.encoders")
 
     class _FakeHTTPException(Exception):
         def __init__(self, status_code: int, detail=None):
@@ -158,10 +159,12 @@ if "fastapi" not in sys.modules:
     fastapi_module.HTTPException = _FakeHTTPException
     fastapi_module.Request = _FakeRequest
     cors_module.CORSMiddleware = _FakeCORSMiddleware
+    encoders_module.jsonable_encoder = lambda value, **_kwargs: value
 
     sys.modules["fastapi"] = fastapi_module
     sys.modules["fastapi.middleware"] = fastapi_middleware_module
     sys.modules["fastapi.middleware.cors"] = cors_module
+    sys.modules["fastapi.encoders"] = encoders_module
 
 if "pydantic" not in sys.modules:
     pydantic_module = types.ModuleType("pydantic")
@@ -231,6 +234,9 @@ def _load_module(name: str, relative_path: str):
 
 
 APP = _load_module("workflow_orchestrator_app", "app.py")
+SW_WORKFLOW = _load_module(
+    "workflow_orchestrator_sw_workflow", "workflows/sw_workflow.py"
+)
 
 
 def test_extract_published_revisions_reads_latest_revision_snapshot():
@@ -353,3 +359,45 @@ def test_resolve_execution_target_rejects_unknown_published_version():
         APP._resolve_execution_target(workflow_row, "pub_missing")
 
     assert exc_info.value.status_code == 400
+
+
+def test_resolve_native_agent_args_renders_trigger_templates_before_child_workflow():
+    workflow = types.SimpleNamespace(
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"owner": "giteaadmin", "repo": "repo-test-1"},
+        execution_id="exec_123",
+        db_execution_id="db_exec_123",
+        integrations=None,
+    )
+
+    resolved = SW_WORKFLOW._resolve_native_agent_args(
+        tc,
+        None,
+        {
+            "prompt": "Create repo {{trigger.owner}}/{{trigger.repo}}",
+            "cwd": "/tmp/{{trigger.repo}}",
+            "body": {
+                "input": {
+                    "owner": "{{trigger.owner}}",
+                    "repo": "{{trigger.repo}}",
+                }
+            },
+        },
+    )
+
+    assert resolved["prompt"] == "Create repo giteaadmin/repo-test-1"
+    assert resolved["cwd"] == "/tmp/repo-test-1"
+    assert resolved["body"]["input"]["owner"] == "giteaadmin"
+    assert resolved["body"]["input"]["repo"] == "repo-test-1"
