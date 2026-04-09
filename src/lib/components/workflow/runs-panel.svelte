@@ -156,6 +156,22 @@
 		const stream = createExecutionStream(execId);
 		const unsubscribe = stream.subscribe((state) => {
 			executionStreamStates.set(execId, state);
+			const snapshot = state.snapshot;
+			if (!snapshot) return;
+			executions = executions.map((execution) =>
+				execution.id === execId
+					? {
+							...execution,
+							status: snapshot.status || execution.status,
+							startedAt: snapshot.startedAt || execution.startedAt,
+							completedAt: snapshot.completedAt || execution.completedAt,
+							output:
+								(snapshot.output as Record<string, unknown> | undefined) ??
+								(snapshot.summaryOutput as Record<string, unknown> | undefined) ??
+								execution.output
+						}
+					: execution
+			);
 		});
 		executionStreams.set(execId, stream);
 		executionStreamStops.set(execId, unsubscribe);
@@ -201,12 +217,23 @@
 
 	// Re-fetch logs when a running execution completes
 	$effect(() => {
+		const executionIds = new Set(executions.map((execution) => execution.id));
+
 		for (const exec of executions) {
+			if (isRunning(exec.status)) {
+				ensureExecutionStream(exec.id);
+			}
 			if (!isRunning(exec.status) && expandedIds.has(exec.id) && !executionLogs.has(exec.id)) {
 				fetchLogsForExecution(exec.id);
 			}
-			if (!isRunning(exec.status) && executionStreams.has(exec.id)) {
+			if (!isRunning(exec.status) && executionStreams.has(exec.id) && !expandedIds.has(exec.id)) {
 				stopExecutionStream(exec.id);
+			}
+		}
+
+		for (const execId of executionStreams.keys()) {
+			if (!executionIds.has(execId)) {
+				stopExecutionStream(execId);
 			}
 		}
 	});
@@ -258,10 +285,10 @@
 	}
 
 	function activeStepLabel(stream: ExecutionStreamState): string | null {
-		const currentNodeName = stream.snapshot?.currentNodeName?.trim();
-		if (currentNodeName) return currentNodeName;
 		const currentNodeId = stream.snapshot?.currentNodeId?.trim();
-		return currentNodeId || null;
+		if (currentNodeId) return currentNodeId;
+		const currentNodeName = stream.snapshot?.currentNodeName?.trim();
+		return currentNodeName || null;
 	}
 </script>
 
@@ -293,8 +320,9 @@
 				{#each executions as exec, index (exec.id)}
 					{@const execId = exec.id}
 					{@const isExpanded = expandedIds.has(execId)}
-					{@const logs = executionLogs.get(execId) ?? null}
 					{@const stream = streamState(execId)}
+					{@const liveSteps = stream.snapshot?.steps ?? null}
+					{@const logs = liveSteps && liveSteps.length > 0 ? liveSteps : (executionLogs.get(execId) ?? null)}
 					{@const isLogsLoading = loadingLogs.has(execId)}
 
 					<Card class="overflow-hidden transition-all {store.selectedExecutionId === exec.id ? 'ring-2 ring-primary ring-offset-1 ring-offset-background' : ''}">

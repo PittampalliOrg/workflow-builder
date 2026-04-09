@@ -17,6 +17,11 @@ import {
 } from '$lib/server/db/mcp';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import {
+	applyWorkflowInputDefaults,
+	getPromptExpansionConfig
+} from '$lib/utils/workflow-input-config';
+import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 
 type Body = {
 	toolName?: string;
@@ -207,7 +212,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		input
 	});
 
-	const triggerData = {
+	let triggerData: Record<string, unknown> = {
 		__mcp: {
 			runId: run.id,
 			projectId,
@@ -217,6 +222,10 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		},
 		...input
 	};
+	triggerData = applyWorkflowInputDefaults(spec, triggerData);
+	if (getPromptExpansionConfig(spec)) {
+		triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+	}
 	const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
 	if (missingTriggerFields.length > 0) {
 		return error(400, `Missing required workflow input fields: ${missingTriggerFields.join(', ')}`);

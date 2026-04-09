@@ -6,8 +6,10 @@ export interface ExecutionTimelineEvent {
 }
 
 export interface ExecutionStepLog {
+	logId?: string;
 	stepName: string;
 	label: string;
+	displayLabel?: string;
 	actionType: string;
 	status: 'success' | 'error' | 'running' | 'pending' | 'unknown';
 	input: unknown;
@@ -16,6 +18,8 @@ export interface ExecutionStepLog {
 	durationMs: number | null;
 	startedAt: string | null;
 	completedAt: string | null;
+	attempt?: number;
+	attemptsTotal?: number;
 }
 
 export interface ExecutionReadModel {

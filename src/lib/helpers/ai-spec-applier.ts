@@ -63,15 +63,25 @@ export async function applySpec(
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let layoutedNodes = enrichedNodes as any[];
 	try {
-		const { layoutElkWorkflowNodes } = await import('$lib/utils/layout/elk-layout');
+		const { layoutWorkflowGraph, suggestLayoutConfig } = await import('$lib/utils/layout');
 		if (enrichedNodes.length > 1) {
-			layoutedNodes = await layoutElkWorkflowNodes(enrichedNodes as any[], newEdges as any[], {
-				direction: 'TB',
-				nodeWidth: 148,
-				nodeHeight: 148,
-				rankSep: 60,
-				nodeSep: 40,
-			}) as typeof store.nodes;
+			const layoutConfig = store.layoutConfigTouched
+				? store.layoutConfig
+				: suggestLayoutConfig(
+						enrichedNodes as unknown as typeof store.nodes,
+						newEdges as unknown as typeof store.edges,
+						store.layoutConfig
+					);
+
+			if (!store.layoutConfigTouched) {
+				store.setLayoutConfig(layoutConfig, { touched: false });
+			}
+
+			layoutedNodes = await layoutWorkflowGraph(
+				enrichedNodes as any[],
+				newEdges as any[],
+				layoutConfig
+			) as typeof store.nodes;
 		}
 	} catch (err) {
 		console.warn('[ai-spec-applier] Auto-layout skipped:', err);

@@ -60,6 +60,7 @@
 		"@dagrejs/dagre": "^3.0.0",
 		"@opentelemetry/api-logs": "^0.212.0",
 		"@serverlessworkflow/sdk": "^1.0.1",
+		"@tanstack/svelte-table": "9.0.0-alpha.32",
 		"@xyflow/svelte": "^1.5.2",
 		"ai": "^6.0.146",
 		"bcryptjs": "^3.0.3",

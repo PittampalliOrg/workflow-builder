@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, sql } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
@@ -170,6 +170,65 @@ export async function listExecutionAgentEvents(
 	return rows.map((row) => mapAgentEvent(row));
 }
 
+/**
+ * List agent events for a specific sandbox name, across all executions.
+ * Used by the sandbox detail page to show what happened in a sandbox.
+ *
+ * Strategy: first looks for events with sandbox_name set directly, then
+ * falls back to finding the execution via its output JSONB (which contains
+ * the sandbox name as a workspace reference), then returns that execution's events.
+ */
+export async function listSandboxAgentEvents(
+	sandboxName: string,
+	afterEventId: number = 0,
+	limit: number = 200
+): Promise<ExecutionTimelineEvent[]> {
+	if (!db) return [];
+
+	// Try direct sandbox_name match first
+	const directRows = await db
+		.select()
+		.from(workflowAgentEvents)
+		.where(
+			and(
+				eq(workflowAgentEvents.sandboxName, sandboxName),
+				gt(workflowAgentEvents.eventId, afterEventId)
+			)
+		)
+		.orderBy(asc(workflowAgentEvents.eventId))
+		.limit(limit);
+
+	if (directRows.length > 0) {
+		return directRows.map((row) => mapAgentEvent(row));
+	}
+
+	// Fallback: find execution(s) whose output JSON mentions this sandbox name,
+	// then return that execution's agent events
+	const executions = await db
+		.select({ id: workflowExecutions.id })
+		.from(workflowExecutions)
+		.where(sql`${workflowExecutions.output}::text LIKE ${'%' + sandboxName + '%'}`)
+		.orderBy(desc(workflowExecutions.startedAt))
+		.limit(1);
+
+	if (executions.length === 0) return [];
+
+	const executionId = executions[0].id;
+	const rows = await db
+		.select()
+		.from(workflowAgentEvents)
+		.where(
+			and(
+				eq(workflowAgentEvents.workflowExecutionId, executionId),
+				gt(workflowAgentEvents.eventId, afterEventId)
+			)
+		)
+		.orderBy(asc(workflowAgentEvents.eventId))
+		.limit(limit);
+
+	return rows.map((row) => mapAgentEvent(row));
+}
+
 async function refreshExecutionRuntime(execution: ExecutionRow): Promise<LiveRuntimeStatus | null> {
 	if (!execution.daprInstanceId) return null;
 	if (execution.status !== 'running' && execution.status !== 'pending') return null;
@@ -307,11 +366,26 @@ async function readExecutionSteps(executionId: string): Promise<ExecutionStepLog
 		.where(eq(workflowExecutionLogs.executionId, executionId))
 		.orderBy(asc(workflowExecutionLogs.startedAt));
 
-	return rows
-		.filter((row) => !['trigger', 'state'].includes(row.nodeId))
-		.map((row) => ({
+	const visibleRows = rows.filter((row) => !['trigger', 'state'].includes(row.nodeId));
+	const attemptsByNode = new Map<string, number>();
+	const totalsByNode = new Map<string, number>();
+
+	for (const row of visibleRows) {
+		totalsByNode.set(row.nodeId, (totalsByNode.get(row.nodeId) ?? 0) + 1);
+	}
+
+	return visibleRows.map((row) => {
+		const attempt = (attemptsByNode.get(row.nodeId) ?? 0) + 1;
+		attemptsByNode.set(row.nodeId, attempt);
+		const attemptsTotal = totalsByNode.get(row.nodeId) ?? 1;
+		const baseLabel = row.nodeName || row.nodeId;
+
+		return {
+			logId: row.id,
 			stepName: row.nodeId,
 			label: row.nodeName,
+			displayLabel:
+				attemptsTotal > 1 ? `${baseLabel} (attempt ${attempt})` : baseLabel,
 			actionType: row.activityName ?? row.nodeType,
 			status:
 				row.status === 'success' ||
@@ -325,8 +399,11 @@ async function readExecutionSteps(executionId: string): Promise<ExecutionStepLog
 			error: row.error,
 			durationMs: parseDurationMs(row.duration),
 			startedAt: toIso(row.startedAt),
-			completedAt: toIso(row.completedAt)
-		}));
+			completedAt: toIso(row.completedAt),
+			attempt,
+			attemptsTotal
+		};
+	});
 }
 
 async function readTraceIds(execution: ExecutionRow) {

@@ -3,6 +3,7 @@
 #
 # Architecture:
 #   - Replaces production container with devcontainer (full build tools)
+#   - Scales the Argo-managed workflow-builder deployment to 0 during `dev`
 #   - Syncs local files to container in real-time
 #   - Runs SvelteKit dev server with hot module replacement
 #   - Integrates with existing OTEL observability stack
@@ -12,6 +13,7 @@
 #   bash scripts/devspace-dev-ryzen.sh --profile sw-workflow-dev  # CNCF Serverless Workflow 1.0 development
 #   bash scripts/devspace-dev-ryzen.sh --profile openshell-observable-dev  # Explicit observable loop
 #   bash scripts/devspace-dev-ryzen.sh --profile workflow-ui-only  # Iterate on the SvelteKit app only
+#   devspace dev --profile workflow-ui-only  # Raw fastest loop: workflow-builder only
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-ui  # Iterate on workflow-builder Svelte app + durable-agent
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-e2e  # workflow-builder + workflow-orchestrator + durable-agent
 #   bash scripts/devspace-dev-ryzen.sh --profile durable-agent-only  # Backward-compatible alias for durable-agent-ui
@@ -1113,25 +1115,149 @@ pipelines:
       SKIP_ANNOTATION="argocd.argoproj.io/skip-reconcile"
       REFRESH_ANNOTATION="argocd.argoproj.io/refresh"
       WORKFLOW_BUILDER_SERVICE="workflow-builder"
+      ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
+
+      resolve_active_apps() {
+        case "${DEVSPACE_PROFILE:-}" in
+          workflow-ui-only)
+            printf '%s\n' "workflow-builder"
+            ;;
+          ui-orchestrator)
+            printf '%s\n' "workflow-builder workflow-orchestrator"
+            ;;
+          durable-agent-ui|durable-agent-only)
+            printf '%s\n' "workflow-builder durable-agent"
+            ;;
+          durable-agent-e2e)
+            printf '%s\n' "workflow-builder workflow-orchestrator durable-agent"
+            ;;
+          ai-chatbot-dev)
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router"
+            ;;
+          function-stack)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router fn-activepieces"
+            ;;
+          sw-workflow-dev|openshell-inner-loop)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router"
+            ;;
+          full-agent-stack)
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"
+            ;;
+          *)
+            printf '%s\n' "${ARGO_APPS}"
+            ;;
+        esac
+      }
+
+      resolve_recovery_deployments() {
+        case "${DEVSPACE_PROFILE:-}" in
+          workflow-ui-only)
+            printf '%s\n' "workflow-builder"
+            ;;
+          ui-orchestrator)
+            printf '%s\n' "workflow-builder workflow-orchestrator"
+            ;;
+          durable-agent-ui|durable-agent-only)
+            printf '%s\n' "workflow-builder durable-agent"
+            ;;
+          durable-agent-e2e)
+            printf '%s\n' "workflow-builder workflow-orchestrator durable-agent"
+            ;;
+          ai-chatbot-dev)
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router"
+            ;;
+          function-stack)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router fn-activepieces"
+            ;;
+          sw-workflow-dev|openshell-inner-loop)
+            printf '%s\n' "workflow-builder workflow-orchestrator function-router"
+            ;;
+          full-agent-stack)
+            printf '%s\n' "workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent"
+            ;;
+          *)
+            printf '%s\n' "${PRODUCTION_DEPLOYMENTS}"
+            ;;
+        esac
+      }
+
+      ACTIVE_APPS="$(resolve_active_apps)"
+      RECOVERY_DEPLOYMENTS="$(resolve_recovery_deployments)"
 
       route_workflow_builder_service_to_dev() {
         kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
           --namespace "$WL_NS" \
-          --type=json \
-          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"true"}]' \
+          --type=merge \
+          -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"true"}}}' \
           >/dev/null 2>&1 || true
       }
 
       restore_workflow_builder_service_to_prod() {
         kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
           --namespace "$WL_NS" \
-          --type=json \
-          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"false"}]' \
+          --type=merge \
+          -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"false"}}}' \
           >/dev/null 2>&1 || true
       }
 
+      capture_workflow_builder_replicas() {
+        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+        if [ -z "${replicas}" ]; then
+          replicas="1"
+        fi
+        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          "${ORIGINAL_REPLICAS_ANNOTATION}=${replicas}" \
+          --overwrite >/dev/null 2>&1 || true
+      }
+
+      scale_workflow_builder_to_dev() {
+        capture_workflow_builder_replicas
+        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          --replicas=0 >/dev/null 2>&1 || true
+      }
+
+      restore_workflow_builder_replicas() {
+        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+        if [ -z "${replicas}" ]; then
+          replicas="1"
+        fi
+        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          --replicas="${replicas}" >/dev/null 2>&1 || true
+        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" \
+          --namespace "$WL_NS" \
+          "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
+      }
+
+      delete_workflow_builder_devspace_state() {
+        kubectl delete deployment \
+          --namespace "$WL_NS" \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found \
+          --wait=true >/dev/null 2>&1 || true
+        kubectl delete replicaset \
+          --namespace "$WL_NS" \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete pod \
+          --namespace "$WL_NS" \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found >/dev/null 2>&1 || true
+        for _ in $(seq 1 15); do
+          if ! kubectl get deployment \
+            --namespace "$WL_NS" \
+            -l 'app=workflow-builder,devspace.sh/replaced=true' \
+            -o name 2>/dev/null | grep -q .; then
+            break
+          fi
+          sleep 1
+        done
+      }
+
       # ── Pause ArgoCD for active apps ──
-      for app in ${ARGO_APPS}; do
+      for app in ${ACTIVE_APPS}; do
         if kubectl get application "$app" --namespace "$ARGO_NS" >/dev/null 2>&1; then
           echo "==> Pausing ArgoCD reconciliation for $app"
           kubectl annotate application "$app" \
@@ -1147,8 +1273,12 @@ pipelines:
         echo ""
         echo "==> Restoring workflow-builder service selector"
         restore_workflow_builder_service_to_prod
+        echo "==> Restoring workflow-builder deployment replicas"
+        restore_workflow_builder_replicas
+        echo "==> Removing workflow-builder DevSpace replacement resources"
+        delete_workflow_builder_devspace_state
         echo "==> Resuming ArgoCD reconciliation"
-        for app in ${ARGO_APPS}; do
+        for app in ${ACTIVE_APPS}; do
           kubectl annotate application "$app" \
             --namespace "$ARGO_NS" \
             "${SKIP_ANNOTATION}-" >/dev/null 2>&1 || true
@@ -1158,7 +1288,7 @@ pipelines:
             --overwrite >/dev/null 2>&1 || true
         done
         echo "==> Waiting for production deployments to recover"
-        for dep in ${PRODUCTION_DEPLOYMENTS}; do
+        for dep in ${RECOVERY_DEPLOYMENTS}; do
           kubectl rollout status \
             --namespace "$WL_NS" \
             "deployment/${dep}" \
@@ -1174,7 +1304,13 @@ pipelines:
       create_deployments --all
       echo "==> Routing workflow-builder service to the DevSpace replacement pod"
       route_workflow_builder_service_to_dev
+      echo "==> Scaling down the Argo-managed workflow-builder deployment"
+      scale_workflow_builder_to_dev
       start_dev --all
+      echo "==> Dev session active. Press Ctrl+C to restore production routing."
+      while true; do
+        sleep 3600
+      done
 
   deploy-ui:
     run: |
@@ -1192,29 +1328,84 @@ hooks:
       - -c
       - |
         ARGO_NS="argocd"
+        WL_NS="workflow-builder"
         SKIP="argocd.argoproj.io/skip-reconcile"
         REFRESH="argocd.argoproj.io/refresh"
-        for app in ${ARGO_APPS}; do
+        WORKFLOW_BUILDER_SERVICE="workflow-builder"
+        ORIGINAL_REPLICAS_ANNOTATION="devspace.sh/original-workflow-builder-replicas"
+        case "${DEVSPACE_PROFILE:-}" in
+          workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
+          ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
+          durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
+          durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
+          ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
+          function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
+          sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
+          full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+          *) ACTIVE_APPS="${ARGO_APPS}" ;;
+        esac
+        for app in ${ACTIVE_APPS}; do
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${SKIP}-" 2>/dev/null || true
           kubectl annotate application "$app" --namespace "$ARGO_NS" "${REFRESH}=hard" --overwrite 2>/dev/null || true
         done
+        replicas="$(kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" -o jsonpath="{.metadata.annotations.${ORIGINAL_REPLICAS_ANNOTATION//\//\\.}}" 2>/dev/null)"
+        if [ -z "${replicas}" ]; then
+          replicas="1"
+        fi
+        kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" --replicas="${replicas}" >/dev/null 2>&1 || true
+        kubectl annotate deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" "${ORIGINAL_REPLICAS_ANNOTATION}-" >/dev/null 2>&1 || true
         kubectl patch service workflow-builder \
           --namespace workflow-builder \
-          --type=json \
-          -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"false"}]' \
+          --type=merge \
+          -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"false"}}}' \
           >/dev/null 2>&1 || true
+        kubectl delete deployment \
+          --namespace workflow-builder \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found \
+          --wait=true >/dev/null 2>&1 || true
+        kubectl delete replicaset \
+          --namespace workflow-builder \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found >/dev/null 2>&1 || true
+        kubectl delete pod \
+          --namespace workflow-builder \
+          -l 'app=workflow-builder,devspace.sh/replaced=true' \
+          --ignore-not-found >/dev/null 2>&1 || true
 
 # ============================================================================
 # Commands — manual ArgoCD pause/resume
 # ============================================================================
 commands:
   argocd-pause: |-
-    for app in ${ARGO_APPS}; do
+    case "${DEVSPACE_PROFILE:-}" in
+      workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
+      ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
+      durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
+      durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
+      ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
+      function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
+      sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+      *) ACTIVE_APPS="${ARGO_APPS}" ;;
+    esac
+    for app in ${ACTIVE_APPS}; do
       kubectl annotate application "$app" --namespace argocd \
         "argocd.argoproj.io/skip-reconcile=true" --overwrite 2>/dev/null || true
     done
   argocd-resume: |-
-    for app in ${ARGO_APPS}; do
+    case "${DEVSPACE_PROFILE:-}" in
+      workflow-ui-only) ACTIVE_APPS="workflow-builder" ;;
+      ui-orchestrator) ACTIVE_APPS="workflow-builder workflow-orchestrator" ;;
+      durable-agent-ui|durable-agent-only) ACTIVE_APPS="workflow-builder durable-agent" ;;
+      durable-agent-e2e) ACTIVE_APPS="workflow-builder workflow-orchestrator durable-agent" ;;
+      ai-chatbot-dev) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router" ;;
+      function-stack) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router fn-activepieces" ;;
+      sw-workflow-dev|openshell-inner-loop) ACTIVE_APPS="workflow-builder workflow-orchestrator function-router" ;;
+      full-agent-stack) ACTIVE_APPS="workflow-builder ai-chatbot workflow-orchestrator function-router fn-activepieces mcp-gateway durable-agent" ;;
+      *) ACTIVE_APPS="${ARGO_APPS}" ;;
+    esac
+    for app in ${ACTIVE_APPS}; do
       kubectl annotate application "$app" --namespace argocd \
         "argocd.argoproj.io/skip-reconcile-" 2>/dev/null || true
       kubectl annotate application "$app" --namespace argocd \

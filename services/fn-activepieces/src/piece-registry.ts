@@ -19,6 +19,7 @@ import { contextualAi } from "@activepieces/piece-contextual-ai";
 import { discord } from "@activepieces/piece-discord";
 // Storage
 import { dropbox } from "@activepieces/piece-dropbox";
+import { gitea } from "@activepieces/piece-gitea";
 import { gmail } from "@activepieces/piece-gmail";
 import { googleCalendar } from "@activepieces/piece-google-calendar";
 import { googleDocs } from "@activepieces/piece-google-docs";
@@ -94,6 +95,7 @@ export const PIECES: Record<string, Piece> = {
 	zendesk: zendesk as unknown as Piece,
 	sendgrid: sendgrid as unknown as Piece,
 	dropbox: dropbox as unknown as Piece,
+	gitea: gitea as unknown as Piece,
 	"telegram-bot": telegramBot as unknown as Piece,
 	// AI & ML
 	openai: openai as unknown as Piece,

@@ -6,6 +6,8 @@ import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-m
 import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
+import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 import {
 	buildWorkflowSessionId,
 	injectWorkflowSessionHeaders
@@ -45,7 +47,7 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 		// Empty body is fine
 	}
 
-	const triggerData = (body.input as Record<string, unknown>) ?? {};
+	let triggerData = (body.input as Record<string, unknown>) ?? {};
 	const userId = locals.session.userId;
 
 	// Fetch workflow from DB
@@ -61,6 +63,19 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	if (!spec || !isSWWorkflow(spec)) {
 		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
+	}
+
+	try {
+		triggerData = applyWorkflowInputDefaults(spec, triggerData);
+		triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+	} catch (expandError) {
+		console.error('[Execute] greenfield prompt expansion failed:', expandError);
+		return error(
+			500,
+			expandError instanceof Error
+				? expandError.message
+				: 'Failed to derive greenfield workflow inputs from prompt'
+		);
 	}
 
 	const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);

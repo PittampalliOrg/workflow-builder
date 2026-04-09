@@ -5,9 +5,11 @@
 	import {
 		SvelteFlow,
 		MiniMap,
+		Controls,
 		Background,
 		BackgroundVariant,
 		type NodeTypes,
+		type EdgeTypes,
 		type Node,
 		type Edge
 	} from '@xyflow/svelte';
@@ -65,6 +67,9 @@
 	import RaiseNode from '$lib/components/workflow/nodes/sw/raise-node.svelte';
 	import DoNode from '$lib/components/workflow/nodes/sw/do-node.svelte';
 	import DefaultNode from '$lib/components/workflow/nodes/default-node.svelte';
+	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
+	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
+	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
 
 	let workflowId = $derived(page.params.workflowId);
 	let executionId = $derived(page.params.executionId ?? '');
@@ -251,19 +256,11 @@
 		}
 	});
 
-	const canvasNodes = $derived.by(() =>
-		workflowNodes.map((node) => {
-			const status = nodeStatuses[node.id];
-			if (!status || node.data.status === status) return node;
-			return {
-				...node,
-				data: {
-					...node.data,
-					status
-				}
-			};
-		})
-	);
+	const edgeTypes: EdgeTypes = {
+		default: AnimatedEdge,
+		animated: AnimatedEdge,
+		labeled: LabeledEdge
+	} satisfies EdgeTypes;
 
 	// Auto-scroll timeline to bottom
 	$effect(() => {
@@ -745,9 +742,10 @@
 				</div>
 			{:else}
 				<SvelteFlow
-					nodes={canvasNodes}
+					nodes={workflowNodes}
 					edges={workflowEdges}
 					{nodeTypes}
+					{edgeTypes}
 					colorMode={document.documentElement.classList.contains('dark') ? 'dark' : 'light'}
 					nodesDraggable={false}
 					nodesConnectable={false}
@@ -756,6 +754,14 @@
 					minZoom={0.1}
 					maxZoom={4}
 				>
+					<ExecutionCanvasSync
+						snapshot={snapshot}
+						edges={workflowEdges}
+						setEdges={(edges) => {
+							workflowEdges = edges;
+						}}
+					/>
+					<Controls />
 					<MiniMap zoomable pannable />
 					<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
 				</SvelteFlow>

@@ -7,6 +7,11 @@ import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import {
+	applyWorkflowInputDefaults,
+	getPromptExpansionConfig
+} from '$lib/utils/workflow-input-config';
+import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -192,9 +197,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		return json({ error: 'Workflow not found' }, { status: 404 });
 	}
 
-	const triggerData = body.triggerData ?? {};
+	let triggerData = body.triggerData ?? {};
 	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
+		triggerData = applyWorkflowInputDefaults(spec, triggerData);
+		if (getPromptExpansionConfig(spec)) {
+			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+		}
 		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
 		if (missingTriggerFields.length > 0) {
 			return json(

@@ -261,6 +261,7 @@
 	function onNodeDragStop() {
 		store.isDirty = true;
 	}
+
 </script>
 
 <div class="h-full w-full">

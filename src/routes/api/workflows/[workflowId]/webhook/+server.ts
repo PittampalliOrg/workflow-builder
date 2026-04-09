@@ -7,6 +7,11 @@ import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-m
 import { workflows, workflowExecutions, apiKeys } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import {
+	applyWorkflowInputDefaults,
+	getPromptExpansionConfig
+} from '$lib/utils/workflow-input-config';
+import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
 
 // ---------------------------------------------------------------------------
 // CORS headers — webhook callers may be cross-origin
@@ -193,7 +198,10 @@ export const POST: RequestHandler = async ({ params, request }) => {
 
 		// 6. Parse request body (empty body is fine)
 		const body = await request.json().catch(() => ({}));
-		const triggerData = body as Record<string, unknown>;
+		let triggerData = applyWorkflowInputDefaults(spec, body as Record<string, unknown>);
+		if (getPromptExpansionConfig(spec)) {
+			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
+		}
 		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
 		if (missingTriggerFields.length > 0) {
 			return corsJson(
@@ -234,7 +242,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			workflowId,
 			execution.id,
 			spec,
-			body as Record<string, unknown>
+			triggerData
 		);
 
 		return corsJson({

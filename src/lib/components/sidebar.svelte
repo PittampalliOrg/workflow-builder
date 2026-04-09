@@ -16,7 +16,8 @@
 		Eye,
 		Code,
 		ChevronsUpDown,
-		Server
+		Server,
+		Container
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -41,6 +42,7 @@
 		{ href: '/agents', label: 'Agents', icon: Bot },
 		{ href: '/mcp-chat', label: 'MCP Chat', icon: MessageSquare },
 		{ href: '/monitor', label: 'Monitor', icon: Activity },
+		{ href: '/sandboxes', label: 'Sandboxes', icon: Container },
 		{ href: '/activities', label: 'Activities', icon: Server },
 		{ href: '/code-functions', label: 'Code Functions', icon: Code },
 		{ href: '/observability', label: 'Observability', icon: Eye },

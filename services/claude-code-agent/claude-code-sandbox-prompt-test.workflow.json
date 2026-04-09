@@ -1,0 +1,278 @@
+{
+  "id": "claude-code-sandbox-prompt-test",
+  "name": "Claude Code Sandbox Prompt Test",
+  "description": "Create a repo with deterministic setup, build a prompt-driven SvelteKit app in a local working copy, push it, then capture browser screenshots and video from a sandbox clone.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "claude-code-sandbox-prompt-test",
+      "version": "1.0.0",
+      "title": "Claude Code Sandbox Prompt Test",
+      "summary": "Deterministic repo setup, one prompt-driven Claude build step in a local working copy, deterministic git finalize/push, then minimal sandbox browser capture.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "Describe the SvelteKit app you want Claude to build in the repository.",
+          "fields": {
+            "model": {
+              "type": "select",
+              "label": "Claude Model",
+              "description": "Model used for the Claude implementation step.",
+              "defaultValue": "anthropic/claude-opus-4-6",
+              "options": [
+                {
+                  "label": "Opus 4.6",
+                  "value": "anthropic/claude-opus-4-6"
+                },
+                {
+                  "label": "Sonnet 4.6",
+                  "value": "anthropic/claude-sonnet-4-6"
+                },
+                {
+                  "label": "Sonnet 4 (20250514)",
+                  "value": "anthropic/claude-sonnet-4-20250514"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "do": [
+      {
+        "claude_setup": {
+          "call": "claude/run",
+          "with": {
+            "prompt": "Set up a bare-ready Git repository for later sandbox work.\n\nUse ONE Bash tool call only. Copy this script exactly and do not rename the owner, repo, or paths:\n\nset -euo pipefail\nOWNER='{{trigger.owner}}'\nREPO='{{trigger.repo}}'\nDESCRIPTION='Repository for prompt-driven Claude sandbox test'\nAPI='http://gitea-http.gitea.svc.cluster.local:3000/api/v1'\nCLONE_URL=\"http://giteaadmin:${GITEA_TOKEN}@gitea-http.gitea.svc.cluster.local:3000/${OWNER}/${REPO}.git\"\n\nif ! curl -sf \"${API}/repos/${OWNER}/${REPO}\" -H \"Authorization: token ${GITEA_TOKEN}\" >/dev/null; then\n  curl -sS -X POST \"${API}/user/repos\" \\\n    -H 'Content-Type: application/json' \\\n    -H \"Authorization: token ${GITEA_TOKEN}\" \\\n    -d \"{\\\"name\\\":\\\"${REPO}\\\",\\\"description\\\":\\\"${DESCRIPTION}\\\",\\\"private\\\":false,\\\"auto_init\\\":true}\"\nfi\n\nrm -rf \"/tmp/${REPO}\"\ngit clone \"${CLONE_URL}\" \"/tmp/${REPO}\"\ncd \"/tmp/${REPO}\"\ngit config user.email 'claude@agent.local'\ngit config user.name 'Claude Code Agent'\nif ! git rev-parse HEAD >/dev/null 2>&1; then\n  printf '# %s\\n' \"${REPO}\" > README.md\n  git add README.md\n  git commit -m 'Initial commit'\n  git push origin main\nfi\n\ngit remote -v\ngit log --oneline -3 || true\necho 'SETUP COMPLETE'",
+            "mode": "execute_direct",
+            "model": "{{trigger.model}}",
+            "tools": [
+              "Bash"
+            ],
+            "maxTurns": 6,
+            "timeoutMinutes": 5,
+            "agentConfig": {
+              "name": "claude-setup",
+              "instructions": "You are setting up a new Git repository. Use curl for API calls and git for repo operations.",
+              "tools": [
+                "Bash",
+                "Read",
+                "Write",
+                "Edit",
+                "Glob",
+                "Grep"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "claude_prompt_build": {
+          "call": "claude/run",
+          "with": {
+            "cwd": "/tmp/{{trigger.repo}}",
+            "model": "{{trigger.model}}",
+            "prompt": "Work only inside /tmp/{{trigger.repo}}. That directory is already a git clone of the target repository. Build the requested SvelteKit application from scratch in this repository based on the user prompt below.\n\nImportant execution rules:\n- Use Bash, Read, Write, Glob, and Grep only.\n- When you need to change a file, rewrite the whole file with Write instead of trying to patch it incrementally.\n- Start by replacing the default SvelteKit starter page at src/routes/+page.svelte. The final app must not contain the text \"Welcome to SvelteKit\" anywhere in src/routes/+page.svelte.\n- Build a standard npm-based SvelteKit app that runs with NODE_ENV=development npm install, npm run dev, npm run check, and npm run build.\n- Follow standard SvelteKit validation practice: make sure the project has a check script that runs `svelte-kit sync && svelte-check --fail-on-warnings`, then run that check before the build.\n- Use a current compatible SvelteKit toolchain. Do not invent arbitrary old version ranges. The project must include these devDependencies with compatible modern versions: @sveltejs/adapter-auto, @sveltejs/kit, @sveltejs/vite-plugin-svelte, svelte, vite, and svelte-check.\n- Include either jsconfig.json or tsconfig.json so svelte-check has a project config to use.\n- The app must include these exact stable browser demo hooks in src/routes/+page.svelte:\n  - data-demo=\"app-shell\" on the main application container\n  - data-demo=\"primary-action\" on one visible interactive control\n  - data-demo=\"demo-state\" on one visible region that reflects the result of the interaction\n- Clicking the primary action must visibly update the demo-state region.\n- Produce valid Svelte markup. Do not leave invalid table structure, invalid nesting, or compile warnings in the final app.\n- Before finishing, run concrete validation commands and confirm they passed.\n- Do NOT commit or push changes in this step.\n\nUser prompt:\n{{trigger.prompt}}\n\nDefinition of done:\n- src/routes/+page.svelte is no longer the default starter page\n- the repository contains a working SvelteKit app\n- package.json and source files are present\n- src/routes/+page.svelte includes the required data-demo hooks\n- validation commands were run successfully, including NODE_ENV=development npm install, npm run check, and npm run build\n- the final response states what was built and what commands you ran",
+            "mode": "execute_direct",
+            "tools": [
+              "Bash",
+              "Read",
+              "Write",
+              "Glob",
+              "Grep"
+            ],
+            "maxTurns": 24,
+            "timeoutMinutes": 45,
+            "agentConfig": {
+              "name": "claude-sandbox-prompt-build",
+              "instructions": "You are working inside an existing git clone at /tmp/{{trigger.repo}}. Replace the default starter page immediately, build the requested app, verify it, rewrite files directly instead of patching them incrementally, include the required data-demo hooks in src/routes/+page.svelte for browser capture, and stop after the application files are ready for a deterministic git finalize step.",
+              "tools": [
+                "Bash",
+                "Read",
+                "Write",
+                "Glob",
+                "Grep"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "claude_finalize_push": {
+          "call": "claude/run",
+          "with": {
+            "cwd": "/tmp/{{trigger.repo}}",
+            "model": "{{trigger.model}}",
+            "prompt": "Finalize the git repository in /tmp/{{trigger.repo}}.\n\nUse ONE Bash tool call only. Copy this script exactly and do not rename paths or commands:\n\nset -euo pipefail\ncd /tmp/{{trigger.repo}}\ngit status --short\n[ -f package.json ]\n[ -f src/routes/+page.svelte ]\n! rg -n 'Welcome to SvelteKit' src/routes/+page.svelte\nrg -n 'data-demo=\"app-shell\"|data-demo=\\\"app-shell\\\"' src/routes/+page.svelte\nrg -n 'data-demo=\"primary-action\"|data-demo=\\\"primary-action\\\"' src/routes/+page.svelte\nrg -n 'data-demo=\"demo-state\"|data-demo=\\\"demo-state\\\"' src/routes/+page.svelte\nnode <<'NODE'\nconst fs = require('fs');\nconst pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));\npkg.private = true;\npkg.type = 'module';\npkg.scripts = {\n  ...(pkg.scripts || {}),\n  dev: 'vite dev',\n  build: 'vite build',\n  preview: 'vite preview',\n  check: 'svelte-kit sync && svelte-check --fail-on-warnings'\n};\npkg.devDependencies = {\n  ...(pkg.devDependencies || {}),\n  '@sveltejs/adapter-auto': '^3.3.1',\n  '@sveltejs/kit': '^2.57.0',\n  '@sveltejs/vite-plugin-svelte': '^5.1.1',\n  'svelte': '^5.55.2',\n  'vite': '^6.4.2',\n  'svelte-check': '^4.3.1'\n};\nfs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\\n');\nif (!fs.existsSync('jsconfig.json') && !fs.existsSync('tsconfig.json')) {\n  fs.writeFileSync('jsconfig.json', JSON.stringify({\n    extends: './.svelte-kit/tsconfig.json',\n    compilerOptions: {\n      allowJs: true,\n      checkJs: true,\n      esModuleInterop: true,\n      forceConsistentCasingInFileNames: true,\n      moduleResolution: 'bundler',\n      resolveJsonModule: true,\n      skipLibCheck: true,\n      sourceMap: true,\n      strict: true\n    }\n  }, null, 2) + '\\n');\n}\nNODE\nrm -rf node_modules .svelte-kit\nNODE_ENV=development npm install --no-audit --no-fund --loglevel=warn\nnpm run check\nnpm run build\ngit add -A\ngit diff --cached --stat\nif git diff --cached --quiet; then\n  echo 'NO_CHANGES_TO_COMMIT'\n  exit 1\nfi\ngit commit -m 'feat: implement prompt-driven sveltekit app'\ngit push origin main\ngit rev-parse HEAD\ngit ls-remote --heads origin main\necho 'FINALIZE COMPLETE'\n\nDo not add any extra tool calls. Report the commit hash after the Bash command succeeds.",
+            "mode": "execute_direct",
+            "tools": [
+              "Bash"
+            ],
+            "maxTurns": 6,
+            "timeoutMinutes": 10,
+            "agentConfig": {
+              "name": "claude-finalize-push",
+              "instructions": "You are performing a deterministic git finalize step. Use exactly one Bash tool call, do not edit files, and do not improvise.",
+              "tools": [
+                "Bash"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "prompt-demo-capture",
+            "rootPath": "/sandbox",
+            "enabledTools": [
+              "Bash",
+              "Read",
+              "Write"
+            ],
+            "timeoutMs": 450000,
+            "commandTimeoutMs": 360000,
+            "sandboxTemplate": "openshell-browser"
+          }
+        }
+      },
+      {
+        "workspace_clone": {
+          "call": "workspace/clone",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "targetDir": "{{trigger.repo}}",
+            "repositoryUrl": "http://gitea-http.gitea.svc.cluster.local:3000/{{trigger.owner}}/{{trigger.repo}}.git",
+            "repositoryBranch": "main",
+            "repositoryUsername": "giteaadmin",
+            "repositoryToken": "89c4068bdf972389a23557227817bd99750ca225"
+          }
+        }
+      },
+      {
+        "browser_capture": {
+          "call": "browser/validate",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "repoPath": "{{workspace_clone.clonePath}}",
+            "installCommand": "rm -rf node_modules .svelte-kit && NODE_ENV=development npm install --no-audit --no-fund --loglevel=warn",
+            "baseUrl": "http://127.0.0.1:3009",
+            "steps": [
+              {
+                "id": "home",
+                "label": "Home",
+                "action": "visit",
+                "path": "/",
+                "goal": "Show the initial application shell.",
+                "waitForSelector": "[data-demo=\"app-shell\"]",
+                "pauseMs": 1800,
+                "fullPage": true
+              },
+              {
+                "id": "primary-action",
+                "label": "Primary Interaction",
+                "action": "click",
+                "selector": "[data-demo=\"primary-action\"]",
+                "goal": "Trigger the core interaction that demonstrates the app.",
+                "waitForSelector": "[data-demo=\"demo-state\"]",
+                "pauseMs": 1600,
+                "fullPage": false
+              },
+              {
+                "id": "demo-state",
+                "label": "Demo State",
+                "action": "scroll",
+                "selector": "[data-demo=\"demo-state\"]",
+                "goal": "Frame the updated UI state after the interaction.",
+                "pauseMs": 1600,
+                "fullPage": false
+              },
+              {
+                "id": "final",
+                "label": "Final Overview",
+                "action": "assert",
+                "waitForSelector": "[data-demo=\"app-shell\"]",
+                "goal": "Capture the final state of the application.",
+                "pauseMs": 1200,
+                "fullPage": true
+              }
+            ],
+            "captureVideo": true,
+            "captureTrace": false,
+            "viewportPreset": "desktop",
+            "captureMode": "demo",
+            "demoTitle": "{{trigger.repo}}",
+            "demoSummary": "{{trigger.prompt}}",
+            "renderAnnotatedVideo": false,
+            "renderCaptions": false,
+            "timeoutMs": 600000
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": { "x": 260, "y": 20 },
+      "data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "claude_setup",
+      "type": "call",
+      "position": { "x": 260, "y": 140 },
+      "data": { "label": "Setup Repo", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "claude_prompt_build",
+      "type": "call",
+      "position": { "x": 260, "y": 300 },
+      "data": { "label": "Claude Build", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "claude_finalize_push",
+      "type": "call",
+      "position": { "x": 260, "y": 460 },
+      "data": { "label": "Finalize Commit And Push", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": { "x": 260, "y": 620 },
+      "data": { "label": "Browser Workspace", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "workspace_clone",
+      "type": "call",
+      "position": { "x": 260, "y": 780 },
+      "data": { "label": "Clone For Capture", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "browser_capture",
+      "type": "call",
+      "position": { "x": 260, "y": 940 },
+      "data": { "label": "Capture Demo", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": { "x": 260, "y": 1100 },
+      "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "e-start-setup", "source": "start", "target": "claude_setup", "type": "default" },
+    { "id": "e-setup-claude", "source": "claude_setup", "target": "claude_prompt_build", "type": "default" },
+    { "id": "e-claude-finalize", "source": "claude_prompt_build", "target": "claude_finalize_push", "type": "default" },
+    { "id": "e-finalize-workspace", "source": "claude_finalize_push", "target": "workspace_profile", "type": "default" },
+    { "id": "e-workspace-clone", "source": "workspace_profile", "target": "workspace_clone", "type": "default" },
+    { "id": "e-clone-capture", "source": "workspace_clone", "target": "browser_capture", "type": "default" },
+    { "id": "e-capture-end", "source": "browser_capture", "target": "end", "type": "default" }
+  ]
+}

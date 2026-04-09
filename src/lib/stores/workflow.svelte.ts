@@ -4,6 +4,11 @@ import {
   type HistorySnapshot,
 } from "./history-store.svelte";
 import { normalizeAgentTaskConfig } from "$lib/types/agent-graph";
+import {
+  createLayoutConfig,
+  DEFAULT_LAYOUT_CONFIG,
+  type WorkflowLayoutConfig,
+} from "$lib/utils/layout";
 
 // CNCF Serverless Workflow 1.0 node types (SW 1.0 only)
 export type WorkflowNodeType =
@@ -141,11 +146,15 @@ export function createWorkflowStore() {
   // Execution state
   let currentRunningNodeId = $state<string | null>(null);
   let selectedExecutionId = $state<string | null>(null);
+  let executionFollowMode = $state(true);
+  let executionFollowSuppressUntil = $state(0);
 
   // UI state
   let activeConfigTab = $state("runs");
   let showMinimap = $state(true);
   let showRunsPanel = $state(true);
+  let layoutConfig = $state<WorkflowLayoutConfig>(createLayoutConfig());
+  let layoutConfigTouched = $state(false);
 
   // History integration
   const history = createHistoryStore();
@@ -313,6 +322,23 @@ export function createWorkflowStore() {
     edges = edges.filter((e) => e.id !== id);
   }
 
+  function setLayoutConfig(
+    next: Partial<WorkflowLayoutConfig>,
+    options: { touched?: boolean } = {},
+  ) {
+    layoutConfig = createLayoutConfig(next, layoutConfig);
+    if (options.touched ?? true) {
+      layoutConfigTouched = true;
+    }
+  }
+
+  function resetLayoutConfig(options: { touched?: boolean } = {}) {
+    layoutConfig = createLayoutConfig({}, DEFAULT_LAYOUT_CONFIG);
+    if (options.touched ?? true) {
+      layoutConfigTouched = true;
+    }
+  }
+
   function insertNodeOnEdge(
     edgeId: string,
     nodeType: WorkflowNodeType,
@@ -368,6 +394,10 @@ export function createWorkflowStore() {
     workflowId = id;
     workflowName = name;
     spec = loadedSpec || null;
+    layoutConfig = createLayoutConfig({}, DEFAULT_LAYOUT_CONFIG);
+    layoutConfigTouched = false;
+    executionFollowMode = true;
+    executionFollowSuppressUntil = 0;
 
     // Load nodes/edges (will be rebuilt from spec if available)
     nodes = loadedNodes;
@@ -517,6 +547,8 @@ export function createWorkflowStore() {
     edges = [];
     selectedNodeId = null;
     selectedEdgeId = null;
+    layoutConfig = createLayoutConfig({}, DEFAULT_LAYOUT_CONFIG);
+    layoutConfigTouched = false;
   }
 
   return {
@@ -605,6 +637,18 @@ export function createWorkflowStore() {
     set selectedExecutionId(v) {
       selectedExecutionId = v;
     },
+    get executionFollowMode() {
+      return executionFollowMode;
+    },
+    set executionFollowMode(v) {
+      executionFollowMode = v;
+    },
+    get executionFollowSuppressUntil() {
+      return executionFollowSuppressUntil;
+    },
+    set executionFollowSuppressUntil(v) {
+      executionFollowSuppressUntil = v;
+    },
 
     // UI
     get activeConfigTab() {
@@ -624,6 +668,16 @@ export function createWorkflowStore() {
     },
     set showRunsPanel(v) {
       showRunsPanel = v;
+    },
+    get layoutConfig() {
+      return layoutConfig;
+    },
+    set layoutConfig(v) {
+      layoutConfig = createLayoutConfig(v, layoutConfig);
+      layoutConfigTouched = true;
+    },
+    get layoutConfigTouched() {
+      return layoutConfigTouched;
     },
 
     // Derived
@@ -654,6 +708,8 @@ export function createWorkflowStore() {
     updateNodeStatus,
     addEdge,
     removeEdge,
+    setLayoutConfig,
+    resetLayoutConfig,
     insertNodeOnEdge,
     getSelectedNodes,
     getSelectedEdges,

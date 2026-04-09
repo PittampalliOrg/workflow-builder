@@ -5,14 +5,18 @@
 	import CollapsibleSection from './collapsible-section.svelte';
 
 	interface StepLog {
+		logId?: string;
 		stepName: string;
 		label: string;
+		displayLabel?: string;
 		actionType: string;
 		status: string;
 		input: unknown;
 		output: unknown;
 		error: string | null;
 		durationMs: number | null;
+		attempt?: number;
+		attemptsTotal?: number;
 	}
 
 	interface Props {
@@ -89,7 +93,7 @@
 				>
 					<svelte:component this={isExpanded ? ChevronDown : ChevronRight} size={12} class="shrink-0 text-muted-foreground" />
 					<span class="flex-1 truncate text-xs font-medium group-hover:text-foreground">
-						{step.label || step.stepName}
+						{step.displayLabel || step.label || step.stepName}
 					</span>
 					{#if step.durationMs !== null}
 						<span class="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">

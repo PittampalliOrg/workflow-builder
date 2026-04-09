@@ -17,6 +17,7 @@ import { eq } from 'drizzle-orm';
 import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
 import { buildBuildPrompt, buildFixPrompt } from '$lib/server/ai-assistant/build-prompt';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
+import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 // Tools available for future ReAct-style planning (not yet wired to generateText)
 // import { createWorkflowTools } from '$lib/server/ai-assistant/tools';
 
@@ -157,7 +158,10 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 						})
 						.where(eq(workflows.id, workflowId));
 
-					const missingTriggerFields = getMissingRequiredTriggerFields(spec, {});
+					const missingTriggerFields = getMissingRequiredTriggerFields(
+						spec,
+						applyWorkflowInputDefaults(spec, {})
+					);
 					if (missingTriggerFields.length > 0) {
 						const message = `Generated workflow requires trigger inputs before execution: ${missingTriggerFields.join(', ')}`;
 						emit('status', { phase: 'error', message });

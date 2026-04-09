@@ -47,6 +47,9 @@ importers:
       '@serverlessworkflow/sdk':
         specifier: ^1.0.1
         version: 1.0.1
+      '@tanstack/svelte-table':
+        specifier: 9.0.0-alpha.32
+        version: 9.0.0-alpha.32(svelte@5.55.1)
       '@xyflow/svelte':
         specifier: ^1.5.2
         version: 1.5.2(svelte@5.55.1)
@@ -1791,6 +1794,24 @@ packages:
     resolution: {integrity: sha512-mEiF5HO1QqCLXoNEfXVA1Tzo+cYsrqV7w9Juj2wdUFyW07JRenqMG225MvPwr3ZD9N1bFQj46X7r33iHxLUW0w==}
     peerDependencies:
       vite: ^5.2.0 || ^6 || ^7 || ^8
+
+  '@tanstack/store@0.9.3':
+    resolution: {integrity: sha512-8reSzl/qGWGGVKhBoxXPMWzATSbZLZFWhwBAFO9NAyp0TxzfBP0mIrGb8CP8KrQTmvzXlR/vFPPUrHTLBGyFyw==}
+
+  '@tanstack/svelte-store@0.10.3':
+    resolution: {integrity: sha512-9gM4mc+a42PQtydeFvq+BYqO1NYp85YocKFybV1mis9kCg8XbpwVfwbTkiiKDPdtnSMCc5nUqzcxmvvNJAVF8A==}
+    peerDependencies:
+      svelte: ^5.0.0
+
+  '@tanstack/svelte-table@9.0.0-alpha.32':
+    resolution: {integrity: sha512-4PI05eNCS/wmaIFJpJvbJ1MAPnpi5RD1ClRcVDsEdpKtQ1zBocdrlFHt/97/mCBmhdHubu9yhFg9V6lv2OlrqQ==}
+    engines: {node: '>=16'}
+    peerDependencies:
+      svelte: ^5.0.0
+
+  '@tanstack/table-core@9.0.0-alpha.32':
+    resolution: {integrity: sha512-Ah2PomRoRjrV7f3zQDUJ5Cp6oy5yxTpLGJkpS3dSOyFN7ldAQUeY0BUTCo8mY2OOrkHIjKmlIoDRH12LFv99vw==}
+    engines: {node: '>=16'}
 
   '@types/aws-lambda@8.10.161':
     resolution: {integrity: sha512-rUYdp+MQwSFocxIOcSsYSF3YYYC/uUpMbCY/mbO21vGqfrEYvNSoPyKYDj6RhXXpPfS0KstW9RwG3qXh9sL7FQ==}
@@ -4662,6 +4683,23 @@ snapshots:
       '@tailwindcss/oxide': 4.2.2
       tailwindcss: 4.2.2
       vite: 7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
+
+  '@tanstack/store@0.9.3': {}
+
+  '@tanstack/svelte-store@0.10.3(svelte@5.55.1)':
+    dependencies:
+      '@tanstack/store': 0.9.3
+      svelte: 5.55.1
+
+  '@tanstack/svelte-table@9.0.0-alpha.32(svelte@5.55.1)':
+    dependencies:
+      '@tanstack/svelte-store': 0.10.3(svelte@5.55.1)
+      '@tanstack/table-core': 9.0.0-alpha.32
+      svelte: 5.55.1
+
+  '@tanstack/table-core@9.0.0-alpha.32':
+    dependencies:
+      '@tanstack/store': 0.9.3
 
   '@types/aws-lambda@8.10.161': {}
 

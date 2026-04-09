@@ -15,6 +15,9 @@ WL_NS="workflow-builder"
 TAILSCALE_INGRESS_NAME="workflow-builder-tailscale"
 TAILSCALE_HOST_FALLBACK="workflow-builder-ryzen.tail286401.ts.net"
 WORKFLOW_BUILDER_SERVICE="workflow-builder"
+WORKFLOW_BUILDER_SELECTOR='app=workflow-builder,devspace.sh/replaced=true'
+ARGO_NS="argocd"
+started_dev_session=0
 
 args=("$@")
 profile="$DEFAULT_PROFILE"
@@ -29,19 +32,59 @@ if [[ " ${args[*]} " != *" --profile "* ]] && [[ " ${args[*]} " != *" -p "* ]]; 
 fi
 
 # Guard: if replacement deployments already exist, session is running
+cleanup_workflow_builder_devspace_state() {
+  kubectl delete deployment -n "$WL_NS" -l "$WORKFLOW_BUILDER_SELECTOR" --ignore-not-found --wait=true >/dev/null 2>&1 || true
+  kubectl delete replicaset -n "$WL_NS" -l "$WORKFLOW_BUILDER_SELECTOR" --ignore-not-found >/dev/null 2>&1 || true
+  kubectl delete pod -n "$WL_NS" -l "$WORKFLOW_BUILDER_SELECTOR" --ignore-not-found >/dev/null 2>&1 || true
+  for _ in $(seq 1 15); do
+    if ! kubectl get deployment -n "$WL_NS" -l "$WORKFLOW_BUILDER_SELECTOR" -o name 2>/dev/null | grep -q .; then
+      break
+    fi
+    sleep 1
+  done
+  kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
+    --namespace "$WL_NS" \
+    --type=merge \
+    -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"false"}}}' \
+    >/dev/null 2>&1 || true
+  kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" --replicas=1 >/dev/null 2>&1 || true
+}
+
+restore_workflow_builder_prod_state() {
+  kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
+    --namespace "$WL_NS" \
+    --type=merge \
+    -p='{"spec":{"selector":{"app":"workflow-builder","traffic":"prod","devspace.sh/replaced":"false"}}}' \
+    >/dev/null 2>&1 || true
+  kubectl scale deployment "$WORKFLOW_BUILDER_SERVICE" --namespace "$WL_NS" --replicas=1 >/dev/null 2>&1 || true
+  cleanup_workflow_builder_devspace_state
+  kubectl annotate application "$WORKFLOW_BUILDER_SERVICE" \
+    --namespace "$ARGO_NS" \
+    "argocd.argoproj.io/skip-reconcile-" >/dev/null 2>&1 || true
+  kubectl annotate application "$WORKFLOW_BUILDER_SERVICE" \
+    --namespace "$ARGO_NS" \
+    "argocd.argoproj.io/refresh=hard" --overwrite >/dev/null 2>&1 || true
+}
+
+cleanup_on_exit() {
+  if [[ "$started_dev_session" -eq 1 ]]; then
+    printf '\n==> Restoring workflow-builder cluster state\n'
+    restore_workflow_builder_prod_state
+  fi
+}
+
+trap cleanup_on_exit EXIT INT TERM
+
 if kubectl get deployment -n "$WL_NS" -l devspace.sh/replaced=true -o name 2>/dev/null | grep -q .; then
   selector_replaced="$(
     kubectl get service "$WORKFLOW_BUILDER_SERVICE" -n "$WL_NS" \
       -o jsonpath='{.spec.selector.devspace\.sh/replaced}' 2>/dev/null || true
   )"
-  if [[ "$selector_replaced" != "true" ]]; then
-    printf '==> Repairing workflow-builder service selector to target the active DevSpace pod.\n'
-    kubectl patch service "$WORKFLOW_BUILDER_SERVICE" \
-      --namespace "$WL_NS" \
-      --type=json \
-      -p='[{"op":"replace","path":"/spec/selector/devspace.sh~1replaced","value":"true"}]' \
-      >/dev/null 2>&1 || true
-  fi
+  prod_replicas="$(
+    kubectl get deployment "$WORKFLOW_BUILDER_SERVICE" -n "$WL_NS" \
+      -o jsonpath='{.spec.replicas}' 2>/dev/null || true
+  )"
+  prod_replicas="${prod_replicas:-1}"
 
   stale_session=0
   while IFS= read -r line; do
@@ -56,12 +99,18 @@ if kubectl get deployment -n "$WL_NS" -l devspace.sh/replaced=true -o name 2>/de
       -o jsonpath='{range .items[*]}{.status.readyReplicas}/{.status.replicas}{"\n"}{end}' 2>/dev/null
   )
 
+  # A valid active session must own traffic and have the prod deployment scaled down.
+  if [[ "$selector_replaced" != "true" || "$prod_replicas" != "0" ]]; then
+    stale_session=1
+  fi
+
   if [[ "$stale_session" -eq 1 ]]; then
-    printf '==> Found degraded DevSpace replacement deployments. Purging stale session first.\n'
-    (cd "$PROJECT_ROOT" && devspace purge --force-purge --profile "$profile") || true
+    printf '==> Found stale or partial DevSpace state. Cleaning it before starting a fresh session.\n'
+    cleanup_workflow_builder_devspace_state
   else
-    printf '==> DevSpace session already active. Use devspace enter/attach/logs.\n'
-    exit 0
+    printf '==> DevSpace session already active. Attaching to the running dev container.\n'
+    cd "$PROJECT_ROOT"
+    exec devspace enter --profile "$profile"
   fi
 fi
 
@@ -100,4 +149,5 @@ probe_tailscale_url() {
 
 cd "$PROJECT_ROOT"
 probe_tailscale_url &
-exec devspace dev "${args[@]}"
+started_dev_session=1
+devspace dev "${args[@]}"

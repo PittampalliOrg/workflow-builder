@@ -12,6 +12,7 @@
 	import { useSvelteFlow, useNodesInitialized } from '@xyflow/svelte';
 	import { getContext, onMount } from 'svelte';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
+	import { getWorkflowNodeBounds } from '$lib/utils/layout';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const { fitView, setCenter, getNodes } = useSvelteFlow();
@@ -32,16 +33,10 @@
 	function smartInitialView() {
 		const nodes = store.nodes;
 		if (nodes.length === 0) return;
+		const bounds = getWorkflowNodeBounds(nodes);
+		if (!bounds) return;
 
-		// Calculate workflow bounds
-		const positions = nodes.map((n) => n.position);
-		const minX = Math.min(...positions.map((p) => p.x));
-		const maxX = Math.max(...positions.map((p) => p.x));
-		const minY = Math.min(...positions.map((p) => p.y));
-		const maxY = Math.max(...positions.map((p) => p.y));
-		const width = maxX - minX;
-		const height = maxY - minY || 1;
-		const aspectRatio = width / height;
+		const aspectRatio = bounds.width / bounds.height;
 
 		// Small workflows: fit all nodes comfortably
 		if (nodes.length <= SMALL_WORKFLOW_THRESHOLD && aspectRatio <= MAX_FIT_ASPECT_RATIO) {
@@ -55,20 +50,17 @@
 		}
 
 		// Large or wide workflows: center on start node at comfortable zoom
-		const startNode = nodes.find(
-			(n) => n.type === 'start' || n.id === '__start__'
-		);
-		const targetNode = startNode || nodes[0];
+		const direction = store.layoutConfig.direction;
+		const focusX =
+			direction === 'TB'
+				? bounds.minX + bounds.width * 0.42
+				: bounds.centerX;
+		const focusY =
+			direction === 'TB'
+				? bounds.centerY
+				: bounds.minY + bounds.height * 0.42;
 
-		// Center on the target node with comfortable zoom
-		// Offset slightly right and down so the start node is in the upper-left quadrant
-		const nodeWidth = 180; // approximate node width
-		const nodeHeight = 60;
-		setCenter(
-			targetNode.position.x + nodeWidth / 2 + 100,
-			targetNode.position.y + nodeHeight / 2 + 50,
-			{ zoom: COMFORTABLE_ZOOM, duration: 0 }
-		);
+		setCenter(focusX, focusY, { zoom: COMFORTABLE_ZOOM, duration: 0 });
 	}
 
 	// Auto-position when nodes are first initialized

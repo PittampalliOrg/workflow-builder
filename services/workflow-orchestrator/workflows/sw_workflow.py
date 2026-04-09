@@ -298,6 +298,51 @@ def _store_task_output(
     }
 
 
+def _call_task_uses_direct_node_logging(
+    task_data: dict[str, Any],
+    workflow: Workflow,
+) -> bool:
+    _ = task_data, workflow
+    # All call-task execution paths already persist their own node logs:
+    # - function-router single-shot actions
+    # - tracked agent child workflows
+    return False
+
+
+def _run_task_uses_direct_node_logging(task_data: dict[str, Any]) -> bool:
+    run_config = task_data.get("run", {})
+    if not isinstance(run_config, dict):
+        return True
+
+    if "workflow" in run_config:
+        wf_config = run_config.get("workflow", {})
+        child_input = (
+            wf_config.get("input", {}) if isinstance(wf_config, dict) else {}
+        )
+        agent_action_type = (
+            child_input.get("actionType", "")
+            if isinstance(child_input, dict)
+            else ""
+        )
+        # Agent child workflow paths persist their own node logs.
+        return agent_action_type not in _AGENT_ACTION_TYPES
+
+    # Shell/script/container runs go through function-router, which already logs them.
+    return False
+
+
+def _should_log_task_directly(
+    task_type: TaskType,
+    task_data: dict[str, Any],
+    workflow: Workflow,
+) -> bool:
+    if task_type == TaskType.CALL:
+        return _call_task_uses_direct_node_logging(task_data, workflow)
+    if task_type == TaskType.RUN:
+        return _run_task_uses_direct_node_logging(task_data)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Task execution context
 # ---------------------------------------------------------------------------
@@ -1660,6 +1705,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
 
         while task_index < total_tasks:
             task_name, task_data = tasks[task_index]
+            task_type = get_task_type(task_data)
 
             # Update status (field names match legacy WorkflowCustomStatus for UI compat)
             ctx.set_custom_status(json.dumps({
@@ -1674,8 +1720,8 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
             # Log task start
             log_id = None
             task_start_ms = _now_ms(ctx)
-            if db_execution_id:
-                task_type = get_task_type(task_data)
+            should_log_directly = _should_log_task_directly(task_type, task_data, workflow)
+            if db_execution_id and should_log_directly:
                 start_result = yield ctx.call_activity(
                     log_node_start,
                     input=_freeze({
@@ -1691,8 +1737,23 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 log_id = start_result.get("logId")
 
             # Dispatch the task
-            task_type = get_task_type(task_data)
-            result = yield from _dispatch_task(ctx, task_name, task_data, tc)
+            try:
+                result = yield from _dispatch_task(ctx, task_name, task_data, tc)
+            except Exception as task_err:
+                if db_execution_id and log_id:
+                    task_duration_ms = _elapsed_ms(ctx, task_start_ms)
+                    yield ctx.call_activity(
+                        log_node_complete,
+                        input=_freeze({
+                            "logId": log_id,
+                            "status": "error",
+                            "output": None,
+                            "error": str(task_err),
+                            "durationMs": task_duration_ms,
+                            "_otel": tc.otel_ctx,
+                        }),
+                    )
+                raise
 
             # Log task completion
             if db_execution_id and log_id:
