@@ -61,6 +61,8 @@ class OrchestratorConfig:
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
+    CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
+    CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
 
     # Workflow versioning and runtime controls (Dapr 1.17+)
     DYNAMIC_WORKFLOW_VERSION: str = "v1"
@@ -109,6 +111,8 @@ class OrchestratorConfig:
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
+                "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
+                "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -190,6 +194,14 @@ class OrchestratorConfig:
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "durableRunWorkflowV1",
+            ),
+            "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
+                "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
+                "true",
+            ),
+            "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "claudeCodeRunWorkflowV1",
             ),
             "DYNAMIC_WORKFLOW_VERSION": (
                 "DYNAMIC_WORKFLOW_VERSION",

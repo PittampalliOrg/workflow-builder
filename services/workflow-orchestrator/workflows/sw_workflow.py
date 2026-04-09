@@ -504,10 +504,22 @@ _AGENT_ACTION_TYPES = {
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
 }
-_NATIVE_DURABLE_AGENT_ACTION_TYPES = {
-    "openshell/run",
+_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"openshell/run"}
+if str(config.CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW).lower() == "true":
+    _NATIVE_DURABLE_AGENT_ACTION_TYPES.add("claude/run")
+
+_NATIVE_DURABLE_AGENT_TARGETS = {
+    "openshell/run": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.DURABLE_AGENT_APP_ID,
+        "instance_prefix": "durable-agent",
+    },
+    "claude/run": {
+        "workflow_name": config.CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.CLAUDE_AGENT_APP_ID,
+        "instance_prefix": "claude",
+    },
 }
-_NATIVE_DURABLE_AGENT_WORKFLOW_NAME = "openshellRunWorkflowV1"
 
 
 def _parse_optional_int(value: Any) -> int | None:
@@ -642,6 +654,10 @@ def _run_native_durable_agent_child_workflow(
     resolved_args: dict[str, Any],
     tc: "TaskContext",
 ):
+    target = _NATIVE_DURABLE_AGENT_TARGETS.get(action_type)
+    if not target:
+        raise RuntimeError(f"No native child workflow target configured for {action_type}")
+
     flattened_args = dict(resolved_args or {})
     body_args = flattened_args.get("body")
     if isinstance(body_args, dict):
@@ -661,7 +677,7 @@ def _run_native_durable_agent_child_workflow(
 
     child_execution_index = _next_task_execution_count(tc, task_name)
     child_instance_id = (
-        f"{ctx.instance_id}__durable-agent__{task_name}__run__{child_execution_index}"
+        f"{ctx.instance_id}__{target['instance_prefix']}__{task_name}__run__{child_execution_index}"
     )
 
     timeout_minutes = max(
@@ -719,11 +735,14 @@ def _run_native_durable_agent_child_workflow(
     child_input = {
         "task": run_prompt,
         "prompt": prompt,
-        "workflow_instance_id": ctx.instance_id,
+        "workflow_instance_id": child_instance_id,
         "parentExecutionId": ctx.instance_id,
         "executionId": tc.db_execution_id or tc.execution_id,
+        "workflowExecutionId": tc.db_execution_id or tc.execution_id,
         "workflowId": tc.workflow_id,
         "nodeId": task_name,
+        "nodeName": task_name,
+        "agentRunId": child_instance_id,
         "workspaceRef": flattened_args.get("workspaceRef"),
         "stopCondition": stop_condition or None,
         "cwd": cwd,
@@ -797,15 +816,21 @@ def _run_native_durable_agent_child_workflow(
             )
 
     child_result = yield ctx.call_child_workflow(
-        _NATIVE_DURABLE_AGENT_WORKFLOW_NAME,
+        target["workflow_name"],
         input=_freeze(child_input),
         instance_id=child_instance_id,
-        app_id=config.DURABLE_AGENT_APP_ID,
+        app_id=target["app_id"],
     )
 
     child_result = (
         child_result if isinstance(child_result, dict) else {"content": str(child_result)}
     )
+    child_result.setdefault("agentWorkflowId", child_instance_id)
+    child_result.setdefault("daprInstanceId", child_instance_id)
+    child_result.setdefault("childWorkflowName", target["workflow_name"])
+    child_result.setdefault("childAppId", target["app_id"])
+    if "success" not in child_result:
+        child_result["success"] = not bool(child_result.get("error"))
     success = bool(child_result.get("success", True))
     if tc.db_execution_id:
         try:
