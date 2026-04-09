@@ -60,8 +60,6 @@ export const POST: RequestHandler = async ({ params, request }) => {
 			message: errorBody.error ?? errorBody.message ?? 'Failed to terminate execution'
 		});
 	}
-
-	const result = await response.json();
 	const completedAt = new Date();
 
 	await db
@@ -88,8 +86,8 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		);
 
 	return json({
-		success: result.success ?? true,
+		success: true,
 		executionId,
-		instanceId: result.instanceId ?? instanceId
+		instanceId
 	});
 };
