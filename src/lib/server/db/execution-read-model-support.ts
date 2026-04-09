@@ -31,12 +31,13 @@ export async function assertExecutionReadModelColumns(): Promise<void> {
 
 	if (!cachedAssertion) {
 		cachedAssertion = (async () => {
+			const expectedColumns = EXECUTION_READ_MODEL_COLUMNS.map((column) => sql`${column}`);
 			const rows = await sql<{ column_name: string }[]>`
 				select column_name
 				from information_schema.columns
 				where table_schema = 'public'
 					and table_name = 'workflow_executions'
-					and column_name = any(${sql.array([...EXECUTION_READ_MODEL_COLUMNS])})
+					and column_name in (${sql.join(expectedColumns, sql`, `)})
 			`;
 
 			const existing = new Set(rows.map((row) => row.column_name));
