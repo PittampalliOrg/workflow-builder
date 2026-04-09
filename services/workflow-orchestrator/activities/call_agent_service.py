@@ -511,13 +511,32 @@ def terminate_durable_runs_by_parent_execution(
         "reason": reason or "terminated due to parent workflow termination",
         "cleanupWorkspace": cleanup_workspace,
     }
-    return _dapr_invoke_or_raise(
-        DURABLE_AGENT_APP_ID,
-        "api/runs/terminate-by-parent",
-        payload,
-        timeout=20,
-        service_label="Durable run parent termination",
-    )
+    try:
+        return _dapr_invoke_or_raise(
+            DURABLE_AGENT_APP_ID,
+            "api/runs/terminate-by-parent",
+            payload,
+            timeout=20,
+            service_label="Durable run parent termination",
+        )
+    except Exception as exc:
+        message = str(exc)
+        if (
+            "failed to resolve address" in message
+            or "name resolver error" in message
+            or "connection refused" in message.lower()
+        ):
+            logger.info(
+                "[Call Durable Agent Run] Skipping parent durable-run termination "
+                "because durable-agent is unavailable: %s",
+                message,
+            )
+            return {
+                "success": True,
+                "skipped": True,
+                "reason": "durable-agent unavailable",
+            }
+        raise
 
 
 def call_durable_agent_run(ctx, input_data: dict) -> dict:
