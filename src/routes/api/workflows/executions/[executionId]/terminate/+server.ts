@@ -79,7 +79,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	await db
 		.update(workflowAgentRuns)
 		.set({
-			status: 'cancelled',
+			status: 'failed',
 			completedAt,
 			updatedAt: completedAt,
 			error: reason ?? 'Execution terminated by user'

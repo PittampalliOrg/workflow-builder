@@ -29,6 +29,7 @@ function snapshotKey(model: ExecutionReadModel) {
 		completedAt: model.completedAt,
 		nodeStatuses: model.nodeStatuses,
 		steps: model.steps,
+		agentRuns: model.agentRuns,
 		browserArtifacts: model.browserArtifacts,
 		output: model.output,
 		summaryOutput: model.summaryOutput

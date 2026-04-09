@@ -48,8 +48,9 @@
 	import ExecutionHeader from '$lib/components/workflow/execution/execution-header.svelte';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
+	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
-	import type { ExecutionTimelineEvent } from '$lib/types/execution-stream';
+	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
@@ -172,12 +173,23 @@
 	const browserArtifacts = $derived(
 		(snapshot?.browserArtifacts as BrowserArtifact[] | undefined) ?? []
 	);
+	const agentRuns = $derived(
+		(snapshot?.agentRuns as ExecutionAgentRun[] | undefined) ?? []
+	);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
 	const isLoadingLogs = $derived(isLoadingStatus);
 	const isLoadingBrowserArtifacts = $derived(isLoadingStatus);
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
+	);
+	let selectedAgentRunId = $state<string | null>(null);
+	const selectedAgentRun = $derived.by(
+		() =>
+			agentRuns.find((run) => run.id === selectedAgentRunId) ??
+			agentRuns.find((run) => run.status === 'running') ??
+			agentRuns[0] ??
+			null
 	);
 
 	const nodeTypes: NodeTypes = {
@@ -266,6 +278,12 @@
 	$effect(() => {
 		if (executionState.events.length && timelineRef) {
 			timelineRef.scrollTop = timelineRef.scrollHeight;
+		}
+	});
+
+	$effect(() => {
+		if (!selectedAgentRunId && selectedAgentRun) {
+			selectedAgentRunId = selectedAgentRun.id;
 		}
 	});
 
@@ -496,6 +514,14 @@
 			previewActionPending = false;
 		}
 	}
+
+	function openAgentRunForNode(nodeId: string | null | undefined) {
+		if (!nodeId) return;
+		const match = agentRuns.find((run) => run.nodeId === nodeId);
+		if (!match) return;
+		selectedAgentRunId = match.id;
+		activeTab = 'agents';
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -544,6 +570,7 @@
 				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
+				<TabsTrigger value="agents">Agents</TabsTrigger>
 				<TabsTrigger value="browser">Browser</TabsTrigger>
 				<TabsTrigger value="trace">Trace</TabsTrigger>
 			</TabsList>
@@ -753,6 +780,7 @@
 					fitView
 					minZoom={0.1}
 					maxZoom={4}
+					onnodeclick={({ node }) => openAgentRunForNode(node.id)}
 				>
 					<ExecutionCanvasSync
 						snapshot={snapshot}
@@ -766,6 +794,19 @@
 					<Background variant={BackgroundVariant.Dots} gap={16} size={1} />
 				</SvelteFlow>
 			{/if}
+		</TabsContent>
+
+		<TabsContent value="agents" class="flex-1 overflow-hidden p-4">
+			<div class="mx-auto h-full max-w-7xl">
+				<AgentRunExplorer
+					{agentRuns}
+					agentEvents={executionState.events}
+					selectedRunId={selectedAgentRunId}
+					onSelectRun={(runId) => {
+						selectedAgentRunId = runId;
+					}}
+				/>
+			</div>
 		</TabsContent>
 
 		<!-- Tab 5: Browser -->

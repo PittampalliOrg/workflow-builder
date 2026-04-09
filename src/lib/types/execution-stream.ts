@@ -3,6 +3,29 @@ export interface ExecutionTimelineEvent {
 	type: string;
 	data: Record<string, unknown>;
 	timestamp: string;
+	workflowAgentRunId?: string | null;
+	daprInstanceId?: string | null;
+	phase?: string | null;
+	toolName?: string | null;
+}
+
+export interface ExecutionAgentRun {
+	id: string;
+	workflowExecutionId: string;
+	workflowId: string;
+	nodeId: string;
+	mode: 'run' | 'plan' | 'execute_plan';
+	status: 'scheduled' | 'running' | 'completed' | 'failed' | 'event_published';
+	agentWorkflowId: string;
+	daprInstanceId: string;
+	parentExecutionId: string;
+	workspaceRef: string | null;
+	artifactRef: string | null;
+	result: Record<string, unknown> | null;
+	error: string | null;
+	createdAt: string | null;
+	updatedAt: string | null;
+	completedAt: string | null;
 }
 
 export interface ExecutionStepLog {
@@ -44,6 +67,7 @@ export interface ExecutionReadModel {
 	nodeStatuses: Record<string, string>;
 	steps: ExecutionStepLog[];
 	browserArtifacts: Array<Record<string, unknown>>;
+	agentRuns: ExecutionAgentRun[];
 	agentEvents: ExecutionTimelineEvent[];
 	lastAgentEventId: number;
 }

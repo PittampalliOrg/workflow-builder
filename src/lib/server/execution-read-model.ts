@@ -3,6 +3,7 @@ import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
 import {
 	workflowAgentEvents,
+	workflowAgentRuns,
 	workflowExecutionLogs,
 	workflowExecutions
 } from '$lib/server/db/schema';
@@ -146,8 +147,40 @@ function mapAgentEvent(row: typeof workflowAgentEvents.$inferSelect): ExecutionT
 		id: row.eventId,
 		type: normalizeEventType(row.eventType),
 		data,
-		timestamp
+		timestamp,
+		workflowAgentRunId: row.workflowAgentRunId,
+		daprInstanceId: row.daprInstanceId,
+		phase: row.phase,
+		toolName: row.toolName
 	};
+}
+
+async function readExecutionAgentRuns(executionId: string): Promise<ExecutionReadModel['agentRuns']> {
+	if (!db) return [];
+	const rows = await db
+		.select()
+		.from(workflowAgentRuns)
+		.where(eq(workflowAgentRuns.workflowExecutionId, executionId))
+		.orderBy(asc(workflowAgentRuns.createdAt));
+
+	return rows.map((row) => ({
+		id: row.id,
+		workflowExecutionId: row.workflowExecutionId,
+		workflowId: row.workflowId,
+		nodeId: row.nodeId,
+		mode: row.mode,
+		status: row.status,
+		agentWorkflowId: row.agentWorkflowId,
+		daprInstanceId: row.daprInstanceId,
+		parentExecutionId: row.parentExecutionId,
+		workspaceRef: row.workspaceRef ?? null,
+		artifactRef: row.artifactRef ?? null,
+		result: (row.result as Record<string, unknown> | null) ?? null,
+		error: row.error ?? null,
+		createdAt: toIso(row.createdAt),
+		updatedAt: toIso(row.updatedAt),
+		completedAt: toIso(row.completedAt)
+	}));
 }
 
 export async function listExecutionAgentEvents(
@@ -343,6 +376,7 @@ export function serializeExecutionReadModel(
 		...model,
 		output: shouldCompact ? model.summaryOutput ?? null : model.output,
 		steps: shouldCompact ? model.steps.map((step) => compactStepLog(step)) : model.steps,
+		agentRuns: model.agentRuns,
 		agentEvents: includeAgentEvents ? model.agentEvents : []
 	};
 }
@@ -446,9 +480,10 @@ export async function loadExecutionReadModel(
 		execution = (await readExecutionRow(executionId)) ?? execution;
 	}
 
-	const [steps, browserArtifacts, agentEvents, traceIds] = await Promise.all([
+	const [steps, browserArtifacts, agentRuns, agentEvents, traceIds] = await Promise.all([
 		readExecutionSteps(executionId),
 		listBrowserArtifactsByExecutionId(executionId),
+		readExecutionAgentRuns(executionId),
 		options?.includeAgentEvents === false ? Promise.resolve([]) : fetchRecentAgentEvents(executionId),
 		readTraceIds(execution)
 	]);
@@ -487,6 +522,7 @@ export async function loadExecutionReadModel(
 		nodeStatuses,
 		steps,
 		browserArtifacts,
+		agentRuns,
 		agentEvents,
 		lastAgentEventId
 	};
