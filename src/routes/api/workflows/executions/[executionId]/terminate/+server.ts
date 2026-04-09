@@ -50,11 +50,17 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		{
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ reason })
+			body: JSON.stringify({ reason }),
+			signal: AbortSignal.timeout(2000)
 		}
-	);
+	).catch((fetchError) => {
+		if (fetchError instanceof Error && fetchError.name === 'TimeoutError') {
+			return null;
+		}
+		throw fetchError;
+	});
 
-	if (!response.ok) {
+	if (response && !response.ok) {
 		const errorBody = await response.json().catch(() => ({ error: 'Unknown error' }));
 		throw error(response.status, {
 			message: errorBody.error ?? errorBody.message ?? 'Failed to terminate execution'
