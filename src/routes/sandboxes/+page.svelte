@@ -4,6 +4,7 @@
 		FlexRender,
 		tableFeatures,
 		rowSortingFeature,
+		rowSelectionFeature,
 		columnFilteringFeature,
 		globalFilteringFeature,
 		rowPaginationFeature,
@@ -18,6 +19,7 @@
 	} from '@tanstack/svelte-table';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
+	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import {
 		Container,
 		Plus,
@@ -37,6 +39,7 @@
 	} from 'lucide-svelte';
 	import { createSandboxListStream } from '$lib/stores/sandbox-stream.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
+	import SandboxPreviewPopover from '$lib/components/sandbox/sandbox-preview-popover.svelte';
 	import CreateSandboxDialog from '$lib/components/sandbox/create-sandbox-dialog.svelte';
 	import { getSandboxes } from './data.remote';
 	import type { Sandbox, SandboxPhase } from '$lib/types/sandbox';
@@ -51,10 +54,13 @@
 	let createOpen = $state(false);
 	let deleting = $state<string | null>(null);
 	let globalFilter = $state('');
+	let batchDeleteOpen = $state(false);
+	let batchDeleting = $state(false);
 
 	// -- TanStack Table setup --
 	const _features = tableFeatures({
 		rowSortingFeature,
+		rowSelectionFeature,
 		columnFilteringFeature,
 		globalFilteringFeature,
 		rowPaginationFeature
@@ -63,6 +69,12 @@
 	const columnHelper = createColumnHelper<typeof _features, Sandbox>();
 
 	const columns = columnHelper.columns([
+		columnHelper.display({
+			id: 'select',
+			header: () => '',
+			cell: () => '',
+			enableSorting: false
+		}),
 		columnHelper.accessor('name', {
 			header: 'Name',
 			cell: (info) => info.getValue(),
@@ -121,6 +133,7 @@
 				paginatedRowModel: createPaginatedRowModel()
 			},
 			columns,
+			getRowId: (row) => row.name,
 			get data() {
 				return data;
 			},
@@ -143,6 +156,15 @@
 		(state) => state
 	);
 
+	const selectedCount = $derived(
+		table ? Object.keys(table.state?.rowSelection ?? {}).length : 0
+	);
+
+	const selectedNames = $derived.by(() => {
+		if (!table) return [];
+		return Object.keys(table.state?.rowSelection ?? {});
+	});
+
 	async function deleteSandbox(name: string) {
 		deleting = name;
 		try {
@@ -152,6 +174,24 @@
 			// ignore
 		} finally {
 			deleting = null;
+		}
+	}
+
+	async function batchDelete() {
+		batchDeleting = true;
+		try {
+			await Promise.allSettled(
+				selectedNames.map((name) =>
+					fetch(`/api/sandboxes/${encodeURIComponent(name)}`, { method: 'DELETE' })
+				)
+			);
+			table.resetRowSelection();
+			sandboxQuery.refresh();
+		} catch {
+			// ignore
+		} finally {
+			batchDeleting = false;
+			batchDeleteOpen = false;
 		}
 	}
 </script>
@@ -250,6 +290,25 @@
 				</p>
 			</div>
 		{:else}
+			<!-- Bulk action bar -->
+			{#if selectedCount > 0}
+				<div class="mb-3 flex items-center gap-3 rounded-md border border-border bg-muted/50 px-4 py-2">
+					<span class="text-sm font-medium">{selectedCount} selected</span>
+					<Button variant="outline" size="sm" class="text-xs" onclick={() => table.resetRowSelection()}>
+						Deselect All
+					</Button>
+					<Button
+						variant="destructive"
+						size="sm"
+						class="text-xs"
+						onclick={() => (batchDeleteOpen = true)}
+					>
+						<Trash2 class="mr-1 h-3 w-3" />
+						Delete Selected
+					</Button>
+				</div>
+			{/if}
+
 			<div class="rounded-md border border-border">
 				<table class="w-full">
 					<thead>
@@ -257,9 +316,17 @@
 							<tr class="border-b border-border bg-muted/50 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
 								{#each headerGroup.headers as header}
 									<th
-										class="px-4 py-3 {header.column.getCanSort() ? 'cursor-pointer select-none' : ''} {header.id === 'actions' ? 'text-right' : ''}"
-										onclick={header.column.getToggleSortingHandler()}
+										class="px-4 py-3 {header.column.getCanSort() ? 'cursor-pointer select-none' : ''} {header.id === 'actions' ? 'text-right' : ''} {header.id === 'select' ? 'w-10' : ''}"
+										onclick={header.id !== 'select' ? header.column.getToggleSortingHandler() : undefined}
 									>
+										{#if header.id === 'select'}
+										<input
+											type="checkbox"
+											checked={table.getIsAllPageRowsSelected()}
+											onchange={table.getToggleAllPageRowsSelectedHandler()}
+											class="h-3.5 w-3.5 rounded border-border accent-primary"
+										/>
+									{:else}
 										<div class="flex items-center gap-1 {header.id === 'actions' ? 'justify-end' : ''}">
 											{#if !header.isPlaceholder}
 												<FlexRender {header} />
@@ -274,6 +341,7 @@
 												{/if}
 											{/if}
 										</div>
+									{/if}
 									</th>
 								{/each}
 							</tr>
@@ -283,9 +351,18 @@
 						{#each table.getRowModel().rows as row}
 							<tr class="border-b border-border last:border-b-0 hover:bg-muted/30">
 								{#each row.getAllCells() as cell}
-									<td class="px-4 py-3 {cell.column.id === 'actions' ? 'text-right' : ''}">
-										{#if cell.column.id === 'name'}
-											{@render nameCell(cell.getValue() as string)}
+									<td class="px-4 py-3 {cell.column.id === 'actions' ? 'text-right' : ''} {cell.column.id === 'select' ? 'w-10' : ''}">
+										{#if cell.column.id === 'select'}
+											<input
+												type="checkbox"
+												checked={row.getIsSelected()}
+												onchange={row.getToggleSelectedHandler()}
+												class="h-3.5 w-3.5 rounded border-border accent-primary"
+											/>
+										{:else if cell.column.id === 'name'}
+											<SandboxPreviewPopover sandbox={row.original}>
+												{@render nameCell(cell.getValue() as string)}
+											</SandboxPreviewPopover>
 										{:else if cell.column.id === 'type'}
 											{@render typeCell(cell.getValue() as string)}
 										{:else if cell.column.id === 'phase'}
@@ -383,3 +460,23 @@
 	onOpenChange={(v) => (createOpen = v)}
 	onCreated={() => sandboxQuery.refresh()}
 />
+
+<AlertDialog.Root bind:open={batchDeleteOpen}>
+	<AlertDialog.Content>
+		<AlertDialog.Header>
+			<AlertDialog.Title>Delete {selectedCount} sandbox{selectedCount === 1 ? '' : 'es'}?</AlertDialog.Title>
+			<AlertDialog.Description>
+				This will permanently delete the selected sandboxes. This action cannot be undone.
+			</AlertDialog.Description>
+		</AlertDialog.Header>
+		<AlertDialog.Footer>
+			<AlertDialog.Cancel>Cancel</AlertDialog.Cancel>
+			<AlertDialog.Action onclick={batchDelete} disabled={batchDeleting}>
+				{#if batchDeleting}
+					<Loader2 class="mr-2 h-4 w-4 animate-spin" />
+				{/if}
+				Delete {selectedCount}
+			</AlertDialog.Action>
+		</AlertDialog.Footer>
+	</AlertDialog.Content>
+</AlertDialog.Root>

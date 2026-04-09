@@ -50,6 +50,7 @@
 		"@ai-sdk/anthropic": "^3.0.66",
 		"@ai-sdk/openai": "^3.0.50",
 		"@ai-sdk/svelte": "^4.0.146",
+		"@battlefieldduck/xterm-svelte": "^2.2.1",
 		"@codemirror/autocomplete": "^6.20.1",
 		"@codemirror/commands": "^6.10.3",
 		"@codemirror/lang-yaml": "^6.1.3",

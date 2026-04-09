@@ -1,7 +1,6 @@
 <script lang="ts">
-	import { Button } from '$lib/components/ui/button';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Loader2, Play } from 'lucide-svelte';
+	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
+	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
 
 	interface Props {
 		sandboxName: string;
@@ -9,27 +8,81 @@
 
 	let { sandboxName }: Props = $props();
 
-	let command = $state('');
-	let output = $state('');
-	let exitCode = $state<number | null>(null);
-	let running = $state(false);
-	let outputEl: HTMLPreElement | undefined = $state();
+	let terminal = $state<Terminal>();
+	let lineBuffer = '';
+	let running = false;
 
-	async function execute() {
-		if (!command.trim() || running) return;
-		output = '';
-		exitCode = null;
+	const options: ITerminalOptions = {
+		fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+		fontSize: 13,
+		lineHeight: 1.2,
+		cursorBlink: true,
+		cursorStyle: 'bar',
+		convertEol: true,
+		theme: {
+			background: '#09090b',
+			foreground: '#fafafa',
+			cursor: '#fafafa',
+			selectionBackground: '#3f3f46',
+			black: '#09090b',
+			red: '#ef4444',
+			green: '#22c55e',
+			yellow: '#eab308',
+			blue: '#3b82f6',
+			magenta: '#a855f7',
+			cyan: '#06b6d4',
+			white: '#fafafa',
+			brightBlack: '#71717a',
+			brightRed: '#f87171',
+			brightGreen: '#4ade80',
+			brightYellow: '#facc15',
+			brightBlue: '#60a5fa',
+			brightMagenta: '#c084fc',
+			brightCyan: '#22d3ee',
+			brightWhite: '#ffffff'
+		}
+	};
+
+	async function onLoad(term: Terminal) {
+		terminal = term;
+
+		const { FitAddon } = await XtermAddon.FitAddon();
+		const fitAddon = new FitAddon();
+		terminal.loadAddon(fitAddon);
+
+		try {
+			const { WebLinksAddon } = await XtermAddon.WebLinksAddon();
+			terminal.loadAddon(new WebLinksAddon());
+		} catch {
+			// optional
+		}
+
+		fitAddon.fit();
+
+		const container = terminal.element?.parentElement;
+		if (container) {
+			new ResizeObserver(() => fitAddon.fit()).observe(container);
+		}
+
+		terminal.writeln('\x1b[32mOpenShell Sandbox Terminal\x1b[0m');
+		terminal.writeln(`\x1b[90mSandbox: ${sandboxName}\x1b[0m`);
+		terminal.writeln('');
+		writePrompt();
+	}
+
+	function writePrompt() {
+		terminal?.write('\x1b[36msandbox\x1b[0m:\x1b[34m~\x1b[0m$ ');
+	}
+
+	async function executeCommand(command: string) {
+		if (!command.trim()) {
+			writePrompt();
+			return;
+		}
+
 		running = true;
 
 		try {
-			const es = new EventSource(
-				`/api/sandboxes/${encodeURIComponent(sandboxName)}/exec?stream=true`
-			);
-
-			// We need to POST the command, but EventSource only does GET.
-			// Use fetch with SSE parsing instead.
-			es.close();
-
 			const response = await fetch(
 				`/api/sandboxes/${encodeURIComponent(sandboxName)}/exec?stream=true`,
 				{
@@ -40,7 +93,8 @@
 			);
 
 			if (!response.ok || !response.body) {
-				output = `Error: ${response.statusText}`;
+				terminal?.writeln(`\x1b[31mError: ${response.statusText}\x1b[0m`);
+				writePrompt();
 				running = false;
 				return;
 			}
@@ -48,8 +102,9 @@
 			const reader = response.body.getReader();
 			const decoder = new TextDecoder();
 			let buffer = '';
+			let streamDone = false;
 
-			while (true) {
+			while (!streamDone) {
 				const { done, value } = await reader.read();
 				if (done) break;
 
@@ -65,70 +120,86 @@
 						const raw = line.slice(6);
 						try {
 							const data = JSON.parse(raw);
-							if (eventType === 'stdout' || eventType === 'stderr') {
-								output += data.text ?? '';
+							if (eventType === 'stdout') {
+								terminal?.write(data.text ?? '');
+							} else if (eventType === 'stderr') {
+								terminal?.write(`\x1b[31m${data.text ?? ''}\x1b[0m`);
 							} else if (eventType === 'exit') {
-								exitCode = data.exitCode ?? null;
+								const code = data.exitCode ?? 0;
+								if (code !== 0) {
+									terminal?.writeln(`\x1b[90m(exit ${code})\x1b[0m`);
+								}
 							} else if (eventType === 'error') {
-								output += `\nError: ${data.message ?? 'unknown'}\n`;
+								terminal?.writeln(`\x1b[31mError: ${data.message ?? 'unknown'}\x1b[0m`);
+							} else if (eventType === 'done') {
+								streamDone = true;
+								break;
 							}
 						} catch {
-							// ignore
+							// ignore unparseable
 						}
 						eventType = '';
 					}
 				}
-
-				if (outputEl) {
-					outputEl.scrollTop = outputEl.scrollHeight;
-				}
 			}
+
+			// Cancel the reader if still open
+			try { reader.cancel(); } catch { /* */ }
 		} catch (err) {
-			output += `\nConnection error: ${err instanceof Error ? err.message : 'unknown'}`;
+			terminal?.writeln(
+				`\x1b[31mConnection error: ${err instanceof Error ? err.message : 'unknown'}\x1b[0m`
+			);
 		} finally {
 			running = false;
+			writePrompt();
 		}
 	}
 
-	function onKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !e.shiftKey) {
-			e.preventDefault();
-			execute();
+	function onData(data: string) {
+		if (!terminal) return;
+
+		// Handle special keys
+		const code = data.charCodeAt(0);
+
+		if (code === 13) {
+			// Enter
+			terminal.write('\r\n');
+			const cmd = lineBuffer;
+			lineBuffer = '';
+			executeCommand(cmd);
+		} else if (code === 127 || code === 8) {
+			// Backspace
+			if (lineBuffer.length > 0) {
+				lineBuffer = lineBuffer.slice(0, -1);
+				terminal.write('\b \b');
+			}
+		} else if (code === 3) {
+			// Ctrl+C
+			lineBuffer = '';
+			terminal.write('^C\r\n');
+			if (!running) writePrompt();
+		} else if (code === 12) {
+			// Ctrl+L (clear)
+			terminal.clear();
+			writePrompt();
+		} else if (code === 21) {
+			// Ctrl+U (clear line)
+			const len = lineBuffer.length;
+			lineBuffer = '';
+			terminal.write('\r\x1b[K');
+			writePrompt();
+		} else if (code >= 32) {
+			// Printable character
+			if (!running) {
+				lineBuffer += data;
+				terminal.write(data);
+			}
 		}
 	}
 </script>
 
-<div class="flex h-full flex-col gap-3">
-	<div class="flex gap-2">
-		<input
-			type="text"
-			bind:value={command}
-			onkeydown={onKeydown}
-			placeholder="Enter command..."
-			disabled={running}
-			class="flex-1 rounded border border-border bg-background px-3 py-1.5 font-mono text-sm outline-none focus:ring-1 focus:ring-ring"
-		/>
-		<Button size="sm" onclick={execute} disabled={running || !command.trim()}>
-			{#if running}
-				<Loader2 class="h-4 w-4 animate-spin" />
-			{:else}
-				<Play class="h-4 w-4" />
-			{/if}
-			Run
-		</Button>
-	</div>
-
-	<div class="relative flex-1">
-		<pre
-			bind:this={outputEl}
-			class="h-full overflow-auto rounded bg-zinc-950 p-3 font-mono text-xs leading-5 text-zinc-100"
-		>{#if output}{output}{:else}<span class="text-zinc-500">Output will appear here...</span>{/if}</pre>
-		{#if exitCode !== null}
-			<div class="absolute right-2 top-2">
-				<Badge variant={exitCode === 0 ? 'secondary' : 'destructive'}>
-					exit {exitCode}
-				</Badge>
-			</div>
-		{/if}
+<div class="flex h-full flex-col overflow-hidden bg-[#09090b]">
+	<div class="flex-1 overflow-hidden p-1">
+		<Xterm {options} {onLoad} {onData} />
 	</div>
 </div>

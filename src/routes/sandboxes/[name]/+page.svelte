@@ -6,7 +6,11 @@
 	import { createSandboxDetailStream } from '$lib/stores/sandbox-detail-stream.svelte';
 	import SandboxPhaseBadge from '$lib/components/sandbox/sandbox-phase-badge.svelte';
 	import SandboxLogViewer from '$lib/components/sandbox/sandbox-log-viewer.svelte';
+	import SandboxActivityLog from '$lib/components/sandbox/sandbox-activity-log.svelte';
+	import SandboxPhaseTimeline from '$lib/components/sandbox/sandbox-phase-timeline.svelte';
 	import SandboxTerminal from '$lib/components/sandbox/sandbox-terminal.svelte';
+	import SandboxInfoCard from '$lib/components/sandbox/sandbox-info-card.svelte';
+	import SandboxFileBrowser from '$lib/components/sandbox/sandbox-file-browser.svelte';
 	import { goto } from '$app/navigation';
 
 	const sandboxName = $derived(decodeURIComponent(page.params.name ?? ''));
@@ -57,6 +61,7 @@
 
 			{#if stream.status}
 				<SandboxPhaseBadge phase={stream.status.phase} />
+				<SandboxPhaseTimeline currentPhase={stream.status.phase} />
 			{/if}
 
 			<div
@@ -131,11 +136,17 @@
 							<span class="ml-1 text-xs text-muted-foreground">({stream.events.length})</span>
 						{/if}
 					</Tabs.Trigger>
+					<Tabs.Trigger value="files">Files</Tabs.Trigger>
+					<Tabs.Trigger value="info">Info</Tabs.Trigger>
 					<Tabs.Trigger value="terminal">Terminal</Tabs.Trigger>
 				</Tabs.List>
 
 				<Tabs.Content value="logs" class="flex-1 overflow-hidden p-6 pt-3">
-					<SandboxLogViewer logs={stream.logs} />
+					{#if stream.logs.length > 0 && stream.logs.some((l) => ['tool_call_start', 'llm_start', 'run_started'].includes((l as unknown as Record<string, unknown>).eventType as string ?? l.source))}
+						<SandboxActivityLog logs={stream.logs} />
+					{:else}
+						<SandboxLogViewer logs={stream.logs} />
+					{/if}
 				</Tabs.Content>
 
 				<Tabs.Content value="events" class="flex-1 overflow-hidden p-6 pt-3">
@@ -167,6 +178,14 @@
 							</div>
 						{/if}
 					</div>
+				</Tabs.Content>
+
+				<Tabs.Content value="files" class="flex-1 overflow-hidden">
+					<SandboxFileBrowser {sandboxName} />
+				</Tabs.Content>
+
+				<Tabs.Content value="info" class="flex-1 overflow-auto p-6 pt-3">
+					<SandboxInfoCard {sandboxName} />
 				</Tabs.Content>
 
 				<Tabs.Content value="terminal" class="flex-1 overflow-hidden p-6 pt-3">
