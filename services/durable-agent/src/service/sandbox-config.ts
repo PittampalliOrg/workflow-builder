@@ -95,6 +95,13 @@ function buildAllowedEnv(): NodeJS.ProcessEnv {
 	return env;
 }
 
+function resolveShellBinary(): string {
+	if (existsSync("/bin/sh")) return "/bin/sh";
+	if (existsSync("/bin/bash")) return "/bin/bash";
+	if (process.env.SHELL && existsSync(process.env.SHELL)) return process.env.SHELL;
+	return "sh";
+}
+
 // ── Local Sandbox ─────────────────────────────────────────────
 
 /** Shared sandbox interface for command execution */
@@ -173,6 +180,9 @@ export class LocalSandbox implements Sandbox {
 	): Promise<CommandResult> {
 		const timeout = options?.timeout ?? this._timeout;
 		const cwd = options?.cwd ?? this.workDir;
+		if (!existsSync(cwd)) {
+			await fsMkdir(cwd, { recursive: true });
+		}
 		const envOverrides = Object.fromEntries(
 			Object.entries(options?.env ?? {})
 				.filter(
@@ -195,7 +205,7 @@ export class LocalSandbox implements Sandbox {
 
 		try {
 			const { stdout, stderr } = await execFileAsync(
-				"sh",
+				resolveShellBinary(),
 				["-c", fullCommand],
 				{
 					cwd,
