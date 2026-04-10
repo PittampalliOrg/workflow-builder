@@ -213,6 +213,245 @@ export function buildAgentLoopGraph(
 	return { nodes, edges };
 }
 
+function compactAgentLoopGraph(
+	graph: { nodes: AgentLoopNode[]; edges: AgentLoopEdge[] }
+): { nodes: AgentLoopNode[]; edges: AgentLoopEdge[] } {
+	if (graph.nodes.length <= 8) return graph;
+
+	const root = graph.nodes[0];
+	const body = graph.nodes.slice(1);
+	const middle = body.slice(0, 5);
+	const tail = body.at(-1);
+	const omittedCount = Math.max(body.length - middle.length - (tail ? 1 : 0), 0);
+
+	const nodes: AgentLoopNode[] = [root];
+	const edges: AgentLoopEdge[] = [];
+	let previousId = root.id;
+
+	for (const [index, node] of middle.entries()) {
+		const compactId = `${node.id}:compact:${index}`;
+		nodes.push({
+			...node,
+			id: compactId,
+			position: { x: (index + 1) * 220, y: 0 }
+		});
+		edges.push({
+			id: `${previousId}->${compactId}`,
+			source: previousId,
+			target: compactId,
+			type: 'animated'
+		});
+		previousId = compactId;
+	}
+
+	if (omittedCount > 0) {
+		const summaryId = `summary:${root.id}`;
+		nodes.push({
+			id: summaryId,
+			type: 'default',
+			position: { x: (middle.length + 1) * 220, y: 0 },
+			data: {
+				label: `${omittedCount} more steps`,
+				description: 'Expanded in Agents tab',
+				status: 'idle'
+			}
+		});
+		edges.push({
+			id: `${previousId}->${summaryId}`,
+			source: previousId,
+			target: summaryId,
+			type: 'animated'
+		});
+		previousId = summaryId;
+	}
+
+	if (tail) {
+		const tailId = `${tail.id}:tail`;
+		nodes.push({
+			...tail,
+			id: tailId,
+			position: { x: (nodes.length + 1) * 220, y: 0 }
+		});
+		edges.push({
+			id: `${previousId}->${tailId}`,
+			source: previousId,
+			target: tailId,
+			type: 'animated'
+		});
+	}
+
+	return { nodes, edges };
+}
+
+function latestToolName(events: ExecutionTimelineEvent[]): string | null {
+	for (let index = events.length - 1; index >= 0; index -= 1) {
+		const event = events[index];
+		const name =
+			asString(event.toolName) ??
+			asString(event.data.toolName) ??
+			asString(event.data.name);
+		if (name) return name;
+	}
+	return null;
+}
+
+function latestRunError(run: ExecutionAgentRun, events: ExecutionTimelineEvent[]): string | undefined {
+	for (let index = events.length - 1; index >= 0; index -= 1) {
+		const error = asString(events[index].data.error) ?? asString(events[index].data.message);
+		if (error) return shortText(error, 96);
+	}
+	return shortText(run.error, 96);
+}
+
+function buildAgentLoopStateDiagram(
+	run: ExecutionAgentRun,
+	events: ExecutionTimelineEvent[]
+): { nodes: AgentLoopNode[]; edges: AgentLoopEdge[] } {
+	const relevant = eventsForAgentRun(run, events);
+	const turnCount = relevant.filter((event) => event.type === 'turn_started').length;
+	const toolStarts = relevant.filter((event) => event.type === 'tool_call_start');
+	const toolEnds = relevant.filter((event) => event.type === 'tool_call_end');
+	const toolErrors = relevant.filter((event) => event.type === 'tool_call_error');
+	const lastTool = latestToolName(relevant);
+	const lastEvent = relevant.at(-1) ?? null;
+	const completed = run.status === 'completed';
+	const failed = run.status === 'failed';
+
+	const plannerActive = Boolean(lastEvent && ['turn_started', 'llm_start', 'llm_complete'].includes(lastEvent.type));
+	const toolActive = Boolean(lastEvent && lastEvent.type === 'tool_call_start');
+	const observeActive = Boolean(lastEvent && ['tool_call_end', 'tool_call_error'].includes(lastEvent.type));
+
+	const nodes: AgentLoopNode[] = [
+		{
+			id: `planner:${run.id}`,
+			type: 'default',
+			position: { x: 156, y: 32 },
+			data: {
+				label: 'Planner / LLM',
+				description:
+					turnCount > 0
+						? `${turnCount} turn${turnCount === 1 ? '' : 's'}${plannerActive ? ' · reasoning' : ''}`
+						: 'Waiting for first turn',
+				status: failed && plannerActive ? 'error' : completed ? 'success' : plannerActive || run.status === 'running' ? 'running' : turnCount > 0 ? 'success' : 'idle'
+			}
+		},
+		{
+			id: `tool:${run.id}`,
+			type: 'default',
+			position: { x: 324, y: 156 },
+			data: {
+				label: 'Tool Execution',
+				description:
+					toolStarts.length > 0
+						? `${toolStarts.length} call${toolStarts.length === 1 ? '' : 's'}${lastTool ? ` · ${lastTool}` : ''}`
+						: 'No tools used',
+				status:
+					failed && toolActive
+						? 'error'
+						: completed
+							? toolStarts.length > 0
+								? 'success'
+								: 'idle'
+							: toolActive
+								? 'running'
+								: toolStarts.length > 0
+									? toolErrors.length > 0
+										? 'error'
+										: 'success'
+									: 'idle'
+			}
+		},
+		{
+			id: `observe:${run.id}`,
+			type: 'default',
+			position: { x: 156, y: 288 },
+			data: {
+				label: 'Observation',
+				description:
+					toolEnds.length > 0 || toolErrors.length > 0
+						? `${toolEnds.length} result${toolEnds.length === 1 ? '' : 's'}${toolErrors.length ? ` · ${toolErrors.length} error${toolErrors.length === 1 ? '' : 's'}` : ''}`
+						: 'Awaiting tool results',
+				status:
+					failed && observeActive
+						? 'error'
+						: completed
+							? toolEnds.length > 0 || toolErrors.length > 0
+								? 'success'
+								: 'idle'
+							: observeActive
+								? 'running'
+								: toolEnds.length > 0 || toolErrors.length > 0
+									? 'success'
+									: 'idle'
+			}
+		},
+		{
+			id: `result:${run.id}`,
+			type: 'default',
+			position: { x: 0, y: 156 },
+			data: {
+				label: failed ? 'Run Failed' : completed ? 'Final Response' : 'Pending Outcome',
+				description:
+					failed
+						? latestRunError(run, relevant) ?? 'See Agents tab for details'
+						: completed
+							? 'Goal achieved'
+							: 'Loop until done',
+				status: failed ? 'error' : completed ? 'success' : run.status === 'running' ? 'running' : 'idle'
+			}
+		}
+	];
+
+	const edges: AgentLoopEdge[] = [
+		{
+			id: `planner->tool:${run.id}`,
+			source: `planner:${run.id}`,
+			target: `tool:${run.id}`,
+			type: 'animated',
+			sourceHandle: 'right-source',
+			targetHandle: 'left-target',
+			animated: toolActive || (!completed && toolStarts.length > 0),
+			label: toolStarts.length > 0 ? 'Action' : undefined,
+			data: { route: 'arc' }
+		},
+		{
+			id: `tool->observe:${run.id}`,
+			source: `tool:${run.id}`,
+			target: `observe:${run.id}`,
+			type: 'animated',
+			sourceHandle: 'bottom-source',
+			targetHandle: 'top-target',
+			animated: observeActive || (!completed && (toolEnds.length > 0 || toolErrors.length > 0)),
+			label: toolEnds.length > 0 || toolErrors.length > 0 ? 'Results' : undefined,
+			data: { route: 'arc' }
+		},
+		{
+			id: `observe->planner:${run.id}`,
+			source: `observe:${run.id}`,
+			target: `planner:${run.id}`,
+			type: 'animated',
+			sourceHandle: 'left-source',
+			targetHandle: 'bottom-target',
+			animated: !completed && !failed && (turnCount > 1 || toolEnds.length > 0 || observeActive),
+			label: turnCount > 1 || observeActive ? 'Loop' : undefined,
+			data: { route: 'arc' }
+		},
+		{
+			id: `planner->result:${run.id}`,
+			source: `planner:${run.id}`,
+			target: `result:${run.id}`,
+			type: 'animated',
+			sourceHandle: 'left-source',
+			targetHandle: 'top-target',
+			animated: completed || failed,
+			label: completed ? 'Goal achieved' : failed ? 'Failed' : undefined,
+			data: { route: 'arc' }
+		}
+	];
+
+	return { nodes, edges };
+}
+
 function parentNodeSize(node: Node): { width: number; height: number } {
 	return {
 		width: node.measured?.width ?? node.width ?? 220,
@@ -220,102 +459,135 @@ function parentNodeSize(node: Node): { width: number; height: number } {
 	};
 }
 
-function groupClass(runId: string, selectedRunId: string | null): string {
-	return `agent-subflow-group${selectedRunId === runId ? ' agent-subflow-group-selected' : ''}`;
+function resolveWorkflowNode(
+	workflowNodes: Node[],
+	runNodeId: string
+): Node | undefined {
+	return (
+		workflowNodes.find((node) => node.id === runNodeId) ??
+		workflowNodes.find((node) => node.id === `/${runNodeId}`) ??
+		workflowNodes.find((node) => node.id.endsWith(`/${runNodeId}`)) ??
+		workflowNodes.find((node) => {
+			const label = (node.data as Record<string, unknown> | undefined)?.label;
+			return typeof label === 'string' && label.trim() === runNodeId;
+		})
+	);
 }
 
 export function buildAgentCanvasSubflows(
 	workflowNodes: Node[],
 	agentRuns: ExecutionAgentRun[],
 	events: ExecutionTimelineEvent[],
-	selectedRunId: string | null
-): { nodes: AgentCanvasNode[]; edges: AgentCanvasEdge[] } {
+	_expandedRunId: string | null
+): { nodes: AgentCanvasNode[]; edges: AgentCanvasEdge[]; replacedNodeIds: Set<string> } {
 	const nodes: AgentCanvasNode[] = [];
 	const edges: AgentCanvasEdge[] = [];
+	const replacedNodeIds = new Set<string>();
+
+	const loopNodeWidth = 260;
+	const groupPadX = 20;
+	const groupPadTop = 56;
+	const groupWidth = loopNodeWidth + groupPadX * 2;
+	const groupHeight = 240;
 
 	for (const run of agentRuns) {
-		const workflowNode = workflowNodes.find((node) => node.id === run.nodeId);
+		const workflowNode = resolveWorkflowNode(workflowNodes, run.nodeId);
 		if (!workflowNode) continue;
 
-		const graph = buildAgentLoopGraph(run, events);
-		if (graph.nodes.length === 0) continue;
+		const relevant = eventsForAgentRun(run, events);
+		const toolCount = relevant.filter((e) => e.type === 'tool_call_start').length;
+		const turnCount = relevant.filter((e) => e.type === 'turn_started').length;
+		const lastTool = latestToolName(relevant);
+		const runStatus = asWorkflowNodeStatus(nodeStatusForRun(run.status));
 
-		const { width: parentWidth, height: parentHeight } = parentNodeSize(workflowNode);
-		const paddingX = 24;
-		const paddingTop = 24;
-		const paddingBottom = 24;
-		const maxX = Math.max(...graph.nodes.map((node) => node.position.x)) + 180;
-		const maxY = Math.max(...graph.nodes.map((node) => node.position.y)) + 96;
-		const groupWidth = Math.max(420, maxX + paddingX * 2);
-		const groupHeight = Math.max(220, maxY + paddingTop + paddingBottom);
 		const groupId = `agent-group:${run.id}`;
+		const loopId = `agent-loop:${run.id}`;
 
+		const parentLabel = typeof (workflowNode.data as Record<string, unknown>)?.label === 'string'
+			? (workflowNode.data as Record<string, unknown>).label as string
+			: run.nodeId;
+
+		// Mark the original node for removal — the group replaces it
+		replacedNodeIds.add(workflowNode.id);
+
+		// Subflow group positioned exactly where the original node was
 		nodes.push({
 			id: groupId,
-			type: 'group',
-			position: {
-				x: workflowNode.position.x + parentWidth + 140,
-				y: workflowNode.position.y - Math.max(40, (groupHeight - parentHeight) / 3)
-			},
+			type: 'childWorkflowGroup',
+			position: { ...workflowNode.position },
 			draggable: false,
-			selectable: false,
+			selectable: true,
 			connectable: false,
-			class: groupClass(run.id, selectedRunId),
 			style: `width:${groupWidth}px;height:${groupHeight}px;`,
 			data: {
-				label: `${run.nodeId} child run`,
+				label: parentLabel,
 				description: `${run.mode} · ${run.status}`,
-				status: asWorkflowNodeStatus(nodeStatusForRun(run.status)),
-				type: 'run'
+				status: runStatus,
+				type: 'run',
+				childWorkflow: true,
+				agentRunId: run.id,
+				replacedNodeId: workflowNode.id
 			}
 		});
 
-		for (const node of graph.nodes) {
-			nodes.push({
-				id: `agent:${run.id}:${node.id}`,
-				type: 'default',
-				parentId: groupId,
-				extent: 'parent',
-				position: {
-					x: node.position.x + paddingX,
-					y: node.position.y + paddingTop
-				},
-				draggable: false,
-				selectable: false,
-				connectable: false,
-				data: {
-					label: node.data.label,
-					description: node.data.description,
-					status: asWorkflowNodeStatus(node.data.status),
-					type: 'run'
-				}
-			});
-		}
-
-		const rootChildId = `agent:${run.id}:${graph.nodes[0]?.id}`;
-		edges.push({
-			id: `${workflowNode.id}->${rootChildId}`,
-			source: workflowNode.id,
-			target: rootChildId,
-			type: 'animated',
-			selectable: false,
-			focusable: false,
+		// Loop node nested inside the group
+		nodes.push({
+			id: loopId,
+			type: 'childWorkflowLoop',
+			parentId: groupId,
+			extent: 'parent',
+			position: { x: groupPadX, y: groupPadTop },
+			draggable: false,
+			selectable: true,
+			connectable: false,
+			style: `width:${loopNodeWidth}px;`,
 			data: {
-				status: run.status === 'failed' ? 'error' : run.status === 'completed' ? 'success' : 'running'
+				label: run.status === 'running' && lastTool
+					? `Running · ${lastTool}`
+					: run.status === 'failed'
+						? latestRunError(run, relevant) ?? 'Failed'
+						: run.status === 'completed'
+							? 'Done'
+							: 'Waiting',
+				status: runStatus,
+				type: 'run',
+				childWorkflow: true,
+				agentRunId: run.id,
+				childWorkflowTurnCount: turnCount,
+				childWorkflowToolCount: toolCount
 			}
 		});
+	}
 
-		for (const edge of graph.edges) {
-			edges.push({
-				...edge,
-				id: `agent:${run.id}:${edge.id}`,
-				source: `agent:${run.id}:${edge.source}`,
-				target: `agent:${run.id}:${edge.target}`,
-				selectable: false,
-				focusable: false
-			});
+	return { nodes, edges, replacedNodeIds };
+}
+
+/** Remap edges so that any edge pointing to/from a replaced node points to its group instead. */
+export function remapEdgesForReplacements(
+	edges: Edge[],
+	replacedNodeIds: Set<string>,
+	agentRuns: { id: string; nodeId: string }[],
+	workflowNodes: Node[]
+): Edge[] {
+	if (replacedNodeIds.size === 0) return edges;
+
+	// Build a map: original node id → group id
+	const remap = new Map<string, string>();
+	for (const run of agentRuns) {
+		const wfNode = resolveWorkflowNode(workflowNodes, run.nodeId);
+		if (wfNode && replacedNodeIds.has(wfNode.id)) {
+			remap.set(wfNode.id, `agent-group:${run.id}`);
 		}
 	}
 
-	return { nodes, edges };
+	return edges.map((edge) => {
+		const newSource = remap.get(edge.source);
+		const newTarget = remap.get(edge.target);
+		if (!newSource && !newTarget) return edge;
+		return {
+			...edge,
+			source: newSource ?? edge.source,
+			target: newTarget ?? edge.target
+		};
+	});
 }

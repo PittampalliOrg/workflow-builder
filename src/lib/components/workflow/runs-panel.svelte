@@ -84,6 +84,14 @@
 		}
 	});
 
+	$effect(() => {
+		if (store.selectedExecutionId || executions.length === 0) return;
+		const preferred = executions.find((execution) => isRunning(execution.status)) ?? executions[0];
+		if (preferred) {
+			store.selectedExecutionId = preferred.id;
+		}
+	});
+
 	// Refetch when the runs tab becomes active
 	let lastActiveTab = $state('');
 	$effect(() => {

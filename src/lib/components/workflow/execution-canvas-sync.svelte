@@ -12,6 +12,7 @@
 		edges: Edge[];
 		setEdges: (edges: Edge[]) => void;
 		managedNodeIds?: string[] | null;
+		companionNodeId?: string | null;
 		onAutoCenter?: () => void;
 		showPanel?: boolean;
 	}
@@ -21,11 +22,12 @@
 		edges,
 		setEdges,
 		managedNodeIds = null,
+		companionNodeId = null,
 		onAutoCenter,
 		showPanel = true
 	}: Props = $props();
 
-	const { getNodes, updateNodeData, setCenter, getViewport } = useSvelteFlow();
+	const { getNodes, updateNodeData, setCenter, getViewport, fitView } = useSvelteFlow();
 	const nodesInitialized = useNodesInitialized();
 
 	let lastActiveNodeId = $state<string | null>(null);
@@ -49,6 +51,37 @@
 	function centerOnNode(nodeId: string) {
 		const node = getNodes().find((entry) => entry.id === nodeId);
 		if (!node) return;
+		const companion = companionNodeId ? getNodes().find((entry) => entry.id === companionNodeId) : null;
+
+		if (companion && companion.id !== node.id) {
+			onAutoCenter?.();
+			fitView({
+				nodes: [node, companion],
+				padding: 0.28,
+				duration: 350,
+				maxZoom: 0.9
+			});
+
+			queueMicrotask(() => {
+				const viewport = getViewport();
+				if (viewport.zoom >= 0.42) return;
+
+				const nodeWidth = node.measured?.width ?? node.width ?? 148;
+				const nodeHeight = node.measured?.height ?? node.height ?? 148;
+				const companionWidth = companion.measured?.width ?? companion.width ?? 420;
+				const companionHeight = companion.measured?.height ?? companion.height ?? 220;
+				const left = Math.min(node.position.x, companion.position.x);
+				const right = Math.max(node.position.x + nodeWidth, companion.position.x + companionWidth);
+				const top = Math.min(node.position.y, companion.position.y);
+				const bottom = Math.max(node.position.y + nodeHeight, companion.position.y + companionHeight);
+
+				setCenter((left + right) / 2, (top + bottom) / 2, {
+					zoom: 0.42,
+					duration: 350
+				});
+			});
+			return;
+		}
 
 		const width = node.measured?.width ?? node.width ?? 148;
 		const height = node.measured?.height ?? node.height ?? 148;

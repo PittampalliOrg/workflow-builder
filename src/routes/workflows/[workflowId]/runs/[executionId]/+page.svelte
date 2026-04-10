@@ -49,10 +49,11 @@
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import StepDetail from '$lib/components/workflow/execution/step-detail.svelte';
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
+	import AgentSubflowFocus from '$lib/components/workflow/execution/agent-subflow-focus.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
-	import { buildAgentCanvasSubflows } from '$lib/utils/agent-subflow';
+	import { buildAgentCanvasSubflows, remapEdgesForReplacements } from '$lib/utils/agent-subflow';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
 	import EndNode from '$lib/components/workflow/nodes/sw/end-node.svelte';
@@ -69,6 +70,8 @@
 	import RaiseNode from '$lib/components/workflow/nodes/sw/raise-node.svelte';
 	import DoNode from '$lib/components/workflow/nodes/sw/do-node.svelte';
 	import DefaultNode from '$lib/components/workflow/nodes/default-node.svelte';
+	import ChildWorkflowGroupNode from '$lib/components/workflow/nodes/child-workflow-group-node.svelte';
+	import ChildWorkflowLoopNode from '$lib/components/workflow/nodes/child-workflow-loop-node.svelte';
 	import AnimatedEdge from '$lib/components/workflow/edges/animated-edge.svelte';
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
@@ -185,6 +188,7 @@
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
 	);
 	let selectedAgentRunId = $state<string | null>(null);
+	let expandedAgentRunId: string | null = null;
 	const selectedAgentRun = $derived.by(
 		() =>
 			agentRuns.find((run) => run.id === selectedAgentRunId) ??
@@ -192,17 +196,27 @@
 			agentRuns[0] ??
 			null
 	);
+	const runningAgentRun = $derived.by(() => agentRuns.find((run) => run.status === 'running') ?? null);
 	const agentCanvasSubflows = $derived.by(() =>
 		buildAgentCanvasSubflows(
 			workflowNodes,
 			agentRuns,
 			executionState.events,
-			selectedAgentRunId
+			expandedAgentRunId
 		)
 	);
-	const canvasNodes = $derived.by(() => [...workflowNodes, ...agentCanvasSubflows.nodes]);
-	const canvasEdges = $derived.by(() => [...workflowEdges, ...agentCanvasSubflows.edges]);
+	const canvasNodes = $derived.by(() => {
+		const hidden = agentCanvasSubflows.replacedNodeIds;
+		const visible = hidden.size > 0 ? workflowNodes.filter((n) => !hidden.has(n.id)) : workflowNodes;
+		return [...visible, ...agentCanvasSubflows.nodes];
+	});
+	const canvasEdges = $derived.by(() => {
+		const remapped = remapEdgesForReplacements(workflowEdges, agentCanvasSubflows.replacedNodeIds, agentRuns, workflowNodes);
+		return [...remapped, ...agentCanvasSubflows.edges];
+	});
 	const workflowNodeIds = $derived.by(() => workflowNodes.map((node) => node.id));
+	const selectedAgentGroupNodeId: string | null = null;
+	const selectedAgentParentNodeId: string | null = null;
 
 	const nodeTypes: NodeTypes = {
 		start: StartNode,
@@ -219,7 +233,9 @@
 		run: RunNode,
 		raise: RaiseNode,
 		do: DoNode,
-		default: DefaultNode
+		default: DefaultNode,
+		childWorkflowGroup: ChildWorkflowGroupNode,
+		childWorkflowLoop: ChildWorkflowLoopNode
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
@@ -296,6 +312,12 @@
 	$effect(() => {
 		if (!selectedAgentRunId && selectedAgentRun) {
 			selectedAgentRunId = selectedAgentRun.id;
+		}
+	});
+
+	$effect(() => {
+		if (isRunning && runningAgentRun && selectedAgentRunId !== runningAgentRun.id) {
+			selectedAgentRunId = runningAgentRun.id;
 		}
 	});
 
@@ -527,8 +549,18 @@
 		}
 	}
 
-	function openAgentRunForNode(nodeId: string | null | undefined) {
+	function openAgentRunForNode(node: Node | string | null | undefined) {
+		const nodeId = typeof node === 'string' ? node : node?.id;
 		if (!nodeId) return;
+		const nodeData =
+			typeof node === 'string' || !node
+				? undefined
+				: (node.data as Record<string, unknown> | undefined);
+		const directRunId = typeof nodeData?.agentRunId === 'string' ? nodeData.agentRunId : null;
+		if (directRunId) {
+			selectedAgentRunId = directRunId;
+			return;
+		}
 		const match = agentRuns.find((run) => run.nodeId === nodeId);
 		if (!match) return;
 		selectedAgentRunId = match.id;
@@ -791,7 +823,7 @@
 					fitView
 					minZoom={0.1}
 					maxZoom={4}
-					onnodeclick={({ node }) => openAgentRunForNode(node.id)}
+					onnodeclick={({ node }) => openAgentRunForNode(node)}
 				>
 					<ExecutionCanvasSync
 						snapshot={snapshot}
@@ -800,6 +832,11 @@
 							workflowEdges = edges;
 						}}
 						managedNodeIds={workflowNodeIds}
+						companionNodeId={selectedAgentGroupNodeId}
+					/>
+					<AgentSubflowFocus
+						parentNodeId={selectedAgentParentNodeId}
+						groupNodeId={selectedAgentGroupNodeId}
 					/>
 					<Controls />
 					<MiniMap zoomable pannable />
@@ -1022,18 +1059,70 @@
 
 <style>
 	:global(.svelte-flow__node.agent-subflow-group) {
-		border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-		border-radius: 20px;
+		border: 2px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+		border-radius: 24px;
 		background:
+			linear-gradient(180deg, color-mix(in srgb, var(--primary) 10%, transparent), transparent 42%),
 			linear-gradient(180deg, color-mix(in srgb, var(--muted) 58%, transparent), transparent 38%),
-			color-mix(in srgb, var(--card) 92%, transparent);
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border) 42%, transparent);
+			color-mix(in srgb, var(--card) 96%, transparent);
+		box-shadow:
+			inset 0 0 0 1px color-mix(in srgb, var(--primary) 12%, transparent),
+			0 16px 36px color-mix(in srgb, black 12%, transparent);
 	}
 
 	:global(.svelte-flow__node.agent-subflow-group.agent-subflow-group-selected) {
 		box-shadow:
-			inset 0 0 0 1px color-mix(in srgb, var(--primary) 42%, transparent),
-			0 0 0 1px color-mix(in srgb, var(--primary) 24%, transparent),
-			0 20px 40px color-mix(in srgb, black 12%, transparent);
+			inset 0 0 0 1px color-mix(in srgb, var(--primary) 55%, transparent),
+			0 0 0 2px color-mix(in srgb, var(--primary) 26%, transparent),
+			0 24px 48px color-mix(in srgb, black 14%, transparent);
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header) {
+		pointer-events: none;
+		z-index: 3 !important;
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header .svelte-flow__handle) {
+		display: none;
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header > div) {
+		border-width: 2px;
+		border-style: solid;
+		border-color: color-mix(in srgb, var(--primary) 35%, var(--border));
+		border-radius: 16px;
+		background:
+			linear-gradient(135deg, color-mix(in srgb, var(--primary) 12%, transparent), transparent 56%),
+			color-mix(in srgb, var(--background) 94%, transparent);
+		box-shadow:
+			0 10px 24px color-mix(in srgb, black 10%, transparent),
+			inset 0 0 0 1px color-mix(in srgb, var(--primary) 10%, transparent);
+		min-width: 260px;
+		padding: 14px 16px;
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header > div .text-xs.font-medium.text-card-foreground) {
+		font-size: 0.82rem;
+		font-weight: 700;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+		color: color-mix(in srgb, var(--primary) 72%, var(--foreground));
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header > div .text-xs.text-muted-foreground) {
+		font-size: 0.78rem;
+		line-height: 1.2;
+		color: color-mix(in srgb, var(--foreground) 58%, var(--muted-foreground));
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header > div .rounded-md.bg-gray-100),
+	:global(.svelte-flow__node.agent-subflow-header > div .dark\:bg-gray-800) {
+		background: color-mix(in srgb, var(--primary) 16%, transparent) !important;
+		border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
+	}
+
+	:global(.svelte-flow__node.agent-subflow-header > div .text-gray-600),
+	:global(.svelte-flow__node.agent-subflow-header > div .dark\:text-gray-400) {
+		color: color-mix(in srgb, var(--primary) 74%, var(--foreground)) !important;
 	}
 </style>

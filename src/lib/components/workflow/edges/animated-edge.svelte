@@ -2,6 +2,7 @@
 	import {
 		BaseEdge,
 		getBezierPath,
+		getSmoothStepPath,
 		EdgeLabel,
 		EdgeReconnectAnchor,
 		type EdgeProps
@@ -21,16 +22,39 @@
 		style
 	}: EdgeProps = $props();
 
-	let [edgePath, labelX, labelY] = $derived(
-		getBezierPath({
+	let [edgePath, labelX, labelY] = $derived.by(() => {
+		if ((data?.route as string | undefined) === 'loop') {
+			return getSmoothStepPath({
+				sourceX,
+				sourceY,
+				sourcePosition,
+				targetX,
+				targetY,
+				targetPosition,
+				borderRadius: 18,
+				offset: 26
+			});
+		}
+		if ((data?.route as string | undefined) === 'arc') {
+			return getBezierPath({
+				sourceX,
+				sourceY,
+				sourcePosition,
+				targetX,
+				targetY,
+				targetPosition,
+				curvature: 0.42
+			});
+		}
+		return getBezierPath({
 			sourceX,
 			sourceY,
 			sourcePosition,
 			targetX,
 			targetY,
 			targetPosition
-		})
-	);
+		});
+	});
 
 	function onInsertClick(event: MouseEvent) {
 		event.stopPropagation();

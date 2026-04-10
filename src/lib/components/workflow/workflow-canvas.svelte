@@ -21,6 +21,14 @@
 	import { toast } from 'svelte-sonner';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
+	import {
+		createExecutionStream,
+		createInitialExecutionStreamState,
+		type ExecutionStreamState,
+		type ExecutionStreamStore
+	} from '$lib/stores/execution-stream.svelte';
+	import type { ExecutionAgentRun } from '$lib/types/execution-stream';
+	import { buildAgentCanvasSubflows, remapEdgesForReplacements } from '$lib/utils/agent-subflow';
 
 	// CNCF Serverless Workflow 1.0 node types only
 	import StartNode from './nodes/sw/start-node.svelte';
@@ -39,6 +47,8 @@
 	import RaiseNode from './nodes/sw/raise-node.svelte';
 	import DoNode from './nodes/sw/do-node.svelte';
 	import DefaultNode from './nodes/default-node.svelte';
+	import ChildWorkflowGroupNode from './nodes/child-workflow-group-node.svelte';
+	import ChildWorkflowLoopNode from './nodes/child-workflow-loop-node.svelte';
 	import AnimatedEdge from './edges/animated-edge.svelte';
 	import LabeledEdge from './edges/labeled-edge.svelte';
 	import CustomConnectionLine from './custom-connection-line.svelte';
@@ -51,6 +61,7 @@
 	import CommandPalette from './command-palette.svelte';
 	import ExecutionDemo from './execution-demo.svelte';
 	import ExecutionTracker from './execution-tracker.svelte';
+	import AgentSubflowFocus from './execution/agent-subflow-focus.svelte';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 	const ui = getContext<ReturnType<typeof createUiStore>>('ui');
@@ -82,7 +93,9 @@
 		run: RunNode,
 		raise: RaiseNode,
 		do: DoNode,
-		default: DefaultNode
+		default: DefaultNode,
+		childWorkflowGroup: ChildWorkflowGroupNode,
+		childWorkflowLoop: ChildWorkflowLoopNode
 	} satisfies NodeTypes;
 
 	const edgeTypes: EdgeTypes = {
@@ -94,10 +107,170 @@
 	// Context menu state
 	let contextMenu = $state<{ x: number; y: number; nodeId: string | null } | null>(null);
 	let edgeContextMenu = $state<{ x: number; y: number; edgeId: string } | null>(null);
+	let executionState = $state<ExecutionStreamState>(createInitialExecutionStreamState());
+	let selectedAgentRunId = $state<string | null>(null);
+	let expandedAgentRunId = $state<string | null>(null);
+	let canvasNodes = $state.raw<Node[]>([]);
+	let canvasEdges = $state.raw<Edge[]>([]);
+	let executionStream: ExecutionStreamStore | null = null;
+	let stopExecutionStream = () => {};
+	let lastExecutionId = '';
+	let lastExecutionLookupWorkflowId = '';
+	let autoExecutionId = $state<string | null>(null);
 
 	// Insert-on-edge: pending edge ID for inserting a node
 	let insertOnEdgeId = $state<string | null>(null);
 	let insertOnEdgePosition = $state<{ x: number; y: number } | null>(null);
+
+	const agentRuns = $derived(
+		(executionState.snapshot?.agentRuns as ExecutionAgentRun[] | undefined) ?? []
+	);
+	const runningAgentRun = $derived.by(
+		() => agentRuns.find((run) => run.status === 'running') ?? null
+	);
+	const agentCanvasSubflows = $derived.by(() =>
+		buildAgentCanvasSubflows(store.nodes, agentRuns, executionState.events, expandedAgentRunId)
+	);
+	const selectedAgentGroupNodeId = $derived.by(() =>
+		expandedAgentRunId ? `agent-group:${expandedAgentRunId}` : null
+	);
+	const selectedAgentParentNodeId = $derived.by(
+		() => agentRuns.find((run) => run.id === expandedAgentRunId)?.nodeId ?? null
+	);
+	const activeExecutionId = $derived(store.selectedExecutionId ?? autoExecutionId);
+
+	function isChildWorkflowNode(node: Node | null | undefined): boolean {
+		if (!node) return false;
+		return (
+			node.type === 'childWorkflowLoop' ||
+			node.id.startsWith('agent-loop:')
+		);
+	}
+
+	function isChildWorkflowEdge(edge: Edge | null | undefined): boolean {
+		if (!edge) return false;
+		return (
+			edge.id.startsWith('agent:') ||
+			edge.source.startsWith('agent:') ||
+			edge.target.startsWith('agent:') ||
+			edge.source.startsWith('agent-group:') ||
+			edge.target.startsWith('agent-group:')
+		);
+	}
+
+	function syncCanvasFromStore() {
+		const hidden = agentCanvasSubflows.replacedNodeIds;
+		const visible = hidden.size > 0 ? store.nodes.filter((n) => !hidden.has(n.id)) : store.nodes;
+		canvasNodes = [...visible, ...agentCanvasSubflows.nodes];
+		canvasEdges = [...remapEdgesForReplacements(store.edges, hidden, agentRuns, store.nodes), ...agentCanvasSubflows.edges];
+	}
+
+	function syncStoreNodesFromCanvas() {
+		store.nodes = canvasNodes.filter((node) => !isChildWorkflowNode(node)) as typeof store.nodes;
+	}
+
+	function startExecutionOverlay(executionId: string) {
+		stopExecutionStream();
+		stopExecutionStream = () => {};
+		executionStream?.dispose();
+		executionState = createInitialExecutionStreamState();
+
+		void fetch(`/api/workflows/executions/${executionId}/status`)
+			.then((response) => (response.ok ? response.json() : null))
+			.then((snapshot) => {
+				if (!snapshot || store.selectedExecutionId !== executionId) return;
+				executionState = {
+					...executionState,
+					snapshot,
+					events: Array.isArray(snapshot.agentEvents) ? snapshot.agentEvents : executionState.events
+				};
+			})
+			.catch((error) => {
+				console.warn('[WorkflowCanvas] Failed to load execution snapshot', error);
+			});
+
+		executionStream = createExecutionStream(executionId);
+		stopExecutionStream = executionStream.subscribe((state) => {
+			executionState = state;
+		});
+	}
+
+	async function ensureSelectedExecution(workflowId: string) {
+		try {
+			const response = await fetch(`/api/workflows/${workflowId}/executions`);
+			if (!response.ok) return;
+			const executions = (await response.json()) as Array<{ id: string; status: string }>;
+			const preferred = executions.find((execution) =>
+				['running', 'pending'].includes(execution.status?.toLowerCase?.() ?? '')
+			) ?? executions[0];
+			if (preferred) {
+				autoExecutionId = preferred.id;
+				if (!store.selectedExecutionId) {
+					store.selectedExecutionId = preferred.id;
+				}
+			}
+		} catch (error) {
+			console.warn('[WorkflowCanvas] Failed to auto-select execution', error);
+		}
+	}
+
+	$effect(() => {
+		if (!agentRuns.length) {
+			selectedAgentRunId = null;
+			expandedAgentRunId = null;
+		} else if (runningAgentRun) {
+			selectedAgentRunId = runningAgentRun.id;
+			expandedAgentRunId = runningAgentRun.id;
+		} else if (selectedAgentRunId && !agentRuns.some((run) => run.id === selectedAgentRunId)) {
+			selectedAgentRunId = null;
+		}
+
+		if (expandedAgentRunId && !agentRuns.some((run) => run.id === expandedAgentRunId)) {
+			expandedAgentRunId = null;
+		}
+	});
+
+	$effect(() => {
+		const baseNodes = store.nodes;
+		const baseEdges = store.edges;
+		const subflowNodes = agentCanvasSubflows.nodes;
+		const subflowEdges = agentCanvasSubflows.edges;
+		const hidden = agentCanvasSubflows.replacedNodeIds;
+		const visible = hidden.size > 0 ? baseNodes.filter((n) => !hidden.has(n.id)) : baseNodes;
+		canvasNodes = [...visible, ...subflowNodes];
+		canvasEdges = [...remapEdgesForReplacements(baseEdges, hidden, agentRuns, baseNodes), ...subflowEdges];
+	});
+
+	$effect(() => {
+		const execId = activeExecutionId;
+		if (execId && execId !== lastExecutionId) {
+			lastExecutionId = execId;
+			startExecutionOverlay(execId);
+		}
+
+		if (!execId) {
+			lastExecutionId = '';
+			stopExecutionStream();
+			stopExecutionStream = () => {};
+			executionStream?.dispose();
+			executionStream = null;
+			executionState = createInitialExecutionStreamState();
+		}
+
+		return () => {
+			stopExecutionStream();
+			stopExecutionStream = () => {};
+			executionStream?.dispose();
+			executionStream = null;
+		};
+	});
+
+	$effect(() => {
+		const workflowId = store.workflowId;
+		if (!workflowId || activeExecutionId || workflowId === lastExecutionLookupWorkflowId) return;
+		lastExecutionLookupWorkflowId = workflowId;
+		void ensureSelectedExecution(workflowId);
+	});
 
 	function handleInsertOnEdge(event: Event) {
 		const detail = (event as CustomEvent).detail as { edgeId: string; position: { x: number; y: number } };
@@ -179,27 +352,47 @@
 	}
 
 	function onNodeClick({ node }: { node: Node; event: MouseEvent | TouchEvent }) {
+		if (isChildWorkflowNode(node)) {
+			const runId =
+				typeof (node.data as Record<string, unknown> | undefined)?.agentRunId === 'string'
+					? ((node.data as Record<string, unknown>).agentRunId as string)
+					: null;
+			if (runId) {
+				selectedAgentRunId = runId;
+				expandedAgentRunId = expandedAgentRunId === runId ? null : runId;
+			}
+			return;
+		}
 		store.selectedNodeId = node.id;
 		store.selectedEdgeId = null;
+		const matchingRun = agentRuns.find((run) => run.nodeId === node.id);
+		if (matchingRun) {
+			selectedAgentRunId = matchingRun.id;
+			expandedAgentRunId = expandedAgentRunId === matchingRun.id ? null : matchingRun.id;
+		}
 	}
 
 	function onNodeDoubleClick({ node }: { node: Node; event: MouseEvent }) {
+		if (isChildWorkflowNode(node)) return;
 		// Double-click opens config panel
 		store.selectedNodeId = node.id;
 		ui.openRightPanel('properties');
 	}
 
 	function onNodeContextMenu({ node, event }: { node: Node; event: MouseEvent }) {
+		if (isChildWorkflowNode(node)) return;
 		event.preventDefault();
 		contextMenu = { x: event.clientX, y: event.clientY, nodeId: node.id };
 	}
 
 	function onEdgeClick({ edge }: { edge: Edge; event: MouseEvent }) {
+		if (isChildWorkflowEdge(edge)) return;
 		store.selectedEdgeId = edge.id;
 		store.selectedNodeId = null;
 	}
 
 	function onEdgeContextMenu({ edge, event }: { edge: Edge; event: MouseEvent }) {
+		if (isChildWorkflowEdge(edge)) return;
 		event.preventDefault();
 		edgeContextMenu = { x: event.clientX, y: event.clientY, edgeId: edge.id };
 		contextMenu = null;
@@ -259,6 +452,7 @@
 	}
 
 	function onNodeDragStop() {
+		syncStoreNodesFromCanvas();
 		store.isDirty = true;
 	}
 
@@ -266,8 +460,8 @@
 
 <div class="h-full w-full">
 	<SvelteFlow
-		bind:nodes={store.nodes}
-		bind:edges={store.edges}
+		bind:nodes={canvasNodes}
+		bind:edges={canvasEdges}
 		{nodeTypes}
 		{edgeTypes}
 		{colorMode}
@@ -300,6 +494,11 @@
 		<AutoLayout />
 		<ExecutionDemo />
 		<ExecutionTracker />
+		<AgentSubflowFocus
+			parentNodeId={selectedAgentParentNodeId}
+			groupNodeId={selectedAgentGroupNodeId}
+			enabled={Boolean(activeExecutionId)}
+		/>
 		<StepPalette />
 		<DropTarget />
 		<Controls>
@@ -310,6 +509,26 @@
 		<Background variant={BackgroundVariant.Dots} bgColor="var(--background)" patternColor="var(--border)" gap={24} size={2} />
 	</SvelteFlow>
 </div>
+
+<style>
+	:global(.svelte-flow__node.agent-subflow-group) {
+		border: 2px solid color-mix(in oklab, var(--primary) 28%, var(--border));
+		border-radius: 24px;
+		background:
+			linear-gradient(180deg, color-mix(in oklab, var(--primary) 10%, transparent), transparent 72%),
+			color-mix(in oklab, var(--card) 96%, white 4%);
+		box-shadow:
+			0 18px 42px color-mix(in oklab, var(--primary) 12%, transparent),
+			0 2px 0 color-mix(in oklab, var(--background) 86%, transparent) inset;
+	}
+
+	:global(.svelte-flow__node.agent-subflow-group.agent-subflow-group-selected) {
+		border-color: color-mix(in oklab, var(--primary) 70%, white 30%);
+		box-shadow:
+			0 0 0 3px color-mix(in oklab, var(--primary) 22%, transparent),
+			0 18px 42px color-mix(in oklab, var(--primary) 18%, transparent);
+	}
+</style>
 
 {#if contextMenu}
 	<ContextMenu

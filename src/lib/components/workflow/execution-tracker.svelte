@@ -9,6 +9,12 @@
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import ExecutionCanvasSync from './execution-canvas-sync.svelte';
 
+	interface Props {
+		onStateChange?: (state: ExecutionStreamState) => void;
+	}
+
+	let { onStateChange }: Props = $props();
+
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 
 	let executionStream: ExecutionStreamStore | null = null;
@@ -20,10 +26,12 @@
 		stopExecutionStream();
 		executionStream?.dispose();
 		executionState = createInitialExecutionStreamState();
+		queueMicrotask(() => onStateChange?.(executionState));
 
 		executionStream = createExecutionStream(executionId);
 		stopExecutionStream = executionStream.subscribe((state) => {
 			executionState = state;
+			queueMicrotask(() => onStateChange?.(state));
 		});
 	}
 
@@ -41,6 +49,7 @@
 			executionStream?.dispose();
 			executionStream = null;
 			executionState = createInitialExecutionStreamState();
+			queueMicrotask(() => onStateChange?.(executionState));
 		}
 
 		return () => {
