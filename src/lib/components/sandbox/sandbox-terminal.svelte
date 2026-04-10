@@ -1,16 +1,26 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
 
 	interface Props {
 		sandboxName: string;
+		sessionId: string;
 	}
 
-	let { sandboxName }: Props = $props();
+	let { sandboxName, sessionId }: Props = $props();
 
 	let terminal = $state<Terminal>();
-	let lineBuffer = '';
-	let running = false;
+	let ws: WebSocket | null = null;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let firstMessageTimer: ReturnType<typeof setTimeout> | null = null;
+	let resizeSubscription: { dispose?: () => void } | null = null;
+	let attachAddon: { activate: (terminal: Terminal) => void; dispose: () => void } | null = null;
+	let reconnectDelay = 1000;
+	let intentionalClose = false;
+
+	const MAX_RECONNECT_DELAY = 30000;
+	const FIRST_MESSAGE_TIMEOUT_MS = 4000;
 
 	const options: ITerminalOptions = {
 		fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -18,7 +28,6 @@
 		lineHeight: 1.2,
 		cursorBlink: true,
 		cursorStyle: 'bar',
-		convertEol: true,
 		theme: {
 			background: '#09090b',
 			foreground: '#fafafa',
@@ -43,163 +52,146 @@
 		}
 	};
 
+	function getWsUrl(): string {
+		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		return `${proto}//${location.host}/api/sandboxes/${encodeURIComponent(sandboxName)}/terminal/${encodeURIComponent(sessionId)}`;
+	}
+
+	function clearFirstMessageTimer() {
+		if (firstMessageTimer) {
+			clearTimeout(firstMessageTimer);
+			firstMessageTimer = null;
+		}
+	}
+
+	function disposeTerminalBindings() {
+		attachAddon?.dispose?.();
+		attachAddon = null;
+		resizeSubscription?.dispose?.();
+		resizeSubscription = null;
+	}
+
+	function renderTerminalBanner(term: Terminal) {
+		term.clear();
+		term.writeln('\x1b[32mOpenShell Sandbox Terminal\x1b[0m');
+		term.writeln(`\x1b[90mSandbox: ${sandboxName}\x1b[0m`);
+		term.writeln('');
+	}
+
+	async function connect(term: Terminal, options: { resetDisplay?: boolean } = {}) {
+		if (ws) {
+			ws.close();
+			ws = null;
+		}
+		clearFirstMessageTimer();
+		disposeTerminalBindings();
+		if (options.resetDisplay) {
+			renderTerminalBanner(term);
+		}
+
+		term.writeln('\x1b[90mConnecting to sandbox...\x1b[0m');
+
+		const socket = new WebSocket(getWsUrl());
+		ws = socket;
+
+		const { AttachAddon } = await XtermAddon.AttachAddon();
+
+		socket.onopen = () => {
+			reconnectDelay = 1000;
+			let sawFirstMessage = false;
+			attachAddon = new AttachAddon(socket, { bidirectional: true });
+			term.loadAddon(attachAddon);
+			socket.addEventListener('message', () => {
+				if (!sawFirstMessage) {
+					sawFirstMessage = true;
+					clearFirstMessageTimer();
+				}
+			});
+			firstMessageTimer = setTimeout(() => {
+				if (!sawFirstMessage && socket.readyState === WebSocket.OPEN) {
+					term.writeln('\x1b[90mNo terminal output yet; retrying...\x1b[0m');
+					socket.close(1013, 'terminal startup timeout');
+				}
+			}, FIRST_MESSAGE_TIMEOUT_MS);
+
+			// Send initial size and track resizes
+			const sendResize = (cols: number, rows: number) => {
+				if (socket.readyState === WebSocket.OPEN) {
+					socket.send(`\x01${JSON.stringify({ type: 'resize', cols, rows })}`);
+				}
+			};
+			sendResize(term.cols, term.rows);
+			resizeSubscription = term.onResize(({ cols, rows }) => sendResize(cols, rows));
+		};
+
+		socket.onclose = (ev) => {
+			clearFirstMessageTimer();
+			disposeTerminalBindings();
+			if (intentionalClose) return;
+			term.writeln('');
+			term.writeln(
+				`\x1b[90mDisconnected${ev.reason ? ': ' + ev.reason : ''} (code ${ev.code})\x1b[0m`
+			);
+			scheduleReconnect(term);
+		};
+
+		socket.onerror = () => {
+			// onclose fires after
+		};
+	}
+
+	function scheduleReconnect(term: Terminal) {
+		if (intentionalClose) return;
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+
+		term.writeln(`\x1b[90mReconnecting in ${reconnectDelay / 1000}s...\x1b[0m`);
+		reconnectTimer = setTimeout(() => {
+			reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY);
+			connect(term, { resetDisplay: true });
+		}, reconnectDelay);
+	}
+
 	async function onLoad(term: Terminal) {
 		terminal = term;
 
 		const { FitAddon } = await XtermAddon.FitAddon();
 		const fitAddon = new FitAddon();
-		terminal.loadAddon(fitAddon);
+		term.loadAddon(fitAddon);
 
 		try {
 			const { WebLinksAddon } = await XtermAddon.WebLinksAddon();
-			terminal.loadAddon(new WebLinksAddon());
+			term.loadAddon(new WebLinksAddon());
 		} catch {
 			// optional
 		}
 
 		fitAddon.fit();
 
-		const container = terminal.element?.parentElement;
+		const container = term.element?.parentElement;
 		if (container) {
 			new ResizeObserver(() => fitAddon.fit()).observe(container);
 		}
 
-		terminal.writeln('\x1b[32mOpenShell Sandbox Terminal\x1b[0m');
-		terminal.writeln(`\x1b[90mSandbox: ${sandboxName}\x1b[0m`);
-		terminal.writeln('');
-		writePrompt();
+		renderTerminalBanner(term);
+		connect(term);
 	}
 
-	function writePrompt() {
-		terminal?.write('\x1b[36msandbox\x1b[0m:\x1b[34m~\x1b[0m$ ');
-	}
-
-	async function executeCommand(command: string) {
-		if (!command.trim()) {
-			writePrompt();
-			return;
-		}
-
-		running = true;
-
-		try {
-			const response = await fetch(
-				`/api/sandboxes/${encodeURIComponent(sandboxName)}/exec?stream=true`,
-				{
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ command: command.trim(), timeout: 30 })
-				}
-			);
-
-			if (!response.ok || !response.body) {
-				terminal?.writeln(`\x1b[31mError: ${response.statusText}\x1b[0m`);
-				writePrompt();
-				running = false;
-				return;
+	onMount(() => {
+		return () => {
+			intentionalClose = true;
+			if (reconnectTimer) clearTimeout(reconnectTimer);
+			clearFirstMessageTimer();
+			disposeTerminalBindings();
+			if (ws) {
+				ws.close();
+				ws = null;
 			}
-
-			const reader = response.body.getReader();
-			const decoder = new TextDecoder();
-			let buffer = '';
-			let streamDone = false;
-
-			while (!streamDone) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				buffer += decoder.decode(value, { stream: true });
-				const lines = buffer.split('\n');
-				buffer = lines.pop() ?? '';
-
-				let eventType = '';
-				for (const line of lines) {
-					if (line.startsWith('event: ')) {
-						eventType = line.slice(7).trim();
-					} else if (line.startsWith('data: ')) {
-						const raw = line.slice(6);
-						try {
-							const data = JSON.parse(raw);
-							if (eventType === 'stdout') {
-								terminal?.write(data.text ?? '');
-							} else if (eventType === 'stderr') {
-								terminal?.write(`\x1b[31m${data.text ?? ''}\x1b[0m`);
-							} else if (eventType === 'exit') {
-								const code = data.exitCode ?? 0;
-								if (code !== 0) {
-									terminal?.writeln(`\x1b[90m(exit ${code})\x1b[0m`);
-								}
-							} else if (eventType === 'error') {
-								terminal?.writeln(`\x1b[31mError: ${data.message ?? 'unknown'}\x1b[0m`);
-							} else if (eventType === 'done') {
-								streamDone = true;
-								break;
-							}
-						} catch {
-							// ignore unparseable
-						}
-						eventType = '';
-					}
-				}
-			}
-
-			// Cancel the reader if still open
-			try { reader.cancel(); } catch { /* */ }
-		} catch (err) {
-			terminal?.writeln(
-				`\x1b[31mConnection error: ${err instanceof Error ? err.message : 'unknown'}\x1b[0m`
-			);
-		} finally {
-			running = false;
-			writePrompt();
-		}
-	}
-
-	function onData(data: string) {
-		if (!terminal) return;
-
-		// Handle special keys
-		const code = data.charCodeAt(0);
-
-		if (code === 13) {
-			// Enter
-			terminal.write('\r\n');
-			const cmd = lineBuffer;
-			lineBuffer = '';
-			executeCommand(cmd);
-		} else if (code === 127 || code === 8) {
-			// Backspace
-			if (lineBuffer.length > 0) {
-				lineBuffer = lineBuffer.slice(0, -1);
-				terminal.write('\b \b');
-			}
-		} else if (code === 3) {
-			// Ctrl+C
-			lineBuffer = '';
-			terminal.write('^C\r\n');
-			if (!running) writePrompt();
-		} else if (code === 12) {
-			// Ctrl+L (clear)
-			terminal.clear();
-			writePrompt();
-		} else if (code === 21) {
-			// Ctrl+U (clear line)
-			const len = lineBuffer.length;
-			lineBuffer = '';
-			terminal.write('\r\x1b[K');
-			writePrompt();
-		} else if (code >= 32) {
-			// Printable character
-			if (!running) {
-				lineBuffer += data;
-				terminal.write(data);
-			}
-		}
-	}
+		};
+	});
 </script>
 
 <div class="flex h-full flex-col overflow-hidden bg-[#09090b]">
 	<div class="flex-1 overflow-hidden p-1">
-		<Xterm {options} {onLoad} {onData} />
+		<Xterm {options} {onLoad} />
 	</div>
 </div>
