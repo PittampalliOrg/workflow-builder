@@ -499,29 +499,21 @@ def _resolve_function_call(
 # (not single-shot HTTP calls through function-router)
 _AGENT_ACTION_TYPES = {
     "durable/run",
+}
+_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
+_REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
     "openshell/run",
     "openshell/session-start",
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
 }
-_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run", "openshell/run", "claude/run"}
 
 _NATIVE_DURABLE_AGENT_TARGETS = {
     "durable/run": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
         "app_id": config.DURABLE_AGENT_APP_ID,
         "instance_prefix": "durable",
-    },
-    "openshell/run": {
-        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DURABLE_AGENT_APP_ID,
-        "instance_prefix": "durable-agent",
-    },
-    "claude/run": {
-        "workflow_name": config.CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.CLAUDE_AGENT_APP_ID,
-        "instance_prefix": "claude",
     },
 }
 
@@ -736,6 +728,18 @@ def _run_native_durable_agent_child_workflow(
         cwd,
         agent_graph,
     )
+    workspace_ref = (
+        flattened_args.get("workspaceRef").strip()
+        if isinstance(flattened_args.get("workspaceRef"), str)
+        and flattened_args.get("workspaceRef").strip()
+        else None
+    )
+    if not workspace_ref:
+        raise RuntimeError(
+            "SW 1.0 durable/run tasks require an explicit workspaceRef. "
+            "Provision a workspace/profile step in the parent workflow and pass "
+            "with.workspaceRef into the durable/run task."
+        )
     child_input = {
         "task": run_prompt,
         "prompt": prompt,
@@ -747,7 +751,7 @@ def _run_native_durable_agent_child_workflow(
         "nodeId": task_name,
         "nodeName": task_name,
         "agentRunId": child_instance_id,
-        "workspaceRef": flattened_args.get("workspaceRef"),
+        "workspaceRef": workspace_ref,
         "stopCondition": stop_condition or None,
         "cwd": cwd,
         "requireFileChanges": require_file_changes,
@@ -782,7 +786,7 @@ def _run_native_durable_agent_child_workflow(
                         "agentWorkflowId": child_instance_id,
                         "daprInstanceId": child_instance_id,
                         "parentExecutionId": ctx.instance_id,
-                        "workspaceRef": flattened_args.get("workspaceRef"),
+                        "workspaceRef": workspace_ref,
                         "_otel": tc.otel_ctx,
                     }
                 ),
@@ -893,10 +897,8 @@ def _handle_call_task(
 ) -> Any:
     """Execute a call task via function-router / Dapr service invocation.
 
-    Agent actions (openshell/*, langgraph/*) are dispatched through the
-    legacy process_agent_child_workflow which handles multi-turn LLM agent
-    loops, plan approval gates, child workflow orchestration, and progress
-    tracking. All other calls go through execute_action as single-shot HTTP.
+    Embedded agent actions are dispatched through the native durable child
+    workflow path. All other calls go through execute_action as single-shot HTTP.
     """
     resolved = _resolve_function_call(task_data, tc.workflow)
     action_type = (
@@ -906,6 +908,12 @@ def _handle_call_task(
     )
 
     _log_info(ctx, "[SW Workflow] call task: %s (action=%s)", task_name, action_type)
+
+    if action_type in _REMOVED_AGENT_ACTION_TYPES:
+        raise RuntimeError(
+            f"Removed SW 1.0 agent action '{action_type}' in workflow task '{task_name}'. "
+            "Use 'durable/run' for all embedded agent execution."
+        )
 
     # Agent actions: prefer native durable child workflows when available
     if action_type in _AGENT_ACTION_TYPES:
@@ -1391,6 +1399,11 @@ def _handle_run_task(
 
         # Check if this is an agent workflow that needs the full orchestration
         agent_action_type = child_input.get("actionType", "")
+        if agent_action_type in _REMOVED_AGENT_ACTION_TYPES:
+            raise RuntimeError(
+                f"Removed SW 1.0 agent workflow action '{agent_action_type}' in task '{task_name}'. "
+                "Use 'durable/run' for all embedded agent execution."
+            )
         if agent_action_type in _AGENT_ACTION_TYPES:
             if agent_action_type in _NATIVE_DURABLE_AGENT_ACTION_TYPES:
                 result = yield from _run_native_durable_agent_child_workflow(

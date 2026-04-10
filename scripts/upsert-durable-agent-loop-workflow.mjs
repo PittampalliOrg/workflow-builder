@@ -185,7 +185,7 @@ function createAgentTask(label) {
 	};
 
 	return {
-		call: "openshell/run",
+		call: "durable/run",
 		with: {
 			workspaceRef: "${ .workspace_profile.workspaceRef }",
 			prompt: body.prompt,

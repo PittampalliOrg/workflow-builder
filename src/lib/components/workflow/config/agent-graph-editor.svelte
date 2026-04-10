@@ -234,7 +234,7 @@
 				</Button>
 				<div class="rounded-md border p-2 text-xs text-muted-foreground">
 					Connect nodes directly on the canvas to define a single durable agent loop. Persisted
-					graph data is stored on the `openshell/run` task body.
+					graph data is stored on the `durable/run` task body.
 				</div>
 			</div>
 

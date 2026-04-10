@@ -492,7 +492,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 						"You are planning a repository feature delivery task for this specific codebase.\n\nUser feature request:\n{{@trigger:Manual.feature_request}}\n\nPlanning requirements:\n- Inspect the repository first and stay read-only during this step.\n- Build a concrete implementation plan for this exact repository, not a generic solution.\n- Prefer the smallest cohesive change set that satisfies the request.\n- Identify the likely files/modules to touch, tests to add or update, validation commands to run, and any important risks or assumptions.\n- If the request is underspecified, make the minimum necessary assumptions and state them explicitly.\n\nReturn only the final implementation plan for approval.",
 					profile: "feature-delivery",
 					maxTurns: "24",
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					toolPolicy: "all",
 					agentConfig,
 					shellPolicy: "workspace-safe",
@@ -551,7 +551,7 @@ function buildOpenShellLangGraphFeatureDeliveryNodes(input?: {
 						"Implement the approved feature plan for this repository.\n\nOriginal user feature request:\n{{@trigger:Manual.feature_request}}\n\nExecution requirements:\n- Follow the approved plan artifact as the primary source of truth.\n- Match existing repository patterns and architecture.\n- Keep the change set cohesive and avoid unrelated edits.\n- Add or update tests when behavior changes.\n- Run the provided validation commands and any targeted checks needed for the changed code.\n- If the approved plan needs a small adaptation based on repository realities, make the smallest justified adjustment and explain it clearly in the final summary.\n\nReturn a concise engineering summary that includes changed files, verification results, and residual risks.",
 					profile: "implement",
 					maxTurns: "80",
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					toolPolicy: "all",
 					agentConfig,
 					artifactRef: `{{@${OPENSHELL_FEATURE_IDS.plan}:OpenShell LangGraph Plan.artifactRef}}`,
@@ -880,7 +880,7 @@ function buildNodes(profileVersion: number) {
 				description: "Generate plan only (no execution)",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "plan_mode",
 					model: "openai/gpt-5.4",
 					prompt:
@@ -922,7 +922,7 @@ function buildNodes(profileVersion: number) {
 				description: "Execute plan with concrete file edits",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "execute_direct",
 					model: "openai/gpt-5.4",
 					prompt:
@@ -1368,7 +1368,7 @@ fi`,
 					"Use the durable coding agent to review the repository and summarize the project.",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: AGENT_PROFILE_TEMPLATE_ID,
 					model: "openai/gpt-5.4",
@@ -1533,7 +1533,7 @@ function buildAiCodingAgentNodes() {
 					"Create the implementation plan, wait for approval, then execute the approved plan in the same OpenShell sandbox flow.",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "plan_mode",
 					profile: "feature-delivery",
 					provider: "",
@@ -1704,7 +1704,7 @@ fi`,
 					"Run the OpenShell coding agent through plan, approval, implementation, and verification.",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "plan_mode",
 					profile: "feature-delivery",
 					provider: "",

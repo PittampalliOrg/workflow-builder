@@ -53,7 +53,7 @@
 		const node = store.nodes.find((n) => n.id === nodeId);
 		if (!node || node.type !== 'call') return false;
 		const call = node.data?.taskConfig?.call;
-		return typeof call === 'string' ? !['durable/run', 'openshell/run'].includes(call) : true;
+		return typeof call === 'string' ? call !== 'durable/run' : true;
 	});
 </script>
 

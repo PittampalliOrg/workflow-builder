@@ -32,19 +32,26 @@ server.on('upgrade', (req, socket, head) => {
 
 	wss.handleUpgrade(req, socket, head, (browserWs) => {
 		const upstream = new WebSocket(upstreamUrl);
+		const pendingMessages = [];
+
+		browserWs.on('message', (data, isBinary) => {
+			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.send(data, { binary: isBinary });
+			} else if (upstream.readyState === WebSocket.CONNECTING) {
+				pendingMessages.push({ data, isBinary });
+			}
+		});
 
 		upstream.on('open', () => {
-			browserWs.on('message', (data, isBinary) => {
-				if (upstream.readyState === WebSocket.OPEN) {
-					upstream.send(data, { binary: isBinary });
-				}
-			});
+			for (const { data, isBinary } of pendingMessages.splice(0)) {
+				upstream.send(data, { binary: isBinary });
+			}
+		});
 
-			upstream.on('message', (data, isBinary) => {
-				if (browserWs.readyState === WebSocket.OPEN) {
-					browserWs.send(data, { binary: isBinary });
-				}
-			});
+		upstream.on('message', (data, isBinary) => {
+			if (browserWs.readyState === WebSocket.OPEN) {
+				browserWs.send(data, { binary: isBinary });
+			}
 		});
 
 		upstream.on('close', (code, reason) => {

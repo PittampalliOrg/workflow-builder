@@ -332,7 +332,7 @@ export function isAgentTaskConfig(
   taskConfig: Record<string, unknown> | null | undefined,
 ): boolean {
   return typeof taskConfig?.call === "string" &&
-    (taskConfig.call === "openshell/run" || taskConfig.call === "durable/run");
+    taskConfig.call === "durable/run";
 }
 
 export function normalizeAgentTaskConfig(
@@ -357,7 +357,7 @@ export function normalizeAgentTaskConfig(
 
   return {
     ...existing,
-    call: "openshell/run",
+    call: "durable/run",
     with: {
       ...withBlock,
       prompt: normalizedBody.prompt,

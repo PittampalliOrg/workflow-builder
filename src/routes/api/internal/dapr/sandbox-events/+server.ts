@@ -1,6 +1,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { sandboxEventBus } from '$lib/server/sandbox-event-bus';
+import { daprEventStream } from '$lib/server/dapr-event-stream';
 
 /**
  * Dapr pub/sub event handler for sandbox events.
@@ -11,6 +12,10 @@ import { sandboxEventBus } from '$lib/server/sandbox-event-bus';
  */
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json();
+
+	// Also push to the dapr event stream for the Dapr System dashboard
+	const streamEventType = body.type ?? body.data?.type ?? 'unknown';
+	daprEventStream.push('workflow.stream', streamEventType, body.source ?? '', body.data ?? body);
 
 	// Dapr CloudEvents envelope: body.type is the event type, body.data has the payload
 	const eventType = body.type ?? body.data?.type ?? '';

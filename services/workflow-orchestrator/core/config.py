@@ -51,18 +51,12 @@ class OrchestratorConfig:
 
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
-    PRIMARY_AGENT_RUNTIME: str = "openshell"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
-    CLAUDE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
-    OPENSHELL_LANGGRAPH_APP_ID: str = "openshell-langgraph-observable"
-    OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME: str = "dapr.langgraph.OpenShellLanggraphObservable.workflow"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
-    CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
-    CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
 
     # Runtime feature gate and startup checks
     ENFORCE_MIN_DAPR_VERSION: str = "false"
@@ -83,7 +77,6 @@ class OrchestratorConfig:
         logger.info(
             f"[Config] Loaded (dapr={self._loaded_from_dapr}): "
             f"FUNCTION_ROUTER_APP_ID={self.FUNCTION_ROUTER_APP_ID}, "
-            f"PRIMARY_AGENT_RUNTIME={self.PRIMARY_AGENT_RUNTIME}, "
             f"DURABLE_AGENT_APP_ID={self.DURABLE_AGENT_APP_ID}, "
             f"PUBSUB_NAME={self.PUBSUB_NAME}"
         )
@@ -95,18 +88,12 @@ class OrchestratorConfig:
 
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
-                "PRIMARY_AGENT_RUNTIME",
                 "DURABLE_AGENT_APP_ID",
-                "CLAUDE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
-                "OPENSHELL_LANGGRAPH_APP_ID",
-                "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
-                "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
-                "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "PUBSUB_NAME",
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
@@ -154,20 +141,10 @@ class OrchestratorConfig:
             "DAPR_SECRETS_STORE": ("DAPR_SECRETS_STORE", "azure-keyvault"),
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
-            "PRIMARY_AGENT_RUNTIME": ("PRIMARY_AGENT_RUNTIME", "openshell"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
-            "CLAUDE_AGENT_APP_ID": ("CLAUDE_AGENT_APP_ID", "claude-code-agent"),
             "OPENSHELL_AGENT_APP_ID": (
                 "OPENSHELL_AGENT_APP_ID",
                 "openshell-agent-runtime.openshell",
-            ),
-            "OPENSHELL_LANGGRAPH_APP_ID": (
-                "OPENSHELL_LANGGRAPH_APP_ID",
-                "openshell-langgraph-observable",
-            ),
-            "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME": (
-                "OPENSHELL_LANGGRAPH_CHILD_WORKFLOW_RUN_NAME",
-                "daprAgentRunWorkflowV1",
             ),
             "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -184,14 +161,6 @@ class OrchestratorConfig:
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "durableRunWorkflowV1",
-            ),
-            "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW": (
-                "CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
-                "true",
-            ),
-            "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
-                "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME",
-                "claudeCodeRunWorkflowV1",
             ),
             "ENFORCE_MIN_DAPR_VERSION": (
                 "ENFORCE_MIN_DAPR_VERSION",

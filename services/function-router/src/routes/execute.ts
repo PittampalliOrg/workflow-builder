@@ -171,23 +171,6 @@ function resolveAgentHttpTimeoutMs(timeoutMinutes: unknown): number {
   );
 }
 
-function resolveObservableAgentHttpTimeoutMs(input: {
-  appId: string;
-  mode: unknown;
-  timeoutMinutes: unknown;
-}): number {
-  if (input.appId !== "openshell-langgraph-observable") {
-    return resolveAgentHttpTimeoutMs(input.timeoutMinutes);
-  }
-
-  const mode =
-    typeof input.mode === "string" ? input.mode.trim().toLowerCase() : "";
-  const defaultTimeoutMinutes = mode === "execute_direct" ? 10 : 5;
-  return resolveAgentHttpTimeoutMs(
-    input.timeoutMinutes ?? defaultTimeoutMinutes,
-  );
-}
-
 function resolveDaprSweHttpTimeoutMs(input: {
   timeoutMinutes: unknown;
   timeoutMs: unknown;
@@ -252,36 +235,6 @@ function resolveWorkspaceUtilityTimeoutMs(input: {
     explicitTimeoutMs ?? DEFAULT_WORKSPACE_UTILITY_TIMEOUT_MS,
     { min: 10_000, max: MAX_WORKSPACE_UTILITY_TIMEOUT_MS },
   );
-}
-
-function normalizeSandboxSegment(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-function resolveOpenShellLangGraphSandboxName(input: {
-  explicitSandboxName: unknown;
-  dbExecutionId: string | null | undefined;
-  executionId: string;
-}): string | undefined {
-  if (
-    typeof input.explicitSandboxName === "string" &&
-    input.explicitSandboxName.trim().length > 0
-  ) {
-    return input.explicitSandboxName.trim().slice(0, 63);
-  }
-  const rawScope =
-    (typeof input.dbExecutionId === "string" && input.dbExecutionId.trim()) ||
-    input.executionId;
-  const normalizedScope = normalizeSandboxSegment(rawScope);
-  if (!normalizedScope) {
-    return undefined;
-  }
-  return `openshell-lg-${normalizedScope}`.slice(0, 63);
 }
 
 function isNoFileChangeReviewResult(
@@ -952,7 +905,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     if (retiredAgentPrefixes.has(pluginId)) {
       return reply.status(410).send({
         success: false,
-        error: `The ${pluginId} runtime has been retired. Use openshell/* actions instead.`,
+        error: `The ${pluginId} runtime has been retired. Use durable/run for embedded agent execution instead.`,
         duration_ms: 0,
       } as ExecuteResponse);
     }
@@ -1031,7 +984,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
-          target.appId === "claude-code-agent" ||
           target.appId === "openshell-agent-runtime";
 
         if (isBuiltinRuntime) {
@@ -1183,15 +1135,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     args.nodeName.trim().length > 0
                   ? args.nodeName.trim()
                   : browserNodeId;
-            const openshellLanggraphSandboxName =
-              pluginId === "openshell-langgraph"
-                ? resolveOpenShellLangGraphSandboxName({
-                    explicitSandboxName: args.sandboxName,
-                    dbExecutionId: body.db_execution_id,
-                    executionId: workspaceExecutionId,
-                  })
-                : undefined;
-
             targetUrl = functionUrl;
             requestBody = "";
             const loopPolicy = buildLoopPolicyInput(args);
@@ -1259,9 +1202,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   waitForCompletion: true,
                 });
               } else {
-                targetUrl = hasWorkspaceRef
-                  ? `${functionUrl}/api/run-sandboxed`
-                  : `${functionUrl}/api/run`;
+                targetUrl = `${functionUrl}/api/run`;
                 requestBody = JSON.stringify({
                   prompt: args.prompt ?? "",
                   mode: runMode || "execute_direct",
@@ -2204,65 +2145,24 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 metadata: { pieceName: pluginId, actionName: stepName },
               }),
             };
-            const isObservableAgentRuntime =
-              target.appId === "openshell-langgraph-observable";
-            const observableArgs = isPlainObject(normalizedInput)
-              ? (normalizedInput as Record<string, unknown>)
-              : {};
-            const observableExecutionId =
-              typeof body.db_execution_id === "string" &&
-              body.db_execution_id.trim().length > 0
-                ? body.db_execution_id.trim()
-                : body.execution_id;
-            const requestBody = isObservableAgentRuntime
-              ? JSON.stringify({
-                  ...observableArgs,
-                  task:
-                    typeof observableArgs.task === "string" &&
-                    observableArgs.task.trim().length > 0
-                      ? observableArgs.task
-                      : typeof observableArgs.prompt === "string" &&
-                          observableArgs.prompt.trim().length > 0
-                        ? observableArgs.prompt
-                        : typeof observableArgs.goal === "string"
-                          ? observableArgs.goal
-                          : "",
-                  prompt:
-                    typeof observableArgs.prompt === "string" &&
-                    observableArgs.prompt.trim().length > 0
-                      ? observableArgs.prompt
-                      : typeof observableArgs.task === "string"
-                        ? observableArgs.task
-                        : typeof observableArgs.goal === "string"
-                          ? observableArgs.goal
-                          : "",
-                  parentExecutionId: body.execution_id,
-                  executionId: observableExecutionId,
-                  dbExecutionId: body.db_execution_id ?? undefined,
-                  workflowId: body.workflow_id,
-                  nodeId: body.node_id,
-                  nodeName: body.node_name,
-                  credentials: credentialResult.credentials,
-                })
-              : JSON.stringify(knativeRequest);
+            const requestBody = JSON.stringify(knativeRequest);
 
             console.log(
               `[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
             );
-            const requestPath =
-              target.appId === "openshell-langgraph-observable"
-                ? "/api/run"
-                : "/execute";
-            const requestTimeoutMs = isObservableAgentRuntime
-              ? resolveObservableAgentHttpTimeoutMs({
-                  appId: target.appId,
-                  mode: observableArgs.mode,
-                  timeoutMinutes: observableArgs.timeoutMinutes,
-                })
-              : target.appId === "dapr-swe"
+            const requestPath = "/execute";
+            const requestTimeoutMs = target.appId === "dapr-swe"
                 ? resolveDaprSweHttpTimeoutMs({
-                    timeoutMinutes: observableArgs.timeoutMinutes,
-                    timeoutMs: observableArgs.timeoutMs,
+                    timeoutMinutes:
+                      isPlainObject(normalizedInput) &&
+                      typeof normalizedInput.timeoutMinutes !== "undefined"
+                        ? normalizedInput.timeoutMinutes
+                        : undefined,
+                    timeoutMs:
+                      isPlainObject(normalizedInput) &&
+                      typeof normalizedInput.timeoutMs !== "undefined"
+                        ? normalizedInput.timeoutMs
+                        : undefined,
                   })
                 : HTTP_TIMEOUT_MS;
 
@@ -2275,7 +2175,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
             const executionStartTime = Date.now();
             console.log(
-              `[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms (mode=${typeof observableArgs.mode === "string" ? observableArgs.mode : "n/a"})`,
+              `[Execute Route] HTTP timeout budget for ${target.appId}: ${requestTimeoutMs}ms`,
             );
             try {
               const httpResponse = await undiciFetch(

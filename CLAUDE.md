@@ -163,7 +163,7 @@ Actions are routed by `actionType` slug prefix:
 | `durable/*` | durable-agent (direct) | Async | Durable agent run with prompt |
 | `workspace/*` | openshell-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
 | `browser/*` | openshell-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
-| `openshell/run` | openshell-agent-runtime (via function-router) | Async | Standard OpenShell coding run |
+| `durable/run` | durable-agent (native child workflow) | Async | Standard OpenShell-backed durable coding run |
 | `openshell/session-start` | openshell-agent-runtime (via function-router) | Async | Start a retained Claude session in an OpenShell sandbox |
 | `openshell-langgraph-observable/run` | openshell-langgraph-observable (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
 | `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |

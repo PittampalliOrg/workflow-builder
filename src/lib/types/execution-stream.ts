@@ -28,6 +28,26 @@ export interface ExecutionAgentRun {
 	completedAt: string | null;
 }
 
+export interface ExecutionWorkspaceSession {
+	workspaceRef: string;
+	workflowExecutionId: string;
+	durableInstanceId: string | null;
+	name: string;
+	rootPath: string;
+	clonePath: string | null;
+	backend: 'openshell';
+	enabledTools: string[];
+	requireReadBeforeWrite: boolean;
+	commandTimeoutMs: number;
+	status: 'active' | 'cleaned' | 'error';
+	lastError: string | null;
+	createdAt: string | null;
+	updatedAt: string | null;
+	lastAccessedAt: string | null;
+	cleanedAt: string | null;
+	sandboxState: Record<string, unknown> | null;
+}
+
 export interface ExecutionStepLog {
 	logId?: string;
 	stepName: string;
@@ -68,6 +88,7 @@ export interface ExecutionReadModel {
 	steps: ExecutionStepLog[];
 	browserArtifacts: Array<Record<string, unknown>>;
 	agentRuns: ExecutionAgentRun[];
+	workspaces: ExecutionWorkspaceSession[];
 	agentEvents: ExecutionTimelineEvent[];
 	lastAgentEventId: number;
 }

@@ -1472,11 +1472,7 @@ def _is_while_body_candidate(node: dict[str, Any]) -> bool:
         return False
     data = node.get("data", {}) if isinstance(node.get("data"), dict) else {}
     config = data.get("config", {}) if isinstance(data.get("config"), dict) else {}
-    return str(config.get("actionType") or "").strip() in {
-        "openshell/run",
-        "openshell-langgraph/run",
-        "openshell-langgraph-observable/run",
-    }
+    return str(config.get("actionType") or "").strip() == "durable/run"
 
 
 def _abs_position(

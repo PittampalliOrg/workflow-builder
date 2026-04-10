@@ -314,6 +314,20 @@ export function extractFileChanges(toolCalls: ToolCallRecord[]): FileChange[] {
 	return changes;
 }
 
+function toolCallResultFailed(result: unknown): boolean {
+	if (!result || typeof result !== "object") return false;
+	const record = result as Record<string, unknown>;
+	if (record.success === false) return true;
+	if (typeof record.exitCode === "number" && Number.isFinite(record.exitCode)) {
+		return record.exitCode !== 0;
+	}
+	return false;
+}
+
+export function didAnyToolCallFail(toolCalls: ToolCallRecord[]): boolean {
+	return toolCalls.some((toolCall) => toolCallResultFailed(toolCall.result));
+}
+
 export async function buildOpenShellRunCompletion(
 	input: BuildOpenShellRunCompletionInput,
 	deps: BuildOpenShellRunCompletionDeps,
@@ -324,6 +338,9 @@ export async function buildOpenShellRunCompletion(
 }> {
 	const toolCalls = extractToolCalls(input.completion.result);
 	const fileChanges = extractFileChanges(toolCalls);
+	const toolFailureViolation = didAnyToolCallFail(toolCalls)
+		? "One or more tool calls failed, so the run cannot be considered successful."
+		: undefined;
 	const changeSummary =
 		input.workspaceRef && input.executionId
 			? await deps.buildAgentChangeSummary(
@@ -348,6 +365,7 @@ export async function buildOpenShellRunCompletion(
 	if (
 		deps.scorers.length > 0 &&
 		input.completion.success &&
+		!toolFailureViolation &&
 		!fileChangeGuardViolation
 	) {
 		evalResults = await deps.runScorers(
@@ -359,7 +377,7 @@ export async function buildOpenShellRunCompletion(
 	}
 
 	const completionSuccess =
-		input.completion.success && !fileChangeGuardViolation;
+		input.completion.success && !toolFailureViolation && !fileChangeGuardViolation;
 	const completionResult = {
 		text,
 		toolCalls,
@@ -399,8 +417,13 @@ export async function buildOpenShellRunCompletion(
 	return {
 		success: completionSuccess,
 		result: completionResult,
-		...(fileChangeGuardViolation || input.completion.error
-			? { error: fileChangeGuardViolation || input.completion.error }
+		...(toolFailureViolation || fileChangeGuardViolation || input.completion.error
+			? {
+					error:
+						toolFailureViolation ||
+						fileChangeGuardViolation ||
+						input.completion.error,
+				}
 			: {}),
 	};
 }

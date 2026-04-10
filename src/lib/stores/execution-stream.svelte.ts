@@ -121,6 +121,7 @@ export function createExecutionStream(executionId: string) {
 						browserArtifacts: next.browserArtifacts ?? state.snapshot.browserArtifacts,
 						traceIds: next.traceIds ?? state.snapshot.traceIds,
 						agentRuns: next.agentRuns ?? state.snapshot.agentRuns,
+						workspaces: next.workspaces ?? state.snapshot.workspaces,
 						agentEvents: next.agentEvents ?? state.snapshot.agentEvents
 					} as ExecutionReadModel);
 

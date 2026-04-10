@@ -45,7 +45,7 @@
 			const def = task[taskName] as Record<string, unknown>;
 			return (
 				typeof def?.call === 'string' &&
-				!['durable/run', 'openshell/run'].includes(def.call)
+				def.call !== 'durable/run'
 			) || def?.call === '';
 		}
 		// Fallback: check node data

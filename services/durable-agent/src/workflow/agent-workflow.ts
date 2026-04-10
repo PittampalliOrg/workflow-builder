@@ -69,6 +69,9 @@ export interface AgentWorkflowResult {
 		outputTokens: number;
 		totalTokens: number;
 	};
+	workspaceRef?: string;
+	workspaceRootPath?: string;
+	workspaceWorkingDirectory?: string;
 }
 
 /** Type for the bound activity functions passed from DurableAgent. */
@@ -123,6 +126,51 @@ function extractDoneToolAnswer(input: {
 		return value.trim();
 	}
 	return undefined;
+}
+
+function extractWorkspaceContext(
+	allToolCalls: AgentWorkflowResult["all_tool_calls"],
+): {
+	workspaceRef?: string;
+	workspaceRootPath?: string;
+	workspaceWorkingDirectory?: string;
+} {
+	for (let index = allToolCalls.length - 1; index >= 0; index -= 1) {
+		const executionResult = allToolCalls[index]?.execution_result;
+		if (!executionResult || typeof executionResult !== "object") continue;
+		const sandbox = (executionResult as Record<string, unknown>).sandbox;
+		if (!sandbox || typeof sandbox !== "object") continue;
+		const sandboxRecord = sandbox as Record<string, unknown>;
+		const details =
+			typeof sandboxRecord.details === "object" &&
+			sandboxRecord.details &&
+			!Array.isArray(sandboxRecord.details)
+				? (sandboxRecord.details as Record<string, unknown>)
+				: undefined;
+		const workspaceRef =
+			typeof details?.workspaceRef === "string" && details.workspaceRef.trim()
+				? details.workspaceRef.trim()
+				: undefined;
+		const workspaceRootPath =
+			typeof sandboxRecord.rootPath === "string" && sandboxRecord.rootPath.trim()
+				? sandboxRecord.rootPath.trim()
+				: typeof details?.rootPath === "string" && details.rootPath.trim()
+					? details.rootPath.trim()
+					: undefined;
+		const workspaceWorkingDirectory =
+			typeof sandboxRecord.workingDirectory === "string" &&
+			sandboxRecord.workingDirectory.trim()
+				? sandboxRecord.workingDirectory.trim()
+				: undefined;
+		if (workspaceRef || workspaceRootPath || workspaceWorkingDirectory) {
+			return {
+				...(workspaceRef ? { workspaceRef } : {}),
+				...(workspaceRootPath ? { workspaceRootPath } : {}),
+				...(workspaceWorkingDirectory ? { workspaceWorkingDirectory } : {}),
+			};
+		}
+	}
+	return {};
 }
 
 function buildCelBindings(input: {
@@ -599,6 +647,7 @@ export function createAgentWorkflow(
 
 		// Return full result including accumulated tool history
 		const usageTotals = computeUsageTotals(stepHistory);
+		const workspaceContext = extractWorkspaceContext(allToolCalls);
 		const result: AgentWorkflowResult = {
 			role: finalMessage.role,
 			content: finalMessage.content,
@@ -620,6 +669,7 @@ export function createAgentWorkflow(
 				? { last_compaction_reason: lastCompactionReason }
 				: {}),
 			usage_totals: usageTotals,
+			...workspaceContext,
 		};
 		return result;
 	};

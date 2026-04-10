@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, or } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import {
 	workflowExecutionLogs,
@@ -399,7 +399,35 @@ function summarizeSpan(span: ObservabilityTraceSpan): string | null {
 	return clampPreview(summary);
 }
 
-async function getWorkflowSteps(executionId: string): Promise<{
+async function resolveExecutionForInvestigation(identifier: string): Promise<{
+	executionId: string | null;
+	sessionId: string | null;
+}> {
+	if (!db) {
+		return { executionId: null, sessionId: null };
+	}
+
+	const [execution] = await db
+		.select({
+			id: workflowExecutions.id,
+			workflowSessionId: workflowExecutions.workflowSessionId
+		})
+		.from(workflowExecutions)
+		.where(
+			or(
+				eq(workflowExecutions.id, identifier),
+				eq(workflowExecutions.workflowSessionId, identifier)
+			)
+		)
+		.limit(1);
+
+	return {
+		executionId: execution?.id ?? null,
+		sessionId: execution?.workflowSessionId ?? null
+	};
+}
+
+async function getWorkflowSteps(executionOrSessionId: string): Promise<{
 	steps: ObservabilityWorkflowStep[];
 	status: string | null;
 	startedAt: string | null;
@@ -409,16 +437,19 @@ async function getWorkflowSteps(executionId: string): Promise<{
 		return { steps: [], status: null, startedAt: null, completedAt: null };
 	}
 
+	const resolved = await resolveExecutionForInvestigation(executionOrSessionId);
+	const resolvedExecutionId = resolved.executionId ?? executionOrSessionId;
+
 	const [execution] = await db
 		.select()
 		.from(workflowExecutions)
-		.where(eq(workflowExecutions.id, executionId))
+		.where(eq(workflowExecutions.id, resolvedExecutionId))
 		.limit(1);
 
 	const dbLogs = await db
 		.select()
 		.from(workflowExecutionLogs)
-		.where(eq(workflowExecutionLogs.executionId, executionId))
+		.where(eq(workflowExecutionLogs.executionId, resolvedExecutionId))
 		.orderBy(workflowExecutionLogs.startedAt);
 
 	if (dbLogs.length > 0) {
@@ -752,10 +783,12 @@ function dedupeByKey<T>(items: T[], keyFn: (item: T) => string): T[] {
 	});
 }
 
-export async function buildSessionInvestigation(sessionId: string): Promise<ObservabilityInvestigationPayload> {
+export async function buildSessionInvestigation(sessionOrExecutionId: string): Promise<ObservabilityInvestigationPayload> {
+	const resolved = await resolveExecutionForInvestigation(sessionOrExecutionId);
+	const sessionId = resolved.sessionId ?? sessionOrExecutionId;
 	const [{ steps, status, startedAt, completedAt }, traceSpans, logs, llmSpans, toolSpans] =
 		await Promise.all([
-			getWorkflowSteps(sessionId),
+			getWorkflowSteps(sessionOrExecutionId),
 			getSessionTraceSpans(sessionId),
 			getSessionLogs(sessionId),
 			getSessionLlmSpans(sessionId),

@@ -104,7 +104,7 @@ function buildWorkflowPayload() {
 
 	const agentTask = normalizeAgentTaskConfig(
 		{
-			call: "openshell/run",
+			call: "durable/run",
 			with: {
 				body: agentBody,
 			},

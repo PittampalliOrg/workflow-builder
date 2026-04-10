@@ -214,7 +214,7 @@ function createAgentTask() {
 	};
 
 	return {
-		call: "openshell/run",
+		call: "durable/run",
 		with: {
 			workspaceRef: "${ .workspace_profile.workspaceRef }",
 			cwd: cwdExpression,

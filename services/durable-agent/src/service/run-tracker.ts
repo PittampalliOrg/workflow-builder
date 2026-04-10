@@ -58,6 +58,37 @@ type TrackInput = {
 	artifactRef?: string;
 };
 
+function extractWorkspaceRef(
+	result: Record<string, unknown> | undefined,
+): string | undefined {
+	if (!result) return undefined;
+	const direct =
+		typeof result.workspaceRef === "string" ? result.workspaceRef.trim() : "";
+	if (direct) return direct;
+
+	const allToolCalls = result.all_tool_calls;
+	if (!Array.isArray(allToolCalls)) return undefined;
+	for (let index = allToolCalls.length - 1; index >= 0; index -= 1) {
+		const executionResult = (allToolCalls[index] as Record<string, unknown> | null)
+			?.execution_result;
+		if (!executionResult || typeof executionResult !== "object") continue;
+		const sandbox = (executionResult as Record<string, unknown>).sandbox;
+		if (!sandbox || typeof sandbox !== "object") continue;
+		const details =
+			typeof (sandbox as Record<string, unknown>).details === "object" &&
+			(sandbox as Record<string, unknown>).details &&
+			!Array.isArray((sandbox as Record<string, unknown>).details)
+				? ((sandbox as Record<string, unknown>).details as Record<string, unknown>)
+				: undefined;
+		const workspaceRef =
+			typeof details?.workspaceRef === "string"
+				? details.workspaceRef.trim()
+				: "";
+		if (workspaceRef) return workspaceRef;
+	}
+	return undefined;
+}
+
 function toIso(input: string | Date | null | undefined): string | undefined {
 	if (!input) return undefined;
 	if (input instanceof Date) return input.toISOString();
@@ -171,12 +202,14 @@ class WorkflowRunTracker {
 		error?: string;
 	}): Promise<void> {
 		const sql = this.ensureSql();
+		const workspaceRef = extractWorkspaceRef(input.result);
 		await sql`
 			update workflow_agent_runs
 			set
 				status = ${input.success ? "completed" : "failed"},
 				result = ${sql.json((input.result ?? null) as any)},
 				error = ${input.error ?? null},
+				workspace_ref = coalesce(${workspaceRef ?? null}, workspace_ref),
 				completed_at = now(),
 				updated_at = now()
 			where id = ${input.id}

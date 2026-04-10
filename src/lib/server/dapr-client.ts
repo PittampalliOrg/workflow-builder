@@ -1,5 +1,11 @@
 import { env } from "$env/dynamic/private";
 
+/** Get the Dapr sidecar base URL (localhost) */
+export function getDaprSidecarUrl(): string {
+  const port = env.DAPR_HTTP_PORT || "3500";
+  return `http://localhost:${port}`;
+}
+
 const RETRYABLE_STATUS_CODES = new Set([408, 429, 502, 503, 504]);
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const DEFAULT_MAX_RETRIES = 3;

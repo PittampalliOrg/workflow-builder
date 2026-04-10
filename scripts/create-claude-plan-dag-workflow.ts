@@ -388,7 +388,7 @@ function buildWorkflowGraph(input: {
 					"Generate an implementation-ready plan and wait for approval",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "plan_mode",
 					prompt: input.prompt,
 					workspaceRef: workspaceRefTemplate,
@@ -412,7 +412,7 @@ function buildWorkflowGraph(input: {
 					"Execute the approved plan artifact in the canonical OpenShell runtime",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "execute_direct",
 					artifactRef: artifactRefTemplate,
 					workspaceRef: workspaceRefTemplate,

@@ -1,0 +1,171 @@
+{
+  "id": "durable-agent-long-flow-validation",
+  "name": "Durable Agent Long Flow Validation",
+  "description": "Validate a longer multi-step SW 1.0 workflow with multiple durable child agent runs sharing one OpenShell workspace.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "durable-agent-long-flow-validation",
+      "version": "1.0.0",
+      "title": "Durable Agent Long Flow Validation",
+      "summary": "Provision one OpenShell workspace, execute three durable child agent steps against it, and verify shared workspace continuity across a longer run.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Validation Goal",
+          "promptPlaceholder": "Describe the validation scenario for the long-running durable agent flow.",
+          "defaultPrompt": "Validate that multiple durable child agent runs can collaborate through one explicit OpenShell workspace over a longer SW 1.0 workflow.",
+          "fields": {
+            "sleepSeconds": {
+              "type": "select",
+              "label": "Implementation Sleep",
+              "description": "How long the middle durable agent step should sleep inside the workspace to make the flow meaningfully long-running.",
+              "defaultValue": "20",
+              "options": [
+                { "label": "10 seconds", "value": "10" },
+                { "label": "20 seconds", "value": "20" },
+                { "label": "30 seconds", "value": "30" }
+              ]
+            },
+            "maxTurns": {
+              "type": "select",
+              "label": "Max Turns Per Agent Step",
+              "description": "Iteration budget for each durable child agent step.",
+              "defaultValue": "8",
+              "options": [
+                { "label": "6 turns", "value": "6" },
+                { "label": "8 turns", "value": "8" },
+                { "label": "10 turns", "value": "10" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "durable-agent-long-flow-validation",
+            "rootPath": "/sandbox",
+            "enabledTools": [
+              "execute_command"
+            ],
+            "timeoutMs": 240000,
+            "commandTimeoutMs": 240000,
+            "sandboxTemplate": "dapr-agent"
+          }
+        }
+      },
+      {
+        "durable_discovery_run": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "prompt": "You are step 1 of a long-running SW 1.0 durable agent validation flow.\n\nValidation goal:\n{{trigger.prompt}}\n\nExecution rules:\n- Use the execute_command tool only.\n- Inspect the current workspace with `pwd && ls -la`.\n- Create a directory `flow-state` if it does not exist.\n- Create `flow-state/01-discovery.txt` containing exactly these three lines:\n  STEP=DISCOVERY\n  STATUS=COMPLETE\n  GOAL={{trigger.prompt}}\n- Print the file contents.\n- End with a concise summary that includes the exact phrase DISCOVERY COMPLETE.\n- Do not use network commands.\n- Do not ask for confirmation.\n",
+            "mode": "execute_direct",
+            "maxTurns": "{{trigger.maxTurns}}",
+            "timeoutMinutes": 15,
+            "stopCondition": "Stop only after flow-state/01-discovery.txt exists and the final answer includes the exact phrase DISCOVERY COMPLETE.",
+            "agentConfig": {
+              "name": "durable-long-flow-discovery",
+              "instructions": "Inspect the workspace, write the discovery marker file exactly as requested, verify it, and stop with DISCOVERY COMPLETE.",
+              "tools": [
+                "execute_command"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "durable_implementation_run": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "prompt": "You are step 2 of a long-running SW 1.0 durable agent validation flow.\n\nValidation goal:\n{{trigger.prompt}}\n\nExecution rules:\n- Use the execute_command tool only.\n- Read `flow-state/01-discovery.txt` first.\n- Create `flow-state/02-implementation.txt` containing exactly these four lines:\n  STEP=IMPLEMENTATION\n  STATUS=COMPLETE\n  INPUT=flow-state/01-discovery.txt\n  SLEEP_SECONDS={{trigger.sleepSeconds}}\n- Then sleep for {{trigger.sleepSeconds}} seconds in the same shell command.\n- After the sleep, create `flow-state/implementation-report.json` with valid JSON containing keys `step`, `status`, and `sleepSeconds`.\n- Print the file contents and a directory listing for `flow-state`.\n- End with a concise summary that includes the exact phrase IMPLEMENTATION COMPLETE.\n- Do not use network commands.\n- Do not ask for confirmation.\n",
+            "mode": "execute_direct",
+            "maxTurns": "{{trigger.maxTurns}}",
+            "timeoutMinutes": 20,
+            "stopCondition": "Stop only after flow-state/02-implementation.txt and flow-state/implementation-report.json both exist and the final answer includes the exact phrase IMPLEMENTATION COMPLETE.",
+            "agentConfig": {
+              "name": "durable-long-flow-implementation",
+              "instructions": "Read the discovery marker, create the implementation artifacts, sleep in the workspace command, verify the results, and stop with IMPLEMENTATION COMPLETE.",
+              "tools": [
+                "execute_command"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "durable_verification_run": {
+          "call": "durable/run",
+          "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
+            "prompt": "You are step 3 of a long-running SW 1.0 durable agent validation flow.\n\nValidation goal:\n{{trigger.prompt}}\n\nExecution rules:\n- Use the execute_command tool only.\n- Verify that these files exist and print them:\n  - flow-state/01-discovery.txt\n  - flow-state/02-implementation.txt\n  - flow-state/implementation-report.json\n- Create `flow-state/03-verification.txt` containing exactly these four lines:\n  STEP=VERIFICATION\n  STATUS=COMPLETE\n  DISCOVERY=OK\n  IMPLEMENTATION=OK\n- Print `flow-state/03-verification.txt` and a final listing of `flow-state`.\n- End with a concise summary that includes the exact phrase LONG FLOW VALIDATED.\n- Do not use network commands.\n- Do not ask for confirmation.\n",
+            "mode": "execute_direct",
+            "maxTurns": "{{trigger.maxTurns}}",
+            "timeoutMinutes": 15,
+            "stopCondition": "Stop only after flow-state/03-verification.txt exists and the final answer includes the exact phrase LONG FLOW VALIDATED.",
+            "agentConfig": {
+              "name": "durable-long-flow-verification",
+              "instructions": "Verify the earlier step artifacts, write the final verification marker, print the final state, and stop with LONG FLOW VALIDATED.",
+              "tools": [
+                "execute_command"
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": { "x": 320, "y": 20 },
+      "data": { "label": "Start", "type": "start", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": { "x": 320, "y": 140 },
+      "data": { "label": "Create Workspace", "type": "call", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "durable_discovery_run",
+      "type": "call",
+      "position": { "x": 320, "y": 280 },
+      "data": { "label": "Discovery Agent", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "durable_implementation_run",
+      "type": "call",
+      "position": { "x": 320, "y": 420 },
+      "data": { "label": "Implementation Agent", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "durable_verification_run",
+      "type": "call",
+      "position": { "x": 320, "y": 560 },
+      "data": { "label": "Verification Agent", "type": "agent", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": { "x": 320, "y": 700 },
+      "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
+    }
+  ],
+  "edges": [
+    { "id": "e-start-workspace", "source": "start", "target": "workspace_profile", "type": "default" },
+    { "id": "e-workspace-discovery", "source": "workspace_profile", "target": "durable_discovery_run", "type": "default" },
+    { "id": "e-discovery-implementation", "source": "durable_discovery_run", "target": "durable_implementation_run", "type": "default" },
+    { "id": "e-implementation-verification", "source": "durable_implementation_run", "target": "durable_verification_run", "type": "default" },
+    { "id": "e-verification-end", "source": "durable_verification_run", "target": "end", "type": "default" }
+  ]
+}

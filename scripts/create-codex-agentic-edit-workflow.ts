@@ -385,7 +385,7 @@ fi`;
 				description: "Execute complex code edit task",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "execute_direct",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,

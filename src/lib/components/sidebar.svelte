@@ -17,7 +17,8 @@
 		Code,
 		ChevronsUpDown,
 		Server,
-		Container
+		Container,
+		Network
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -46,6 +47,7 @@
 		{ href: '/activities', label: 'Activities', icon: Server },
 		{ href: '/code-functions', label: 'Code Functions', icon: Code },
 		{ href: '/observability', label: 'Observability', icon: Eye },
+		{ href: '/dapr-system', label: 'Dapr System', icon: Network },
 		{ href: '/settings', label: 'Settings', icon: Settings }
 	];
 

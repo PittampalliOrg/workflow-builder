@@ -92,10 +92,9 @@
 <div class="space-y-4">
 	<div class="flex items-center justify-between">
 		<div>
-			<p class="text-xs font-medium">OpenShell Durable Agent</p>
+			<p class="text-xs font-medium">Durable Agent</p>
 			<p class="text-[11px] text-muted-foreground">
-				Compiled as `openshell/run` and executed by the OpenShell-backed TypeScript durable
-				agent runtime.
+				Compiled as `durable/run` and executed by the OpenShell-backed durable agent runtime.
 			</p>
 		</div>
 		<Badge variant="outline">{summarizeAgentGraph(body.agentGraph)}</Badge>
@@ -108,7 +107,7 @@
 			rows={4}
 			value={body.prompt}
 			oninput={(event) => updateBody({ prompt: event.currentTarget.value })}
-			placeholder="Describe the OpenShell-backed durable agent task."
+			placeholder="Describe the durable agent task."
 		/>
 	</div>
 

@@ -24,9 +24,18 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
 
 	wss.handleUpgrade(req, socket, head, (browserWs) => {
 		const upstream = new WebSocket(upstreamUrl);
+		const pendingMessages: Array<{ data: WebSocket.RawData; isBinary: boolean }> = [];
 
 		browserWs.on('message', (data, isBinary) => {
 			if (upstream.readyState === WebSocket.OPEN) {
+				upstream.send(data, { binary: isBinary });
+			} else if (upstream.readyState === WebSocket.CONNECTING) {
+				pendingMessages.push({ data, isBinary });
+			}
+		});
+
+		upstream.on('open', () => {
+			for (const { data, isBinary } of pendingMessages.splice(0)) {
 				upstream.send(data, { binary: isBinary });
 			}
 		});

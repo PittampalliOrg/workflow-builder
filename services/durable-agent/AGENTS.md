@@ -119,8 +119,9 @@ Default port: **8001** (configurable via `PORT` env var).
 | `PUBSUB_NAME` | `pubsub` | Dapr pub/sub component |
 | `PUBSUB_TOPIC` | `workflow.stream` | Event topic |
 | `ORCHESTRATOR_APP_ID` | `workflow-orchestrator` | Parent orchestrator for completion events |
-| `AGENT_WORKSPACE_PATH` | `./workspace` | Workspace directory |
-| `SANDBOX_BACKEND` | auto-detect | `"k8s"` or `"local"` |
+| `AGENT_WORKSPACE_PATH` | `/sandbox/shared/durable-agent` | Shared OpenShell-backed workspace root for non-session utilities |
+| `WORKSPACE_SESSIONS_ROOT` | `/sandbox/workspaces` | Per-execution OpenShell workspace root |
+| `OPENSHELL_AGENT_RUNTIME_API_BASE_URL` | `http://openshell-agent-runtime.openshell.svc.cluster.local:8083` | OpenShell runtime API base URL |
 
 ## Built-in Workspace Tools
 
@@ -135,7 +136,7 @@ Default port: **8001** (configurable via `PORT` env var).
 | `file_stat` | Get file size, type, and timestamps |
 | `execute_command` | Run a shell command |
 
-Tools use a Sandbox abstraction (auto-detects K8s pod or local process execution).
+Tools execute through the OpenShell-backed workspace/session abstraction. SW 1.0 no longer supports local or legacy K8s sandbox backends for workflow-bound runs.
 
 ## File Structure
 

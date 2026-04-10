@@ -1,6 +1,6 @@
 import { db } from '$lib/server/db';
-import { workflowExecutions } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { workflowExecutions, workflowWorkspaceSessions } from '$lib/server/db/schema';
+import { desc, eq } from 'drizzle-orm';
 
 export interface ExecutionSandboxPreviewInfo {
 	executionId: string;
@@ -44,6 +44,18 @@ export async function getExecutionSandboxPreviewInfo(
 
 	if (!execution) return null;
 
+	const [workspace] = await db
+		.select({
+			workspaceRef: workflowWorkspaceSessions.workspaceRef,
+			rootPath: workflowWorkspaceSessions.rootPath,
+			sandboxState: workflowWorkspaceSessions.sandboxState,
+			status: workflowWorkspaceSessions.status
+		})
+		.from(workflowWorkspaceSessions)
+		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
+		.orderBy(desc(workflowWorkspaceSessions.createdAt))
+		.limit(1);
+
 	const input = asRecord(execution.input);
 	const output = asRecord(execution.output);
 	const triggerData = asRecord(input?.triggerData);
@@ -52,16 +64,23 @@ export async function getExecutionSandboxPreviewInfo(
 	const initialize = asRecord(outputs?.initialize);
 	const initializeData = asRecord(initialize?.data);
 
+	const sandboxState = asRecord(workspace?.sandboxState);
+	const workspaceDetails = asRecord(sandboxState?.details);
 	const workspaceRef =
+		asString(workspace?.workspaceRef) ||
 		asString(workflowOutput?.sandboxWorkspaceRef) ||
 		asString(initializeData?.sandbox_id);
 	const workingDir =
+		asString(workspace?.rootPath) ||
+		asString(sandboxState?.workingDirectory) ||
 		asString(workflowOutput?.sandboxWorkingDir) ||
 		asString(initializeData?.working_dir);
 	const provider =
+		asString(workspaceDetails?.provider) ||
 		asString(workflowOutput?.sandboxProvider) ||
 		asString(initializeData?.provider);
 	const kept =
+		workspace?.status === 'active' ||
 		asBoolean(workflowOutput?.sandboxKept) ||
 		asBoolean(triggerData?.keepSandbox) ||
 		asBoolean(triggerData?.keep_sandbox) ||

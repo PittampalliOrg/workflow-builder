@@ -69,7 +69,7 @@ Current route contract:
 
 - `workspace/*` -> `openshell-agent-runtime`
 - `browser/*` -> `openshell-agent-runtime`
-- `openshell/*` -> `openshell-agent-runtime`
+- `durable/*` -> `durable-agent`
 - `dapr-swe/*` -> `dapr-swe`
 - `_default` -> `fn-activepieces`
 
@@ -84,8 +84,7 @@ Canonical OpenShell runtime for standard agent and workspace flows.
   - `workspace/clone`
   - `workspace/command`
   - `workspace/cleanup`
-  - `openshell/run`
-  - `openshell/session-start`
+  - `durable/run`
   - `browser/*`
 
 Important behavior:

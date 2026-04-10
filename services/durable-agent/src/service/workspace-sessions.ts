@@ -9,11 +9,8 @@
 
 import { posix as pathPosix, resolve as pathResolve } from "node:path";
 import { nanoid } from "nanoid";
-import { chromium } from "playwright-core";
 import {
-	browserArtifacts,
 	type WorkflowBrowserArtifactRecord,
-	type WorkflowBrowserCaptureStep,
 	type WorkflowBrowserArtifactStatus,
 } from "./browser-artifacts.js";
 import {
@@ -24,11 +21,9 @@ import {
 	type ChangeFileStatus,
 	type ExecutionFileSnapshot,
 } from "./change-artifacts.js";
-import { K8sRemoteFilesystem } from "./k8s-remote-filesystem.js";
-import { K8sSandbox, type K8sSandboxPersistedState } from "./k8s-sandbox.js";
 import {
-	LocalFilesystem,
-	LocalSandbox,
+	OpenShellFilesystem,
+	OpenShellSandbox,
 	SANDBOX_BACKEND,
 	type Filesystem,
 	type Sandbox,
@@ -75,7 +70,7 @@ type WorkspaceSession = {
 	rootPath: string;
 	clonePath?: string;
 	cloneInfo?: CloneInfo;
-	backend: "k8s" | "local";
+	backend: "openshell";
 	sandbox: Sandbox;
 	filesystem: Filesystem;
 	enabledTools: Set<WorkspaceToolName>;
@@ -89,7 +84,7 @@ type WorkspaceSession = {
 };
 
 export type WorkspaceSandboxMetadata = {
-	backend: "k8s" | "local";
+	backend: "openshell";
 	rootPath: string;
 	workingDirectory: string;
 	details: Record<string, unknown>;
@@ -101,7 +96,7 @@ export type WorkspaceProfileResult = {
 	name: string;
 	rootPath: string;
 	clonePath?: string;
-	backend: "k8s" | "local";
+	backend: "openshell";
 	enabledTools: WorkspaceToolName[];
 	requireReadBeforeWrite: boolean;
 	commandTimeoutMs: number;
@@ -272,8 +267,7 @@ class WorkspaceSessionManager {
 	private readonly executionToWorkspace = new Map<string, string>();
 	private readonly durableInstanceToWorkspace = new Map<string, string>();
 	private readonly defaultRoot =
-		process.env.WORKSPACE_SESSIONS_ROOT ||
-		(SANDBOX_BACKEND === "k8s" ? "/app/workspaces" : "./workspace-runs");
+		process.env.WORKSPACE_SESSIONS_ROOT || "/sandbox/workspaces";
 
 	constructor() {
 		const timer = setInterval(() => {
@@ -565,16 +559,7 @@ class WorkspaceSessionManager {
 				commandTimeoutMs: session.commandTimeoutMs,
 				status: "active",
 			});
-			// Persist sandbox pod metadata for reconnection after restart
-			if (session.backend === "k8s" && session.sandbox instanceof K8sSandbox) {
-				const sandboxState = session.sandbox.getPersistedState();
-				if (sandboxState) {
-					await workspaceSessionStore.markSandboxState(
-						session.workspaceRef,
-						sandboxState as unknown as Record<string, unknown>,
-					);
-				}
-			}
+			await this.persistSandboxState(session);
 		} catch (err) {
 			console.warn(
 				`[workspace-sessions] Failed persisting workspace session ${session.workspaceRef}:`,
@@ -749,123 +734,38 @@ class WorkspaceSessionManager {
 			input.workspaceRef,
 			input.executionId,
 		);
-		const baseUrl = String(input.baseUrl || "").trim();
-		if (!baseUrl) {
-			throw new Error("baseUrl is required");
-		}
-		if (!input.workflowId.trim() || !input.nodeId.trim()) {
-			throw new Error("workflowId and nodeId are required");
-		}
-		if (input.steps.length === 0) {
-			throw new Error("At least one browser capture step is required");
-		}
-
-		const browserInfo = await this.getBrowserConnectionInfo(session);
-		const browser = await chromium.connectOverCDP(browserInfo.cdpUrl, {
-			timeout: input.timeoutMs,
-		});
-		const screenshots: Array<{ payload: Buffer; contentType: string }> = [];
-		const steps: WorkflowBrowserCaptureStep[] = [];
-		let overallStatus: WorkflowBrowserArtifactStatus = "completed";
-		const startedAt = new Date().toISOString();
-
-		try {
-			const context = browser.contexts()[0] || (await browser.newContext());
-			const page = context.pages()[0] || (await context.newPage());
-
-			for (let index = 0; index < input.steps.length; index += 1) {
-				const step = input.steps[index]!;
-				const label = step.label?.trim() || `Step ${index + 1}`;
-				const targetUrl = this.resolveBrowserStepUrl(baseUrl, step);
-				try {
-					await page.goto(targetUrl, {
-						waitUntil: "domcontentloaded",
-						timeout: input.timeoutMs,
-					});
-					if (step.waitForSelector?.trim()) {
-						await page.waitForSelector(step.waitForSelector.trim(), {
-							timeout: input.timeoutMs,
-						});
-					}
-					if (step.waitForText?.trim()) {
-						const needle = step.waitForText.trim();
-						await page.waitForFunction(
-							(text) => document.body?.innerText?.includes(text),
-							needle,
-							{ timeout: input.timeoutMs },
-						);
-					}
-					if (
-						typeof step.delayMs === "number" &&
-						Number.isFinite(step.delayMs) &&
-						step.delayMs > 0
-					) {
-						await page.waitForTimeout(step.delayMs);
-					}
-					const png = await page.screenshot({
-						fullPage: step.fullPage !== false,
-						type: "png",
-					});
-					screenshots.push({ payload: png, contentType: "image/png" });
-					steps.push({
-						id: step.id?.trim() || `step-${index + 1}`,
-						label,
-						url: page.url(),
-						title: await page.title(),
-						waitForSelector: step.waitForSelector?.trim() || undefined,
-						waitForText: step.waitForText?.trim() || undefined,
-						delayMs:
-							typeof step.delayMs === "number" && Number.isFinite(step.delayMs)
-								? step.delayMs
-								: undefined,
-						capturedAt: new Date().toISOString(),
-						status: "completed",
-					});
-				} catch (error) {
-					overallStatus = screenshots.length > 0 ? "partial" : "failed";
-					steps.push({
-						id: step.id?.trim() || `step-${index + 1}`,
-						label,
-						url: targetUrl,
-						waitForSelector: step.waitForSelector?.trim() || undefined,
-						waitForText: step.waitForText?.trim() || undefined,
-						delayMs:
-							typeof step.delayMs === "number" && Number.isFinite(step.delayMs)
-								? step.delayMs
-								: undefined,
-						status: "failed",
-						error: error instanceof Error ? error.message : String(error),
-					});
-					break;
-				}
-			}
-		} finally {
-			await browser.close();
-		}
-
-		const artifact = await browserArtifacts.save({
-			workflowExecutionId: session.executionId,
-			workflowId: input.workflowId.trim(),
-			nodeId: input.nodeId.trim(),
-			workspaceRef: session.workspaceRef,
-			status: overallStatus,
-			manifest: {
-				baseUrl,
-				startedAt,
-				completedAt: new Date().toISOString(),
-				status: overallStatus,
-				steps,
-				metadata: input.metadata ?? null,
+		const response = await fetch(
+			`${process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL?.trim() || "http://openshell-agent-runtime.openshell.svc.cluster.local:8083"}/api/browser/capture-flow`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					workspaceRef: session.workspaceRef,
+					executionId: session.executionId,
+					workflowId: input.workflowId,
+					nodeId: input.nodeId,
+					baseUrl: input.baseUrl,
+					steps: input.steps,
+					timeoutMs: input.timeoutMs,
+					metadata: input.metadata,
+				}),
 			},
-			screenshots,
-		});
+		);
+		const payload = (await response.json()) as Record<string, unknown>;
+		if (!response.ok) {
+			throw new Error(
+				String(payload.error || `Browser capture failed (${response.status})`),
+			);
+		}
+		const artifact = payload.artifact as WorkflowBrowserArtifactRecord;
+		const status = String(payload.status || "failed") as WorkflowBrowserArtifactStatus;
 
 		this.touch(session);
 		return {
 			artifact,
-			artifactId: artifact.id,
-			stepCount: steps.length,
-			status: overallStatus,
+			artifactId: String(payload.artifactId || artifact.id),
+			stepCount: Number(payload.stepCount || 0),
+			status,
 			sandbox: this.buildSandboxMetadata(session),
 		};
 	}
@@ -1309,6 +1209,7 @@ class WorkspaceSessionManager {
 	}
 
 	private async createSession(input: {
+		workspaceRef?: string;
 		executionId: string;
 		name: string;
 		rootPath: string;
@@ -1317,37 +1218,16 @@ class WorkspaceSessionManager {
 		commandTimeoutMs: number;
 		sandboxTemplate?: string;
 	}): Promise<WorkspaceSession> {
-		let sandbox: Sandbox;
-		let filesystem: Filesystem;
-		let k8sSandboxRef: K8sSandbox | null = null;
-
-		if (SANDBOX_BACKEND === "k8s") {
-			const template =
-				input.sandboxTemplate || process.env.SANDBOX_TEMPLATE || "dapr-agent";
-			const workingDir =
-				template === "aio-browser" ? "/home/gem" : input.rootPath;
-			const k8sSandbox = new K8sSandbox({
-				templateName: template,
-				workingDirectory: workingDir,
-				timeout: input.commandTimeoutMs,
-			});
-			await k8sSandbox.start();
-			sandbox = k8sSandbox;
-			k8sSandboxRef = k8sSandbox;
-			filesystem = new K8sRemoteFilesystem({
-				sandbox: k8sSandbox,
-				basePath: input.rootPath,
-				timeout: input.commandTimeoutMs,
-			});
-		} else {
-			const localSandbox = new LocalSandbox(
-				input.rootPath,
-				input.commandTimeoutMs,
-			);
-			await localSandbox.start();
-			sandbox = localSandbox;
-			filesystem = new LocalFilesystem(input.rootPath);
-		}
+		const workspaceRef = input.workspaceRef || `ws_${nanoid(12)}`;
+		const sandbox = new OpenShellSandbox(
+			workspaceRef,
+			input.rootPath,
+			input.commandTimeoutMs,
+			input.executionId,
+			input.enabledTools,
+		);
+		await sandbox.start();
+		const filesystem = new OpenShellFilesystem(sandbox, input.rootPath);
 
 		await filesystem.mkdir(".", { recursive: true });
 
@@ -1372,11 +1252,11 @@ class WorkspaceSessionManager {
 
 		const now = Date.now();
 		const session: WorkspaceSession = {
-			workspaceRef: `ws_${nanoid(12)}`,
+			workspaceRef,
 			executionId: input.executionId,
 			name: input.name,
 			rootPath: input.rootPath,
-			backend: SANDBOX_BACKEND === "k8s" ? "k8s" : "local",
+			backend: SANDBOX_BACKEND,
 			sandbox,
 			filesystem,
 			enabledTools,
@@ -1388,14 +1268,6 @@ class WorkspaceSessionManager {
 			createdAt: now,
 			lastAccessedAt: now,
 		};
-
-		// Register reprovision callback so workspace state (directories, cloned repos) is
-		// restored transparently when the sandbox pod is replaced.
-		if (k8sSandboxRef) {
-			k8sSandboxRef.onReprovision = async () => {
-				await this.restoreWorkspaceAfterReprovision(session);
-			};
-		}
 
 		return session;
 	}
@@ -1497,6 +1369,7 @@ class WorkspaceSessionManager {
 			executionId: session.executionId,
 		});
 		session.trackingGitDir = newTrackingGitDir ?? undefined;
+		await this.persistSandboxState(session);
 	}
 
 	private async initializeTrackingRepository(input: {
@@ -1919,18 +1792,8 @@ class WorkspaceSessionManager {
 		}
 
 		try {
-			// Try reconnecting to existing K8s sandbox pod first (preserves cloned data)
-			if (record.backend === "k8s" && record.sandboxState) {
-				const reconnected = await this.tryReconnectToSandbox(record);
-				if (reconnected) {
-					return reconnected;
-				}
-				console.log(
-					`[workspace-sessions] Reconnect failed for ${record.workspaceRef}, creating new sandbox`,
-				);
-			}
-
 			const session = await this.createSession({
+				workspaceRef: record.workspaceRef,
 				executionId: record.workflowExecutionId,
 				name: record.name,
 				rootPath: record.rootPath,
@@ -1951,6 +1814,7 @@ class WorkspaceSessionManager {
 					record.workspaceRef,
 				);
 			}
+			await this.persistSandboxState(session);
 			this.touch(session);
 			return session;
 		} catch (err) {
@@ -1970,121 +1834,20 @@ class WorkspaceSessionManager {
 		}
 	}
 
-	/**
-	 * Attempt to reconnect to an existing K8s sandbox pod using persisted state.
-	 * If the pod is still alive and reachable, reuse it (preserving cloned data).
-	 */
-	private async tryReconnectToSandbox(
-		record: PersistedWorkspaceSession,
-	): Promise<WorkspaceSession | null> {
-		const state = record.sandboxState as unknown as
-			| K8sSandboxPersistedState
-			| undefined;
-		if (!state || !state.claimName || !state.podName || !state.podIp) {
-			return null;
-		}
-
-		try {
-			const reconnected = await K8sSandbox.reconnect(state, {
-				workingDirectory: record.rootPath,
-				timeout: record.commandTimeoutMs,
-			});
-			if (!reconnected) return null;
-
-			const filesystem = new K8sRemoteFilesystem({
-				sandbox: reconnected,
-				basePath: record.rootPath,
-				timeout: record.commandTimeoutMs,
-			});
-
-			const enabledTools = new Set<WorkspaceToolName>();
-			for (const t of record.enabledTools) {
-				const normalized = normalizeToolName(t);
-				if (normalized) enabledTools.add(normalized);
-			}
-			if (enabledTools.size === 0) {
-				for (const t of WORKSPACE_TOOL_NAMES) enabledTools.add(t);
-			}
-
-			const now = Date.now();
-			const session: WorkspaceSession = {
-				workspaceRef: record.workspaceRef,
-				executionId: record.workflowExecutionId,
-				name: record.name,
-				rootPath: record.rootPath,
-				clonePath: record.clonePath,
-				backend: "k8s",
-				sandbox: reconnected,
-				filesystem,
-				enabledTools,
-				requireReadBeforeWrite: record.requireReadBeforeWrite,
-				commandTimeoutMs: record.commandTimeoutMs,
-				readPaths: new Set<string>(),
-				changeSequence: 0,
-				createdAt: now,
-				lastAccessedAt: now,
-			};
-
-			// Register reprovision callback on reconnected sandbox
-			reconnected.onReprovision = async () => {
-				await this.restoreWorkspaceAfterReprovision(session);
-			};
-
-			this.sessions.set(session.workspaceRef, session);
-			this.executionToWorkspace.set(
-				record.workflowExecutionId,
-				record.workspaceRef,
-			);
-			if (record.durableInstanceId) {
-				this.durableInstanceToWorkspace.set(
-					record.durableInstanceId,
-					record.workspaceRef,
-				);
-			}
-
-			console.log(
-				`[workspace-sessions] Reconnected workspace ${record.workspaceRef} to sandbox pod ${state.podName} (${state.podIp})`,
-			);
-			this.touch(session);
-			return session;
-		} catch (err) {
-			console.warn(
-				`[workspace-sessions] Failed reconnecting to sandbox pod for ${record.workspaceRef}:`,
-				err,
-			);
-			return null;
-		}
-	}
-
 	private resolveRootPath(
 		executionId: string,
 		requested?: string,
 		sandboxTemplate?: string,
 	): string {
 		const requestedPath = String(requested || "").trim();
-		if (SANDBOX_BACKEND === "k8s") {
-			const templateBase =
-				sandboxTemplate === "aio-browser" ? "/home/gem" : "/app";
-			const defaultRootForTemplate =
-				sandboxTemplate === "aio-browser"
-					? pathPosix.join(templateBase, "workspaces")
-					: this.defaultRoot;
-			const base = defaultRootForTemplate.startsWith("/")
-				? defaultRootForTemplate
-				: pathPosix.join(templateBase, defaultRootForTemplate);
-			if (requestedPath) {
-				if (requestedPath.startsWith("/")) return requestedPath;
-				return pathPosix.join(base, sanitizeSegment(requestedPath));
-			}
-			return pathPosix.join(base, sanitizeSegment(executionId));
-		}
-
-		const base = pathResolve(this.defaultRoot);
+		const base = this.defaultRoot.startsWith("/")
+			? this.defaultRoot
+			: pathResolve(this.defaultRoot);
 		if (requestedPath) {
 			if (requestedPath.startsWith("/")) return requestedPath;
-			return pathResolve(base, requestedPath);
+			return pathPosix.join(base, sanitizeSegment(requestedPath));
 		}
-		return pathResolve(base, sanitizeSegment(executionId));
+		return pathPosix.join(base, sanitizeSegment(executionId));
 	}
 
 	private serialize(session: WorkspaceSession): WorkspaceProfileResult {
@@ -2269,16 +2032,27 @@ class WorkspaceSessionManager {
 	private buildSandboxMetadata(
 		session: WorkspaceSession,
 	): WorkspaceSandboxMetadata {
-		const workingDirectory =
-			session.backend === "k8s" && session.sandbox instanceof K8sSandbox
-				? session.sandbox.workingDirectory
-				: session.rootPath;
+		const workingDirectory = session.clonePath || session.rootPath;
 		return {
 			backend: session.backend,
 			rootPath: session.rootPath,
 			workingDirectory,
 			details: session.sandbox.getDebugInfo?.() ?? {},
 		};
+	}
+
+	private async persistSandboxState(session: WorkspaceSession): Promise<void> {
+		try {
+			await workspaceSessionStore.markSandboxState(
+				session.workspaceRef,
+				this.buildSandboxMetadata(session) as unknown as Record<string, unknown>,
+			);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed persisting sandbox_state for ${session.workspaceRef}:`,
+				err,
+			);
+		}
 	}
 
 	private resolveBrowserStepUrl(
@@ -2294,48 +2068,6 @@ class WorkspaceSessionManager {
 			return baseUrl;
 		}
 		return new URL(path, `${baseUrl.replace(/\/+$/, "")}/`).toString();
-	}
-
-	private async getBrowserConnectionInfo(session: WorkspaceSession): Promise<{
-		cdpUrl: string;
-	}> {
-		if (!(session.sandbox instanceof K8sSandbox)) {
-			throw new Error("Browser capture requires a k8s-backed workspace");
-		}
-		const podIp = session.sandbox.getSandboxPodIp();
-		if (!podIp) {
-			throw new Error("Browser sandbox pod is not ready");
-		}
-		const infoUrl = `http://${podIp}:${session.sandbox.getPort()}/v1/browser/info`;
-		const response = await fetch(infoUrl);
-		if (!response.ok) {
-			throw new Error(
-				`Failed to load browser info from sandbox (${response.status})`,
-			);
-		}
-		const payload = (await response.json()) as Record<string, unknown>;
-		const data =
-			payload.data && typeof payload.data === "object"
-				? (payload.data as Record<string, unknown>)
-				: payload;
-		const cdpUrlCandidates = [
-			data.debugger_url,
-			data.debuggerUrl,
-			data.ws_url,
-			data.wsUrl,
-			data.websocket_url,
-			data.websocketUrl,
-			data.cdp_url,
-			data.cdpUrl,
-		];
-		const cdpUrl = cdpUrlCandidates.find(
-			(value): value is string =>
-				typeof value === "string" && value.trim().length > 0,
-		);
-		if (!cdpUrl) {
-			throw new Error("Sandbox browser info did not include a CDP endpoint");
-		}
-		return { cdpUrl: cdpUrl.trim() };
 	}
 
 	private async sweepExpired(): Promise<void> {

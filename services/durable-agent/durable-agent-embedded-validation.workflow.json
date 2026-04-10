@@ -44,9 +44,25 @@
     },
     "do": [
       {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "durable-agent-embedded-validation",
+            "rootPath": "/sandbox",
+            "enabledTools": [
+              "execute_command"
+            ],
+            "timeoutMs": 120000,
+            "commandTimeoutMs": 120000,
+            "sandboxTemplate": "dapr-agent"
+          }
+        }
+      },
+      {
         "durable_validation_run": {
           "call": "durable/run",
           "with": {
+            "workspaceRef": "${ .workspace_profile.workspaceRef }",
             "prompt": "You are validating embedded Dapr DurableAgent execution inside a parent workflow.\n\nUser task:\n{{trigger.prompt}}\n\nExecution rules:\n- Use the execute_command tool only.\n- First inspect the current workspace with `pwd && ls -la`.\n- Then create a directory named validation-output.\n- Then create validation-output/marker.txt containing exactly the line VALIDATION COMPLETE.\n- Then print the file contents and a short directory listing for validation-output.\n- End with a concise summary that includes the exact phrase VALIDATION COMPLETE.\n- Do not use network commands.\n- Do not ask for confirmation.\n",
             "mode": "execute_direct",
             "maxTurns": "{{trigger.maxTurns}}",
@@ -130,18 +146,25 @@
     {
       "id": "durable_validation_run",
       "type": "call",
-      "position": { "x": 260, "y": 180 },
+      "position": { "x": 260, "y": 360 },
       "data": { "label": "Run Durable Agent", "type": "agent", "status": "idle", "enabled": true }
     },
     {
       "id": "end",
       "type": "end",
-      "position": { "x": 260, "y": 360 },
+      "position": { "x": 260, "y": 540 },
       "data": { "label": "Done", "type": "end", "status": "idle", "enabled": true }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": { "x": 260, "y": 180 },
+      "data": { "label": "Create Workspace", "type": "call", "status": "idle", "enabled": true }
     }
   ],
   "edges": [
-    { "id": "e-start-durable", "source": "start", "target": "durable_validation_run", "type": "default" },
+    { "id": "e-start-workspace", "source": "start", "target": "workspace_profile", "type": "default" },
+    { "id": "e-workspace-durable", "source": "workspace_profile", "target": "durable_validation_run", "type": "default" },
     { "id": "e-durable-end", "source": "durable_validation_run", "target": "end", "type": "default" }
   ]
 }

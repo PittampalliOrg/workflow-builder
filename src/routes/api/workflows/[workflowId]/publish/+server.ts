@@ -4,6 +4,7 @@ import { db } from '$lib/server/db';
 import { workflows } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
+import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
 
 export const POST: RequestHandler = async ({ params }) => {
 	if (!db) return error(503, 'Database not configured');
@@ -20,6 +21,11 @@ export const POST: RequestHandler = async ({ params }) => {
 
 	const versionId = `pub_${Date.now()}_${nanoid(6).toLowerCase()}`;
 	const daprWorkflowName = workflow.daprWorkflowName || `wf_${workflow.id}`;
+	const spec = (workflow.spec as Record<string, unknown>) || {};
+	const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
+	if (removedAgentCallsError) {
+		return error(400, removedAgentCallsError);
+	}
 
 	// Build the frozen revision snapshot
 	const revision = {
@@ -32,7 +38,6 @@ export const POST: RequestHandler = async ({ params }) => {
 	};
 
 	// Merge into existing spec or create new one
-	const spec = (workflow.spec as Record<string, unknown>) || {};
 	const metadata = (spec.metadata as Record<string, unknown>) || {};
 	const publishedRuntime = (metadata.publishedRuntime as Record<string, unknown>) || {};
 	const existingRevisions = (publishedRuntime.revisions as unknown[]) || [];

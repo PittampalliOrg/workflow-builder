@@ -79,6 +79,37 @@ def _to_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _extract_workspace_ref(result: Any) -> str | None:
+    if not isinstance(result, dict):
+        return None
+
+    direct = str(result.get("workspaceRef") or "").strip()
+    if direct:
+        return direct
+
+    all_tool_calls = result.get("all_tool_calls")
+    if not isinstance(all_tool_calls, list):
+        return None
+
+    for item in reversed(all_tool_calls):
+        if not isinstance(item, dict):
+            continue
+        execution_result = item.get("execution_result")
+        if not isinstance(execution_result, dict):
+            continue
+        sandbox = execution_result.get("sandbox")
+        if not isinstance(sandbox, dict):
+            continue
+        details = sandbox.get("details")
+        if not isinstance(details, dict):
+            continue
+        workspace_ref = str(details.get("workspaceRef") or "").strip()
+        if workspace_ref:
+            return workspace_ref
+
+    return None
+
+
 def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
     """
     Insert/update a scheduled workflow_agent_runs row.
@@ -183,6 +214,21 @@ def track_agent_run_scheduled(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                             artifact_ref,
                         ),
                     )
+                    if workspace_ref:
+                        cur.execute(
+                            """
+                            UPDATE workflow_workspace_sessions
+                            SET
+                                durable_instance_id = %s,
+                                updated_at = now(),
+                                last_accessed_at = now()
+                            WHERE workspace_ref = %s
+                            """,
+                            (
+                                dapr_instance_id,
+                                workspace_ref,
+                            ),
+                        )
                 conn.commit()
             finally:
                 conn.close()
@@ -215,7 +261,9 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
 
     run_success = _to_bool(input_data.get("success"), True)
     mark_event_published = _to_bool(input_data.get("eventPublished"), False)
-    result_json = _json_dumps_safe(input_data.get("result"))
+    result_value = input_data.get("result")
+    result_json = _json_dumps_safe(result_value)
+    workspace_ref = _extract_workspace_ref(result_value)
     error = str(input_data.get("error") or "").strip() or None
     otel = input_data.get("_otel") or {}
 
@@ -240,6 +288,7 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                             status = %s,
                             result = %s::jsonb,
                             error = %s,
+                            workspace_ref = COALESCE(%s, workspace_ref),
                             completed_at = COALESCE(completed_at, now()),
                             event_published_at = CASE
                                 WHEN %s THEN now()
@@ -252,6 +301,7 @@ def track_agent_run_completed(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                             status,
                             result_json,
                             error,
+                            workspace_ref,
                             mark_event_published,
                             run_id,
                         ),

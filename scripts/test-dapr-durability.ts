@@ -464,7 +464,7 @@ function extractAgentStep(status: WorkflowExecutionStatus) {
 	const outputs = (output.outputs ?? {}) as Record<string, unknown>;
 	for (const value of Object.values(outputs)) {
 		const record = value as Record<string, unknown>;
-		if ((record.actionType as string) === "openshell/run") {
+		if ((record.actionType as string) === "durable/run") {
 			return record.data as Record<string, unknown>;
 		}
 	}

@@ -64,8 +64,7 @@ All active sandbox-backed agent work now runs on OpenShell.
 
 Supported agent actions:
 
-- `openshell/run`
-- `openshell/session-start`
+- `durable/run`
 
 Supported workspace/browser actions:
 
@@ -102,7 +101,7 @@ browser
      -> function-router
         -> system/* handlers
         -> workspace/* and browser/* -> openshell-agent-runtime
-        -> openshell/* -> openshell-agent-runtime
+        -> durable/* -> durable-agent
         -> dapr-swe/* -> dapr-swe
         -> _default -> fn-activepieces
 
@@ -127,29 +126,20 @@ openshell-agent-runtime / dapr-swe
 4. Action nodes are routed through `function-router`.
 5. The parent workflow persists status and review data as the run progresses.
 
-### Standard OpenShell coding run
+### Standard durable agent coding run
 
-1. A workflow node uses `openshell/run`.
-2. `workflow-orchestrator` schedules the action from the parent workflow.
-3. `function-router` routes the action to `openshell-agent-runtime`.
-4. `openshell-agent-runtime` provisions or reuses the OpenShell sandbox/workspace.
-5. The repo is cloned or reconnected inside the sandbox.
-6. The agent task runs in the sandbox.
-7. The runtime returns normalized run output to the parent workflow.
-8. Review artifacts are persisted to Postgres.
-
-### OpenShell session handoff
-
-1. A workflow node uses `openshell/session-start`.
-2. `openshell-agent-runtime` provisions the OpenShell sandbox and repo workspace.
-3. It initializes a retained Claude session in that sandbox.
-4. The result includes sandbox/session handoff metadata such as `sessionId` and `resumeCommand`.
+1. A workflow node uses `durable/run`.
+2. `workflow-orchestrator` schedules the durable child workflow from the parent workflow.
+3. `durable-agent` runs the durable control loop.
+4. `durable-agent` binds or creates an OpenShell workspace for the workflow execution.
+5. All tool and file operations run through `openshell-agent-runtime` against that workspace.
+6. Review artifacts are persisted to Postgres.
 
 ### Legacy workflow compatibility
 
-1. Older saved workflows may still contain `durable/*` or `openshell-langgraph*` action types.
-2. `workflow-orchestrator` normalizes those legacy action types to `openshell/run`.
-3. New workflow definitions should use `openshell/run` directly.
+1. Older saved workflows may still contain deprecated agent action types.
+2. `workflow-orchestrator` rejects deprecated embedded-agent actions at runtime.
+3. New workflow definitions must use `durable/run`.
 
 ### Browser validation
 
@@ -192,7 +182,7 @@ Key areas:
 Provides:
 
 - route lookup by `actionType`
-- routing for `system/*`, `workspace/*`, `browser/*`, `openshell/*`
+- routing for `system/*`, `workspace/*`, `browser/*`
 - routing for `dapr-swe/*`
 - fallback routing to `fn-activepieces`
 
@@ -201,8 +191,6 @@ Provides:
 Provides:
 
 - OpenShell-backed workspace profile, clone, command, and cleanup
-- standard `openshell/run`
-- retained `openshell/session-start`
 - browser materialization and validation
 
 It is a runtime backend, not the orchestration owner.

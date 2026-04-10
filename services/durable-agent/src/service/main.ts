@@ -115,8 +115,10 @@ import {
   createScorers,
   type ScorerLike,
 } from "../mastra/eval-scorer.js";
-import { createOpenShellRunWorkflow } from "../workflow/openshell-run-workflow.js";
-import { buildOpenShellRunCompletion } from "./run-shaping.js";
+import {
+  buildOpenShellRunCompletion,
+  didAnyToolCallFail,
+} from "./run-shaping.js";
 
 // ── Configuration ─────────────────────────────────────────────
 
@@ -156,8 +158,6 @@ const STARTUP_INIT_RETRY_MS = Math.max(
 );
 const DURABLE_RUN_WORKFLOW_NAME =
   process.env.DURABLE_RUN_WORKFLOW_NAME?.trim() || "durableRunWorkflowV1";
-const OPENSHELL_RUN_WORKFLOW_NAME =
-  process.env.OPENSHELL_RUN_WORKFLOW_NAME?.trim() || "openshellRunWorkflowV1";
 const DURABLE_PLAN_WORKFLOW_NAME =
   process.env.DURABLE_PLAN_WORKFLOW_NAME?.trim() || "durablePlanWorkflowV1";
 const DAG_EXECUTOR_WORKFLOW_NAME =
@@ -225,13 +225,6 @@ const WORKFLOW_STATUS_TERMINATED = 5;
 function listRuntimeWorkflowRegistrations() {
   return [
     {
-      name: "openshellRunWorkflowV1",
-      version: "v1",
-      aliases: [OPENSHELL_RUN_WORKFLOW_NAME],
-      isLatest: true,
-      source: "service-introspection" as const,
-    },
-    {
       name: "agentWorkflow",
       version: null,
       aliases: [DURABLE_RUN_WORKFLOW_NAME],
@@ -257,7 +250,6 @@ function listRuntimeWorkflowRegistrations() {
 
 // Map activity names → factory function names in activities.ts for source extraction
 const ACTIVITY_FACTORY_MAP: Record<string, string> = {
-  finalizeOpenShellRunResult: "finalizeOpenShellRunResultActivity",
   recordInitialEntry: "createRecordInitialEntry",
   callLlm: "createCallLlm",
   runTool: "createRunTool",
@@ -1339,14 +1331,6 @@ Use workspace tools to help users with file operations and command execution:
       const { WorkflowRuntime } = await import("@dapr/dapr");
       const sharedRuntime = new WorkflowRuntime();
       agent.register(sharedRuntime);
-      const finalizeOpenShellRunResultActivity =
-        createFinalizeOpenShellRunResultActivity();
-      const openshellRunWorkflow = createOpenShellRunWorkflow(
-        DURABLE_RUN_WORKFLOW_NAME,
-        {
-          finalizeOpenShellRunResult: finalizeOpenShellRunResultActivity,
-        },
-      );
 
       // Register DAG executor workflow + activities on the same runtime
       const { createDagExecutorWorkflow } = await import("./dag-executor.js");
@@ -1360,14 +1344,9 @@ Use workspace tools to help users with file operations and command execution:
         agent.agentWorkflow,
       );
       sharedRuntime.registerWorkflowWithName(
-        OPENSHELL_RUN_WORKFLOW_NAME,
-        openshellRunWorkflow,
-      );
-      sharedRuntime.registerWorkflowWithName(
         DAG_EXECUTOR_WORKFLOW_NAME,
         dagExecutor.implementation,
       );
-      sharedRuntime.registerActivity(finalizeOpenShellRunResultActivity);
       sharedRuntime.registerActivity(
         createDagExecuteClaudeTaskActivity({ workspaceSessions }),
       );
@@ -2163,47 +2142,6 @@ async function buildAgentChangeSummary(
     inlinePatchPreview: patch ? patch.slice(0, previewLimit) : undefined,
     baseRevision: changeSets[0]?.baseRevision,
     headRevision: changeSets.at(-1)?.headRevision,
-  };
-}
-
-function createFinalizeOpenShellRunResultActivity() {
-  return async function finalizeOpenShellRunResultActivity(
-    _ctx: unknown,
-    payload: {
-      instanceId: string;
-      loopInstanceId: string;
-      runPrompt: string;
-      workspaceRef?: string;
-      executionId?: string;
-      requireFileChanges: boolean;
-      traceContext?: Record<string, unknown>;
-      completion: {
-        success: boolean;
-        result?: Record<string, unknown>;
-        error?: string;
-      };
-    },
-  ): Promise<{
-    success: boolean;
-    result?: Record<string, unknown>;
-    error?: string;
-  }> {
-    return buildOpenShellRunCompletion(
-      {
-        completion: payload.completion,
-        runPrompt: payload.runPrompt,
-        instanceId: payload.loopInstanceId,
-        executionId: payload.executionId,
-        workspaceRef: payload.workspaceRef,
-        requireFileChanges: payload.requireFileChanges,
-        traceContext: payload.traceContext,
-      },
-      {
-        scorers,
-        runScorers,
-        buildAgentChangeSummary,
-      },
-    );
   };
 }
 
@@ -3491,7 +3429,7 @@ app.get(
 );
 
 // Agent run endpoint (fire-and-forget)
-app.post(["/api/run", "/api/run-sandboxed"], async (req, res) => {
+app.post("/api/run", async (req, res) => {
   try {
     const prompt = req.body?.prompt as string;
     if (!prompt) {
@@ -3521,13 +3459,7 @@ app.post(["/api/run", "/api/run-sandboxed"], async (req, res) => {
       typeof req.body?.workspaceRef === "string"
         ? req.body.workspaceRef.trim()
         : "";
-    const workspaceRef =
-      requestedWorkspaceRef ||
-      (executionId
-        ? (await workspaceSessions.getWorkspaceRefByExecutionIdDurable(
-            executionId,
-          )) || ""
-        : "");
+    const workspaceRef = requestedWorkspaceRef;
     const agentGraph =
       req.body?.agentGraph &&
       typeof req.body.agentGraph === "object" &&
@@ -3554,16 +3486,22 @@ app.post(["/api/run", "/api/run-sandboxed"], async (req, res) => {
       cwd,
       agentGraph,
     );
-    if (workspaceRef) {
-      const session =
-        await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
-      if (!session) {
-        res.status(400).json({
-          success: false,
-          error: `workspaceRef not found: ${workspaceRef}`,
-        });
-        return;
-      }
+    if (!workspaceRef) {
+      res.status(400).json({
+        success: false,
+        error:
+          "workspaceRef is required. SW 1.0 durable/run workflows must provision a workspace/profile step before the agent step.",
+      });
+      return;
+    }
+    const session =
+      await workspaceSessions.getByWorkspaceRefDurable(workspaceRef);
+    if (!session) {
+      res.status(400).json({
+        success: false,
+        error: `workspaceRef not found: ${workspaceRef}`,
+      });
+      return;
     }
 
     // Set workflow context on eventBus
@@ -4811,9 +4749,13 @@ app.post("/api/execute-plan", async (req, res) => {
           requireFileChanges && completion.success && !hasFileMutations
             ? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
             : undefined;
+        let toolFailureViolation = didAnyToolCallFail(toolCalls)
+          ? "One or more tool calls failed, so the execute-plan run cannot be considered successful."
+          : undefined;
         let repairAttempts = 0;
 
         while (
+          !toolFailureViolation &&
           fileChangeGuardViolation &&
           repairAttempts < EXECUTE_PLAN_FILE_CHANGE_REPAIR_ATTEMPTS
         ) {
@@ -4869,6 +4811,9 @@ app.post("/api/execute-plan", async (req, res) => {
             requireFileChanges && completion.success && !hasFileMutations
               ? "Execution plan required file changes, but the agent completed without write/edit/delete operations."
               : undefined;
+          toolFailureViolation = didAnyToolCallFail(toolCalls)
+            ? "One or more tool calls failed, so the execute-plan run cannot be considered successful."
+            : undefined;
         }
 
         let cleanup: {
@@ -4946,13 +4891,18 @@ app.post("/api/execute-plan", async (req, res) => {
           cleanup,
         };
         const completionSuccess =
-          completion.success && !fileChangeGuardViolation;
+          completion.success &&
+          !toolFailureViolation &&
+          !fileChangeGuardViolation;
         if (executionId && workflowId && nodeId) {
           await workflowRunTracker.markCompleted({
             id: trackedRunId,
             success: completionSuccess,
             result: completionResult,
-            error: fileChangeGuardViolation || completion.error,
+            error:
+              toolFailureViolation ||
+              fileChangeGuardViolation ||
+              completion.error,
           });
         }
 
@@ -4962,7 +4912,10 @@ app.post("/api/execute-plan", async (req, res) => {
             parentExecutionId,
             success: completionSuccess,
             result: completionResult,
-            error: fileChangeGuardViolation || completion.error,
+            error:
+              toolFailureViolation ||
+              fileChangeGuardViolation ||
+              completion.error,
           });
           if (published && executionId && workflowId && nodeId) {
             await workflowRunTracker.markEventPublished(trackedRunId);
@@ -5382,7 +5335,6 @@ app.listen(PORT, HOST, async () => {
     `[durable-agent]   POST /api/run          — start agent workflow`,
   );
   console.log(
-    `[durable-agent]   POST /api/run-sandboxed — start agent workflow with sandbox affinity`,
   );
   console.log(
     `[durable-agent]   POST /api/run/:workflowId/terminate — terminate a durable run`,

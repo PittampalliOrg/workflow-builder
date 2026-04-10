@@ -370,7 +370,7 @@ function buildWorkflowGraph(input: {
 	}
 
 	const commonAgentConfig: Record<string, string> = {
-		actionType: "openshell/run",
+		actionType: "durable/run",
 		engine: "langgraph",
 		model: DEFAULT_MODEL,
 		workspaceRef: workspaceRefTemplate,

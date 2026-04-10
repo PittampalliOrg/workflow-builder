@@ -24,10 +24,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "code/*": { appId: "code-runtime", type: "knative" },
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-  "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+  "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/*": { appId: "durable-agent", type: "knative" },
-  // Claude Code agent (Anthropic SDK-based durable agent alternative)
-  "claude/*": { appId: "claude-code-agent", type: "knative" },
   // dapr-swe agent actions (PlannerAgent, DeveloperAgent, ReviewerAgent)
   "dapr-swe/*": { appId: "dapr-swe", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
@@ -47,9 +45,8 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "code/*": { appId: "code-runtime", type: "knative" },
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
-  "workspace/*": { appId: "openshell-agent-runtime", type: "knative" },
+  "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/*": { appId: "durable-agent", type: "knative" },
-  "claude/*": { appId: "claude-code-agent", type: "knative" },
   "dapr-swe/*": { appId: "dapr-swe", type: "knative" },
 };
 

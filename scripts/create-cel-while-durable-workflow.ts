@@ -197,7 +197,7 @@ function buildWorkflowGraph(input: {
 	const afterLoopId = nanoid();
 
 	const durableConfig: Record<string, string> = {
-		actionType: "openshell/run",
+		actionType: "durable/run",
 		mode: "execute_direct",
 		agentProfileTemplateId: input.agentProfileTemplateId,
 		prompt: input.prompt,

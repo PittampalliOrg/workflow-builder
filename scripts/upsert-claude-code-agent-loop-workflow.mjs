@@ -107,7 +107,7 @@ async function resolveOwner(sql, existingWorkflow, userEmail) {
 
 function createAgentTask() {
 	return {
-		call: "claude/run",
+		call: "durable/run",
 		with: {
 			workspaceRef: "${ .workspace_profile.workspaceRef }",
 			prompt: DEFAULT_PROMPT,

@@ -23,7 +23,7 @@
 	const TRIGGER_FIELD_DESCRIPTIONS: Record<string, string> = {
 		owner: 'Repository owner or organization',
 		repo: 'Repository name',
-		model: 'Claude model to use for claude/run steps',
+		model: 'Model to use for durable/run steps',
 		app_name: 'Display name for the generated application',
 		headline: 'Primary headline shown in the UI',
 		description: 'Repository or project description',

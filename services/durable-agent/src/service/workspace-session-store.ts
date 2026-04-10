@@ -10,7 +10,7 @@ type WorkspaceSessionRow = {
 	name: string;
 	root_path: string;
 	clone_path: string | null;
-	backend: "k8s" | "local";
+	backend: "openshell";
 	enabled_tools: string[] | string;
 	require_read_before_write: boolean;
 	command_timeout_ms: number;
@@ -26,7 +26,7 @@ export type PersistedWorkspaceSession = {
 	name: string;
 	rootPath: string;
 	clonePath?: string;
-	backend: "k8s" | "local";
+	backend: "openshell";
 	enabledTools: string[];
 	requireReadBeforeWrite: boolean;
 	commandTimeoutMs: number;
@@ -98,7 +98,7 @@ class WorkspaceSessionStore {
 		workflowExecutionId: string;
 		name: string;
 		rootPath: string;
-		backend: "k8s" | "local";
+		backend: "openshell";
 		enabledTools: string[];
 		requireReadBeforeWrite: boolean;
 		commandTimeoutMs: number;

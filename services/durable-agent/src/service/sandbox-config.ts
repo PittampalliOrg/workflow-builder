@@ -1,110 +1,48 @@
 /**
- * Centralized Sandbox Configuration
+ * OpenShell-backed workspace runtime.
  *
- * Factory that creates the appropriate sandbox based on SANDBOX_BACKEND:
- * - "k8s": K8sSandbox — routes commands to an isolated Agent Sandbox pod
- * - "local": Simple local sandbox using child_process
- *
- * No @mastra/core dependency — all implementations are standalone.
+ * SW 1.0 uses a single sandbox backend: OpenShell. Durable-agent keeps the
+ * durable control loop, while all filesystem/process side effects execute
+ * through openshell-agent-runtime using workspaceRef bindings.
  */
 
-import { resolve } from "node:path";
-import { existsSync } from "node:fs";
-import {
-	readFile,
-	writeFile,
-	rm,
-	mkdir as fsMkdir,
-	readdir as fsReaddir,
-	stat as fsStat,
-} from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { K8sSandbox } from "./k8s-sandbox.js";
-import type { CommandResult } from "./k8s-sandbox.js";
-import { K8sRemoteFilesystem } from "./k8s-remote-filesystem.js";
-import type { FileEntry, FileStat } from "./k8s-remote-filesystem.js";
+import { posix as pathPosix } from "node:path";
 
-const execFileAsync = promisify(execFile);
-
-export const WORKSPACE_PATH = resolve(
-	process.env.AGENT_WORKSPACE_PATH || "./workspace",
-);
-
-export const SANDBOX_BACKEND = resolveBackend();
-
-function resolveBackend(): "k8s" | "local" {
-	const inCluster = existsSync(
-		"/var/run/secrets/kubernetes.io/serviceaccount/token",
-	);
-	const configured = String(process.env.SANDBOX_BACKEND || "").trim();
-	if (!configured) {
-		return detectBackend();
-	}
-
-	if (configured === "k8s") {
-		return "k8s";
-	}
-
-	if (configured === "local") {
-		if (
-			inCluster &&
-			process.env.SANDBOX_ALLOW_LOCAL_IN_CLUSTER !== "true"
-		) {
-			throw new Error(
-				"[sandbox] Invalid production configuration: SANDBOX_BACKEND=local " +
-					"is not allowed in-cluster unless SANDBOX_ALLOW_LOCAL_IN_CLUSTER=true.",
-			);
-		}
-		return "local";
-	}
-
-	console.warn(
-		`[sandbox] Unknown SANDBOX_BACKEND "${configured}", falling back to auto-detect`,
-	);
-	return detectBackend();
+export interface CommandResult {
+	command: string;
+	args?: string[];
+	stdout: string;
+	stderr: string;
+	exitCode: number;
+	success: boolean;
+	executionTimeMs: number;
+	timedOut?: boolean;
 }
 
-/** Auto-detect: use K8s if running in-cluster, local otherwise. */
-function detectBackend(): "k8s" | "local" {
-	if (existsSync("/var/run/secrets/kubernetes.io/serviceaccount/token")) {
-		console.log("[sandbox] Detected in-cluster environment, using k8s backend");
-		return "k8s";
-	}
-	console.log("[sandbox] No K8s service account found, using local backend");
-	return "local";
+export interface FileEntry {
+	name: string;
+	type: "file" | "directory";
 }
 
-// ── Environment Allowlist (for local sandbox) ─────────────────
-const ENV_ALLOWLIST = [
-	"PATH",
-	"HOME",
-	"NODE_ENV",
-	"LANG",
-	"GIT_AUTHOR_NAME",
-	"GIT_AUTHOR_EMAIL",
-];
-
-function buildAllowedEnv(): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {};
-	for (const key of ENV_ALLOWLIST) {
-		if (process.env[key]) {
-			env[key] = process.env[key];
-		}
-	}
-	return env;
+export interface FileStat {
+	name: string;
+	path: string;
+	type: "file" | "directory";
+	size: number;
+	createdAt: Date;
+	modifiedAt: Date;
 }
 
-function resolveShellBinary(): string {
-	if (existsSync("/bin/sh")) return "/bin/sh";
-	if (existsSync("/bin/bash")) return "/bin/bash";
-	if (process.env.SHELL && existsSync(process.env.SHELL)) return process.env.SHELL;
-	return "sh";
-}
+export const OPEN_SHELL_RUNTIME_BASE_URL =
+	process.env.OPENSHELL_AGENT_RUNTIME_API_BASE_URL?.trim() ||
+	"http://openshell-agent-runtime.openshell.svc.cluster.local:8083";
 
-// ── Local Sandbox ─────────────────────────────────────────────
+export const WORKSPACE_PATH = (
+	process.env.AGENT_WORKSPACE_PATH || "/sandbox/shared/durable-agent"
+).trim();
 
-/** Shared sandbox interface for command execution */
+export const SANDBOX_BACKEND = "openshell" as const;
+
 export interface Sandbox {
 	readonly name: string;
 	start(): Promise<void>;
@@ -120,7 +58,6 @@ export interface Sandbox {
 	getDebugInfo?(): Record<string, unknown>;
 }
 
-/** Shared filesystem interface */
 export interface Filesystem {
 	readonly name: string;
 	readFile(
@@ -143,34 +80,124 @@ export interface Filesystem {
 	shellEscape?(s: string): string;
 }
 
-export class LocalSandbox implements Sandbox {
-	readonly name = "LocalSandbox";
-	private readonly workDir: string;
-	private readonly _timeout: number;
+function shellEscape(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
 
-	constructor(workDir: string, timeout = 30_000) {
-		this.workDir = workDir;
-		this._timeout = timeout;
+async function postOpenShell<T>(
+	path: string,
+	payload: Record<string, unknown>,
+): Promise<T> {
+	const response = await fetch(`${OPEN_SHELL_RUNTIME_BASE_URL}${path}`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(payload),
+	});
+	const text = await response.text();
+	const parsed = text.trim()
+		? (() => {
+				try {
+					return JSON.parse(text) as T & { error?: string };
+				} catch {
+					return ({ raw: text } as unknown) as T & { error?: string };
+				}
+			})()
+		: ({} as T & { error?: string });
+	if (!response.ok) {
+		const error =
+			typeof parsed === "object" && parsed && "error" in parsed
+				? String(parsed.error || response.statusText)
+				: response.statusText;
+		throw new Error(`OpenShell ${path} failed (${response.status}): ${error}`);
 	}
+	return parsed as T;
+}
+
+function buildCommand(command: string, args?: string[]): string {
+	if (args && args.length > 0) {
+		if (
+			(command === "sh" || command === "bash") &&
+			args[0] === "-c" &&
+			typeof args[1] === "string"
+		) {
+			return args[1];
+		}
+		const escaped = args.map((arg) => shellEscape(String(arg))).join(" ");
+		return `${command} ${escaped}`.trim();
+	}
+	return command.trim();
+}
+
+function withEnvPrefix(
+	command: string,
+	env?: Record<string, string>,
+): string {
+	if (!env) return command;
+	const entries = Object.entries(env).filter(
+		([key, value]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && value.length > 0,
+	);
+	if (entries.length === 0) return command;
+	const prefix = entries
+		.map(([key, value]) => `${key}=${shellEscape(value)}`)
+		.join(" ");
+	return `${prefix} ${command}`;
+}
+
+export class OpenShellSandbox implements Sandbox {
+	readonly name = "OpenShellSandbox";
+	private started = false;
+	private latestProfileDetails: Record<string, unknown> | null = null;
+
+	constructor(
+		private readonly workspaceRef: string,
+		private readonly rootPath: string,
+		private readonly commandTimeoutMs: number,
+		private readonly executionId?: string,
+		private readonly enabledTools?: string[],
+	) {}
 
 	async start(): Promise<void> {
-		// Ensure workspace exists
-		if (!existsSync(this.workDir)) {
-			await fsMkdir(this.workDir, { recursive: true });
-		}
-		console.log(`[sandbox] LocalSandbox started (workDir=${this.workDir})`);
+		if (this.started) return;
+		const profile = await postOpenShell<{
+			sandbox?: {
+				details?: Record<string, unknown>;
+			};
+		}>("/api/workspaces/profile", {
+			workspaceRef: this.workspaceRef,
+			rootPath: this.rootPath,
+			commandTimeoutMs: this.commandTimeoutMs,
+			...(this.executionId ? { executionId: this.executionId } : {}),
+			...(this.enabledTools?.length ? { enabledTools: this.enabledTools } : {}),
+		});
+		this.latestProfileDetails =
+			profile?.sandbox?.details && typeof profile.sandbox.details === "object"
+				? profile.sandbox.details
+				: null;
+		this.started = true;
 	}
 
 	async stop(): Promise<void> {
-		console.log("[sandbox] LocalSandbox stopped");
+		// No-op. Workspace lifecycle is managed explicitly via cleanup.
 	}
 
 	async destroy(): Promise<void> {
-		console.log("[sandbox] LocalSandbox destroyed");
+		await postOpenShell<{ cleanedWorkspaceRefs?: string[] }>(
+			"/api/workspaces/cleanup",
+			{
+				workspaceRef: this.workspaceRef,
+				...(this.executionId ? { executionId: this.executionId } : {}),
+			},
+		);
+		this.started = false;
 	}
 
 	async isReady(): Promise<boolean> {
-		return true;
+		try {
+			await this.start();
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	async executeCommand(
@@ -178,93 +205,61 @@ export class LocalSandbox implements Sandbox {
 		args?: string[],
 		options?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 	): Promise<CommandResult> {
-		const timeout = options?.timeout ?? this._timeout;
-		const cwd = options?.cwd ?? this.workDir;
-		if (!existsSync(cwd)) {
-			await fsMkdir(cwd, { recursive: true });
-		}
-		const envOverrides = Object.fromEntries(
-			Object.entries(options?.env ?? {})
-				.filter(
-					([key, value]) => /^[A-Z_][A-Z0-9_]*$/.test(key) && value.length > 0,
-				)
-				.map(([key, value]) => [key, value]),
-		);
-
-		let fullCommand: string;
-		if (args && args.length > 0) {
-			const escaped = args.map((a) =>
-				a.includes(" ") ? `"${a.replace(/"/g, '\\"')}"` : a,
-			);
-			fullCommand = `${command} ${escaped.join(" ")}`;
-		} else {
-			fullCommand = command;
-		}
-
-		const startTime = Date.now();
-
-		try {
-			const { stdout, stderr } = await execFileAsync(
-				resolveShellBinary(),
-				["-c", fullCommand],
-				{
-					cwd,
-					timeout,
-					env: { ...buildAllowedEnv(), HOME: cwd, ...envOverrides },
-					maxBuffer: 10 * 1024 * 1024, // 10MB
-				},
-			);
-
-			return {
-				command,
-				args,
-				stdout: stdout || "",
-				stderr: stderr || "",
-				exitCode: 0,
-				success: true,
-				executionTimeMs: Date.now() - startTime,
-			};
-		} catch (err: any) {
-			const executionTimeMs = Date.now() - startTime;
-			const isTimeout = err.killed || err.signal === "SIGTERM";
-
-			return {
-				command,
-				args,
-				stdout: err.stdout || "",
-				stderr: err.stderr || err.message || "",
-				exitCode: err.code ?? (isTimeout ? 124 : 1),
-				success: false,
-				executionTimeMs,
-				timedOut: isTimeout,
-			};
-		}
+		await this.start();
+		const finalCommand = withEnvPrefix(buildCommand(command, args), options?.env);
+		const result = await postOpenShell<{
+			stdout?: string;
+			stderr?: string;
+			exitCode?: number;
+			success?: boolean;
+			executionTimeMs?: number;
+			timedOut?: boolean;
+		}>("/api/workspaces/command", {
+			workspaceRef: this.workspaceRef,
+			command: finalCommand,
+			cwd: options?.cwd || this.rootPath,
+			timeoutMs: options?.timeout ?? this.commandTimeoutMs,
+			...(this.executionId ? { executionId: this.executionId } : {}),
+		});
+		return {
+			command,
+			args,
+			stdout: String(result.stdout || ""),
+			stderr: String(result.stderr || ""),
+			exitCode: Number(result.exitCode ?? 1),
+			success: Boolean(result.success),
+			executionTimeMs: Number(result.executionTimeMs ?? 0),
+			timedOut: Boolean(result.timedOut),
+		};
 	}
 
 	getDebugInfo(): Record<string, unknown> {
 		return {
-			backend: "local",
-			workDir: this.workDir,
-			timeoutMs: this._timeout,
+			backend: SANDBOX_BACKEND,
+			workspaceRef: this.workspaceRef,
+			rootPath: this.rootPath,
+			executionId: this.executionId,
+			...(this.latestProfileDetails ?? {}),
 		};
+	}
+
+	getWorkspaceRef(): string {
+		return this.workspaceRef;
 	}
 }
 
-export class LocalFilesystem implements Filesystem {
-	readonly name = "LocalFilesystem";
-	private readonly _basePath: string;
+export class OpenShellFilesystem implements Filesystem {
+	readonly name = "OpenShellFilesystem";
 
-	get basePath(): string {
-		return this._basePath;
-	}
-
-	constructor(basePath: string) {
-		this._basePath = basePath;
-	}
+	constructor(
+		private readonly sandbox: OpenShellSandbox,
+		private readonly basePath: string,
+	) {}
 
 	private resolvePath(userPath: string): string {
-		if (userPath.startsWith("/")) return userPath;
-		return resolve(this._basePath, userPath);
+		if (!userPath || userPath === ".") return this.basePath;
+		if (userPath.startsWith("/")) return pathPosix.normalize(userPath);
+		return pathPosix.normalize(pathPosix.join(this.basePath, userPath));
 	}
 
 	async readFile(
@@ -272,12 +267,18 @@ export class LocalFilesystem implements Filesystem {
 		options?: { encoding?: string },
 	): Promise<string | Buffer> {
 		const absPath = this.resolvePath(path);
-		if (options?.encoding) {
-			return readFile(absPath, {
-				encoding: options.encoding as BufferEncoding,
-			});
+		const result = await this.sandbox.executeCommand(
+			"sh",
+			["-c", `cat -- ${shellEscape(absPath)}`],
+			{ cwd: "/" },
+		);
+		if (!result.success || result.exitCode !== 0) {
+			throw new Error(result.stderr || `Failed reading ${absPath}`);
 		}
-		return readFile(absPath);
+		if (options?.encoding) {
+			return result.stdout;
+		}
+		return Buffer.from(result.stdout, "utf-8");
 	}
 
 	async writeFile(
@@ -286,13 +287,24 @@ export class LocalFilesystem implements Filesystem {
 		options?: { recursive?: boolean },
 	): Promise<void> {
 		const absPath = this.resolvePath(path);
+		const payload = Buffer.isBuffer(content)
+			? content
+			: content instanceof Uint8Array
+				? Buffer.from(content)
+				: Buffer.from(content, "utf-8");
 		if (options?.recursive) {
-			const dir = absPath.substring(0, absPath.lastIndexOf("/"));
-			if (dir) {
-				await fsMkdir(dir, { recursive: true });
-			}
+			const parent = pathPosix.dirname(absPath);
+			await this.mkdir(parent, { recursive: true });
 		}
-		await writeFile(absPath, content);
+		await postOpenShell("/api/workspaces/materialize-files", {
+			workspaceRef: this.sandbox.getWorkspaceRef(),
+			files: [
+				{
+					path: absPath,
+					contentB64: payload.toString("base64"),
+				},
+			],
+		});
 	}
 
 	async deleteFile(
@@ -300,105 +312,125 @@ export class LocalFilesystem implements Filesystem {
 		options?: { recursive?: boolean; force?: boolean },
 	): Promise<void> {
 		const absPath = this.resolvePath(path);
-		await rm(absPath, {
-			recursive: options?.recursive,
-			force: options?.force,
+		const command =
+			options?.recursive === true
+				? `rm -rf -- ${shellEscape(absPath)}`
+				: `rm ${options?.force ? "-f" : ""} -- ${shellEscape(absPath)}`.trim();
+		const result = await this.sandbox.executeCommand("sh", ["-c", command], {
+			cwd: "/",
 		});
+		if (!result.success && !(options?.force && result.exitCode === 1)) {
+			throw new Error(result.stderr || `Failed deleting ${absPath}`);
+		}
 	}
 
 	async mkdir(path: string, options?: { recursive?: boolean }): Promise<void> {
 		const absPath = this.resolvePath(path);
-		await fsMkdir(absPath, { recursive: options?.recursive ?? true });
+		const command =
+			options?.recursive === false
+				? `mkdir -- ${shellEscape(absPath)}`
+				: `mkdir -p -- ${shellEscape(absPath)}`;
+		const result = await this.sandbox.executeCommand("sh", ["-c", command], {
+			cwd: "/",
+		});
+		if (!result.success || result.exitCode !== 0) {
+			throw new Error(result.stderr || `Failed creating ${absPath}`);
+		}
 	}
 
 	async readdir(path: string): Promise<FileEntry[]> {
 		const absPath = this.resolvePath(path);
-		const entries = await fsReaddir(absPath, { withFileTypes: true });
-		return entries.map((e) => ({
-			name: e.name,
-			type: e.isDirectory() ? ("directory" as const) : ("file" as const),
-		}));
+		const command = `find ${shellEscape(absPath)} -mindepth 1 -maxdepth 1 -printf '%f\\t%y\\n'`;
+		const result = await this.sandbox.executeCommand("sh", ["-c", command], {
+			cwd: "/",
+		});
+		if (!result.success || result.exitCode !== 0) {
+			throw new Error(result.stderr || `Failed listing ${absPath}`);
+		}
+		return result.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter(Boolean)
+			.map((line) => {
+				const [name, type] = line.split("\t");
+				return {
+					name,
+					type: type === "d" ? ("directory" as const) : ("file" as const),
+				};
+			});
 	}
 
 	async exists(path: string): Promise<boolean> {
 		const absPath = this.resolvePath(path);
-		return existsSync(absPath);
+		const result = await this.sandbox.executeCommand(
+			"sh",
+			["-c", `test -e ${shellEscape(absPath)}`],
+			{ cwd: "/" },
+		);
+		return result.success && result.exitCode === 0;
 	}
 
 	async stat(path: string): Promise<FileStat> {
 		const absPath = this.resolvePath(path);
-		const s = await fsStat(absPath);
-		const name = absPath.split("/").pop() || "";
+		const command = [
+			`if [ -d ${shellEscape(absPath)} ]; then kind=directory;`,
+			`elif [ -f ${shellEscape(absPath)} ]; then kind=file;`,
+			"else exit 1; fi;",
+			`stat_output=$(stat -c '%s\t%Y\t%W' ${shellEscape(absPath)});`,
+			'printf "%s\\t%s\\n" "$kind" "$stat_output"',
+		].join(" ");
+		const result = await this.sandbox.executeCommand("sh", ["-c", command], {
+			cwd: "/",
+		});
+		if (!result.success || result.exitCode !== 0) {
+			throw new Error(result.stderr || `Failed stat for ${absPath}`);
+		}
+		const [kind = "file", sizeRaw = "0", modifiedRaw = "0", createdRaw = "0"] =
+			result.stdout.trim().split("\t");
+		const modifiedSeconds = Number.parseInt(modifiedRaw, 10) || 0;
+		const createdSeconds = Number.parseInt(createdRaw, 10);
 		return {
-			name,
+			name: pathPosix.basename(absPath),
 			path: absPath,
-			type: s.isDirectory() ? "directory" : "file",
-			size: s.size,
-			createdAt: s.birthtime,
-			modifiedAt: s.mtime,
+			type: kind === "directory" ? "directory" : "file",
+			size: Number.parseInt(sizeRaw, 10) || 0,
+			createdAt: new Date(
+				(createdSeconds > 0 ? createdSeconds : modifiedSeconds) * 1000,
+			),
+			modifiedAt: new Date(modifiedSeconds * 1000),
 		};
 	}
 
-	shellEscape(s: string): string {
-		return `'${s.replace(/'/g, "'\\''")}'`;
+	shellEscape(value: string): string {
+		return shellEscape(value);
 	}
 }
 
-// ── Export Shared Instances ───────────────────────────────────
+const sharedTimeoutMs = parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
+const sharedWorkspaceRef =
+	process.env.AGENT_SHARED_WORKSPACE_REF?.trim() || "durable-agent-shared";
 
-function createK8sSandbox(): K8sSandbox {
-	const timeout = parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
-	return new K8sSandbox({
-		timeout,
-		onStart: async () => {
-			console.log("[sandbox] K8sSandbox started");
-		},
-		onStop: async () => {
-			console.log("[sandbox] K8sSandbox stopped");
-		},
-		onDestroy: async () => {
-			console.log("[sandbox] K8sSandbox destroyed");
-		},
-	});
-}
+export const sandbox: Sandbox = new OpenShellSandbox(
+	sharedWorkspaceRef,
+	WORKSPACE_PATH,
+	sharedTimeoutMs,
+	"shared",
+);
 
-function createLocalSandbox(): LocalSandbox {
-	const timeout = parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
-	return new LocalSandbox(WORKSPACE_PATH, timeout);
-}
-
-export const sandbox: Sandbox =
-	SANDBOX_BACKEND === "k8s" ? createK8sSandbox() : createLocalSandbox();
-
-export const filesystem: Filesystem =
-	SANDBOX_BACKEND === "k8s"
-		? new K8sRemoteFilesystem({
-				sandbox: sandbox as K8sSandbox,
-				basePath: "/app",
-			})
-		: new LocalFilesystem(WORKSPACE_PATH);
+export const filesystem: Filesystem = new OpenShellFilesystem(
+	sandbox as OpenShellSandbox,
+	WORKSPACE_PATH,
+);
 
 console.log(`[sandbox] Backend: ${SANDBOX_BACKEND}`);
 
-// ── Helper for tool execution ─────────────────────────────────
-
-/**
- * Execute a shell command string through the sandbox.
- */
 export async function executeCommandViaSandbox(
 	command: string,
 	opts?: { timeout?: number; cwd?: string; env?: Record<string, string> },
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-	const timeout =
-		opts?.timeout ?? parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
-
-	if (!(await sandbox.isReady())) {
-		await sandbox.start();
-	}
-
 	const result = await sandbox.executeCommand("sh", ["-c", command], {
-		timeout,
-		cwd: opts?.cwd,
+		timeout: opts?.timeout ?? sharedTimeoutMs,
+		cwd: opts?.cwd ?? WORKSPACE_PATH,
 		env: opts?.env,
 	});
 	return {

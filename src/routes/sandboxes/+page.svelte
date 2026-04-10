@@ -56,6 +56,28 @@
 	let globalFilter = $state('');
 	let batchDeleteOpen = $state(false);
 	let batchDeleting = $state(false);
+	let quickCreating = $state(false);
+
+	function generateSandboxName(): string {
+		const ts = Math.floor(Date.now() / 1000).toString(36);
+		return `sandbox-${ts}`;
+	}
+
+	async function quickCreate() {
+		quickCreating = true;
+		try {
+			const res = await fetch('/api/sandboxes', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: generateSandboxName(), provider: 'claude' })
+			});
+			if (res.ok) sandboxQuery.refresh();
+		} catch {
+			// ignore
+		} finally {
+			quickCreating = false;
+		}
+	}
 
 	// -- TanStack Table setup --
 	const _features = tableFeatures({
@@ -269,6 +291,15 @@
 
 			<Button variant="outline" size="sm" href="/sandboxes/dashboard">
 				Dashboard
+			</Button>
+
+			<Button variant="outline" size="sm" onclick={quickCreate} disabled={quickCreating}>
+				{#if quickCreating}
+					<Loader2 class="mr-1 h-4 w-4 animate-spin" />
+				{:else}
+					<Container class="mr-1 h-4 w-4" />
+				{/if}
+				Quick Create
 			</Button>
 
 			<Button size="sm" onclick={() => (createOpen = true)}>

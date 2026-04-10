@@ -594,7 +594,7 @@ export const workflowWorkspaceSessions = pgTable(
 		name: text("name").notNull(),
 		rootPath: text("root_path").notNull(),
 		clonePath: text("clone_path"),
-		backend: text("backend").notNull().$type<"k8s" | "local">(),
+		backend: text("backend").notNull().$type<"openshell">(),
 		enabledTools: jsonb("enabled_tools").notNull().$type<string[]>(),
 		requireReadBeforeWrite: boolean("require_read_before_write")
 			.notNull()

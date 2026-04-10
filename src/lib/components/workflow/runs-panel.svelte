@@ -16,6 +16,7 @@
 		type ExecutionStreamStore,
 		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
+	import type { ExecutionAgentRun } from '$lib/types/execution-stream';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 
@@ -217,9 +218,7 @@
 			expandedIds.add(exec.id);
 			store.selectedExecutionId = exec.id;
 			fetchLogsForExecution(exec.id);
-			if (isRunning(exec.status)) {
-				ensureExecutionStream(exec.id);
-			}
+			ensureExecutionStream(exec.id);
 		}
 	}
 
@@ -298,6 +297,12 @@
 		const currentNodeName = stream.snapshot?.currentNodeName?.trim();
 		return currentNodeName || null;
 	}
+
+	function childRunSummary(run: ExecutionAgentRun): string {
+		const segments = [run.nodeId, run.mode];
+		if (run.workspaceRef) segments.push(run.workspaceRef);
+		return segments.join(' · ');
+	}
 </script>
 
 <div class="flex h-full flex-col">
@@ -330,6 +335,7 @@
 					{@const isExpanded = expandedIds.has(execId)}
 					{@const stream = streamState(execId)}
 					{@const liveSteps = stream.snapshot?.steps ?? null}
+					{@const agentRuns = stream.snapshot?.agentRuns ?? []}
 					{@const logs = liveSteps && liveSteps.length > 0 ? liveSteps : (executionLogs.get(execId) ?? null)}
 					{@const isLogsLoading = loadingLogs.has(execId)}
 
@@ -448,6 +454,21 @@
 												{/each}
 											</div>
 										{/if}
+									</div>
+								{/if}
+
+								{#if agentRuns.length > 0}
+									<div class="space-y-1 px-3 pb-3">
+										<div class="text-[10px] text-muted-foreground">Child agent runs ({agentRuns.length})</div>
+										<div class="space-y-1">
+											{#each agentRuns as run (run.id)}
+												<div class="flex items-center gap-2 rounded-md bg-background/70 px-2 py-1.5 text-[10px]">
+													<span class="h-2 w-2 shrink-0 rounded-full {statusDotColor(run.status)}"></span>
+													<span class="min-w-0 flex-1 truncate font-medium">{childRunSummary(run)}</span>
+													<span class="shrink-0 capitalize text-muted-foreground">{run.status}</span>
+												</div>
+											{/each}
+										</div>
 									</div>
 								{/if}
 

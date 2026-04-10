@@ -52,6 +52,7 @@
 	import AgentSubflowFocus from '$lib/components/workflow/execution/agent-subflow-focus.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
+	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { buildAgentCanvasSubflows, remapEdgesForReplacements } from '$lib/utils/agent-subflow';
 
@@ -180,6 +181,13 @@
 	const agentRuns = $derived(
 		(snapshot?.agentRuns as ExecutionAgentRun[] | undefined) ?? []
 	);
+	const workspaces = $derived(
+		(snapshot?.workspaces as ExecutionWorkspaceSession[] | undefined) ?? []
+	);
+	const primaryWorkspace = $derived.by(
+		() => workspaces.find((workspace) => workspace.status === 'active') ?? workspaces[0] ?? null
+	);
+	const investigationSessionId = $derived(snapshot?.sessionId ?? null);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
 	const isLoadingLogs = $derived(isLoadingStatus);
@@ -270,12 +278,12 @@
 	}
 
 	async function fetchInvestigation() {
-		if (investigationFetched) return;
+		if (investigationFetched || !investigationSessionId) return;
 		investigationFetched = true;
 		isLoadingInvestigation = true;
 		investigationError = null;
 		try {
-			const res = await fetch(`/api/observability/sessions/${encodeURIComponent(executionId)}/investigation`);
+			const res = await fetch(`/api/observability/sessions/${encodeURIComponent(investigationSessionId)}/investigation`);
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
 			const data = await res.json();
 			if (data.error) {
@@ -291,7 +299,7 @@
 	}
 
 	$effect(() => {
-		if (activeTab === 'trace' && !investigationFetched) {
+		if (activeTab === 'trace' && investigationSessionId && !investigationFetched) {
 			fetchInvestigation();
 		}
 	});
@@ -671,6 +679,40 @@
 							{#if previewActionError}
 								<p class="text-sm text-red-600 dark:text-red-400">{previewActionError}</p>
 							{/if}
+						</CardContent>
+					</Card>
+				{/if}
+
+				{#if primaryWorkspace}
+					<Card>
+						<CardContent class="space-y-3 p-4">
+							<div>
+								<p class="text-sm font-medium">Workspace</p>
+								<p class="text-sm text-muted-foreground">
+									Canonical execution workspace tracked from <code>workflow_workspace_sessions</code>.
+								</p>
+							</div>
+
+							<div class="grid gap-2 text-sm sm:grid-cols-2">
+								<p><span class="font-medium text-foreground">Workspace Ref:</span> <code>{primaryWorkspace.workspaceRef}</code></p>
+								<p><span class="font-medium text-foreground">Backend:</span> <code>{primaryWorkspace.backend}</code></p>
+								<p><span class="font-medium text-foreground">Root Path:</span> <code>{primaryWorkspace.rootPath}</code></p>
+								<p><span class="font-medium text-foreground">Status:</span> <code>{primaryWorkspace.status}</code></p>
+								{#if primaryWorkspace.durableInstanceId}
+									<p class="sm:col-span-2"><span class="font-medium text-foreground">Durable Instance:</span> <code>{primaryWorkspace.durableInstanceId}</code></p>
+								{/if}
+								{#if primaryWorkspace.enabledTools.length > 0}
+									<p class="sm:col-span-2">
+										<span class="font-medium text-foreground">Enabled Tools:</span>
+										<code>{primaryWorkspace.enabledTools.join(', ')}</code>
+									</p>
+								{/if}
+								{#if primaryWorkspace.lastError}
+									<p class="sm:col-span-2 text-red-600 dark:text-red-400">
+										<span class="font-medium">Last Error:</span> {primaryWorkspace.lastError}
+									</p>
+								{/if}
+							</div>
 						</CardContent>
 					</Card>
 				{/if}

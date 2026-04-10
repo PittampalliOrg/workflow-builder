@@ -5,7 +5,8 @@ import {
 	workflowAgentEvents,
 	workflowAgentRuns,
 	workflowExecutionLogs,
-	workflowExecutions
+	workflowExecutions,
+	workflowWorkspaceSessions
 } from '$lib/server/db/schema';
 import { listBrowserArtifactsByExecutionId } from '$lib/server/browser-artifacts';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
@@ -180,6 +181,37 @@ async function readExecutionAgentRuns(executionId: string): Promise<ExecutionRea
 		createdAt: toIso(row.createdAt),
 		updatedAt: toIso(row.updatedAt),
 		completedAt: toIso(row.completedAt)
+	}));
+}
+
+async function readExecutionWorkspaces(
+	executionId: string
+): Promise<ExecutionReadModel['workspaces']> {
+	if (!db) return [];
+	const rows = await db
+		.select()
+		.from(workflowWorkspaceSessions)
+		.where(eq(workflowWorkspaceSessions.workflowExecutionId, executionId))
+		.orderBy(asc(workflowWorkspaceSessions.createdAt));
+
+	return rows.map((row) => ({
+		workspaceRef: row.workspaceRef,
+		workflowExecutionId: row.workflowExecutionId,
+		durableInstanceId: row.durableInstanceId ?? null,
+		name: row.name,
+		rootPath: row.rootPath,
+		clonePath: row.clonePath ?? null,
+		backend: row.backend,
+		enabledTools: Array.isArray(row.enabledTools) ? row.enabledTools : [],
+		requireReadBeforeWrite: row.requireReadBeforeWrite,
+		commandTimeoutMs: row.commandTimeoutMs,
+		status: row.status,
+		lastError: row.lastError ?? null,
+		createdAt: toIso(row.createdAt),
+		updatedAt: toIso(row.updatedAt),
+		lastAccessedAt: toIso(row.lastAccessedAt),
+		cleanedAt: toIso(row.cleanedAt),
+		sandboxState: (row.sandboxState as Record<string, unknown> | null) ?? null
 	}));
 }
 
@@ -480,10 +512,11 @@ export async function loadExecutionReadModel(
 		execution = (await readExecutionRow(executionId)) ?? execution;
 	}
 
-	const [steps, browserArtifacts, agentRuns, agentEvents, traceIds] = await Promise.all([
+	const [steps, browserArtifacts, agentRuns, workspaces, agentEvents, traceIds] = await Promise.all([
 		readExecutionSteps(executionId),
 		listBrowserArtifactsByExecutionId(executionId),
 		readExecutionAgentRuns(executionId),
+		readExecutionWorkspaces(executionId),
 		options?.includeAgentEvents === false ? Promise.resolve([]) : fetchRecentAgentEvents(executionId),
 		readTraceIds(execution)
 	]);
@@ -523,6 +556,7 @@ export async function loadExecutionReadModel(
 		steps,
 		browserArtifacts,
 		agentRuns,
+		workspaces,
 		agentEvents,
 		lastAgentEventId
 	};

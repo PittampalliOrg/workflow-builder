@@ -8,7 +8,7 @@ Available SW 1.0 node types:
 - start: The entry point of the workflow
 - end: The termination point of the workflow
 - call: Invokes an external function or service (taskConfig: { function, arguments })
-- agent: Invokes the OpenShell-backed durable TypeScript agent runtime (taskConfig: openshell/run body with prompt, agentConfig, agentGraph)
+- agent: Invokes the OpenShell-backed durable agent runtime (taskConfig: durable/run body with prompt, agentConfig, agentGraph)
 - set: Sets workflow variables (taskConfig: { variables: { key: value } })
 - switch: Conditional branching (taskConfig: { conditions: [{ name, condition, then }] })
 - wait: Waits for a duration or event (taskConfig: { duration, event })

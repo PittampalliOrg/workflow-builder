@@ -272,7 +272,7 @@ function buildWorkflowNodes(input: {
 					"Create a plan, wait for approval, then execute in a single durable run",
 				type: "action",
 				config: {
-					actionType: "openshell/run",
+					actionType: "durable/run",
 					mode: "plan_mode",
 					agentProfileTemplateId: input.agentProfileTemplateId,
 					prompt: input.prompt,

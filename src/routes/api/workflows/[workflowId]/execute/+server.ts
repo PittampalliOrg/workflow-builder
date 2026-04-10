@@ -7,6 +7,7 @@ import { workflows, workflowExecutions } from '$lib/server/db/schema';
 import { daprFetch, getOrchestratorUrl } from '$lib/server/dapr-client';
 import { getMissingRequiredTriggerFields } from '$lib/server/workflows/trigger-validation';
 import { expandGreenfieldPromptInput } from '$lib/server/workflows/greenfield-prompt';
+import { getRemovedSw10AgentCallsError } from '$lib/server/workflows/sw10-agent-validation';
 import { applyWorkflowInputDefaults } from '$lib/utils/workflow-input-config';
 import {
 	buildWorkflowSessionId,
@@ -63,6 +64,10 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	if (!spec || !isSWWorkflow(spec)) {
 		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
+	}
+	const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
+	if (removedAgentCallsError) {
+		return error(400, removedAgentCallsError);
 	}
 
 	try {
