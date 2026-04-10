@@ -14,6 +14,16 @@ function getUpstreamWsUrl() {
 	);
 }
 
+function forwardableCloseCode(code) {
+	if (code >= 3000 && code <= 4999) return code;
+	if (code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) return code;
+	return 1011;
+}
+
+function closeReason(reason) {
+	return (reason.toString() || 'upstream closed').slice(0, 123);
+}
+
 const wss = new WebSocketServer({ noServer: true });
 
 const server = http.createServer(handler);
@@ -56,7 +66,7 @@ server.on('upgrade', (req, socket, head) => {
 
 		upstream.on('close', (code, reason) => {
 			if (browserWs.readyState === WebSocket.OPEN) {
-				browserWs.close(code || 1000, reason?.toString() || 'upstream closed');
+				browserWs.close(forwardableCloseCode(code), closeReason(reason));
 			}
 		});
 

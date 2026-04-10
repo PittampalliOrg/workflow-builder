@@ -13,6 +13,16 @@ function getUpstreamWsUrl(): string {
 	);
 }
 
+function forwardableCloseCode(code: number): number {
+	if (code >= 3000 && code <= 4999) return code;
+	if (code >= 1000 && code <= 1014 && ![1004, 1005, 1006].includes(code)) return code;
+	return 1011;
+}
+
+function closeReason(reason: Buffer): string {
+	return (reason.toString() || 'upstream closed').slice(0, 123);
+}
+
 export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
 	const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 	const match = url.pathname.match(TERMINAL_PATH_RE);
@@ -48,7 +58,7 @@ export function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer
 
 		upstream.on('close', (code, reason) => {
 			if (browserWs.readyState === WebSocket.OPEN) {
-				browserWs.close(code || 1000, reason?.toString() || 'upstream closed');
+				browserWs.close(forwardableCloseCode(code), closeReason(reason));
 			}
 		});
 
