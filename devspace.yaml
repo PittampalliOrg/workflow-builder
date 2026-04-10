@@ -392,7 +392,7 @@ dev:
       - name: npm_config_store_dir
         value: /app/.pnpm-store
       - name: DURABLE_EVENT_STREAM_PUBLISH_ENABLED
-        value: "false"
+        value: "true"
       - name: DURABLE_LEGACY_COMPLETION_EVENTS_ENABLED
         value: "false"
       - name: OTEL_SERVICE_NAME

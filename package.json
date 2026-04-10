@@ -76,6 +76,7 @@
 		"js-yaml": "^4.1.1",
 		"lucide-svelte": "^0.552.0",
 		"nanoid": "^5.1.6",
+		"nats": "^2.29.3",
 		"paneforge": "^1.0.0",
 		"postgres": "^3.4.7",
 		"shiki": "^4.0.2",

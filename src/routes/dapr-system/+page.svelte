@@ -14,6 +14,8 @@
 		TableCell
 	} from '$lib/components/ui/table';
 	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
+	import { Message, MessageContent, MessageLabel } from '$lib/components/ai-elements/message';
+	import { ToolCall } from '$lib/components/ai-elements/tool';
 	import {
 		RefreshCw,
 		Loader2,
@@ -722,7 +724,7 @@
 									<!-- JSON view -->
 									<JsonViewer data={val} label="Value" />
 								{:else if isConversation}
-									<!-- Structured conversation view -->
+									<!-- Structured conversation view using ai-elements -->
 									{@const roles = [...new Set(val.map((m: Record<string, unknown>) => m.role))]}
 									<div class="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
 										<Badge variant="outline">{val.length} messages</Badge>
@@ -730,23 +732,22 @@
 											<span class="text-muted-foreground">{role}: {val.filter((m: Record<string, unknown>) => m.role === role).length}</span>
 										{/each}
 									</div>
-									<div class="space-y-1.5">
+									<div class="space-y-0.5">
 										{#each val as msg}
 											{@const role = String(msg.role || '')}
 											{@const content = String(msg.content || '')}
-											<div class="flex gap-2 text-xs {role === 'user' ? '' : role === 'assistant' ? 'pl-4' : 'pl-8'}">
-												<Badge variant={role === 'user' ? 'default' : role === 'assistant' ? 'secondary' : 'outline'} class="shrink-0 text-[10px]">
-													{role}{msg.name ? `: ${msg.name}` : ''}
-												</Badge>
-												<div class="min-w-0 flex-1">
+											<Message from={role === 'user' ? 'user' : role === 'tool' ? 'tool' : 'assistant'}>
+												<MessageContent variant={role === 'tool' ? 'flat' : 'contained'}>
+													<MessageLabel>
+														{role}{msg.name ? `: ${msg.name}` : ''} &middot; {formatTime(String(msg.createdAt || msg.timestamp || ''))}
+													</MessageLabel>
 													{#if content}
-														<div class="whitespace-pre-wrap break-words text-[11px] {role === 'tool' ? 'font-mono text-muted-foreground' : ''}">{content.length > 400 ? content.slice(0, 400) + '...' : content}</div>
+														<div class="whitespace-pre-wrap break-words text-[11px] {role === 'tool' ? 'font-mono' : ''}">{content.length > 400 ? content.slice(0, 400) + '...' : content}</div>
 													{:else if msg.tool_calls}
-														<span class="text-muted-foreground">[{Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 1} tool call(s)]</span>
+														<span class="text-[11px] text-muted-foreground">[{Array.isArray(msg.tool_calls) ? msg.tool_calls.length : 1} tool call(s)]</span>
 													{/if}
-												</div>
-												<span class="shrink-0 whitespace-nowrap text-[10px] text-muted-foreground">{formatTime(String(msg.createdAt || msg.timestamp || ''))}</span>
-											</div>
+												</MessageContent>
+											</Message>
 										{/each}
 									</div>
 								{:else if isAgentState}
@@ -1248,88 +1249,85 @@
 																			</div>
 
 																			{#if agentDetailTab === 'events'}
-																				<!-- Structured activity timeline -->
+																				<!-- Structured activity timeline using ai-elements -->
 																				{@const timeline = buildActivityTimeline(inst)}
-																				<div class="space-y-2">
+																				<div class="space-y-1">
 																					{#each timeline as turn, turnIdx}
 																						{#if turn.type === 'system'}
-																							<div class="rounded border border-amber-500/20 bg-amber-500/5 p-2">
-																								<div class="flex items-center gap-2">
-																									<Badge variant="outline" class="border-amber-500/30 text-[10px] text-amber-500">system</Badge>
-																									<span class="text-[11px] text-muted-foreground">{formatTime(turn.timestamp)}</span>
-																								</div>
-																								<div class="mt-1 max-h-12 overflow-hidden whitespace-pre-wrap text-[11px] text-muted-foreground">{(turn.content || '').slice(0, 200)}{(turn.content || '').length > 200 ? '...' : ''}</div>
-																							</div>
+																							<Message from="system">
+																								<MessageContent variant="flat">
+																									<MessageLabel>System</MessageLabel>
+																									<div class="max-h-12 overflow-hidden whitespace-pre-wrap text-[11px] text-muted-foreground">{(turn.content || '').slice(0, 200)}{(turn.content || '').length > 200 ? '...' : ''}</div>
+																								</MessageContent>
+																							</Message>
 																						{:else if turn.type === 'prompt'}
-																							<div class="rounded border border-border/30 bg-muted/20 p-2">
-																								<div class="flex items-center gap-2">
-																									<Badge variant="default" class="text-[10px]">prompt</Badge>
-																									<span class="text-[11px] text-muted-foreground">{formatTime(turn.timestamp)}</span>
-																								</div>
-																								<div class="mt-1 max-h-16 overflow-hidden whitespace-pre-wrap text-[11px]">{(turn.content || '').slice(0, 300)}{(turn.content || '').length > 300 ? '...' : ''}</div>
-																							</div>
+																							<Message from="user">
+																								<MessageContent>
+																									<MessageLabel>User &middot; {formatTime(turn.timestamp)}</MessageLabel>
+																									<div class="max-h-20 overflow-hidden whitespace-pre-wrap text-[11px]">{(turn.content || '').slice(0, 400)}{(turn.content || '').length > 400 ? '...' : ''}</div>
+																								</MessageContent>
+																							</Message>
 																						{:else if turn.type === 'tool_turn'}
-																							<!-- Tool call + result pair -->
-																							<div class="rounded border border-border/30 p-2">
-																								<div class="mb-1 flex items-center gap-2 text-[10px] text-muted-foreground">
-																									<span class="font-medium">Turn {turnIdx}</span>
-																									<span>{formatTime(turn.timestamp)}</span>
-																								</div>
-																								{#each turn.toolCalls || [] as tc, tcIdx}
-																									{@const result = turn.toolResults?.find((r) => r.callId === tc.id) || turn.toolResults?.[tcIdx]}
-																									<!-- Call -->
-																									<div class="mb-1 rounded border border-blue-500/20 bg-blue-500/5 p-1.5">
-																										<div class="flex items-center gap-2">
-																											<Badge variant="outline" class="border-blue-500/30 text-[10px] text-blue-500">{tc.name}</Badge>
-																											{#if tc.args.description}
-																												<span class="text-[10px] text-muted-foreground">{tc.args.description}</span>
-																											{/if}
-																										</div>
-																										{#if tc.args.command}
-																											<pre class="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted/50 px-2 py-1 font-mono text-[10px]">{String(tc.args.command).slice(0, 400)}{String(tc.args.command).length > 400 ? '...' : ''}</pre>
-																										{:else if Object.keys(tc.args).length > 0}
-																											<pre class="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted/50 px-2 py-1 font-mono text-[10px]">{JSON.stringify(tc.args, null, 2).slice(0, 300)}</pre>
-																										{/if}
-																									</div>
-																									<!-- Result -->
-																									{#if result}
-																										<div class="mb-1 rounded border p-1.5 {result.result.success === false ? 'border-red-500/20 bg-red-500/5' : 'border-green-500/20 bg-green-500/5'}">
-																											<div class="flex items-center gap-2">
-																												<Badge variant={result.result.success === false ? 'destructive' : 'secondary'} class="text-[10px]">
-																													{result.result.success === false ? `exit ${result.result.exitCode}` : 'success'}
-																												</Badge>
-																												{#if result.result.sandbox?.name}
-																													<span class="font-mono text-[9px] text-muted-foreground">{result.result.sandbox.name}</span>
+																							<Message from="assistant">
+																								<MessageContent variant="flat">
+																									{#each turn.toolCalls || [] as tc, tcIdx}
+																										{@const result = turn.toolResults?.find((r) => r.callId === tc.id) || turn.toolResults?.[tcIdx]}
+																										<ToolCall
+																											name={tc.name}
+																											state={result ? (result.result.success === false ? 'error' : 'completed') : 'running'}
+																										>
+																											<!-- Input -->
+																											<div class="space-y-1 border-t border-border/30 p-2">
+																												{#if tc.args.description}
+																													<div class="text-[10px] text-muted-foreground">{tc.args.description}</div>
+																												{/if}
+																												{#if tc.args.command}
+																													<pre class="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted/50 px-2 py-1.5 font-mono text-[10px]">{String(tc.args.command).slice(0, 500)}{String(tc.args.command).length > 500 ? '...' : ''}</pre>
+																												{:else if Object.keys(tc.args).length > 0}
+																													<pre class="overflow-x-auto whitespace-pre-wrap break-all rounded bg-muted/50 px-2 py-1.5 font-mono text-[10px]">{JSON.stringify(tc.args, null, 2).slice(0, 400)}</pre>
+																												{/if}
+
+																												<!-- Output -->
+																												{#if result}
+																													<div class="mt-1 rounded border p-1.5 {result.result.success === false ? 'border-red-500/20 bg-red-500/5' : 'border-border/20 bg-muted/20'}">
+																														<div class="mb-1 flex items-center gap-2">
+																															<Badge variant={result.result.success === false ? 'destructive' : 'secondary'} class="text-[10px]">
+																																{result.result.success === false ? `exit ${result.result.exitCode}` : 'success'}
+																															</Badge>
+																															{#if result.result.sandbox?.name}
+																																<span class="font-mono text-[9px] text-muted-foreground">{result.result.sandbox.name}</span>
+																															{/if}
+																														</div>
+																														{#if result.result.stdout}
+																															<pre class="max-h-28 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 px-2 py-1 font-mono text-[10px]">{result.result.stdout.slice(0, 600)}{result.result.stdout.length > 600 ? '...' : ''}</pre>
+																														{/if}
+																														{#if result.result.stderr}
+																															<pre class="mt-1 max-h-10 overflow-auto whitespace-pre-wrap break-all rounded bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-400">{result.result.stderr.slice(0, 200)}</pre>
+																														{/if}
+																														{#if result.result.files?.length}
+																															<div class="mt-1 flex flex-wrap gap-1">
+																																{#each result.result.files as f}
+																																	<Badge variant="outline" class="text-[9px]">{f.status === 'A' ? '+' : f.status === 'D' ? '-' : '~'} {f.path}</Badge>
+																																{/each}
+																															</div>
+																														{/if}
+																														{#if result.result.raw}
+																															<div class="mt-1 max-h-16 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-muted-foreground">{result.result.raw}</div>
+																														{/if}
+																													</div>
 																												{/if}
 																											</div>
-																											{#if result.result.stdout}
-																												<pre class="mt-1 max-h-24 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 px-2 py-1 font-mono text-[10px]">{result.result.stdout.slice(0, 500)}{result.result.stdout.length > 500 ? '...' : ''}</pre>
-																											{/if}
-																											{#if result.result.stderr}
-																												<pre class="mt-1 max-h-10 overflow-auto whitespace-pre-wrap break-all rounded bg-red-500/10 px-2 py-1 font-mono text-[10px] text-red-400">{result.result.stderr.slice(0, 200)}</pre>
-																											{/if}
-																											{#if result.result.files?.length}
-																												<div class="mt-1 flex flex-wrap gap-1">
-																													{#each result.result.files as f}
-																														<Badge variant="outline" class="text-[9px]">{f.status === 'A' ? '+' : f.status === 'D' ? '-' : '~'} {f.path}</Badge>
-																													{/each}
-																												</div>
-																											{/if}
-																											{#if result.result.raw}
-																												<div class="mt-1 max-h-16 overflow-auto whitespace-pre-wrap break-all font-mono text-[10px] text-muted-foreground">{result.result.raw}</div>
-																											{/if}
-																										</div>
-																									{/if}
-																								{/each}
-																							</div>
+																										</ToolCall>
+																									{/each}
+																								</MessageContent>
+																							</Message>
 																						{:else if turn.type === 'response'}
-																							<div class="rounded border border-green-500/20 bg-green-500/5 p-2">
-																								<div class="flex items-center gap-2">
-																									<Badge variant="secondary" class="text-[10px]">response</Badge>
-																									<span class="text-[11px] text-muted-foreground">{formatTime(turn.timestamp)}</span>
-																								</div>
-																								<div class="mt-1 whitespace-pre-wrap text-[11px]">{turn.responseText}</div>
-																							</div>
+																							<Message from="assistant">
+																								<MessageContent>
+																									<MessageLabel>Assistant &middot; {formatTime(turn.timestamp)}</MessageLabel>
+																									<div class="whitespace-pre-wrap text-[11px]">{turn.responseText}</div>
+																								</MessageContent>
+																							</Message>
 																						{/if}
 																					{/each}
 																				</div>

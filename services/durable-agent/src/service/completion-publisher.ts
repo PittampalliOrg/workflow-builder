@@ -23,7 +23,8 @@ const LEGACY_COMPLETION_EVENTS_ENABLED = ["1", "true", "yes", "on"].includes(
 		.toLowerCase(),
 );
 
-const publishUrl = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/publish/${PUBSUB_NAME}/${PUBSUB_TOPIC}`;
+const publishBaseUrl = `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/publish/${PUBSUB_NAME}`;
+const publishUrl = `${publishBaseUrl}/${PUBSUB_TOPIC}`;
 let eventStreamPublishingDisabledReason: string | null = null;
 
 function isMissingWorkflowInstance(body: string): boolean {
@@ -40,19 +41,28 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 		return;
 	}
 
+	// Derive executionId from event data or workflow context
+	const executionId =
+		(event.data as Record<string, unknown>)?.executionId as string |
+		(event.data as Record<string, unknown>)?.parentExecutionId as string |
+		eventBus.getWorkflowContext()?.instanceId as string |
+		undefined;
+
+	const payload = JSON.stringify({
+		source: "durable-agent",
+		type: event.type,
+		executionId: executionId || undefined,
+		runId: event.runId,
+		callId: event.callId,
+		data: event.data,
+		timestamp: event.timestamp,
+	});
+
+	const headers = { "Content-Type": "application/json" };
+
 	try {
-		const resp = await fetch(publishUrl, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				source: "durable-agent",
-				type: event.type,
-				runId: event.runId,
-				callId: event.callId,
-				data: event.data,
-				timestamp: event.timestamp,
-			}),
-		});
+		// Publish to the default topic (backward compat for existing subscribers)
+		const resp = await fetch(publishUrl, { method: "POST", headers, body: payload });
 		if (!resp.ok) {
 			const status = resp.status;
 			const body = await resp.text().catch(() => "");
@@ -64,6 +74,14 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 				return;
 			}
 			console.warn(`[dapr] Publish failed: ${status}${body ? ` ${body}` : ""}`);
+		}
+
+		// Also publish to per-execution topic for direct NATS consumer filtering
+		if (executionId) {
+			const perExecUrl = `${publishBaseUrl}/workflow.events.${encodeURIComponent(executionId)}`;
+			fetch(perExecUrl, { method: "POST", headers, body: payload }).catch(() => {
+				// Best-effort — don't disable publishing if per-execution topic fails
+			});
 		}
 	} catch (error) {
 		eventStreamPublishingDisabledReason =

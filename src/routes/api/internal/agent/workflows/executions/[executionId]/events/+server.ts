@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types';
 import { validateInternalToken } from '$lib/server/internal-auth';
 import { db } from '$lib/server/db';
 import { assertExecutionReadModelColumns } from '$lib/server/db/execution-read-model-support';
+import { getNatsConnection, executionSubject } from '$lib/server/nats-client';
 import {
 	workflowExecutions,
 	workflowAgentEvents,
@@ -264,6 +265,31 @@ export const POST: RequestHandler = async ({ request, params }) => {
 				phase: nextPhase ?? undefined
 			})
 			.where(eq(workflowExecutions.id, executionId));
+	}
+
+	// Bridge persisted events to NATS JetStream for real-time streaming
+	// This ensures events from ALL sources (durable-agent, claude-code-agent)
+	// flow through the per-execution NATS subject for SSE consumers
+	if (inserted.length > 0) {
+		try {
+			const nc = await getNatsConnection();
+			const subject = executionSubject(executionId);
+			const encoder = new TextEncoder();
+			for (const event of normalized) {
+				nc.publish(subject, encoder.encode(JSON.stringify({
+					source: 'agent-events-ingest',
+					type: event.eventType,
+					executionId,
+					daprInstanceId: event.daprInstanceId,
+					toolName: event.toolName,
+					phase: event.phase,
+					data: event.payload,
+					timestamp: event.ts instanceof Date ? event.ts.toISOString() : event.ts,
+				})));
+			}
+		} catch {
+			// NATS unavailable — events are still persisted in DB, SSE fallback works
+		}
 	}
 
 	return json({
