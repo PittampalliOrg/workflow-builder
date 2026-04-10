@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+CLAUDE_CODE_AGENT_APP_ID = config.CLAUDE_CODE_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 _SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] | None = None
 _DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] = {
@@ -344,7 +345,11 @@ def terminate_durable_runs_by_parent_execution(
     cleanup_workspace: bool = True,
 ) -> dict:
     """
-    Terminate active durable-agent runs belonging to a parent workflow execution.
+    Terminate active durable agent runs belonging to a parent workflow execution.
+
+    SW 1.0 durable/run can target either the Python durable-agent or the custom
+    claude-code-agent harness. Parent cancellation must clean up both runtimes so
+    retry and timeout paths do not leave orphaned child workflows.
     """
     parent_execution_id = str(parent_execution_id or "").strip()
     if not parent_execution_id:
@@ -355,32 +360,54 @@ def terminate_durable_runs_by_parent_execution(
         "reason": reason or "terminated due to parent workflow termination",
         "cleanupWorkspace": cleanup_workspace,
     }
-    try:
-        return _dapr_invoke_or_raise(
-            DURABLE_AGENT_APP_ID,
-            "api/runs/terminate-by-parent",
-            payload,
-            timeout=20,
-            service_label="Durable run parent termination",
-        )
-    except Exception as exc:
-        message = str(exc)
-        if (
-            "failed to resolve address" in message
-            or "name resolver error" in message
-            or "connection refused" in message.lower()
-        ):
-            logger.info(
-                "[Call Durable Agent Run] Skipping parent durable-run termination "
-                "because durable-agent is unavailable: %s",
+    agents = {
+        "durable-agent": DURABLE_AGENT_APP_ID,
+        "claude-code-agent": CLAUDE_CODE_AGENT_APP_ID,
+    }
+    results: dict[str, dict] = {}
+    failures: dict[str, str] = {}
+
+    for agent_label, app_id in agents.items():
+        try:
+            results[agent_label] = _dapr_invoke_or_raise(
+                app_id,
+                "api/runs/terminate-by-parent",
+                payload,
+                timeout=20,
+                service_label=f"{agent_label} parent termination",
+            )
+        except Exception as exc:
+            message = str(exc)
+            if (
+                "failed to resolve address" in message
+                or "name resolver error" in message
+                or "connection refused" in message.lower()
+            ):
+                logger.info(
+                    "[Call Durable Agent Run] Skipping parent durable-run "
+                    "termination because %s is unavailable: %s",
+                    agent_label,
+                    message,
+                )
+                results[agent_label] = {
+                    "success": True,
+                    "skipped": True,
+                    "reason": f"{agent_label} unavailable",
+                }
+                continue
+            logger.warning(
+                "[Call Durable Agent Run] %s parent termination failed: %s",
+                agent_label,
                 message,
             )
-            return {
-                "success": True,
-                "skipped": True,
-                "reason": "durable-agent unavailable",
-            }
-        raise
+            failures[agent_label] = message
+
+    return {
+        "success": not failures,
+        "parentExecutionId": parent_execution_id,
+        "results": results,
+        "failures": failures,
+    }
 
 
 def call_durable_agent_run(ctx, input_data: dict) -> dict:
