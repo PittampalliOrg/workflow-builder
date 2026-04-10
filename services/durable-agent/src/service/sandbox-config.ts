@@ -47,10 +47,13 @@ function resolveBackend(): "k8s" | "local" {
 	}
 
 	if (configured === "local") {
-		if (inCluster) {
+		if (
+			inCluster &&
+			process.env.SANDBOX_ALLOW_LOCAL_IN_CLUSTER !== "true"
+		) {
 			throw new Error(
 				"[sandbox] Invalid production configuration: SANDBOX_BACKEND=local " +
-					"is not allowed in-cluster. Set SANDBOX_BACKEND=k8s.",
+					"is not allowed in-cluster unless SANDBOX_ALLOW_LOCAL_IN_CLUSTER=true.",
 			);
 		}
 		return "local";
