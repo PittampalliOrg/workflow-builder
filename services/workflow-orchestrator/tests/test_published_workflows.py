@@ -401,3 +401,74 @@ def test_resolve_native_agent_args_renders_trigger_templates_before_child_workfl
     assert resolved["cwd"] == "/tmp/repo-test-1"
     assert resolved["body"]["input"]["owner"] == "giteaadmin"
     assert resolved["body"]["input"]["repo"] == "repo-test-1"
+
+
+def test_durable_run_uses_native_child_workflow_target():
+    workflow = types.SimpleNamespace(
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"prompt": "Create a validation marker"},
+        execution_id="exec_456",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-wf-1"
+
+        def call_child_workflow(self, workflow_name, input=None, instance_id=None, app_id=None):
+            return {
+                "kind": "call_child_workflow",
+                "workflow_name": workflow_name,
+                "input": input,
+                "instance_id": instance_id,
+                "app_id": app_id,
+            }
+
+    ctx = _FakeCtx()
+    workflow_gen = SW_WORKFLOW._run_native_durable_agent_child_workflow(
+        ctx,
+        "durable_validation_run",
+        "durable/run",
+        {
+            "prompt": "Create a validation marker",
+            "maxTurns": "8",
+            "timeoutMinutes": "15",
+            "agentConfig": {"name": "durable-validation"},
+        },
+        tc,
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["kind"] == "call_child_workflow"
+    assert yielded["workflow_name"] == SW_WORKFLOW.config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+    assert yielded["app_id"] == SW_WORKFLOW.config.DURABLE_AGENT_APP_ID
+    assert yielded["instance_id"] == "parent-wf-1__durable__durable_validation_run__run__0"
+    assert yielded["input"]["task"] == "Create a validation marker"
+    assert yielded["input"]["maxIterations"] == 8
+    assert yielded["input"]["agentRunId"] == yielded["instance_id"]
+    assert yielded["input"]["parentExecutionId"] == "parent-wf-1"
+
+    with pytest.raises(StopIteration) as stop:
+        workflow_gen.send(
+            {
+                "success": True,
+                "content": "VALIDATION COMPLETE",
+            }
+        )
+
+    result = stop.value.value
+    assert result["success"] is True
+    assert result["childWorkflowName"] == SW_WORKFLOW.config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME
+    assert result["childAppId"] == SW_WORKFLOW.config.DURABLE_AGENT_APP_ID

@@ -23,20 +23,6 @@ type ExecuteBody = {
 	triggerData?: Record<string, unknown>;
 };
 
-type LegacyNodeRecord = {
-	id?: string;
-	type?: string;
-	data?: {
-		type?: string;
-		[key: string]: unknown;
-	};
-};
-
-type LegacyEdgeRecord = {
-	source?: string;
-	target?: string;
-};
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -49,67 +35,6 @@ function isSWWorkflow(spec: unknown): boolean {
 	return (
 		doc.dsl === '1.0.0' && typeof doc.namespace === 'string' && typeof doc.name === 'string'
 	);
-}
-
-function buildLegacyExecutionOrder(
-	nodes: unknown,
-	edges: unknown
-): string[] {
-	const rawNodes = Array.isArray(nodes) ? (nodes as LegacyNodeRecord[]) : [];
-	const rawEdges = Array.isArray(edges) ? (edges as LegacyEdgeRecord[]) : [];
-
-	const execNodes = rawNodes.filter((node) => {
-		if (!node || typeof node.id !== 'string') return false;
-		if (node.type === 'add') return false;
-		if (node.data?.type === 'add') return false;
-		return true;
-	});
-
-	const nodeIds = new Set(execNodes.map((node) => node.id as string));
-	const incomingCounts = new Map<string, number>();
-	const adjacency = new Map<string, string[]>();
-
-	for (const node of execNodes) {
-		incomingCounts.set(node.id as string, 0);
-		adjacency.set(node.id as string, []);
-	}
-
-	for (const edge of rawEdges) {
-		if (typeof edge?.source !== 'string' || typeof edge?.target !== 'string') continue;
-		if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) continue;
-		adjacency.get(edge.source)?.push(edge.target);
-		incomingCounts.set(edge.target, (incomingCounts.get(edge.target) ?? 0) + 1);
-	}
-
-	const queue = [...incomingCounts.entries()]
-		.filter(([, count]) => count === 0)
-		.map(([nodeId]) => nodeId)
-		.sort();
-
-	const order: string[] = [];
-
-	while (queue.length > 0) {
-		const current = queue.shift();
-		if (!current) break;
-		order.push(current);
-
-		for (const next of adjacency.get(current) ?? []) {
-			const remaining = (incomingCounts.get(next) ?? 0) - 1;
-			incomingCounts.set(next, remaining);
-			if (remaining === 0) {
-				queue.push(next);
-				queue.sort();
-			}
-		}
-	}
-
-	for (const nodeId of [...nodeIds].sort()) {
-		if (!order.includes(nodeId)) {
-			order.push(nodeId);
-		}
-	}
-
-	return order;
 }
 
 /**
@@ -233,62 +158,33 @@ export const POST: RequestHandler = async ({ request }) => {
 		// 2. Start workflow via orchestrator
 		const orchestratorUrl = workflow.daprOrchestratorUrl || getOrchestratorUrl();
 
+		if (!spec || !isSWWorkflow(spec)) {
+			throw new Error(
+				'Workflow does not have a valid SW 1.0 spec. Save or publish the workflow before executing it.'
+			);
+		}
+
 		let instanceId: string | undefined;
-		let startStatus = 'running';
 
 		try {
-			if (spec && isSWWorkflow(spec)) {
-				// SW 1.0 workflow — use the sw-workflows endpoint
-				const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						workflow: spec,
-						workflowId: workflow.id,
-						triggerData,
-						dbExecutionId: execution.id
-					})
-				});
+			const res = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					workflow: spec,
+					workflowId: workflow.id,
+					triggerData,
+					dbExecutionId: execution.id
+				})
+			});
 
-				if (!res.ok) {
-					const errText = await res.text().catch(() => 'Unknown error');
-					throw new Error(`Orchestrator error (${res.status}): ${errText}`);
-				}
-
-				const result = await res.json();
-				instanceId = result.instanceId;
-				startStatus = result.status ?? 'running';
-			} else {
-				// Legacy Dapr workflow — use the workflows endpoint
-				const executionOrder = buildLegacyExecutionOrder(workflow.nodes, workflow.edges);
-
-				const res = await daprFetch(`${orchestratorUrl}/api/v2/workflows`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						definition: {
-							id: workflow.id,
-							workflowId: workflow.id,
-							name: workflow.name,
-							nodes: workflow.nodes,
-							edges: workflow.edges,
-							executionOrder
-						},
-						triggerData,
-						metadata: {},
-						executionId: execution.id
-					})
-				});
-
-				if (!res.ok) {
-					const errText = await res.text().catch(() => 'Unknown error');
-					throw new Error(`Orchestrator error (${res.status}): ${errText}`);
-				}
-
-				const result = await res.json();
-				instanceId = result.instanceId;
-				startStatus = result.status ?? 'running';
+			if (!res.ok) {
+				const errText = await res.text().catch(() => 'Unknown error');
+				throw new Error(`Orchestrator error (${res.status}): ${errText}`);
 			}
+
+			const result = await res.json();
+			instanceId = result.instanceId;
 		} catch (err) {
 			// Mark execution as failed if orchestrator start fails
 			await db
@@ -322,7 +218,7 @@ export const POST: RequestHandler = async ({ request }) => {
 			instanceId: instanceId ?? null,
 			workflowId: workflow.id,
 			workflowName: workflow.name,
-			status: startStatus
+			status: 'running'
 		});
 	} catch (err) {
 		console.error('[internal/agent/workflows/execute] Failed:', err);

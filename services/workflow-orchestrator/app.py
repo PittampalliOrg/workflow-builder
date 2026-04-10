@@ -42,9 +42,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from core.config import config
-from workflows.dynamic_workflow import wfr, dynamic_workflow
-from workflows.ap_workflow import ap_workflow
 from workflows.sw_workflow import sw_workflow
+from workflows.sw_workflow import wfr
 from activities.call_agent_service import terminate_durable_runs_by_parent_execution
 from activities.metadata import get_activity_metadata
 
@@ -322,11 +321,7 @@ def _is_taskhub_unimplemented_error(error: Exception) -> bool:
 
 _taskhub_channel: grpc.Channel | None = None
 _taskhub_stub: pb_grpc.TaskHubSidecarServiceStub | None = None
-DYNAMIC_WORKFLOW_NAME = "dynamic_workflow"
-AP_WORKFLOW_NAME = "ap_workflow"
 SW_WORKFLOW_NAME = "sw_workflow_v1"
-_published_workflow_descriptors: list[dict[str, Any]] = []
-_published_workflow_handlers: list[Any] = []
 
 
 def _taskhub_metadata() -> list[tuple[str, str]] | None:
@@ -578,115 +573,6 @@ def _extract_published_revisions(
     return workflow_name, latest_version, revisions
 
 
-def _make_published_workflow_handler(
-    workflow_name: str,
-    workflow_version: str,
-    frozen_definition: dict[str, Any],
-):
-    safe_name = workflow_name.replace("-", "_").replace(".", "_")
-    safe_version = workflow_version.replace("-", "_").replace(".", "_")
-
-    def _published_workflow(ctx: Any, input_data: dict) -> dict:
-        merged_input = dict(input_data or {})
-        merged_input["definition"] = _clone_json_value(frozen_definition)
-        merged_input.setdefault("_workflowVersion", workflow_version)
-        return (yield from dynamic_workflow(ctx, merged_input))
-
-    _published_workflow.__name__ = f"published_{safe_name}_{safe_version}"
-    return _published_workflow
-
-
-def _fetch_published_workflows_from_db() -> list[dict[str, Any]]:
-    import psycopg2
-
-    db_url = _get_database_url()
-    conn = psycopg2.connect(db_url)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT id, name, description, user_id, nodes, edges, spec, spec_version, dapr_workflow_name
-            FROM workflows
-            WHERE dapr_workflow_name IS NOT NULL
-            """
-        )
-        rows = cur.fetchall()
-        published: list[dict[str, Any]] = []
-        for row in rows:
-            (
-                wf_id,
-                wf_name,
-                wf_description,
-                user_id,
-                nodes_json,
-                edges_json,
-                spec_json,
-                spec_version,
-                dapr_workflow_name,
-            ) = row
-            nodes = json.loads(nodes_json) if isinstance(nodes_json, str) else nodes_json
-            edges = json.loads(edges_json) if isinstance(edges_json, str) else edges_json
-            spec = json.loads(spec_json) if isinstance(spec_json, str) else spec_json
-            workflow_row = {
-                "id": wf_id,
-                "name": wf_name,
-                "description": wf_description,
-                "userId": user_id,
-                "nodes": nodes,
-                "edges": edges,
-                "spec": spec,
-                "specVersion": spec_version,
-                "daprWorkflowName": dapr_workflow_name,
-            }
-            workflow_name, latest_version, revisions = _extract_published_revisions(
-                workflow_row
-            )
-            if not workflow_name or not revisions:
-                continue
-            for revision in revisions:
-                published.append(
-                    {
-                        "workflowId": wf_id,
-                        "name": workflow_name,
-                        "version": revision["version"],
-                        "aliases": [],
-                        "definition": revision["definition"],
-                        "publishedAt": revision.get("publishedAt"),
-                        "isLatest": revision["version"] == latest_version,
-                        "source": "db-published-workflow",
-                    }
-                )
-        return published
-    finally:
-        conn.close()
-
-
-def _register_published_workflows() -> list[dict[str, Any]]:
-    global _published_workflow_descriptors, _published_workflow_handlers
-
-    descriptors = _fetch_published_workflows_from_db()
-    handlers: list[Any] = []
-    for descriptor in descriptors:
-        handler = _make_published_workflow_handler(
-            descriptor["name"],
-            descriptor["version"],
-            descriptor["definition"],
-        )
-        wfr.register_versioned_workflow(
-            handler,
-            name=descriptor["name"],
-            version_name=descriptor["version"],
-            is_latest=bool(descriptor.get("isLatest")),
-        )
-        handlers.append(handler)
-    _published_workflow_handlers = handlers
-    _published_workflow_descriptors = [
-        {key: value for key, value in descriptor.items() if key != "definition"}
-        for descriptor in descriptors
-    ]
-    return _published_workflow_descriptors
-
-
 # --- Lifecycle ---
 
 @asynccontextmanager
@@ -712,35 +598,16 @@ async def lifespan(app: FastAPI):
 
     logger.info("[Workflow Orchestrator] Registered all activities")
 
-    # Register workflows (versioned for Dapr 1.17+ safe evolution).
-    wfr.register_versioned_workflow(
-        dynamic_workflow,
-        name=DYNAMIC_WORKFLOW_NAME,
-        version_name=config.DYNAMIC_WORKFLOW_VERSION,
-        is_latest=True,
-    )
-    wfr.register_versioned_workflow(
-        ap_workflow,
-        name=AP_WORKFLOW_NAME,
-        version_name=config.AP_WORKFLOW_VERSION,
-        is_latest=True,
-    )
-    # CNCF Serverless Workflow 1.0 interpreter
+    # Register the only supported workflow interpreter: CNCF Serverless Workflow 1.0.
     wfr.register_versioned_workflow(
         sw_workflow,
         name=SW_WORKFLOW_NAME,
         version_name="1.0.0",
         is_latest=True,
     )
-    published_workflows = _register_published_workflows()
     logger.info(
-        "[Workflow Orchestrator] Registered workflows: %s@%s, %s@%s, %s@1.0.0 (+ %s published revisions)",
-        DYNAMIC_WORKFLOW_NAME,
-        config.DYNAMIC_WORKFLOW_VERSION,
-        AP_WORKFLOW_NAME,
-        config.AP_WORKFLOW_VERSION,
+        "[Workflow Orchestrator] Registered workflows: %s@1.0.0",
         SW_WORKFLOW_NAME,
-        len(published_workflows),
     )
 
     # Start the workflow runtime
@@ -1234,24 +1101,16 @@ def _activity_metadata_payload(fn: Callable[..., Any]) -> dict[str, Any]:
 def _registered_workflow_descriptors() -> list[dict[str, Any]]:
     return [
         {
-            "name": DYNAMIC_WORKFLOW_NAME,
-            "version": config.DYNAMIC_WORKFLOW_VERSION,
+            "name": SW_WORKFLOW_NAME,
+            "version": "1.0.0",
             "aliases": [],
             "isLatest": True,
             "source": "service-introspection",
-        },
-        {
-            "name": AP_WORKFLOW_NAME,
-            "version": config.AP_WORKFLOW_VERSION,
-            "aliases": [],
-            "isLatest": True,
-            "source": "service-introspection",
-        },
-        *_published_workflow_descriptors,
+        }
     ]
 
 
-# --- Database helpers for execute-by-id ---
+# --- Database helpers for SW workflow execution ---
 
 _database_url: str | None = None
 
@@ -2295,183 +2154,19 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
 # --- Routes ---
 
 @app.post("/api/v2/workflows", response_model=StartWorkflowResponse)
-def start_workflow(request: StartWorkflowRequest, http_request: Request):
-    """
-    Start a new workflow instance.
-
-    POST /api/v2/workflows
-    """
-    db_execution_id = request.dbExecutionId
-
-    try:
-        definition = request.definition.model_dump()
-        trigger_data = request.triggerData
-        integrations = request.integrations
-
-        selected_workflow_version = (
-            request.workflowVersion
-            or config.DYNAMIC_WORKFLOW_VERSION
-        )
-
-        # Build the input for the dynamic workflow
-        otel_ctx = _merge_otel_context(http_request)
-        session_id = workflow_session_id(db_execution_id) or extract_session_id(otel_ctx)
-        if session_id:
-            otel_ctx["sessionId"] = session_id
-            otel_ctx["session.id"] = session_id
-            otel_ctx["workflow.execution.id"] = session_id
-        try:
-            from opentelemetry import trace as ot_trace
-
-            attach_workflow_session(ot_trace.get_current_span(), session_id)
-        except Exception:
-            pass
-
-        workflow_input = {
-            "definition": definition,
-            "triggerData": trigger_data,
-            "integrations": integrations,
-            "dbExecutionId": db_execution_id,
-            "nodeConnectionMap": request.nodeConnectionMap,
-            "_workflowVersion": selected_workflow_version,
-            "_otel": otel_ctx,
-        }
-
-        # Generate instance ID: deterministic when dbExecutionId is available,
-        # random fallback otherwise. Deterministic IDs enable Dapr-level dedup
-        # and prevent cascade on orchestrator restart (actor replay).
-        if db_execution_id:
-            instance_id = f"{definition['id']}-exec-{db_execution_id}"
-        else:
-            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=7))
-            instance_id = f"{definition['id']}-{int(time.time() * 1000)}-{random_suffix}"
-
-        logger.info(f"[Workflow Routes] Starting workflow: {definition['name']} ({instance_id})")
-
-        # Idempotent start: if the instance already exists and is running,
-        # return it instead of failing. If terminal, purge and retry.
-        result_id = _idempotent_schedule(
-            workflow_name=DYNAMIC_WORKFLOW_NAME,
-            instance_id=instance_id,
-            workflow_input=workflow_input,
-            workflow_version=selected_workflow_version,
-            parent_trace_context=otel_ctx,
-        )
-
-        if not result_id:
-            raise RuntimeError("workflow runtime returned an empty instance ID")
-
-        if db_execution_id:
-            _mark_workflow_execution_started(db_execution_id, result_id)
-
-        logger.info(f"[Workflow Routes] Workflow scheduled: {result_id}")
-
-        return StartWorkflowResponse(
-            instanceId=result_id,
-            workflowId=definition["id"],
-            status="started",
-            workflowVersion=selected_workflow_version,
-        )
-
-    except Exception as e:
-        try:
-            if db_execution_id:
-                _mark_workflow_execution_failed_to_start(
-                    db_execution_id,
-                    str(e),
-                )
-        except Exception as persist_err:
-            logger.error(
-                f"[Workflow Routes] Failed to persist workflow start failure: {persist_err}"
-            )
-        logger.error(f"[Workflow Routes] Failed to start workflow: {e}")
-        _raise_workflow_route_error("start_workflow", e)
+def start_workflow(_request: StartWorkflowRequest, _http_request: Request):
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy workflow execution was removed. Use POST /api/v2/sw-workflows with a SW 1.0 spec.",
+    )
 
 
 @app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
-def execute_workflow_by_id(request: ExecuteByIdRequest, http_request: Request):
-    """
-    Execute a workflow by its database ID.
-
-    POST /api/v2/workflows/execute-by-id
-
-    Fetches the workflow definition from PostgreSQL, serializes it,
-    computes execution order, and delegates to the dynamic workflow runtime.
-    Intended for service-to-service invocation (e.g., MCP tools via Dapr).
-    """
-    try:
-        # 1. Fetch workflow from DB
-        wf = _fetch_workflow_from_db(request.workflowId)
-        execution_target = _resolve_execution_target(wf, request.workflowVersion)
-        definition = execution_target["definition"]
-
-        # 6.5 Create DB execution row so child-run tracking and workspace
-        # artifacts always have a valid workflow_executions foreign key.
-        db_execution_id = _create_workflow_execution(
-            workflow_id=wf["id"],
-            user_id=wf["userId"],
-            trigger_data=request.triggerData,
-        )
-
-        # 7. Schedule via the existing start_workflow logic
-        selected_workflow_version = execution_target["workflowVersion"]
-        otel_ctx = _merge_otel_context(http_request)
-        workflow_input = {
-            "definition": definition,
-            "triggerData": request.triggerData,
-            "integrations": request.integrations,
-            "dbExecutionId": db_execution_id,
-            "nodeConnectionMap": request.nodeConnectionMap,
-            "_workflowVersion": selected_workflow_version,
-            "_otel": otel_ctx,
-        }
-
-        # Deterministic instance ID from the DB execution ID
-        instance_id = f"{wf['id']}-exec-{db_execution_id}"
-
-        logger.info(
-            "[Execute-By-Id] Starting workflow: %s (%s) via %s@%s [%s]",
-            wf["name"],
-            instance_id,
-            execution_target["workflowName"],
-            selected_workflow_version,
-            execution_target["mode"],
-        )
-
-        result_id = _idempotent_schedule(
-            workflow_name=execution_target["workflowName"],
-            instance_id=instance_id,
-            workflow_input=workflow_input,
-            workflow_version=selected_workflow_version,
-            parent_trace_context=otel_ctx,
-        )
-
-        _mark_workflow_execution_started(db_execution_id, result_id)
-
-        logger.info(f"[Execute-By-Id] Workflow scheduled: {result_id}")
-
-        return StartWorkflowResponse(
-            instanceId=result_id,
-            workflowId=wf["id"],
-            status="started",
-            workflowVersion=selected_workflow_version,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        try:
-            if "db_execution_id" in locals():
-                _mark_workflow_execution_failed_to_start(
-                    db_execution_id,
-                    str(e),
-                )
-        except Exception as persist_err:
-            logger.error(
-                f"[Execute-By-Id] Failed to mark execution start failure: {persist_err}"
-            )
-        logger.error(f"[Execute-By-Id] Failed to execute workflow: {e}")
-        _raise_workflow_route_error("execute_workflow_by_id", e)
+def execute_workflow_by_id(_request: ExecuteByIdRequest, _http_request: Request):
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy execute-by-id was removed. Resolve the workflow spec from the database and call POST /api/v2/sw-workflows.",
+    )
 
 
 class ExecuteSWWorkflowRequest(BaseModel):
@@ -2578,69 +2273,11 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
 
 
 @app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)
-def start_ap_workflow(request: StartAPWorkflowRequest):
-    """
-    Start an AP flow execution via Dapr workflow.
-
-    POST /api/v2/ap-workflows
-
-    Called by AP's dapr-executor.ts when AP_EXECUTION_ENGINE=dapr.
-    Receives the full FlowVersion JSON and walks the AP action chain
-    using the Dapr workflow runtime.
-    """
-    try:
-        client = get_workflow_client()
-        selected_workflow_version = config.AP_WORKFLOW_VERSION
-
-        workflow_input = {
-            "flowRunId": request.flowRunId,
-            "projectId": request.projectId,
-            "platformId": request.platformId,
-            "flowVersionId": request.flowVersionId,
-            "flowId": request.flowId,
-            "executionType": request.executionType,
-            "triggerPayload": request.triggerPayload,
-            "executeTrigger": request.executeTrigger,
-            "progressUpdateType": request.progressUpdateType,
-            "callbackUrl": request.callbackUrl,
-            "flowVersion": request.flowVersion,
-            "_workflowVersion": selected_workflow_version,
-        }
-
-        # Use the AP flow run ID as the Dapr instance ID (1:1 mapping).
-        # This makes monitor/status queries and resume events trivial and avoids UI confusion.
-        instance_id = request.flowRunId
-
-        logger.info(
-            f"[AP Workflow] Starting AP flow: run={request.flowRunId}, "
-            f"flow={request.flowVersion.get('displayName', 'unknown')}, "
-            f"instance={instance_id}"
-        )
-
-        # Idempotent start: if the instance already exists, return it.
-        try:
-            _schedule_new_workflow_instance(
-                workflow_name=AP_WORKFLOW_NAME,
-                instance_id=instance_id,
-                workflow_input=workflow_input,
-                workflow_version=selected_workflow_version,
-            )
-        except Exception:
-            existing = client.get_workflow_state(instance_id=instance_id, fetch_payloads=False)
-            if existing is None:
-                raise
-
-        logger.info(f"[AP Workflow] Workflow scheduled: {instance_id}")
-
-        return StartAPWorkflowResponse(
-            instanceId=instance_id,
-            flowRunId=request.flowRunId,
-            status="started",
-        )
-
-    except Exception as e:
-        logger.error(f"[AP Workflow] Failed to start AP workflow: {e}")
-        _raise_workflow_route_error("start_ap_workflow", e)
+def start_ap_workflow(_request: StartAPWorkflowRequest):
+    raise HTTPException(
+        status_code=410,
+        detail="AP workflow execution was removed. Use SW 1.0 workflows exclusively.",
+    )
 
 
 @app.get("/api/workflows/{instance_id}")

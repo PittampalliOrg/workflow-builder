@@ -499,17 +499,23 @@ def _resolve_function_call(
 # Agent action types that require multi-turn child workflow execution
 # (not single-shot HTTP calls through function-router)
 _AGENT_ACTION_TYPES = {
+    "durable/run",
     "claude/run",
     "openshell/run",
     "openshell/session-start",
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
 }
-_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"openshell/run"}
+_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run", "openshell/run"}
 if str(config.CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW).lower() == "true":
     _NATIVE_DURABLE_AGENT_ACTION_TYPES.add("claude/run")
 
 _NATIVE_DURABLE_AGENT_TARGETS = {
+    "durable/run": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.DURABLE_AGENT_APP_ID,
+        "instance_prefix": "durable",
+    },
     "openshell/run": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
         "app_id": config.DURABLE_AGENT_APP_ID,

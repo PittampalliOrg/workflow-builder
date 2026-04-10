@@ -1,5 +1,5 @@
 """Workflows for the orchestrator."""
 
-from .dynamic_workflow import dynamic_workflow, wfr
+from .sw_workflow import sw_workflow, wfr
 
-__all__ = ["dynamic_workflow", "wfr"]
+__all__ = ["sw_workflow", "wfr"]

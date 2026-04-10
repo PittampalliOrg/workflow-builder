@@ -13,6 +13,10 @@ import type { UiEvent, UiModel, UiToast } from "./types.js";
 
 const ORCHESTRATOR_URL =
 	process.env.WORKFLOW_ORCHESTRATOR_URL ?? "http://workflow-orchestrator:8080";
+const WORKFLOW_BUILDER_URL =
+	process.env.WORKFLOW_BUILDER_URL ??
+	"http://workflow-builder.workflow-builder.svc.cluster.local:3000";
+const INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN || "";
 
 const MAX_BATCHES = 200;
 
@@ -478,11 +482,21 @@ export class UiSession {
 					break;
 				}
 				case "execution.run": {
+					if (!INTERNAL_API_TOKEN) {
+						this.toast(
+							"INTERNAL_API_TOKEN is not configured for SW workflow execution",
+							"error",
+						);
+						break;
+					}
 					const resp = await fetch(
-						`${ORCHESTRATOR_URL}/api/v2/workflows/execute-by-id`,
+						`${WORKFLOW_BUILDER_URL}/api/internal/agent/workflows/execute`,
 						{
 							method: "POST",
-							headers: { "Content-Type": "application/json" },
+							headers: {
+								"Content-Type": "application/json",
+								"X-Internal-Token": INTERNAL_API_TOKEN,
+							},
 							body: JSON.stringify({
 								workflowId: event.workflowId,
 								triggerData: event.triggerData ?? {},
