@@ -281,84 +281,11 @@ def test_extract_published_revisions_reads_latest_revision_snapshot():
     assert revisions[-1]["definition"]["name"] == "v2"
 
 
-def test_resolve_execution_target_prefers_published_revision_snapshot():
-    workflow_row = {
-        "id": "wf_123",
-        "name": "Published Workflow",
-        "nodes": [
-            {
-                "id": "trigger",
-                "type": "trigger",
-                "data": {"type": "trigger", "label": "Trigger", "config": {}},
-            }
-        ],
-        "edges": [],
-        "specVersion": "workflow-spec/v1",
-        "daprWorkflowName": "wf_wf_123",
-        "spec": {
-            "metadata": {
-                "publishedRuntime": {
-                    "status": "published",
-                    "workflowName": "wf_wf_123",
-                    "latestVersion": "pub_9",
-                    "publishedAt": "2026-03-29T12:00:00Z",
-                    "revisions": [
-                        {
-                            "version": "pub_9",
-                            "publishedAt": "2026-03-29T12:00:00Z",
-                            "definition": {
-                                "id": "wf_123",
-                                "name": "Frozen Published Definition",
-                                "nodes": [],
-                                "edges": [],
-                                "executionOrder": [],
-                            },
-                        }
-                    ],
-                }
-            }
-        },
-    }
-
-    target = APP._resolve_execution_target(workflow_row, None)
-
-    assert target["mode"] == "published"
-    assert target["workflowName"] == "wf_wf_123"
-    assert target["workflowVersion"] == "pub_9"
-    assert target["definition"]["name"] == "Frozen Published Definition"
-
-
-def test_resolve_execution_target_rejects_unknown_published_version():
-    workflow_row = {
-        "id": "wf_123",
-        "name": "Published Workflow",
-        "nodes": [],
-        "edges": [],
-        "specVersion": "workflow-spec/v1",
-        "daprWorkflowName": "wf_wf_123",
-        "spec": {
-            "metadata": {
-                "publishedRuntime": {
-                    "status": "published",
-                    "workflowName": "wf_wf_123",
-                    "latestVersion": "pub_9",
-                    "publishedAt": "2026-03-29T12:00:00Z",
-                    "revisions": [
-                        {
-                            "version": "pub_9",
-                            "publishedAt": "2026-03-29T12:00:00Z",
-                            "definition": {"id": "wf_123", "name": "Frozen"},
-                        }
-                    ],
-                }
-            }
-        },
-    }
-
-    with pytest.raises(APP.HTTPException) as exc_info:
-        APP._resolve_execution_target(workflow_row, "pub_missing")
-
-    assert exc_info.value.status_code == 400
+def test_legacy_execution_routes_are_not_registered():
+    assert not hasattr(APP, "_resolve_execution_target")
+    assert not hasattr(APP, "start_workflow")
+    assert not hasattr(APP, "execute_workflow_by_id")
+    assert not hasattr(APP, "start_ap_workflow")
 
 
 def test_resolve_native_agent_args_renders_trigger_templates_before_child_workflow():

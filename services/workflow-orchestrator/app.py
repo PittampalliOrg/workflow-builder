@@ -652,38 +652,6 @@ app.add_middleware(
 
 # --- Request / Response Models ---
 
-class WorkflowDefinitionModel(BaseModel):
-    """Workflow definition model."""
-    id: str
-    name: str
-    version: str = "1.0.0"
-    nodes: list[dict[str, Any]]
-    edges: list[dict[str, Any]]
-    executionOrder: list[str]
-    metadata: dict[str, Any] | None = None
-    createdAt: str | None = None
-    updatedAt: str | None = None
-
-
-class StartWorkflowRequest(BaseModel):
-    """Request to start a workflow."""
-    definition: WorkflowDefinitionModel
-    triggerData: dict[str, Any] = Field(default_factory=dict)
-    integrations: dict[str, dict[str, str]] | None = None
-    dbExecutionId: str | None = Field(
-        default=None,
-        description="Database execution ID for logging"
-    )
-    nodeConnectionMap: dict[str, str] | None = Field(
-        default=None,
-        description="Per-node connection external IDs for credential resolution"
-    )
-    workflowVersion: str | None = Field(
-        default=None,
-        description="Optional workflow version to start (Dapr versioned workflow)",
-    )
-
-
 class StartWorkflowResponse(BaseModel):
     """Response from starting a workflow."""
     instanceId: str
@@ -712,37 +680,6 @@ class CloudEvent(BaseModel):
     id: str | None = None
     time: str | None = None
     datacontenttype: str = "application/json"
-
-
-class StartAPWorkflowRequest(BaseModel):
-    """Request from AP's dapr-executor.ts to start an AP flow execution."""
-    flowRunId: str
-    projectId: str
-    platformId: str | None = None
-    flowVersionId: str | None = None
-    flowId: str | None = None
-    executionType: str = "BEGIN"
-    triggerPayload: Any = None
-    executeTrigger: bool = True
-    progressUpdateType: str | None = None
-    callbackUrl: str = ""
-    flowVersion: dict[str, Any] = Field(default_factory=dict)
-
-
-class StartAPWorkflowResponse(BaseModel):
-    """Response from starting an AP workflow."""
-    instanceId: str
-    flowRunId: str
-    status: str = "started"
-
-
-class ExecuteByIdRequest(BaseModel):
-    """Request to execute a workflow by its database ID."""
-    workflowId: str
-    triggerData: dict[str, Any] = Field(default_factory=dict)
-    integrations: dict[str, dict[str, str]] | None = None
-    nodeConnectionMap: dict[str, str] | None = None
-    workflowVersion: str | None = None
 
 
 class WorkflowStatusResponse(BaseModel):
@@ -1237,39 +1174,6 @@ def _generate_execution_id() -> str:
     import secrets
     alphabet = "0123456789abcdefghijklmnopqrstuvwxyz"
     return "".join(secrets.choice(alphabet) for _ in range(21))
-
-
-def _resolve_execution_target(
-    workflow_row: dict[str, Any],
-    requested_version: str | None,
-) -> dict[str, Any]:
-    workflow_name, latest_version, revisions = _extract_published_revisions(workflow_row)
-    revisions_by_version = {revision["version"]: revision for revision in revisions}
-
-    if workflow_name and revisions:
-        selected_version = requested_version or latest_version or revisions[-1]["version"]
-        selected_revision = revisions_by_version.get(selected_version)
-        if selected_revision is None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Published workflow version '{selected_version}' is not registered "
-                    f"for workflow {workflow_row['id']}"
-                ),
-            )
-        return {
-            "workflowName": workflow_name,
-            "workflowVersion": selected_revision["version"],
-            "definition": _clone_json_value(selected_revision["definition"]),
-            "mode": "published",
-        }
-
-    return {
-        "workflowName": DYNAMIC_WORKFLOW_NAME,
-        "workflowVersion": requested_version or config.DYNAMIC_WORKFLOW_VERSION,
-        "definition": _build_definition_from_workflow_record(workflow_row),
-        "mode": "draft",
-    }
 
 
 def _create_workflow_execution(
@@ -2153,22 +2057,6 @@ def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
 
 # --- Routes ---
 
-@app.post("/api/v2/workflows", response_model=StartWorkflowResponse)
-def start_workflow(_request: StartWorkflowRequest, _http_request: Request):
-    raise HTTPException(
-        status_code=410,
-        detail="Legacy workflow execution was removed. Use POST /api/v2/sw-workflows with a SW 1.0 spec.",
-    )
-
-
-@app.post("/api/v2/workflows/execute-by-id", response_model=StartWorkflowResponse)
-def execute_workflow_by_id(_request: ExecuteByIdRequest, _http_request: Request):
-    raise HTTPException(
-        status_code=410,
-        detail="Legacy execute-by-id was removed. Resolve the workflow spec from the database and call POST /api/v2/sw-workflows.",
-    )
-
-
 class ExecuteSWWorkflowRequest(BaseModel):
     """Request body for executing a CNCF Serverless Workflow 1.0 document."""
     workflow: dict = Field(..., description="CNCF SW 1.0 workflow JSON document")
@@ -2270,14 +2158,6 @@ def execute_sw_workflow(request: ExecuteSWWorkflowRequest, http_request: Request
     except Exception as e:
         logger.error(f"[SW Workflow] Failed to execute: {e}")
         _raise_workflow_route_error("execute_sw_workflow", e)
-
-
-@app.post("/api/v2/ap-workflows", response_model=StartAPWorkflowResponse)
-def start_ap_workflow(_request: StartAPWorkflowRequest):
-    raise HTTPException(
-        status_code=410,
-        detail="AP workflow execution was removed. Use SW 1.0 workflows exclusively.",
-    )
 
 
 @app.get("/api/workflows/{instance_id}")
@@ -2870,8 +2750,7 @@ def get_runtime_introspection():
         errors=errors,
         additional={
             "config": {
-                "dynamicWorkflowVersion": config.DYNAMIC_WORKFLOW_VERSION,
-                "apWorkflowVersion": config.AP_WORKFLOW_VERSION,
+                "swWorkflowVersion": "1.0.0",
                 "stateStoreName": config.STATE_STORE_NAME,
                 "pubsubName": config.PUBSUB_NAME,
                 "durableAgentAppId": config.DURABLE_AGENT_APP_ID,

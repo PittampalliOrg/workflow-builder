@@ -2,8 +2,7 @@
 CNCF Serverless Workflow 1.0 Interpreter
 
 Executes SW 1.0 workflow documents using Dapr Workflows as the durable runtime.
-Replaces the custom dynamic_workflow interpreter by dispatching on SW 1.0 task types
-instead of custom node types.
+All workflow execution goes through this interpreter.
 
 Task type -> Dapr primitive mapping:
   - call (http/function) -> ctx.call_activity(execute_action)
@@ -506,9 +505,7 @@ _AGENT_ACTION_TYPES = {
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
 }
-_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run", "openshell/run"}
-if str(config.CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW).lower() == "true":
-    _NATIVE_DURABLE_AGENT_ACTION_TYPES.add("claude/run")
+_NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run", "openshell/run", "claude/run"}
 
 _NATIVE_DURABLE_AGENT_TARGETS = {
     "durable/run": {
@@ -935,48 +932,10 @@ def _handle_call_task(
 
             return result
 
-        from workflows.dynamic_workflow import process_agent_child_workflow
-
-        resolved_args = dict(resolved.get("args", {}) or {})
-        body_args = resolved_args.get("body")
-        flattened_args = dict(resolved_args)
-        if isinstance(body_args, dict):
-            flattened_args = {
-                **body_args,
-                **{k: v for k, v in resolved_args.items() if k != "body"},
-            }
-
-        node_compat = {
-            "id": task_name,
-            "type": "action",
-            "label": task_name,
-            "config": {
-                "actionType": action_type,
-                **flattened_args,
-            },
-        }
-
-        result = yield from process_agent_child_workflow(
-            ctx=ctx,
-            node=node_compat,
-            node_outputs=tc.task_outputs,
-            node_execution_counts={},
-            action_type=action_type,
-            integrations=tc.integrations,
-            db_execution_id=tc.db_execution_id,
-            connection_external_id=None,
-            workflow_id=tc.workflow_id,
-            execution_id=tc.execution_id,
-            otel_ctx=tc.otel_ctx,
+        raise RuntimeError(
+            f"Unsupported agent action '{action_type}' in SW 1.0 workflow. "
+            "Only native durable child workflow agent actions are supported."
         )
-
-        _store_task_output(tc, task_name, action_type, result)
-        tc.completed_tasks.add(task_name)
-
-        if isinstance(result, dict) and not result.get("success", True):
-            raise RuntimeError(result.get("error") or f"Agent action failed: {task_name}")
-
-        return result
 
     # Standard call: single-shot HTTP via function-router.
     # Materialize task input and call arguments through SW `${ ... }` expressions.
@@ -1453,40 +1412,10 @@ def _handle_run_task(
                     raise RuntimeError(result.get("error") or f"Agent action failed: {task_name}")
                 return result
 
-            from workflows.dynamic_workflow import process_agent_child_workflow
-
-            _log_info(ctx, "[SW Workflow] Running agent workflow: %s (%s)", child_wf_name, agent_action_type)
-            node_compat = {
-                "id": task_name,
-                "type": "action",
-                "label": task_name,
-                "config": {
-                    "actionType": agent_action_type,
-                    **child_input,
-                },
-            }
-            result = yield from process_agent_child_workflow(
-                ctx=ctx,
-                node=node_compat,
-                node_outputs=tc.task_outputs,
-                node_execution_counts={},
-                action_type=agent_action_type,
-                integrations=tc.integrations,
-                db_execution_id=tc.db_execution_id,
-                connection_external_id=None,
-                workflow_id=tc.workflow_id,
-                execution_id=tc.execution_id,
-                otel_ctx=tc.otel_ctx,
+            raise RuntimeError(
+                f"Unsupported agent workflow action '{agent_action_type}' in SW 1.0 workflow. "
+                "Only native durable child workflow agent actions are supported."
             )
-            run_result = _apply_task_output_definition(
-                task_data,
-                tc,
-                task_input=task_input,
-                raw_output=result,
-            )
-            _store_task_output(tc, task_name, agent_action_type, run_result)
-            tc.completed_tasks.add(task_name)
-            return result
 
         # Standard child workflow invocation
         _log_info(ctx, "[SW Workflow] Running child workflow: %s", child_wf_name)
@@ -1882,7 +1811,7 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                 }),
             )
 
-        # Workspace cleanup (matches legacy dynamic_workflow behavior) unless
+        # Workspace cleanup unless
         # the caller explicitly asked to keep the sandbox alive for post-run use.
         if _should_cleanup_workspaces(tc):
             try:

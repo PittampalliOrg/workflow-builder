@@ -1238,15 +1238,6 @@ async function initAgent(): Promise<void> {
       // Register built-in model providers (openai)
       registerBuiltinProviders();
 
-      // The shared sandbox is only required for legacy direct non-workspace
-      // command execution paths. Do not block workflow replay/recovery on it.
-      void ensureSharedSandboxStarted().catch((error) => {
-        console.warn(
-          "[durable-agent] Shared sandbox unavailable during startup; continuing with lazy initialization:",
-          error instanceof Error ? error.message : String(error),
-        );
-      });
-
       // Resolve model: prefer MASTRA_MODEL_SPEC, fallback to AI_MODEL env var
       const modelSpecRaw = process.env.MASTRA_MODEL_SPEC;
       const modelSpec = modelSpecRaw

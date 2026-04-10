@@ -64,12 +64,6 @@ class OrchestratorConfig:
     CLAUDE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
 
-    # Workflow versioning and runtime controls (Dapr 1.17+)
-    DYNAMIC_WORKFLOW_VERSION: str = "v1"
-    AP_WORKFLOW_VERSION: str = "v1"
-    DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES: int = 150
-    AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS: int = 75
-
     # Runtime feature gate and startup checks
     ENFORCE_MIN_DAPR_VERSION: str = "false"
     MIN_DAPR_RUNTIME_VERSION: str = "1.17.0"
@@ -117,10 +111,6 @@ class OrchestratorConfig:
                 "STATE_STORE_NAME",
                 "DAPR_SECRETS_STORE",
                 "TASKHUB_RPC_TIMEOUT_SECONDS",
-                "DYNAMIC_WORKFLOW_VERSION",
-                "AP_WORKFLOW_VERSION",
-                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
-                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
                 "ENFORCE_MIN_DAPR_VERSION",
                 "MIN_DAPR_RUNTIME_VERSION",
             ]
@@ -203,22 +193,6 @@ class OrchestratorConfig:
                 "CLAUDE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "claudeCodeRunWorkflowV1",
             ),
-            "DYNAMIC_WORKFLOW_VERSION": (
-                "DYNAMIC_WORKFLOW_VERSION",
-                "v1",
-            ),
-            "AP_WORKFLOW_VERSION": (
-                "AP_WORKFLOW_VERSION",
-                "v1",
-            ),
-            "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES": (
-                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
-                "150",
-            ),
-            "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS": (
-                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
-                "75",
-            ),
             "ENFORCE_MIN_DAPR_VERSION": (
                 "ENFORCE_MIN_DAPR_VERSION",
                 "false",
@@ -234,8 +208,6 @@ class OrchestratorConfig:
             value = dapr_values.get(attr) or os.environ.get(env_var, default)
             if attr in {
                 "PORT",
-                "DYNAMIC_WORKFLOW_CONTINUE_AS_NEW_AFTER_NODES",
-                "AP_WORKFLOW_CONTINUE_AS_NEW_AFTER_STEPS",
             }:
                 setattr(self, attr, int(value))
             elif attr == "TASKHUB_RPC_TIMEOUT_SECONDS":
