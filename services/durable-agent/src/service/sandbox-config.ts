@@ -379,6 +379,10 @@ export async function executeCommandViaSandbox(
 	const timeout =
 		opts?.timeout ?? parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10);
 
+	if (!(await sandbox.isReady())) {
+		await sandbox.start();
+	}
+
 	const result = await sandbox.executeCommand("sh", ["-c", command], {
 		timeout,
 		cwd: opts?.cwd,
