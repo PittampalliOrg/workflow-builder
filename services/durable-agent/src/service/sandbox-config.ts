@@ -7,6 +7,7 @@
  */
 
 import { posix as pathPosix } from "node:path";
+import { Agent, request } from "undici";
 
 export interface CommandResult {
 	command: string;
@@ -42,6 +43,16 @@ export const WORKSPACE_PATH = (
 ).trim();
 
 export const SANDBOX_BACKEND = "openshell" as const;
+
+const OPEN_SHELL_HTTP_TIMEOUT_MS = Math.max(
+	60_000,
+	Number.parseInt(process.env.OPENSHELL_HTTP_TIMEOUT_MS || "", 10) ||
+		60 * 60_000,
+);
+const openShellDispatcher = new Agent({
+	headersTimeout: OPEN_SHELL_HTTP_TIMEOUT_MS,
+	bodyTimeout: OPEN_SHELL_HTTP_TIMEOUT_MS,
+});
 
 export interface Sandbox {
 	readonly name: string;
@@ -88,12 +99,13 @@ async function postOpenShell<T>(
 	path: string,
 	payload: Record<string, unknown>,
 ): Promise<T> {
-	const response = await fetch(`${OPEN_SHELL_RUNTIME_BASE_URL}${path}`, {
+	const response = await request(`${OPEN_SHELL_RUNTIME_BASE_URL}${path}`, {
 		method: "POST",
 		headers: { "content-type": "application/json" },
 		body: JSON.stringify(payload),
+		dispatcher: openShellDispatcher,
 	});
-	const text = await response.text();
+	const text = await response.body.text();
 	const parsed = text.trim()
 		? (() => {
 				try {
@@ -103,12 +115,12 @@ async function postOpenShell<T>(
 				}
 			})()
 		: ({} as T & { error?: string });
-	if (!response.ok) {
+	if (response.statusCode < 200 || response.statusCode >= 300) {
 		const error =
 			typeof parsed === "object" && parsed && "error" in parsed
 				? String(parsed.error || response.statusText)
-				: response.statusText;
-		throw new Error(`OpenShell ${path} failed (${response.status}): ${error}`);
+				: response.statusText || "unknown error";
+		throw new Error(`OpenShell ${path} failed (${response.statusCode}): ${error}`);
 	}
 	return parsed as T;
 }

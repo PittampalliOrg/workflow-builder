@@ -229,6 +229,18 @@ const INLINE_PATCH_PREVIEW_BYTES = parseInt(
 	process.env.WORKSPACE_INLINE_PATCH_PREVIEW_BYTES || "16384",
 	10,
 );
+const TRACKING_GIT_IGNORED_PATHS = [
+	"node_modules",
+	".svelte-kit",
+	".vite",
+	"build",
+	"dist",
+	".turbo",
+	".cache",
+	"coverage",
+	"playwright-report",
+	"test-results",
+] as const;
 
 function sanitizeSegment(input: string): string {
 	return input.replace(/[^a-zA-Z0-9._-]/g, "-");
@@ -247,6 +259,18 @@ function normalizePathKey(input: string): string {
 
 function shellEscape(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function trackingGitAddCommand(): string {
+	const excludedPathspecs = TRACKING_GIT_IGNORED_PATHS.flatMap((path) => [
+		shellEscape(`:!${path}`),
+		shellEscape(`:!${path}/**`),
+	]);
+	return ["git add -A -- .", ...excludedPathspecs].join(" ");
+}
+
+function trackingGitExcludeFileContent(): string {
+	return `${TRACKING_GIT_IGNORED_PATHS.map((path) => `${path}/`).join("\n")}\n`;
 }
 
 function isNoFileChangesReviewResult(input: {
@@ -1383,7 +1407,8 @@ class WorkspaceSessionManager {
 			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} git init -q`,
 			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} git config user.email ${shellEscape("workspace-tracker@local")}`,
 			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} git config user.name ${shellEscape("Workspace Tracker")}`,
-			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} git add -A .`,
+			`printf '%s' ${shellEscape(trackingGitExcludeFileContent())} > ${shellEscape(pathPosix.join(gitDir, "info", "exclude"))}`,
+			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} ${trackingGitAddCommand()}`,
 			`GIT_DIR=${shellEscape(gitDir)} GIT_WORK_TREE=${shellEscape(input.rootPath)} git commit -q --allow-empty -m ${shellEscape("workspace baseline")}`,
 		].join(" && ");
 
@@ -1436,7 +1461,7 @@ class WorkspaceSessionManager {
 		operation: string,
 	): Promise<void> {
 		if (!session.trackingGitDir) return;
-		const add = await this.runTrackingGit(session, "git add -A .");
+		const add = await this.runTrackingGit(session, trackingGitAddCommand());
 		if (!add.success || add.exitCode !== 0) return;
 		const commit = await this.runTrackingGit(
 			session,
@@ -1630,7 +1655,7 @@ class WorkspaceSessionManager {
 		try {
 			const baseRevision = await this.getTrackingHeadRevision(session);
 
-			const stage = await this.runTrackingGit(session, "git add -A .");
+			const stage = await this.runTrackingGit(session, trackingGitAddCommand());
 			if (!stage.success || stage.exitCode !== 0) {
 				throw new Error(stage.stderr || "git add failed");
 			}

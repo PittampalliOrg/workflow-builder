@@ -5317,9 +5317,15 @@ async function shutdown(signal: string) {
   try {
     if (mcpDisconnect) await mcpDisconnect();
     await stopConfigStoreSubscriptions();
-    await workspaceSessions.destroyAll();
     if (agent) await agent.stop();
-    await sandbox.destroy();
+    if (process.env.DURABLE_AGENT_CLEANUP_WORKSPACES_ON_SHUTDOWN === "true") {
+      await workspaceSessions.destroyAll();
+      await sandbox.destroy();
+    } else {
+      console.log(
+        "[durable-agent] Leaving OpenShell workspaces intact; use explicit workspace cleanup APIs to remove them.",
+      );
+    }
     sharedSandboxStarted = false;
   } catch (err) {
     console.error("[durable-agent] Shutdown error:", err);
