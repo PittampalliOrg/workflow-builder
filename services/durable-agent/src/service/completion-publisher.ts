@@ -42,10 +42,11 @@ async function publishEvent(event: AgentEvent): Promise<void> {
 	}
 
 	// Derive executionId from event data or workflow context
+	const eventData = event.data as Record<string, unknown> | undefined;
 	const executionId =
-		(event.data as Record<string, unknown>)?.executionId as string |
-		(event.data as Record<string, unknown>)?.parentExecutionId as string |
-		eventBus.getWorkflowContext()?.instanceId as string |
+		(typeof eventData?.executionId === "string" ? eventData.executionId : null) ||
+		(typeof eventData?.parentExecutionId === "string" ? eventData.parentExecutionId : null) ||
+		eventBus.getWorkflowContext()?.instanceId ||
 		undefined;
 
 	const payload = JSON.stringify({
