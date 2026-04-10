@@ -1,19 +1,31 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { Xterm, XtermAddon } from '@battlefieldduck/xterm-svelte';
 	import type { Terminal, ITerminalOptions } from '@battlefieldduck/xterm-svelte';
 
 	interface Props {
 		sandboxName: string;
 		sessionId: string;
+		active?: boolean;
 	}
 
-	let { sandboxName, sessionId }: Props = $props();
+	interface TerminalFitAddon {
+		activate: (terminal: Terminal) => void;
+		fit: () => void;
+		dispose: () => void;
+	}
+
+	let { sandboxName, sessionId, active = true }: Props = $props();
 
 	let terminal = $state<Terminal>();
+	let terminalFrame: HTMLDivElement | null = null;
 	let ws: WebSocket | null = null;
 	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	let firstMessageTimer: ReturnType<typeof setTimeout> | null = null;
+	let fitRetryTimer: ReturnType<typeof setTimeout> | null = null;
+	let fitAnimationFrame = 0;
+	let fitAddon: TerminalFitAddon | null = null;
+	let frameObserver: ResizeObserver | null = null;
 	let resizeSubscription: { dispose?: () => void } | null = null;
 	let attachAddon: { activate: (terminal: Terminal) => void; dispose: () => void } | null = null;
 	let reconnectDelay = 1000;
@@ -71,6 +83,36 @@
 		resizeSubscription = null;
 	}
 
+	function clearPendingFits() {
+		if (fitAnimationFrame) {
+			cancelAnimationFrame(fitAnimationFrame);
+			fitAnimationFrame = 0;
+		}
+		if (fitRetryTimer) {
+			clearTimeout(fitRetryTimer);
+			fitRetryTimer = null;
+		}
+	}
+
+	function fitTerminal(): boolean {
+		if (!terminalFrame || !fitAddon || !terminalFrame.offsetWidth || !terminalFrame.offsetHeight) {
+			return false;
+		}
+		fitAddon.fit();
+		return true;
+	}
+
+	function queueFit(retry = true) {
+		clearPendingFits();
+		fitAnimationFrame = requestAnimationFrame(() => {
+			fitAnimationFrame = 0;
+			const fitted = fitTerminal();
+			if (!fitted && retry) {
+				fitRetryTimer = setTimeout(() => queueFit(false), 75);
+			}
+		});
+	}
+
 	function renderTerminalBanner(term: Terminal) {
 		term.clear();
 		term.writeln('\x1b[32mOpenShell Sandbox Terminal\x1b[0m');
@@ -120,8 +162,9 @@
 					socket.send(`\x01${JSON.stringify({ type: 'resize', cols, rows })}`);
 				}
 			};
-			sendResize(term.cols, term.rows);
 			resizeSubscription = term.onResize(({ cols, rows }) => sendResize(cols, rows));
+			queueFit();
+			sendResize(term.cols, term.rows);
 		};
 
 		socket.onclose = (ev) => {
@@ -155,7 +198,7 @@
 		terminal = term;
 
 		const { FitAddon } = await XtermAddon.FitAddon();
-		const fitAddon = new FitAddon();
+		fitAddon = new FitAddon();
 		term.loadAddon(fitAddon);
 
 		try {
@@ -165,23 +208,36 @@
 			// optional
 		}
 
-		fitAddon.fit();
+		await tick();
+		queueFit();
 
-		const container = term.element?.parentElement;
-		if (container) {
-			new ResizeObserver(() => fitAddon.fit()).observe(container);
+		if (terminalFrame) {
+			frameObserver = new ResizeObserver(() => queueFit());
+			frameObserver.observe(terminalFrame);
 		}
 
 		renderTerminalBanner(term);
 		connect(term);
 	}
 
+	$effect(() => {
+		if (active) {
+			queueFit();
+		}
+	});
+
 	onMount(() => {
+		const fitOnWindowResize = () => queueFit();
+		window.addEventListener('resize', fitOnWindowResize);
 		return () => {
 			intentionalClose = true;
 			if (reconnectTimer) clearTimeout(reconnectTimer);
 			clearFirstMessageTimer();
+			clearPendingFits();
+			frameObserver?.disconnect();
+			fitAddon?.dispose?.();
 			disposeTerminalBindings();
+			window.removeEventListener('resize', fitOnWindowResize);
 			if (ws) {
 				ws.close();
 				ws = null;
@@ -191,7 +247,22 @@
 </script>
 
 <div class="flex h-full flex-col overflow-hidden bg-[#09090b]">
-	<div class="flex-1 overflow-hidden p-1">
-		<Xterm {options} {onLoad} />
+	<div
+		bind:this={terminalFrame}
+		class="sandbox-terminal-frame min-h-0 flex-1 overflow-hidden p-1"
+	>
+		<Xterm class="h-full w-full" {options} {onLoad} />
 	</div>
 </div>
+
+<style>
+	.sandbox-terminal-frame :global(.xterm) {
+		height: 100%;
+		width: 100%;
+	}
+
+	.sandbox-terminal-frame :global(.xterm-viewport),
+	.sandbox-terminal-frame :global(.xterm-screen) {
+		height: 100% !important;
+	}
+</style>

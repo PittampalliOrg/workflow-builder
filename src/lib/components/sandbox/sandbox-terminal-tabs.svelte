@@ -175,7 +175,11 @@
 	<div class="flex-1 overflow-hidden">
 		{#each tabs as tab (tab.id)}
 			<div class="h-full {activeTabId === tab.id ? '' : 'hidden'}">
-				<SandboxTerminal {sandboxName} sessionId={tab.sessionId} />
+				<SandboxTerminal
+					{sandboxName}
+					sessionId={tab.sessionId}
+					active={activeTabId === tab.id}
+				/>
 			</div>
 		{/each}
 	</div>
