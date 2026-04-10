@@ -139,7 +139,7 @@
 	}
 </script>
 
-<div class="flex h-full flex-col">
+<div class="flex h-full min-h-0 flex-col overflow-hidden">
 	<!-- Tab bar -->
 	<div class="flex items-center border-b border-border bg-zinc-950">
 		<div class="flex flex-1 overflow-x-auto">
@@ -172,9 +172,9 @@
 	</div>
 
 	<!-- Terminal panels -->
-	<div class="flex-1 overflow-hidden">
+	<div class="min-h-0 flex-1 overflow-hidden">
 		{#each tabs as tab (tab.id)}
-			<div class="h-full {activeTabId === tab.id ? '' : 'hidden'}">
+			<div class="h-full min-h-0 {activeTabId === tab.id ? 'flex flex-col' : 'hidden'}">
 				<SandboxTerminal
 					{sandboxName}
 					sessionId={tab.sessionId}

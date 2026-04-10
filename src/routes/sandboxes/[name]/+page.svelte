@@ -217,7 +217,7 @@
 					</div>
 				</Tabs.Content>
 
-				<Tabs.Content value="terminal" class="flex-1 overflow-hidden">
+				<Tabs.Content value="terminal" class="flex min-h-0 flex-1 flex-col overflow-hidden">
 					<SandboxTerminalTabs {sandboxName} />
 				</Tabs.Content>
 			</Tabs.Root>

@@ -28,6 +28,7 @@
 	let frameObserver: ResizeObserver | null = null;
 	let resizeSubscription: { dispose?: () => void } | null = null;
 	let attachAddon: { activate: (terminal: Terminal) => void; dispose: () => void } | null = null;
+	let sendTerminalResize: ((cols: number, rows: number) => void) | null = null;
 	let reconnectDelay = 1000;
 	let intentionalClose = false;
 
@@ -81,6 +82,7 @@
 		attachAddon = null;
 		resizeSubscription?.dispose?.();
 		resizeSubscription = null;
+		sendTerminalResize = null;
 	}
 
 	function clearPendingFits() {
@@ -99,6 +101,9 @@
 			return false;
 		}
 		fitAddon.fit();
+		if (terminal && sendTerminalResize) {
+			sendTerminalResize(terminal.cols, terminal.rows);
+		}
 		return true;
 	}
 
@@ -162,6 +167,7 @@
 					socket.send(`\x01${JSON.stringify({ type: 'resize', cols, rows })}`);
 				}
 			};
+			sendTerminalResize = sendResize;
 			resizeSubscription = term.onResize(({ cols, rows }) => sendResize(cols, rows));
 			queueFit();
 			sendResize(term.cols, term.rows);
@@ -246,7 +252,7 @@
 	});
 </script>
 
-<div class="flex h-full flex-col overflow-hidden bg-[#09090b]">
+<div class="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-[#09090b]">
 	<div
 		bind:this={terminalFrame}
 		class="sandbox-terminal-frame min-h-0 flex-1 overflow-hidden p-1"
