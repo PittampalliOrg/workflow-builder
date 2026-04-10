@@ -510,12 +510,46 @@ _REMOVED_AGENT_ACTION_TYPES = {
 }
 
 _NATIVE_DURABLE_AGENT_TARGETS = {
-    "durable/run": {
+    "durable-agent": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
         "app_id": config.DURABLE_AGENT_APP_ID,
         "instance_prefix": "durable",
     },
+    "claude-code-agent": {
+        "workflow_name": config.CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.CLAUDE_CODE_AGENT_APP_ID,
+        "instance_prefix": "claude",
+    },
 }
+
+
+def _resolve_native_agent_runtime(
+    flattened_args: dict[str, Any],
+    agent_config: dict[str, Any] | None,
+) -> tuple[str, dict[str, str]]:
+    runtime = (
+        flattened_args.get("agentRuntime").strip()
+        if isinstance(flattened_args.get("agentRuntime"), str)
+        and flattened_args.get("agentRuntime").strip()
+        else flattened_args.get("runtime").strip()
+        if isinstance(flattened_args.get("runtime"), str)
+        and flattened_args.get("runtime").strip()
+        else agent_config.get("runtime").strip()
+        if isinstance(agent_config, dict)
+        and isinstance(agent_config.get("runtime"), str)
+        and agent_config.get("runtime").strip()
+        else agent_config.get("agentRuntime").strip()
+        if isinstance(agent_config, dict)
+        and isinstance(agent_config.get("agentRuntime"), str)
+        and agent_config.get("agentRuntime").strip()
+        else "durable-agent"
+    )
+    if runtime not in _NATIVE_DURABLE_AGENT_TARGETS:
+        allowed = ", ".join(sorted(_NATIVE_DURABLE_AGENT_TARGETS))
+        raise RuntimeError(
+            f"Unsupported durable/run agentRuntime '{runtime}'. Allowed runtimes: {allowed}"
+        )
+    return runtime, _NATIVE_DURABLE_AGENT_TARGETS[runtime]
 
 
 def _parse_optional_int(value: Any) -> int | None:
@@ -650,10 +684,6 @@ def _run_native_durable_agent_child_workflow(
     resolved_args: dict[str, Any],
     tc: "TaskContext",
 ):
-    target = _NATIVE_DURABLE_AGENT_TARGETS.get(action_type)
-    if not target:
-        raise RuntimeError(f"No native child workflow target configured for {action_type}")
-
     flattened_args = dict(resolved_args or {})
     body_args = flattened_args.get("body")
     if isinstance(body_args, dict):
@@ -671,6 +701,12 @@ def _run_native_durable_agent_child_workflow(
     if not prompt:
         raise RuntimeError(f"Agent action missing prompt/task: {task_name}")
 
+    agent_config = (
+        flattened_args.get("agentConfig")
+        if isinstance(flattened_args.get("agentConfig"), dict)
+        else None
+    )
+    agent_runtime, target = _resolve_native_agent_runtime(flattened_args, agent_config)
     child_execution_index = _next_task_execution_count(tc, task_name)
     child_instance_id = (
         f"{ctx.instance_id}__{target['instance_prefix']}__{task_name}__run__{child_execution_index}"
@@ -705,11 +741,6 @@ def _run_native_durable_agent_child_workflow(
         else None
     )
     agent_graph = flattened_args.get("agentGraph")
-    agent_config = (
-        flattened_args.get("agentConfig")
-        if isinstance(flattened_args.get("agentConfig"), dict)
-        else None
-    )
     loop_config = agent_config.get("loop") if isinstance(agent_config, dict) else None
     loop_strategy_name = (
         flattened_args.get("loopStrategyName").strip()
@@ -752,6 +783,7 @@ def _run_native_durable_agent_child_workflow(
         "nodeName": task_name,
         "agentRunId": child_instance_id,
         "workspaceRef": workspace_ref,
+        "agentRuntime": agent_runtime,
         "stopCondition": stop_condition or None,
         "cwd": cwd,
         "requireFileChanges": require_file_changes,
@@ -787,6 +819,7 @@ def _run_native_durable_agent_child_workflow(
                         "daprInstanceId": child_instance_id,
                         "parentExecutionId": ctx.instance_id,
                         "workspaceRef": workspace_ref,
+                        "agentRuntime": agent_runtime,
                         "_otel": tc.otel_ctx,
                     }
                 ),
@@ -837,6 +870,7 @@ def _run_native_durable_agent_child_workflow(
     child_result.setdefault("daprInstanceId", child_instance_id)
     child_result.setdefault("childWorkflowName", target["workflow_name"])
     child_result.setdefault("childAppId", target["app_id"])
+    child_result.setdefault("agentRuntime", agent_runtime)
     if "success" not in child_result:
         child_result["success"] = not bool(child_result.get("error"))
     success = bool(child_result.get("success", True))

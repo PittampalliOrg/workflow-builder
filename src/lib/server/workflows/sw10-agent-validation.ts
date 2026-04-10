@@ -7,9 +7,10 @@ const REMOVED_SW10_AGENT_CALLS = new Set([
 ]);
 
 type ValidationIssue = {
-	code: 'removed_call' | 'missing_workspace_ref';
+	code: 'removed_call' | 'missing_workspace_ref' | 'invalid_agent_runtime';
 	call: string;
 	path: string;
+	value?: string;
 };
 
 function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
@@ -37,6 +38,16 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
 			typeof withRecord?.workspaceRef === 'string' ? withRecord.workspaceRef.trim() : '';
 		if (!workspaceRef) {
 			issues.push({ code: 'missing_workspace_ref', call, path: `${path}.with.workspaceRef` });
+		}
+		const runtime =
+			typeof withRecord?.agentRuntime === 'string' ? withRecord.agentRuntime.trim() : '';
+		if (runtime && runtime !== 'durable-agent' && runtime !== 'claude-code-agent') {
+			issues.push({
+				code: 'invalid_agent_runtime',
+				call,
+				path: `${path}.with.agentRuntime`,
+				value: runtime
+			});
 		}
 	}
 
@@ -74,6 +85,15 @@ export function getRemovedSw10AgentCallsError(spec: unknown): string | null {
 			.slice(0, 5)
 			.join(', ');
 		return `SW 1.0 durable/run steps require an explicit with.workspaceRef. Add a workspace/profile step and bind its workspaceRef before execution: ${details}`;
+	}
+
+	const runtimeIssues = issues.filter((issue) => issue.code === 'invalid_agent_runtime');
+	if (runtimeIssues.length > 0) {
+		const details = runtimeIssues
+			.map((issue) => `${issue.value} at ${issue.path}`)
+			.slice(0, 5)
+			.join(', ');
+		return `SW 1.0 durable/run only supports agentRuntime durable-agent or claude-code-agent: ${details}`;
 	}
 
 	return null;

@@ -52,9 +52,11 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
     DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
+    CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
     DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
 
@@ -89,9 +91,11 @@ class OrchestratorConfig:
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
                 "DURABLE_AGENT_APP_ID",
+                "CLAUDE_CODE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
                 "PUBSUB_NAME",
@@ -142,6 +146,10 @@ class OrchestratorConfig:
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "CLAUDE_CODE_AGENT_APP_ID": (
+                "CLAUDE_CODE_AGENT_APP_ID",
+                "claude-code-agent",
+            ),
             "OPENSHELL_AGENT_APP_ID": (
                 "OPENSHELL_AGENT_APP_ID",
                 "openshell-agent-runtime.openshell",
@@ -153,6 +161,10 @@ class OrchestratorConfig:
             "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
                 "durableRunWorkflowV1",
+            ),
+            "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
+                "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME",
+                "claudeCodeRunWorkflowV1",
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",

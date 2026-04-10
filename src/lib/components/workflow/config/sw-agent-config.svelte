@@ -94,7 +94,7 @@
 		<div>
 			<p class="text-xs font-medium">Durable Agent</p>
 			<p class="text-[11px] text-muted-foreground">
-				Compiled as `durable/run` and executed by the OpenShell-backed durable agent runtime.
+				Compiled as `durable/run` and executed by the selected OpenShell-backed durable runtime.
 			</p>
 		</div>
 		<Badge variant="outline">{summarizeAgentGraph(body.agentGraph)}</Badge>
@@ -123,6 +123,21 @@
 	</div>
 
 	<div class="grid grid-cols-2 gap-3">
+		<div class="space-y-1.5">
+			<Label for="agent-runtime">Runtime</Label>
+			<NativeSelect
+				id="agent-runtime"
+				class="w-full"
+				value={body.agentRuntime}
+				onchange={(event) =>
+					updateBody({
+						agentRuntime: event.currentTarget.value
+					})}
+			>
+				<option value="durable-agent">Dapr Durable Agent</option>
+				<option value="claude-code-agent">Claude Code Agent</option>
+			</NativeSelect>
+		</div>
 		<div class="space-y-1.5">
 			<Label for="agent-name">Agent Name</Label>
 			<Input

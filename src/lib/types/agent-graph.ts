@@ -44,6 +44,7 @@ export interface AgentGraphDefinition {
 export interface AgentTaskBody extends Record<string, unknown> {
   prompt: string;
   mode: "execute_direct";
+  agentRuntime: "durable-agent" | "claude-code-agent";
   maxTurns?: number;
   timeoutMinutes?: number;
   stopCondition?: string;
@@ -267,6 +268,11 @@ export function getAgentTaskBody(
   return {
     prompt: typeof body.prompt === "string" ? body.prompt : "",
     mode: "execute_direct",
+    agentRuntime:
+      body.agentRuntime === "claude-code-agent" ||
+      withBlock.agentRuntime === "claude-code-agent"
+        ? "claude-code-agent"
+        : "durable-agent",
     maxTurns:
       typeof body.maxTurns === "number"
         ? body.maxTurns
@@ -295,6 +301,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
   return {
     prompt: "",
     mode: "execute_direct",
+    agentRuntime: "durable-agent",
     maxTurns: 12,
     timeoutMinutes: 30,
     agentGraph: createDefaultAgentGraph(),
@@ -362,6 +369,7 @@ export function normalizeAgentTaskConfig(
       ...withBlock,
       prompt: normalizedBody.prompt,
       mode: normalizedBody.mode,
+      agentRuntime: normalizedBody.agentRuntime,
       ...(normalizedBody.maxTurns !== undefined
         ? { maxTurns: normalizedBody.maxTurns }
         : {}),
