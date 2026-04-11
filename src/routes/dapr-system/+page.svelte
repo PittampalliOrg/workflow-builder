@@ -35,10 +35,8 @@
 		getKnownStateKeys,
 		getWorkflowSummary,
 		getWorkflowHistory,
-		getExecutionDetail,
 		getAgentRegistry,
-		getAgentInstanceDetail,
-		getAgentState
+		getAgentDaprState
 	} from './data.remote';
 
 	interface AgentInstance {
@@ -68,6 +66,7 @@
 	let activeTab = $state('overview');
 	let stateStoreName = $state('statestore');
 	let stateKey = $state('');
+	let stateMetadata: Record<string, string> | undefined = $state(undefined);
 	let stateResult: ReturnType<typeof getStateValue> | null = $state(null);
 	let stateLoading = $state(false);
 	let stateViewMode = $state<'structured' | 'json'>('structured');
@@ -85,13 +84,6 @@
 
 	let historyResult: { events: HistoryEvent[]; error?: string } | null | undefined = $state(null);
 	let historyLoading = $state(false);
-	let executionDetail: {
-		logs: { nodeId: string; nodeName: string; nodeType: string; activityName?: string | null; status: string; input?: unknown; output?: unknown; error?: string | null; startedAt?: string; completedAt?: string; duration?: string | null; routedTo?: string | null }[];
-		agentRuns: { id: string; nodeId: string; mode: string; agentWorkflowId: string; daprInstanceId: string; status: string; error?: string | null; createdAt?: string; completedAt?: string }[];
-		agentEvents: { eventId: number; eventType: string; toolName?: string | null; sandboxName?: string | null; ts?: string }[];
-		stateOutputs: Record<string, unknown> | null;
-	} | null = $state(null);
-	let workflowDetailTab = $state<'steps' | 'agents' | 'events' | 'history' | 'outputs'>('steps');
 
 	// Live pub/sub event stream
 	interface StreamEvent {
@@ -140,42 +132,26 @@
 	}
 
 	let selectedAgent: string | null = $state(null);
-	let agentStateResult: { instances: Record<string, AgentInstance> } | null = $state(null);
+	let agentStateResult: {
+		source?: string;
+		storeName?: string;
+		agentName?: string;
+		stateKey?: string;
+		found?: boolean;
+		error?: string;
+		instances: Record<string, AgentInstance>;
+	} | null = $state(null);
 	let agentStateLoading = $state(false);
 	let selectedInstanceId: string | null = $state(null);
-	let agentInstanceDetail: {
-		agentRun: { id: string; nodeId: string; mode: string; status: string; agentWorkflowId: string; daprInstanceId: string; workflowExecutionId: string; error: string | null; createdAt: string | null; completedAt: string | null } | null;
-		agentEvents: { eventId: number; eventType: string; toolName: string | null; sandboxName: string | null; phase: string | null; ts: string | null }[];
-		daprHistory: { events: unknown[] } | null;
-	} | null = $state(null);
-	let agentInstanceLoading = $state(false);
-	let agentDetailTab = $state<'events' | 'history' | 'json'>('events');
+	let agentDetailTab = $state<'events' | 'json'>('events');
 
-	async function toggleAgentInstance(instId: string, inst: AgentInstance) {
+	function toggleAgentInstance(instId: string, _inst: AgentInstance) {
 		if (selectedInstanceId === instId) {
 			selectedInstanceId = null;
-			agentInstanceDetail = null;
 			return;
 		}
 		selectedInstanceId = instId;
-		agentInstanceDetail = null;
-		agentInstanceLoading = true;
 		agentDetailTab = 'events';
-
-		// The inst.workflow_instance_id is the child workflow's Dapr instance ID
-		// Try to fetch execution detail from DB and Dapr history
-		const childInstanceId = inst.workflow_instance_id || instId;
-		const q = getAgentInstanceDetail(childInstanceId);
-		await new Promise<void>((resolve) => {
-			const check = () => {
-				if (!q.loading) {
-					agentInstanceDetail = q.current as typeof agentInstanceDetail;
-					resolve();
-				} else setTimeout(check, 50);
-			};
-			check();
-		});
-		agentInstanceLoading = false;
 	}
 
 	// Derived: state store names from metadata
@@ -195,6 +171,8 @@
 	const pubsubComponents = $derived(
 		(metadata.current?.metadata?.components ?? []).filter((c) => c.type.startsWith('pubsub.'))
 	);
+	const activeAgentRegistry = $derived(registry.current?.agents ?? []);
+	const activeAgentRegistryLoading = $derived(registry.loading);
 
 	function refreshAll() {
 		metadata.refresh();
@@ -207,7 +185,7 @@
 	async function lookupState() {
 		if (!stateKey.trim()) return;
 		stateLoading = true;
-		stateResult = getStateValue({ storeName: stateStoreName, key: stateKey.trim() });
+		stateResult = getStateValue({ storeName: stateStoreName, key: stateKey.trim(), metadata: stateMetadata });
 		// Wait for it to resolve
 		await new Promise<void>((resolve) => {
 			const check = () => {
@@ -219,9 +197,10 @@
 		stateLoading = false;
 	}
 
-	function selectKnownKey(key: string, store?: string) {
+	function selectKnownKey(key: string, store?: string, metadata?: Record<string, string>) {
 		if (store) stateStoreName = store;
 		stateKey = key;
+		stateMetadata = metadata;
 		lookupState();
 	}
 
@@ -229,24 +208,18 @@
 		if (expandedInstance === instanceId) {
 			expandedInstance = null;
 			historyResult = null;
-			executionDetail = null;
 			return;
 		}
 		expandedInstance = instanceId;
 		historyLoading = true;
 		historyResult = null;
-		executionDetail = null;
-		workflowDetailTab = 'steps';
 
-		// Fetch history and execution detail in parallel
 		const historyQuery = getWorkflowHistory(instanceId);
-		const detailQuery = getExecutionDetail(instanceId);
 
 		await new Promise<void>((resolve) => {
 			const check = () => {
-				if (!historyQuery.loading && !detailQuery.loading) {
+				if (!historyQuery.loading) {
 					historyResult = historyQuery.current as { events: HistoryEvent[]; error?: string } | undefined;
-					executionDetail = detailQuery.current as typeof executionDetail;
 					resolve();
 				} else setTimeout(check, 50);
 			};
@@ -259,19 +232,24 @@
 		if (selectedAgent === agentName) {
 			selectedAgent = null;
 			agentStateResult = null;
+			selectedInstanceId = null;
 			return;
 		}
 		selectedAgent = agentName;
 		agentStateLoading = true;
 		agentStateResult = null;
-		const storeName = (registry.current?.storeName as string) || 'workflowstatestore';
+		selectedInstanceId = null;
 		const agentMeta = registry.current?.agents?.find((a) => a.name === agentName)?.metadata;
-		const stateKey = (agentMeta?.stateKey as string) || undefined;
-		const q = getAgentState({ agentName, storeName, stateKey });
+		const storeName = typeof agentMeta?.storeName === 'string' ? agentMeta.storeName : null;
+		const stateKey = typeof agentMeta?.stateKey === 'string' ? agentMeta.stateKey : null;
+		const appId = typeof agentMeta?.appId === 'string' ? agentMeta.appId : null;
+		const instancesEndpoint =
+			typeof agentMeta?.instancesEndpoint === 'string' ? agentMeta.instancesEndpoint : null;
+		const q = getAgentDaprState({ agentName, storeName, stateKey, appId, instancesEndpoint });
 		await new Promise<void>((resolve) => {
 			const check = () => {
 				if (!q.loading) {
-					agentStateResult = q.current as { instances: Record<string, AgentInstance> } | null;
+					agentStateResult = q.current as typeof agentStateResult;
 					resolve();
 				} else setTimeout(check, 50);
 			};
@@ -581,9 +559,9 @@
 					</CardHeader>
 					<CardContent>
 						<div class="flex items-end gap-3">
-							<div class="w-48">
-								<label class="mb-1 block text-xs text-muted-foreground">Store</label>
-								<NativeSelect bind:value={stateStoreName}>
+								<div class="w-48">
+									<label for="dapr-state-store" class="mb-1 block text-xs text-muted-foreground">Store</label>
+									<NativeSelect id="dapr-state-store" bind:value={stateStoreName}>
 									{#each stateStores as store}
 										<option value={store.name}>{store.name}</option>
 									{/each}
@@ -591,14 +569,16 @@
 										<option value="statestore">statestore</option>
 									{/if}
 								</NativeSelect>
-							</div>
-							<div class="flex-1">
-								<label class="mb-1 block text-xs text-muted-foreground">Key</label>
-								<Input
-									bind:value={stateKey}
-									placeholder="e.g. agents:default or my-agent:workflow_state"
-									onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && lookupState()}
-								/>
+								</div>
+								<div class="flex-1">
+									<label for="dapr-state-key" class="mb-1 block text-xs text-muted-foreground">Key</label>
+									<Input
+										id="dapr-state-key"
+										bind:value={stateKey}
+										placeholder="e.g. agents:default or my-agent:workflow_state"
+										oninput={() => stateMetadata = undefined}
+										onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && lookupState()}
+									/>
 							</div>
 							<Button size="sm" onclick={lookupState} disabled={stateLoading || !stateKey.trim()}>
 								{#if stateLoading}
@@ -631,13 +611,13 @@
 											Agent State ({k.agents.length})
 										</h4>
 										<div class="flex flex-wrap gap-1.5">
-											{#each k.agents as agent}
-												<Button
-													variant="outline"
-													size="sm"
-													class="h-7 text-xs font-mono"
-													onclick={() => selectKnownKey(agent.key, agent.storeName)}
-												>
+												{#each k.agents as agent}
+													<Button
+														variant="outline"
+														size="sm"
+														class="h-7 text-xs font-mono"
+														onclick={() => selectKnownKey(agent.key, agent.storeName, agent.metadata)}
+													>
 													{agent.label}
 												</Button>
 											{/each}
@@ -650,13 +630,13 @@
 											Conversations ({k.conversations.length})
 										</h4>
 										<div class="flex flex-wrap gap-1.5">
-											{#each k.conversations as conv}
-												<Button
-													variant="outline"
-													size="sm"
-													class="h-7 text-xs font-mono"
-													onclick={() => selectKnownKey(conv.key, conv.storeName)}
-												>
+												{#each k.conversations as conv}
+													<Button
+														variant="outline"
+														size="sm"
+														class="h-7 text-xs font-mono"
+														onclick={() => selectKnownKey(conv.key, conv.storeName, conv.metadata)}
+													>
 													{conv.label.length > 24
 														? conv.label.slice(0, 24) + '...'
 														: conv.label}
@@ -826,11 +806,56 @@
 								<div class="text-xs text-muted-foreground">Failed</div>
 							</CardContent>
 						</Card>
-					</div>
+						</div>
 
-					<!-- Instance Table -->
-					{#if workflowData.current.instances.length > 0}
-						<Card>
+						{#if workflowData.current.registrations?.length}
+							<Card>
+								<CardHeader>
+									<CardTitle class="text-sm">
+										Registered Workflows ({workflowData.current.registrations.length})
+									</CardTitle>
+								</CardHeader>
+								<CardContent>
+									<div class="rounded-md border border-border">
+										<Table>
+											<TableHeader>
+												<TableRow class="border-b border-border bg-muted/50 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+													<TableHead class="px-4 py-2">Workflow</TableHead>
+													<TableHead class="px-4 py-2">Service</TableHead>
+													<TableHead class="px-4 py-2">Version</TableHead>
+												</TableRow>
+											</TableHeader>
+											<TableBody>
+												{#each workflowData.current.registrations as wf}
+													<TableRow class="border-b border-border last:border-b-0">
+														<TableCell class="px-4 py-2 font-mono text-sm">{wf.name}</TableCell>
+														<TableCell class="px-4 py-2">
+															<Badge variant="outline" class="text-xs">{wf.serviceId}</Badge>
+														</TableCell>
+														<TableCell class="px-4 py-2 font-mono text-xs text-muted-foreground">{wf.version || '-'}</TableCell>
+													</TableRow>
+												{/each}
+											</TableBody>
+										</Table>
+									</div>
+									{#if workflowData.current.discovery?.registrations}
+										<p class="mt-2 text-xs text-muted-foreground">{workflowData.current.discovery.registrations}</p>
+									{/if}
+								</CardContent>
+							</Card>
+						{/if}
+
+						{#if workflowData.current.discovery?.executions}
+							<p class="text-xs text-muted-foreground">{workflowData.current.discovery.executions}</p>
+						{/if}
+
+						{#if workflowData.current.orchestratorError}
+							<p class="text-xs text-destructive">{workflowData.current.orchestratorError}</p>
+						{/if}
+
+						<!-- Instance Table -->
+						{#if workflowData.current.instances.length > 0}
+							<Card>
 							<CardHeader>
 								<CardTitle class="text-sm">
 									Recent Instances ({workflowData.current.instances.length})
@@ -884,119 +909,13 @@
 												{#if expandedInstance === id}
 													<TableRow class="bg-muted/20">
 														<TableCell colspan={5} class="px-4 py-3">
-															{#if historyLoading}
-																<div class="flex items-center gap-2 text-sm text-muted-foreground">
-																	<Loader2 class="h-4 w-4 animate-spin" /> Loading...
-																</div>
-															{:else}
-																<!-- Sub-tab navigation -->
-																<div class="mb-3 flex gap-1">
-																	{#each [
-																		{ key: 'steps', label: 'Steps', count: executionDetail?.logs?.length },
-																		{ key: 'agents', label: 'Agent Runs', count: executionDetail?.agentRuns?.length },
-																		{ key: 'events', label: 'Events', count: executionDetail?.agentEvents?.length },
-																		{ key: 'history', label: 'Dapr History', count: historyResult?.events?.length },
-																		{ key: 'outputs', label: 'Outputs', count: executionDetail?.stateOutputs ? Object.keys(executionDetail.stateOutputs).length : 0 },
-																	] as tab}
-																		<Button
-																			variant={workflowDetailTab === tab.key ? 'default' : 'outline'}
-																			size="sm"
-																			class="h-6 text-[10px]"
-																			onclick={() => workflowDetailTab = tab.key as typeof workflowDetailTab}
-																		>
-																			{tab.label}{tab.count ? ` (${tab.count})` : ''}
-																		</Button>
-																	{/each}
-																</div>
-
-																{#if workflowDetailTab === 'steps' && executionDetail?.logs?.length}
-																	<!-- Workflow step logs from DB -->
-																	<table class="w-full text-xs">
-																		<thead>
-																			<tr class="border-b border-border/50 bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-																				<th class="px-2 py-1 font-medium">Node</th>
-																				<th class="px-2 py-1 font-medium">Activity</th>
-																				<th class="px-2 py-1 font-medium">Status</th>
-																				<th class="px-2 py-1 font-medium">Duration</th>
-																				<th class="px-2 py-1 font-medium">Routed To</th>
-																				<th class="px-2 py-1 font-medium">Started</th>
-																			</tr>
-																		</thead>
-																		<tbody>
-																			{#each executionDetail.logs as log}
-																				<tr class="border-b border-border/30 last:border-b-0">
-																					<td class="px-2 py-1 font-mono">{log.nodeName}</td>
-																					<td class="px-2 py-1 text-muted-foreground">{log.activityName || log.nodeType}</td>
-																					<td class="px-2 py-1">
-																						<Badge variant={statusVariant(log.status)} class="text-[10px]">{log.status}</Badge>
-																					</td>
-																					<td class="px-2 py-1 text-muted-foreground">
-																						{log.duration ? `${Math.round(Number(log.duration) / 1000)}s` : '-'}
-																					</td>
-																					<td class="px-2 py-1 font-mono text-muted-foreground">{log.routedTo || '-'}</td>
-																					<td class="whitespace-nowrap px-2 py-1 text-muted-foreground">{formatTime(log.startedAt)}</td>
-																				</tr>
-																				{#if log.error}
-																					<tr><td colspan={6} class="px-2 py-1 text-xs text-destructive">{log.error}</td></tr>
-																				{/if}
-																			{/each}
-																		</tbody>
-																	</table>
-																{:else if workflowDetailTab === 'agents' && executionDetail?.agentRuns?.length}
-																	<!-- Agent sub-workflow runs -->
-																	<table class="w-full text-xs">
-																		<thead>
-																			<tr class="border-b border-border/50 bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-																				<th class="px-2 py-1 font-medium">Node</th>
-																				<th class="px-2 py-1 font-medium">Mode</th>
-																				<th class="px-2 py-1 font-medium">Status</th>
-																				<th class="px-2 py-1 font-medium">Agent Workflow</th>
-																				<th class="px-2 py-1 font-medium">Instance</th>
-																				<th class="px-2 py-1 font-medium">Started</th>
-																			</tr>
-																		</thead>
-																		<tbody>
-																			{#each executionDetail.agentRuns as run}
-																				<tr class="border-b border-border/30 last:border-b-0">
-																					<td class="px-2 py-1 font-mono">{run.nodeId}</td>
-																					<td class="px-2 py-1"><Badge variant="outline" class="text-[10px]">{run.mode}</Badge></td>
-																					<td class="px-2 py-1">
-																						<Badge variant={statusVariant(run.status)} class="text-[10px]">{run.status}</Badge>
-																					</td>
-																					<td class="px-2 py-1 font-mono text-muted-foreground">{run.agentWorkflowId.length > 25 ? run.agentWorkflowId.slice(0, 25) + '...' : run.agentWorkflowId}</td>
-																					<td class="px-2 py-1 font-mono text-muted-foreground" title={run.daprInstanceId}>{run.daprInstanceId.length > 25 ? run.daprInstanceId.slice(0, 25) + '...' : run.daprInstanceId}</td>
-																					<td class="whitespace-nowrap px-2 py-1 text-muted-foreground">{formatTime(run.createdAt)}</td>
-																				</tr>
-																				{#if run.error}
-																					<tr><td colspan={6} class="px-2 py-1 text-xs text-destructive">{run.error}</td></tr>
-																				{/if}
-																			{/each}
-																		</tbody>
-																	</table>
-																{:else if workflowDetailTab === 'events' && executionDetail?.agentEvents?.length}
-																	<!-- Fine-grained agent events -->
-																	<table class="w-full text-xs">
-																		<thead>
-																			<tr class="border-b border-border/50 bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
-																				<th class="px-2 py-1 font-medium">Time</th>
-																				<th class="px-2 py-1 font-medium">Event</th>
-																				<th class="px-2 py-1 font-medium">Tool</th>
-																				<th class="px-2 py-1 font-medium">Sandbox</th>
-																			</tr>
-																		</thead>
-																		<tbody>
-																			{#each executionDetail.agentEvents as evt}
-																				<tr class="border-b border-border/30 last:border-b-0">
-																					<td class="whitespace-nowrap px-2 py-1 text-muted-foreground">{formatTime(evt.ts)}</td>
-																					<td class="px-2 py-1"><Badge variant="outline" class="text-[10px]">{evt.eventType}</Badge></td>
-																					<td class="px-2 py-1 font-mono">{evt.toolName || ''}</td>
-																					<td class="px-2 py-1 font-mono text-muted-foreground">{evt.sandboxName || ''}</td>
-																				</tr>
-																			{/each}
-																		</tbody>
-																	</table>
-																{:else if workflowDetailTab === 'history' && historyResult?.events?.length}
-																	<!-- Dapr runtime history events -->
+																{#if historyLoading}
+																	<div class="flex items-center gap-2 text-sm text-muted-foreground">
+																		<Loader2 class="h-4 w-4 animate-spin" /> Loading...
+																	</div>
+																{:else if historyResult?.error}
+																	<p class="text-xs text-destructive">{historyResult.error}</p>
+																{:else if historyResult?.events?.length}
 																	<table class="w-full text-xs">
 																		<thead>
 																			<tr class="border-b border-border/50 bg-muted/30 text-left text-[10px] uppercase tracking-wider text-muted-foreground">
@@ -1023,32 +942,11 @@
 																			{/each}
 																		</tbody>
 																	</table>
-																{:else if workflowDetailTab === 'outputs' && executionDetail?.stateOutputs}
-																	<!-- State store outputs per workflow step -->
-																	<div class="space-y-2">
-																		{#each Object.entries(executionDetail.stateOutputs) as [stepKey, stepData]}
-																			{@const step = stepData as { label?: string; actionType?: string; data?: unknown }}
-																			<div class="rounded border border-border/30 p-2">
-																				<div class="mb-1 flex items-center gap-2 text-xs">
-																					<span class="font-medium">{step.label || stepKey}</span>
-																					{#if step.actionType}
-																						<Badge variant="outline" class="text-[10px]">{step.actionType}</Badge>
-																					{/if}
-																				</div>
-																				{#if step.data && Object.keys(step.data as object).length > 0}
-																					<JsonViewer data={step.data} label={stepKey} collapsed={true} />
-																				{:else}
-																					<span class="text-[10px] text-muted-foreground">No output data</span>
-																				{/if}
-																			</div>
-																		{/each}
-																	</div>
 																{:else}
-																	<p class="text-xs text-muted-foreground">No data for this view.</p>
+																	<p class="text-xs text-muted-foreground">No Dapr workflow history found for this instance.</p>
 																{/if}
-															{/if}
-														</TableCell>
-													</TableRow>
+															</TableCell>
+														</TableRow>
 												{/if}
 											{/each}
 										</TableBody>
@@ -1071,15 +969,34 @@
 				{/if}
 			</TabsContent>
 
-			<!-- ==================== AGENTS TAB ==================== -->
-			<TabsContent value="agents" class="space-y-4">
-				{#if registry.loading}
+				<!-- ==================== AGENTS TAB ==================== -->
+				<TabsContent value="agents" class="space-y-4">
+					<div class="flex items-center justify-between">
+						<Badge variant="outline">Dapr Agent Registry</Badge>
+						<div class="text-xs text-muted-foreground">
+							Reads Dapr registry records and declared Dapr execution state keys only.
+						</div>
+					</div>
+
+					{#if registry.current?.discovery?.definitions}
+						<p class="text-xs text-muted-foreground">{registry.current.discovery.definitions}</p>
+					{/if}
+
+					{#if registry.current?.diagnostics?.length}
+						<div class="rounded border border-border/50 px-3 py-2 text-xs text-muted-foreground">
+							{#each registry.current.diagnostics as diagnostic}
+								<div>{diagnostic}</div>
+							{/each}
+						</div>
+					{/if}
+
+					{#if activeAgentRegistryLoading}
 					<div class="flex items-center justify-center py-12">
 						<Loader2 class="h-6 w-6 animate-spin text-muted-foreground" />
 					</div>
-				{:else if registry.current?.agents?.length}
+				{:else if activeAgentRegistry.length}
 					<!-- Agent cards -->
-					{#each registry.current.agents as { name, metadata: meta }}
+					{#each activeAgentRegistry as { name, metadata: meta }}
 						<Card>
 							<CardHeader class="cursor-pointer" onclick={() => selectAgent(name)}>
 								<div class="flex items-center justify-between">
@@ -1090,13 +1007,14 @@
 											<ChevronRight class="h-4 w-4 text-muted-foreground" />
 										{/if}
 										<CardTitle class="font-mono text-sm">{name}</CardTitle>
-										{#if meta.instanceCount != null}
-											<Badge variant="outline">{meta.instanceCount} instances</Badge>
-										{/if}
+											{#if meta.instanceCount != null}
+												<Badge variant="outline">{meta.instanceCount} instances</Badge>
+											{/if}
+											<Badge variant="outline">Dapr</Badge>
+										</div>
+										<span class="font-mono text-xs text-muted-foreground">{meta.stateKey || meta.registryKey || meta.storeName || ''}</span>
 									</div>
-									<span class="font-mono text-xs text-muted-foreground">{meta.storeName || ''}</span>
-								</div>
-							</CardHeader>
+								</CardHeader>
 							{#if selectedAgent === name}
 								<CardContent>
 									{#if agentStateLoading}
@@ -1111,6 +1029,18 @@
 										{@const totalMessages = entries.reduce((s, [, i]) => s + (i.messages?.length ?? 0), 0)}
 										{@const totalTools = entries.reduce((s, [, i]) => s + (i.tool_history?.length ?? 0), 0)}
 										{@const toolNames = [...new Set(entries.flatMap(([, i]) => (i.tool_history ?? []).map((t) => t.tool_name)))]}
+
+											<div class="mb-4 rounded border border-border/50 px-3 py-2 text-xs">
+												<div><span class="text-muted-foreground">State store:</span> <span class="font-mono">{agentStateResult?.storeName || '-'}</span></div>
+												<div><span class="text-muted-foreground">State key:</span> <span class="font-mono">{agentStateResult?.stateKey || '-'}</span></div>
+												{#if agentStateResult?.error}
+													<div class="text-red-500">{agentStateResult.error}</div>
+												{/if}
+											</div>
+
+											{#if registry.current?.discovery?.executions}
+												<p class="mb-4 text-xs text-muted-foreground">{registry.current.discovery.executions}</p>
+											{/if}
 
 										<!-- Summary stats -->
 										<div class="mb-4 grid grid-cols-3 gap-3 md:grid-cols-6">
@@ -1206,37 +1136,27 @@
 															<td class="px-3 py-2">{inst.tool_history?.length ?? 0}</td>
 															<td class="whitespace-nowrap px-3 py-2 text-muted-foreground">{formatTime(inst.start_time)}</td>
 														</tr>
-														{#if selectedInstanceId === instId}
-															<tr>
-																<td colspan={7} class="border-b border-border/30 px-3 py-3">
-																	{#if agentInstanceLoading}
-																		<div class="flex items-center gap-2 text-sm text-muted-foreground">
-																			<Loader2 class="h-4 w-4 animate-spin" /> Loading...
-																		</div>
-																	{:else}
+															{#if selectedInstanceId === instId}
+																<tr>
+																	<td colspan={7} class="border-b border-border/30 px-3 py-3">
 																		<div class="space-y-3">
-																			<!-- Summary -->
-																			<div class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs md:grid-cols-4">
-																				<div><span class="text-muted-foreground">Workflow:</span> <span class="font-mono">{inst.workflow_name || '-'}</span></div>
-																				<div><span class="text-muted-foreground">Source:</span> <span class="font-mono">{inst.source || '-'}</span></div>
-																				<div><span class="text-muted-foreground">Started:</span> {formatTime(inst.start_time)}</div>
-																				<div><span class="text-muted-foreground">Ended:</span> {formatTime(inst.end_time ?? undefined)}</div>
-																				{#if agentInstanceDetail?.agentRun}
-																					<div><span class="text-muted-foreground">Mode:</span> <Badge variant="outline" class="text-[10px]">{agentInstanceDetail.agentRun.mode}</Badge></div>
-																					<div><span class="text-muted-foreground">Node:</span> <span class="font-mono">{agentInstanceDetail.agentRun.nodeId}</span></div>
-																				{/if}
-																				{#if inst.output}
-																					<div class="col-span-2"><span class="text-muted-foreground">Output:</span> <span class="text-green-500">{String(inst.output).slice(0, 100)}</span></div>
-																				{/if}
+																				<!-- Summary -->
+																				<div class="grid grid-cols-2 gap-x-6 gap-y-1 text-xs md:grid-cols-4">
+																					<div><span class="text-muted-foreground">Workflow:</span> <span class="font-mono">{inst.workflow_name || '-'}</span></div>
+																					<div><span class="text-muted-foreground">Source:</span> <span class="font-mono">{inst.source || '-'}</span></div>
+																					<div><span class="text-muted-foreground">Started:</span> {formatTime(inst.start_time)}</div>
+																					<div><span class="text-muted-foreground">Ended:</span> {formatTime(inst.end_time ?? undefined)}</div>
+																					{#if inst.output}
+																						<div class="col-span-2"><span class="text-muted-foreground">Output:</span> <span class="text-green-500">{String(inst.output).slice(0, 100)}</span></div>
+																					{/if}
 																			</div>
 
 																			<!-- Sub-tabs -->
-																			<div class="flex gap-1">
-																				{#each [
-																					{ key: 'events', label: 'Activity', count: inst.messages?.length || 0 },
-																					{ key: 'history', label: 'DB Events', count: agentInstanceDetail?.agentEvents?.length || 0 },
-																					{ key: 'json', label: 'JSON' },
-																				] as tab}
+																				<div class="flex gap-1">
+																					{#each [
+																						{ key: 'events', label: 'Dapr Activity', count: inst.messages?.length || 0 },
+																						{ key: 'json', label: 'JSON' },
+																					] as tab}
 																					<Button
 																						variant={agentDetailTab === tab.key ? 'default' : 'outline'}
 																						size="sm"
@@ -1331,44 +1251,13 @@
 																						{/if}
 																					{/each}
 																				</div>
-																			{:else if agentDetailTab === 'history'}
-																				{#if agentInstanceDetail?.agentEvents?.length}
-																					<table class="w-full text-[11px]">
-																						<thead>
-																							<tr class="border-b border-border/30 bg-muted/20 text-[9px] uppercase tracking-wider text-muted-foreground">
-																								<th class="px-2 py-1 text-left font-medium">Time</th>
-																								<th class="px-2 py-1 text-left font-medium">Event</th>
-																								<th class="px-2 py-1 text-left font-medium">Tool</th>
-																								<th class="px-2 py-1 text-left font-medium">Phase</th>
-																							</tr>
-																						</thead>
-																						<tbody>
-																							{#each agentInstanceDetail.agentEvents as evt}
-																								<tr class="border-b border-border/20 last:border-b-0">
-																									<td class="whitespace-nowrap px-2 py-1 text-muted-foreground">{formatTime(evt.ts ?? undefined)}</td>
-																									<td class="px-2 py-1"><Badge variant="outline" class="text-[10px]">{evt.eventType}</Badge></td>
-																									<td class="px-2 py-1 font-mono">{evt.toolName || ''}</td>
-																									<td class="px-2 py-1 text-muted-foreground">{evt.phase || ''}</td>
-																								</tr>
-																							{/each}
-																						</tbody>
-																					</table>
-																				{:else}
-																					<p class="text-xs text-muted-foreground">No DB events recorded.</p>
+																				{:else if agentDetailTab === 'json'}
+																					<JsonViewer data={inst} label="Agent State" />
 																				{/if}
-																			{:else if agentDetailTab === 'json'}
-																				<JsonViewer data={inst} label="Agent State" />
-																				{#if agentInstanceDetail?.agentRun}
-																					<div class="mt-2">
-																						<JsonViewer data={agentInstanceDetail.agentRun} label="DB Agent Run" collapsed={true} />
-																					</div>
-																				{/if}
-																			{/if}
-																		</div>
-																	{/if}
-																</td>
-															</tr>
-														{/if}
+																			</div>
+																	</td>
+																</tr>
+															{/if}
 													{/each}
 												</tbody>
 											</table>
@@ -1392,14 +1281,14 @@
 							{/if}
 						</Card>
 					{/each}
-				{:else}
-					<div class="flex flex-col items-center justify-center py-16 text-center">
-						<Bot class="mb-4 h-12 w-12 text-muted-foreground/50" />
-						<p class="text-sm text-muted-foreground">
-							No agents discovered. No agent state found in available state stores.
-						</p>
-					</div>
-				{/if}
+					{:else}
+						<div class="flex flex-col items-center justify-center py-16 text-center">
+							<Bot class="mb-4 h-12 w-12 text-muted-foreground/50" />
+							<p class="text-sm text-muted-foreground">
+								No Dapr agent definitions found.
+							</p>
+						</div>
+					{/if}
 			</TabsContent>
 
 			<!-- ==================== PUB/SUB TAB ==================== -->
