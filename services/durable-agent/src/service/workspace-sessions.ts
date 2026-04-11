@@ -7,8 +7,22 @@
  * - runtime bindings from durable workflow instance -> workspaceRef
  */
 
-import { posix as pathPosix, resolve as pathResolve } from "node:path";
-import { lookup as dnsLookup } from "node:dns/promises";
+import { execFile } from "node:child_process";
+import {
+	appendFile,
+	mkdtemp,
+	mkdir,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import {
+	join as pathJoin,
+	posix as pathPosix,
+	resolve as pathResolve,
+} from "node:path";
+import { promisify } from "node:util";
 import { nanoid } from "nanoid";
 import {
 	type WorkflowBrowserArtifactRecord,
@@ -261,6 +275,9 @@ const TRACKING_GIT_IGNORED_PATHS = [
 	"test-results",
 ] as const;
 
+const execFileAsync = promisify(execFile);
+const LOCAL_COMMAND_MAX_BUFFER = 20 * 1024 * 1024;
+
 function sanitizeSegment(input: string): string {
 	return input.replace(/[^a-zA-Z0-9._-]/g, "-");
 }
@@ -278,6 +295,62 @@ function normalizePathKey(input: string): string {
 
 function shellEscape(s: string): string {
 	return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+type LocalCommandResult = {
+	success: boolean;
+	exitCode: number;
+	stdout: string;
+	stderr: string;
+};
+
+async function runLocalCommand(
+	command: string,
+	args: string[],
+	options?: { cwd?: string; env?: Record<string, string> },
+): Promise<LocalCommandResult> {
+	try {
+		const result = await execFileAsync(command, args, {
+			cwd: options?.cwd,
+			env: { ...process.env, ...(options?.env ?? {}) },
+			encoding: "utf8",
+			maxBuffer: LOCAL_COMMAND_MAX_BUFFER,
+		});
+		return {
+			success: true,
+			exitCode: 0,
+			stdout: String(result.stdout || ""),
+			stderr: String(result.stderr || ""),
+		};
+	} catch (err) {
+		const error = err as Error & {
+			code?: number | string;
+			stdout?: string | Buffer;
+			stderr?: string | Buffer;
+		};
+		return {
+			success: false,
+			exitCode: typeof error.code === "number" ? error.code : 1,
+			stdout: String(error.stdout || ""),
+			stderr: String(error.stderr || error.message || "unknown error"),
+		};
+	}
+}
+
+async function requireLocalCommand(
+	command: string,
+	args: string[],
+	options?: { cwd?: string; env?: Record<string, string> },
+): Promise<LocalCommandResult> {
+	const result = await runLocalCommand(command, args, options);
+	if (!result.success || result.exitCode !== 0) {
+		throw new Error(
+			`${command} ${args.join(" ")} failed: ${
+				result.stderr || result.stdout || "unknown error"
+			}`,
+		);
+	}
+	return result;
 }
 
 function trackingGitAddCommand(): string {
@@ -1057,20 +1130,11 @@ class WorkspaceSessionManager {
 		}
 
 		let credentialLine = "";
-		let authenticatedRepositoryUrl = repositoryUrl;
 		try {
 			const parsed = new URL(repositoryUrl);
-			const pushUrl = new URL(repositoryUrl);
-			const pushHost = await this.resolveSandboxReachableHost(parsed.hostname);
-			if (pushHost !== parsed.hostname) {
-				pushUrl.hostname = pushHost;
-			}
 			if (username && token) {
 				credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
-				pushUrl.username = username;
-				pushUrl.password = token;
 			}
-			authenticatedRepositoryUrl = pushUrl.toString();
 		} catch {
 			throw new Error(`Invalid repositoryUrl for publish-gitea: ${repositoryUrl}`);
 		}
@@ -1078,79 +1142,194 @@ class WorkspaceSessionManager {
 		const gitignoreEntries = TRACKING_GIT_IGNORED_PATHS.filter(
 			(path) => path !== ".git",
 		).map((path) => `${path}/`);
-		const gitignoreCommands = gitignoreEntries
-			.map(
-				(entry) =>
-					`grep -qxF ${shellEscape(entry)} .gitignore || printf '%s\\n' ${shellEscape(entry)} >> .gitignore`,
-			)
-			.join(" && ");
-		const pushFlag = input.force === true ? "--force-with-lease " : "";
-		const command = [
+		const tarExcludeArgs = TRACKING_GIT_IGNORED_PATHS.flatMap((path) => [
+			`--exclude=${shellEscape(path)}`,
+			`--exclude=${shellEscape(`./${path}`)}`,
+			`--exclude=${shellEscape(`./${path}/**`)}`,
+		]).join(" ");
+		const archiveCommand = [
 			"set -eu",
-			"unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy grpc_proxy",
-			"command -v git >/dev/null 2>&1 || { echo 'git is not installed in the sandbox runtime' >&2; exit 127; }",
-			"mkdir -p .",
-			"[ -d .git ] || git init -q",
-			'git config user.name "$GITEA_GIT_USER_NAME"',
-			'git config user.email "$GITEA_GIT_USER_EMAIL"',
-			"git remote remove origin >/dev/null 2>&1 || true",
-			'git remote add origin "$GITEA_REPOSITORY_URL"',
-			'[ -z "$GITEA_CREDENTIAL_LINE" ] || { git config credential.helper "store --file=.git/.git-credentials"; printf "%s\\n" "$GITEA_CREDENTIAL_LINE" > .git/.git-credentials; }',
-			"touch .gitignore",
-			gitignoreCommands,
-			'git checkout -B "$GITEA_BRANCH"',
-			trackingGitAddCommand(),
-			'if git rev-parse --verify HEAD >/dev/null 2>&1; then if git diff --cached --quiet; then :; else git commit -m "$GITEA_COMMIT_MESSAGE"; fi; else git commit --allow-empty -m "$GITEA_COMMIT_MESSAGE"; fi',
-			`git push ${pushFlag}-u "$GITEA_AUTHENTICATED_REPOSITORY_URL" "HEAD:refs/heads/$GITEA_BRANCH"`,
-			'printf "commit=%s\\n" "$(git rev-parse HEAD)"',
-			'printf "tracked_files=%s\\n" "$(git ls-files --cached | wc -l | tr -d \' \')"',
+			"command -v tar >/dev/null 2>&1 || { echo 'tar is not installed in the sandbox runtime' >&2; exit 127; }",
+			"command -v base64 >/dev/null 2>&1 || { echo 'base64 is not installed in the sandbox runtime' >&2; exit 127; }",
+			`if base64 --help 2>&1 | grep -q -- '-w'; then tar ${tarExcludeArgs} -czf - -C ${shellEscape(commandCwd)} . | base64 -w 0; else tar ${tarExcludeArgs} -czf - -C ${shellEscape(commandCwd)} . | base64 | tr -d '\\n'; fi`,
 		].join(" && ");
 
-		const result = await session.sandbox.executeCommand(command, undefined, {
-			timeout: timeoutMs,
-			cwd: commandCwd,
-			env: {
-				GIT_TERMINAL_PROMPT: "0",
-				NO_PROXY:
-					"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
-				no_proxy:
-					"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
-				GITEA_REPOSITORY_URL: repositoryUrl,
-				GITEA_AUTHENTICATED_REPOSITORY_URL: authenticatedRepositoryUrl,
-				GITEA_BRANCH: branch,
-				GITEA_COMMIT_MESSAGE:
-					String(input.commitMessage || "").trim() ||
-					`Publish ${repositoryRepo} from workflow-builder`,
-				GITEA_GIT_USER_NAME:
-					String(input.gitUserName || "").trim() || "Workflow Builder",
-				GITEA_GIT_USER_EMAIL:
-					String(input.gitUserEmail || "").trim() ||
-					"workflow-builder@local",
-				GITEA_CREDENTIAL_LINE: credentialLine,
+		const archiveResult = await session.sandbox.executeCommand(
+			archiveCommand,
+			undefined,
+			{
+				timeout: timeoutMs,
+				cwd: commandCwd,
 			},
-		});
+		);
 
 		const sanitize = (value: string) =>
-			[
-				token,
-				credentialLine,
-				authenticatedRepositoryUrl !== repositoryUrl
-					? authenticatedRepositoryUrl
-					: "",
-			]
+			[token, credentialLine]
 				.filter(Boolean)
 				.reduce((text, secret) => text.replaceAll(secret, "***"), value);
-		if (!result.success || result.exitCode !== 0) {
+		if (!archiveResult.success || archiveResult.exitCode !== 0) {
 			throw new Error(
-				`git publish failed: ${sanitize(result.stderr || result.stdout || "unknown error")}`,
+				`workspace archive failed: ${sanitize(archiveResult.stderr || archiveResult.stdout || "unknown error")}`,
 			);
 		}
 
-		const stdout = sanitize(result.stdout);
-		const commitHash =
-			stdout.match(/^commit=(.+)$/m)?.[1]?.trim() || "unknown";
-		const fileCountRaw = stdout.match(/^tracked_files=(\d+)$/m)?.[1];
-		const fileCount = fileCountRaw ? Number.parseInt(fileCountRaw, 10) : 0;
+		const archiveB64 = archiveResult.stdout.trim();
+		if (!archiveB64) {
+			throw new Error("workspace archive failed: sandbox returned empty archive");
+		}
+
+		const tempDir = await mkdtemp(pathJoin(tmpdir(), "workflow-builder-publish-"));
+		const worktreeDir = pathJoin(tempDir, "worktree");
+		const archivePath = pathJoin(tempDir, "workspace.tar.gz");
+		const gitEnv = {
+			GIT_TERMINAL_PROMPT: "0",
+			NO_PROXY:
+				"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
+			no_proxy:
+				"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
+		};
+
+		let stdout = "";
+		let stderr = "";
+		let commitHash = "unknown";
+		let fileCount = 0;
+		try {
+			await mkdir(worktreeDir, { recursive: true });
+			await writeFile(archivePath, Buffer.from(archiveB64, "base64"));
+			await requireLocalCommand("tar", ["-xzf", archivePath, "-C", worktreeDir]);
+			await requireLocalCommand("git", ["init", "-q"], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			await requireLocalCommand(
+				"git",
+				[
+					"config",
+					"user.name",
+					String(input.gitUserName || "").trim() || "Workflow Builder",
+				],
+				{ cwd: worktreeDir, env: gitEnv },
+			);
+			await requireLocalCommand(
+				"git",
+				[
+					"config",
+					"user.email",
+					String(input.gitUserEmail || "").trim() ||
+						"workflow-builder@local",
+				],
+				{ cwd: worktreeDir, env: gitEnv },
+			);
+			await requireLocalCommand("git", ["remote", "add", "origin", repositoryUrl], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			if (credentialLine) {
+				const credentialsPath = pathJoin(worktreeDir, ".git", ".git-credentials");
+				await writeFile(credentialsPath, `${credentialLine}\n`, { mode: 0o600 });
+				await requireLocalCommand(
+					"git",
+					["config", "credential.helper", `store --file=${credentialsPath}`],
+					{ cwd: worktreeDir, env: gitEnv },
+				);
+			}
+
+			const gitignorePath = pathJoin(worktreeDir, ".gitignore");
+			let existingGitignore = "";
+			try {
+				existingGitignore = await readFile(gitignorePath, "utf8");
+			} catch {
+				// Missing .gitignore is expected for new generated workspaces.
+			}
+			const gitignoreAdditions = gitignoreEntries.filter(
+				(entry) => !existingGitignore.split(/\r?\n/).includes(entry),
+			);
+			if (gitignoreAdditions.length > 0) {
+				await appendFile(gitignorePath, `${gitignoreAdditions.join("\n")}\n`);
+			}
+
+			await requireLocalCommand("git", ["checkout", "-B", branch], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			const excludedPathspecs = TRACKING_GIT_IGNORED_PATHS.flatMap((path) => [
+				`:!${path}`,
+				`:!${path}/**`,
+			]);
+			await requireLocalCommand(
+				"git",
+				["add", "-A", "--", ".", ...excludedPathspecs],
+				{ cwd: worktreeDir, env: gitEnv },
+			);
+			const hasHead = await runLocalCommand(
+				"git",
+				["rev-parse", "--verify", "HEAD"],
+				{ cwd: worktreeDir, env: gitEnv },
+			);
+			const diff = await runLocalCommand("git", ["diff", "--cached", "--quiet"], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			if (!hasHead.success || diff.exitCode === 1) {
+				await requireLocalCommand(
+					"git",
+					[
+						"commit",
+						...(hasHead.success ? [] : ["--allow-empty"]),
+						"-m",
+						String(input.commitMessage || "").trim() ||
+							`Publish ${repositoryRepo} from workflow-builder`,
+					],
+					{ cwd: worktreeDir, env: gitEnv },
+				);
+			}
+			const pushArgs = [
+				"push",
+				...(input.force === true ? ["--force-with-lease"] : []),
+				"-u",
+				"origin",
+				`HEAD:refs/heads/${branch}`,
+			];
+			const push = await requireLocalCommand("git", pushArgs, {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			const revParse = await requireLocalCommand("git", ["rev-parse", "HEAD"], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			const lsFiles = await requireLocalCommand("git", ["ls-files", "--cached"], {
+				cwd: worktreeDir,
+				env: gitEnv,
+			});
+			commitHash = revParse.stdout.trim() || "unknown";
+			fileCount = lsFiles.stdout
+				.split("\n")
+				.map((line) => line.trim())
+				.filter(Boolean).length;
+			stdout = sanitize(
+				[
+					push.stdout,
+					`commit=${commitHash}`,
+					`tracked_files=${fileCount}`,
+				]
+					.filter(Boolean)
+					.join("\n"),
+			);
+			stderr = sanitize(push.stderr);
+		} catch (err) {
+			throw new Error(
+				`git publish failed: ${sanitize(err instanceof Error ? err.message : String(err))}`,
+			);
+		} finally {
+			await rm(tempDir, { recursive: true, force: true }).catch((err) => {
+				console.warn(
+					`[workspace-sessions] Failed removing publish temp dir ${tempDir}:`,
+					err,
+				);
+			});
+		}
+
 		const changeSummary = await this.captureWorkspaceChangeSummary({
 			session,
 			operation: "publish_gitea",
@@ -1171,7 +1350,7 @@ class WorkspaceSessionManager {
 			fileCount,
 			force: input.force === true,
 			stdout,
-			stderr: sanitize(result.stderr),
+			stderr,
 			sandbox: this.buildSandboxMetadata(session),
 			...(changeSummary ? { changeSummary } : {}),
 		};
@@ -2089,27 +2268,6 @@ class WorkspaceSessionManager {
 			return value.replace(/\.git$/i, "").trim();
 		} catch {
 			return "";
-		}
-	}
-
-	private async resolveSandboxReachableHost(hostname: string): Promise<string> {
-		const normalized = hostname.trim().toLowerCase();
-		if (
-			!normalized.endsWith(".svc") &&
-			!normalized.endsWith(".svc.cluster.local")
-		) {
-			return hostname;
-		}
-
-		try {
-			const result = await dnsLookup(hostname, { family: 4 });
-			return result.address;
-		} catch (err) {
-			console.warn(
-				`[workspace-sessions] Failed resolving Kubernetes service host ${hostname} for sandbox command:`,
-				err,
-			);
-			return hostname;
 		}
 	}
 
