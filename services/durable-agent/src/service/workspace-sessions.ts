@@ -8,6 +8,7 @@
  */
 
 import { posix as pathPosix, resolve as pathResolve } from "node:path";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { nanoid } from "nanoid";
 import {
 	type WorkflowBrowserArtifactRecord,
@@ -1057,14 +1058,21 @@ class WorkspaceSessionManager {
 
 		let credentialLine = "";
 		let authenticatedRepositoryUrl = repositoryUrl;
-		if (username && token) {
-			try {
-				const parsed = new URL(repositoryUrl);
-				credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
-				authenticatedRepositoryUrl = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}${parsed.pathname}${parsed.search}`;
-			} catch {
-				throw new Error(`Invalid repositoryUrl for publish-gitea: ${repositoryUrl}`);
+		try {
+			const parsed = new URL(repositoryUrl);
+			const pushUrl = new URL(repositoryUrl);
+			const pushHost = await this.resolveSandboxReachableHost(parsed.hostname);
+			if (pushHost !== parsed.hostname) {
+				pushUrl.hostname = pushHost;
 			}
+			if (username && token) {
+				credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
+				pushUrl.username = username;
+				pushUrl.password = token;
+			}
+			authenticatedRepositoryUrl = pushUrl.toString();
+		} catch {
+			throw new Error(`Invalid repositoryUrl for publish-gitea: ${repositoryUrl}`);
 		}
 
 		const gitignoreEntries = TRACKING_GIT_IGNORED_PATHS.filter(
@@ -2081,6 +2089,27 @@ class WorkspaceSessionManager {
 			return value.replace(/\.git$/i, "").trim();
 		} catch {
 			return "";
+		}
+	}
+
+	private async resolveSandboxReachableHost(hostname: string): Promise<string> {
+		const normalized = hostname.trim().toLowerCase();
+		if (
+			!normalized.endsWith(".svc") &&
+			!normalized.endsWith(".svc.cluster.local")
+		) {
+			return hostname;
+		}
+
+		try {
+			const result = await dnsLookup(hostname, { family: 4 });
+			return result.address;
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed resolving Kubernetes service host ${hostname} for sandbox command:`,
+				err,
+			);
+			return hostname;
 		}
 	}
 
