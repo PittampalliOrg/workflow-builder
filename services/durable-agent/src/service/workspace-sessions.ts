@@ -1102,6 +1102,10 @@ class WorkspaceSessionManager {
 			cwd: commandCwd,
 			env: {
 				GIT_TERMINAL_PROMPT: "0",
+				NO_PROXY:
+					"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
+				no_proxy:
+					"127.0.0.1,localhost,::1,.svc,.svc.cluster.local,.cluster.local,gitea-http.gitea.svc.cluster.local",
 				GITEA_REPOSITORY_URL: repositoryUrl,
 				GITEA_AUTHENTICATED_REPOSITORY_URL: authenticatedRepositoryUrl,
 				GITEA_BRANCH: branch,
