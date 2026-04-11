@@ -313,10 +313,6 @@ def _raise_workflow_route_error(operation: str, error: Exception) -> None:
     raise HTTPException(status_code=500, detail=error_message)
 
 
-def _is_taskhub_unimplemented_error(error: Exception) -> bool:
-    return "unimplemented" in str(error).lower()
-
-
 # --- TaskHub gRPC helpers (workflow management APIs) ---
 
 _taskhub_channel: grpc.Channel | None = None
@@ -352,6 +348,20 @@ def _taskhub_call(method: str, request: Any) -> Any:
     if metadata:
         return rpc(request, metadata=metadata, timeout=timeout_seconds)
     return rpc(request, timeout=timeout_seconds)
+
+
+def _list_instance_ids(
+    *,
+    continuation_token: str | None = None,
+    page_size: int = 200,
+) -> tuple[list[str], str | None]:
+    """List workflow IDs using Dapr's Task Hub management protocol."""
+    request = pb.ListInstanceIDsRequest(pageSize=page_size)
+    if continuation_token:
+        request.continuationToken = continuation_token
+    response = _taskhub_call("ListInstanceIDs", request)
+    next_token = str(getattr(response, "continuationToken", "") or "") or None
+    return list(getattr(response, "instanceIds", []) or []), next_token
 
 
 def _schedule_new_workflow_instance(
@@ -1928,40 +1938,93 @@ def _build_workflow_status_payload(instance_id: str, orchestration_state: Any) -
     }
 
 
-def _query_instances(
+def _workflow_payload_matches_filters(
+    payload: dict[str, Any],
     *,
-    status_filter: set[str] | None = None,
-    fetch_payloads: bool = True,
-    continuation_token: str | None = None,
-    page_size: int = 200,
-) -> tuple[list[Any], str | None]:
-    """Query orchestration instances using TaskHub management API."""
-    query = pb.InstanceQuery(
-        maxInstanceCount=page_size,
-        fetchInputsAndOutputs=fetch_payloads,
-    )
-    if status_filter:
-        status_to_enum = {
-            "RUNNING": pb.ORCHESTRATION_STATUS_RUNNING,
-            "COMPLETED": pb.ORCHESTRATION_STATUS_COMPLETED,
-            "FAILED": pb.ORCHESTRATION_STATUS_FAILED,
-            "CANCELED": pb.ORCHESTRATION_STATUS_CANCELED,
-            "TERMINATED": pb.ORCHESTRATION_STATUS_TERMINATED,
-            "PENDING": pb.ORCHESTRATION_STATUS_PENDING,
-            "SUSPENDED": pb.ORCHESTRATION_STATUS_SUSPENDED,
-            "STALLED": pb.ORCHESTRATION_STATUS_STALLED,
-        }
-        for status in status_filter:
-            enum_value = status_to_enum.get(status.upper())
-            if enum_value is not None:
-                query.runtimeStatus.append(enum_value)
-    if continuation_token:
-        query.continuationToken.CopyFrom(
-            wrappers_pb2.StringValue(value=continuation_token)
+    status_filter: set[str] | None,
+    search_filter: str,
+) -> bool:
+    runtime_status = str(payload.get("runtimeStatus") or "UNKNOWN").upper()
+    if status_filter and runtime_status not in status_filter:
+        return False
+
+    if search_filter:
+        fields = [
+            str(payload.get("instanceId") or ""),
+            str(payload.get("workflowId") or ""),
+            str(payload.get("workflowName") or ""),
+            str(payload.get("workflowNameVersioned") or ""),
+            str(payload.get("phase") or ""),
+            str(payload.get("message") or ""),
+        ]
+        if not any(search_filter in field.lower() for field in fields):
+            return False
+
+    return True
+
+
+def _list_workflows_from_taskhub_instance_ids(
+    *,
+    status_filter: set[str] | None,
+    search_filter: str,
+    limit: int,
+    offset: int,
+) -> WorkflowListResponse:
+    """
+    List workflow instances using Dapr's Task Hub ListInstanceIDs protocol.
+
+    QueryInstances is unimplemented in the current Dapr workflow runtime, but
+    ListInstanceIDs is implemented and documented for management-tool pagination.
+    Hydrate each returned ID with GetInstance so the response still contains
+    normalized status, timestamps, custom status, trace IDs, and outputs.
+    """
+    instance_ids: list[str] = []
+    continuation_token: str | None = None
+    max_scan = 5000
+
+    while len(instance_ids) < max_scan:
+        page_ids, continuation_token = _list_instance_ids(
+            continuation_token=continuation_token,
+            page_size=200,
         )
-    response = _taskhub_call("QueryInstances", pb.QueryInstancesRequest(query=query))
-    next_token = _parse_wrapped_string(getattr(response, "continuationToken", None))
-    return list(getattr(response, "orchestrationState", []) or []), next_token
+        if not page_ids:
+            break
+        instance_ids.extend(page_ids)
+        if not continuation_token:
+            break
+
+    items: list[dict[str, Any]] = []
+
+    for instance_id in instance_ids[:max_scan]:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=True),
+        )
+        if not getattr(response, "exists", False):
+            continue
+
+        payload = _build_workflow_status_payload(instance_id, response.orchestrationState)
+        if _workflow_payload_matches_filters(
+            payload,
+            status_filter=status_filter,
+            search_filter=search_filter,
+        ):
+            items.append(payload)
+
+    items.sort(
+        key=lambda item: str(item.get("startedAt") or ""),
+        reverse=True,
+    )
+    total = len(items)
+    page = items[offset : offset + limit]
+    workflows = [WorkflowListItemResponse(**item) for item in page]
+
+    return WorkflowListResponse(
+        workflows=workflows,
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 def _normalize_history_event(event: Any) -> dict[str, Any]:
@@ -2190,75 +2253,14 @@ def list_workflows(
             if part.strip()
         }
         search_filter = (search or "").strip().lower()
-
-        instance_states: list[Any] = []
-        continuation_token: str | None = None
-        max_scan = 5000
-
-        while len(instance_states) < max_scan:
-            page_states, continuation_token = _query_instances(
-                status_filter=status_filter if status_filter else None,
-                fetch_payloads=True,
-                continuation_token=continuation_token,
-                page_size=200,
-            )
-            if not page_states:
-                break
-            instance_states.extend(page_states)
-            if not continuation_token:
-                break
-
-        items: list[dict[str, Any]] = []
-        for state in instance_states[:max_scan]:
-            instance_id = str(getattr(state, "instanceId", "") or "")
-            if not instance_id:
-                continue
-            payload = _build_workflow_status_payload(instance_id, state)
-            runtime_status = str(payload.get("runtimeStatus") or "UNKNOWN").upper()
-            if status_filter and runtime_status not in status_filter:
-                continue
-
-            if search_filter:
-                fields = [
-                    str(payload.get("instanceId") or ""),
-                    str(payload.get("workflowId") or ""),
-                    str(payload.get("workflowName") or ""),
-                    str(payload.get("phase") or ""),
-                    str(payload.get("message") or ""),
-                ]
-                if not any(search_filter in field.lower() for field in fields):
-                    continue
-
-            items.append(payload)
-
-        items.sort(
-            key=lambda item: str(item.get("startedAt") or ""),
-            reverse=True,
-        )
-        total = len(items)
-        page = items[normalized_offset : normalized_offset + normalized_limit]
-        workflows = [WorkflowListItemResponse(**item) for item in page]
-
-        return WorkflowListResponse(
-            workflows=workflows,
-            total=total,
+        return _list_workflows_from_taskhub_instance_ids(
+            status_filter=status_filter if status_filter else None,
+            search_filter=search_filter,
             limit=normalized_limit,
             offset=normalized_offset,
         )
     except Exception as e:
         logger.error(f"[Workflow Routes] Failed to list workflows: {e}")
-        if _is_taskhub_unimplemented_error(e):
-            raise HTTPException(
-                status_code=501,
-                detail={
-                    "code": "workflow_query_unsupported",
-                    "error": (
-                        "This Dapr runtime does not implement workflow instance listing "
-                        "via QueryInstances"
-                    ),
-                    "rawError": str(e),
-                },
-            )
         _raise_workflow_route_error("list_workflows", e)
 
 
