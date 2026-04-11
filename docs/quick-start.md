@@ -52,6 +52,8 @@ During active development, the most relevant services are:
 4. Execute it from the UI.
 5. Inspect status, logs, patch, changes, snapshots, and browser artifacts in the run UI.
 
+When a workflow requires source control inputs, the execute dialog prompts for the configured SCM connection, owner, repository, and issue context. Repository dropdowns are constrained to the dialog viewport so large repo lists remain selectable. If you choose to create a new repository instead of selecting an existing repository, the UI generates a unique repository name automatically and lets you regenerate it before launching the run.
+
 For OpenShell-backed coding flows, the common starting shape is:
 
 1. `Workspace Profile`

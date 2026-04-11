@@ -158,6 +158,7 @@ Provides:
 - Svelte Flow editor (@xyflow/svelte)
 - workflow save and publish UX
 - run launch, approval, and review UI
+- SCM-aware execute prompts with bounded repository selectors and generated unique names for new repositories
 - BFF routes for orchestrator and execution data
 
 ### workflow-orchestrator

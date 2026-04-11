@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Loader2 } from 'lucide-svelte';
+	import { Loader2, RefreshCw } from 'lucide-svelte';
 	import { Label } from '$lib/components/ui/label';
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
@@ -83,6 +83,8 @@
 	let ownersRequestKey = 0;
 	let reposRequestKey = 0;
 	let issuesRequestKey = 0;
+	const selectContentClass =
+		'w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))] max-w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))]';
 
 	const hasOwnerField = $derived(fieldKeys.includes('owner') || fieldKeys.length === 0);
 	const hasRepoField = $derived(fieldKeys.includes('repo') || fieldKeys.length === 0);
@@ -104,6 +106,39 @@
 	function getConnectionLabel(connection: ScmConnectionSummary | undefined): string {
 		if (!connection) return '';
 		return `${formatProviderLabel(connection.providerId)}: ${connection.displayName}`;
+	}
+
+	function slugifyRepoName(value: string): string {
+		return value
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9]+/g, '-')
+			.replace(/^-+|-+$/g, '')
+			.slice(0, 48);
+	}
+
+	function randomSuffix(): string {
+		const bytes = new Uint8Array(2);
+		globalThis.crypto?.getRandomValues(bytes);
+		const randomValue =
+			bytes[0] || bytes[1]
+				? (bytes[0] * 256 + bytes[1]).toString(36)
+				: Math.floor(Math.random() * 0xffff).toString(36);
+		return randomValue.padStart(3, '0').slice(0, 3);
+	}
+
+	function generateRepositoryName(baseName = 'generated-app'): string {
+		const base = slugifyRepoName(baseName) || 'generated-app';
+		const timePart = Date.now().toString(36);
+		let candidate = `${base}-${timePart}-${randomSuffix()}`;
+		let attempts = 0;
+
+		while (repos.some((repo) => repo.name === candidate) && attempts < 5) {
+			candidate = `${base}-${Date.now().toString(36)}-${randomSuffix()}`;
+			attempts += 1;
+		}
+
+		return candidate;
 	}
 
 	$effect(() => {
@@ -294,7 +329,7 @@
 		if (nextRepo === '__custom__') {
 			customRepoMode = true;
 			updateValues({
-				repo: '',
+				repo: generateRepositoryName(),
 				issue_number: null,
 				title: '',
 				body: ''
@@ -356,7 +391,7 @@
 					{/if}
 				</span>
 			</Select.Trigger>
-			<Select.Content class="w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))] max-w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))]">
+			<Select.Content class={selectContentClass}>
 				{#each connections as connection}
 					<Select.Item value={connection.externalId}>
 						<span class="block max-w-[calc(100%-1.5rem)] min-w-0 truncate">
@@ -393,7 +428,7 @@
 							{values.owner || 'Select owner...'}
 						</span>
 					</Select.Trigger>
-					<Select.Content class="w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))] max-w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))]">
+					<Select.Content class={selectContentClass}>
 						{#each owners as owner}
 							<Select.Item value={owner.login}>
 								<span class="block max-w-[calc(100%-1.5rem)] min-w-0 truncate">{owner.label}</span>
@@ -419,11 +454,23 @@
 			</Label>
 			{#if customRepoMode}
 				<div class="min-w-0 space-y-2">
-					<Input
-						value={values.repo}
-						oninput={(event) => updateValues({ repo: event.currentTarget.value })}
-						placeholder="New repository name"
-					/>
+					<div class="flex min-w-0 gap-2">
+						<Input
+							class="min-w-0 flex-1"
+							value={values.repo}
+							oninput={(event) => updateValues({ repo: event.currentTarget.value })}
+							placeholder="New repository name"
+						/>
+						<button
+							type="button"
+							class="inline-flex shrink-0 items-center gap-1 rounded-md border border-input bg-background px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+							onclick={() => updateValues({ repo: generateRepositoryName() })}
+							title="Generate another unique repository name"
+						>
+							<RefreshCw size={12} />
+							Regenerate
+						</button>
+					</div>
 					<button
 						type="button"
 						class="text-xs text-muted-foreground underline-offset-2 hover:underline"
@@ -457,7 +504,7 @@
 							{/if}
 						</span>
 					</Select.Trigger>
-					<Select.Content class="w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))] max-w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))]">
+					<Select.Content class={selectContentClass}>
 						{#each repos as repo}
 							<Select.Item value={repo.name}>
 								<span class="block max-w-[calc(100%-1.5rem)] min-w-0 truncate">
@@ -503,7 +550,7 @@
 						{/if}
 					</span>
 				</Select.Trigger>
-				<Select.Content class="w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))] max-w-[min(var(--bits-select-anchor-width),calc(100vw-2rem))]">
+				<Select.Content class={selectContentClass}>
 					{#each issues as issue}
 						<Select.Item value={issue.number.toString()}>
 							<span class="block max-w-[calc(100%-1.5rem)] min-w-0 truncate">#{issue.number} — {issue.title}</span>
