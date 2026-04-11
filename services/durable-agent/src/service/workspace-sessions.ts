@@ -1079,6 +1079,7 @@ class WorkspaceSessionManager {
 		const pushFlag = input.force === true ? "--force-with-lease " : "";
 		const command = [
 			"set -eu",
+			"unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy grpc_proxy",
 			"command -v git >/dev/null 2>&1 || { echo 'git is not installed in the sandbox runtime' >&2; exit 127; }",
 			"mkdir -p .",
 			"[ -d .git ] || git init -q",
