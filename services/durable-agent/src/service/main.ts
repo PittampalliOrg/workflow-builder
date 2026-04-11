@@ -11,6 +11,7 @@
  * - POST /api/tools/:toolId    — Direct tool execution (bypass agent)
  * - POST /api/workspaces/profile — Create/get execution-scoped workspace
  * - POST /api/workspaces/clone   — Clone Git repo into workspace session
+ * - POST /api/workspaces/publish-gitea — Publish workspace contents to Gitea
  * - POST /api/workspaces/command — Execute command in workspace
  * - POST /api/workspaces/file    — Execute file operation in workspace
  * - POST /api/workspaces/cleanup — Cleanup workspace session(s)
@@ -2791,6 +2792,90 @@ app.post("/api/workspaces/clone", async (req, res) => {
   }
 });
 
+app.post("/api/workspaces/publish-gitea", async (req, res) => {
+  try {
+    const repositoryUrl =
+      typeof req.body?.repositoryUrl === "string" ? req.body.repositoryUrl : "";
+    const repositoryRepo =
+      typeof req.body?.repositoryRepo === "string"
+        ? req.body.repositoryRepo
+        : "";
+    if (!repositoryUrl.trim() || !repositoryRepo.trim()) {
+      res.status(400).json({
+        success: false,
+        error: "repositoryUrl and repositoryRepo are required",
+      });
+      return;
+    }
+
+    const result = await workspaceSessions.publishGiteaRepository({
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef
+          : undefined,
+      executionId:
+        typeof req.body?.executionId === "string"
+          ? req.body.executionId
+          : typeof req.body?.dbExecutionId === "string"
+            ? req.body.dbExecutionId
+            : undefined,
+      durableInstanceId:
+        typeof req.body?.durableInstanceId === "string"
+          ? req.body.durableInstanceId
+          : typeof req.body?.__durable_instance_id === "string"
+            ? req.body.__durable_instance_id
+            : undefined,
+      repositoryUrl,
+      repositoryOwner:
+        typeof req.body?.repositoryOwner === "string"
+          ? req.body.repositoryOwner
+          : undefined,
+      repositoryRepo,
+      repositoryBranch:
+        typeof req.body?.repositoryBranch === "string"
+          ? req.body.repositoryBranch
+          : undefined,
+      repositoryUsername:
+        typeof req.body?.repositoryUsername === "string"
+          ? req.body.repositoryUsername
+          : undefined,
+      repositoryToken:
+        typeof req.body?.repositoryToken === "string"
+          ? req.body.repositoryToken
+          : undefined,
+      commitMessage:
+        typeof req.body?.commitMessage === "string"
+          ? req.body.commitMessage
+          : undefined,
+      gitUserName:
+        typeof req.body?.gitUserName === "string"
+          ? req.body.gitUserName
+          : undefined,
+      gitUserEmail:
+        typeof req.body?.gitUserEmail === "string"
+          ? req.body.gitUserEmail
+          : undefined,
+      force:
+        req.body?.force === true ||
+        (typeof req.body?.force === "string" &&
+          req.body.force.trim().toLowerCase() === "true"),
+      timeoutMs:
+        typeof req.body?.timeoutMs === "number"
+          ? req.body.timeoutMs
+          : typeof req.body?.timeoutMs === "string" && req.body.timeoutMs.trim()
+            ? parseInt(req.body.timeoutMs, 10)
+            : undefined,
+    });
+
+    res.json({ success: result.success, result });
+  } catch (err) {
+    res.status(400).json({
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
 app.post("/api/workspaces/command", async (req, res) => {
   try {
     const command =
@@ -5364,6 +5449,9 @@ app.listen(PORT, HOST, async () => {
   );
   console.log(
     `[durable-agent]   POST /api/workspaces/clone   — clone repository in workspace`,
+  );
+  console.log(
+    `[durable-agent]   POST /api/workspaces/publish-gitea — publish workspace to Gitea`,
   );
   console.log(
     `[durable-agent]   POST /api/workspaces/command — execute command in workspace`,

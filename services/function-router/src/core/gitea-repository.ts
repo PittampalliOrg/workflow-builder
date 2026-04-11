@@ -148,6 +148,16 @@ type CloneResolutionResult = {
 	ensuredInGitea: boolean;
 };
 
+type PublishRepositoryResult = {
+	repositoryUrl: string;
+	repositoryOwner: string;
+	repositoryRepo: string;
+	repositoryUsername: string;
+	repositoryToken: string;
+	created: boolean;
+	htmlUrl?: string | null;
+};
+
 type ParsedRepoUrl = {
 	host: string;
 	owner: string;
@@ -463,6 +473,93 @@ async function ensureRepoInGitea(input: {
 	throw new Error(
 		`Gitea repo import failed (${createResponse.status}): ${body.slice(0, 300)}`,
 	);
+}
+
+export async function ensureGiteaPublishRepository(input: {
+	repositoryOwner?: string;
+	repositoryRepo: string;
+	repositoryUsername?: string;
+	repositoryToken?: string;
+	repositoryBranch?: string;
+	description?: string;
+	private?: boolean;
+}): Promise<PublishRepositoryResult> {
+	const settings = await getRuntimeGiteaSettings();
+	const owner = (input.repositoryOwner || settings.repoOwner).trim();
+	const repo = input.repositoryRepo.trim();
+	const auth = await giteaAuth({
+		repositoryUrl: "",
+		repositoryOwner: owner,
+		repositoryRepo: repo,
+		repositoryBranch: input.repositoryBranch || "main",
+		repositoryUsername: input.repositoryUsername || "",
+		repositoryToken: input.repositoryToken || "",
+		githubToken: "",
+	});
+
+	if (!repo) {
+		throw new Error("repositoryRepo is required for workspace/publish-gitea");
+	}
+	if (!owner) {
+		throw new Error("repositoryOwner is required for workspace/publish-gitea");
+	}
+	if (!auth) {
+		throw new Error(
+			"Gitea credentials are required to publish a workspace. Set repositoryUsername/repositoryToken or configure GITEA_USERNAME/GITEA_PASSWORD.",
+		);
+	}
+
+	const existing = await getGiteaRepo(owner, repo);
+	if (existing.status === 200) {
+		return {
+			repositoryUrl: await buildGiteaCloneUrl(owner, repo),
+			repositoryOwner: owner,
+			repositoryRepo: repo,
+			repositoryUsername: auth.username,
+			repositoryToken: auth.password,
+			created: false,
+			htmlUrl: existing.repo?.full_name ? `${owner}/${repo}` : null,
+		};
+	}
+	if (existing.status !== 404) {
+		throw new Error(
+			`Gitea repo lookup failed for ${owner}/${repo} (${existing.status}): ${existing.bodyText.slice(0, 300)}`,
+		);
+	}
+
+	const body = {
+		name: repo,
+		private: input.private === true,
+		auto_init: false,
+		description:
+			input.description?.trim() || "Created by workflow-builder publish action",
+	};
+	const createPath =
+		owner === auth.username
+			? "/api/v1/user/repos"
+			: `/api/v1/orgs/${encodeURIComponent(owner)}/repos`;
+	const createResponse = await giteaRequest(createPath, {
+		method: "POST",
+		auth,
+		body,
+	});
+
+	if (createResponse.status !== 201 && createResponse.status !== 409) {
+		const responseBody = await createResponse.text();
+		throw new Error(
+			`Gitea repo create failed for ${owner}/${repo} (${createResponse.status}): ${responseBody.slice(0, 300)}`,
+		);
+	}
+
+	return {
+		repositoryUrl: await buildGiteaCloneUrl(owner, repo),
+		repositoryOwner: owner,
+		repositoryRepo: repo,
+		repositoryUsername: auth.username,
+		repositoryToken: auth.password,
+		created: createResponse.status === 201,
+		htmlUrl: `${owner}/${repo}`,
+	};
 }
 
 export async function resolveCloneRepository(

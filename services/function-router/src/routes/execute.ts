@@ -39,7 +39,10 @@ import {
   recordResponseTime,
   resolveOpenFunctionUrl,
 } from "../core/openfunction-resolver.js";
-import { resolveCloneRepository } from "../core/gitea-repository.js";
+import {
+  ensureGiteaPublishRepository,
+  resolveCloneRepository,
+} from "../core/gitea-repository.js";
 import { lookupFunction } from "../core/registry.js";
 import {
   bindWorkflowSessionContext,
@@ -1047,6 +1050,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               pluginId === "workspace" && toolId === "profile";
             const isWorkspaceClone =
               pluginId === "workspace" && toolId === "clone";
+            const isWorkspacePublishGitea =
+              pluginId === "workspace" && toolId === "publish-gitea";
             const isWorkspaceCommand =
               pluginId === "workspace" && toolId === "command";
             const isWorkspaceFile =
@@ -1072,6 +1077,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             const isWorkspaceUtility =
               isWorkspaceProfile ||
               isWorkspaceClone ||
+              isWorkspacePublishGitea ||
               isWorkspaceCommand ||
               isWorkspaceFile ||
               isWorkspaceCleanup ||
@@ -1397,6 +1403,65 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeId: body.node_id,
                 nodeName: body.node_name,
               });
+            } else if (isWorkspacePublishGitea) {
+              const repositoryOwner =
+                typeof args.repositoryOwner === "string"
+                  ? args.repositoryOwner.trim()
+                  : "";
+              const repositoryRepo =
+                typeof args.repositoryRepo === "string"
+                  ? args.repositoryRepo.trim()
+                  : "";
+              const repositoryBranch =
+                typeof args.repositoryBranch === "string" &&
+                args.repositoryBranch.trim()
+                  ? args.repositoryBranch.trim()
+                  : "main";
+              const repositoryUsername =
+                typeof args.repositoryUsername === "string"
+                  ? args.repositoryUsername.trim()
+                  : "";
+              const repositoryToken =
+                typeof args.repositoryToken === "string"
+                  ? args.repositoryToken.trim()
+                  : "";
+
+              const resolved = await ensureGiteaPublishRepository({
+                repositoryOwner: repositoryOwner || undefined,
+                repositoryRepo,
+                repositoryBranch,
+                repositoryUsername,
+                repositoryToken,
+                description:
+                  typeof args.description === "string"
+                    ? args.description
+                    : undefined,
+                private: parseBooleanInput(args.private) ?? false,
+              });
+              console.log(
+                `[Execute Route] workspace/publish-gitea resolved ${resolved.repositoryOwner}/${resolved.repositoryRepo} created=${resolved.created}`,
+              );
+
+              targetUrl = `${functionUrl}/api/workspaces/publish-gitea`;
+              requestBody = JSON.stringify({
+                executionId: workspaceExecutionId,
+                dbExecutionId: body.db_execution_id ?? undefined,
+                workspaceRef: args.workspaceRef,
+                repositoryUrl: resolved.repositoryUrl,
+                repositoryOwner: resolved.repositoryOwner,
+                repositoryRepo: resolved.repositoryRepo,
+                repositoryBranch,
+                repositoryUsername: resolved.repositoryUsername,
+                repositoryToken: resolved.repositoryToken,
+                commitMessage: args.commitMessage,
+                gitUserName: args.gitUserName,
+                gitUserEmail: args.gitUserEmail,
+                force: args.force,
+                timeoutMs: args.timeoutMs,
+                workflowId: body.workflow_id,
+                nodeId: body.node_id,
+                nodeName: body.node_name,
+              });
             } else if (isWorkspaceCommand || isBrowserCommand) {
               targetUrl = `${functionUrl}/api/workspaces/command`;
               requestBody = JSON.stringify({
@@ -1655,6 +1720,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               typeof parsed === "object" &&
               (isWorkspaceProfile ||
                 isWorkspaceClone ||
+                isWorkspacePublishGitea ||
                 isWorkspaceCommand ||
                 isWorkspaceFile ||
                 isWorkspaceCleanup ||

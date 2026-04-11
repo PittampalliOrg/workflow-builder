@@ -185,6 +185,23 @@ export type ExecuteWorkspaceCloneInput = {
 	timeoutMs?: number;
 };
 
+export type ExecuteWorkspacePublishGiteaInput = {
+	workspaceRef?: string;
+	executionId?: string;
+	durableInstanceId?: string;
+	repositoryUrl: string;
+	repositoryOwner?: string;
+	repositoryRepo: string;
+	repositoryBranch?: string;
+	repositoryUsername?: string;
+	repositoryToken?: string;
+	commitMessage?: string;
+	gitUserName?: string;
+	gitUserEmail?: string;
+	timeoutMs?: number;
+	force?: boolean;
+};
+
 export type MaterializeChangeArtifactInput = {
 	workspaceRef?: string;
 	executionId?: string;
@@ -230,6 +247,7 @@ const INLINE_PATCH_PREVIEW_BYTES = parseInt(
 	10,
 );
 const TRACKING_GIT_IGNORED_PATHS = [
+	".git",
 	"node_modules",
 	".svelte-kit",
 	".vite",
@@ -1004,6 +1022,134 @@ class WorkspaceSessionManager {
 			commitHash,
 			fileCount,
 			gitMetadataStripped: strippedGitDir,
+			sandbox: this.buildSandboxMetadata(session),
+			...(changeSummary ? { changeSummary } : {}),
+		};
+	}
+
+	async publishGiteaRepository(
+		input: ExecuteWorkspacePublishGiteaInput,
+	): Promise<Record<string, unknown>> {
+		const session = await this.resolveFromInput(
+			input.workspaceRef,
+			input.executionId,
+		);
+		this.assertEnabled(session, "execute_command");
+
+		const repositoryUrl = String(input.repositoryUrl || "").trim();
+		const repositoryOwner = String(input.repositoryOwner || "").trim();
+		const repositoryRepo = String(input.repositoryRepo || "").trim();
+		const branch = String(input.repositoryBranch || "main").trim() || "main";
+		const username = String(input.repositoryUsername || "").trim();
+		const token = String(input.repositoryToken || "").trim();
+		const commandCwd = session.clonePath || session.rootPath;
+		const timeoutMs =
+			typeof input.timeoutMs === "number" && input.timeoutMs > 0
+				? Math.floor(input.timeoutMs)
+				: Math.max(session.commandTimeoutMs, 300_000);
+
+		if (!repositoryUrl) {
+			throw new Error("repositoryUrl is required for publish-gitea");
+		}
+		if (!repositoryRepo) {
+			throw new Error("repositoryRepo is required for publish-gitea");
+		}
+
+		let credentialLine = "";
+		if (username && token) {
+			try {
+				const parsed = new URL(repositoryUrl);
+				credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
+			} catch {
+				throw new Error(`Invalid repositoryUrl for publish-gitea: ${repositoryUrl}`);
+			}
+		}
+
+		const gitignoreEntries = TRACKING_GIT_IGNORED_PATHS.filter(
+			(path) => path !== ".git",
+		).map((path) => `${path}/`);
+		const gitignoreCommands = gitignoreEntries
+			.map(
+				(entry) =>
+					`grep -qxF ${shellEscape(entry)} .gitignore || printf '%s\\n' ${shellEscape(entry)} >> .gitignore`,
+			)
+			.join(" && ");
+		const pushFlag = input.force === true ? "--force-with-lease " : "";
+		const command = [
+			"set -eu",
+			"command -v git >/dev/null 2>&1 || { echo 'git is not installed in the sandbox runtime' >&2; exit 127; }",
+			"mkdir -p .",
+			"[ -d .git ] || git init -q",
+			'git config user.name "$GITEA_GIT_USER_NAME"',
+			'git config user.email "$GITEA_GIT_USER_EMAIL"',
+			"git remote remove origin >/dev/null 2>&1 || true",
+			'git remote add origin "$GITEA_REPOSITORY_URL"',
+			'[ -z "$GITEA_CREDENTIAL_LINE" ] || { git config credential.helper "store --file=.git/.git-credentials"; printf "%s\\n" "$GITEA_CREDENTIAL_LINE" > .git/.git-credentials; }',
+			"touch .gitignore",
+			gitignoreCommands,
+			'git checkout -B "$GITEA_BRANCH"',
+			trackingGitAddCommand(),
+			'if git rev-parse --verify HEAD >/dev/null 2>&1; then if git diff --cached --quiet; then :; else git commit -m "$GITEA_COMMIT_MESSAGE"; fi; else git commit --allow-empty -m "$GITEA_COMMIT_MESSAGE"; fi',
+			`git push ${pushFlag}-u origin "HEAD:refs/heads/$GITEA_BRANCH"`,
+			'printf "commit=%s\\n" "$(git rev-parse HEAD)"',
+			'printf "tracked_files=%s\\n" "$(git ls-files --cached | wc -l | tr -d \' \')"',
+		].join(" && ");
+
+		const result = await session.sandbox.executeCommand(command, undefined, {
+			timeout: timeoutMs,
+			cwd: commandCwd,
+			env: {
+				GIT_TERMINAL_PROMPT: "0",
+				GITEA_REPOSITORY_URL: repositoryUrl,
+				GITEA_BRANCH: branch,
+				GITEA_COMMIT_MESSAGE:
+					String(input.commitMessage || "").trim() ||
+					`Publish ${repositoryRepo} from workflow-builder`,
+				GITEA_GIT_USER_NAME:
+					String(input.gitUserName || "").trim() || "Workflow Builder",
+				GITEA_GIT_USER_EMAIL:
+					String(input.gitUserEmail || "").trim() ||
+					"workflow-builder@local",
+				GITEA_CREDENTIAL_LINE: credentialLine,
+			},
+		});
+
+		const sanitize = (value: string) =>
+			[token, credentialLine]
+				.filter(Boolean)
+				.reduce((text, secret) => text.replaceAll(secret, "***"), value);
+		if (!result.success || result.exitCode !== 0) {
+			throw new Error(
+				`git publish failed: ${sanitize(result.stderr || result.stdout || "unknown error")}`,
+			);
+		}
+
+		const stdout = sanitize(result.stdout);
+		const commitHash =
+			stdout.match(/^commit=(.+)$/m)?.[1]?.trim() || "unknown";
+		const fileCountRaw = stdout.match(/^tracked_files=(\d+)$/m)?.[1];
+		const fileCount = fileCountRaw ? Number.parseInt(fileCountRaw, 10) : 0;
+		const changeSummary = await this.captureWorkspaceChangeSummary({
+			session,
+			operation: "publish_gitea",
+			durableInstanceId: input.durableInstanceId,
+			includeInExecutionPatch: true,
+		});
+
+		this.touch(session);
+		return {
+			success: true,
+			repository:
+				repositoryOwner && repositoryRepo
+					? `${repositoryOwner}/${repositoryRepo}`
+					: repositoryRepo,
+			repositoryUrl,
+			branch,
+			commitHash,
+			fileCount,
+			force: input.force === true,
+			stdout,
+			stderr: sanitize(result.stderr),
 			sandbox: this.buildSandboxMetadata(session),
 			...(changeSummary ? { changeSummary } : {}),
 		};
