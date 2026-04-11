@@ -1,0 +1,381 @@
+{
+  "id": "dapr-agent-py-greenfield-sveltekit",
+  "name": "Dapr Agent Py Greenfield SvelteKit",
+  "description": "Create and validate a SvelteKit app with the Python dapr-agent-py durable agent in a canonical OpenShell workspace.",
+  "visibility": "public",
+  "spec": {
+    "document": {
+      "dsl": "1.0.0",
+      "namespace": "workflow-builder",
+      "name": "dapr-agent-py-greenfield-sveltekit",
+      "version": "1.0.0",
+      "title": "Dapr Agent Py Greenfield SvelteKit",
+      "summary": "Provision OpenShell workspace, run dapr-agent-py through its AgentRunner HTTP endpoint, publish the generated app to Gitea, then capture browser evidence from the same workspace.",
+      "x-workflow-builder": {
+        "input": {
+          "mode": "single_prompt",
+          "promptField": "prompt",
+          "promptLabel": "Prompt",
+          "promptPlaceholder": "Describe the SvelteKit app you want dapr-agent-py to build.",
+          "derivedFields": [
+            "app_name",
+            "headline",
+            "description",
+            "ui_brief",
+            "implementation_brief",
+            "capture_steps_json",
+            "annotation_plan_json"
+          ],
+          "fields": {}
+        }
+      }
+    },
+    "do": [
+      {
+        "workspace_profile": {
+          "call": "workspace/profile",
+          "with": {
+            "name": "dapr-agent-py-greenfield-sveltekit",
+            "rootPath": "/sandbox/{{trigger.repo}}",
+            "commandTimeoutMs": 900000,
+            "timeoutMs": 1200000,
+            "sandboxTemplate": "openshell-browser",
+            "enabledTools": [
+              "execute_command",
+              "read_file",
+              "write_file",
+              "edit_file",
+              "list_files",
+              "mkdir",
+              "file_stat"
+            ]
+          }
+        }
+      },
+      {
+        "dapr_agent_py_build": {
+          "call": "dapr-agent-py/run",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "cwd": "/sandbox/{{trigger.repo}}",
+            "mode": "execute_direct",
+            "maxTurns": 120,
+            "timeoutMinutes": 120,
+            "stopCondition": "Stop only after /sandbox/{{trigger.repo}} contains a working SvelteKit app, npm install has succeeded, npm run build has succeeded, /sandbox/{{trigger.repo}}/validation-output/greenfield-result.json exists, and the final response includes SVELTEKIT APP VALIDATED.",
+            "prompt": "Build and validate a SvelteKit app in the explicit OpenShell workspace using dapr-agent-py.\n\nUser prompt:\n{{trigger.prompt}}\n\nDerived app context:\n- App name: {{trigger.app_name}}\n- Headline: {{trigger.headline}}\n- Description: {{trigger.description}}\n- UI brief: {{trigger.ui_brief}}\n- Implementation brief: {{trigger.implementation_brief}}\n- Demo capture plan JSON: {{trigger.capture_steps_json}}\n- Annotation plan JSON: {{trigger.annotation_plan_json}}\n\nExecution context:\n- Workspace ref: {{workspace_profile.workspaceRef}}\n- Workspace root: /sandbox/{{trigger.repo}}\n- The runtime model is configured by the dapr-agent-py Dapr conversation.openai component.\n\nExecution rules:\n- Use the available workspace/file/command tools to make real file changes in /sandbox/{{trigger.repo}}.\n- Work only in /sandbox/{{trigger.repo}}.\n- First inspect the workspace with `pwd && ls -la`.\n- Use small bounded tool calls. Prefer writing or editing one compact file at a time, then install and build in separate command calls.\n- Keep the implementation compact and bounded: at most 8 source/config files, each source file under 220 lines, and no generated file over 12 KB.\n- Keep every command and file payload under 12 KB. If a file would exceed that, simplify the implementation instead of emitting a large payload.\n- Do not emit long explanations or paste full source file contents in the final answer; make file changes with tools and summarize only.\n- Do not use interactive project generators such as npm create, create-svelte, or sv create.\n- Manually scaffold a modern SvelteKit app with package.json, svelte.config.js, vite.config.js, src/app.html, and src/routes/+page.svelte.\n- vite.config.js must import `sveltekit` from `@sveltejs/kit/vite`, not from `@sveltejs/vite-plugin-svelte`.\n- package.json must include scripts named dev, build, preview, and check.\n- package.json must use mutually compatible current SvelteKit dependencies: @sveltejs/adapter-auto ^6, @sveltejs/kit ^2, @sveltejs/vite-plugin-svelte ^6, svelte ^5, svelte-check ^4, typescript ^5, and vite ^7.\n- If using Svelte 5 event attributes such as onclick, keep svelte ^5 in package.json. Do not combine Svelte 5 syntax with Svelte 4 dependencies.\n- Implement the derived app context, not a generic placeholder app.\n- If the prompt asks for live or real-world data, use a small representative embedded dataset generated from the prompt context. Do not browse, search the web, call external APIs, fetch remote data, or add runtime network dependencies.\n- Include data-demo=\"app-shell\" on the main application container.\n- Include data-demo=\"primary-action\" on a visible interactive control.\n- Include data-demo=\"demo-state\" on a visible region that changes after the interaction.\n- Create validation-output/greenfield-result.json with valid JSON containing status, repo, appName, buildCommand, and validatedAt fields. Set validatedAt from `date -u +%Y-%m-%dT%H:%M:%SZ` during execution.\n- Run npm install --no-audit --no-fund --loglevel=warn before finishing.\n- Run npm run build before finishing.\n- If npm run build fails, inspect only the concise error output and repair the smallest relevant file before retrying.\n- Print validation-output/greenfield-result.json and a concise tracked-file listing only; do not print node_modules, .svelte-kit, build output, or full source contents.\n- Do not use network commands except npm package installation.\n- End with a concise final answer that includes SVELTEKIT APP VALIDATED.",
+            "loopPolicy": {
+              "prepareStep": {
+                "activeTools": [
+                  "read_file",
+                  "write_file",
+                  "edit_file",
+                  "list_files",
+                  "mkdir",
+                  "file_stat",
+                  "execute_command"
+                ],
+                "appendInstructions": "Use dapr-agent-py with the workspace context for /sandbox/{{trigger.repo}}, which is the SvelteKit app root. Make real file mutations there with small bounded tool calls if workspace tools are available. Keep generated source compact, use the correct SvelteKit vite import from @sveltejs/kit/vite, run npm install and npm run build there, then stop after the validation artifact exists. Do not print full source files or build directories."
+              }
+            },
+            "agentGraph": {
+              "version": "v1",
+              "nodes": [
+                {
+                  "id": "input",
+                  "position": {
+                    "x": 120,
+                    "y": 60
+                  },
+                  "data": {
+                    "label": "Input",
+                    "stepType": "input",
+                    "config": {}
+                  }
+                },
+                {
+                  "id": "plan",
+                  "position": {
+                    "x": 120,
+                    "y": 200
+                  },
+                  "data": {
+                    "label": "Plan SvelteKit App",
+                    "stepType": "decide",
+                    "config": {}
+                  }
+                },
+                {
+                  "id": "build",
+                  "position": {
+                    "x": 120,
+                    "y": 340
+                  },
+                  "data": {
+                    "label": "Scaffold And Build",
+                    "stepType": "tool_batch",
+                    "config": {
+                      "activeTools": [
+                        "read_file",
+                        "write_file",
+                        "edit_file",
+                        "list_files",
+                        "mkdir",
+                        "file_stat",
+                        "execute_command"
+                      ],
+                      "toolChoice": "auto"
+                    }
+                  }
+                },
+                {
+                  "id": "memory-write",
+                  "position": {
+                    "x": 120,
+                    "y": 480
+                  },
+                  "data": {
+                    "label": "Persist State",
+                    "stepType": "memory_write",
+                    "config": {}
+                  }
+                },
+                {
+                  "id": "finish",
+                  "position": {
+                    "x": 120,
+                    "y": 620
+                  },
+                  "data": {
+                    "label": "Finish",
+                    "stepType": "finish",
+                    "config": {}
+                  }
+                }
+              ],
+              "edges": [
+                {
+                  "id": "input->plan",
+                  "source": "input",
+                  "target": "plan"
+                },
+                {
+                  "id": "plan->build",
+                  "source": "plan",
+                  "target": "build"
+                },
+                {
+                  "id": "build->memory-write",
+                  "source": "build",
+                  "target": "memory-write"
+                },
+                {
+                  "id": "memory-write->finish",
+                  "source": "memory-write",
+                  "target": "finish"
+                }
+              ]
+            },
+            "agentConfig": {
+              "name": "dapr-agent-py-greenfield-sveltekit",
+              "runtime": "dapr-agent-py",
+              "instructions": "You are dapr-agent-py running through Dapr Agents AgentRunner. Build and validate the requested SvelteKit app using the provided workspace context and any available workspace tools.",
+              "tools": [
+                "read_file",
+                "write_file",
+                "edit_file",
+                "list_files",
+                "mkdir",
+                "file_stat",
+                "execute_command"
+              ],
+              "loop": {
+                "strategy": "graph_v1"
+              },
+              "memory": {
+                "backend": "dapr_state",
+                "sessionId": "dapr-agent-py-greenfield-sveltekit"
+              }
+            }
+          }
+        }
+      },
+      {
+        "publish_repo": {
+          "call": "workspace/publish-gitea",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "repositoryRepo": "{{trigger.repo}}",
+            "repositoryBranch": "main",
+            "description": "{{trigger.description}}",
+            "commitMessage": "Bootstrap {{trigger.app_name}} generated by workflow-builder",
+            "gitUserName": "Workflow Builder",
+            "gitUserEmail": "workflow-builder@local",
+            "timeoutMs": 300000
+          }
+        }
+      },
+      {
+        "browser_capture": {
+          "call": "browser/validate",
+          "with": {
+            "workspaceRef": "{{workspace_profile.workspaceRef}}",
+            "repoPath": "/sandbox/{{trigger.repo}}",
+            "installCommand": "npm install --no-audit --no-fund --loglevel=warn",
+            "baseUrl": "http://127.0.0.1:3009",
+            "steps": [
+              {
+                "id": "home",
+                "label": "Home",
+                "action": "visit",
+                "path": "/",
+                "goal": "Show the initial application shell.",
+                "waitForSelector": "[data-demo=\"app-shell\"]",
+                "pauseMs": 1200,
+                "fullPage": true
+              },
+              {
+                "id": "primary-action",
+                "label": "Primary Interaction",
+                "action": "click",
+                "selector": "[data-demo=\"primary-action\"]",
+                "goal": "Trigger the app interaction.",
+                "waitForSelector": "[data-demo=\"demo-state\"]",
+                "pauseMs": 1200,
+                "fullPage": false
+              },
+              {
+                "id": "final",
+                "label": "Final Overview",
+                "action": "assert",
+                "waitForSelector": "[data-demo=\"app-shell\"]",
+                "goal": "Capture the final state of the application.",
+                "pauseMs": 1200,
+                "fullPage": true
+              }
+            ],
+            "captureVideo": true,
+            "captureTrace": true,
+            "viewportPreset": "desktop",
+            "captureMode": "demo",
+            "demoTitle": "{{trigger.app_name}}",
+            "demoSummary": "{{trigger.description}}",
+            "timeoutMs": 600000
+          }
+        }
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "start",
+      "position": {
+        "x": 260,
+        "y": 20
+      },
+      "data": {
+        "label": "Start",
+        "type": "start",
+        "status": "idle",
+        "enabled": true
+      }
+    },
+    {
+      "id": "workspace_profile",
+      "type": "call",
+      "position": {
+        "x": 260,
+        "y": 140
+      },
+      "data": {
+        "label": "OpenShell Workspace",
+        "type": "call",
+        "status": "idle",
+        "enabled": true
+      }
+    },
+    {
+      "id": "dapr_agent_py_build",
+      "type": "call",
+      "position": {
+        "x": 260,
+        "y": 300
+      },
+      "data": {
+        "label": "Dapr Agent Py Build",
+        "type": "agent",
+        "status": "idle",
+        "enabled": true
+      }
+    },
+    {
+      "id": "publish_repo",
+      "type": "call",
+      "position": {
+        "x": 260,
+        "y": 460
+      },
+      "data": {
+        "label": "Publish Gitea Repo",
+        "type": "call",
+        "status": "idle",
+        "enabled": true
+      }
+    },
+    {
+      "id": "browser_capture",
+      "type": "call",
+      "position": {
+        "x": 260,
+        "y": 620
+      },
+      "data": {
+        "label": "Browser Capture",
+        "type": "call",
+        "status": "idle",
+        "enabled": true
+      }
+    },
+    {
+      "id": "end",
+      "type": "end",
+      "position": {
+        "x": 260,
+        "y": 780
+      },
+      "data": {
+        "label": "Done",
+        "type": "end",
+        "status": "idle",
+        "enabled": true
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "source": "start",
+      "target": "workspace_profile"
+    },
+    {
+      "id": "e2",
+      "source": "workspace_profile",
+      "target": "dapr_agent_py_build"
+    },
+    {
+      "id": "e3",
+      "source": "dapr_agent_py_build",
+      "target": "publish_repo"
+    },
+    {
+      "id": "e4",
+      "source": "publish_repo",
+      "target": "browser_capture"
+    },
+    {
+      "id": "e5",
+      "source": "browser_capture",
+      "target": "end"
+    }
+  ]
+}

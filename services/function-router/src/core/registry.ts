@@ -26,6 +26,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/*": { appId: "durable-agent", type: "knative" },
+  "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
   // dapr-swe agent actions (PlannerAgent, DeveloperAgent, ReviewerAgent)
   "dapr-swe/*": { appId: "dapr-swe", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
@@ -47,6 +48,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/*": { appId: "durable-agent", type: "knative" },
+  "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
   "dapr-swe/*": { appId: "dapr-swe", type: "knative" },
 };
 

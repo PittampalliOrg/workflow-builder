@@ -1,0 +1,27 @@
+[project]
+name = "dapr-agent-py"
+version = "0.1.0"
+description = "Minimal Python durable agent with hot-reload configuration"
+requires-python = ">=3.12"
+dependencies = [
+    "dapr-agents>=0.10",
+    "dapr-ext-workflow>=1.14",
+    "dapr>=1.14",
+    "fastapi>=0.104",
+    "uvicorn>=0.24",
+    "pydantic>=2.0",
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-instrumentation-fastapi>=0.41b0",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "ruff"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
