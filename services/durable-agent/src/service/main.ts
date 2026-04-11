@@ -2903,6 +2903,19 @@ app.post("/api/workspaces/command", async (req, res) => {
             ? req.body.__durable_instance_id
             : undefined,
       command,
+      env:
+        req.body?.env &&
+        typeof req.body.env === "object" &&
+        !Array.isArray(req.body.env)
+          ? Object.fromEntries(
+              Object.entries(req.body.env)
+                .filter(
+                  ([key, value]) =>
+                    typeof key === "string" && typeof value === "string",
+                )
+                .map(([key, value]) => [key, value as string]),
+            )
+          : undefined,
       timeoutMs:
         typeof req.body?.timeoutMs === "number"
           ? req.body.timeoutMs

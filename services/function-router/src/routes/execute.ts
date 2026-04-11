@@ -1469,6 +1469,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 dbExecutionId: body.db_execution_id ?? undefined,
                 workspaceRef: args.workspaceRef,
                 command: args.command ?? args.prompt ?? "",
+                env:
+                  args.env &&
+                  typeof args.env === "object" &&
+                  !Array.isArray(args.env)
+                    ? args.env
+                    : undefined,
                 timeoutMs: args.timeoutMs,
                 workflowId: body.workflow_id,
                 nodeId: body.node_id,

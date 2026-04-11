@@ -152,7 +152,7 @@ function withEnvPrefix(
 	const prefix = entries
 		.map(([key, value]) => `${key}=${shellEscape(value)}`)
 		.join(" ");
-	return `${prefix} ${command}`;
+	return `export ${prefix}; ${command}`;
 }
 
 export class OpenShellSandbox implements Sandbox {
