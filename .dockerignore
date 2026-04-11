@@ -30,3 +30,8 @@ test-results
 !drizzle/**
 !src/**
 !static/**
+
+# Function-router is built from the repo root because its Dockerfile copies
+# services/function-router paths.
+!services/
+!services/function-router/**
