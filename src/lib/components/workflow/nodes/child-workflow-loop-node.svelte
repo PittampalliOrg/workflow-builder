@@ -10,6 +10,7 @@
 	let { data, selected = false }: Props = $props();
 
 	const turnCount = $derived((data as Record<string, unknown>).childWorkflowTurnCount as number ?? 0);
+	const maxTurns = $derived((data as Record<string, unknown>).childWorkflowMaxTurns as number | undefined);
 	const toolCount = $derived((data as Record<string, unknown>).childWorkflowToolCount as number ?? 0);
 
 	const isRunning = $derived(data.status === 'running');
@@ -17,7 +18,9 @@
 	const isError = $derived(data.status === 'error');
 
 	// Ring progress
-	const maxDisplayTurns = 30;
+	const maxDisplayTurns = $derived(
+		typeof maxTurns === 'number' && Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 30
+	);
 	const cappedTurns = $derived(Math.min(turnCount, maxDisplayTurns));
 	const radius = 30;
 	const circumference = 2 * Math.PI * radius;
@@ -81,7 +84,11 @@
 					{turnCount}
 				</span>
 				<span class="text-[8px] uppercase tracking-widest text-slate-400 dark:text-slate-500">
-					{turnCount === 1 ? 'turn' : 'turns'}
+					{#if maxTurns}
+						/ {maxTurns}
+					{:else}
+						{turnCount === 1 ? 'turn' : 'turns'}
+					{/if}
 				</span>
 			</div>
 		</div>
@@ -96,6 +103,12 @@
 				<div class="mt-1 flex items-center gap-1 text-[11px] text-slate-500">
 					<Wrench size={10} />
 					<span>{toolCount} tool call{toolCount === 1 ? '' : 's'}</span>
+				</div>
+			{/if}
+
+			{#if maxTurns}
+				<div class="mt-1 text-[10px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+					{turnCount} / {maxTurns} turns
 				</div>
 			{/if}
 

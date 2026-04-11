@@ -495,11 +495,10 @@ def _resolve_function_call(
     }
 
 
-# Agent action types that require multi-turn child workflow execution
-# (not single-shot HTTP calls through function-router)
-_AGENT_ACTION_TYPES = {
-    "durable/run",
-}
+# Embedded agent calls are normal SW 1.0 call tasks. The function-router exact
+# route for durable/run dispatches to dapr-agent-py, whose Dapr DurableAgent
+# runtime owns the multi-turn loop.
+_AGENT_ACTION_TYPES: set[str] = set()
 _NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
 _REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
@@ -507,6 +506,9 @@ _REMOVED_AGENT_ACTION_TYPES = {
     "openshell/session-start",
     "openshell-langgraph/run",
     "openshell-langgraph-observable/run",
+    "dapr-agent-py/run",
+    "dapr-swe/run",
+    "durable/plan",
 }
 
 _NATIVE_DURABLE_AGENT_TARGETS = {

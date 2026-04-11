@@ -1,6 +1,7 @@
 import type { Edge, Node } from '@xyflow/svelte';
 import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 import type { WorkflowNodeData, NodeStatus } from '$lib/stores/workflow.svelte';
+import { getAgentTaskBody } from '$lib/types/agent-graph';
 
 type AgentLoopNodeData = {
 	label: string;
@@ -474,6 +475,16 @@ function resolveWorkflowNode(
 	);
 }
 
+function formatTurnBudget(maxTurns: unknown): string | null {
+	const parsed =
+		typeof maxTurns === 'number'
+			? maxTurns
+			: typeof maxTurns === 'string'
+				? Number.parseInt(maxTurns, 10)
+				: Number.NaN;
+	return Number.isFinite(parsed) && parsed > 0 ? `max ${parsed} turns` : null;
+}
+
 export function buildAgentCanvasSubflows(
 	workflowNodes: Node[],
 	agentRuns: ExecutionAgentRun[],
@@ -499,6 +510,9 @@ export function buildAgentCanvasSubflows(
 		const turnCount = relevant.filter((e) => e.type === 'turn_started').length;
 		const lastTool = latestToolName(relevant);
 		const runStatus = asWorkflowNodeStatus(nodeStatusForRun(run.status));
+		const taskConfig = (workflowNode.data as Record<string, unknown> | undefined)?.taskConfig;
+		const agentBody = getAgentTaskBody(taskConfig as Record<string, unknown> | undefined);
+		const turnBudget = formatTurnBudget(agentBody.maxTurns);
 
 		const groupId = `agent-group:${run.id}`;
 		const loopId = `agent-loop:${run.id}`;
@@ -521,7 +535,7 @@ export function buildAgentCanvasSubflows(
 			style: `width:${groupWidth}px;height:${groupHeight}px;`,
 			data: {
 				label: parentLabel,
-				description: `${run.mode} · ${run.status}`,
+				description: [run.mode, run.status, turnBudget].filter(Boolean).join(' · '),
 				status: runStatus,
 				type: 'run',
 				childWorkflow: true,
@@ -554,6 +568,7 @@ export function buildAgentCanvasSubflows(
 				childWorkflow: true,
 				agentRunId: run.id,
 				childWorkflowTurnCount: turnCount,
+				childWorkflowMaxTurns: agentBody.maxTurns,
 				childWorkflowToolCount: toolCount
 			}
 		});

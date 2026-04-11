@@ -134,8 +134,7 @@
 						agentRuntime: event.currentTarget.value
 					})}
 			>
-				<option value="durable-agent">Dapr Durable Agent</option>
-				<option value="claude-code-agent">Claude Code Agent</option>
+				<option value="openshell-durable-agent">OpenShell Durable Agent</option>
 			</NativeSelect>
 		</div>
 		<div class="space-y-1.5">
@@ -163,6 +162,33 @@
 				value={typeof agentConfig.modelSpec === 'string' ? agentConfig.modelSpec : ''}
 				oninput={(event) => updateAgentConfig({ modelSpec: event.currentTarget.value })}
 				placeholder="openai/gpt-5.4"
+			/>
+		</div>
+		<div class="space-y-1.5">
+			<Label for="agent-workspace-ref">Workspace Ref</Label>
+			<Input
+				id="agent-workspace-ref"
+				value={body.workspaceRef ?? ''}
+				oninput={(event) => updateBody({ workspaceRef: event.currentTarget.value })}
+				placeholder={'${ .workspaceProfile.workspaceRef }'}
+			/>
+		</div>
+		<div class="space-y-1.5">
+			<Label for="agent-sandbox-name">Sandbox Name</Label>
+			<Input
+				id="agent-sandbox-name"
+				value={body.sandboxName ?? ''}
+				oninput={(event) => updateBody({ sandboxName: event.currentTarget.value })}
+				placeholder={'${ .workspaceProfile.sandboxName }'}
+			/>
+		</div>
+		<div class="space-y-1.5">
+			<Label for="agent-cwd">Working Directory</Label>
+			<Input
+				id="agent-cwd"
+				value={body.cwd ?? '/sandbox'}
+				oninput={(event) => updateBody({ cwd: event.currentTarget.value })}
+				placeholder="/sandbox"
 			/>
 		</div>
 		<div class="space-y-1.5">
@@ -215,9 +241,9 @@
 			<Input
 				id="agent-max-turns"
 				type="number"
-				value={String(body.maxTurns ?? 12)}
+				value={String(body.maxTurns ?? 120)}
 				oninput={(event) =>
-					updateBody({ maxTurns: Number.parseInt(event.currentTarget.value, 10) || 12 })}
+					updateBody({ maxTurns: Number.parseInt(event.currentTarget.value, 10) || 120 })}
 			/>
 		</div>
 		<div class="space-y-1.5">
@@ -225,10 +251,10 @@
 			<Input
 				id="agent-timeout"
 				type="number"
-				value={String(body.timeoutMinutes ?? 30)}
+				value={String(body.timeoutMinutes ?? 120)}
 				oninput={(event) =>
 					updateBody({
-						timeoutMinutes: Number.parseInt(event.currentTarget.value, 10) || 30
+						timeoutMinutes: Number.parseInt(event.currentTarget.value, 10) || 120
 					})}
 			/>
 		</div>

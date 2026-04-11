@@ -416,6 +416,34 @@ function resolveDaprAgentPyInstanceId(payload: unknown): string | undefined {
   );
 }
 
+function deriveSandboxNameFromWorkspaceRef(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const workspaceRef = value.trim();
+  if (!workspaceRef.startsWith("ws_")) return undefined;
+  return `ws-${workspaceRef.slice(3).replace(/_/g, "-").toLowerCase()}`;
+}
+
+function resolveSandboxName(payload: unknown): string | undefined {
+  if (!isPlainObject(payload)) return undefined;
+  return (
+    firstStringField(payload, [
+      "sandboxName",
+      "sandbox_name",
+      "workspaceSandboxName",
+    ]) ??
+    (isPlainObject(payload.sandbox)
+      ? (firstStringField(payload.sandbox, ["sandboxName", "sandbox_name"]) ??
+        (isPlainObject(payload.sandbox.details)
+          ? firstStringField(payload.sandbox.details, [
+              "sandboxName",
+              "sandbox_name",
+            ])
+          : undefined))
+      : undefined) ??
+    resolveSandboxName(payload.result)
+  );
+}
+
 function normalizeDaprAgentPyStatus(payload: Record<string, unknown>): string {
   return (
     firstStringField(payload, [
@@ -1009,6 +1037,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
   const retiredAgentPrefixes = new Set([
     "durable",
     "dapr-agent",
+    "dapr-agent-py",
+    "dapr-swe",
+    "claude",
     "mastra",
     "ms-agent",
     "openshell-langgraph",
@@ -1050,7 +1081,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const pluginId = functionSlug.split("/")[0];
-    if (retiredAgentPrefixes.has(pluginId)) {
+    if (functionSlug !== "durable/run" && retiredAgentPrefixes.has(pluginId)) {
       return reply.status(410).send({
         success: false,
         error: `The ${pluginId} runtime has been retired. Use durable/run for embedded agent execution instead.`,
@@ -1144,6 +1175,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           let executionStartTime = Date.now();
           let targetUrl = functionUrl;
           let requestBody = "";
+          let daprAgentPySandboxName: string | undefined;
 
           try {
             const { toolId, args } = parseMastraToolInput(
@@ -1189,9 +1221,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
             const isAgentRun = toolId === "run";
             const isDaprAgentPyRun =
-              target.appId === "dapr-agent-py" &&
-              pluginId === "dapr-agent-py" &&
-              isAgentRun;
+              target.appId === "dapr-agent-py" && isAgentRun;
             const isPlan = toolId === "plan";
             const isClaudePlan = toolId === "claude-plan";
             const isMaterializePlan = toolId === "materialize-plan";
@@ -1328,42 +1358,55 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             if (isDaprAgentPyRun) {
               if (runMode !== "execute_direct") {
                 throw new Error(
-                  "dapr-agent-py/run only supports mode execute_direct",
+                  "durable/run only supports mode execute_direct",
                 );
               }
 
+              const bodyArgs = isPlainObject(args.body) ? args.body : {};
+              const agentArgs = { ...bodyArgs, ...args };
               const prompt =
-                typeof args.prompt === "string"
-                  ? args.prompt
-                  : typeof args.task === "string"
-                    ? args.task
+                typeof agentArgs.prompt === "string"
+                  ? agentArgs.prompt
+                  : typeof agentArgs.task === "string"
+                    ? agentArgs.task
                     : "";
               targetUrl = `${functionUrl}/agent/run`;
               const agentMessage: Record<string, string> = {
                 task:
-                  typeof args.task === "string" && args.task.trim()
-                    ? args.task
+                  typeof agentArgs.task === "string" && agentArgs.task.trim()
+                    ? agentArgs.task
                     : prompt,
               };
               if (prompt) agentMessage.prompt = prompt;
+              const sandboxName =
+                typeof agentArgs.sandboxName === "string" &&
+                agentArgs.sandboxName.trim()
+                  ? agentArgs.sandboxName.trim()
+                  : deriveSandboxNameFromWorkspaceRef(agentArgs.workspaceRef);
+              daprAgentPySandboxName = sandboxName;
               for (const key of [
                 "workspaceRef",
+                "sandboxName",
                 "cwd",
                 "mode",
                 "maxTurns",
                 "timeoutMinutes",
                 "stopCondition",
               ]) {
-                if (typeof args[key] === "string") {
-                  agentMessage[key] = args[key];
-                } else if (typeof args[key] === "number") {
-                  agentMessage[key] = String(args[key]);
+                if (key === "sandboxName" && sandboxName) {
+                  agentMessage[key] = sandboxName;
+                } else if (typeof agentArgs[key] === "string") {
+                  agentMessage[key] = agentArgs[key];
+                } else if (typeof agentArgs[key] === "number") {
+                  agentMessage[key] = String(agentArgs[key]);
                 }
               }
               agentMessage.metadata = JSON.stringify({
-                ...(isPlainObject(args.metadata) ? args.metadata : {}),
-                ...(isPlainObject(args._message_metadata)
-                  ? args._message_metadata
+                ...(isPlainObject(agentArgs.metadata)
+                  ? agentArgs.metadata
+                  : {}),
+                ...(isPlainObject(agentArgs._message_metadata)
+                  ? agentArgs._message_metadata
                   : {}),
                 source: "workflow-builder",
                 workflow_id: body.workflow_id,
@@ -1372,10 +1415,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 node_id: body.node_id,
                 node_name: body.node_name,
                 workspace_ref:
-                  typeof args.workspaceRef === "string"
-                    ? args.workspaceRef
+                  typeof agentArgs.workspaceRef === "string"
+                    ? agentArgs.workspaceRef
                     : undefined,
-                cwd: typeof args.cwd === "string" ? args.cwd : undefined,
+                sandboxName,
+                cwd:
+                  typeof agentArgs.cwd === "string" ? agentArgs.cwd : undefined,
               });
               requestBody = JSON.stringify(agentMessage);
             } else if (isAgentRun) {
@@ -1962,7 +2007,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               const instanceId = resolveDaprAgentPyInstanceId(parsed);
               if (!instanceId) {
                 throw new Error(
-                  `dapr-agent-py/run did not return an instance_id: ${responseText.slice(0, 300)}`,
+                  `durable/run did not return an instance_id: ${responseText.slice(0, 300)}`,
                 );
               }
 
@@ -1979,6 +2024,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     toolId,
                     instanceId,
                     status: wait.status,
+                    sandboxName:
+                      resolveSandboxName(wait.result) ??
+                      resolveSandboxName(parsed) ??
+                      daprAgentPySandboxName,
                     result: wait.result,
                     ...(isPlainObject(wait.result) ? wait.result : {}),
                   },
@@ -1991,6 +2040,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   data: {
                     toolId,
                     instanceId,
+                    sandboxName:
+                      resolveSandboxName(parsed) ?? daprAgentPySandboxName,
                     result: parsed,
                     ...(isPlainObject(parsed) ? parsed : {}),
                   },
@@ -2161,12 +2212,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                           ? ((resolvedMastra as Record<string, unknown>)
                               .backend as string)
                           : undefined,
-                      sandboxName:
-                        typeof (resolvedMastra as Record<string, unknown>)
-                          .sandboxName === "string"
-                          ? ((resolvedMastra as Record<string, unknown>)
-                              .sandboxName as string)
-                          : undefined,
+                      sandboxName: resolveSandboxName(resolvedMastra),
                       cleanedWorkspaceRefs: Array.isArray(
                         (resolvedMastra as Record<string, unknown>)
                           .cleanedWorkspaceRefs,
@@ -2467,7 +2513,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               `[Execute Route] Invoking Knative function ${target.appId} step: ${stepName} at ${functionUrl} (routing: ${timing.routingMs}ms)`,
             );
             const requestPath = "/execute";
-            const requestTimeoutMs = target.appId === "dapr-swe"
+            const requestTimeoutMs =
+              target.appId === "dapr-swe"
                 ? resolveDaprSweHttpTimeoutMs({
                     timeoutMinutes:
                       isPlainObject(normalizedInput) &&

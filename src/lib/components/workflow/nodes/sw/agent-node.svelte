@@ -23,8 +23,12 @@
 			typeof body.agentConfig?.modelSpec === 'string' && body.agentConfig.modelSpec.trim().length > 0
 				? body.agentConfig.modelSpec.trim()
 				: '';
+		const turnBudget =
+			typeof body.maxTurns === 'number' && Number.isFinite(body.maxTurns) && body.maxTurns > 0
+				? `max ${body.maxTurns} turns`
+				: '';
 		const graphSummary = summarizeAgentGraph(body.agentGraph);
-		return [graphSummary, modelSpec].filter(Boolean).join(' • ');
+		return [graphSummary, turnBudget, modelSpec].filter(Boolean).join(' • ');
 	});
 
 	let nodeData = $derived(subtitle ? { ...data, description: subtitle } : data);

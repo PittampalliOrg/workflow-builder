@@ -44,7 +44,10 @@ export interface AgentGraphDefinition {
 export interface AgentTaskBody extends Record<string, unknown> {
   prompt: string;
   mode: "execute_direct";
-  agentRuntime: "durable-agent" | "claude-code-agent";
+  agentRuntime: "openshell-durable-agent";
+  workspaceRef?: string;
+  sandboxName?: string;
+  cwd?: string;
   maxTurns?: number;
   timeoutMinutes?: number;
   stopCondition?: string;
@@ -268,11 +271,25 @@ export function getAgentTaskBody(
   return {
     prompt: typeof body.prompt === "string" ? body.prompt : "",
     mode: "execute_direct",
-    agentRuntime:
-      body.agentRuntime === "claude-code-agent" ||
-      withBlock.agentRuntime === "claude-code-agent"
-        ? "claude-code-agent"
-        : "durable-agent",
+    agentRuntime: "openshell-durable-agent",
+    workspaceRef:
+      typeof body.workspaceRef === "string"
+        ? body.workspaceRef
+        : typeof withBlock.workspaceRef === "string"
+          ? withBlock.workspaceRef
+          : undefined,
+    sandboxName:
+      typeof body.sandboxName === "string"
+        ? body.sandboxName
+        : typeof withBlock.sandboxName === "string"
+          ? withBlock.sandboxName
+          : undefined,
+    cwd:
+      typeof body.cwd === "string"
+        ? body.cwd
+        : typeof withBlock.cwd === "string"
+          ? withBlock.cwd
+          : undefined,
     maxTurns:
       typeof body.maxTurns === "number"
         ? body.maxTurns
@@ -301,9 +318,12 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
   return {
     prompt: "",
     mode: "execute_direct",
-    agentRuntime: "durable-agent",
-    maxTurns: 12,
-    timeoutMinutes: 30,
+    agentRuntime: "openshell-durable-agent",
+    workspaceRef: "",
+    sandboxName: "",
+    cwd: "/sandbox",
+    maxTurns: 120,
+    timeoutMinutes: 120,
     agentGraph: createDefaultAgentGraph(),
     agentConfig: {
       name: agentName,
@@ -338,8 +358,9 @@ export function sanitizeAgentName(label: string): string {
 export function isAgentTaskConfig(
   taskConfig: Record<string, unknown> | null | undefined,
 ): boolean {
-  return typeof taskConfig?.call === "string" &&
-    taskConfig.call === "durable/run";
+  return (
+    typeof taskConfig?.call === "string" && taskConfig.call === "durable/run"
+  );
 }
 
 export function normalizeAgentTaskConfig(
@@ -370,6 +391,9 @@ export function normalizeAgentTaskConfig(
       prompt: normalizedBody.prompt,
       mode: normalizedBody.mode,
       agentRuntime: normalizedBody.agentRuntime,
+      workspaceRef: normalizedBody.workspaceRef || "",
+      sandboxName: normalizedBody.sandboxName || "",
+      cwd: normalizedBody.cwd || "/sandbox",
       ...(normalizedBody.maxTurns !== undefined
         ? { maxTurns: normalizedBody.maxTurns }
         : {}),

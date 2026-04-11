@@ -1,44 +1,92 @@
 <script lang="ts">
-	import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '$lib/components/ui/card';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
+	import { Badge } from '$lib/components/ui/badge';
+	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '$lib/components/ui/card';
+	import JsonViewer from '$lib/components/workflow/execution/json-viewer.svelte';
 	import { CircleAlert } from 'lucide-svelte';
 
-	type AgentModelSpec = {
-		provider: string;
-		name: string;
-	};
+	type JsonRecord = Record<string, unknown>;
 
-	type AgentToolRef = {
-		type: 'workspace' | 'mcp' | 'action';
-		ref: string;
-	};
-
-	type Agent = {
+	type RegistryAgent = {
 		id: string;
 		name: string;
-		description: string | null;
-		agentType: string;
-		model: AgentModelSpec;
-		tools: AgentToolRef[];
-		maxTurns: number;
-		isEnabled: boolean;
-		isDefault: boolean;
-		createdAt: string;
+		team: string;
+		registryStore: string;
+		registryKey: string;
+		schemaVersion: string | null;
+		registeredAt: string | null;
+		appId: string | null;
+		type: string | null;
+		framework: string | null;
+		role: string | null;
+		goal: string | null;
+		instructions: string[];
+		systemPrompt: string | null;
+		maxIterations: number | null;
+		toolChoice: string | null;
+		orchestrator: boolean;
+		pubsub: JsonRecord | null;
+		memory: JsonRecord | null;
+		llm: JsonRecord | null;
+		tools: JsonRecord[];
+		metadata: JsonRecord | null;
+		raw: JsonRecord;
 	};
 
-	let agents = $state<Agent[]>([]);
+	type AgentsResponse = {
+		source: string;
+		storeName: string;
+		teams: string[];
+		agents: RegistryAgent[];
+		diagnostics: string[];
+	};
+
+	const emptyResponse: AgentsResponse = {
+		source: 'dapr-agent-registry',
+		storeName: 'agent-registry',
+		teams: ['default'],
+		agents: [],
+		diagnostics: []
+	};
+
+	let response = $state<AgentsResponse>(emptyResponse);
 	let loading = $state(true);
 	let errorMessage = $state<string | null>(null);
 	let expandedId = $state<string | null>(null);
 
-	function formatDate(dateStr: string): string {
-		return new Date(dateStr).toLocaleDateString('en-US', {
+	let agents = $derived(response.agents);
+
+	function formatDate(dateStr: string | null): string {
+		if (!dateStr) return 'Unknown';
+		const date = new Date(dateStr);
+		if (Number.isNaN(date.getTime())) return dateStr;
+
+		return date.toLocaleString('en-US', {
 			year: 'numeric',
 			month: 'short',
-			day: 'numeric'
+			day: 'numeric',
+			hour: '2-digit',
+			minute: '2-digit'
 		});
+	}
+
+	function stringify(value: unknown): string {
+		if (value === null || value === undefined) return 'None';
+		if (typeof value === 'string') return value;
+		return JSON.stringify(value, null, 2);
+	}
+
+	function recordValue(record: JsonRecord | null, key: string): string {
+		if (!record || record[key] === undefined || record[key] === null) return 'None';
+		return stringify(record[key]);
+	}
+
+	function toolName(tool: JsonRecord): string {
+		return typeof tool.name === 'string' ? tool.name : 'Unnamed tool';
+	}
+
+	function toolDescription(tool: JsonRecord): string | null {
+		return typeof tool.description === 'string' && tool.description.trim() ? tool.description : null;
 	}
 
 	function toggleExpand(id: string) {
@@ -50,13 +98,14 @@
 		errorMessage = null;
 		try {
 			const res = await fetch('/api/agents');
-			if (res.ok) {
-				agents = await res.json();
-			} else {
-				errorMessage = 'Failed to load agents';
+			if (!res.ok) {
+				errorMessage = `Failed to load Dapr agents (${res.status})`;
+				return;
 			}
-		} catch {
-			errorMessage = 'Failed to load agents';
+
+			response = await res.json();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : 'Failed to load Dapr agents';
 		} finally {
 			loading = false;
 		}
@@ -69,121 +118,186 @@
 
 <div class="flex h-full flex-col">
 	<header class="flex h-12 items-center justify-between border-b border-border px-6">
-		<h1 class="text-sm font-semibold tracking-tight">Agents</h1>
+		<div>
+			<h1 class="text-sm font-semibold tracking-tight">Agents</h1>
+			<p class="text-xs text-muted-foreground">
+				{response.storeName} / {response.teams.join(', ')}
+			</p>
+		</div>
 		<span class="text-sm text-muted-foreground">{agents.length} agent{agents.length !== 1 ? 's' : ''}</span>
 	</header>
+
 	<div class="flex-1 overflow-auto p-6">
-		<div class="mx-auto max-w-5xl">
+		<div class="mx-auto max-w-6xl space-y-4">
 			{#if errorMessage}
-				<Alert variant="destructive" class="mb-4">
+				<Alert variant="destructive">
 					<CircleAlert class="size-4" />
 					<AlertDescription>{errorMessage}</AlertDescription>
 				</Alert>
 			{/if}
 
+			{#if response.diagnostics.length > 0}
+				<Alert>
+					<CircleAlert class="size-4" />
+					<AlertDescription>
+						<div class="space-y-1">
+							{#each response.diagnostics as diagnostic}
+								<p>{diagnostic}</p>
+							{/each}
+						</div>
+					</AlertDescription>
+				</Alert>
+			{/if}
+
 			{#if loading}
-				<div class="py-16 text-center text-sm text-muted-foreground">Loading agents...</div>
+				<div class="py-16 text-center text-sm text-muted-foreground">Loading Dapr agents...</div>
 			{:else if agents.length === 0}
-				<div class="flex flex-col items-center justify-center rounded-lg border border-dashed border-border py-16">
-					<svg class="mb-4 h-12 w-12 text-muted-foreground/50" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
-						<path stroke-linecap="round" stroke-linejoin="round" d="M9.75 3.104v5.714a2.25 2.25 0 01-.659 1.591L5 14.5M9.75 3.104c-.251.023-.501.05-.75.082m.75-.082a24.301 24.301 0 014.5 0m0 0v5.714c0 .597.237 1.17.659 1.591L19.8 15.3M14.25 3.104c.251.023.501.05.75.082M19.8 15.3l-1.57.393A9.065 9.065 0 0112 15a9.065 9.065 0 00-6.23.693L5 14.5m14.8.8l1.402 1.402c1.232 1.232.65 3.318-1.067 3.611A48.309 48.309 0 0112 21c-2.773 0-5.491-.235-8.135-.687-1.718-.293-2.3-2.379-1.067-3.61L5 14.5" />
-					</svg>
-					<h3 class="mb-1 text-base font-medium">No agents found</h3>
-					<p class="text-sm text-muted-foreground">
-						Agents will appear here when they are configured in the database.
+				<div class="flex flex-col items-center justify-center rounded-lg border border-dashed border-border px-4 py-16 text-center">
+					<h3 class="mb-1 text-base font-medium">No registered Dapr agents found</h3>
+					<p class="max-w-xl text-sm text-muted-foreground">
+						No entries were found in {response.storeName} for {response.teams.join(', ')}.
 					</p>
 				</div>
 			{:else}
 				<div class="grid gap-4">
 					{#each agents as agent (agent.id)}
 						<Card>
-							<!-- svelte-ignore a11y_no_static_element_interactions -->
-							<div class="cursor-pointer" onclick={() => toggleExpand(agent.id)} onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleExpand(agent.id); }} role="button" tabindex="0">
-								<CardHeader>
-									<div class="flex items-start justify-between">
-										<div class="min-w-0 flex-1">
-											<div class="flex items-center gap-2">
-												<CardTitle class="text-base">{agent.name}</CardTitle>
-												{#if agent.isDefault}
-													<Badge variant="default">Default</Badge>
-												{/if}
-												{#if !agent.isEnabled}
-													<Badge variant="secondary">Disabled</Badge>
-												{/if}
-												<Badge variant="outline">{agent.agentType}</Badge>
-											</div>
-											{#if agent.description}
-												<CardDescription class="mt-1">{agent.description}</CardDescription>
+							<CardHeader>
+								<button
+									type="button"
+									class="flex w-full items-start justify-between gap-4 text-left"
+									onclick={() => toggleExpand(agent.id)}
+								>
+									<div class="min-w-0 flex-1 space-y-2">
+										<div class="flex flex-wrap items-center gap-2">
+											<CardTitle class="break-words text-base">{agent.name}</CardTitle>
+											<Badge variant="outline">{agent.team}</Badge>
+											{#if agent.type}
+												<Badge variant="secondary">{agent.type}</Badge>
+											{/if}
+											{#if agent.orchestrator}
+												<Badge>Orchestrator</Badge>
 											{/if}
 										</div>
-										<svg
-											class="ml-2 h-5 w-5 shrink-0 text-muted-foreground transition-transform {expandedId === agent.id ? 'rotate-180' : ''}"
-											fill="none"
-											viewBox="0 0 24 24"
-											stroke="currentColor"
-											stroke-width="2"
-										>
-											<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
-										</svg>
+										<CardDescription class="break-words">
+											{agent.role ?? 'No role'}{agent.goal ? ` - ${agent.goal}` : ''}
+										</CardDescription>
+										<div class="flex flex-wrap gap-3 text-xs text-muted-foreground">
+											<span>App ID: {agent.appId ?? 'Unknown'}</span>
+											<span>Framework: {agent.framework ?? 'Unknown'}</span>
+											<span>Registered: {formatDate(agent.registeredAt)}</span>
+										</div>
 									</div>
-									<div class="mt-2 flex flex-wrap gap-3 text-xs text-muted-foreground">
-										<span class="flex items-center gap-1">
-											<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-												<path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-											</svg>
-											{agent.model.provider}/{agent.model.name}
-										</span>
-										<span class="flex items-center gap-1">
-											<svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-												<path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17l-5.384-3.116A2 2 0 004 14v5a2 2 0 001.036 1.752l6 3.5a2 2 0 002.024-.088L19 20.5a2 2 0 001-1.732V14a2 2 0 00-2.036-1.754L11.42 15.17z" />
-											</svg>
-											{agent.tools.length} tool{agent.tools.length !== 1 ? 's' : ''}
-										</span>
-										<span>Created {formatDate(agent.createdAt)}</span>
-									</div>
-								</CardHeader>
-							</div>
+									<svg
+										class="mt-1 h-5 w-5 shrink-0 text-muted-foreground transition-transform {expandedId === agent.id ? 'rotate-180' : ''}"
+										fill="none"
+										viewBox="0 0 24 24"
+										stroke="currentColor"
+										stroke-width="2"
+									>
+										<path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7" />
+									</svg>
+								</button>
+							</CardHeader>
 
 							{#if expandedId === agent.id}
 								<CardContent>
-									<div class="space-y-4">
-										<!-- Model Details -->
-										<div>
-											<h4 class="mb-2 text-sm font-medium">Model</h4>
-											<div class="rounded-md border border-border">
-												<div class="flex items-center justify-between px-3 py-2">
-													<span class="text-sm text-muted-foreground">Provider</span>
-													<code class="rounded bg-muted px-2 py-0.5 text-xs">{agent.model.provider}</code>
+									<div class="grid gap-5">
+										<section>
+											<h2 class="mb-2 text-sm font-medium">Registry</h2>
+											<div class="grid gap-2 rounded-md border border-border p-3 text-sm md:grid-cols-2">
+												<div>
+													<p class="text-xs text-muted-foreground">Store</p>
+													<code class="break-all text-xs">{agent.registryStore}</code>
 												</div>
-												<div class="flex items-center justify-between border-t border-border px-3 py-2">
-													<span class="text-sm text-muted-foreground">Model</span>
-													<code class="rounded bg-muted px-2 py-0.5 text-xs">{agent.model.name}</code>
+												<div>
+													<p class="text-xs text-muted-foreground">Key</p>
+													<code class="break-all text-xs">{agent.registryKey}</code>
 												</div>
-												<div class="flex items-center justify-between border-t border-border px-3 py-2">
-													<span class="text-sm text-muted-foreground">Max Turns</span>
-													<span class="text-sm">{agent.maxTurns}</span>
+												<div>
+													<p class="text-xs text-muted-foreground">Schema</p>
+													<span>{agent.schemaVersion ?? 'Unknown'}</span>
+												</div>
+												<div>
+													<p class="text-xs text-muted-foreground">Max iterations</p>
+													<span>{agent.maxIterations ?? 'None'}</span>
 												</div>
 											</div>
-										</div>
+										</section>
 
-										<!-- Tools -->
-										{#if agent.tools.length > 0}
+										<section>
+											<h2 class="mb-2 text-sm font-medium">Instructions</h2>
+											{#if agent.instructions.length > 0}
+												<ul class="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+													{#each agent.instructions as instruction}
+														<li>{instruction}</li>
+													{/each}
+												</ul>
+											{:else}
+												<p class="text-sm text-muted-foreground">None</p>
+											{/if}
+										</section>
+
+										{#if agent.systemPrompt}
+											<section>
+												<h2 class="mb-2 text-sm font-medium">System Prompt</h2>
+												<pre class="max-h-64 overflow-auto rounded-md bg-muted p-3 text-xs whitespace-pre-wrap">{agent.systemPrompt}</pre>
+											</section>
+										{/if}
+
+										<section class="grid gap-4 md:grid-cols-3">
 											<div>
-												<h4 class="mb-2 text-sm font-medium">Tools ({agent.tools.length})</h4>
-												<div class="flex flex-wrap gap-2">
+												<h2 class="mb-2 text-sm font-medium">Pub/Sub</h2>
+												<div class="space-y-2 rounded-md border border-border p-3 text-sm">
+													<p><span class="text-muted-foreground">Resource:</span> {recordValue(agent.pubsub, 'resource_name')}</p>
+													<p><span class="text-muted-foreground">Agent topic:</span> {recordValue(agent.pubsub, 'agent_topic')}</p>
+													<p><span class="text-muted-foreground">Broadcast:</span> {recordValue(agent.pubsub, 'broadcast_topic')}</p>
+												</div>
+											</div>
+											<div>
+												<h2 class="mb-2 text-sm font-medium">Memory</h2>
+												<JsonViewer data={agent.memory} label="Memory" collapsed={false} />
+											</div>
+											<div>
+												<h2 class="mb-2 text-sm font-medium">LLM</h2>
+												<JsonViewer data={agent.llm} label="LLM" collapsed={false} />
+											</div>
+										</section>
+
+										<section>
+											<h2 class="mb-2 text-sm font-medium">Tools ({agent.tools.length})</h2>
+											{#if agent.tools.length > 0}
+												<div class="grid gap-2 md:grid-cols-2">
 													{#each agent.tools as tool}
-														<Badge variant="outline">
-															<span class="text-xs">{tool.type}: {tool.ref}</span>
-														</Badge>
+														<div class="rounded-md border border-border p-3">
+															<p class="text-sm font-medium">{toolName(tool)}</p>
+															{#if toolDescription(tool)}
+																<p class="mt-1 text-sm text-muted-foreground">{toolDescription(tool)}</p>
+															{/if}
+															{#if tool.args}
+																<div class="mt-2">
+																	<JsonViewer data={tool.args} label="Args" collapsed={false} />
+																</div>
+															{/if}
+														</div>
 													{/each}
 												</div>
-											</div>
-										{:else}
-											<div>
-												<h4 class="mb-2 text-sm font-medium">Tools</h4>
-												<p class="text-sm text-muted-foreground">No tools configured.</p>
-											</div>
+											{:else}
+												<p class="text-sm text-muted-foreground">None</p>
+											{/if}
+										</section>
+
+										{#if agent.metadata}
+											<section>
+												<h2 class="mb-2 text-sm font-medium">Metadata</h2>
+												<JsonViewer data={agent.metadata} label="Metadata" collapsed={false} />
+											</section>
 										{/if}
+
+										<section>
+											<h2 class="mb-2 text-sm font-medium">Raw Registry Record</h2>
+											<JsonViewer data={agent.raw} label="Raw Registry Record" collapsed={false} />
+										</section>
 									</div>
 								</CardContent>
 							{/if}
