@@ -1056,10 +1056,12 @@ class WorkspaceSessionManager {
 		}
 
 		let credentialLine = "";
+		let authenticatedRepositoryUrl = repositoryUrl;
 		if (username && token) {
 			try {
 				const parsed = new URL(repositoryUrl);
 				credentialLine = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}`;
+				authenticatedRepositoryUrl = `${parsed.protocol}//${encodeURIComponent(username)}:${encodeURIComponent(token)}@${parsed.host}${parsed.pathname}${parsed.search}`;
 			} catch {
 				throw new Error(`Invalid repositoryUrl for publish-gitea: ${repositoryUrl}`);
 			}
@@ -1090,7 +1092,7 @@ class WorkspaceSessionManager {
 			'git checkout -B "$GITEA_BRANCH"',
 			trackingGitAddCommand(),
 			'if git rev-parse --verify HEAD >/dev/null 2>&1; then if git diff --cached --quiet; then :; else git commit -m "$GITEA_COMMIT_MESSAGE"; fi; else git commit --allow-empty -m "$GITEA_COMMIT_MESSAGE"; fi',
-			`git push ${pushFlag}-u origin "HEAD:refs/heads/$GITEA_BRANCH"`,
+			`git push ${pushFlag}-u "$GITEA_AUTHENTICATED_REPOSITORY_URL" "HEAD:refs/heads/$GITEA_BRANCH"`,
 			'printf "commit=%s\\n" "$(git rev-parse HEAD)"',
 			'printf "tracked_files=%s\\n" "$(git ls-files --cached | wc -l | tr -d \' \')"',
 		].join(" && ");
@@ -1101,6 +1103,7 @@ class WorkspaceSessionManager {
 			env: {
 				GIT_TERMINAL_PROMPT: "0",
 				GITEA_REPOSITORY_URL: repositoryUrl,
+				GITEA_AUTHENTICATED_REPOSITORY_URL: authenticatedRepositoryUrl,
 				GITEA_BRANCH: branch,
 				GITEA_COMMIT_MESSAGE:
 					String(input.commitMessage || "").trim() ||
@@ -1115,7 +1118,13 @@ class WorkspaceSessionManager {
 		});
 
 		const sanitize = (value: string) =>
-			[token, credentialLine]
+			[
+				token,
+				credentialLine,
+				authenticatedRepositoryUrl !== repositoryUrl
+					? authenticatedRepositoryUrl
+					: "",
+			]
 				.filter(Boolean)
 				.reduce((text, secret) => text.replaceAll(secret, "***"), value);
 		if (!result.success || result.exitCode !== 0) {
