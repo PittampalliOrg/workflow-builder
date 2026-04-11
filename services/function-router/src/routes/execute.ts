@@ -1339,30 +1339,45 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     ? args.task
                     : "";
               targetUrl = `${functionUrl}/agent/run`;
-              requestBody = JSON.stringify({
-                ...args,
+              const agentMessage: Record<string, string> = {
                 task:
                   typeof args.task === "string" && args.task.trim()
                     ? args.task
                     : prompt,
-                prompt,
-                _message_metadata: {
-                  ...(isPlainObject(args._message_metadata)
-                    ? args._message_metadata
-                    : {}),
-                  source: "workflow-builder",
-                  workflow_id: body.workflow_id,
-                  execution_id: body.execution_id,
-                  db_execution_id: body.db_execution_id ?? undefined,
-                  node_id: body.node_id,
-                  node_name: body.node_name,
-                  workspace_ref:
-                    typeof args.workspaceRef === "string"
-                      ? args.workspaceRef
-                      : undefined,
-                  cwd: typeof args.cwd === "string" ? args.cwd : undefined,
-                },
+              };
+              if (prompt) agentMessage.prompt = prompt;
+              for (const key of [
+                "workspaceRef",
+                "cwd",
+                "mode",
+                "maxTurns",
+                "timeoutMinutes",
+                "stopCondition",
+              ]) {
+                if (typeof args[key] === "string") {
+                  agentMessage[key] = args[key];
+                } else if (typeof args[key] === "number") {
+                  agentMessage[key] = String(args[key]);
+                }
+              }
+              agentMessage.metadata = JSON.stringify({
+                ...(isPlainObject(args.metadata) ? args.metadata : {}),
+                ...(isPlainObject(args._message_metadata)
+                  ? args._message_metadata
+                  : {}),
+                source: "workflow-builder",
+                workflow_id: body.workflow_id,
+                execution_id: body.execution_id,
+                db_execution_id: body.db_execution_id ?? undefined,
+                node_id: body.node_id,
+                node_name: body.node_name,
+                workspace_ref:
+                  typeof args.workspaceRef === "string"
+                    ? args.workspaceRef
+                    : undefined,
+                cwd: typeof args.cwd === "string" ? args.cwd : undefined,
               });
+              requestBody = JSON.stringify(agentMessage);
             } else if (isAgentRun) {
               if (runMode === "plan_mode") {
                 targetUrl = `${functionUrl}/api/plan`;
