@@ -800,6 +800,8 @@ def _run_native_durable_agent_child_workflow(
         "_message_metadata": {
             "source": action_type,
             "triggering_workflow_instance_id": ctx.instance_id,
+            "executionId": tc.db_execution_id or tc.execution_id,
+            "workflowExecutionId": tc.db_execution_id or tc.execution_id,
         },
         "_otel_span_context": tc.otel_ctx,
     }
