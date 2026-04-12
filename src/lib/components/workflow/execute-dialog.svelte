@@ -312,7 +312,34 @@
 									<span class="text-destructive">*</span>
 								{/if}
 							</Label>
-							{#if fieldConfig?.options?.length}
+							{#if fieldConfig?.type === 'multiselect' && fieldConfig?.options?.length}
+								{@const selected = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean))}
+								<div class="flex flex-wrap gap-1.5">
+									{#each fieldConfig.options as option}
+										{@const isSelected = selected.has(option.value)}
+										<button
+											type="button"
+											class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors {isSelected ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}"
+											onclick={() => {
+												const current = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean));
+												if (current.has(option.value)) {
+													current.delete(option.value);
+												} else {
+													current.add(option.value);
+												}
+												formValues[key] = [...current].join(',');
+											}}
+										>
+											<span class="h-3 w-3 rounded-sm border {isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/40'}">
+												{#if isSelected}
+													<svg viewBox="0 0 12 12" class="h-3 w-3 text-primary-foreground"><path d="M3 6l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+												{/if}
+											</span>
+											{option.label}
+										</button>
+									{/each}
+								</div>
+							{:else if fieldConfig?.options?.length}
 								<Select.Root
 									type="single"
 									value={formValues[key] || fieldConfig.defaultValue || ''}

@@ -14,7 +14,7 @@ export interface WorkflowInputOption {
 }
 
 export interface WorkflowInputFieldConfig {
-	type?: 'text' | 'textarea' | 'select';
+	type?: 'text' | 'textarea' | 'select' | 'multiselect';
 	label?: string;
 	description?: string;
 	defaultValue?: string;
@@ -89,7 +89,7 @@ export function getWorkflowInputFieldConfigs(
 
 		fields[key] = {
 			type:
-				value.type === 'textarea' || value.type === 'select' || value.type === 'text'
+				value.type === 'textarea' || value.type === 'select' || value.type === 'text' || value.type === 'multiselect'
 					? value.type
 					: undefined,
 			label:
