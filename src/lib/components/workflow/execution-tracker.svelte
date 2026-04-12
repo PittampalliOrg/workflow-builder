@@ -63,6 +63,7 @@
 
 <ExecutionCanvasSync
 	snapshot={executionState.snapshot}
+	streamEvents={executionState.events}
 	edges={store.edges}
 	setEdges={(edges) => {
 		store.edges = edges as typeof store.edges;

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { Panel, useNodesInitialized, useSvelteFlow, type Edge } from '@xyflow/svelte';
 	import { CheckCircle2, Loader2, MapPinned, XCircle } from 'lucide-svelte';
-	import type { ExecutionReadModel } from '$lib/types/execution-stream';
+	import type { ExecutionReadModel, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import {
 		buildExecutionCanvasState,
 		type ExecutionCanvasStatus
@@ -9,6 +9,7 @@
 
 	interface Props {
 		snapshot: ExecutionReadModel | null;
+		streamEvents?: ExecutionTimelineEvent[];
 		edges: Edge[];
 		setEdges: (edges: Edge[]) => void;
 		managedNodeIds?: string[] | null;
@@ -19,6 +20,7 @@
 
 	let {
 		snapshot,
+		streamEvents = [],
 		edges,
 		setEdges,
 		managedNodeIds = null,
@@ -97,22 +99,18 @@
 
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
 		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
-		// Compute agent progress from snapshot events
-		// Events may use type field directly or have data.type
-		const events = snapshot?.agentEvents ?? [];
-		const turnCount = events.filter(e =>
-			e.type === 'llm_complete' || (e.data?.type as string) === 'llm_complete'
-		).length;
-		const toolStarts = events.filter(e =>
-			e.type === 'tool_call_start' || (e.data?.type as string) === 'tool_call_start'
-		);
+		// Compute agent progress from stream events (primary) or snapshot (fallback)
+		const events = streamEvents.length > 0 ? streamEvents : (snapshot?.agentEvents ?? []);
+		const matchType = (e: { type: string; data?: Record<string, unknown> }, t: string) =>
+			e.type === t || (e.data?.type as string) === t;
+		const turnCount = events.filter(e => matchType(e, 'llm_complete')).length;
+		const toolStarts = events.filter(e => matchType(e, 'tool_call_start'));
 		const toolCount = toolStarts.length;
-		const activeTool = toolStarts.at(-1)?.toolName
-			?? (toolStarts.at(-1)?.data?.toolName as string | undefined)
+		const lastTool = toolStarts.at(-1);
+		const activeTool = (lastTool as any)?.toolName
+			?? (lastTool?.data?.toolName as string | undefined)
 			?? null;
-		const toolEndCount = events.filter(e =>
-			e.type === 'tool_call_end' || (e.data?.type as string) === 'tool_call_end'
-		).length;
+		const toolEndCount = events.filter(e => matchType(e, 'tool_call_end')).length;
 		const isToolActive = toolCount > toolEndCount;
 
 		for (const node of getNodes()) {
