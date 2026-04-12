@@ -33,7 +33,8 @@
 		FileArchive,
 		Brain,
 		Bot,
-		Zap
+		Zap,
+		ChevronDown
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -60,6 +61,12 @@
 		ChainOfThoughtContent,
 		ChainOfThoughtStep
 	} from '$lib/components/ui/ai-elements/chain-of-thought/index.js';
+	import {
+		Task,
+		TaskTrigger,
+		TaskContent,
+		TaskItem
+	} from '$lib/components/ui/ai-elements/task/index.js';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
@@ -880,70 +887,147 @@
 
 				<div class="flex-1 overflow-y-auto p-4" bind:this={timelineRef}>
 					{#if significantTimelineEvents.length > 0}
-						<ChainOfThought defaultOpen={true}>
-							<ChainOfThoughtHeader>
-								Agent Activity ({significantTimelineEvents.length} steps)
-							</ChainOfThoughtHeader>
-							<ChainOfThoughtContent>
-								{#each significantTimelineEvents as event, i (event.timestamp + event.type + i)}
-									{@const evtType = event.type || (event.data?.type as string) || ''}
-									{#if evtType === 'llm_start'}
-										<ChainOfThoughtStep
-											icon={Brain}
-											label="Thinking..."
-											description={event.data?.model ? `Model: ${event.data.model}` : undefined}
-											status={i === significantTimelineEvents.length - 1 && isRunning ? 'active' : 'complete'}
-										/>
-									{:else if evtType === 'llm_complete'}
-										{@const toolCalls = (event.data?.toolCalls ?? []) as string[]}
-										<ChainOfThoughtStep
-											icon={MessageSquare}
-											label={toolCalls.length ? `Plan: call ${toolCalls.join(', ')}` : 'Response'}
-											description={event.data?.content ? String(event.data.content).slice(0, 200) : undefined}
-											status="complete"
-										/>
-									{:else if evtType === 'tool_call_start'}
-										{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
-										{@const args = event.data?.args}
-										<ChainOfThoughtStep
-											icon={Wrench}
-											label={toolName}
-											description={args && typeof args === 'object' ? Object.entries(args as Record<string, unknown>).map(([k,v]) => `${k}: ${String(v).slice(0,60)}`).join(', ') : undefined}
-											status={i === significantTimelineEvents.length - 1 && isRunning ? 'active' : 'complete'}
-										/>
-									{:else if evtType === 'tool_call_end'}
-										{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
-										{@const success = event.data?.success !== false}
-										<ChainOfThoughtStep
-											icon={success ? CheckCircle2 : XCircle}
-											label="{toolName} {success ? '✓' : '✗'}"
-											description={event.data?.output ? String(event.data.output).slice(0, 200) : event.data?.error ? String(event.data.error).slice(0, 200) : undefined}
-											status="complete"
-										/>
-									{:else if evtType === 'run_started'}
-										<ChainOfThoughtStep
-											icon={Bot}
-											label="Agent started"
-											description={event.data?.model ? `Using ${event.data.model}` : event.data?.task ? String(event.data.task).slice(0, 100) : undefined}
-											status="complete"
-										/>
-									{:else if evtType === 'run_complete'}
-										<ChainOfThoughtStep
-											icon={CheckCircle2}
-											label="Agent completed"
-											status="complete"
-										/>
-									{:else if evtType === 'run_error'}
-										<ChainOfThoughtStep
-											icon={XCircle}
-											label="Agent error"
-											description={event.data?.error ? String(event.data.error).slice(0, 200) : undefined}
-											status="complete"
-										/>
-									{/if}
-								{/each}
-							</ChainOfThoughtContent>
-						</ChainOfThought>
+						<div class="space-y-3">
+							{#each significantTimelineEvents as event, i (event.timestamp + event.type + i)}
+								{@const evtType = event.type || (event.data?.type as string) || ''}
+
+								{#if evtType === 'run_started'}
+									<div class="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3">
+										<Bot size={16} class="text-cyan-400" />
+										<span class="text-sm font-medium text-cyan-400">Agent started</span>
+										{#if event.data?.model}
+											<Badge variant="outline" class="ml-auto text-[10px]">{event.data.model}</Badge>
+										{/if}
+									</div>
+
+								{:else if evtType === 'llm_start'}
+									<div class="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2.5">
+										<Brain size={14} class="text-blue-400 {i === significantTimelineEvents.length - 1 && isRunning ? 'animate-pulse' : ''}" />
+										<span class="text-xs text-blue-400">Thinking...</span>
+										{#if event.data?.model}
+											<span class="ml-auto text-[10px] text-muted-foreground">{event.data.model}</span>
+										{/if}
+									</div>
+
+								{:else if evtType === 'llm_complete'}
+									{@const toolCalls = (event.data?.toolCalls ?? []) as string[]}
+									{@const content = event.data?.content ? String(event.data.content) : ''}
+									<Task open={false}>
+										<TaskTrigger title="">
+											<div class="flex w-full items-center gap-2 text-sm">
+												<MessageSquare size={14} class="shrink-0 text-blue-400" />
+												<span class="font-medium">{toolCalls.length ? `Plan: call ${toolCalls.join(', ')}` : 'Response'}</span>
+												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+											</div>
+										</TaskTrigger>
+										<TaskContent>
+											{#if content}
+												<TaskItem>
+													<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs font-mono">{content}</pre>
+												</TaskItem>
+											{:else if toolCalls.length}
+												<TaskItem>
+													<div class="flex flex-wrap gap-1.5">
+														{#each toolCalls as tc}
+															<Badge variant="outline" class="text-[10px]">
+																<Wrench size={10} class="mr-1 text-orange-400" />{tc}
+															</Badge>
+														{/each}
+													</div>
+												</TaskItem>
+											{:else}
+												<TaskItem class="text-muted-foreground italic">No content</TaskItem>
+											{/if}
+										</TaskContent>
+									</Task>
+
+								{:else if evtType === 'tool_call_start'}
+									{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
+									{@const args = event.data?.args as Record<string, unknown> | undefined}
+									<Task open={false}>
+										<TaskTrigger title="">
+											<div class="flex w-full items-center gap-2 text-sm">
+												<Wrench size={14} class="shrink-0 text-orange-400" />
+												<span class="font-medium text-orange-300">{toolName}</span>
+												{#if args}
+													{@const preview = Object.keys(args).slice(0, 3).join(', ')}
+													<span class="truncate text-xs text-muted-foreground">({preview})</span>
+												{/if}
+												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+											</div>
+										</TaskTrigger>
+										<TaskContent>
+											{#if args}
+												{#each Object.entries(args) as [key, value]}
+													<TaskItem>
+														<div class="space-y-1">
+															<span class="text-[10px] font-semibold uppercase tracking-wider text-orange-400/70">{key}</span>
+															<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-2 text-[11px] font-mono">{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre>
+														</div>
+													</TaskItem>
+												{/each}
+											{:else}
+												<TaskItem class="text-muted-foreground italic">No arguments</TaskItem>
+											{/if}
+										</TaskContent>
+									</Task>
+
+								{:else if evtType === 'tool_call_end'}
+									{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
+									{@const success = event.data?.success !== false}
+									{@const output = event.data?.output ? String(event.data.output) : ''}
+									{@const error = event.data?.error ? String(event.data.error) : ''}
+									<Task open={false}>
+										<TaskTrigger title="">
+											<div class="flex w-full items-center gap-2 text-sm">
+												{#if success}
+													<CheckCircle2 size={14} class="shrink-0 text-green-400" />
+													<span class="font-medium text-green-300">{toolName} ✓</span>
+												{:else}
+													<XCircle size={14} class="shrink-0 text-red-400" />
+													<span class="font-medium text-red-300">{toolName} ✗</span>
+												{/if}
+												<span class="truncate text-xs text-muted-foreground">{(output || error).slice(0, 60)}</span>
+												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+											</div>
+										</TaskTrigger>
+										<TaskContent>
+											<TaskItem>
+												{#if error}
+													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{error}</pre>
+												{:else if output}
+													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-[11px] font-mono">{output}</pre>
+												{:else}
+													<span class="text-muted-foreground italic">No output</span>
+												{/if}
+											</TaskItem>
+										</TaskContent>
+									</Task>
+
+								{:else if evtType === 'run_complete'}
+									<div class="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-4 py-3">
+										<CheckCircle2 size={16} class="text-green-400" />
+										<span class="text-sm font-medium text-green-400">Agent completed</span>
+									</div>
+
+								{:else if evtType === 'run_error'}
+									<Task open={true}>
+										<TaskTrigger title="">
+											<div class="flex w-full items-center gap-2 text-sm">
+												<XCircle size={14} class="shrink-0 text-red-400" />
+												<span class="font-medium text-red-300">Agent error</span>
+												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
+											</div>
+										</TaskTrigger>
+										<TaskContent>
+											<TaskItem>
+												<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{event.data?.error ? String(event.data.error) : 'Unknown error'}</pre>
+											</TaskItem>
+										</TaskContent>
+									</Task>
+								{/if}
+							{/each}
+						</div>
 					{:else if executionState.error}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<XCircle size={20} class="text-red-500" />
