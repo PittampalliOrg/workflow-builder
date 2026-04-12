@@ -54,6 +54,7 @@
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import AgentSubflowFocus from '$lib/components/workflow/execution/agent-subflow-focus.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
+	import PlanReview from '$lib/components/workflow/execution/plan-review.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -167,6 +168,10 @@
 	// Active tab
 	let activeTab = $state('overview');
 
+	// Plan artifacts
+	let planArtifacts = $state<Array<{ id: string; status: string; goal: string; planMarkdown: string | null; planJson: unknown; nodeId: string; createdAt: string; updatedAt: string }>>([]);
+	let planArtifactsLoaded = $state(false);
+
 	// Loading
 	let isLoadingWorkflow = $state(true);
 
@@ -244,6 +249,39 @@
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
 	);
+	// Extract plan text from agent_plan step output
+	const planText = $derived.by(() => {
+		const planStep = logs.find(
+			(l: StepLog) => l.stepName === 'agent_plan' && l.status === 'success'
+		);
+		if (!planStep?.output) return null;
+		const out = planStep.output as Record<string, unknown>;
+		// The agent's final response is in the output — try to extract text
+		if (typeof out === 'string') return out;
+		if (typeof out.result === 'string') return out.result;
+		if (typeof out.output === 'string') return out.output;
+		return JSON.stringify(out, null, 2);
+	});
+
+	async function loadPlanArtifacts(): Promise<void> {
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/plan-artifacts`);
+			if (res.ok) {
+				const data = await res.json();
+				planArtifacts = data.artifacts ?? [];
+			}
+		} catch {
+			// Non-critical
+		}
+		planArtifactsLoaded = true;
+	}
+
+	$effect(() => {
+		if (activeTab === 'plan' && !planArtifactsLoaded) {
+			loadPlanArtifacts();
+		}
+	});
+
 	let selectedAgentRunId = $state<string | null>(null);
 	let expandedAgentRunId: string | null = null;
 	const selectedAgentRun = $derived.by(
@@ -676,6 +714,7 @@
 				<TabsTrigger value="overview">Overview</TabsTrigger>
 				<TabsTrigger value="steps">Steps</TabsTrigger>
 				<TabsTrigger value="timeline">Timeline</TabsTrigger>
+				<TabsTrigger value="plan">Plan</TabsTrigger>
 				<TabsTrigger value="canvas">Canvas</TabsTrigger>
 				<TabsTrigger value="agents">Agents</TabsTrigger>
 				<TabsTrigger value="browser">Browser</TabsTrigger>
@@ -1018,7 +1057,19 @@
 			</div>
 		</TabsContent>
 
-		<!-- Tab 4: Canvas -->
+		<!-- Tab 4: Plan -->
+		<TabsContent value="plan" class="flex-1 overflow-y-auto p-4">
+			<PlanReview
+				{executionId}
+				workflowId={page.params.workflowId}
+				{executionStatus}
+				{planText}
+				artifacts={planArtifacts}
+				onArtifactsChange={loadPlanArtifacts}
+			/>
+		</TabsContent>
+
+		<!-- Tab 5: Canvas -->
 		<TabsContent value="canvas" class="flex-1 overflow-hidden">
 			{#if isLoadingWorkflow}
 				<div class="flex h-full items-center justify-center">
