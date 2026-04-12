@@ -16,7 +16,7 @@ import { eq } from 'drizzle-orm';
 import { AckPolicy, DeliverPolicy } from 'nats';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
-const SNAPSHOT_INTERVAL_MS = 3_000;
+const SNAPSHOT_INTERVAL_MS = 10_000;
 const CONSUMER_INACTIVE_THRESHOLD_NS = 10_000_000_000; // 10s in nanoseconds
 const FETCH_BATCH_SIZE = 10;
 const FETCH_TIMEOUT_MS = 1000;
@@ -156,9 +156,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
 						}
 					} catch { /* ignore */ }
 				}
-				// Also subscribe to workflow.stream to catch all agent events
-				// (filter by executionId in the event payload)
-				subjectSet.add('workflow.stream');
+				// Only subscribe to per-execution subjects — the agent-stream handler
+				// bridges events from workflow.stream to these subjects
 				const filterSubjects = [...subjectSet];
 
 				const consumerOpts = {
@@ -210,19 +209,6 @@ export const GET: RequestHandler = async ({ params, request }) => {
 							try {
 								const data = JSON.parse(new TextDecoder().decode(msg.data));
 								const seq = msg.seq;
-
-								// For workflow.stream events, filter by matching execution context
-								if (msg.subject === 'workflow.stream') {
-									const eventData = data.data ?? data;
-									const evtExecId = eventData.executionId || eventData.instanceId || '';
-									const evtSource = eventData.source || data.source || '';
-									// Skip sandbox events and events from other executions
-									if (!evtSource || evtSource === 'openshell-agent-runtime') continue;
-									// Check if this event belongs to our execution
-									if (evtExecId && !subjectSet.has(executionSubject(evtExecId))) continue;
-									// Dynamically learn child instance IDs for future filtering
-									if (evtExecId) subjectSet.add(executionSubject(evtExecId));
-								}
 
 								// Normalize event for client compatibility
 								send('agent_event', {

@@ -42,6 +42,10 @@ export function createExecutionStream(executionId: string) {
 	function dispose() {
 		es?.close();
 		es = null;
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
 		patchState((state) => ({
 			...state,
 			isConnected: false,
@@ -134,8 +138,27 @@ export function createExecutionStream(executionId: string) {
 		});
 	}
 
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+	async function fetchSnapshotFallback() {
+		// When SSE is unavailable, fetch a one-shot snapshot so the UI isn't blank
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/status`);
+			if (res.ok) {
+				const data = await res.json();
+				mergeSnapshot(data);
+			}
+		} catch {
+			// Status endpoint also unavailable
+		}
+	}
+
 	function connect() {
 		if (typeof window === 'undefined' || !executionId) return;
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
 		es = new EventSource(`/api/workflows/executions/${executionId}/nats-stream`);
 		terminal = false;
 
@@ -149,11 +172,17 @@ export function createExecutionStream(executionId: string) {
 
 		es.onerror = () => {
 			if (terminal || !es) return;
+			es?.close();
+			es = null;
 			patchState((state) => ({
 				...state,
 				isConnected: false,
-				error: 'Connection lost'
+				error: 'Connection lost — retrying...'
 			}));
+			// Fetch a one-shot snapshot so the UI shows something
+			fetchSnapshotFallback();
+			// Retry SSE connection after 5s
+			reconnectTimer = setTimeout(connect, 5000);
 		};
 
 		es.addEventListener('snapshot', (raw) => {
