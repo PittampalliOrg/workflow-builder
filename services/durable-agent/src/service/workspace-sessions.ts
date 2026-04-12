@@ -110,6 +110,7 @@ export type WorkspaceProfileResult = {
 	executionId: string;
 	name: string;
 	rootPath: string;
+	repoName: string;
 	clonePath?: string;
 	backend: "openshell";
 	enabledTools: WorkspaceToolName[];
@@ -2216,6 +2217,11 @@ class WorkspaceSessionManager {
 			? this.defaultRoot
 			: pathResolve(this.defaultRoot);
 		if (requestedPath) {
+			// If rootPath ends with "/" the repo name was empty -- auto-generate one
+			if (requestedPath.endsWith("/")) {
+				const slug = `project-${Date.now().toString(36)}`;
+				return requestedPath + slug;
+			}
 			if (requestedPath.startsWith("/")) return requestedPath;
 			return pathPosix.join(base, sanitizeSegment(requestedPath));
 		}
@@ -2223,11 +2229,16 @@ class WorkspaceSessionManager {
 	}
 
 	private serialize(session: WorkspaceSession): WorkspaceProfileResult {
+		// Extract repoName from the last segment of rootPath
+		const rootSegments = session.rootPath.split("/").filter(Boolean);
+		const repoName = rootSegments.length > 0 ? rootSegments[rootSegments.length - 1] : session.name;
+
 		return {
 			workspaceRef: session.workspaceRef,
 			executionId: session.executionId,
 			name: session.name,
 			rootPath: session.rootPath,
+			repoName,
 			clonePath: session.clonePath,
 			backend: session.backend,
 			enabledTools: [...session.enabledTools],
