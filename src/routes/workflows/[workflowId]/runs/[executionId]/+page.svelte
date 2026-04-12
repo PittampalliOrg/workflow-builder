@@ -249,16 +249,33 @@
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
 	);
-	// Extract plan text from agent events (llm_complete with non-empty content and no tool calls)
-	// The plan is the last LLM response that has content but no tool_calls — the agent's final answer.
+	// Extract plan text from agent events.
+	// Priority 1: FileWrite tool call that wrote PLAN.md (full content, never truncated)
+	// Priority 2: Longest llm_complete without tool_calls (may be truncated)
 	const planText = $derived.by(() => {
-		// First check persisted agent events for the plan phase's final LLM response
 		const allEvents = [
 			...(snapshot?.agentEvents ?? []),
 			...persistedAgentEvents
-		] as Array<{ type: string; data: Record<string, unknown> }>;
+		] as Array<{ type: string; data: Record<string, unknown>; toolName?: string | null }>;
 
-		// Find llm_complete events with substantial content (the plan text)
+		// Priority 1: Look for FileWrite tool_call_start with PLAN.md in args
+		// The args contain the full file content written by the planner
+		const planFileWrite = allEvents.find(
+			(e) =>
+				e.type === 'tool_call_start' &&
+				(e.toolName === 'FileWrite' || e.data?.toolName === 'FileWrite') &&
+				typeof e.data?.args === 'object' &&
+				e.data.args !== null &&
+				String((e.data.args as Record<string, string>).file_path || '').includes('PLAN.md')
+		);
+		if (planFileWrite) {
+			const args = planFileWrite.data.args as Record<string, string>;
+			if (args.content && args.content.length > 50) {
+				return args.content;
+			}
+		}
+
+		// Priority 2: Longest llm_complete without tool_calls
 		const planResponses = allEvents
 			.filter(
 				(e) =>
@@ -270,18 +287,9 @@
 			.map((e) => e.data.content as string);
 
 		if (planResponses.length > 0) {
-			// Return the longest response (most likely the plan)
 			return planResponses.reduce((a, b) => (a.length >= b.length ? a : b));
 		}
 
-		// Fallback: try step output
-		const planStep = logs.find(
-			(l: StepLog) => l.stepName === 'agent_plan' && l.status === 'success'
-		);
-		if (!planStep?.output) return null;
-		const out = planStep.output as Record<string, unknown>;
-		if (typeof out === 'string') return out;
-		if (typeof out.result === 'string' && out.result) return out.result;
 		return null;
 	});
 
