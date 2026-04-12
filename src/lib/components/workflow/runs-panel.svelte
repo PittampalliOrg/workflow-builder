@@ -442,6 +442,7 @@
 										class="flex max-h-[50vh] flex-col space-y-2 overflow-y-auto p-3 scroll-smooth"
 										onscroll={(e) => handleStreamScroll(exec.id, e.currentTarget as HTMLDivElement)}
 										use:registerStreamScroll={exec.id}
+									>
 										{#if activeStepLabel(stream)}
 											<div class="flex items-center gap-1.5 text-xs">
 												<span class="text-muted-foreground">Current step:</span>
