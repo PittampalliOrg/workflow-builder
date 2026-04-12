@@ -10,6 +10,9 @@ import {
 	executionSubject,
 	isNatsAvailable
 } from '$lib/server/nats-client';
+import { db } from '$lib/server/db';
+import { workflowExecutionLogs } from '$lib/server/db/schema';
+import { eq } from 'drizzle-orm';
 import { AckPolicy, DeliverPolicy } from 'nats';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -116,22 +119,44 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				}
 
 				// Build filter subjects for this execution.
-				// Subscribe to events published under:
-				// 1. The DB execution ID (from agent-stream bridge)
-				// 2. The Dapr instance ID (from direct pub/sub by agents)
-				// 3. Any child agent run instance IDs
-				const filterSubjects = [executionSubject(executionId)];
+				// Subscribe to events from all possible sources:
+				// 1. DB execution ID (from agent-stream bridge)
+				// 2. Dapr parent instance ID (from orchestrator)
+				// 3. Child agent run instance IDs (from agent_runs table)
+				// 4. Child workflow instance IDs (from execution_logs output)
+				// 5. workflow.stream (catch-all for all agent events)
+				const subjectSet = new Set<string>();
+				subjectSet.add(executionSubject(executionId));
 				if (model.instanceId && model.instanceId !== executionId) {
-					filterSubjects.push(executionSubject(model.instanceId));
+					subjectSet.add(executionSubject(model.instanceId));
 				}
-				// Add child agent run instance IDs
 				if (model.agentRuns?.length) {
 					for (const run of model.agentRuns) {
 						if (run.daprInstanceId) {
-							filterSubjects.push(executionSubject(run.daprInstanceId));
+							subjectSet.add(executionSubject(run.daprInstanceId));
 						}
 					}
 				}
+				// Check execution_logs for child workflow instance IDs
+				// (dapr-agent-py child workflows store instanceId in output)
+				if (db) {
+					try {
+						const logs = await db
+							.select({ output: workflowExecutionLogs.output })
+							.from(workflowExecutionLogs)
+							.where(eq(workflowExecutionLogs.executionId, executionId));
+						for (const log of logs) {
+							const out = log.output as Record<string, unknown> | null;
+							if (out?.instanceId && typeof out.instanceId === 'string') {
+								subjectSet.add(executionSubject(out.instanceId));
+							}
+						}
+					} catch { /* ignore */ }
+				}
+				// Also subscribe to workflow.stream to catch all agent events
+				// (filter by executionId in the event payload)
+				subjectSet.add('workflow.stream');
+				const filterSubjects = [...subjectSet];
 
 				const consumerOpts = {
 					filter_subjects: filterSubjects,
@@ -182,16 +207,29 @@ export const GET: RequestHandler = async ({ params, request }) => {
 								const data = JSON.parse(new TextDecoder().decode(msg.data));
 								const seq = msg.seq;
 
+								// For workflow.stream events, filter by matching execution context
+								if (msg.subject === 'workflow.stream') {
+									const eventData = data.data ?? data;
+									const evtExecId = eventData.executionId || eventData.instanceId || '';
+									const evtSource = eventData.source || data.source || '';
+									// Skip sandbox events and events from other executions
+									if (!evtSource || evtSource === 'openshell-agent-runtime') continue;
+									// Check if this event belongs to our execution
+									if (evtExecId && !subjectSet.has(executionSubject(evtExecId))) continue;
+									// Dynamically learn child instance IDs for future filtering
+									if (evtExecId) subjectSet.add(executionSubject(evtExecId));
+								}
+
 								// Normalize event for client compatibility
 								send('agent_event', {
 									id: seq,
-									type: data.type || 'unknown',
+									type: data.type || data.data?.type || 'unknown',
 									data: data.data || data,
-									timestamp: data.timestamp || new Date().toISOString(),
-									executionId: data.executionId,
-									runId: data.runId,
-									callId: data.callId,
-									source: data.source
+									timestamp: data.timestamp || data.data?.timestamp || new Date().toISOString(),
+									executionId: data.executionId || data.data?.executionId,
+									runId: data.runId || data.data?.runId,
+									callId: data.callId || data.data?.callId,
+									source: data.source || data.data?.source
 								}, seq);
 							} catch {
 								// Skip malformed messages
