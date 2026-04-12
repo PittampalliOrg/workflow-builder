@@ -1286,7 +1286,7 @@ class WorkspaceSessionManager {
 			}
 			const pushArgs = [
 				"push",
-				...(input.force === true ? ["--force-with-lease"] : []),
+				...(input.force === true ? ["--force"] : []),
 				"-u",
 				"origin",
 				`HEAD:refs/heads/${branch}`,
