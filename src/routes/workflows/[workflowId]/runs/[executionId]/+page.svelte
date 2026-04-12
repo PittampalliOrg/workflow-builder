@@ -249,49 +249,42 @@
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
 	);
-	// Extract plan text from agent events.
-	// Priority 1: FileWrite tool call that wrote PLAN.md (full content, never truncated)
-	// Priority 2: Longest llm_complete without tool_calls (may be truncated)
-	const planText = $derived.by(() => {
+	// Plan text fetched from Dapr state store (full content, never truncated)
+	let planText = $state<string | null>(null);
+	let planTextLoaded = $state(false);
+
+	async function loadPlanText(): Promise<void> {
+		if (planTextLoaded) return;
+		try {
+			// Priority 1: Fetch from Dapr state store (persisted by agent after writing PLAN.md)
+			const res = await fetch(`/api/workflows/executions/${executionId}/plan`);
+			if (res.ok) {
+				const data = await res.json();
+				if (data.plan && typeof data.plan === 'string' && data.plan.length > 10) {
+					planText = data.plan;
+					planTextLoaded = true;
+					return;
+				}
+			}
+		} catch {
+			// Non-critical
+		}
+
+		// Priority 2: Check plan_artifact agent event (published by agent after reading PLAN.md)
 		const allEvents = [
 			...(snapshot?.agentEvents ?? []),
 			...persistedAgentEvents
-		] as Array<{ type: string; data: Record<string, unknown>; toolName?: string | null }>;
+		] as Array<{ type: string; data: Record<string, unknown> }>;
 
-		// Priority 1: Look for FileWrite tool_call_start with PLAN.md in args
-		// The args contain the full file content written by the planner
-		const planFileWrite = allEvents.find(
-			(e) =>
-				e.type === 'tool_call_start' &&
-				(e.toolName === 'FileWrite' || e.data?.toolName === 'FileWrite') &&
-				typeof e.data?.args === 'object' &&
-				e.data.args !== null &&
-				String((e.data.args as Record<string, string>).file_path || '').includes('PLAN.md')
+		const planArtifactEvent = allEvents.find(
+			(e) => e.type === 'plan_artifact' && typeof e.data?.content === 'string'
 		);
-		if (planFileWrite) {
-			const args = planFileWrite.data.args as Record<string, string>;
-			if (args.content && args.content.length > 50) {
-				return args.content;
-			}
+		if (planArtifactEvent) {
+			planText = planArtifactEvent.data.content as string;
 		}
 
-		// Priority 2: Longest llm_complete without tool_calls
-		const planResponses = allEvents
-			.filter(
-				(e) =>
-					e.type === 'llm_complete' &&
-					typeof e.data?.content === 'string' &&
-					(e.data.content as string).length > 100 &&
-					(!Array.isArray(e.data?.toolCalls) || (e.data.toolCalls as unknown[]).length === 0)
-			)
-			.map((e) => e.data.content as string);
-
-		if (planResponses.length > 0) {
-			return planResponses.reduce((a, b) => (a.length >= b.length ? a : b));
-		}
-
-		return null;
-	});
+		planTextLoaded = true;
+	}
 
 	async function loadPlanArtifacts(): Promise<void> {
 		try {
@@ -307,8 +300,9 @@
 	}
 
 	$effect(() => {
-		if (activeTab === 'plan' && !planArtifactsLoaded) {
-			loadPlanArtifacts();
+		if (activeTab === 'plan') {
+			if (!planArtifactsLoaded) loadPlanArtifacts();
+			if (!planTextLoaded) loadPlanText();
 		}
 	});
 
