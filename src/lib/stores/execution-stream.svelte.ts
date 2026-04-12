@@ -134,14 +134,9 @@ export function createExecutionStream(executionId: string) {
 		});
 	}
 
-	let useNatsStream = true; // Try NATS-backed endpoint first
-
 	function connect() {
 		if (typeof window === 'undefined' || !executionId) return;
-		const endpoint = useNatsStream
-			? `/api/workflows/executions/${executionId}/nats-stream`
-			: `/api/workflows/executions/${executionId}/stream`;
-		es = new EventSource(endpoint);
+		es = new EventSource(`/api/workflows/executions/${executionId}/nats-stream`);
 		terminal = false;
 
 		es.onopen = () => {
@@ -154,35 +149,12 @@ export function createExecutionStream(executionId: string) {
 
 		es.onerror = () => {
 			if (terminal || !es) return;
-			// If NATS endpoint fails, fall back to DB-polling endpoint
-			if (useNatsStream) {
-				useNatsStream = false;
-				es?.close();
-				es = null;
-				connect();
-				return;
-			}
 			patchState((state) => ({
 				...state,
 				isConnected: false,
 				error: 'Connection lost'
 			}));
 		};
-
-		// Handle NATS-specific error events (fallback signal)
-		es.addEventListener('error', (raw) => {
-			try {
-				const data = JSON.parse((raw as MessageEvent).data);
-				if (data?.fallback && useNatsStream) {
-					useNatsStream = false;
-					es?.close();
-					es = null;
-					connect();
-				}
-			} catch {
-				// Not a JSON error event — ignore
-			}
-		});
 
 		es.addEventListener('snapshot', (raw) => {
 			try {
