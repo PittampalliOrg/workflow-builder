@@ -16,6 +16,7 @@ import { eq } from 'drizzle-orm';
 import { AckPolicy, DeliverPolicy } from 'nats';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
+const SNAPSHOT_INTERVAL_MS = 3_000;
 const CONSUMER_INACTIVE_THRESHOLD_NS = 10_000_000_000; // 10s in nanoseconds
 const FETCH_BATCH_SIZE = 10;
 const FETCH_TIMEOUT_MS = 1000;
@@ -45,6 +46,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
 		async start(controller) {
 			const encoder = new TextEncoder();
 			let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+				let lastSnapshotAt = 0;
+				let lastSnapshotHash = '';
 
 			function send(event: string, data: unknown, id?: string | number) {
 				if (cancelled) return;
@@ -162,9 +165,10 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					filter_subjects: filterSubjects,
 					ack_policy: AckPolicy.None,
 					inactive_threshold: CONSUMER_INACTIVE_THRESHOLD_NS,
+					// Use DeliverNew — initial state comes from DB snapshot, NATS is for live events only
 					...(isReconnect
 						? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: lastEventId + 1 }
-						: { deliver_policy: DeliverPolicy.All }
+						: { deliver_policy: DeliverPolicy.New }
 					)
 				};
 
@@ -247,9 +251,9 @@ export const GET: RequestHandler = async ({ params, request }) => {
 						await new Promise((r) => setTimeout(r, 500));
 					}
 
-					// Periodically refresh execution status from DB
-					// (for nodeStatuses, phase, progress that come from orchestrator, not pub/sub)
-					if (!cancelled) {
+					// Periodically refresh execution status from DB (every 3s)
+					if (!cancelled && Date.now() - lastSnapshotAt >= SNAPSHOT_INTERVAL_MS) {
+						lastSnapshotAt = Date.now();
 						try {
 							const updated = await loadExecutionReadModel(executionId, {
 								refreshRuntime: true,
@@ -267,9 +271,15 @@ export const GET: RequestHandler = async ({ params, request }) => {
 									});
 									break;
 								}
-								// Send snapshot update for status/phase/progress changes
-								const snap = serializeExecutionReadModel(updated, { compact: true });
-								send('snapshot', snap);
+								const snapHash = JSON.stringify({
+									status: updated.status, phase: updated.phase,
+									progress: updated.progress, nodeStatuses: updated.nodeStatuses
+								});
+								if (snapHash !== lastSnapshotHash) {
+									lastSnapshotHash = snapHash;
+									const snap = serializeExecutionReadModel(updated, { compact: true });
+									send('snapshot', snap);
+								}
 							}
 						} catch {
 							// DB read failed — continue with NATS events
