@@ -1,8 +1,8 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { workflowExecutions, workflowExecutionLogs } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { workflowExecutions, workflowExecutionLogs, workflowAgentEvents } from '$lib/server/db/schema';
+import { eq, asc } from 'drizzle-orm';
 import { extractExecutionTraceIds } from '$lib/server/otel/clickhouse';
 
 export interface NormalizedLog {
@@ -105,8 +105,27 @@ export const GET: RequestHandler = async ({ params }) => {
 	const traceId = (execOutput?.traceId as string) ?? null;
 	const allTraceIds = extractExecutionTraceIds(execution.output);
 
+	// Fetch agent events for this execution
+	const agentEvents = await db
+		.select({
+			type: workflowAgentEvents.eventType,
+			toolName: workflowAgentEvents.toolName,
+			phase: workflowAgentEvents.phase,
+			data: workflowAgentEvents.payload,
+			timestamp: workflowAgentEvents.ts,
+		})
+		.from(workflowAgentEvents)
+		.where(eq(workflowAgentEvents.workflowExecutionId, executionId))
+		.orderBy(asc(workflowAgentEvents.eventId));
+
 	return json({
 		logs,
+		agentEvents: agentEvents.map(e => ({
+			type: e.type,
+			toolName: e.toolName,
+			data: e.data ?? {},
+			timestamp: e.timestamp?.toISOString() ?? '',
+		})),
 		traceId,
 		traceIds: allTraceIds,
 		executionStatus: execution.status,

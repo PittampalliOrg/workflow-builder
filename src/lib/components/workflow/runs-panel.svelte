@@ -59,6 +59,7 @@
 	let isLoadingList = $state(false);
 	let expandedIds = new SvelteSet<string>();
 	let executionLogs = new SvelteMap<string, StepLog[]>();
+	let executionAgentEvents = new SvelteMap<string, Array<{ type: string; data: Record<string, unknown>; timestamp: string; toolName?: string | null }>>();
 	let loadingLogs = new SvelteSet<string>();
 	let executionStreams = new SvelteMap<string, ExecutionStreamStore>();
 	let executionStreamStates = new SvelteMap<string, ExecutionStreamState>();
@@ -204,6 +205,9 @@
 			if (res.ok) {
 				const data = await res.json();
 				executionLogs.set(execId, data.logs ?? []);
+				if (data.agentEvents?.length) {
+					executionAgentEvents.set(execId, data.agentEvents);
+				}
 			}
 		} catch {
 			// ignore
@@ -557,7 +561,7 @@
 									</div>
 								{:else if logs && logs.length > 0}
 									<div class="p-3">
-										<StepTimeline steps={logs} agentEvents={stream.events} />
+										<StepTimeline steps={logs} agentEvents={stream.events.length > 0 ? stream.events : (executionAgentEvents.get(exec.id) ?? [])} />
 									</div>
 								{:else if !isRunning(exec.status)}
 									<div class="py-6 text-center text-[10px] text-muted-foreground">
