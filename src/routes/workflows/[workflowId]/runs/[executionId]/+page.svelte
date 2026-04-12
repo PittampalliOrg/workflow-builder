@@ -33,8 +33,7 @@
 		FileArchive,
 		Brain,
 		Bot,
-		Zap,
-		ChevronDown
+		Zap
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -913,13 +912,7 @@
 									{@const toolCalls = (event.data?.toolCalls ?? []) as string[]}
 									{@const content = event.data?.content ? String(event.data.content) : ''}
 									<Task open={false}>
-										<TaskTrigger title="">
-											<div class="flex w-full items-center gap-2 text-sm">
-												<MessageSquare size={14} class="shrink-0 text-blue-400" />
-												<span class="font-medium">{toolCalls.length ? `Plan: call ${toolCalls.join(', ')}` : 'Response'}</span>
-												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-											</div>
-										</TaskTrigger>
+										<TaskTrigger title={toolCalls.length ? `💬 Plan: call ${toolCalls.join(', ')}` : '💬 Response'} />
 										<TaskContent>
 											{#if content}
 												<TaskItem>
@@ -945,17 +938,7 @@
 									{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
 									{@const args = event.data?.args as Record<string, unknown> | undefined}
 									<Task open={false}>
-										<TaskTrigger title="">
-											<div class="flex w-full items-center gap-2 text-sm">
-												<Wrench size={14} class="shrink-0 text-orange-400" />
-												<span class="font-medium text-orange-300">{toolName}</span>
-												{#if args}
-													{@const preview = Object.keys(args).slice(0, 3).join(', ')}
-													<span class="truncate text-xs text-muted-foreground">({preview})</span>
-												{/if}
-												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-											</div>
-										</TaskTrigger>
+										<TaskTrigger title="🔧 {toolName} {args ? '(' + Object.keys(args).slice(0, 3).join(', ') + ')' : ''}" />
 										<TaskContent>
 											{#if args}
 												{#each Object.entries(args) as [key, value]}
@@ -978,19 +961,7 @@
 									{@const output = event.data?.output ? String(event.data.output) : ''}
 									{@const error = event.data?.error ? String(event.data.error) : ''}
 									<Task open={false}>
-										<TaskTrigger title="">
-											<div class="flex w-full items-center gap-2 text-sm">
-												{#if success}
-													<CheckCircle2 size={14} class="shrink-0 text-green-400" />
-													<span class="font-medium text-green-300">{toolName} ✓</span>
-												{:else}
-													<XCircle size={14} class="shrink-0 text-red-400" />
-													<span class="font-medium text-red-300">{toolName} ✗</span>
-												{/if}
-												<span class="truncate text-xs text-muted-foreground">{(output || error).slice(0, 60)}</span>
-												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-											</div>
-										</TaskTrigger>
+										<TaskTrigger title="{success ? '✅' : '❌'} {toolName} — {(output || error).slice(0, 80)}" />
 										<TaskContent>
 											<TaskItem>
 												{#if error}
@@ -1012,13 +983,7 @@
 
 								{:else if evtType === 'run_error'}
 									<Task open={true}>
-										<TaskTrigger title="">
-											<div class="flex w-full items-center gap-2 text-sm">
-												<XCircle size={14} class="shrink-0 text-red-400" />
-												<span class="font-medium text-red-300">Agent error</span>
-												<ChevronDown size={14} class="ml-auto shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
-											</div>
-										</TaskTrigger>
+										<TaskTrigger title="❌ Agent error" />
 										<TaskContent>
 											<TaskItem>
 												<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{event.data?.error ? String(event.data.error) : 'Unknown error'}</pre>
