@@ -126,7 +126,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 	if (spec && isSWWorkflow(spec)) {
 		triggerData = applyWorkflowInputDefaults(spec, triggerData);
-		if (getPromptExpansionConfig(spec)) {
+		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
 		}
 		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);

@@ -223,7 +223,7 @@ export const POST: RequestHandler = async ({ request, params }) => {
 		...input
 	};
 	triggerData = applyWorkflowInputDefaults(spec, triggerData);
-	if (getPromptExpansionConfig(spec)) {
+	if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 		triggerData = await expandGreenfieldPromptInput(spec, triggerData);
 	}
 	const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);

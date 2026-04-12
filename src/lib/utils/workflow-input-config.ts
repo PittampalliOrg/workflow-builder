@@ -4,6 +4,8 @@ export interface PromptExpansionConfig {
 	derivedFields: string[];
 	promptLabel?: string;
 	promptPlaceholder?: string;
+	/** True when derivedFields is non-empty and AI expansion is required. */
+	requiresExpansion: boolean;
 }
 
 export interface WorkflowInputOption {
@@ -38,12 +40,12 @@ export function getPromptExpansionConfig(spec: unknown): PromptExpansionConfig |
 	const derivedFields = Array.isArray(input.derivedFields)
 		? input.derivedFields.filter((field): field is string => typeof field === 'string' && field.trim().length > 0)
 		: [];
-	if (derivedFields.length === 0) return null;
 
 	return {
 		mode: 'single_prompt',
 		promptField,
 		derivedFields,
+		requiresExpansion: derivedFields.length > 0,
 		promptLabel:
 			typeof input.promptLabel === 'string' && input.promptLabel.trim()
 				? input.promptLabel.trim()

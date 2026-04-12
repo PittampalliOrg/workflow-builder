@@ -186,7 +186,7 @@ export async function expandGreenfieldPromptInput(
 	triggerData: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
 	const config = getPromptExpansionConfig(spec);
-	if (!config) return triggerData;
+	if (!config || !config.requiresExpansion) return triggerData;
 
 	const prompt = isPresentString(triggerData[config.promptField])
 		? String(triggerData[config.promptField]).trim()

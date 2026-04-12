@@ -199,7 +199,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		// 6. Parse request body (empty body is fine)
 		const body = await request.json().catch(() => ({}));
 		let triggerData = applyWorkflowInputDefaults(spec, body as Record<string, unknown>);
-		if (getPromptExpansionConfig(spec)) {
+		if (getPromptExpansionConfig(spec)?.requiresExpansion) {
 			triggerData = await expandGreenfieldPromptInput(spec, triggerData);
 		}
 		const missingTriggerFields = getMissingRequiredTriggerFields(spec, triggerData);
