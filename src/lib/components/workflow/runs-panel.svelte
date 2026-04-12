@@ -420,9 +420,9 @@
 										{/if}
 
 										<!-- Agent stats bar -->
+										{#if stream.events.filter(e => e.type === 'llm_complete' || e.type === 'tool_call_start').length > 0}
 										{@const turnCount = stream.events.filter(e => e.type === 'llm_complete').length}
 										{@const toolCount = stream.events.filter(e => e.type === 'tool_call_start').length}
-										{#if turnCount > 0 || toolCount > 0}
 											<div class="flex items-center gap-3 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-3 py-2">
 												<div class="flex items-center gap-1.5">
 													<div class="flex h-5 w-5 items-center justify-center rounded-full bg-blue-500/20">
@@ -472,7 +472,7 @@
 
 										<!-- Chain of thought event feed -->
 										{#if stream.events.length > 0}
-											{@const significantEvents = stream.events.filter(e => ['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(e.type))}
+										{@const significantEvents = stream.events.filter(e => ['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(e.type))}
 											<ChainOfThought defaultOpen={true}>
 												<ChainOfThoughtHeader>
 													Agent Activity ({significantEvents.length} steps)
