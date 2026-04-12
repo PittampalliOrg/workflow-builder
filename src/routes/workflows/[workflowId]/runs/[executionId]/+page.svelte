@@ -30,7 +30,10 @@
 		Inbox,
 		ImageIcon,
 		Video,
-		FileArchive
+		FileArchive,
+		Brain,
+		Bot,
+		Zap
 	} from 'lucide-svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { Tabs, TabsList, TabsTrigger, TabsContent } from '$lib/components/ui/tabs';
@@ -51,6 +54,12 @@
 	import AgentRunExplorer from '$lib/components/workflow/execution/agent-run-explorer.svelte';
 	import AgentSubflowFocus from '$lib/components/workflow/execution/agent-subflow-focus.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
+	import {
+		ChainOfThought,
+		ChainOfThoughtHeader,
+		ChainOfThoughtContent,
+		ChainOfThoughtStep
+	} from '$lib/components/ui/ai-elements/chain-of-thought/index.js';
 	import type { ExecutionAgentRun, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
@@ -159,6 +168,40 @@
 	let executionStream: ExecutionStreamStore | null = null;
 	let executionState = $state<ExecutionStreamState>(createInitialExecutionStreamState());
 	let timelineRef = $state<HTMLDivElement | null>(null);
+	let persistedAgentEvents = $state<Array<{ type: string; data: Record<string, unknown>; timestamp: string; toolName?: string | null }>>([]);
+	let persistedEventsLoaded = $state(false);
+
+	// Fetch persisted agent events from DB when stream events are empty
+	async function loadPersistedAgentEvents() {
+		if (persistedEventsLoaded) return;
+		persistedEventsLoaded = true;
+		try {
+			const res = await fetch(`/api/workflows/executions/${executionId}/logs`);
+			if (res.ok) {
+				const data = await res.json();
+				if (data.agentEvents?.length) {
+					persistedAgentEvents = data.agentEvents;
+				}
+			}
+		} catch { /* ignore */ }
+	}
+
+	// Combined events: prefer live stream, fall back to persisted
+	let timelineEvents = $derived(
+		executionState.events.length > 0 ? executionState.events : persistedAgentEvents
+	);
+
+	// Derived stats from timeline events
+	let turnCount = $derived(timelineEvents.filter(e => e.type === 'llm_complete' || (e.data?.type as string) === 'llm_complete').length);
+	let toolCallCount = $derived(timelineEvents.filter(e => e.type === 'tool_call_start' || (e.data?.type as string) === 'tool_call_start').length);
+	let significantTimelineEvents = $derived(
+		timelineEvents.filter(e =>
+			['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(
+				e.type ?? (e.data?.type as string) ?? ''
+			)
+		)
+	);
+
 	const snapshot = $derived(executionState.snapshot);
 	const executionStatus = $derived(snapshot?.status ?? 'unknown');
 	const startTime = $derived(snapshot?.startedAt ?? null);
@@ -301,6 +344,13 @@
 	$effect(() => {
 		if (activeTab === 'trace' && investigationSessionId && !investigationFetched) {
 			fetchInvestigation();
+		}
+	});
+
+	// Load persisted events when timeline tab is shown and stream is empty
+	$effect(() => {
+		if (activeTab === 'timeline' && executionState.events.length === 0 && !persistedEventsLoaded) {
+			loadPersistedAgentEvents();
 		}
 	});
 
@@ -791,34 +841,109 @@
 					</div>
 				{/if}
 
-				<div class="flex-1 overflow-y-auto" bind:this={timelineRef}>
-					{#if executionState.events.length > 0}
-						<div class="divide-y divide-border">
-							{#each executionState.events as event, i (i)}
-								{@const Icon = eventIcon(event.type)}
-								<div class="flex gap-3 px-4 py-2.5 hover:bg-muted/30 transition-colors">
-									<div class="mt-0.5 shrink-0">
-										{#if event.type === 'tool_call_start'}
-											<Icon size={14} class="text-yellow-500" />
-										{:else if event.type === 'run_complete'}
-											<Icon size={14} class="text-green-500" />
-										{:else if event.type === 'run_error'}
-											<Icon size={14} class="text-red-500" />
-										{:else}
-											<Icon size={14} class="text-muted-foreground" />
-										{/if}
-									</div>
-									<div class="min-w-0 flex-1">
-										<p class="text-xs leading-relaxed break-words">
-											{eventLabel(event)}
-										</p>
-										<p class="text-[10px] text-muted-foreground mt-0.5">
-											{new Date(event.timestamp).toLocaleTimeString()}
-										</p>
-									</div>
+				<!-- Stats bar -->
+				{#if turnCount > 0 || toolCallCount > 0}
+					<div class="border-b border-border px-4 py-2">
+						<div class="flex items-center gap-4 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-4 py-2">
+							<div class="flex items-center gap-1.5">
+								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-blue-500/20">
+									<MessageSquare size={12} class="text-blue-400" />
 								</div>
-							{/each}
+								<div class="text-xs">
+									<span class="font-semibold text-blue-400">{turnCount}</span>
+									<span class="text-muted-foreground"> turn{turnCount !== 1 ? 's' : ''}</span>
+								</div>
+							</div>
+							<div class="h-4 w-px bg-border"></div>
+							<div class="flex items-center gap-1.5">
+								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-orange-500/20">
+									<Wrench size={12} class="text-orange-400" />
+								</div>
+								<div class="text-xs">
+									<span class="font-semibold text-orange-400">{toolCallCount}</span>
+									<span class="text-muted-foreground"> tool{toolCallCount !== 1 ? 's' : ''}</span>
+								</div>
+							</div>
+							<div class="h-4 w-px bg-border"></div>
+							<div class="flex items-center gap-1.5">
+								<div class="flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500/20">
+									<Zap size={12} class="text-emerald-400" />
+								</div>
+								<div class="text-xs">
+									<span class="font-semibold text-emerald-400">{timelineEvents.length}</span>
+									<span class="text-muted-foreground"> events</span>
+								</div>
+							</div>
 						</div>
+					</div>
+				{/if}
+
+				<div class="flex-1 overflow-y-auto p-4" bind:this={timelineRef}>
+					{#if significantTimelineEvents.length > 0}
+						<ChainOfThought defaultOpen={true}>
+							<ChainOfThoughtHeader>
+								Agent Activity ({significantTimelineEvents.length} steps)
+							</ChainOfThoughtHeader>
+							<ChainOfThoughtContent>
+								{#each significantTimelineEvents as event, i (event.timestamp + event.type + i)}
+									{@const evtType = event.type || (event.data?.type as string) || ''}
+									{#if evtType === 'llm_start'}
+										<ChainOfThoughtStep
+											icon={Brain}
+											label="Thinking..."
+											description={event.data?.model ? `Model: ${event.data.model}` : undefined}
+											status={i === significantTimelineEvents.length - 1 && isRunning ? 'active' : 'complete'}
+										/>
+									{:else if evtType === 'llm_complete'}
+										{@const toolCalls = (event.data?.toolCalls ?? []) as string[]}
+										<ChainOfThoughtStep
+											icon={MessageSquare}
+											label={toolCalls.length ? `Plan: call ${toolCalls.join(', ')}` : 'Response'}
+											description={event.data?.content ? String(event.data.content).slice(0, 200) : undefined}
+											status="complete"
+										/>
+									{:else if evtType === 'tool_call_start'}
+										{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
+										{@const args = event.data?.args}
+										<ChainOfThoughtStep
+											icon={Wrench}
+											label={toolName}
+											description={args && typeof args === 'object' ? Object.entries(args as Record<string, unknown>).map(([k,v]) => `${k}: ${String(v).slice(0,60)}`).join(', ') : undefined}
+											status={i === significantTimelineEvents.length - 1 && isRunning ? 'active' : 'complete'}
+										/>
+									{:else if evtType === 'tool_call_end'}
+										{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
+										{@const success = event.data?.success !== false}
+										<ChainOfThoughtStep
+											icon={success ? CheckCircle2 : XCircle}
+											label="{toolName} {success ? '✓' : '✗'}"
+											description={event.data?.output ? String(event.data.output).slice(0, 200) : event.data?.error ? String(event.data.error).slice(0, 200) : undefined}
+											status="complete"
+										/>
+									{:else if evtType === 'run_started'}
+										<ChainOfThoughtStep
+											icon={Bot}
+											label="Agent started"
+											description={event.data?.model ? `Using ${event.data.model}` : event.data?.task ? String(event.data.task).slice(0, 100) : undefined}
+											status="complete"
+										/>
+									{:else if evtType === 'run_complete'}
+										<ChainOfThoughtStep
+											icon={CheckCircle2}
+											label="Agent completed"
+											status="complete"
+										/>
+									{:else if evtType === 'run_error'}
+										<ChainOfThoughtStep
+											icon={XCircle}
+											label="Agent error"
+											description={event.data?.error ? String(event.data.error).slice(0, 200) : undefined}
+											status="complete"
+										/>
+									{/if}
+								{/each}
+							</ChainOfThoughtContent>
+						</ChainOfThought>
 					{:else if executionState.error}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<XCircle size={20} class="text-red-500" />
@@ -827,19 +952,17 @@
 					{:else if isRunning}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<Loader2 size={20} class="animate-spin" />
-							<p class="text-sm">Live status is updating from the execution stream.</p>
-							{#if activeNodeLabel}
-								<p class="text-xs">Current step: {activeNodeLabel}</p>
-							{/if}
-							{#if executionState.currentPhase}
-								<p class="text-xs">Phase: {executionState.currentPhase}</p>
-							{/if}
-							<p class="text-xs">Agent events will appear here when this workflow emits them.</p>
+							<p class="text-sm">Waiting for agent events...</p>
+						</div>
+					{:else if !persistedEventsLoaded}
+						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
+							<Loader2 size={20} class="animate-spin" />
+							<p class="text-sm">Loading agent activity...</p>
 						</div>
 					{:else}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<Terminal size={20} />
-							<p class="text-sm">No agent events</p>
+							<p class="text-sm">No agent events recorded for this execution</p>
 						</div>
 					{/if}
 				</div>
