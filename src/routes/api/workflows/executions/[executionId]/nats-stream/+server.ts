@@ -115,15 +115,31 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					return;
 				}
 
-				// Create ephemeral consumer for this execution
-				const subject = executionSubject(executionId);
+				// Build filter subjects for this execution.
+				// Subscribe to events published under:
+				// 1. The DB execution ID (from agent-stream bridge)
+				// 2. The Dapr instance ID (from direct pub/sub by agents)
+				// 3. Any child agent run instance IDs
+				const filterSubjects = [executionSubject(executionId)];
+				if (model.instanceId && model.instanceId !== executionId) {
+					filterSubjects.push(executionSubject(model.instanceId));
+				}
+				// Add child agent run instance IDs
+				if (model.agentRuns?.length) {
+					for (const run of model.agentRuns) {
+						if (run.daprInstanceId) {
+							filterSubjects.push(executionSubject(run.daprInstanceId));
+						}
+					}
+				}
+
 				const consumerOpts = {
-					filter_subject: subject,
-					ack_policy: AckPolicy.None, // No ack needed — ephemeral read-only
+					filter_subjects: filterSubjects,
+					ack_policy: AckPolicy.None,
 					inactive_threshold: CONSUMER_INACTIVE_THRESHOLD_NS,
 					...(isReconnect
 						? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: lastEventId + 1 }
-						: { deliver_policy: DeliverPolicy.New }
+						: { deliver_policy: DeliverPolicy.All }
 					)
 				};
 
@@ -132,9 +148,8 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					const info = await jsm.consumers.add(WORKFLOW_STREAM_NAME, consumerOpts);
 					consumer = await js.consumers.get(WORKFLOW_STREAM_NAME, info.name);
 				} catch (err) {
-					// Consumer creation failed (stream may not exist or subject not matched)
-					// Fall back to heartbeat-only mode — events will come via DB polling if needed
-					console.warn(`[nats-stream] Failed to create consumer for ${subject}:`, err);
+					// Consumer creation failed (stream may not exist or subjects not matched)
+					console.warn(`[nats-stream] Failed to create consumer for ${filterSubjects.join(', ')}:`, err);
 					send('error', {
 						error: 'Consumer creation failed',
 						fallback: true,
