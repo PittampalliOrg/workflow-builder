@@ -98,19 +98,29 @@
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
 		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
 		// Compute agent progress from snapshot events
+		// Events may use type field directly or have data.type
 		const events = snapshot?.agentEvents ?? [];
-		const turnCount = events.filter(e => e.type === 'llm_complete').length;
-		const toolCount = events.filter(e => e.type === 'tool_call_start').length;
-		const activeTool = events.filter(e => e.type === 'tool_call_start').at(-1)?.data?.toolName as string | undefined;
-		const lastToolEnd = events.filter(e => e.type === 'tool_call_end').length;
-		const isToolActive = toolCount > lastToolEnd;
+		const turnCount = events.filter(e =>
+			e.type === 'llm_complete' || (e.data?.type as string) === 'llm_complete'
+		).length;
+		const toolStarts = events.filter(e =>
+			e.type === 'tool_call_start' || (e.data?.type as string) === 'tool_call_start'
+		);
+		const toolCount = toolStarts.length;
+		const activeTool = toolStarts.at(-1)?.toolName
+			?? (toolStarts.at(-1)?.data?.toolName as string | undefined)
+			?? null;
+		const toolEndCount = events.filter(e =>
+			e.type === 'tool_call_end' || (e.data?.type as string) === 'tool_call_end'
+		).length;
+		const isToolActive = toolCount > toolEndCount;
 
 		for (const node of getNodes()) {
 			if (managed && !managed.has(node.id)) continue;
 			const nextStatus = statuses[node.id] ?? 'idle';
 			const updates: Record<string, unknown> = { status: nextStatus };
 
-			// Attach agent progress to agent/run nodes while running
+			// Attach agent progress to running nodes
 			if (nextStatus === 'running' && (turnCount > 0 || toolCount > 0)) {
 				updates.agentProgress = {
 					turnCount,
@@ -118,12 +128,14 @@
 					activeTool: isToolActive ? activeTool : null,
 					eventCount: events.length,
 				};
-			} else {
+			} else if (nextStatus !== 'running') {
 				updates.agentProgress = null;
 			}
 
 			const current = node.data;
-			if (current?.status === nextStatus && JSON.stringify(current?.agentProgress) === JSON.stringify(updates.agentProgress)) continue;
+			const prevProgress = JSON.stringify(current?.agentProgress ?? null);
+			const nextProgress = JSON.stringify(updates.agentProgress ?? null);
+			if (current?.status === nextStatus && prevProgress === nextProgress) continue;
 			updateNodeData(node.id, updates);
 		}
 	}
