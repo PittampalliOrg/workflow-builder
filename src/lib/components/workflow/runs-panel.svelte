@@ -65,6 +65,41 @@
 	let executionStreamStates = new SvelteMap<string, ExecutionStreamState>();
 	let executionStreamStops = new SvelteMap<string, () => void>();
 
+	// Auto-scroll for streaming containers
+	let streamScrollRefs = new SvelteMap<string, HTMLDivElement>();
+	let autoScrollEnabled = new SvelteMap<string, boolean>();
+
+	function registerStreamScroll(node: HTMLElement, execId: string) {
+		streamScrollRefs.set(execId, node as HTMLDivElement);
+		autoScrollEnabled.set(execId, true);
+		return {
+			destroy() {
+				streamScrollRefs.delete(execId);
+				autoScrollEnabled.delete(execId);
+			}
+		};
+	}
+
+	function handleStreamScroll(execId: string, el: HTMLDivElement) {
+		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+		autoScrollEnabled.set(execId, atBottom);
+	}
+
+	// Auto-scroll when events change
+	$effect(() => {
+		for (const [execId, state] of executionStreamStates) {
+			const count = state.events.length;
+			if (count > 0) {
+				const el = streamScrollRefs.get(execId);
+				if (el && autoScrollEnabled.get(execId) !== false) {
+					requestAnimationFrame(() => {
+						el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+					});
+				}
+			}
+		}
+	});
+
 	// Fetch executions list
 	async function fetchExecutions() {
 		if (!store.workflowId) return;
@@ -403,7 +438,10 @@
 							<div class="border-t bg-muted/10">
 								<!-- Agent stream inline (for running executions) -->
 								{#if isRunning(exec.status)}
-									<div class="flex max-h-[50vh] flex-col space-y-2 overflow-y-auto p-3">
+									<div
+										class="flex max-h-[50vh] flex-col space-y-2 overflow-y-auto p-3 scroll-smooth"
+										onscroll={(e) => handleStreamScroll(exec.id, e.currentTarget as HTMLDivElement)}
+										use:registerStreamScroll={exec.id}
 										{#if activeStepLabel(stream)}
 											<div class="flex items-center gap-1.5 text-xs">
 												<span class="text-muted-foreground">Current step:</span>
