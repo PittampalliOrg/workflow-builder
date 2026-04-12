@@ -17,6 +17,7 @@
 	let { data, selected = false, ports, icon: Icon, iconColor, providerIconUrl = null, children }: Props = $props();
 
 	let status = $derived((data.status as string) || 'idle');
+	let agentProgress = $derived(data.agentProgress as { turnCount: number; toolCount: number; activeTool: string | null; eventCount: number } | null);
 	let prevStatus = $state('idle');
 	let showRipple = $state(false);
 
@@ -91,7 +92,20 @@
 			<div class="wb-node__label text-xs font-semibold leading-snug text-card-foreground">
 				{data.label || ''}
 			</div>
-			{#if data.description}
+			{#if agentProgress}
+				<div class="mt-1 flex items-center justify-center gap-2 text-[9px]">
+					<span class="font-semibold text-blue-400">{agentProgress.turnCount}</span>
+					<span class="text-muted-foreground/60">turns</span>
+					<span class="text-muted-foreground/30">·</span>
+					<span class="font-semibold text-orange-400">{agentProgress.toolCount}</span>
+					<span class="text-muted-foreground/60">tools</span>
+				</div>
+				{#if agentProgress.activeTool}
+					<div class="mt-0.5 truncate text-[8px] text-orange-400/80">
+						⚡ {agentProgress.activeTool}
+					</div>
+				{/if}
+			{:else if data.description}
 				<div class="wb-node__desc mt-0.5 text-[9px] leading-tight text-muted-foreground">
 					{data.description}
 				</div>

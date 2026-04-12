@@ -97,11 +97,34 @@
 
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
 		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
+		// Compute agent progress from snapshot events
+		const events = snapshot?.agentEvents ?? [];
+		const turnCount = events.filter(e => e.type === 'llm_complete').length;
+		const toolCount = events.filter(e => e.type === 'tool_call_start').length;
+		const activeTool = events.filter(e => e.type === 'tool_call_start').at(-1)?.data?.toolName as string | undefined;
+		const lastToolEnd = events.filter(e => e.type === 'tool_call_end').length;
+		const isToolActive = toolCount > lastToolEnd;
+
 		for (const node of getNodes()) {
 			if (managed && !managed.has(node.id)) continue;
 			const nextStatus = statuses[node.id] ?? 'idle';
-			if ((node.data?.status as string | undefined) === nextStatus) continue;
-			updateNodeData(node.id, { status: nextStatus });
+			const updates: Record<string, unknown> = { status: nextStatus };
+
+			// Attach agent progress to agent/run nodes while running
+			if (nextStatus === 'running' && (turnCount > 0 || toolCount > 0)) {
+				updates.agentProgress = {
+					turnCount,
+					toolCount,
+					activeTool: isToolActive ? activeTool : null,
+					eventCount: events.length,
+				};
+			} else {
+				updates.agentProgress = null;
+			}
+
+			const current = node.data;
+			if (current?.status === nextStatus && JSON.stringify(current?.agentProgress) === JSON.stringify(updates.agentProgress)) continue;
+			updateNodeData(node.id, updates);
 		}
 	}
 
