@@ -557,7 +557,7 @@
 									</div>
 								{:else if logs && logs.length > 0}
 									<div class="p-3">
-										<StepTimeline steps={logs} />
+										<StepTimeline steps={logs} agentEvents={stream.events} />
 									</div>
 								{:else if !isRunning(exec.status)}
 									<div class="py-6 text-center text-[10px] text-muted-foreground">
