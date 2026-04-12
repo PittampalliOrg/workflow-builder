@@ -4,12 +4,18 @@
 	import {
 		X, Check, Loader2, CheckCircle2, XCircle, Clock,
 		ChevronDown, ChevronRight, ExternalLink, RefreshCw,
-		Wrench, MessageSquare, Monitor, Terminal
+		Wrench, MessageSquare, Monitor, Terminal, Brain, Bot, Zap
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Card } from '$lib/components/ui/card';
 	import { formatDistanceToNow } from 'date-fns';
 	import StepTimeline from '$lib/components/workflow/execution/step-timeline.svelte';
+	import {
+		ChainOfThought,
+		ChainOfThoughtHeader,
+		ChainOfThoughtContent,
+		ChainOfThoughtStep
+	} from '$lib/components/ui/ai-elements/chain-of-thought/index.js';
 	import {
 		createExecutionStream,
 		createInitialExecutionStreamState,
@@ -413,6 +419,43 @@
 											</div>
 										{/if}
 
+										<!-- Agent stats bar -->
+										{@const turnCount = stream.events.filter(e => e.type === 'llm_complete').length}
+										{@const toolCount = stream.events.filter(e => e.type === 'tool_call_start').length}
+										{#if turnCount > 0 || toolCount > 0}
+											<div class="flex items-center gap-3 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-3 py-2">
+												<div class="flex items-center gap-1.5">
+													<div class="flex h-5 w-5 items-center justify-center rounded-full bg-blue-500/20">
+														<MessageSquare size={10} class="text-blue-400" />
+													</div>
+													<div class="text-[10px]">
+														<span class="font-semibold text-blue-400">{turnCount}</span>
+														<span class="text-muted-foreground"> turn{turnCount !== 1 ? 's' : ''}</span>
+													</div>
+												</div>
+												<div class="h-3 w-px bg-border"></div>
+												<div class="flex items-center gap-1.5">
+													<div class="flex h-5 w-5 items-center justify-center rounded-full bg-orange-500/20">
+														<Wrench size={10} class="text-orange-400" />
+													</div>
+													<div class="text-[10px]">
+														<span class="font-semibold text-orange-400">{toolCount}</span>
+														<span class="text-muted-foreground"> tool{toolCount !== 1 ? 's' : ''}</span>
+													</div>
+												</div>
+												<div class="h-3 w-px bg-border"></div>
+												<div class="flex items-center gap-1.5">
+													<div class="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/20">
+														<Zap size={10} class="text-emerald-400" />
+													</div>
+													<div class="text-[10px]">
+														<span class="font-semibold text-emerald-400">{stream.events.length}</span>
+														<span class="text-muted-foreground"> events</span>
+													</div>
+												</div>
+											</div>
+										{/if}
+
 										{#if stream.activeToolName}
 											<div class="flex items-center gap-1.5 rounded-md bg-accent/50 px-2 py-1.5 text-xs">
 												<Wrench size={11} class="text-orange-500" />
@@ -427,32 +470,67 @@
 											</div>
 										{/if}
 
-										<!-- Compact event feed (last 8) -->
+										<!-- Chain of thought event feed -->
 										{#if stream.events.length > 0}
-											<div class="space-y-0.5">
-												<div class="text-[10px] text-muted-foreground">Events ({stream.events.length})</div>
-												{#each stream.events.slice(-8) as event (event.timestamp + event.type)}
-													<div class="flex items-center gap-1.5 text-[10px]">
-														{#if event.type === 'tool_call_start' || event.type === 'tool_call_end'}
-															<Wrench size={9} class="shrink-0 text-orange-500" />
+											{@const significantEvents = stream.events.filter(e => ['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(e.type))}
+											<ChainOfThought defaultOpen={true}>
+												<ChainOfThoughtHeader>
+													Agent Activity ({significantEvents.length} steps)
+												</ChainOfThoughtHeader>
+												<ChainOfThoughtContent>
+													{#each significantEvents.slice(-12) as event, i (event.timestamp + event.type + i)}
+														{#if event.type === 'llm_start'}
+															<ChainOfThoughtStep
+																icon={Brain}
+																label="Thinking..."
+																description={event.data.model ? `Model: ${event.data.model}` : undefined}
+																status="active"
+															/>
 														{:else if event.type === 'llm_complete'}
-															<MessageSquare size={9} class="shrink-0 text-blue-500" />
-														{:else if event.type === 'sandbox_output'}
-															<Monitor size={9} class="shrink-0 text-purple-500" />
+															<ChainOfThoughtStep
+																icon={MessageSquare}
+																label={event.data.toolCalls?.length ? `Plan: call ${event.data.toolCalls.join(', ')}` : 'Response'}
+																description={event.data.content ? String(event.data.content).slice(0, 120) : undefined}
+																status="complete"
+															/>
+														{:else if event.type === 'tool_call_start'}
+															<ChainOfThoughtStep
+																icon={Wrench}
+																label={`${event.data.toolName || 'Tool'}`}
+																description={event.data.args ? Object.entries(event.data.args).map(([k,v]) => `${k}: ${String(v).slice(0,40)}`).join(', ') : undefined}
+																status="active"
+															/>
+														{:else if event.type === 'tool_call_end'}
+															<ChainOfThoughtStep
+																icon={event.data.success ? CheckCircle2 : XCircle}
+																label={`${event.data.toolName || 'Tool'} ${event.data.success ? '✓' : '✗'}`}
+																description={event.data.output ? String(event.data.output).slice(0, 120) : event.data.error ? String(event.data.error).slice(0, 120) : undefined}
+																status="complete"
+															/>
+														{:else if event.type === 'run_started'}
+															<ChainOfThoughtStep
+																icon={Bot}
+																label="Agent started"
+																description={event.data.model ? `Using ${event.data.model}` : undefined}
+																status="complete"
+															/>
 														{:else if event.type === 'run_complete'}
-															<CheckCircle2 size={9} class="shrink-0 text-green-500" />
+															<ChainOfThoughtStep
+																icon={CheckCircle2}
+																label="Agent completed"
+																status="complete"
+															/>
 														{:else if event.type === 'run_error'}
-															<XCircle size={9} class="shrink-0 text-red-500" />
-														{:else}
-															<Terminal size={9} class="shrink-0 text-muted-foreground" />
+															<ChainOfThoughtStep
+																icon={XCircle}
+																label="Agent error"
+																description={event.data.error ? String(event.data.error).slice(0, 120) : undefined}
+																status="complete"
+															/>
 														{/if}
-														<span class="truncate text-muted-foreground">
-															{event.type === 'tool_call_start' ? `Tool: ${event.data.toolName ?? ''}` : event.type}
-														</span>
-														<span class="ml-auto shrink-0 text-muted-foreground/60">{formatTime(event.timestamp)}</span>
-													</div>
-												{/each}
-											</div>
+													{/each}
+												</ChainOfThoughtContent>
+											</ChainOfThought>
 										{/if}
 									</div>
 								{/if}
