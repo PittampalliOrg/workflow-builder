@@ -249,18 +249,40 @@
 	const activeNodeLabel = $derived(
 		snapshot?.currentNodeName?.trim() || snapshot?.currentNodeId?.trim() || null
 	);
-	// Extract plan text from agent_plan step output
+	// Extract plan text from agent events (llm_complete with non-empty content and no tool calls)
+	// The plan is the last LLM response that has content but no tool_calls — the agent's final answer.
 	const planText = $derived.by(() => {
+		// First check persisted agent events for the plan phase's final LLM response
+		const allEvents = [
+			...(snapshot?.agentEvents ?? []),
+			...persistedAgentEvents
+		] as Array<{ type: string; data: Record<string, unknown> }>;
+
+		// Find llm_complete events with substantial content (the plan text)
+		const planResponses = allEvents
+			.filter(
+				(e) =>
+					e.type === 'llm_complete' &&
+					typeof e.data?.content === 'string' &&
+					(e.data.content as string).length > 100 &&
+					(!Array.isArray(e.data?.toolCalls) || (e.data.toolCalls as unknown[]).length === 0)
+			)
+			.map((e) => e.data.content as string);
+
+		if (planResponses.length > 0) {
+			// Return the longest response (most likely the plan)
+			return planResponses.reduce((a, b) => (a.length >= b.length ? a : b));
+		}
+
+		// Fallback: try step output
 		const planStep = logs.find(
 			(l: StepLog) => l.stepName === 'agent_plan' && l.status === 'success'
 		);
 		if (!planStep?.output) return null;
 		const out = planStep.output as Record<string, unknown>;
-		// The agent's final response is in the output — try to extract text
 		if (typeof out === 'string') return out;
-		if (typeof out.result === 'string') return out.result;
-		if (typeof out.output === 'string') return out.output;
-		return JSON.stringify(out, null, 2);
+		if (typeof out.result === 'string' && out.result) return out.result;
+		return null;
 	});
 
 	async function loadPlanArtifacts(): Promise<void> {
