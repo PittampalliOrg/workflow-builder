@@ -13,10 +13,18 @@ function hasPresentValue(record: Record<string, unknown>, key: string): boolean 
 export function collectRequiredTriggerFields(spec: unknown): string[] {
 	if (!isRecord(spec)) return [];
 	const serialized = JSON.stringify(spec);
-	const pattern = /\{\{\s*trigger\.([a-zA-Z0-9_]+)(?=[.\s}])/g;
 	const fields = new Set<string>();
 
-	for (const match of serialized.matchAll(pattern)) {
+	// Match {{ trigger.field }} (legacy/Mastra format)
+	const legacyPattern = /\{\{\s*trigger\.([a-zA-Z0-9_]+)(?=[.\s}])/g;
+	for (const match of serialized.matchAll(legacyPattern)) {
+		const field = match[1]?.trim();
+		if (field) fields.add(field);
+	}
+
+	// Match ${ .trigger.field ... } (SW 1.0 jq expression format)
+	const sw1Pattern = /\$\{\s*[^}]*\.trigger\.([a-zA-Z0-9_]+)/g;
+	for (const match of serialized.matchAll(sw1Pattern)) {
 		const field = match[1]?.trim();
 		if (field) fields.add(field);
 	}
