@@ -42,7 +42,7 @@
 
 	let { steps, agentEvents = [] }: Props = $props();
 
-	const AGENT_ACTION_TYPES = new Set(['durable/run', 'dapr-agent-py/run', 'openshell/run', 'claude/run']);
+	const AGENT_ACTION_TYPES = new Set(['durable/run']);
 
 	let significantEvents = $derived(
 		agentEvents.filter(e =>

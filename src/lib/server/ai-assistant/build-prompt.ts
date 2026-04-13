@@ -67,6 +67,27 @@ Examples:
 
 The ACTION_NAME must NOT include the piece name as a prefix.`);
 
+	parts.push(`## Agent Runtime
+The only exposed agent is dapr-agent-py. Use \`call: durable/run\` for agent work. Do not generate \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+
+\`\`\`yaml
+- run-agent:
+    call: durable/run
+    with:
+      prompt: "Do the requested work."
+      mode: execute_direct
+      agentRuntime: dapr-agent-py
+      workspaceRef: "\${ .workspaceProfile.workspaceRef }"
+      sandboxName: "\${ .workspaceProfile.sandboxName }"
+      cwd: /sandbox
+      agentConfig:
+        runtime: dapr-agent-py
+        mcpConnectionMode: explicit
+        mcpServers: []
+\`\`\`
+
+For MCP-enabled agent runs, put server configs in \`with.agentConfig.mcpServers\`. Use \`allowedTools\` only when the user wants a tool allowlist; missing or empty means all tools are exposed.`);
+
 	// SW 1.0 format with working example
 	parts.push(`## SW 1.0 Spec Format
 

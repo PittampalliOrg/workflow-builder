@@ -31,7 +31,7 @@
 
 	const nodeTypes: { type: WorkflowNodeType; label: string; icon: typeof Play; group: string }[] = [
 		{ type: 'call', label: 'Call', icon: Globe, group: 'Steps' },
-		{ type: 'agent', label: 'OpenShell Agent', icon: Bot, group: 'Steps' },
+		{ type: 'agent', label: 'dapr-agent-py', icon: Bot, group: 'Steps' },
 		{ type: 'set', label: 'Set Variable', icon: Variable, group: 'Steps' },
 		{ type: 'switch', label: 'Switch / Branch', icon: GitBranch, group: 'Steps' },
 		{ type: 'wait', label: 'Wait / Delay', icon: Clock, group: 'Steps' },

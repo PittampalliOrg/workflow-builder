@@ -2,6 +2,7 @@ import { createHighlighter, type Highlighter } from "shiki";
 import {
   daprFetch,
   getFnActivepiecesUrl,
+  getFnSystemUrl,
   getOrchestratorUrl,
 } from "$lib/server/dapr-client";
 import {
@@ -92,7 +93,7 @@ let hasWarnedMissingCodeFunctionsTable = false;
 let hasMissingCodeFunctionsTable = false;
 
 type RemoteServiceDescriptor = {
-  serviceId: "workflow-orchestrator" | "fn-activepieces";
+  serviceId: "workflow-orchestrator" | "fn-activepieces" | "fn-system";
   getBaseUrl: () => string;
   metadataPath: string;
   introspectPath: string;
@@ -108,6 +109,12 @@ const REMOTE_SERVICES: RemoteServiceDescriptor[] = [
   {
     serviceId: "fn-activepieces",
     getBaseUrl: getFnActivepiecesUrl,
+    metadataPath: "/api/metadata/actions",
+    introspectPath: "/api/runtime/introspect",
+  },
+  {
+    serviceId: "fn-system",
+    getBaseUrl: getFnSystemUrl,
     metadataPath: "/api/metadata/actions",
     introspectPath: "/api/runtime/introspect",
   },
@@ -131,13 +138,13 @@ function buildActionId(prefix: string, slug: string): string {
   return `${prefix}.${slug}`;
 }
 
-function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
+function buildDaprAgentPyDetail(): ActionCatalogDetail {
   const taskConfig = {
     call: "durable/run",
     with: {
       prompt: "",
       mode: "execute_direct",
-      agentRuntime: "openshell-durable-agent",
+      agentRuntime: "dapr-agent-py",
       workspaceRef: "",
       sandboxName: "",
       cwd: "/sandbox",
@@ -146,7 +153,7 @@ function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
       body: {
         prompt: "",
         mode: "execute_direct",
-        agentRuntime: "openshell-durable-agent",
+        agentRuntime: "dapr-agent-py",
         workspaceRef: "",
         sandboxName: "",
         cwd: "/sandbox",
@@ -160,10 +167,10 @@ function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
     id: buildActionId("builtin", "durable/run"),
     slug: "durable/run",
     name: "durable/run",
-    displayName: "OpenShell Durable Agent",
-    description: "Run the OpenShell-backed dapr-agent-py DurableAgent",
+    displayName: "dapr-agent-py",
+    description: "Run the dapr-agent-py DurableAgent",
     providerId: "dapr-agent-py",
-    providerLabel: "OpenShell Agent",
+    providerLabel: "dapr-agent-py",
     providerIconUrl: null,
     category: "agent",
     serviceId: "dapr-agent-py",
@@ -178,7 +185,7 @@ function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
     insertable: true,
     auth: null,
     fields: null,
-    tags: ["openshell", "dapr-agent-py", "durable-agent"],
+    tags: ["dapr-agent-py", "durable-agent", "mcp"],
     doc: "Requires a workspaceRef and should also pass sandboxName from workspace/profile.",
     inputSchema: {
       type: "object",
@@ -188,6 +195,13 @@ function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
         workspaceRef: { type: "string" },
         sandboxName: { type: "string" },
         cwd: { type: "string", default: "/sandbox" },
+        agentConfig: {
+          type: "object",
+          properties: {
+            runtime: { type: "string", default: "dapr-agent-py" },
+            mcpServers: { type: "array" },
+          },
+        },
         maxTurns: { type: "integer", default: 120 },
         timeoutMinutes: { type: "integer", default: 120 },
       },
@@ -206,7 +220,7 @@ function buildOpenShellDurableAgentDetail(): ActionCatalogDetail {
     },
     runtime: buildRuntimeStatus(
       true,
-      ["openshell-backed", "dapr-durable-agent"],
+      ["dapr-agent-py", "dapr-durable-agent", "mcp-configurable"],
       [],
     ),
     rendered: null,
@@ -978,7 +992,7 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
     REMOTE_SERVICES.map((service) => fetchRemoteService(service)),
   );
 
-  const actions: ActionCatalogDetail[] = [buildOpenShellDurableAgentDetail()];
+  const actions: ActionCatalogDetail[] = [buildDaprAgentPyDetail()];
   const services: ActionCatalogServiceSnapshot[] = [];
   const partialErrors: { serviceId: string; error: string }[] = [];
   for (const result of settled) {

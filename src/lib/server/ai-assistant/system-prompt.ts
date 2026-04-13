@@ -39,6 +39,7 @@ do:
 
 ### Task types
 - **call**: Invoke a function/API — \`call: http\` or \`call: provider/action\`
+- **agent**: Run dapr-agent-py — \`call: durable/run\`
 - **set**: Set variables — \`set: { key: value }\`
 - **switch**: Conditional — \`switch: [{ case: { when: "expr", then: "task" } }]\`
 - **wait**: Delay — \`wait: PT30S\` (ISO 8601 duration)
@@ -75,6 +76,27 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 - Task names must be unique within the do array
 - Duration format: PT30S (30s), PT1H (1h), P1D (1 day)
 - Reference previous task outputs with \`\${ .task-name.field }\`
+
+### dapr-agent-py agent runs
+Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+
+\`\`\`yaml
+- run-agent:
+    call: durable/run
+    with:
+      prompt: "Do the requested work."
+      mode: execute_direct
+      agentRuntime: dapr-agent-py
+      workspaceRef: "\${ .workspaceProfile.workspaceRef }"
+      sandboxName: "\${ .workspaceProfile.sandboxName }"
+      cwd: /sandbox
+      agentConfig:
+        runtime: dapr-agent-py
+        mcpConnectionMode: explicit
+        mcpServers: []
+\`\`\`
+
+To expose MCP tools to the agent, add entries under \`with.agentConfig.mcpServers\`. Each server uses \`server_name\`, \`displayName\`, \`transport\`, and either \`url\` for HTTP/SSE/WebSocket transports or \`command\`/\`args\` for stdio. \`allowedTools\` is optional; omit it or use an empty array to expose every tool from that server.
 
 ### CRITICAL: Only use real actions
 - Every task MUST use a \`call:\` with a real action from the available integrations (e.g., \`gmail/send_email\`)

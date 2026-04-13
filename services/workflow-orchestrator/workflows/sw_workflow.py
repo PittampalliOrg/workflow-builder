@@ -512,15 +512,20 @@ _REMOVED_AGENT_ACTION_TYPES = {
 }
 
 _NATIVE_DURABLE_AGENT_TARGETS = {
+    "dapr-agent-py": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.DURABLE_AGENT_APP_ID,
+        "instance_prefix": "durable",
+    },
     "durable-agent": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
         "app_id": config.DURABLE_AGENT_APP_ID,
         "instance_prefix": "durable",
     },
-    "claude-code-agent": {
-        "workflow_name": config.CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.CLAUDE_CODE_AGENT_APP_ID,
-        "instance_prefix": "claude",
+    "openshell-durable-agent": {
+        "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
+        "app_id": config.DURABLE_AGENT_APP_ID,
+        "instance_prefix": "durable",
     },
 }
 
@@ -773,6 +778,98 @@ def _run_native_durable_agent_child_workflow(
             "Provision a workspace/profile step in the parent workflow and pass "
             "with.workspaceRef into the durable/run task."
         )
+
+    resolved_mcp_servers: list[dict[str, Any]] = []
+    resolved_mcp_warnings: list[str] = []
+    try:
+        from activities.resolve_mcp_config import resolve_agent_mcp_servers
+
+        mcp_resolution = yield ctx.call_activity(
+            resolve_agent_mcp_servers,
+            input=_freeze(
+                {
+                    "workflowId": tc.workflow_id,
+                    "_otel": tc.otel_ctx,
+                }
+            ),
+        )
+        if isinstance(mcp_resolution, dict):
+            if isinstance(mcp_resolution.get("mcpServers"), list):
+                resolved_mcp_servers = [
+                    item
+                    for item in mcp_resolution["mcpServers"]
+                    if isinstance(item, dict)
+                ]
+            if isinstance(mcp_resolution.get("warnings"), list):
+                resolved_mcp_warnings = [
+                    str(item)
+                    for item in mcp_resolution["warnings"]
+                    if str(item).strip()
+                ]
+    except Exception as mcp_err:
+        logger.warning(
+            "[SW Workflow] Failed to resolve MCP connections for workflow %s: %s",
+            tc.workflow_id,
+            mcp_err,
+        )
+
+    if resolved_mcp_servers or resolved_mcp_warnings:
+        existing_config = agent_config if isinstance(agent_config, dict) else {}
+        existing_mcp_servers = existing_config.get("mcpServers")
+        existing_mcp_server_list = [
+            item
+            for item in (
+                existing_mcp_servers
+                if isinstance(existing_mcp_servers, list)
+                else []
+            )
+            if isinstance(item, dict)
+        ]
+        seen_mcp_keys: set[str] = set()
+        for item in existing_mcp_server_list:
+            key = str(
+                item.get("server_name")
+                or item.get("serverName")
+                or item.get("name")
+                or item.get("url")
+                or item.get("serverUrl")
+                or ""
+            ).strip()
+            if key:
+                seen_mcp_keys.add(key)
+        appended_mcp_servers = []
+        for item in resolved_mcp_servers:
+            key = str(
+                item.get("server_name")
+                or item.get("serverName")
+                or item.get("name")
+                or item.get("url")
+                or item.get("serverUrl")
+                or ""
+            ).strip()
+            if key and key in seen_mcp_keys:
+                continue
+            if key:
+                seen_mcp_keys.add(key)
+            appended_mcp_servers.append(item)
+        agent_config = {
+            **existing_config,
+            "mcpServers": [
+                *existing_mcp_server_list,
+                *appended_mcp_servers,
+            ],
+        }
+        if resolved_mcp_warnings:
+            existing_warnings = existing_config.get("mcpConnectionWarnings")
+            agent_config["mcpConnectionWarnings"] = [
+                *(
+                    existing_warnings
+                    if isinstance(existing_warnings, list)
+                    else []
+                ),
+                *resolved_mcp_warnings,
+            ]
+
     child_input = {
         "task": run_prompt,
         "prompt": prompt,

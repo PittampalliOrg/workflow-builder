@@ -373,7 +373,7 @@ def test_durable_run_routes_through_function_router():
                 "workspaceRef": "ws_test_123",
                 "sandboxName": "ws-test-123",
                 "cwd": "/sandbox/repo",
-                "agentRuntime": "openshell-durable-agent",
+                "agentRuntime": "dapr-agent-py",
                 "maxTurns": "8",
                 "timeoutMinutes": "15",
                 "agentConfig": {"name": "durable-validation"},
@@ -391,7 +391,7 @@ def test_durable_run_routes_through_function_router():
     assert config["workspaceRef"] == "ws_test_123"
     assert config["sandboxName"] == "ws-test-123"
     assert config["cwd"] == "/sandbox/repo"
-    assert config["agentRuntime"] == "openshell-durable-agent"
+    assert config["agentRuntime"] == "dapr-agent-py"
     assert config["maxTurns"] == "8"
 
     with pytest.raises(StopIteration) as stop:

@@ -44,7 +44,7 @@ export interface AgentGraphDefinition {
 export interface AgentTaskBody extends Record<string, unknown> {
   prompt: string;
   mode: "execute_direct";
-  agentRuntime: "openshell-durable-agent";
+  agentRuntime: string;
   workspaceRef?: string;
   sandboxName?: string;
   cwd?: string;
@@ -271,7 +271,10 @@ export function getAgentTaskBody(
   return {
     prompt: typeof body.prompt === "string" ? body.prompt : "",
     mode: "execute_direct",
-    agentRuntime: "openshell-durable-agent",
+    agentRuntime:
+      typeof body.agentRuntime === "string" && body.agentRuntime.trim()
+        ? body.agentRuntime.trim()
+        : "dapr-agent-py",
     workspaceRef:
       typeof body.workspaceRef === "string"
         ? body.workspaceRef
@@ -318,7 +321,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
   return {
     prompt: "",
     mode: "execute_direct",
-    agentRuntime: "openshell-durable-agent",
+    agentRuntime: "dapr-agent-py",
     workspaceRef: "",
     sandboxName: "",
     cwd: "/sandbox",
@@ -330,6 +333,9 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
       instructions: "",
       modelSpec: "",
       tools: [],
+      runtime: "dapr-agent-py",
+      mcpConnectionMode: "explicit",
+      mcpServers: [],
       loop: {
         strategy: "graph_v1",
       },
