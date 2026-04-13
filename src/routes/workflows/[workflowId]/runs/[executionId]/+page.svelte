@@ -55,6 +55,13 @@
 	import AgentSubflowFocus from '$lib/components/workflow/execution/agent-subflow-focus.svelte';
 	import InvestigationStudio from '$lib/components/observability/investigation-studio.svelte';
 	import PlanReview from '$lib/components/workflow/execution/plan-review.svelte';
+	import { getToolComponent } from '$lib/components/workflow/execution/tool-views';
+	import { ChatContainerRoot, ChatContainerContent, ChatContainerScrollAnchor } from '$lib/components/ui/prompt-kit/chat-container';
+	import { ScrollButton } from '$lib/components/ui/prompt-kit/scroll-button';
+	import { ThinkingBar } from '$lib/components/ui/prompt-kit/thinking-bar';
+	import { Reasoning, ReasoningTrigger, ReasoningContent } from '$lib/components/ui/prompt-kit/reasoning';
+	import { Message, MessageAvatar, MessageContent } from '$lib/components/ui/prompt-kit/message';
+	import ProviderIcon from '$lib/components/ui/ai-elements/provider-icon.svelte';
 	import {
 		ChainOfThought,
 		ChainOfThoughtHeader,
@@ -71,6 +78,11 @@
 	import type { ExecutionWorkspaceSession } from '$lib/types/execution-stream';
 	import type { ObservabilityInvestigationPayload } from '$lib/types/observability';
 	import { buildAgentCanvasSubflows, remapEdgesForReplacements } from '$lib/utils/agent-subflow';
+	import {
+		buildTimelineItems,
+		eventType,
+		mergeTimelineEvents
+	} from '$lib/utils/execution-timeline';
 
 	import StartNode from '$lib/components/workflow/nodes/sw/start-node.svelte';
 	import EndNode from '$lib/components/workflow/nodes/sw/end-node.svelte';
@@ -93,7 +105,7 @@
 	import LabeledEdge from '$lib/components/workflow/edges/labeled-edge.svelte';
 	import ExecutionCanvasSync from '$lib/components/workflow/execution-canvas-sync.svelte';
 
-	let workflowId = $derived(page.params.workflowId);
+	let workflowId = $derived(page.params.workflowId ?? '');
 	let executionId = $derived(page.params.executionId ?? '');
 
 	// Workflow canvas data
@@ -179,7 +191,7 @@
 	let executionStream: ExecutionStreamStore | null = null;
 	let executionState = $state<ExecutionStreamState>(createInitialExecutionStreamState());
 	let timelineRef = $state<HTMLDivElement | null>(null);
-	let persistedAgentEvents = $state<Array<{ type: string; data: Record<string, unknown>; timestamp: string; toolName?: string | null }>>([]);
+	let persistedAgentEvents = $state<ExecutionTimelineEvent[]>([]);
 	let persistedEventsLoaded = $state(false);
 
 	// Fetch persisted agent events from DB when stream events are empty
@@ -197,9 +209,9 @@
 		} catch { /* ignore */ }
 	}
 
-	// Combined events: prefer live stream, fall back to persisted
+	// Combined events: live updates should extend persisted history, never replace it.
 	let timelineEvents = $derived(
-		executionState.events.length > 0 ? executionState.events : persistedAgentEvents
+		mergeTimelineEvents(persistedAgentEvents, executionState.events)
 	);
 
 	// Derived stats from timeline events
@@ -358,6 +370,16 @@
 	} satisfies NodeTypes;
 
 	const isRunning = $derived(['running', 'pending'].includes(executionStatus.toLowerCase()));
+	let timelineItems = $derived(buildTimelineItems(significantTimelineEvents, { isRunning }));
+
+	/** Extract model name from run_started or llm_start events for provider icon display. */
+	let agentModel = $derived.by(() => {
+		for (const ev of timelineEvents) {
+			const model = ev.data?.model;
+			if (model && typeof model === 'string') return model;
+		}
+		return '';
+	});
 
 	const duration = $derived.by(() => {
 		if (!startTime) return null;
@@ -417,7 +439,7 @@
 
 	// Load persisted events when timeline tab is shown and stream is empty
 	$effect(() => {
-		if (activeTab === 'timeline' && executionState.events.length === 0 && !persistedEventsLoaded) {
+		if (activeTab === 'timeline' && !persistedEventsLoaded) {
 			loadPersistedAgentEvents();
 		}
 	});
@@ -428,12 +450,7 @@
 		labeled: LabeledEdge
 	} satisfies EdgeTypes;
 
-	// Auto-scroll timeline to bottom
-	$effect(() => {
-		if (executionState.events.length && timelineRef) {
-			timelineRef.scrollTop = timelineRef.scrollHeight;
-		}
-	});
+	// Auto-scroll is now handled by ChatContainerRoot (prompt-kit)
 
 	$effect(() => {
 		if (!selectedAgentRunId && selectedAgentRun) {
@@ -947,115 +964,74 @@
 					</div>
 				{/if}
 
-				<div class="flex-1 overflow-y-auto p-4" bind:this={timelineRef}>
-					{#if significantTimelineEvents.length > 0}
-						<div class="space-y-3">
-							{#each significantTimelineEvents as event, i (event.timestamp + event.type + i)}
-								{@const evtType = event.type || (event.data?.type as string) || ''}
-
-								{#if evtType === 'run_started'}
-									<div class="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3">
-										<Bot size={16} class="text-cyan-400" />
-										<span class="text-sm font-medium text-cyan-400">Agent started</span>
-										{#if event.data?.model}
-											<Badge variant="outline" class="ml-auto text-[10px]">{event.data.model}</Badge>
-										{/if}
-									</div>
-
-								{:else if evtType === 'llm_start'}
-									<div class="flex items-center gap-2 rounded-lg border border-blue-500/20 bg-blue-500/5 px-4 py-2.5">
-										<Brain size={14} class="text-blue-400 {i === significantTimelineEvents.length - 1 && isRunning ? 'animate-pulse' : ''}" />
-										<span class="text-xs text-blue-400">Thinking...</span>
-										{#if event.data?.model}
-											<span class="ml-auto text-[10px] text-muted-foreground">{event.data.model}</span>
-										{/if}
-									</div>
-
-								{:else if evtType === 'llm_complete'}
-									{@const toolCalls = (event.data?.toolCalls ?? []) as string[]}
-									{@const content = event.data?.content ? String(event.data.content) : ''}
-									<Task open={false}>
-										<TaskTrigger title={toolCalls.length ? `💬 Plan: call ${toolCalls.join(', ')}` : '💬 Response'} />
-										<TaskContent>
-											{#if content}
-												<TaskItem>
-													<pre class="max-h-[40vh] overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/50 p-3 text-xs font-mono">{content}</pre>
-												</TaskItem>
-											{:else if toolCalls.length}
-												<TaskItem>
-													<div class="flex flex-wrap gap-1.5">
-														{#each toolCalls as tc}
-															<Badge variant="outline" class="text-[10px]">
-																<Wrench size={10} class="mr-1 text-orange-400" />{tc}
-															</Badge>
-														{/each}
-													</div>
-												</TaskItem>
-											{:else}
-												<TaskItem class="text-muted-foreground italic">No content</TaskItem>
+				<div class="relative flex-1 overflow-hidden">
+					<ChatContainerRoot class="h-full overflow-y-auto p-4">
+					{#if timelineItems.length > 0}
+						<ChatContainerContent class="space-y-3">
+							{#each timelineItems as item, i (item.key)}
+								{#if item.kind === 'tool'}
+									{@const ToolComponent = getToolComponent(item.toolName)}
+									<ToolComponent
+										phase={item.phase}
+										toolName={item.toolName}
+										args={item.args}
+										output={item.output}
+										success={item.success}
+										error={item.error}
+										state={item.status === 'unknown' ? 'error' : item.status}
+									/>
+								{:else}
+									{@const event = item.event}
+									{@const evtType = eventType(event)}
+									{#if evtType === 'run_started'}
+										<div class="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-4 py-3">
+											<Bot size={16} class="text-cyan-400" />
+											<span class="text-sm font-medium text-cyan-400">Agent started</span>
+											{#if event.data?.model}
+												<Badge variant="outline" class="ml-auto text-[10px]">{event.data.model}</Badge>
 											{/if}
-										</TaskContent>
-									</Task>
+										</div>
 
-								{:else if evtType === 'tool_call_start'}
-									{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
-									{@const args = event.data?.args as Record<string, unknown> | undefined}
-									<Task open={false}>
-										<TaskTrigger title="🔧 {toolName} {args ? '(' + Object.keys(args).slice(0, 3).join(', ') + ')' : ''}" />
-										<TaskContent>
-											{#if args}
-												{#each Object.entries(args) as [key, value]}
-													<TaskItem>
-														<div class="space-y-1">
-															<span class="text-[10px] font-semibold uppercase tracking-wider text-orange-400/70">{key}</span>
-															<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-2 text-[11px] font-mono">{typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre>
-														</div>
-													</TaskItem>
-												{/each}
-											{:else}
-												<TaskItem class="text-muted-foreground italic">No arguments</TaskItem>
-											{/if}
-										</TaskContent>
-									</Task>
+									{:else if evtType === 'llm_start'}
+										<!-- Only show Thinking... for the last event while running -->
+										{#if i === timelineItems.length - 1 && isRunning}
+											<ThinkingBar />
+										{/if}
 
-								{:else if evtType === 'tool_call_end'}
-									{@const toolName = String(event.toolName || event.data?.toolName || 'Tool')}
-									{@const success = event.data?.success !== false}
-									{@const output = event.data?.output ? String(event.data.output) : ''}
-									{@const error = event.data?.error ? String(event.data.error) : ''}
-									<Task open={false}>
-										<TaskTrigger title="{success ? '✅' : '❌'} {toolName} — {(output || error).slice(0, 80)}" />
-										<TaskContent>
-											<TaskItem>
-												{#if error}
-													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{error}</pre>
-												{:else if output}
-													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-3 text-[11px] font-mono">{output}</pre>
-												{:else}
-													<span class="text-muted-foreground italic">No output</span>
-												{/if}
-											</TaskItem>
-										</TaskContent>
-									</Task>
+									{:else if evtType === 'llm_complete'}
+										{@const content = event.data?.content ? String(event.data.content).trim() : ''}
+										{#if content}
+										<!-- LLM text output: render as assistant message like Claude Code's AssistantTextMessage.
+										     Only content blocks are shown; empty llm_complete (tool-calls-only) are skipped. -->
+										<div class="flex items-start gap-3 rounded-lg border border-border/40 bg-muted/30 px-4 py-3">
+											<div class="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-background">
+												<ProviderIcon model={agentModel} size={18} />
+											</div>
+											<p class="text-sm text-foreground leading-relaxed whitespace-pre-wrap">{content}</p>
+										</div>
+										{/if}
+										<!-- When only tool calls and no content, skip — tool_call_start events render them -->
 
-								{:else if evtType === 'run_complete'}
-									<div class="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-4 py-3">
-										<CheckCircle2 size={16} class="text-green-400" />
-										<span class="text-sm font-medium text-green-400">Agent completed</span>
-									</div>
+									{:else if evtType === 'run_complete'}
+										<div class="flex items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-4 py-3">
+											<CheckCircle2 size={16} class="text-green-400" />
+											<span class="text-sm font-medium text-green-400">Agent completed</span>
+										</div>
 
-								{:else if evtType === 'run_error'}
-									<Task open={true}>
-										<TaskTrigger title="❌ Agent error" />
-										<TaskContent>
-											<TaskItem>
-												<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{event.data?.error ? String(event.data.error) : 'Unknown error'}</pre>
-											</TaskItem>
-										</TaskContent>
-									</Task>
+									{:else if evtType === 'run_error'}
+										<Task open={true}>
+											<TaskTrigger title="❌ Agent error" />
+											<TaskContent>
+												<TaskItem>
+													<pre class="max-h-[30vh] overflow-auto whitespace-pre-wrap break-all rounded-md border border-red-500/20 bg-red-500/5 p-3 text-[11px] font-mono text-red-400">{event.data?.error ? String(event.data.error) : 'Unknown error'}</pre>
+												</TaskItem>
+											</TaskContent>
+										</Task>
+									{/if}
 								{/if}
 							{/each}
-						</div>
+						</ChatContainerContent>
+						<ChatContainerScrollAnchor />
 					{:else if executionState.error}
 						<div class="flex flex-col items-center justify-center h-full gap-2 text-muted-foreground">
 							<XCircle size={20} class="text-red-500" />
@@ -1077,6 +1053,8 @@
 							<p class="text-sm">No agent events recorded for this execution</p>
 						</div>
 					{/if}
+					<ScrollButton />
+					</ChatContainerRoot>
 				</div>
 			</div>
 		</TabsContent>
@@ -1085,7 +1063,7 @@
 		<TabsContent value="plan" class="flex-1 overflow-y-auto p-4">
 			<PlanReview
 				{executionId}
-				workflowId={page.params.workflowId}
+				{workflowId}
 				{executionStatus}
 				{planText}
 				artifacts={planArtifacts}
