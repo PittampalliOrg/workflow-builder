@@ -1378,6 +1378,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     : prompt,
               };
               if (prompt) agentMessage.prompt = prompt;
+              if (isPlainObject(agentConfig)) {
+                agentMessage.agentConfig = JSON.stringify(agentConfig);
+              }
               const sandboxName =
                 typeof agentArgs.sandboxName === "string" &&
                 agentArgs.sandboxName.trim()
