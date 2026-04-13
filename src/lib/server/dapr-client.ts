@@ -107,6 +107,17 @@ export function getFnActivepiecesUrl(): string {
   return url;
 }
 
+/** Get the fn-system base URL */
+export function getFnSystemUrl(): string {
+  const url =
+    env.FN_SYSTEM_URL ||
+    "http://fn-system.workflow-builder.svc.cluster.local";
+  if (url.startsWith("http://") && !url.match(/:\d+$/)) {
+    return url;
+  }
+  return url;
+}
+
 // ---------------------------------------------------------------------------
 // Workflow-capable service discovery
 // ---------------------------------------------------------------------------
@@ -136,6 +147,11 @@ export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
     {
       id: "fn-activepieces",
       getBaseUrl: getFnActivepiecesUrl,
+      introspectPath: "/api/runtime/introspect",
+    },
+    {
+      id: "fn-system",
+      getBaseUrl: getFnSystemUrl,
       introspectPath: "/api/runtime/introspect",
     },
     {

@@ -7,6 +7,7 @@
  * - http-request
  * - database-query
  * - condition
+ * - dapr-converse-structured-output
  */
 
 import { otelLogMixin } from "./otel.js";
@@ -19,6 +20,11 @@ import {
 	databaseQueryStep,
 	DatabaseQueryInputSchema,
 } from "./steps/database-query.js";
+import {
+	DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS,
+	daprConverseStructuredOutputStep,
+	DaprConverseStructuredOutputInputSchema,
+} from "./steps/dapr-converse-structured-output.js";
 import {
 	httpRequestStep,
 	HttpRequestInputSchema,
@@ -70,6 +76,74 @@ async function main() {
 
 	app.get("/health", async (_request, reply) =>
 		reply.status(200).send({ status: "healthy" }),
+	);
+
+	app.get("/api/runtime/introspect", async (_request, reply) =>
+		reply.status(200).send({
+			service: "fn-system",
+			version: "1.0.0",
+			runtime: "node-dapr-conversation",
+			ready: true,
+			features: [
+				"system-actions",
+				"dapr-conversation-alpha2",
+				"structured-output",
+			],
+			registeredWorkflows: [],
+			registeredActivities: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.map(
+				(action) => ({
+					id: action.id,
+					name: action.name,
+					displayName: action.displayName,
+					description: action.description,
+					doc: null,
+					sourceCode: null,
+					sourceHtml: null,
+				}),
+			),
+			additional: {
+				steps: [
+					"http-request",
+					"database-query",
+					"condition",
+					"dapr-converse-structured-output",
+				],
+			},
+		}),
+	);
+
+	app.get("/api/metadata/actions", async (_request, reply) =>
+		reply.status(200).send({
+			service: "fn-system",
+			runtime: "node-dapr-conversation",
+			ready: true,
+			features: [
+				"system-actions",
+				"dapr-conversation-alpha2",
+				"structured-output",
+			],
+			actions: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS,
+			count: DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.length,
+		}),
+	);
+
+	app.get<{ Params: { id: string } }>(
+		"/api/metadata/actions/:id",
+		async (request, reply) => {
+			const action = DAPR_CONVERSE_STRUCTURED_OUTPUT_ACTIONS.find(
+				(item) => item.id === request.params.id || item.name === request.params.id,
+			);
+			if (!action) {
+				return reply.status(404).send({
+					error: `Action ${request.params.id} not found`,
+				});
+			}
+			return reply.status(200).send({
+				service: "fn-system",
+				runtime: "node-dapr-conversation",
+				action,
+			});
+		},
 	);
 
 	app.post<{ Body: ExecuteRequest }>("/execute", async (request, reply) => {
@@ -132,10 +206,28 @@ async function main() {
 				break;
 			}
 
+			case "dapr-converse-structured-output": {
+				const input = DaprConverseStructuredOutputInputSchema.safeParse(
+					body.input,
+				);
+				if (!input.success) {
+					result = {
+						success: false,
+						error: `Invalid input for dapr-converse-structured-output: ${input.error.issues.map((issue) => issue.message).join("; ")}`,
+					};
+					break;
+				}
+				const r = await daprConverseStructuredOutputStep(input.data);
+				result = r.success
+					? { success: true, data: r.data }
+					: { success: false, error: r.error };
+				break;
+			}
+
 			default:
 				result = {
 					success: false,
-					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition`,
+					error: `Unknown step: ${body.step}. Available steps: http-request, database-query, condition, dapr-converse-structured-output`,
 				};
 		}
 
