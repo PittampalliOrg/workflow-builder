@@ -265,6 +265,68 @@
 	let planText = $state<string | null>(null);
 	let planTextLoaded = $state(false);
 
+	function isRecord(value: unknown): value is Record<string, unknown> {
+		return typeof value === 'object' && value !== null && !Array.isArray(value);
+	}
+
+	function stringValue(value: unknown): string | null {
+		return typeof value === 'string' && value.trim().length > 10 ? value.trim() : null;
+	}
+
+	function extractTextValue(value: unknown, depth = 0): string | null {
+		if (depth > 5) return null;
+		const direct = stringValue(value);
+		if (direct) return direct;
+		if (!isRecord(value)) return null;
+
+		for (const key of ['planMarkdown', 'plan', 'markdown', 'content']) {
+			const text = stringValue(value[key]);
+			if (text) return text;
+		}
+
+		for (const key of ['result', 'data', 'output']) {
+			const nested = extractTextValue(value[key], depth + 1);
+			if (nested) return nested;
+		}
+
+		return null;
+	}
+
+	function looksLikePlanText(text: string): boolean {
+		return /\b(plan|implementation|approach|architecture|phase|steps?|tasks?)\b/i.test(text);
+	}
+
+	function stepLooksLikePlan(step: StepLog): boolean {
+		return [step.stepName, step.label]
+			.filter((value): value is string => typeof value === 'string')
+			.some((value) => value.toLowerCase().includes('plan'));
+	}
+
+	function extractPlanTextFromExecution(): string | null {
+		const planStep = logs.find(stepLooksLikePlan);
+		const planStepText = planStep ? extractTextValue(planStep.output) : null;
+		if (planStepText) return planStepText;
+
+		const planRun = agentRuns.find((run) => run.nodeId.toLowerCase().includes('plan'));
+		const planRunText = planRun ? extractTextValue(planRun.result) : null;
+		if (planRunText) return planRunText;
+
+		for (const step of logs) {
+			const text = extractTextValue(step.output);
+			if (text && looksLikePlanText(text)) return text;
+		}
+
+		for (const run of agentRuns) {
+			const text = extractTextValue(run.result);
+			if (text && looksLikePlanText(text)) return text;
+		}
+
+		return null;
+	}
+
+	const executionPlanText = $derived(extractPlanTextFromExecution());
+	const displayPlanText = $derived(planText ?? executionPlanText);
+
 	async function loadPlanText(): Promise<void> {
 		if (planTextLoaded) return;
 		try {
@@ -1065,7 +1127,7 @@
 				{executionId}
 				{workflowId}
 				{executionStatus}
-				{planText}
+				planText={displayPlanText}
 				artifacts={planArtifacts}
 				onArtifactsChange={loadPlanArtifacts}
 			/>
