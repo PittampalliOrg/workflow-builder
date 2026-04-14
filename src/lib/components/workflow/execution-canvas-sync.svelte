@@ -99,34 +99,70 @@
 
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
 		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
-		// Compute agent progress from stream events (primary) or snapshot (fallback)
-		const events = streamEvents.length > 0 ? streamEvents : (snapshot?.agentEvents ?? []);
-		const matchType = (e: { type: string; data?: Record<string, unknown> }, t: string) =>
-			e.type === t || (e.data?.type as string) === t;
-		const turnCount = events.filter(e => matchType(e, 'llm_complete')).length;
-		const toolStarts = events.filter(e => matchType(e, 'tool_call_start'));
-		const toolCount = toolStarts.length;
-		const lastTool = toolStarts.at(-1);
-		const activeTool = (lastTool as any)?.toolName
-			?? (lastTool?.data?.toolName as string | undefined)
-			?? null;
-		const toolEndCount = events.filter(e => matchType(e, 'tool_call_end')).length;
-		const isToolActive = toolCount > toolEndCount;
+		// Compute agent progress from both live stream events and persisted snapshot events.
+		// Dapr pub/sub events are wrapped as `com.dapr.event.sent`; the actual agent event
+		// payload lives under `data.data`.
+		const events = [...(snapshot?.agentEvents ?? []), ...streamEvents];
+		const nestedData = (event: ExecutionTimelineEvent) =>
+			typeof event.data?.data === 'object' && event.data.data !== null && !Array.isArray(event.data.data)
+				? (event.data.data as Record<string, unknown>)
+				: null;
+		const stringValue = (value: unknown) => (typeof value === 'string' && value ? value : null);
+		const matchType = (event: ExecutionTimelineEvent, type: string) =>
+			event.type === type ||
+			(event.data?.type as string | undefined) === type ||
+			(nestedData(event)?.type as string | undefined) === type;
+		const eventRunId = (event: ExecutionTimelineEvent) =>
+			stringValue(event.workflowAgentRunId) ||
+			stringValue(event.data?.workflowAgentRunId) ||
+			stringValue(nestedData(event)?.workflowAgentRunId) ||
+			stringValue(event.daprInstanceId) ||
+			stringValue(event.data?.daprInstanceId) ||
+			stringValue(nestedData(event)?.daprInstanceId) ||
+			null;
+		const eventNodeId = (event: ExecutionTimelineEvent) =>
+			stringValue(event.data?.nodeId) || stringValue(nestedData(event)?.nodeId);
+		const toolName = (event: ExecutionTimelineEvent) =>
+			stringValue(event.toolName) ||
+			stringValue(event.data?.toolName) ||
+			stringValue(nestedData(event)?.toolName);
+		const eventsForNode = (nodeId: string) => {
+			const runIds = new Set(
+				(snapshot?.agentRuns ?? [])
+					.filter((run) => run.nodeId === nodeId)
+					.flatMap((run) => [run.id, run.agentWorkflowId, run.daprInstanceId].filter(Boolean) as string[])
+			);
+			const nodeEvents = events.filter((event) => {
+				const runId = eventRunId(event);
+				return eventNodeId(event) === nodeId || (runId ? runIds.has(runId) : false);
+			});
+			return nodeEvents.length > 0 || (snapshot?.agentRuns ?? []).length !== 1
+				? nodeEvents
+				: events;
+		};
 
 		for (const node of getNodes()) {
 			if (managed && !managed.has(node.id)) continue;
 			const nextStatus = statuses[node.id] ?? 'idle';
 			const updates: Record<string, unknown> = { status: nextStatus };
+			const nodeEvents = eventsForNode(node.id);
+			const turnCount = nodeEvents.filter((event) => matchType(event, 'llm_complete')).length;
+			const toolStarts = nodeEvents.filter((event) => matchType(event, 'tool_call_start'));
+			const toolCount = toolStarts.length;
+			const toolEndCount = nodeEvents.filter((event) => matchType(event, 'tool_call_end')).length;
+			const lastToolStart = toolStarts.at(-1);
+			const activeTool = lastToolStart ? toolName(lastToolStart) : null;
+			const isToolActive = toolCount > toolEndCount;
 
-			// Attach agent progress to running nodes
-			if (nextStatus === 'running' && (turnCount > 0 || toolCount > 0)) {
+			// Attach agent progress to agent nodes while running and after terminal completion.
+			if (turnCount > 0 || toolCount > 0) {
 				updates.agentProgress = {
 					turnCount,
 					toolCount,
-					activeTool: isToolActive ? activeTool : null,
-					eventCount: events.length,
+					activeTool: nextStatus === 'running' && isToolActive ? activeTool : null,
+					eventCount: nodeEvents.length,
 				};
-			} else if (nextStatus !== 'running') {
+			} else {
 				updates.agentProgress = null;
 			}
 

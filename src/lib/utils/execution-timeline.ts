@@ -29,14 +29,20 @@ function stringValue(value: unknown): string | null {
 }
 
 export function eventType(event: ExecutionTimelineEvent): string {
-	return event.type || stringValue(event.data?.type) || '';
+	const nestedData = isRecord(event.data?.data) ? event.data.data : null;
+	return event.type === 'com.dapr.event.sent'
+		? stringValue(nestedData?.type) || stringValue(event.data?.type) || event.type
+		: event.type || stringValue(event.data?.type) || stringValue(nestedData?.type) || '';
 }
 
 export function eventToolName(event: ExecutionTimelineEvent): string {
+	const nestedData = isRecord(event.data?.data) ? event.data.data : null;
 	return (
 		stringValue(event.toolName) ??
 		stringValue(event.data?.toolName) ??
+		stringValue(nestedData?.toolName) ??
 		stringValue(event.data?.name) ??
+		stringValue(nestedData?.name) ??
 		'Tool'
 	);
 }
