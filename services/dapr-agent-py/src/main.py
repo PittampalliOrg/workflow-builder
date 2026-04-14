@@ -7,6 +7,7 @@ import json
 import os
 import urllib.parse
 import urllib.request
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -82,6 +83,8 @@ from dapr_agents.agents.configs import (
 )
 from dapr_agents.agents.durable import DurableAgent
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
+from dapr_agents.tool.executor import AgentToolExecutor
+from dapr_agents.tool.mcp import MCPClient
 from dapr_agents.workflow.runners import AgentRunner
 
 from src.llm_providers import resolve_llm_client
@@ -92,6 +95,10 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+_base_tools = list(ALL_TOOLS)
+_mcp_lock = asyncio.Lock()
+_mcp_client: MCPClient | None = None
+_mcp_config_signature = ""
 
 # ---------------------------------------------------------------------------
 # Hot-reload configuration subscription
@@ -190,7 +197,7 @@ agent = DurableAgent(
         "Produce working apps on the first attempt — verify with build before finishing",
     ],
     llm=resolve_llm_client(),
-    tools=ALL_TOOLS,
+    tools=_base_tools,
     configuration=config,
     state=state_config,
     pubsub=pubsub_config,
@@ -235,6 +242,107 @@ app = FastAPI(
 runner.serve(agent, app=app, port=8002)
 
 
+def _parse_agent_config(payload: dict[str, Any]) -> dict[str, Any]:
+    value = payload.get("agentConfig")
+    if isinstance(value, str) and value.strip():
+        parsed = _parse_json(value)
+        return parsed if isinstance(parsed, dict) else {}
+    return value if isinstance(value, dict) else {}
+
+
+def _mcp_server_config(server: dict[str, Any]) -> dict[str, Any] | None:
+    url = str(server.get("url") or "").strip()
+    command = str(server.get("command") or "").strip()
+    transport = str(server.get("transport") or "").strip() or (
+        "stdio" if command else "streamable_http"
+    )
+    server_name = (
+        str(
+            server.get("server_name")
+            or server.get("serverName")
+            or server.get("pieceName")
+            or server.get("displayName")
+            or "mcp"
+        )
+        .strip()
+        .replace(" ", "_")
+    )
+    if not server_name:
+        server_name = "mcp"
+
+    config: dict[str, Any] = {"server_name": server_name, "transport": transport}
+    if transport == "stdio":
+        if not command:
+            return None
+        config["command"] = command
+        if isinstance(server.get("args"), list):
+            config["args"] = server["args"]
+        if isinstance(server.get("env"), dict):
+            config["env"] = server["env"]
+        if isinstance(server.get("cwd"), str) and server["cwd"].strip():
+            config["cwd"] = server["cwd"].strip()
+    else:
+        if not url:
+            return None
+        config["url"] = url
+        if isinstance(server.get("headers"), dict):
+            config["headers"] = server["headers"]
+    return config
+
+
+async def _configure_mcp_tools(payload: dict[str, Any]) -> None:
+    global _mcp_client, _mcp_config_signature
+
+    agent_config = _parse_agent_config(payload)
+    servers = agent_config.get("mcpServers")
+    if not isinstance(servers, list):
+        return
+
+    configs = [
+        config
+        for server in servers
+        if isinstance(server, dict)
+        for config in [_mcp_server_config(server)]
+        if config is not None
+    ]
+    signature = json.dumps(configs, sort_keys=True)
+
+    async with _mcp_lock:
+        if signature == _mcp_config_signature:
+            return
+        if _mcp_client is not None:
+            try:
+                await _mcp_client.close()
+            except Exception as exc:
+                logger.warning("Failed to close previous MCP client: %s", exc)
+
+        if not configs:
+            _mcp_client = None
+            _mcp_config_signature = ""
+            agent.tools = list(_base_tools)
+            agent.tool_executor = AgentToolExecutor(tools=list(agent.tools))
+            return
+
+        client = MCPClient()
+        try:
+            await client.connect_many(configs)
+            mcp_tools = client.get_all_tools()
+        except Exception as exc:
+            logger.warning("Failed to configure MCP tools: %s", exc)
+            await client.close()
+            return
+
+        _mcp_client = client
+        _mcp_config_signature = signature
+        agent.tools = [*_base_tools, *mcp_tools]
+        agent.tool_executor = AgentToolExecutor(tools=list(agent.tools))
+        logger.info(
+            "Configured %s MCP tool(s) from %s server(s)",
+            len(mcp_tools),
+            len(configs),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Sandbox binding middleware — extracts workspaceRef/cwd from incoming
 # /agent/run requests and binds the global sandbox before the workflow starts.
@@ -260,8 +368,9 @@ class SandboxBindMiddleware(BaseHTTPMiddleware):
                         "Sandbox bound for run: ref=%s sandbox=%s cwd=%s",
                         workspace_ref, sandbox_name, cwd,
                     )
+                await _configure_mcp_tools(payload)
             except Exception:
-                logger.warning("Failed to parse /agent/run body for sandbox binding")
+                logger.warning("Failed to prepare /agent/run context", exc_info=True)
         return await call_next(request)
 
 
