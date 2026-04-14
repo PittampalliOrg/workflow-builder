@@ -7,6 +7,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import { Card, CardHeader, CardTitle, CardContent } from '$lib/components/ui/card';
 	import { Label } from '$lib/components/ui/label';
+	import { NativeSelect } from '$lib/components/ui/native-select';
 	import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '$lib/components/ui/dialog';
 	import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '$lib/components/ui/table';
 	import { CircleAlert, Copy, Check, Lock, LockOpen, Trash2, Loader2, RefreshCw, Power, PowerOff, Plus, Globe } from 'lucide-svelte';
@@ -123,13 +124,25 @@
 		displayName: string;
 		sourceType: string;
 		pieceName: string | null;
+		connectionExternalId: string | null;
 		serverUrl: string | null;
 		status: string;
 		metadata: Record<string, unknown> | null;
 		createdAt: string;
 	}
 
+	interface AppConnection {
+		externalId: string;
+		pieceName: string;
+		displayName: string;
+		providerId: string;
+		providerLabel: string;
+		status: string;
+		type: string;
+	}
+
 	let mcpConnections = $state<McpConnection[]>([]);
+	let appConnections = $state<AppConnection[]>([]);
 	let mcpLoading = $state(false);
 	let mcpCustomName = $state('');
 	let mcpCustomUrl = $state('');
@@ -142,6 +155,13 @@
 			const res = await fetch('/api/mcp-connections');
 			if (res.ok) mcpConnections = await res.json();
 		} catch { /* */ } finally { mcpLoading = false; }
+	}
+
+	async function loadAppConnections() {
+		try {
+			const res = await fetch('/api/app-connections');
+			if (res.ok) appConnections = await res.json();
+		} catch { /* */ }
 	}
 
 	async function createMcpCustom() {
@@ -176,6 +196,28 @@
 		} catch { toast.error('Failed to update status'); } finally { mcpBusyId = null; }
 	}
 
+	async function updateMcpCredential(conn: McpConnection, connectionExternalId: string) {
+		mcpBusyId = conn.id;
+		try {
+			const res = await fetch(`/api/mcp-connections/${conn.id}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ connectionExternalId: connectionExternalId || null })
+			});
+			if (res.ok) {
+				toast.success('MCP credential binding updated');
+				await loadMcpConnections();
+			} else {
+				const data = await res.json().catch(() => ({}));
+				toast.error(data.message || 'Failed to update credential binding');
+			}
+		} catch {
+			toast.error('Failed to update credential binding');
+		} finally {
+			mcpBusyId = null;
+		}
+	}
+
 	async function deleteMcpConnection(conn: McpConnection) {
 		mcpBusyId = conn.id;
 		try {
@@ -197,6 +239,21 @@
 
 	function mcpToolCount(conn: McpConnection): number {
 		return (conn.metadata as Record<string, unknown>)?.toolCount as number ?? 0;
+	}
+
+	function normalizePieceName(value: string | null | undefined): string {
+		return (value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/^@activepieces\/piece-/, '')
+			.replace(/[_\s]+/g, '-')
+			.replace(/-+/g, '-');
+	}
+
+	function appConnectionsForMcp(conn: McpConnection): AppConnection[] {
+		const piece = normalizePieceName(conn.pieceName);
+		if (!piece) return [];
+		return appConnections.filter((app) => normalizePieceName(app.pieceName) === piece && app.status === 'ACTIVE');
 	}
 
 	async function loadApiKeys() {
@@ -296,7 +353,7 @@
 	</header>
 	<div class="flex-1 overflow-auto p-6">
 		<div class="mx-auto max-w-5xl">
-			<Tabs value={activeTab} onValueChange={(v) => { activeTab = v; if (v === 'mcp-connections' && mcpConnections.length === 0) loadMcpConnections(); }}>
+			<Tabs value={activeTab} onValueChange={(v) => { activeTab = v; if (v === 'mcp-connections') { if (mcpConnections.length === 0) loadMcpConnections(); if (appConnections.length === 0) loadAppConnections(); } }}>
 				<TabsList class="mb-6 h-9">
 					<TabsTrigger value="api-keys" class="text-xs px-3">API Keys</TabsTrigger>
 					<TabsTrigger value="profile" class="text-xs px-3">Profile</TabsTrigger>
@@ -607,6 +664,7 @@
 										<TableRow>
 											<TableHead>Name</TableHead>
 											<TableHead>Source</TableHead>
+											<TableHead>Credential</TableHead>
 											<TableHead>Status</TableHead>
 											<TableHead>Server URL</TableHead>
 											<TableHead>Tools</TableHead>
@@ -615,10 +673,32 @@
 									</TableHeader>
 									<TableBody>
 										{#each mcpConnections as conn (conn.id)}
+											{@const matchingAppConnections = appConnectionsForMcp(conn)}
 											<TableRow>
 												<TableCell class="font-medium text-xs">{conn.displayName}</TableCell>
 												<TableCell>
 													<Badge variant="outline" class="text-[9px]">{mcpSourceLabel(conn.sourceType)}</Badge>
+												</TableCell>
+												<TableCell>
+													{#if conn.sourceType === 'nimble_piece'}
+														{#if matchingAppConnections.length > 0}
+															<NativeSelect
+																value={conn.connectionExternalId || ''}
+																disabled={mcpBusyId === conn.id}
+																class="h-7 max-w-[190px] text-[10px]"
+																onchange={(event) => updateMcpCredential(conn, (event.currentTarget as HTMLSelectElement).value)}
+															>
+																<option value="">No credential</option>
+																{#each matchingAppConnections as app (app.externalId)}
+																	<option value={app.externalId}>{app.displayName || app.providerLabel}</option>
+																{/each}
+															</NativeSelect>
+														{:else}
+															<span class="text-[9px] text-muted-foreground">No matching app connection</span>
+														{/if}
+													{:else}
+														<span class="text-[9px] text-muted-foreground">—</span>
+													{/if}
 												</TableCell>
 												<TableCell>
 													{#if conn.status === 'ENABLED'}

@@ -10,6 +10,7 @@ The active runtime on `kind-ryzen` and the GitOps-managed cluster is:
 - `workflow-builder-svelte`: alternate Svelte frontend deployment
 - `workflow-orchestrator`: Python Dapr durable workflow owner
 - `function-router`: action router
+- `dapr-agent-py`: native Python Dapr agent runtime for `durable/run`
 - `openshell-agent-runtime`: canonical OpenShell workspace, browser, and standard agent runtime
 - `dapr-swe`: separate distributed coding workflow runtime
 - `fn-activepieces`: default SaaS action backend
@@ -101,7 +102,7 @@ browser
      -> function-router
         -> system/* handlers
         -> workspace/* and browser/* -> openshell-agent-runtime
-        -> durable/* -> durable-agent
+        -> durable/run -> dapr-agent-py
         -> dapr-swe/* -> dapr-swe
         -> _default -> fn-activepieces
 
@@ -109,7 +110,7 @@ workflow-orchestrator
   -> dynamic_workflow for drafts
   -> versioned registered workflows for published revisions
 
-openshell-agent-runtime / dapr-swe
+openshell-agent-runtime / dapr-agent-py / dapr-swe
   -> OpenShell sandboxes or dedicated coding workers
   -> PostgreSQL-backed review surfaces
 ```
@@ -130,10 +131,13 @@ openshell-agent-runtime / dapr-swe
 
 1. A workflow node uses `durable/run`.
 2. `workflow-orchestrator` schedules the durable child workflow from the parent workflow.
-3. `durable-agent` runs the durable control loop.
-4. `durable-agent` binds or creates an OpenShell workspace for the workflow execution.
-5. All tool and file operations run through `openshell-agent-runtime` against that workspace.
-6. Review artifacts are persisted to Postgres.
+3. `dapr-agent-py` runs the agent loop.
+4. `dapr-agent-py` binds to the OpenShell workspace created or resolved earlier in the workflow.
+5. Built-in workspace tools run against that OpenShell workspace.
+6. MCP tools are added from `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
+7. Review artifacts are persisted to Postgres.
+
+See `docs/mcp-agent-workflows.md` for the current UI-runnable MCP configuration method.
 
 ### Legacy workflow compatibility
 
@@ -184,8 +188,18 @@ Provides:
 
 - route lookup by `actionType`
 - routing for `system/*`, `workspace/*`, `browser/*`
+- routing for `durable/run` and `dapr-agent-py/*`
 - routing for `dapr-swe/*`
 - fallback routing to `fn-activepieces`
+
+### dapr-agent-py
+
+Provides:
+
+- native Dapr child workflow execution for `durable/run`
+- the agent loop for OpenShell-backed coding runs
+- runtime MCP client setup from `agentConfig.mcpServers`
+- MCP tool dispatch alongside built-in workspace tools
 
 ### openshell-agent-runtime
 

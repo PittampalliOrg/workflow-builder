@@ -127,6 +127,19 @@ Security note:
 
 - The `pieces/options` path is explicitly owner-scoped to prevent cross-user credential access.
 
+## MCP Credential Binding
+
+Activepieces piece MCP servers use the same `app_connection` credentials. The additional project-level binding is stored in `mcp_connection`:
+
+- `mcp_connection.connection_external_id` references `app_connection.external_id`.
+- `mcp_connection.piece_name` identifies the Activepieces piece, such as `microsoft-onedrive`.
+- `mcp_connection.server_url` points to the in-cluster MCP endpoint, such as `http://ap-microsoft-onedrive-service:3100/mcp`.
+- `mcp_connection.status = 'ENABLED'` makes the binding eligible for project-level resolution.
+
+The piece MCP service resolves OAuth credentials server-side through the internal decrypt endpoint. `dapr-agent-py` only receives the MCP endpoint and connection external id in `agentConfig.mcpServers`; it does not hold provider OAuth secrets.
+
+Workflow saves also maintain `workflow_connection_ref` rows so a workflow node can be traced back to the connection it uses. The validated UI smoke path stores the MCP server config explicitly in the SW 1.0 `durable/run` node, while the orchestrator code can also append enabled project `mcp_connection` rows when the deployed image includes the resolver.
+
 ## Environment Variables
 
 Required in most deployments:
@@ -143,4 +156,3 @@ Activepieces integration (depending on deployment):
 
 - `pnpm analyze:activepieces-auth` inspects `piece_metadata.auth` coverage. It requires a reachable Postgres (`DATABASE_URL`).
 - `pnpm check` may fail on NixOS if Biome is installed via a dynamically linked binary by `ultracite` (use Nix-packaged tooling or run checks in CI).
-

@@ -183,6 +183,13 @@
 			"when": 1775671800000,
 			"tag": "0025_code_functions",
 			"breakpoints": true
+		},
+		{
+			"idx": 26,
+			"version": "7",
+			"when": 1776104849951,
+			"tag": "0026_mcp_connection_credential_binding",
+			"breakpoints": true
 		}
 	]
 }

@@ -2,6 +2,8 @@
 
 Completed migrations for reference. All migrations below are done.
 
+Current note: this file is historical. The current `durable/run` runtime is `dapr-agent-py`; legacy `durable-agent` references below describe earlier migration steps.
+
 ## Mastra Agent → Durable Agent
 
 Agent routing has been migrated from mastra-agent-tanstack to durable-agent:

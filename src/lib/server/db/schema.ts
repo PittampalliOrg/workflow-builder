@@ -259,6 +259,7 @@ export const mcpConnections = pgTable(
 		sourceType: text("source_type").notNull().$type<McpConnectionSourceType>(),
 		pieceName: text("piece_name"),
 		serverKey: text("server_key"),
+		connectionExternalId: text("connection_external_id"),
 		displayName: text("display_name").notNull(),
 		registryRef: text("registry_ref"),
 		serverUrl: text("server_url"),

@@ -41,6 +41,7 @@ During active development, the most relevant services are:
 - `workflow-builder`
 - `workflow-orchestrator`
 - `function-router`
+- `dapr-agent-py`
 - `openshell-agent-runtime`
 - `dapr-swe` when you are working on the distributed coding flow
 
@@ -57,10 +58,12 @@ When a workflow requires source control inputs, the execute dialog prompts for t
 For OpenShell-backed coding flows, the common starting shape is:
 
 1. `Workspace Profile`
-2. `Workspace Clone`
-3. `OpenShell Run` or `OpenShell Session Start`
+2. `Workspace Clone` when the run needs repository contents, or skip it for a connection-only smoke test
+3. `durable/run`
 
-Repo selection should normally be configured on `workspace/clone`, not repeatedly requested in the trigger.
+Repo selection should normally be configured on `workspace/clone`, not repeatedly requested in the trigger. For UI-runnable `durable/run` workflows, prefer a trigger prompt field and reference it from the action with `${ .trigger.prompt }`.
+
+For an MCP-enabled agent smoke workflow, configure the MCP server under `durable/run.with.agentConfig.mcpServers` and add `x-workflow-builder.input` metadata so the run dialog renders a prompt textarea. See `docs/mcp-agent-workflows.md` for the current working pattern.
 
 ## Publish a Workflow
 

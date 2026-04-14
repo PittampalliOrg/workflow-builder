@@ -1,5 +1,7 @@
 # Plan: Consolidated Durable Agent Node
 
+Status: historical planning document. The current `durable/run` runtime is `dapr-agent-py`, and the MCP-enabled UI workflow path is documented in `docs/mcp-agent-workflows.md`.
+
 ## Context
 
 Three overlapping agent pieces exist: `AGENT_PIECE` (agent/run), `DURABLE_AGENT_PIECE` (durable/run), and `MASTRA_AGENT_PIECE` (mastra/*). All agent runs route to the same durable-agent service. The pieces expose different subsets of parameters, and the `agentId` field is never resolved end-to-end. This plan replaces all three with one optimal implementation and wires up complete agent resolution.

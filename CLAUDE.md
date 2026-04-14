@@ -5,6 +5,7 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 > **Supplementary docs**: See `docs/` for detailed references:
 > - `docs/activepieces-auth.md` — AP auth/connection system details
 > - `docs/activepieces-integration-implementation.md` — AP integration implementation
+> - `docs/mcp-agent-workflows.md` - MCP-enabled `dapr-agent-py` workflow method
 > - `docs/CLICKHOUSE_OBSERVABILITY.md` — ClickHouse observability stack
 > - `docs/openshell-capabilities.md` — OpenShell sandbox capabilities
 
@@ -24,9 +25,9 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 │  OAuth2 PKCE +          Dapr svc invoke    Dapr svc invoke              │
 │  App Connections                   │              │                      │
 │         │               ┌─────────▼──┐    ┌──────▼──────────────┐      │
-│         │               │ function-  │    │  durable-agent       │      │
+│         │               │ function-  │    │  dapr-agent-py       │      │
 │         │               │ router     │    │  (Dapr Workflow       │      │
-│         │               │ (registry) │    │   ReAct loop)        │      │
+│         │               │ (registry) │    │   agent runtime)     │      │
 │         │               └─────┬──────┘    └─────────────────────┘      │
 │         │          ┌──────────┼────────────────┐                       │
 │         │          ▼          ▼                ▼                        │
@@ -53,8 +54,8 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 - **Database**: PostgreSQL via Drizzle ORM
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
-- **Durable AI Agent**: durable-agent (Dapr Workflow ReAct loop, AI SDK 6, @ai-sdk/openai) — primary agent service
-- **Function Execution**: function-router → fn-system, fn-activepieces, openshell-agent-runtime, durable-agent
+- **Durable AI Agent**: dapr-agent-py - native Python Dapr runtime for `durable/run`
+- **Function Execution**: function-router -> fn-system, fn-activepieces, openshell-agent-runtime, dapr-agent-py
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry → OTEL Collector → Jaeger
@@ -78,8 +79,8 @@ pnpm test:e2e         # Run Playwright E2E tests
 | Service | Port | Role |
 |---------|------|------|
 | **workflow-orchestrator** | 8080 | Python Dapr workflow engine, topological node execution |
-| **durable-agent** | 8001 | Primary AI agent — Dapr Workflow ReAct loop, AI SDK 6 |
-| **function-router** | 8080 | Routes actions to fn-system/fn-activepieces/durable-agent |
+| **dapr-agent-py** | n/a | Primary `durable/run` agent runtime with MCP client support |
+| **function-router** | 8080 | Routes actions to fn-system/fn-activepieces/openshell-agent-runtime/dapr-agent-py |
 | **fn-system** | 8080 | System actions: http-request, database-query, condition |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
 | **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
@@ -134,7 +135,7 @@ src/
 
 services/
   workflow-orchestrator/               # Python Dapr workflow orchestrator
-  durable-agent/                       # Durable AI agent (PRIMARY)
+  durable-agent/                       # Legacy TypeScript durable agent service
   dapr-swe/                            # Dapr SWE coding agent
   function-router/                     # Function execution router
   fn-activepieces/                     # AP piece executor
@@ -156,14 +157,14 @@ Actions are routed by `actionType` slug prefix:
 | Prefix | Service | Sync/Async | Examples |
 |--------|---------|------------|----------|
 | `system/*` | fn-system (via function-router) | Sync | `system/http-request`, `system/database-query`, `system/condition` |
-| `mastra/clone` | durable-agent (via function-router) | Sync | Clone a git repo |
-| `mastra/plan` | durable-agent (via function-router) | Sync | Generate execution plan |
-| `mastra/execute` | durable-agent (direct) | Async | Execute a plan (fire-and-forget) |
-| `agent/*` | durable-agent (direct) | Async | Agent run with prompt |
-| `durable/*` | durable-agent (direct) | Async | Durable agent run with prompt |
+| `mastra/clone` | durable-agent legacy path | Sync | Legacy clone route |
+| `mastra/plan` | durable-agent legacy path | Sync | Legacy planning route |
+| `mastra/execute` | durable-agent legacy path | Async | Legacy plan execution route |
+| `agent/*` | durable-agent legacy path | Async | Legacy agent route |
+| `durable/run` | dapr-agent-py (native child workflow) | Async | Standard OpenShell-backed durable coding run |
+| `dapr-agent-py/*` | dapr-agent-py (via function-router) | Async | Direct agent runtime routes |
 | `workspace/*` | openshell-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
 | `browser/*` | openshell-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
-| `durable/run` | durable-agent (native child workflow) | Async | Standard OpenShell-backed durable coding run |
 | `openshell/session-start` | openshell-agent-runtime (via function-router) | Async | Start a retained Claude session in an OpenShell sandbox |
 | `openshell-langgraph-observable/run` | openshell-langgraph-observable (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
 | `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
@@ -191,17 +192,22 @@ Actions are routed by `actionType` slug prefix:
 - **functions**: `id`, `slug`, `name`, `plugin_id`, `execution_type`, `is_builtin`
 - **app_connections**: `id`, `externalId`, `pieceName`, `type` (OAUTH2/SECRET_TEXT/etc), `value` (encrypted JSONB)
 - **piece_metadata**: `name`, `displayName`, `version`, `auth` (JSONB), `actions` (JSONB)
-- **mcp_servers**, **mcp_runs**: MCP server config and execution tracking
+- **mcp_connection**: project-level MCP bindings to app connections and MCP server URLs
+- **mcp_server**, **mcp_run**: hosted MCP server config and execution tracking where used
+- **workflow_connection_ref**: workflow-node connection usage index
 - **api_keys**: JWT API keys for programmatic access
 - **Browser artifacts**: `workflow_browser_artifacts` (manifest JSONB), `workflow_browser_artifact_blob_payloads` (base64 PNG screenshots)
 - **Observability**: `workflow_execution_logs`, `credential_access_logs`, `workflow_external_events`
 
 ## MCP Integration
 
-Three MCP server types:
-1. **mcp-gateway**: Hosted MCP endpoint for external AI clients
-2. **workflow-mcp-server**: Optional workflow MCP tool server retained in source
-3. **piece-mcp-server**: Optional AP piece MCP server retained in source
+Current MCP paths:
+
+1. **Activepieces piece MCP services**: per-piece in-cluster MCP endpoints, backed by `mcp_connection.connection_external_id` and the encrypted `app_connection` credential.
+2. **dapr-agent-py MCP client**: reads `durable/run.with.agentConfig.mcpServers`, connects at runtime, and exposes MCP tools beside built-in OpenShell workspace tools.
+3. **mcp-gateway / workflow-mcp-server / piece-mcp-server**: retained hosted MCP surfaces and source packages for external-client or on-demand server flows.
+
+For UI-runnable agent workflows, use SW 1.0 `durable/run` with `agentConfig.mcpServers` and `x-workflow-builder.input` prompt metadata. See `docs/mcp-agent-workflows.md`.
 
 MCP Apps use `@modelcontextprotocol/ext-apps` for interactive UI (ToolWidget in `components/mcp-chat/tool-widget.tsx`).
 
@@ -235,16 +241,16 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 ## Troubleshooting
 
 - Missing credentials → Add API keys to Azure Key Vault or create app connections
-- Agent timeout → Check durable-agent logs (`kubectl logs -l app=durable-agent`)
+- Agent timeout -> Check `dapr-agent-py` and `workflow-orchestrator` logs
 - Agent stops before completing plan → Check `maxTurns` setting (default: 50, configurable per-node)
 - OAuth2 token expired → Auto-refresh should handle; check `AP_ENCRYPTION_KEY`
 - AP credential decrypt fails → Verify `INTERNAL_API_TOKEN` matches across services
-- Dapr pub/sub scoping → durable-agent uses `durable-pubsub` (NATS); orchestrator uses `pubsub` (Redis) — isolated
+- Dapr pub/sub scoping -> agent runtimes and orchestrator may use different scoped components; verify the live Dapr component YAML in `stacks/main`
 - SvelteKit type errors → Run `pnpm check` (svelte-check)
 
 > See Dapr component YAMLs in the stacks repo for service scoping and env var configuration.
 
 ---
 
-**Last Updated**: 2026-04-03
-**Status**: Production-ready SvelteKit app with OpenTelemetry observability, sandbox execution, and hosted MCP servers
+**Last Updated**: 2026-04-13
+**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs, and MCP-enabled agent workflows

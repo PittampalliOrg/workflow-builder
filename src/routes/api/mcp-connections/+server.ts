@@ -1,8 +1,48 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { mcpConnections } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { appConnections, mcpConnections } from '$lib/server/db/schema';
+import { AppConnectionStatus } from '$lib/server/types/app-connection';
+import { and, eq, inArray } from 'drizzle-orm';
+
+function normalizePieceName(value: string | null | undefined): string {
+	return (value || '')
+		.trim()
+		.toLowerCase()
+		.replace(/^@activepieces\/piece-/, '')
+		.replace(/[_\s]+/g, '-')
+		.replace(/-+/g, '-');
+}
+
+function pieceCandidates(value: string | null | undefined): string[] {
+	const normalized = normalizePieceName(value);
+	if (!normalized) return [];
+	return [normalized, `@activepieces/piece-${normalized}`];
+}
+
+async function validateConnectionBinding(pieceName: string | null | undefined, externalId: unknown) {
+	const value = typeof externalId === 'string' ? externalId.trim() : '';
+	if (!value) return null;
+	const candidates = pieceCandidates(pieceName);
+	if (candidates.length === 0) {
+		throw error(400, 'connectionExternalId can only be set for a piece MCP connection');
+	}
+	const [connection] = await db
+		.select({ externalId: appConnections.externalId })
+		.from(appConnections)
+		.where(
+			and(
+				eq(appConnections.externalId, value),
+				eq(appConnections.status, AppConnectionStatus.ACTIVE),
+				inArray(appConnections.pieceName, candidates)
+			)
+		)
+		.limit(1);
+	if (!connection) {
+		throw error(400, 'connectionExternalId must reference an active app connection for the same piece');
+	}
+	return value;
+}
 
 /**
  * GET /api/mcp-connections
@@ -29,13 +69,14 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	if (!db) return error(500, 'Database not available');
 
 	const body = await request.json();
-	const { displayName, serverUrl, sourceType } = body;
+	const { displayName, serverUrl, sourceType, connectionExternalId } = body;
 
 	if (!displayName || !serverUrl) {
 		return error(400, 'displayName and serverUrl are required');
 	}
 
 	const id = crypto.randomUUID().replace(/-/g, '').slice(0, 21);
+	const credentialBinding = await validateConnectionBinding(body.pieceName, connectionExternalId);
 
 	const [conn] = await db
 		.insert(mcpConnections)
@@ -43,6 +84,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			id,
 			projectId: 'default',
 			sourceType: sourceType || 'custom_url',
+			pieceName: typeof body.pieceName === 'string' ? normalizePieceName(body.pieceName) : null,
+			connectionExternalId: credentialBinding,
 			displayName,
 			serverUrl,
 			status: 'ENABLED',

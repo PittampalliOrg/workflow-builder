@@ -1,8 +1,48 @@
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { mcpConnections } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import { appConnections, mcpConnections } from '$lib/server/db/schema';
+import { AppConnectionStatus } from '$lib/server/types/app-connection';
+import { and, eq, inArray } from 'drizzle-orm';
+
+function normalizePieceName(value: string | null | undefined): string {
+	return (value || '')
+		.trim()
+		.toLowerCase()
+		.replace(/^@activepieces\/piece-/, '')
+		.replace(/[_\s]+/g, '-')
+		.replace(/-+/g, '-');
+}
+
+function pieceCandidates(value: string | null | undefined): string[] {
+	const normalized = normalizePieceName(value);
+	if (!normalized) return [];
+	return [normalized, `@activepieces/piece-${normalized}`];
+}
+
+async function validateConnectionBinding(pieceName: string | null, externalId: unknown) {
+	const value = typeof externalId === 'string' ? externalId.trim() : '';
+	if (!value) return null;
+	const candidates = pieceCandidates(pieceName);
+	if (candidates.length === 0) {
+		throw error(400, 'connectionExternalId can only be set for a piece MCP connection');
+	}
+	const [connection] = await db
+		.select({ externalId: appConnections.externalId })
+		.from(appConnections)
+		.where(
+			and(
+				eq(appConnections.externalId, value),
+				eq(appConnections.status, AppConnectionStatus.ACTIVE),
+				inArray(appConnections.pieceName, candidates)
+			)
+		)
+		.limit(1);
+	if (!connection) {
+		throw error(400, 'connectionExternalId must reference an active app connection for the same piece');
+	}
+	return value;
+}
 
 /**
  * POST /api/mcp-connections/[id] (status update)
@@ -16,17 +56,35 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 	const body = await request.json();
 	const { status } = body;
 
-	if (!status || !['ENABLED', 'DISABLED'].includes(status)) {
+	if (status !== undefined && !['ENABLED', 'DISABLED'].includes(status)) {
 		return error(400, 'status must be ENABLED or DISABLED');
+	}
+
+	const [existing] = await db.select().from(mcpConnections).where(eq(mcpConnections.id, id)).limit(1);
+	if (!existing) return error(404, 'Connection not found');
+
+	const updates: Partial<typeof mcpConnections.$inferInsert> = {
+		updatedBy: locals.session.userId,
+		updatedAt: new Date()
+	};
+
+	if (status !== undefined) updates.status = status;
+	if ('connectionExternalId' in body) {
+		if (existing.sourceType !== 'nimble_piece') {
+			return error(400, 'connectionExternalId can only be set for piece MCP connections');
+		}
+		updates.connectionExternalId = await validateConnectionBinding(
+			existing.pieceName,
+			body.connectionExternalId
+		);
 	}
 
 	const [conn] = await db
 		.update(mcpConnections)
-		.set({ status, updatedBy: locals.session.userId, updatedAt: new Date() })
+		.set(updates)
 		.where(eq(mcpConnections.id, id))
 		.returning();
 
-	if (!conn) return error(404, 'Connection not found');
 	return json(conn);
 };
 

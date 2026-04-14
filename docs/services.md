@@ -10,6 +10,7 @@ The current core runtime is:
 - `workflow-builder-svelte`
 - `workflow-orchestrator`
 - `function-router`
+- `dapr-agent-py`
 - `openshell-agent-runtime`
 - `dapr-swe`
 - `fn-activepieces`
@@ -62,20 +63,36 @@ TypeScript action router.
   - `POST /execute`
 - Responsibilities:
   - route built-in system and workspace actions
-  - route OpenShell-backed agent and browser actions
+  - route OpenShell-backed workspace and browser actions
+  - route native durable agent actions
   - route unclaimed plugin slugs to `fn-activepieces`
 
 Current route contract:
 
 - `workspace/*` -> `openshell-agent-runtime`
 - `browser/*` -> `openshell-agent-runtime`
-- `durable/*` -> `durable-agent`
+- `durable/run` -> `dapr-agent-py`
+- `dapr-agent-py/*` -> `dapr-agent-py`
 - `dapr-swe/*` -> `dapr-swe`
 - `_default` -> `fn-activepieces`
 
+The function-router image can also receive a mounted registry override from the cluster. Check the live ConfigMap when runtime routing and local code disagree.
+
+## dapr-agent-py
+
+Native Python Dapr agent runtime for `durable/run`.
+
+- Dapr app-id: `dapr-agent-py`
+- Responsibilities:
+  - run the native durable agent child workflow
+  - bind to the OpenShell workspace identified by `workspaceRef`
+  - execute the agent loop with built-in workspace tools
+  - connect MCP servers from `agentConfig.mcpServers`
+  - dispatch MCP tools and close MCP client sessions at run completion
+
 ## openshell-agent-runtime
 
-Canonical OpenShell runtime for standard agent and workspace flows.
+Canonical OpenShell runtime for workspace and browser flows.
 
 - Port: `8080`
 - Dapr app-id: `openshell-agent-runtime`
@@ -84,13 +101,12 @@ Canonical OpenShell runtime for standard agent and workspace flows.
   - `workspace/clone`
   - `workspace/command`
   - `workspace/cleanup`
-  - `durable/run`
   - `browser/*`
 
 Important behavior:
 
 - uses OpenShell sandboxes as the active sandbox substrate
-- owns standard repo-aware OpenShell runs
+- owns workspace profile, clone, command, cleanup, and browser materialization
 - supports retained Claude session handoff
 - runs browser validation against materialized workspace state
 
@@ -130,7 +146,7 @@ Across OpenShell-backed workflow actions, the stable contract is:
 
 1. create or resolve a workspace profile
 2. clone or reconnect the repo
-3. run planning or coding work in the chosen OpenShell runtime
+3. run planning or coding work in the chosen agent runtime
 4. persist review artifacts
 5. expose those artifacts back to the UI
 
