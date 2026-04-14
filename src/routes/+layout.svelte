@@ -21,6 +21,7 @@
 	setContext('build-workflow', buildWorkflow);
 
 	let isAuthPage = $derived(page.url.pathname.startsWith('/auth'));
+	let routeKey = $derived(page.url.pathname);
 
 	// Initialize theme from server data (cookie) or system preference
 	onMount(() => {
@@ -55,12 +56,16 @@
 </svelte:head>
 
 {#if isAuthPage}
-	{@render children()}
+	{#key routeKey}
+		{@render children()}
+	{/key}
 {:else}
 	<div class="flex h-full">
 		<Sidebar collapsed={ui.sidebarCollapsed} onToggle={ui.toggleSidebar} user={data.user} />
 		<main class="flex-1 overflow-hidden">
-			{@render children()}
+			{#key routeKey}
+				{@render children()}
+			{/key}
 		</main>
 	</div>
 {/if}
