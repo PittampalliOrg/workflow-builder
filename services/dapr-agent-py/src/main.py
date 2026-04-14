@@ -84,6 +84,7 @@ from dapr_agents.agents.durable import DurableAgent
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
 from dapr_agents.workflow.runners import AgentRunner
 
+from src.llm_providers import resolve_llm_client
 from src.tools import ALL_TOOLS, bind_sandbox
 
 logging.basicConfig(
@@ -188,6 +189,7 @@ agent = DurableAgent(
         "Write clean, idiomatic Svelte 5 code",
         "Produce working apps on the first attempt — verify with build before finishing",
     ],
+    llm=resolve_llm_client(),
     tools=ALL_TOOLS,
     configuration=config,
     state=state_config,
