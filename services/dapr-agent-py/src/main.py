@@ -418,12 +418,11 @@ class SandboxBindMiddleware(BaseHTTPMiddleware):
                 workspace_ref = payload.get("workspaceRef", "")
                 cwd = payload.get("cwd", "/sandbox")
                 sandbox_name = payload.get("sandboxName", "")
-                if workspace_ref or AGENT_SANDBOX_MODE == "local":
-                    bind_sandbox(workspace_ref, cwd)
-                    logger.info(
-                        "Sandbox bound for run: ref=%s sandbox=%s cwd=%s",
-                        workspace_ref, sandbox_name, cwd,
-                    )
+                bind_sandbox(workspace_ref, cwd)
+                logger.info(
+                    "Sandbox bound for run: mode=%s ref=%s sandbox=%s cwd=%s",
+                    AGENT_SANDBOX_MODE, workspace_ref, sandbox_name, cwd,
+                )
                 await _configure_mcp_tools(payload)
             except Exception:
                 logger.warning("Failed to prepare /agent/run context", exc_info=True)

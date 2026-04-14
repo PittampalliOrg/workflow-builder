@@ -12,6 +12,7 @@ export type DaprAgentPyTrackingContext = {
   parentExecutionId: string;
   workspaceRef?: string;
   sandboxName?: string;
+  cwd?: string;
 };
 
 type AgentEventInput = {
@@ -73,6 +74,128 @@ function toolCallArgs(call: JsonRecord): unknown {
   return isRecord(call.function) ? parseJson(call.function.arguments) : undefined;
 }
 
+function sanitizeArtifactPart(value: string): string {
+  const sanitized = value.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_");
+  return sanitized.slice(0, 80) || "plan";
+}
+
+function firstLineTitle(markdown: string): string | undefined {
+  const line = markdown
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .find((item) => item.length > 0);
+  return line?.replace(/^#+\s*/, "").slice(0, 180);
+}
+
+function messageText(message: JsonRecord): string | undefined {
+  const content = message.content;
+  if (typeof content === "string" && content.trim()) return content.trim();
+  return undefined;
+}
+
+function planWriteFromToolCall(call: JsonRecord): { path: string; content: string } | null {
+  const name = (toolCallName(call) || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!name.includes("writefile")) return null;
+
+  const args = toolCallArgs(call);
+  if (!isRecord(args)) return null;
+
+  const path =
+    asString(args.path) ||
+    asString(args.filePath) ||
+    asString(args.file_path) ||
+    "";
+  if (!/plan\.md$/i.test(path)) return null;
+
+  const content = asString(args.content) || asString(args.text) || "";
+  if (!content || content.length < 20) return null;
+
+  return { path, content };
+}
+
+function extractPlanWrites(snapshot: JsonRecord): Array<{ path: string; content: string }> {
+  const messages = Array.isArray(snapshot.messages)
+    ? snapshot.messages.filter(isRecord)
+    : [];
+  const writes = new Map<string, { path: string; content: string }>();
+  for (const message of messages) {
+    for (const call of toolCallsFromMessage(message)) {
+      const planWrite = planWriteFromToolCall(call);
+      if (planWrite) writes.set(planWrite.path, planWrite);
+    }
+  }
+  return [...writes.values()];
+}
+
+function sourcePromptFromSnapshot(snapshot: JsonRecord): string {
+  const messages = Array.isArray(snapshot.messages)
+    ? snapshot.messages.filter(isRecord)
+    : [];
+  const userMessage = messages.find((message) => asString(message.role) === "user");
+  return messageText(userMessage || {}) || asString(snapshot.input_value) || "Generated plan";
+}
+
+async function persistPlanArtifactsFromSnapshot(
+  ctx: DaprAgentPyTrackingContext,
+  snapshot: JsonRecord,
+): Promise<void> {
+  const plans = extractPlanWrites(snapshot);
+  if (plans.length === 0) return;
+
+  const sql = getSql();
+  const sourcePrompt = sourcePromptFromSnapshot(snapshot);
+
+  for (const [index, plan] of plans.entries()) {
+    const title = firstLineTitle(plan.content) || "Generated plan";
+    const artifactId = [
+      "plan",
+      sanitizeArtifactPart(ctx.workflowExecutionId),
+      sanitizeArtifactPart(ctx.nodeId),
+      sanitizeArtifactPart(plan.path),
+      String(index + 1),
+    ].join("_");
+    const metadata = {
+      source: "dapr-agent-py-tracker",
+      path: plan.path,
+      title,
+      daprInstanceId: ctx.daprInstanceId,
+      sandboxName: ctx.sandboxName,
+      cwd: ctx.cwd,
+    };
+    const planJson = {
+      kind: "markdown_plan",
+      path: plan.path,
+      title,
+    };
+
+    await sql`
+      INSERT INTO workflow_plan_artifacts (
+        id, workflow_execution_id, workflow_id, user_id, node_id,
+        workspace_ref, clone_path, artifact_type, artifact_version, status,
+        goal, plan_json, plan_markdown, source_prompt, metadata
+      )
+      SELECT
+        ${artifactId}, ${ctx.workflowExecutionId}, COALESCE(we.workflow_id, ${ctx.workflowId}),
+        we.user_id, ${ctx.nodeId}, ${ctx.workspaceRef ?? null}, ${ctx.cwd ?? null},
+        'claude_task_graph_v1', 1, 'draft', ${title}, ${JSON.stringify(planJson)},
+        ${plan.content}, ${sourcePrompt}, ${JSON.stringify(metadata)}
+      FROM workflow_executions we
+      WHERE we.id = ${ctx.workflowExecutionId}
+      ON CONFLICT (id) DO UPDATE
+      SET workflow_id = EXCLUDED.workflow_id,
+        user_id = EXCLUDED.user_id,
+        workspace_ref = EXCLUDED.workspace_ref,
+        clone_path = EXCLUDED.clone_path,
+        goal = EXCLUDED.goal,
+        plan_json = EXCLUDED.plan_json,
+        plan_markdown = EXCLUDED.plan_markdown,
+        source_prompt = EXCLUDED.source_prompt,
+        metadata = EXCLUDED.metadata,
+        updated_at = now()
+    `;
+  }
+}
+
 function buildSnapshotEvents(
   ctx: DaprAgentPyTrackingContext,
   snapshot: JsonRecord,
@@ -94,6 +217,8 @@ function buildSnapshotEvents(
         nodeName: ctx.nodeName,
         workspaceRef: ctx.workspaceRef,
         sandboxName: ctx.sandboxName,
+        cwd: ctx.cwd,
+        sandboxBackend: ctx.workspaceRef ? "openshell" : "local",
       },
     },
   ];
@@ -275,6 +400,10 @@ export async function trackDaprAgentPySnapshot(
       await publishEvent(ctx, event);
     }
   }
+
+  await persistPlanArtifactsFromSnapshot(ctx, snapshot).catch((error) => {
+    console.warn("[dapr-agent-py-tracker] Failed to persist plan artifact:", error);
+  });
 }
 
 export async function completeDaprAgentPyRun(

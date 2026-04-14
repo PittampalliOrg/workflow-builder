@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,9 @@ OPENSHELL_COMMAND_TIMEOUT_MS = int(
 )
 AGENT_SANDBOX_MODE = os.environ.get("AGENT_SANDBOX_MODE", "openshell").strip().lower()
 AGENT_LOCAL_SANDBOX_ROOT = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
+LOCAL_SANDBOX_MODES = {"local", "embedded"}
+OPENSHELL_SANDBOX_MODES = {"openshell", "remote", "workspace"}
+HYBRID_SANDBOX_MODES = {"hybrid", "auto"}
 
 
 @dataclass
@@ -75,6 +79,23 @@ class OpenShellSandbox:
             output=output, exit_code=data.get("exitCode", 1)
         )
 
+    def ensure_cwd(self) -> None:
+        if not self.cwd or self.cwd == "/sandbox":
+            return
+        root = "/sandbox" if self.cwd.startswith("/sandbox/") else "/"
+        quoted = shlex.quote(self.cwd)
+        payload = {
+            "workspaceRef": self.workspace_ref,
+            "command": f"mkdir -p {quoted}",
+            "cwd": root,
+            "timeoutMs": 30_000,
+        }
+        with httpx.Client(timeout=60) as client:
+            resp = client.post(
+                f"{self.base_url}/api/workspaces/command", json=payload
+            )
+            resp.raise_for_status()
+
 
 class LocalSandbox:
     """Sandbox client for agents running inside the execution container."""
@@ -111,27 +132,59 @@ class LocalSandbox:
 _sandbox: OpenShellSandbox | LocalSandbox | None = None
 
 
+def _normalize_workspace_ref(workspace_ref: str | None) -> str:
+    return str(workspace_ref or "").strip()
+
+
+def _should_use_local_sandbox(workspace_ref: str) -> bool:
+    if AGENT_SANDBOX_MODE in LOCAL_SANDBOX_MODES:
+        return True
+    if AGENT_SANDBOX_MODE in OPENSHELL_SANDBOX_MODES:
+        return False
+    if AGENT_SANDBOX_MODE in HYBRID_SANDBOX_MODES:
+        return not bool(workspace_ref)
+
+    logger.warning(
+        "Unknown AGENT_SANDBOX_MODE=%s; using OpenShell when workspaceRef is present",
+        AGENT_SANDBOX_MODE,
+    )
+    return not bool(workspace_ref)
+
+
 def bind_sandbox(workspace_ref: str, cwd: str = "/sandbox") -> None:
     """Bind the global sandbox to a specific workspace for the current run."""
     global _sandbox
-    if AGENT_SANDBOX_MODE == "local":
+    workspace_ref = _normalize_workspace_ref(workspace_ref)
+    cwd = cwd or AGENT_LOCAL_SANDBOX_ROOT
+    if _should_use_local_sandbox(workspace_ref):
         _sandbox = LocalSandbox(cwd=cwd or AGENT_LOCAL_SANDBOX_ROOT)
+        backend = "local"
     else:
+        if not workspace_ref:
+            raise RuntimeError(
+                "workspaceRef is required when AGENT_SANDBOX_MODE is openshell"
+            )
         _sandbox = OpenShellSandbox(workspace_ref=workspace_ref, cwd=cwd)
+        _sandbox.ensure_cwd()
+        backend = "openshell"
     logger.info(
-        "Sandbox bound: mode=%s ref=%s cwd=%s",
+        "Sandbox bound: mode=%s backend=%s ref=%s cwd=%s",
         AGENT_SANDBOX_MODE,
+        backend,
         workspace_ref,
         cwd,
     )
 
 
 def get_sandbox() -> OpenShellSandbox | LocalSandbox:
-    if _sandbox is None and AGENT_SANDBOX_MODE == "local":
-        bind_sandbox("local", AGENT_LOCAL_SANDBOX_ROOT)
+    if _sandbox is None and (
+        AGENT_SANDBOX_MODE in LOCAL_SANDBOX_MODES
+        or AGENT_SANDBOX_MODE in HYBRID_SANDBOX_MODES
+    ):
+        bind_sandbox("", AGENT_LOCAL_SANDBOX_ROOT)
     if _sandbox is None:
         raise RuntimeError(
-            "Sandbox not bound. Call bind_sandbox() before using tools."
+            "Sandbox not bound. Call bind_sandbox() with workspaceRef before using tools."
         )
     return _sandbox
 

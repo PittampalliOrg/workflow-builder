@@ -22,7 +22,7 @@ RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev 2>
     || uv sync --python /usr/bin/python3 --no-python-downloads --no-dev
 COPY src/ src/
 
-ENV AGENT_SANDBOX_MODE=local \
+ENV AGENT_SANDBOX_MODE=hybrid \
     AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
     VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"

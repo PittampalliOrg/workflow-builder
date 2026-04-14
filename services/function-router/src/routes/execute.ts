@@ -2135,6 +2135,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                           ? args.workspaceRef
                           : undefined,
                       sandboxName: daprAgentPySandboxName,
+                      cwd:
+                        typeof args.cwd === "string"
+                          ? args.cwd
+                          : undefined,
                     }
                   : undefined;
               if (daprAgentPyTrackingContext) {
