@@ -16,6 +16,38 @@
 		return page.url.searchParams.get('previewId') ?? page.params.executionId ?? '';
 	}
 
+	function queryParam(name: string): string {
+		return page.url.searchParams.get(name)?.trim() ?? '';
+	}
+
+	function defaultDevServerCommand(baseUrl: string): string {
+		try {
+			const parsed = new URL(baseUrl);
+			return parsed.port ? `npm run dev -- --host 0.0.0.0 --port ${parsed.port}` : '';
+		} catch {
+			return '';
+		}
+	}
+
+	function previewStartBody(): Record<string, string | number> {
+		const body: Record<string, string | number> = { previewId: previewId() };
+		const repoPath = queryParam('repoPath');
+		const installCommand = queryParam('installCommand');
+		const baseUrl = queryParam('baseUrl');
+		const devServerCommand = queryParam('devServerCommand') || defaultDevServerCommand(baseUrl);
+		const timeoutSeconds = Number(queryParam('timeoutSeconds'));
+
+		if (repoPath) body.repoPath = repoPath;
+		if (installCommand) body.installCommand = installCommand;
+		if (devServerCommand) body.devServerCommand = devServerCommand;
+		if (baseUrl) body.baseUrl = baseUrl;
+		if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) {
+			body.timeoutSeconds = timeoutSeconds;
+		}
+
+		return body;
+	}
+
 	async function startPreview() {
 		loading = true;
 		errorMessage = '';
@@ -25,7 +57,7 @@
 			const response = await fetch(`/api/workflows/executions/${executionId}/sandbox-preview`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ previewId: previewId() })
+				body: JSON.stringify(previewStartBody())
 			});
 			const payload = await response.json().catch(() => ({}));
 			if (!response.ok || payload.success === false) {
@@ -38,7 +70,7 @@
 				);
 			}
 			previewUrl = payload.proxyUrl;
-			pageUrl = payload.pageUrl;
+			pageUrl = globalThis.location?.href ?? payload.pageUrl;
 			workspaceRef = payload.workspaceRef ?? '';
 			workingDir = payload.workingDir ?? '';
 			provider = payload.provider ?? '';

@@ -652,6 +652,40 @@
 		return typeof value === 'number' && Number.isFinite(value) ? value : null;
 	}
 
+	function previewPortFromBaseUrl(baseUrl: string): string {
+		try {
+			const parsed = new URL(baseUrl);
+			return parsed.port;
+		} catch {
+			return '';
+		}
+	}
+
+	function defaultDevServerCommand(baseUrl: string): string {
+		const port = previewPortFromBaseUrl(baseUrl);
+		return port ? `npm run dev -- --host 0.0.0.0 --port ${port}` : '';
+	}
+
+	function browserAppPreviewUrl(artifact: BrowserArtifact): string {
+		const repoPath = metadataText(artifact, 'requestedRepoPath');
+		const baseUrl = metadataText(artifact, 'requestedBaseUrl') || artifact.manifestJson.baseUrl;
+		if (!repoPath && !baseUrl) return '';
+
+		const params = new URLSearchParams();
+		params.set('previewId', artifact.id);
+		if (repoPath) params.set('repoPath', repoPath);
+		if (baseUrl) {
+			params.set('baseUrl', baseUrl);
+			const command =
+				metadataText(artifact, 'requestedDevServerCommand') ||
+				metadataText(artifact, 'devServerCommand') ||
+				defaultDevServerCommand(baseUrl);
+			if (command) params.set('devServerCommand', command);
+		}
+		params.set('timeoutSeconds', '7200');
+		return `/workflows/runtime-preview/${encodeURIComponent(executionId)}?${params.toString()}`;
+	}
+
 	function annotationCues(artifact: BrowserArtifact): BrowserAnnotationCue[] {
 		const value = artifact.manifestJson.metadata?.annotationPlan;
 		if (!value || typeof value !== 'object') return [];
@@ -690,6 +724,14 @@
 					? ['true', '1', 'yes'].includes(sandboxKeptValue.trim().toLowerCase())
 					: false;
 		return sandboxKept ? `/workflows/runtime-preview/${encodeURIComponent(executionId)}` : '';
+	});
+
+	const primaryAppPreviewUrl = $derived.by(() => {
+		for (const artifact of browserArtifacts) {
+			const url = browserAppPreviewUrl(artifact);
+			if (url) return url;
+		}
+		return sandboxPreviewUrl;
 	});
 
 	const sandboxWorkspaceRef = $derived.by(() => {
@@ -815,7 +857,7 @@
 		<!-- Tab 1: Overview -->
 		<TabsContent value="overview" class="flex-1 overflow-y-auto p-4">
 			<div class="mx-auto max-w-5xl space-y-4">
-				{#if sandboxPreviewUrl}
+				{#if primaryAppPreviewUrl}
 					<Card>
 						<CardContent class="space-y-3 p-4">
 							<div class="flex flex-wrap items-center justify-between gap-3">
@@ -828,7 +870,7 @@
 								<div class="flex flex-wrap gap-2">
 									<a
 										class="inline-flex items-center gap-1 rounded-md border border-border px-3 py-2 text-sm hover:bg-muted"
-										href={sandboxPreviewUrl}
+										href={primaryAppPreviewUrl}
 										target="_blank"
 										rel="noreferrer"
 									>
@@ -1199,16 +1241,21 @@
 									<span class="text-xs text-muted-foreground">
 										{new Date(artifact.createdAt).toLocaleString()}
 									</span>
-									{#if artifact.manifestJson.baseUrl}
+									{#if browserAppPreviewUrl(artifact)}
 										<a
-											class="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-											href={artifact.manifestJson.baseUrl}
+											class="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-muted"
+											href={browserAppPreviewUrl(artifact)}
 											target="_blank"
 											rel="noreferrer"
 										>
 											<ExternalLink size={12} />
-											{artifact.manifestJson.baseUrl}
+											Open App Preview
 										</a>
+									{/if}
+									{#if artifact.manifestJson.baseUrl}
+										<span class="text-xs text-muted-foreground">
+											Captured from sandbox URL {artifact.manifestJson.baseUrl}
+										</span>
 									{/if}
 								</div>
 
