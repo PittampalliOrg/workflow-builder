@@ -40,7 +40,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		})
 		.returning();
 
-	await syncWorkflowConnectionRefs(workflow.id, body.nodes || []);
+	await syncWorkflowConnectionRefs(workflow.id, body.nodes || [], body.spec);
 
 	return json(workflow, { status: 201 });
 };

@@ -112,6 +112,9 @@
 	let mcpServers = $derived(
 		(Array.isArray(agentConfig.mcpServers) ? agentConfig.mcpServers : []) as McpServerConfig[]
 	);
+	let mcpConnectionMode = $derived(
+		typeof agentConfig.mcpConnectionMode === 'string' ? agentConfig.mcpConnectionMode : 'project'
+	);
 
 	onMount(() => {
 		void loadMcpConnections();
@@ -644,6 +647,26 @@
 					Refresh
 				{/if}
 			</Button>
+		</div>
+
+		<div class="grid gap-3 md:grid-cols-[220px_1fr]">
+			<div class="space-y-1.5">
+				<Label for="agent-mcp-mode">Connection Mode</Label>
+				<NativeSelect
+					id="agent-mcp-mode"
+					class="w-full"
+					value={mcpConnectionMode}
+					onchange={(event) => updateAgentConfig({ mcpConnectionMode: event.currentTarget.value })}
+				>
+					<option value="project">Use project MCP connections</option>
+					<option value="explicit">Only selected MCP servers</option>
+					<option value="auto">Project connections when none selected</option>
+				</NativeSelect>
+			</div>
+			<p class="self-end text-[11px] text-muted-foreground">
+				Project mode resolves enabled Settings MCP connections at runtime and appends any selected
+				servers below.
+			</p>
 		</div>
 
 		<div class="space-y-2">

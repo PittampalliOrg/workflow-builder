@@ -54,10 +54,11 @@
       },
       {
         "dapr_agent_py_build": {
-          "call": "dapr-agent-py/run",
+          "call": "durable/run",
           "with": {
             "workspaceRef": "{{workspace_profile.workspaceRef}}",
             "cwd": "/sandbox/{{trigger.repo}}",
+            "agentRuntime": "dapr-agent-py",
             "mode": "execute_direct",
             "maxTurns": 120,
             "timeoutMinutes": 120,
@@ -178,6 +179,7 @@
             "agentConfig": {
               "name": "dapr-agent-py-greenfield-sveltekit",
               "runtime": "dapr-agent-py",
+              "mcpConnectionMode": "project",
               "instructions": "You are dapr-agent-py running through Dapr Agents AgentRunner. Build and validate the requested SvelteKit app using the provided workspace context and any available workspace tools.",
               "tools": [
                 "read_file",

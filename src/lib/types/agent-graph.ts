@@ -334,7 +334,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
       modelSpec: "",
       tools: [],
       runtime: "dapr-agent-py",
-      mcpConnectionMode: "explicit",
+      mcpConnectionMode: "project",
       mcpServers: [],
       loop: {
         strategy: "graph_v1",

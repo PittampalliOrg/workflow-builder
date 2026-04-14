@@ -9,7 +9,7 @@ The validated path is:
 1. Configure an OAuth-backed app connection in Settings.
 2. Create or enable a matching `mcp_connection` row for the project.
 3. Save a SW 1.0 workflow with a `durable/run` action.
-4. Put the MCP server config in `durable/run.with.agentConfig.mcpServers`.
+4. Set `durable/run.with.agentConfig.mcpConnectionMode` to `project`, or put explicit MCP server configs in `durable/run.with.agentConfig.mcpServers`.
 5. Use `x-workflow-builder.input` metadata so the UI renders a prompt textarea instead of requiring raw JSON.
 
 This path works with the Activepieces MCP services deployed in the `workflow-builder` namespace. For example, the Microsoft OneDrive service endpoint is:
@@ -33,7 +33,7 @@ The important binding is `mcp_connection.connection_external_id -> app_connectio
 
 ### Explicit MCP Config
 
-This is the currently validated production path. The workflow spec carries the MCP config in the `durable/run` node:
+This is the most deterministic smoke-test path. The workflow spec carries the MCP config in the `durable/run` node:
 
 ```json
 {
@@ -51,7 +51,7 @@ This is the currently validated production path. The workflow spec carries the M
 
 ### Project-Level Resolver
 
-The orchestrator code also has a dynamic resolver for native durable agent calls. When present in the deployed image, it:
+The preferred project-level path is `agentConfig.mcpConnectionMode: "project"`. The orchestrator resolver for native durable agent calls:
 
 1. reads enabled `mcp_connection` rows for the workflow project,
 2. skips `hosted_workflow` entries that need bearer-token transport auth,
@@ -59,7 +59,7 @@ The orchestrator code also has a dynamic resolver for native durable agent calls
 4. appends those configs to `agentConfig.mcpServers`,
 5. records warnings in `agentConfig.mcpConnectionWarnings`.
 
-Use the explicit config path for smoke tests unless you have verified the deployed `workflow-orchestrator` image includes the resolver and shows the resolver logs.
+Use the explicit config path for smoke tests when you need to pin a single server. Use project mode for normal workflows that should inherit enabled Settings MCP connections.
 
 ## SW 1.0 Smoke Workflow Shape
 
@@ -94,6 +94,7 @@ Use `workspace/profile` first, then `durable/run` with an explicit `workspaceRef
             "cwd": "/workspace",
             "agentRuntime": "openshell-durable-agent",
             "agentConfig": {
+              "mcpConnectionMode": "project",
               "mcpServers": [
                 {
                   "server_name": "piece_microsoft_onedrive",

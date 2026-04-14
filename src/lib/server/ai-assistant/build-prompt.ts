@@ -82,7 +82,7 @@ The only exposed agent is dapr-agent-py. Use \`call: durable/run\` for agent wor
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py
-        mcpConnectionMode: explicit
+        mcpConnectionMode: project
         mcpServers: []
 \`\`\`
 

@@ -97,7 +97,7 @@ Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py
-        mcpConnectionMode: explicit
+        mcpConnectionMode: project
         mcpServers: []
 \`\`\`
 

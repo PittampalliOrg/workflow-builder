@@ -71,7 +71,7 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		return error(404, 'Workflow not found');
 	}
 
-	await syncWorkflowConnectionRefs(params.workflowId, body.nodes);
+	await syncWorkflowConnectionRefs(params.workflowId, body.nodes, body.spec);
 
 	return json(updated);
 };
