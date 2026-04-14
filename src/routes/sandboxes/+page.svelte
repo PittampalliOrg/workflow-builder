@@ -196,6 +196,8 @@
 	async function deleteSandbox(name: string) {
 		deleting = name;
 		try {
+			const sandbox = data.find((entry) => entry.name === name);
+			if (sandbox?.type === 'agent-runtime') return;
 			await fetch(`/api/sandboxes/${encodeURIComponent(name)}`, { method: 'DELETE' });
 			sandboxQuery.refresh();
 		} catch {
@@ -208,8 +210,11 @@
 	async function batchDelete() {
 		batchDeleting = true;
 		try {
+			const deletable = selectedNames.filter(
+				(name) => data.find((entry) => entry.name === name)?.type !== 'agent-runtime'
+			);
 			await Promise.allSettled(
-				selectedNames.map((name) =>
+				deletable.map((name) =>
 					fetch(`/api/sandboxes/${encodeURIComponent(name)}`, { method: 'DELETE' })
 				)
 			);
@@ -242,6 +247,8 @@
 {/snippet}
 
 {#snippet actionsCell(name: string)}
+	{@const sandbox = data.find((entry) => entry.name === name)}
+	{@const runtimeManaged = sandbox?.type === 'agent-runtime'}
 	<div class="flex items-center justify-end gap-1">
 		<Button variant="ghost" size="icon" class="h-7 w-7" href="/sandboxes/{encodeURIComponent(name)}">
 			<ExternalLink class="h-3.5 w-3.5" />
@@ -251,7 +258,8 @@
 			size="icon"
 			class="h-7 w-7 text-destructive hover:text-destructive"
 			onclick={() => deleteSandbox(name)}
-			disabled={deleting === name}
+			disabled={deleting === name || runtimeManaged}
+			title={runtimeManaged ? 'Agent runtimes are managed by Kubernetes deployment configuration' : 'Delete sandbox'}
 		>
 			{#if deleting === name}
 				<Loader2 class="h-3.5 w-3.5 animate-spin" />

@@ -139,7 +139,7 @@ export function createExecutionStream(executionId: string) {
 	async function fetchSnapshotFallback() {
 		// When SSE is unavailable, fetch a one-shot snapshot so the UI isn't blank
 		try {
-			const res = await fetch(`/api/workflows/executions/${executionId}/status`);
+			const res = await fetch(`/api/workflows/executions/${executionId}/status?includeAgentEvents=true`);
 			if (res.ok) {
 				const data = await res.json();
 				mergeSnapshot(data);

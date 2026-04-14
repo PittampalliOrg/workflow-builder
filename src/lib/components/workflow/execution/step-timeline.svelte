@@ -18,6 +18,14 @@
 		data: Record<string, unknown>;
 		timestamp: string;
 		toolName?: string | null;
+		workflowAgentRunId?: string | null;
+		daprInstanceId?: string | null;
+	}
+
+	interface AgentRun {
+		id: string;
+		nodeId: string;
+		daprInstanceId: string;
 	}
 
 	interface StepLog {
@@ -38,22 +46,53 @@
 	interface Props {
 		steps: StepLog[];
 		agentEvents?: AgentEvent[];
+		agentRuns?: AgentRun[];
 	}
 
-	let { steps, agentEvents = [] }: Props = $props();
+	let { steps, agentEvents = [], agentRuns = [] }: Props = $props();
 
 	const AGENT_ACTION_TYPES = new Set(['durable/run']);
 
-	let significantEvents = $derived(
-		agentEvents.filter(e =>
-			['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(
-				e.type ?? (e.data?.type as string) ?? ''
-			)
-		)
-	);
+	function eventType(event: AgentEvent): string {
+		return event.type || (typeof event.data?.type === 'string' ? event.data.type : '');
+	}
 
-	let turnCount = $derived(agentEvents.filter(e => e.type === 'llm_complete' || (e.data?.type as string) === 'llm_complete').length);
-	let toolCount = $derived(agentEvents.filter(e => e.type === 'tool_call_start' || (e.data?.type as string) === 'tool_call_start').length);
+	function stepAgentEvents(step: StepLog): AgentEvent[] {
+		if (!AGENT_ACTION_TYPES.has(step.actionType)) return [];
+
+		const runsForStep = agentRuns.filter((run) => run.nodeId === step.stepName);
+		if (runsForStep.length > 0) {
+			const runIds = new Set(runsForStep.map((run) => run.id));
+			const instanceIds = new Set(runsForStep.map((run) => run.daprInstanceId));
+			return agentEvents.filter(
+				(event) =>
+					(event.workflowAgentRunId && runIds.has(event.workflowAgentRunId)) ||
+					(event.daprInstanceId && instanceIds.has(event.daprInstanceId))
+			);
+		}
+
+		const nodeMatched = agentEvents.filter((event) => event.data?.nodeId === step.stepName);
+		if (nodeMatched.length > 0) return nodeMatched;
+
+		const durableSteps = steps.filter((candidate) => AGENT_ACTION_TYPES.has(candidate.actionType));
+		return durableSteps.length === 1 ? agentEvents : [];
+	}
+
+	function significantEvents(events: AgentEvent[]): AgentEvent[] {
+		return events.filter((event) =>
+			['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(
+				eventType(event)
+			)
+		);
+	}
+
+	function turnCount(events: AgentEvent[]): number {
+		return events.filter((event) => eventType(event) === 'llm_complete').length;
+	}
+
+	function toolCount(events: AgentEvent[]): number {
+		return events.filter((event) => eventType(event) === 'tool_call_start').length;
+	}
 
 	let expandedSteps = new SvelteSet<number>();
 
@@ -87,6 +126,10 @@
 		{@const isFirst = i === 0}
 		{@const isLast = i === steps.length - 1}
 		{@const isExpanded = expandedSteps.has(i)}
+		{@const stepEvents = stepAgentEvents(step)}
+		{@const stepSignificantEvents = significantEvents(stepEvents)}
+		{@const stepTurnCount = turnCount(stepEvents)}
+		{@const stepToolCount = toolCount(stepEvents)}
 
 		<div class="relative flex gap-3">
 			<!-- Timeline connector -->
@@ -163,20 +206,20 @@
 						{/if}
 
 						<!-- Agent activity chain-of-thought (for durable/run steps) -->
-						{#if AGENT_ACTION_TYPES.has(step.actionType) && significantEvents.length > 0}
+						{#if AGENT_ACTION_TYPES.has(step.actionType) && stepSignificantEvents.length > 0}
 							<div class="space-y-2">
 								<!-- Stats summary -->
-								{#if turnCount > 0 || toolCount > 0}
+								{#if stepTurnCount > 0 || stepToolCount > 0}
 									<div class="flex items-center gap-3 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-3 py-1.5">
 										<div class="flex items-center gap-1 text-[10px]">
 											<MessageSquare size={10} class="text-blue-400" />
-											<span class="font-semibold text-blue-400">{turnCount}</span>
+											<span class="font-semibold text-blue-400">{stepTurnCount}</span>
 											<span class="text-muted-foreground">turns</span>
 										</div>
 										<div class="h-3 w-px bg-border"></div>
 										<div class="flex items-center gap-1 text-[10px]">
 											<Wrench size={10} class="text-orange-400" />
-											<span class="font-semibold text-orange-400">{toolCount}</span>
+											<span class="font-semibold text-orange-400">{stepToolCount}</span>
 											<span class="text-muted-foreground">tools</span>
 										</div>
 									</div>
@@ -184,11 +227,11 @@
 
 								<ChainOfThought defaultOpen={true}>
 									<ChainOfThoughtHeader>
-										Agent Activity ({significantEvents.length} steps)
+										Agent Activity ({stepSignificantEvents.length} steps)
 									</ChainOfThoughtHeader>
 									<ChainOfThoughtContent>
-										{#each significantEvents as event, ei (event.timestamp + event.type + ei)}
-											{@const evtType = event.type || (event.data?.type as string) || ''}
+										{#each stepSignificantEvents as event, ei (event.timestamp + event.type + ei)}
+											{@const evtType = eventType(event)}
 											{#if evtType === 'llm_start'}
 												<ChainOfThoughtStep
 													icon={Brain}
@@ -245,7 +288,7 @@
 							</div>
 						{/if}
 
-						{#if !step.input && !step.output && !step.error && !(AGENT_ACTION_TYPES.has(step.actionType) && significantEvents.length > 0)}
+						{#if !step.input && !step.output && !step.error && !(AGENT_ACTION_TYPES.has(step.actionType) && stepSignificantEvents.length > 0)}
 							<div class="rounded-md border bg-muted/30 py-2.5 text-center text-[10px] text-muted-foreground">
 								No data recorded
 							</div>

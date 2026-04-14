@@ -3,6 +3,7 @@ import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { sandboxEventBus, type SandboxBusEvent } from '$lib/server/sandbox-event-bus';
 import { listSandboxAgentEvents } from '$lib/server/execution-read-model';
+import { getAgentRuntimeSandbox, isAgentRuntimeSandboxName } from '$lib/server/agent-runtime-sandboxes';
 import type { Sandbox } from '$lib/types/sandbox';
 
 const STATUS_POLL_INTERVAL_MS = 3000;
@@ -87,6 +88,9 @@ function formatAgentEventMessage(event: AgentEvent): string {
 }
 
 async function fetchSandboxByName(name: string): Promise<Sandbox | null> {
+	const runtimeSandbox = await getAgentRuntimeSandbox(name);
+	if (runtimeSandbox) return runtimeSandbox;
+
 	const fromBus = sandboxEventBus.get(name);
 	if (fromBus) return fromBus;
 
@@ -231,6 +235,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 			};
 
 			const enqueueOpenShellLogBackfill = async () => {
+				if (isAgentRuntimeSandboxName(name)) return;
 				try {
 					const res = await openshellRuntimeFetch(
 						`/api/v1/sandboxes/${encodeURIComponent(name)}/logs?limit=200&source=all&level=info`
@@ -246,6 +251,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 			};
 
 			const streamOpenShellEvents = async () => {
+				if (isAgentRuntimeSandboxName(name)) return;
 				openshellAbort = new AbortController();
 				try {
 					const res = await openshellRuntimeFetch(

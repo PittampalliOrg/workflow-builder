@@ -332,7 +332,7 @@
 		buildAgentCanvasSubflows(
 			workflowNodes,
 			agentRuns,
-			executionState.events,
+			timelineEvents,
 			expandedAgentRunId
 		)
 	);
@@ -1116,7 +1116,7 @@
 			<div class="mx-auto h-full max-w-7xl">
 				<AgentRunExplorer
 					{agentRuns}
-					agentEvents={executionState.events}
+					agentEvents={timelineEvents}
 					selectedRunId={selectedAgentRunId}
 					onSelectRun={(runId) => {
 						selectedAgentRunId = runId;

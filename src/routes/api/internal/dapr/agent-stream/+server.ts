@@ -1,10 +1,53 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { db } from '$lib/server/db';
-import { workflowExecutions, workflowAgentRuns, workflowAgentEvents } from '$lib/server/db/schema';
-import { eq } from 'drizzle-orm';
+import {
+	workflowExecutions,
+	workflowAgentRuns,
+	workflowAgentEvents,
+	type WorkflowAgentEventType
+} from '$lib/server/db/schema';
+import { and, eq, max } from 'drizzle-orm';
 import { getNatsConnection, executionSubject } from '$lib/server/nats-client';
 import { daprEventStream } from '$lib/server/dapr-event-stream';
+
+const ALLOWED_EVENT_TYPES = new Set<WorkflowAgentEventType>([
+	'run_started',
+	'turn_started',
+	'llm_start',
+	'llm_token',
+	'llm_complete',
+	'tool_call_start',
+	'tool_call_end',
+	'tool_call_error',
+	'sandbox_output',
+	'sandbox_output_partial',
+	'sandbox_heartbeat',
+	'state_snapshot',
+	'run_complete',
+	'run_error',
+	'tool_start',
+	'tool_complete',
+	'tool_error',
+	'model_start',
+	'model_complete'
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | null {
+	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function normalizeTimestamp(value: unknown): Date {
+	if (typeof value === 'string' && value.trim()) {
+		const parsed = new Date(value);
+		if (!Number.isNaN(parsed.getTime())) return parsed;
+	}
+	return new Date();
+}
 
 /**
  * Dapr pub/sub handler for agent execution events from workflow.stream.
@@ -44,17 +87,25 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		// Resolve the parent workflow execution ID (3-step lookup, no unsafe fallback)
 		let parentExecutionId: string | null = null;
+		let workflowAgentRunId: string | null = null;
+		let agentRunParentExecutionId: string | null = null;
 
 		if (db && (instanceId || executionId)) {
 			// 1. Check agent runs table by daprInstanceId
 			if (instanceId) {
 				const [agentRun] = await db
-					.select({ workflowExecutionId: workflowAgentRuns.workflowExecutionId })
+					.select({
+						id: workflowAgentRuns.id,
+						workflowExecutionId: workflowAgentRuns.workflowExecutionId,
+						parentExecutionId: workflowAgentRuns.parentExecutionId
+					})
 					.from(workflowAgentRuns)
 					.where(eq(workflowAgentRuns.daprInstanceId, instanceId))
 					.limit(1);
 				if (agentRun) {
 					parentExecutionId = agentRun.workflowExecutionId;
+					workflowAgentRunId = agentRun.id;
+					agentRunParentExecutionId = agentRun.parentExecutionId;
 				}
 			}
 
@@ -86,6 +137,36 @@ export const POST: RequestHandler = async ({ request }) => {
 			// but still bridge to NATS using the executionId from the event payload
 		}
 
+		const eventPayload = isRecord(eventData.data)
+			? {
+					...eventData.data,
+					id: sourceEventId,
+					type: eventType,
+					ts: timestamp,
+					source,
+					executionId: parentExecutionId || executionId || null,
+					daprInstanceId: instanceId || null,
+					workflowAgentRunId,
+					parentExecutionId: agentRunParentExecutionId
+				}
+			: {
+					id: sourceEventId,
+					type: eventType,
+					ts: timestamp,
+					source,
+					executionId: parentExecutionId || executionId || null,
+					daprInstanceId: instanceId || null,
+					workflowAgentRunId,
+					parentExecutionId: agentRunParentExecutionId,
+					value: eventData.data ?? null
+				};
+		const phase = stringValue(eventPayload.phase);
+		const toolName = stringValue(eventPayload.toolName) ?? stringValue(eventPayload.name);
+		const traceId = stringValue(eventPayload.traceId);
+		const sandboxName =
+			stringValue(eventPayload.sandboxName) ??
+			(source.startsWith('dapr-agent-py') ? source : null);
+
 		// Bridge to per-execution NATS subject for SSE consumers (non-blocking)
 		const targetExecutionId = parentExecutionId || executionId || instanceId;
 		if (targetExecutionId) {
@@ -99,10 +180,13 @@ export const POST: RequestHandler = async ({ request }) => {
 							source,
 							type: eventType,
 							executionId: targetExecutionId,
+							workflowAgentRunId,
 							instanceId,
 							daprInstanceId: instanceId,
 							sourceEventId,
-							data: eventData.data ?? eventData,
+							phase,
+							toolName,
+							data: eventPayload,
 							timestamp,
 						})
 					)
@@ -112,24 +196,54 @@ export const POST: RequestHandler = async ({ request }) => {
 			}
 		}
 
-		// Persist to DB (fire-and-forget — don't block Dapr ACK)
-		if (db && parentExecutionId && eventType) {
-			db.insert(workflowAgentEvents)
+		// Persist to the execution read model. This is the canonical UI history;
+		// NATS is only the live transport.
+		if (db && parentExecutionId && eventType && ALLOWED_EVENT_TYPES.has(eventType as WorkflowAgentEventType)) {
+			const [seqRow] = await db
+				.select({ maxSeq: max(workflowAgentEvents.seq) })
+				.from(workflowAgentEvents)
+				.where(
+					and(
+						eq(workflowAgentEvents.workflowExecutionId, parentExecutionId),
+						eq(workflowAgentEvents.daprInstanceId, instanceId || source)
+					)
+				);
+			const seq = Number(seqRow?.maxSeq ?? 0) + 1;
+
+			const inserted = await db
+				.insert(workflowAgentEvents)
 				.values({
 					workflowExecutionId: parentExecutionId,
-					daprInstanceId: instanceId,
+					workflowAgentRunId,
+					parentExecutionId: agentRunParentExecutionId,
+					daprInstanceId: instanceId || source,
 					sourceEventId,
 					eventType: eventType as any,
-					phase: eventData.data?.phase ?? null,
-					toolName: eventData.data?.toolName ?? null,
-					sandboxName: eventData.data?.sandboxName ?? null,
-					payload: eventData.data ?? eventData,
-					ts: new Date(timestamp),
+					seq,
+					phase,
+					toolName,
+					sandboxName,
+					traceId,
+					payload: eventPayload,
+					ts: normalizeTimestamp(timestamp),
 				})
 				.onConflictDoNothing()
-				.catch(() => {
-					// De-dup conflict or schema mismatch — ignore
+				.returning({
+					eventId: workflowAgentEvents.eventId,
+					traceId: workflowAgentEvents.traceId,
+					phase: workflowAgentEvents.phase
 				});
+			const latestInserted = inserted.at(-1);
+			if (latestInserted) {
+				await db
+					.update(workflowExecutions)
+					.set({
+						lastAgentEventId: latestInserted.eventId,
+						primaryTraceId: latestInserted.traceId ?? undefined,
+						phase: latestInserted.phase ?? undefined
+					})
+					.where(eq(workflowExecutions.id, parentExecutionId));
+			}
 		}
 	} catch {
 		// Malformed event — acknowledge anyway to prevent redelivery

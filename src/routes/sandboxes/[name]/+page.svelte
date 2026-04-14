@@ -45,6 +45,7 @@
 	const hasActivityLogs = $derived(
 		filteredLogs.some((l) => ['tool_call_start', 'llm_start', 'run_started'].includes(l.eventType ?? l.source))
 	);
+	const runtimeManaged = $derived(stream.status?.type === 'agent-runtime');
 
 	async function deleteSandbox() {
 		deleting = true;
@@ -104,28 +105,30 @@
 			{#if stream.status?.createdAt}
 				<span class="text-xs text-muted-foreground">{formatAge(stream.status.createdAt)}</span>
 			{/if}
-			<Button
-				variant="outline"
-				size="sm"
-				onclick={() => (cloneDialogOpen = true)}
-			>
-				<CopyPlus class="mr-1 h-3.5 w-3.5" />
-				Clone
-			</Button>
-			<Button
-				variant="outline"
-				size="sm"
-				class="text-destructive hover:text-destructive"
-				onclick={deleteSandbox}
-				disabled={deleting}
-			>
-				{#if deleting}
-					<Loader2 class="mr-1 h-3.5 w-3.5 animate-spin" />
-				{:else}
-					<Trash2 class="mr-1 h-3.5 w-3.5" />
-				{/if}
-				Delete
-			</Button>
+			{#if !runtimeManaged}
+				<Button
+					variant="outline"
+					size="sm"
+					onclick={() => (cloneDialogOpen = true)}
+				>
+					<CopyPlus class="mr-1 h-3.5 w-3.5" />
+					Clone
+				</Button>
+				<Button
+					variant="outline"
+					size="sm"
+					class="text-destructive hover:text-destructive"
+					onclick={deleteSandbox}
+					disabled={deleting}
+				>
+					{#if deleting}
+						<Loader2 class="mr-1 h-3.5 w-3.5 animate-spin" />
+					{:else}
+						<Trash2 class="mr-1 h-3.5 w-3.5" />
+					{/if}
+					Delete
+				</Button>
+			{/if}
 		</div>
 	</header>
 
@@ -171,9 +174,13 @@
 							<span class="ml-1 text-xs text-muted-foreground">({stream.events.length})</span>
 						{/if}
 					</Tabs.Trigger>
-					<Tabs.Trigger value="files">Files</Tabs.Trigger>
+					{#if !runtimeManaged}
+						<Tabs.Trigger value="files">Files</Tabs.Trigger>
+					{/if}
 					<Tabs.Trigger value="info">Info</Tabs.Trigger>
-					<Tabs.Trigger value="terminal">Terminal</Tabs.Trigger>
+					{#if !runtimeManaged}
+						<Tabs.Trigger value="terminal">Terminal</Tabs.Trigger>
+					{/if}
 				</Tabs.List>
 
 				<Tabs.Content value="logs" class="flex-1 overflow-hidden p-6 pt-3">
@@ -230,7 +237,9 @@
 				</Tabs.Content>
 
 				<Tabs.Content value="files" class="flex-1 overflow-hidden">
-					<SandboxFileBrowser {sandboxName} />
+					{#if !runtimeManaged}
+						<SandboxFileBrowser {sandboxName} />
+					{/if}
 				</Tabs.Content>
 
 				<Tabs.Content value="info" class="flex-1 overflow-auto p-6 pt-3">
@@ -244,13 +253,17 @@
 								/>
 							</div>
 						{/if}
-						<SandboxProcesses {sandboxName} />
+						{#if !runtimeManaged}
+							<SandboxProcesses {sandboxName} />
+						{/if}
 						<SandboxInfoCard {sandboxName} />
 					</div>
 				</Tabs.Content>
 
 				<Tabs.Content value="terminal" class="flex min-h-0 flex-1 flex-col overflow-hidden">
-					<SandboxTerminalTabs {sandboxName} />
+					{#if !runtimeManaged}
+						<SandboxTerminalTabs {sandboxName} />
+					{/if}
 				</Tabs.Content>
 			</Tabs.Root>
 		{/if}

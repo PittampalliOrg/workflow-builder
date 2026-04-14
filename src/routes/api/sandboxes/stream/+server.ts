@@ -2,6 +2,7 @@ import type { RequestHandler } from './$types';
 import { openshellRuntimeFetch } from '$lib/server/openshell-runtime';
 import { normalizeSandboxResponse } from '$lib/utils/sandbox-parse';
 import { sandboxEventBus, type SandboxBusEvent } from '$lib/server/sandbox-event-bus';
+import { listAgentRuntimeSandboxes } from '$lib/server/agent-runtime-sandboxes';
 import type { Sandbox } from '$lib/types/sandbox';
 
 const POLL_INTERVAL_MS = 2000;
@@ -15,13 +16,29 @@ function sandboxChanged(a: Sandbox, b: Sandbox): boolean {
 	return JSON.stringify(a) !== JSON.stringify(b);
 }
 
-async function fetchSandboxes(): Promise<Sandbox[]> {
-	const response = await openshellRuntimeFetch('/api/v1/sandboxes');
-	if (!response.ok) {
-		throw new Error(`OpenShell sandboxes fetch failed (${response.status})`);
+async function mergeRuntimeSandboxes(sandboxes: Sandbox[]): Promise<Sandbox[]> {
+	const runtimeSandboxes = await listAgentRuntimeSandboxes();
+	const byName = new Map(sandboxes.map((sandbox) => [sandbox.name, sandbox]));
+	for (const sandbox of runtimeSandboxes) {
+		byName.set(sandbox.name, sandbox);
 	}
-	const data = await response.json();
-	return normalizeSandboxResponse(data);
+	return Array.from(byName.values());
+}
+
+async function fetchSandboxes(): Promise<Sandbox[]> {
+	const [openshellResult, runtimeResult] = await Promise.allSettled([
+		openshellRuntimeFetch('/api/v1/sandboxes'),
+		listAgentRuntimeSandboxes()
+	]);
+	const openshellSandboxes =
+		openshellResult.status === 'fulfilled' && openshellResult.value.ok
+			? normalizeSandboxResponse(await openshellResult.value.json())
+			: [];
+	const runtimeSandboxes = runtimeResult.status === 'fulfilled' ? runtimeResult.value : [];
+	if (openshellResult.status === 'fulfilled' && !openshellResult.value.ok && runtimeResult.status !== 'fulfilled') {
+		throw new Error(`OpenShell sandboxes fetch failed (${openshellResult.value.status})`);
+	}
+	return [...openshellSandboxes, ...runtimeSandboxes];
 }
 
 export const GET: RequestHandler = async ({ request }) => {
@@ -50,7 +67,13 @@ export const GET: RequestHandler = async ({ request }) => {
 			if (sandboxEventBus.isSeeded) {
 				const sandboxes = sandboxEventBus.getAll();
 				lastSandboxes = new Map(sandboxes.map((s) => [s.name, s]));
-				controller.enqueue(serializeSse('snapshot', { sandboxes }));
+				void mergeRuntimeSandboxes(sandboxes)
+					.then((merged) => {
+						if (closed) return;
+						lastSandboxes = new Map(merged.map((s) => [s.name, s]));
+						controller.enqueue(serializeSse('snapshot', { sandboxes: merged }));
+					})
+					.catch(() => controller.enqueue(serializeSse('snapshot', { sandboxes })));
 
 				// Subscribe to event bus for push-based updates
 				unsubscribe = sandboxEventBus.subscribe((event: SandboxBusEvent) => {
@@ -58,9 +81,11 @@ export const GET: RequestHandler = async ({ request }) => {
 					try {
 						switch (event.type) {
 							case 'snapshot':
-								controller.enqueue(
-									serializeSse('snapshot', { sandboxes: event.sandboxes })
-								);
+								void mergeRuntimeSandboxes(event.sandboxes ?? [])
+									.then((merged) => {
+										if (!closed) controller.enqueue(serializeSse('snapshot', { sandboxes: merged }));
+									})
+									.catch(() => controller.enqueue(serializeSse('snapshot', { sandboxes: event.sandboxes ?? [] })));
 								break;
 							case 'sandbox_added':
 								if (event.sandbox) {
@@ -95,15 +120,21 @@ export const GET: RequestHandler = async ({ request }) => {
 					// Check if event bus got seeded while we were polling
 					if (sandboxEventBus.isSeeded && !unsubscribe) {
 						const sandboxes = sandboxEventBus.getAll();
-						controller.enqueue(serializeSse('snapshot', { sandboxes }));
+						void mergeRuntimeSandboxes(sandboxes)
+							.then((merged) => {
+								if (!closed) controller.enqueue(serializeSse('snapshot', { sandboxes: merged }));
+							})
+							.catch(() => controller.enqueue(serializeSse('snapshot', { sandboxes })));
 						unsubscribe = sandboxEventBus.subscribe((event: SandboxBusEvent) => {
 							if (closed) return;
 							try {
 								switch (event.type) {
 									case 'snapshot':
-										controller.enqueue(
-											serializeSse('snapshot', { sandboxes: event.sandboxes })
-										);
+										void mergeRuntimeSandboxes(event.sandboxes ?? [])
+											.then((merged) => {
+												if (!closed) controller.enqueue(serializeSse('snapshot', { sandboxes: merged }));
+											})
+											.catch(() => controller.enqueue(serializeSse('snapshot', { sandboxes: event.sandboxes ?? [] })));
 										break;
 									case 'sandbox_added':
 										if (event.sandbox) {

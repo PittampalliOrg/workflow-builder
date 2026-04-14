@@ -1,4 +1,4 @@
-export type SandboxType = 'openshell' | 'k8s-crd';
+export type SandboxType = 'openshell' | 'k8s-crd' | 'agent-runtime';
 export type SandboxPhase = 'PROVISIONING' | 'READY' | 'ERROR' | 'DELETING' | 'UNKNOWN';
 
 export interface Sandbox {
@@ -9,6 +9,17 @@ export interface Sandbox {
 	provider?: string;
 	createdAt?: string;
 	conditions?: Array<{ type: string; status: string; message?: string }>;
+	runtime?: {
+		runtimeId: string;
+		appId: string;
+		namespace: string;
+		serviceName: string;
+		serviceUrl: string;
+		stateStore: string;
+		description: string;
+		tools: string[];
+		health?: Record<string, unknown> | null;
+	};
 }
 
 export interface SandboxLogEntry {

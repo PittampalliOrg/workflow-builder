@@ -57,7 +57,8 @@ export function createSandboxDetailStream(name: string) {
 					image: data.image,
 					provider: data.provider,
 					createdAt: data.createdAt ?? data.created,
-					conditions: data.conditions
+					conditions: data.conditions,
+					runtime: data.runtime
 				};
 				isStreaming = true;
 				notFound = false;

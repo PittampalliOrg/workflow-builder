@@ -12,20 +12,21 @@ import {
  * realtime stream endpoint. This keeps the legacy status route aligned with
  * the new SSE-backed run page.
  */
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, url }) => {
 	const { executionId } = params;
+	const includeAgentEvents = url.searchParams.get('includeAgentEvents') === 'true';
 
 	try {
 		const model = await loadExecutionReadModel(executionId, {
 			refreshRuntime: true,
-			includeAgentEvents: false
+			includeAgentEvents
 		});
 
 		if (model) {
 			return json(
 				serializeExecutionReadModel(model, {
 					compact: false,
-					includeAgentEvents: false
+					includeAgentEvents
 				})
 			);
 		}

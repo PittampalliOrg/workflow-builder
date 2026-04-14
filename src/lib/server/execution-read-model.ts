@@ -268,6 +268,32 @@ export async function listSandboxAgentEvents(
 		return directRows.map((row) => mapAgentEvent(row));
 	}
 
+	// Agent-runtime sandboxes are long-lived runtime profiles, so events may
+	// carry the runtime name in payload source/provider fields rather than an
+	// OpenShell sandbox_name.
+	if (sandboxName === 'dapr-agent-py' || sandboxName === 'dapr-agent-py-testing') {
+		const runtimeRows = await db
+			.select()
+			.from(workflowAgentEvents)
+			.where(
+				and(
+					sql`(
+						${workflowAgentEvents.payload}->>'source' = ${sandboxName}
+						OR ${workflowAgentEvents.payload}->>'sandboxName' = ${sandboxName}
+						OR ${workflowAgentEvents.payload}->>'agentRuntime' = ${sandboxName}
+						OR ${workflowAgentEvents.payload}->>'runtime' = ${sandboxName}
+					)`,
+					gt(workflowAgentEvents.eventId, afterEventId)
+				)
+			)
+			.orderBy(asc(workflowAgentEvents.eventId))
+			.limit(limit);
+
+		if (runtimeRows.length > 0) {
+			return runtimeRows.map((row) => mapAgentEvent(row));
+		}
+	}
+
 	// Fallback: find execution(s) whose output JSON mentions this sandbox name,
 	// then return that execution's agent events
 	const executions = await db

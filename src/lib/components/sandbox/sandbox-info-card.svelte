@@ -102,6 +102,21 @@
 						<p class="truncate font-mono text-xs" title={String(detail.image)}>{detail.image}</p>
 					</div>
 				{/if}
+				{#if detail.runtime && typeof detail.runtime === 'object'}
+					{@const runtime = detail.runtime as Record<string, unknown>}
+					<div>
+						<span class="text-muted-foreground">Dapr App ID</span>
+						<p class="font-mono">{runtime.appId ?? '-'}</p>
+					</div>
+					<div>
+						<span class="text-muted-foreground">State Store</span>
+						<p class="font-mono">{runtime.stateStore ?? '-'}</p>
+					</div>
+					<div>
+						<span class="text-muted-foreground">Service</span>
+						<p class="truncate font-mono text-xs" title={String(runtime.serviceUrl ?? '')}>{runtime.serviceName ?? runtime.serviceUrl ?? '-'}</p>
+					</div>
+				{/if}
 				{#if detail.createdAt || detail.created}
 					<div>
 						<span class="text-muted-foreground">Created</span>
@@ -155,32 +170,52 @@
 			</div>
 		{/if}
 
-		<!-- Connect -->
-		<div class="rounded-lg border border-border p-4">
-			<h3 class="mb-3 text-sm font-semibold">Connect</h3>
-			<div class="space-y-2">
-				<div class="flex items-center gap-2 rounded bg-zinc-950 px-3 py-2">
-					<code class="flex-1 font-mono text-xs text-zinc-300">{sshCmd}</code>
-					<button onclick={() => copyCommand(sshCmd)} class="text-zinc-500 hover:text-zinc-300">
-						{#if copiedCmd === sshCmd}
-							<Check class="h-3.5 w-3.5 text-green-400" />
-						{:else}
-							<Copy class="h-3.5 w-3.5" />
-						{/if}
-					</button>
-				</div>
-				<div class="flex items-center gap-2 rounded bg-zinc-950 px-3 py-2">
-					<code class="flex-1 font-mono text-xs text-zinc-300">{execCmd}<span class="text-zinc-500">{'<command>'}</span></code>
-					<button onclick={() => copyCommand(execCmd)} class="text-zinc-500 hover:text-zinc-300">
-						{#if copiedCmd === execCmd}
-							<Check class="h-3.5 w-3.5 text-green-400" />
-						{:else}
-							<Copy class="h-3.5 w-3.5" />
-						{/if}
-					</button>
+		{#if detail.type === 'agent-runtime'}
+			<div class="rounded-lg border border-border p-4">
+				<h3 class="mb-3 text-sm font-semibold">Runtime Management</h3>
+				<p class="text-sm text-muted-foreground">
+					This sandbox is a long-lived Kubernetes-managed agent runtime. Use workflows with
+					<code>{detail.name ?? sandboxName}</code> as the agent runtime; lifecycle changes are applied through the stacks deployment configuration.
+				</p>
+				{#if detail.runtime && typeof detail.runtime === 'object'}
+					{@const runtime = detail.runtime as Record<string, unknown>}
+					{#if Array.isArray(runtime.tools) && runtime.tools.length > 0}
+						<div class="mt-3 flex flex-wrap gap-2">
+							{#each runtime.tools as tool}
+								<Badge variant="secondary">{tool}</Badge>
+							{/each}
+						</div>
+					{/if}
+				{/if}
+			</div>
+		{:else}
+			<!-- Connect -->
+			<div class="rounded-lg border border-border p-4">
+				<h3 class="mb-3 text-sm font-semibold">Connect</h3>
+				<div class="space-y-2">
+					<div class="flex items-center gap-2 rounded bg-zinc-950 px-3 py-2">
+						<code class="flex-1 font-mono text-xs text-zinc-300">{sshCmd}</code>
+						<button onclick={() => copyCommand(sshCmd)} class="text-zinc-500 hover:text-zinc-300">
+							{#if copiedCmd === sshCmd}
+								<Check class="h-3.5 w-3.5 text-green-400" />
+							{:else}
+								<Copy class="h-3.5 w-3.5" />
+							{/if}
+						</button>
+					</div>
+					<div class="flex items-center gap-2 rounded bg-zinc-950 px-3 py-2">
+						<code class="flex-1 font-mono text-xs text-zinc-300">{execCmd}<span class="text-zinc-500">{'<command>'}</span></code>
+						<button onclick={() => copyCommand(execCmd)} class="text-zinc-500 hover:text-zinc-300">
+							{#if copiedCmd === execCmd}
+								<Check class="h-3.5 w-3.5 text-green-400" />
+							{:else}
+								<Copy class="h-3.5 w-3.5" />
+							{/if}
+						</button>
+					</div>
 				</div>
 			</div>
-		</div>
+		{/if}
 
 		<!-- Conditions -->
 		{#if Array.isArray(detail.conditions) && detail.conditions.length > 0}
