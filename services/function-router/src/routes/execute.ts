@@ -63,6 +63,8 @@ import type {
 
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
+const DAPR_AGENT_PY_TESTING_APP_ID =
+  process.env.DAPR_AGENT_PY_TESTING_APP_ID || "dapr-agent-py-testing.openshell";
 const HTTP_TIMEOUT_MS = Number.parseInt(
   process.env.HTTP_TIMEOUT_MS || "60000",
   10,
@@ -79,6 +81,22 @@ const BROWSER_CAPTURE_OVERHEAD_MS = 15_000;
 
 // Cold start detection: if response time is > 3x average, likely a cold start
 const COLD_START_MULTIPLIER = 3;
+
+function shouldUseDaprInvocation(appId: string): boolean {
+  return appId.includes(".");
+}
+
+function daprInvocationBaseUrl(appId: string): string {
+  return `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/invoke/${encodeURIComponent(appId)}/method`;
+}
+
+function isDaprAgentPyAppId(appId: string): boolean {
+  return appId === "dapr-agent-py" || appId.startsWith("dapr-agent-py.");
+}
+
+function isDaprAgentPyTestingAppId(appId: string): boolean {
+  return appId === "dapr-agent-py-testing" || appId.startsWith("dapr-agent-py-testing.");
+}
 
 // Request body schema using Zod
 const ExecuteRequestSchema = z.object({
@@ -1205,7 +1223,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
       functionSlug === "durable/run" &&
       requestedAgentRuntime === "dapr-agent-py-testing"
     ) {
-      target = { ...target, appId: "dapr-agent-py-testing" };
+      target = { ...target, appId: DAPR_AGENT_PY_TESTING_APP_ID };
     }
     console.log(
       `[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`,
@@ -1228,13 +1246,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
         // Resolve the function URL (Knative Service DNS in Knative-only mode)
         const routingStartTime = Date.now();
-        const functionUrl = await resolveOpenFunctionUrl(target.appId);
+        const functionUrl = shouldUseDaprInvocation(target.appId)
+          ? daprInvocationBaseUrl(target.appId)
+          : await resolveOpenFunctionUrl(target.appId);
         timing.routingMs = Date.now() - routingStartTime;
 
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
-          target.appId === "dapr-agent-py" ||
-          target.appId === "dapr-agent-py-testing" ||
+          isDaprAgentPyAppId(target.appId) ||
+          isDaprAgentPyTestingAppId(target.appId) ||
           target.appId === "openshell-agent-runtime";
 
         if (isBuiltinRuntime) {
@@ -1292,8 +1312,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
             const isAgentRun = toolId === "run";
             const isDaprAgentPyRun =
-              (target.appId === "dapr-agent-py" ||
-                target.appId === "dapr-agent-py-testing") &&
+              (isDaprAgentPyAppId(target.appId) ||
+                isDaprAgentPyTestingAppId(target.appId)) &&
               isAgentRun;
             const isPlan = toolId === "plan";
             const isClaudePlan = toolId === "claude-plan";

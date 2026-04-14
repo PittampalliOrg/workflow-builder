@@ -777,6 +777,8 @@ def _run_native_durable_agent_child_workflow(
         and flattened_args.get("workspaceRef").strip()
         else None
     )
+    if not workspace_ref and agent_runtime == "dapr-agent-py-testing":
+        workspace_ref = "local"
     if not workspace_ref:
         raise RuntimeError(
             "SW 1.0 durable/run tasks require an explicit workspaceRef. "

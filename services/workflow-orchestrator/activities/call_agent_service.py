@@ -449,6 +449,7 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
       - maxTurns: int | None
     """
     workspace_ref = str(input_data.get("workspaceRef") or "").strip()
+    agent_runtime = _agent_runtime_from_payload(input_data)
     run_route = "api/run"
     otel = input_data.get("_otel") or {}
     attrs = {
@@ -460,7 +461,7 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
     }
 
     with start_activity_span("activity.call_durable_agent_run", otel, attrs):
-        if not workspace_ref:
+        if not workspace_ref and agent_runtime != "dapr-agent-py-testing":
             return {
                 "success": False,
                 "error": (

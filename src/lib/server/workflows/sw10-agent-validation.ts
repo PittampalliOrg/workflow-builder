@@ -43,17 +43,17 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
       typeof withRecord?.workspaceRef === "string"
         ? withRecord.workspaceRef.trim()
         : "";
-    if (!workspaceRef) {
+    const runtime =
+      typeof withRecord?.agentRuntime === "string"
+        ? withRecord.agentRuntime.trim()
+        : "";
+    if (!workspaceRef && runtime !== "dapr-agent-py-testing") {
       issues.push({
         code: "missing_workspace_ref",
         call,
         path: `${path}.with.workspaceRef`,
       });
     }
-    const runtime =
-      typeof withRecord?.agentRuntime === "string"
-        ? withRecord.agentRuntime.trim()
-        : "";
     if (
       runtime &&
       ![

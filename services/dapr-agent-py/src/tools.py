@@ -11,7 +11,9 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,6 +28,8 @@ OPENSHELL_RUNTIME_URL = os.environ.get(
 OPENSHELL_COMMAND_TIMEOUT_MS = int(
     os.environ.get("OPENSHELL_COMMAND_TIMEOUT_MS", "600000")
 )
+AGENT_SANDBOX_MODE = os.environ.get("AGENT_SANDBOX_MODE", "openshell").strip().lower()
+AGENT_LOCAL_SANDBOX_ROOT = os.environ.get("AGENT_LOCAL_SANDBOX_ROOT", "/sandbox")
 
 
 @dataclass
@@ -72,21 +76,59 @@ class OpenShellSandbox:
         )
 
 
+class LocalSandbox:
+    """Sandbox client for agents running inside the execution container."""
+
+    def __init__(self, cwd: str = "/sandbox") -> None:
+        self.cwd = cwd or AGENT_LOCAL_SANDBOX_ROOT
+        Path(self.cwd).mkdir(parents=True, exist_ok=True)
+
+    def execute(self, command: str, timeout: int = 300) -> ExecuteResult:
+        completed = subprocess.run(
+            command,
+            shell=True,
+            cwd=self.cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+        output = completed.stdout or ""
+        if completed.stderr:
+            output = (
+                f"{output}\nstderr:\n{completed.stderr}"
+                if output
+                else f"stderr:\n{completed.stderr}"
+            )
+        return ExecuteResult(output=output, exit_code=completed.returncode)
+
+
 # ---------------------------------------------------------------------------
 # Global mutable sandbox reference — bound at workflow start
 # ---------------------------------------------------------------------------
 
-_sandbox: OpenShellSandbox | None = None
+_sandbox: OpenShellSandbox | LocalSandbox | None = None
 
 
 def bind_sandbox(workspace_ref: str, cwd: str = "/sandbox") -> None:
     """Bind the global sandbox to a specific workspace for the current run."""
     global _sandbox
-    _sandbox = OpenShellSandbox(workspace_ref=workspace_ref, cwd=cwd)
-    logger.info("Sandbox bound: ref=%s cwd=%s", workspace_ref, cwd)
+    if AGENT_SANDBOX_MODE == "local":
+        _sandbox = LocalSandbox(cwd=cwd or AGENT_LOCAL_SANDBOX_ROOT)
+    else:
+        _sandbox = OpenShellSandbox(workspace_ref=workspace_ref, cwd=cwd)
+    logger.info(
+        "Sandbox bound: mode=%s ref=%s cwd=%s",
+        AGENT_SANDBOX_MODE,
+        workspace_ref,
+        cwd,
+    )
 
 
-def get_sandbox() -> OpenShellSandbox:
+def get_sandbox() -> OpenShellSandbox | LocalSandbox:
+    if _sandbox is None and AGENT_SANDBOX_MODE == "local":
+        bind_sandbox("local", AGENT_LOCAL_SANDBOX_ROOT)
     if _sandbox is None:
         raise RuntimeError(
             "Sandbox not bound. Call bind_sandbox() before using tools."

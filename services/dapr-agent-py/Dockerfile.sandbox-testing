@@ -1,0 +1,38 @@
+FROM ghcr.io/astral-sh/uv:0.9.17 AS uv-bin
+
+FROM node:22-bookworm-slim AS node-bin
+
+FROM gitea-ryzen.tail286401.ts.net/giteaadmin/openshell-sandbox:latest
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv-bin /uv /uvx /usr/local/bin/
+COPY --from=node-bin /usr/local/bin/node /usr/local/bin/
+COPY --from=node-bin /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
+
+RUN npm install -g --force \
+    @anthropic-ai/claude-code@latest \
+    @playwright/mcp@latest \
+    chrome-devtools-mcp@latest
+
+WORKDIR /app
+COPY pyproject.toml ./
+RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev 2>/dev/null \
+    || uv sync --python /usr/bin/python3 --no-python-downloads --no-dev
+COPY src/ src/
+
+ENV AGENT_SANDBOX_MODE=local \
+    AGENT_LOCAL_SANDBOX_ROOT=/sandbox \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers \
+    VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+EXPOSE 8002
+ENTRYPOINT []
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8002"]

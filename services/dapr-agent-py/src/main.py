@@ -88,7 +88,7 @@ from dapr_agents.tool.mcp import MCPClient
 from dapr_agents.workflow.runners import AgentRunner
 
 from src.llm_providers import resolve_llm_client
-from src.tools import ALL_TOOLS, bind_sandbox
+from src.tools import AGENT_SANDBOX_MODE, ALL_TOOLS, bind_sandbox
 
 logging.basicConfig(
     level=logging.INFO,
@@ -107,6 +107,7 @@ AGENT_TOPIC = os.environ.get("AGENT_TOPIC", f"{AGENT_SERVICE_NAME}.requests")
 AGENT_BROADCAST_TOPIC = os.environ.get(
     "AGENT_BROADCAST_TOPIC", f"{AGENT_SERVICE_NAME}.broadcast"
 )
+DAPR_PUBSUB_NAME = os.environ.get("DAPR_PUBSUB_NAME", "pubsub")
 _base_tools = list(ALL_TOOLS)
 _mcp_lock = asyncio.Lock()
 _mcp_client: MCPClient | None = None
@@ -148,7 +149,7 @@ config = RuntimeSubscriptionConfig(
 state_config = AgentStateConfig(store=StateStoreService(store_name=AGENT_STATE_STORE))
 
 pubsub_config = AgentPubSubConfig(
-    pubsub_name="pubsub",
+    pubsub_name=DAPR_PUBSUB_NAME,
     agent_topic=AGENT_TOPIC,
     broadcast_topic=AGENT_BROADCAST_TOPIC,
 )
@@ -227,7 +228,7 @@ agent = DurableAgent(
         "stateKeyPrefix": AGENT_STATE_KEY_PREFIX,
         "memoryKeyPrefix": AGENT_MEMORY_KEY_PREFIX,
         "instancesEndpoint": "/agent/instances",
-        "pubsub": "pubsub",
+        "pubsub": DAPR_PUBSUB_NAME,
         "agentTopic": AGENT_TOPIC,
         "broadcastTopic": AGENT_BROADCAST_TOPIC,
     },
@@ -417,7 +418,7 @@ class SandboxBindMiddleware(BaseHTTPMiddleware):
                 workspace_ref = payload.get("workspaceRef", "")
                 cwd = payload.get("cwd", "/sandbox")
                 sandbox_name = payload.get("sandboxName", "")
-                if workspace_ref:
+                if workspace_ref or AGENT_SANDBOX_MODE == "local":
                     bind_sandbox(workspace_ref, cwd)
                     logger.info(
                         "Sandbox bound for run: ref=%s sandbox=%s cwd=%s",
