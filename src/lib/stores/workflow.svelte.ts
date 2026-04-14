@@ -132,6 +132,33 @@ function taskNameFromNodeId(nodeId: string): string | null {
   return nodeId;
 }
 
+function hasPosition(node: WorkflowNode): boolean {
+  return (
+    typeof node.position?.x === "number" &&
+    Number.isFinite(node.position.x) &&
+    typeof node.position?.y === "number" &&
+    Number.isFinite(node.position.y)
+  );
+}
+
+function normalizeLoadedNodes(loadedNodes: WorkflowNode[]): WorkflowNode[] {
+  return loadedNodes.map((node, index) => ({
+    ...node,
+    position: hasPosition(node) ? node.position : { x: index * 260, y: 0 },
+    type: (node.type || "default") as WorkflowNodeType,
+    data: {
+      ...node.data,
+      label:
+        typeof node.data?.label === "string" && node.data.label.trim()
+          ? node.data.label
+          : node.id,
+      type: (node.data?.type || node.type || "default") as WorkflowNodeType,
+      status: node.data?.status ?? "idle",
+      enabled: node.data?.enabled ?? true,
+    },
+  }));
+}
+
 export function createWorkflowStore() {
   // Canvas state — $state.raw avoids deep proxy overhead on large arrays
   let nodes = $state.raw<WorkflowNode[]>([]);
@@ -427,26 +454,22 @@ export function createWorkflowStore() {
     layoutConfigTouched = false;
     executionFollowMode = true;
     executionFollowSuppressUntil = 0;
+    currentRunningNodeId = null;
+    selectedExecutionId = null;
 
-    // Load nodes/edges (will be rebuilt from spec if available)
-    nodes = loadedNodes;
-    edges = loadedEdges;
-
-    // If spec exists, derive nodes/edges from it (async, client-side only)
-    if (
+    const shouldDeriveGraphFromSpec =
       spec &&
       Array.isArray((spec as Record<string, unknown>).do) &&
-      typeof window !== "undefined"
-    ) {
-      import("$lib/utils/spec-graph-adapter")
-        .then(({ specToGraph }) => {
-          const graph = specToGraph(spec!);
-          if (graph) {
-            nodes = graph.nodes as WorkflowNode[];
-            edges = graph.edges as WorkflowEdge[];
-          }
-        })
-        .catch(() => {});
+      typeof window !== "undefined";
+
+    // Spec is the source of truth. Avoid rendering stale persisted graph rows before
+    // the spec-derived graph is ready because old rows may be incomplete.
+    nodes = shouldDeriveGraphFromSpec ? [] : normalizeLoadedNodes(loadedNodes);
+    edges = shouldDeriveGraphFromSpec ? [] : loadedEdges;
+
+    // If spec exists, derive nodes/edges from it (async, client-side only)
+    if (shouldDeriveGraphFromSpec) {
+      void rebuildGraphFromSpec();
     }
 
     history.clear();

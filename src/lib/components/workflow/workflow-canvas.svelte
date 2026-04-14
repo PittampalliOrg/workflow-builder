@@ -114,6 +114,7 @@
 	let canvasEdges = $state.raw<Edge[]>([]);
 	let executionStream: ExecutionStreamStore | null = null;
 	let stopExecutionStream = () => {};
+	let overlayWorkflowId = '';
 	let lastExecutionId = '';
 	let lastExecutionLookupWorkflowId = '';
 	let autoExecutionId = $state<string | null>(null);
@@ -213,6 +214,26 @@
 			console.warn('[WorkflowCanvas] Failed to auto-select execution', error);
 		}
 	}
+
+	function resetExecutionOverlayState() {
+		stopExecutionStream();
+		stopExecutionStream = () => {};
+		executionStream?.dispose();
+		executionStream = null;
+		executionState = createInitialExecutionStreamState();
+		selectedAgentRunId = null;
+		expandedAgentRunId = null;
+		autoExecutionId = null;
+		lastExecutionId = '';
+		lastExecutionLookupWorkflowId = '';
+	}
+
+	$effect(() => {
+		const workflowId = store.workflowId ?? '';
+		if (workflowId === overlayWorkflowId) return;
+		overlayWorkflowId = workflowId;
+		resetExecutionOverlayState();
+	});
 
 	$effect(() => {
 		if (!agentRuns.length) {

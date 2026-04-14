@@ -158,8 +158,7 @@
 
 	<!-- Tabbed content -->
 	<Tabs
-		value={ui.rightPanelTab}
-		onValueChange={(v) => { ui.rightPanelTab = v as RightPanelTab; }}
+		bind:value={ui.rightPanelTab}
 		class="flex flex-1 flex-col overflow-hidden"
 	>
 		<div class="px-2 pt-1.5 pb-1.5">
