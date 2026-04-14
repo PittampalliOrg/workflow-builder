@@ -55,6 +55,12 @@
 		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
 	}
 
+	function reloadAttrs(href: string): Record<string, string> {
+		return href === '/workflows' && page.url.pathname.startsWith('/workflows/')
+			? { 'data-sveltekit-reload': '' }
+			: {};
+	}
+
 	function toggleTheme() {
 		const next = ui.theme === 'dark' ? 'light' : 'dark';
 		ui.setTheme(next);
@@ -82,7 +88,11 @@
 	<!-- Header -->
 	<div class="flex h-12 items-center border-b border-border {collapsed ? 'justify-center px-0' : 'justify-between px-3'}">
 		{#if !collapsed}
-			<a href="/workflows" class="text-xs font-semibold tracking-tight text-foreground">
+			<a
+				href="/workflows"
+				{...reloadAttrs('/workflows')}
+				class="text-xs font-semibold tracking-tight text-foreground"
+			>
 				Workflow Builder
 			</a>
 		{/if}
@@ -105,6 +115,7 @@
 							{#snippet child({ props })}
 								<a
 									{...props}
+									{...reloadAttrs(item.href)}
 									href={item.href}
 									class="flex h-8 w-full items-center justify-center rounded-md transition-colors {isActive(item.href)
 										? 'bg-accent text-accent-foreground'
@@ -119,6 +130,7 @@
 				{:else}
 					<a
 						href={item.href}
+						{...reloadAttrs(item.href)}
 						class="flex h-8 items-center gap-2.5 rounded-md px-2.5 text-xs transition-colors {isActive(item.href)
 							? 'bg-accent font-medium text-accent-foreground'
 							: 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'}"
