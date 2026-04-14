@@ -29,6 +29,7 @@
 	} from '$lib/stores/execution-stream.svelte';
 	import type { ExecutionAgentRun } from '$lib/types/execution-stream';
 	import { buildAgentCanvasSubflows, remapEdgesForReplacements } from '$lib/utils/agent-subflow';
+	import { mergeTimelineEvents } from '$lib/utils/execution-timeline';
 
 	// CNCF Serverless Workflow 1.0 node types only
 	import StartNode from './nodes/sw/start-node.svelte';
@@ -176,14 +177,17 @@
 		executionStream?.dispose();
 		executionState = createInitialExecutionStreamState();
 
-		void fetch(`/api/workflows/executions/${executionId}/status`)
+		void fetch(`/api/workflows/executions/${executionId}/status?includeAgentEvents=true`)
 			.then((response) => (response.ok ? response.json() : null))
 			.then((snapshot) => {
 				if (!snapshot || store.selectedExecutionId !== executionId) return;
 				executionState = {
 					...executionState,
 					snapshot,
-					events: Array.isArray(snapshot.agentEvents) ? snapshot.agentEvents : executionState.events
+					events: mergeTimelineEvents(
+						executionState.events,
+						Array.isArray(snapshot.agentEvents) ? snapshot.agentEvents : []
+					)
 				};
 			})
 			.catch((error) => {

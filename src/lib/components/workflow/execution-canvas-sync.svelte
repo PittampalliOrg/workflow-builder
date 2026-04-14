@@ -4,8 +4,10 @@
 	import type { ExecutionReadModel, ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import {
 		buildExecutionCanvasState,
+		resolveExecutionNodeId,
 		type ExecutionCanvasStatus
 	} from '$lib/utils/execution-canvas';
+	import { mergeTimelineEvents } from '$lib/utils/execution-timeline';
 
 	interface Props {
 		snapshot: ExecutionReadModel | null;
@@ -98,11 +100,12 @@
 	}
 
 	function applyNodeStatuses(statuses: Record<string, ExecutionCanvasStatus>) {
+		const nodes = getNodes();
 		const managed = managedNodeIds ? new Set(managedNodeIds) : null;
 		// Compute agent progress from both live stream events and persisted snapshot events.
 		// Dapr pub/sub events are wrapped as `com.dapr.event.sent`; the actual agent event
 		// payload lives under `data.data`.
-		const events = [...(snapshot?.agentEvents ?? []), ...streamEvents];
+		const events = mergeTimelineEvents(snapshot?.agentEvents, streamEvents);
 		const nestedData = (event: ExecutionTimelineEvent) =>
 			typeof event.data?.data === 'object' && event.data.data !== null && !Array.isArray(event.data.data)
 				? (event.data.data as Record<string, unknown>)
@@ -126,22 +129,34 @@
 			stringValue(event.toolName) ||
 			stringValue(event.data?.toolName) ||
 			stringValue(nestedData(event)?.toolName);
+		const agentNodeIds = new Set(
+			(snapshot?.agentRuns ?? [])
+				.map((run) => resolveExecutionNodeId(run.nodeId, nodes))
+				.filter(Boolean) as string[]
+		);
 		const eventsForNode = (nodeId: string) => {
+			if (!agentNodeIds.has(nodeId)) return [];
 			const runIds = new Set(
 				(snapshot?.agentRuns ?? [])
-					.filter((run) => run.nodeId === nodeId)
+					.filter((run) => resolveExecutionNodeId(run.nodeId, nodes) === nodeId)
 					.flatMap((run) => [run.id, run.agentWorkflowId, run.daprInstanceId].filter(Boolean) as string[])
 			);
 			const nodeEvents = events.filter((event) => {
+				const rawEventNodeId = eventNodeId(event);
+				const resolvedEventNodeId = resolveExecutionNodeId(rawEventNodeId, nodes);
 				const runId = eventRunId(event);
-				return eventNodeId(event) === nodeId || (runId ? runIds.has(runId) : false);
+				return (
+					rawEventNodeId === nodeId ||
+					resolvedEventNodeId === nodeId ||
+					(runId ? runIds.has(runId) : false)
+				);
 			});
 			return nodeEvents.length > 0 || (snapshot?.agentRuns ?? []).length !== 1
 				? nodeEvents
 				: events;
 		};
 
-		for (const node of getNodes()) {
+		for (const node of nodes) {
 			if (managed && !managed.has(node.id)) continue;
 			const nextStatus = statuses[node.id] ?? 'idle';
 			const updates: Record<string, unknown> = { status: nextStatus };
