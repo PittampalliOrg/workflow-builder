@@ -11,6 +11,7 @@ import {
   toCodeFunctionDefinitionFromDetail,
   type CodeFunctionDetail,
 } from "$lib/server/code-functions";
+import { DEFAULT_NEW_AGENT_SANDBOX_POLICY } from "$lib/workflows/sandbox-policy";
 import type {
   ActionAuthMetadata,
   ActionCatalogDetail,
@@ -145,6 +146,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
       prompt: "",
       mode: "execute_direct",
       agentRuntime: "dapr-agent-py",
+      sandboxPolicy: DEFAULT_NEW_AGENT_SANDBOX_POLICY,
       workspaceRef: "",
       sandboxName: "",
       cwd: "/sandbox",
@@ -154,6 +156,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
         prompt: "",
         mode: "execute_direct",
         agentRuntime: "dapr-agent-py",
+        sandboxPolicy: DEFAULT_NEW_AGENT_SANDBOX_POLICY,
         workspaceRef: "",
         sandboxName: "",
         cwd: "/sandbox",
@@ -185,14 +188,28 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
     insertable: true,
     auth: null,
     fields: null,
-    tags: ["dapr-agent-py", "durable-agent", "mcp"],
-    doc: "Runs inside the sandbox-hosted dapr-agent-py runtime by default. workspaceRef and sandboxName are optional compatibility fields for workflows that still provision an external workspace.",
+    tags: ["dapr-agent-py", "workspace-runtime", "mcp"],
+    doc: "Runs dapr-agent-py with a per-run OpenShell sandbox by default. Existing workflows can choose shared-runtime or provide an external workspaceRef.",
     inputSchema: {
       type: "object",
       required: ["prompt"],
       properties: {
         prompt: { type: "string" },
         workspaceRef: { type: "string" },
+        sandboxPolicy: {
+          type: "object",
+          properties: {
+            mode: {
+              type: "string",
+              enum: ["shared-runtime", "per-run", "per-node", "provided"],
+              default: "per-run",
+            },
+            template: { type: "string", default: "dapr-agent" },
+            keepAfterRun: { type: "boolean", default: false },
+            ttlSeconds: { type: "integer", default: 7200 },
+            workspaceRef: { type: "string" },
+          },
+        },
         sandboxName: { type: "string" },
         cwd: { type: "string", default: "/sandbox" },
         agentConfig: {
@@ -224,12 +241,12 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
       definition: taskConfig,
       taskConfig,
       warnings: [
-        "workspaceRef and sandboxName are optional for the sandbox-hosted dapr-agent-py runtime.",
+        "New agent workflows default to one OpenShell sandbox per workflow run.",
       ],
     },
     runtime: buildRuntimeStatus(
       true,
-      ["dapr-agent-py", "dapr-durable-agent", "mcp-configurable"],
+      ["dapr-agent-py", "workspace-runtime", "mcp-configurable"],
       [],
     ),
     rendered: null,

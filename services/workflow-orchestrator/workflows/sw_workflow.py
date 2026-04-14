@@ -129,6 +129,26 @@ def _should_cleanup_workspaces(tc: "TaskContext") -> bool:
     keep_sandbox = _as_bool(trigger_data.get("keepSandbox"), False) or _as_bool(
         trigger_data.get("keep_sandbox"), False
     )
+    if keep_sandbox:
+        return False
+
+    def _output_requests_keep(output: Any) -> bool:
+        if not isinstance(output, dict):
+            return False
+        if _as_bool(output.get("keepAfterRun"), False):
+            return True
+        sandbox = output.get("sandbox")
+        if isinstance(sandbox, dict) and _as_bool(sandbox.get("keepAfterRun"), False):
+            return True
+        for key in ("data", "result", "output"):
+            nested = output.get(key)
+            if isinstance(nested, dict) and _output_requests_keep(nested):
+                return True
+        return False
+
+    for output in tc.task_outputs.values():
+        if _output_requests_keep(output):
+            return False
     return not keep_sandbox
 
 
@@ -554,7 +574,7 @@ def _resolve_native_agent_runtime(
         if isinstance(agent_config, dict)
         and isinstance(agent_config.get("agentRuntime"), str)
         and agent_config.get("agentRuntime").strip()
-        else "durable-agent"
+        else "dapr-agent-py"
     )
     if runtime not in _NATIVE_DURABLE_AGENT_TARGETS:
         allowed = ", ".join(sorted(_NATIVE_DURABLE_AGENT_TARGETS))
@@ -2040,6 +2060,25 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
                     "_otel": tc.otel_ctx,
                 }),
             )
+
+        if _should_cleanup_workspaces(tc):
+            try:
+                from activities.call_agent_service import cleanup_execution_workspaces
+
+                yield ctx.call_activity(
+                    cleanup_execution_workspaces,
+                    input=_freeze({
+                        "executionId": execution_id,
+                        "dbExecutionId": db_execution_id,
+                        "_otel": tc.otel_ctx,
+                    }),
+                )
+            except Exception as cleanup_err:
+                _log_info(
+                    ctx,
+                    "[SW Workflow] Workspace cleanup after failure failed (non-fatal): %s",
+                    cleanup_err,
+                )
 
         return SWWorkflowOutput(
             success=False,

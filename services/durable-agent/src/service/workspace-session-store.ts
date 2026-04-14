@@ -270,6 +270,32 @@ class WorkspaceSessionStore {
 		return row ? toPersisted(row) : null;
 	}
 
+	async listActiveByExecutionId(
+		workflowExecutionId: string,
+	): Promise<PersistedWorkspaceSession[]> {
+		const sql = this.ensureSql();
+		const rows = await sql<WorkspaceSessionRow[]>`
+			select
+				workspace_ref,
+				workflow_execution_id,
+				durable_instance_id,
+				name,
+				root_path,
+				clone_path,
+				backend,
+				enabled_tools,
+				require_read_before_write,
+				command_timeout_ms,
+				status,
+				last_error,
+				sandbox_state
+			from workflow_workspace_sessions
+			where workflow_execution_id = ${workflowExecutionId} and status = 'active'
+			order by updated_at desc
+		`;
+		return rows.map(toPersisted);
+	}
+
 	async getByDurableInstanceId(
 		durableInstanceId: string,
 	): Promise<PersistedWorkspaceSession | null> {

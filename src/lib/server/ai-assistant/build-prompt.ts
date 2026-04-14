@@ -69,7 +69,7 @@ The ACTION_NAME must NOT include the piece name as a prefix.`);
 
 	parts.push(`## Agent Runtime
 The exposed agents are dapr-agent-py and dapr-agent-py-testing. Use \`call: durable/run\` for agent work. Do not generate \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
-The default \`dapr-agent-py\` runtime is sandbox-hosted. Do not add a workspace/profile step or workspaceRef unless the user explicitly asks to bind an external OpenShell workspace.
+New agent workflows should use \`sandboxPolicy.mode: per-run\` by default so workflow-builder compiles one \`workspace/profile\` task and wires \`workspaceRef\` into agent runs. Use \`shared-runtime\` only when the user asks for the fastest shared runtime path, and use \`provided\` only when the user gives an external \`workspaceRef\`.
 Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
@@ -79,6 +79,10 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
       prompt: "Do the requested work."
       mode: execute_direct
       agentRuntime: dapr-agent-py
+      sandboxPolicy:
+        mode: per-run
+        template: dapr-agent
+        keepAfterRun: false
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py

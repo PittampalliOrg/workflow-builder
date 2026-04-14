@@ -94,6 +94,9 @@ type WorkspaceSession = {
 	readPaths: Set<string>;
 	changeSequence: number;
 	trackingGitDir?: string;
+	keepAfterRun?: boolean;
+	ttlSeconds?: number;
+	sandboxPolicy?: Record<string, unknown>;
 	createdAt: number;
 	lastAccessedAt: number;
 };
@@ -103,6 +106,10 @@ export type WorkspaceSandboxMetadata = {
 	rootPath: string;
 	workingDirectory: string;
 	details: Record<string, unknown>;
+	sandboxPolicy?: Record<string, unknown>;
+	keepAfterRun?: boolean;
+	ttlSeconds?: number;
+	expiresAt?: string;
 };
 
 export type WorkspaceProfileResult = {
@@ -117,6 +124,9 @@ export type WorkspaceProfileResult = {
 	requireReadBeforeWrite: boolean;
 	commandTimeoutMs: number;
 	createdAt: string;
+	keepAfterRun?: boolean;
+	ttlSeconds?: number;
+	sandboxPolicy?: Record<string, unknown>;
 	sandbox: WorkspaceSandboxMetadata;
 };
 
@@ -164,6 +174,11 @@ export type WorkspaceProfileInput = {
 	requireReadBeforeWrite?: boolean;
 	commandTimeoutMs?: number;
 	sandboxTemplate?: string;
+	workspaceRef?: string;
+	reuseExecutionWorkspace?: boolean;
+	keepAfterRun?: boolean;
+	ttlSeconds?: number;
+	sandboxPolicy?: Record<string, unknown>;
 };
 
 export type ExecuteWorkspaceCommandInput = {
@@ -619,29 +634,32 @@ class WorkspaceSessionManager {
 			throw new Error("executionId is required");
 		}
 
-		const existingRef = this.executionToWorkspace.get(executionId);
-		if (existingRef) {
-			const existing = this.sessions.get(existingRef);
-			if (existing) {
-				this.touch(existing);
-				return this.serialize(existing);
-			}
-			this.executionToWorkspace.delete(executionId);
-		}
-		try {
-			const persisted =
-				await workspaceSessionStore.getByExecutionId(executionId);
-			if (persisted) {
-				const hydrated = await this.hydrateFromPersisted(persisted);
-				if (hydrated) {
-					return this.serialize(hydrated);
+		const reuseExecutionWorkspace = input.reuseExecutionWorkspace !== false;
+		if (reuseExecutionWorkspace) {
+			const existingRef = this.executionToWorkspace.get(executionId);
+			if (existingRef) {
+				const existing = this.sessions.get(existingRef);
+				if (existing) {
+					this.touch(existing);
+					return this.serialize(existing);
 				}
+				this.executionToWorkspace.delete(executionId);
 			}
-		} catch (err) {
-			console.warn(
-				`[workspace-sessions] Failed hydrating persisted profile for execution=${executionId}:`,
-				err,
-			);
+			try {
+				const persisted =
+					await workspaceSessionStore.getByExecutionId(executionId);
+				if (persisted) {
+					const hydrated = await this.hydrateFromPersisted(persisted);
+					if (hydrated) {
+						return this.serialize(hydrated);
+					}
+				}
+			} catch (err) {
+				console.warn(
+					`[workspace-sessions] Failed hydrating persisted profile for execution=${executionId}:`,
+					err,
+				);
+			}
 		}
 
 		const rootPath = this.resolveRootPath(
@@ -650,6 +668,7 @@ class WorkspaceSessionManager {
 			input.sandboxTemplate,
 		);
 		const session = await this.createSession({
+			workspaceRef: input.workspaceRef,
 			executionId,
 			name: input.name?.trim() || `workspace-${executionId}`,
 			rootPath,
@@ -660,10 +679,15 @@ class WorkspaceSessionManager {
 					? Math.floor(input.commandTimeoutMs)
 					: parseInt(process.env.SANDBOX_TIMEOUT_MS || "30000", 10),
 			sandboxTemplate: input.sandboxTemplate,
+			keepAfterRun: input.keepAfterRun,
+			ttlSeconds: input.ttlSeconds,
+			sandboxPolicy: input.sandboxPolicy,
 		});
 
 		this.sessions.set(session.workspaceRef, session);
-		this.executionToWorkspace.set(executionId, session.workspaceRef);
+		if (reuseExecutionWorkspace) {
+			this.executionToWorkspace.set(executionId, session.workspaceRef);
+		}
 		try {
 			await workspaceSessionStore.upsert({
 				workspaceRef: session.workspaceRef,
@@ -1508,13 +1532,26 @@ class WorkspaceSessionManager {
 	async cleanupByExecutionId(executionId: string): Promise<string[]> {
 		const id = executionId.trim();
 		if (!id) return [];
-		const ref =
-			this.executionToWorkspace.get(id) ||
-			(await this.getWorkspaceRefByExecutionIdDurable(id)) ||
-			undefined;
-		if (!ref) return [];
-		await this.cleanupByWorkspaceRef(ref);
-		return [ref];
+		const refs = new Set<string>();
+		const mappedRef = this.executionToWorkspace.get(id);
+		if (mappedRef) refs.add(mappedRef);
+		try {
+			const persisted = await workspaceSessionStore.listActiveByExecutionId(id);
+			for (const record of persisted) refs.add(record.workspaceRef);
+		} catch (err) {
+			console.warn(
+				`[workspace-sessions] Failed listing workspaces for execution=${id}:`,
+				err,
+			);
+		}
+		if (refs.size === 0) {
+			const durableRef = (await this.getWorkspaceRefByExecutionIdDurable(id)) || undefined;
+			if (durableRef) refs.add(durableRef);
+		}
+		for (const ref of refs) {
+			await this.cleanupByWorkspaceRef(ref);
+		}
+		return [...refs];
 	}
 
 	async cleanupByWorkspaceRef(workspaceRef: string): Promise<boolean> {
@@ -1589,6 +1626,9 @@ class WorkspaceSessionManager {
 		requireReadBeforeWrite: boolean;
 		commandTimeoutMs: number;
 		sandboxTemplate?: string;
+		keepAfterRun?: boolean;
+		ttlSeconds?: number;
+		sandboxPolicy?: Record<string, unknown>;
 	}): Promise<WorkspaceSession> {
 		const workspaceRef = input.workspaceRef || `ws_${nanoid(12)}`;
 		const sandbox = new OpenShellSandbox(
@@ -1597,6 +1637,12 @@ class WorkspaceSessionManager {
 			input.commandTimeoutMs,
 			input.executionId,
 			input.enabledTools,
+			{
+				sandboxTemplate: input.sandboxTemplate,
+				keepAfterRun: input.keepAfterRun,
+				ttlSeconds: input.ttlSeconds,
+				sandboxPolicy: input.sandboxPolicy,
+			},
 		);
 		await sandbox.start();
 		const filesystem = new OpenShellFilesystem(sandbox, input.rootPath);
@@ -1637,6 +1683,9 @@ class WorkspaceSessionManager {
 			readPaths: new Set<string>(),
 			changeSequence: 0,
 			trackingGitDir: trackingGitDir ?? undefined,
+			keepAfterRun: input.keepAfterRun,
+			ttlSeconds: input.ttlSeconds,
+			sandboxPolicy: input.sandboxPolicy,
 			createdAt: now,
 			lastAccessedAt: now,
 		};
@@ -2165,6 +2214,10 @@ class WorkspaceSessionManager {
 		}
 
 		try {
+			const sandboxState =
+				record.sandboxState && typeof record.sandboxState === "object"
+					? record.sandboxState
+					: {};
 			const session = await this.createSession({
 				workspaceRef: record.workspaceRef,
 				executionId: record.workflowExecutionId,
@@ -2173,6 +2226,20 @@ class WorkspaceSessionManager {
 				enabledTools: record.enabledTools,
 				requireReadBeforeWrite: record.requireReadBeforeWrite,
 				commandTimeoutMs: record.commandTimeoutMs,
+				keepAfterRun:
+					typeof sandboxState.keepAfterRun === "boolean"
+						? sandboxState.keepAfterRun
+						: undefined,
+				ttlSeconds:
+					typeof sandboxState.ttlSeconds === "number"
+						? sandboxState.ttlSeconds
+						: undefined,
+				sandboxPolicy:
+					sandboxState.sandboxPolicy &&
+					typeof sandboxState.sandboxPolicy === "object" &&
+					!Array.isArray(sandboxState.sandboxPolicy)
+						? (sandboxState.sandboxPolicy as Record<string, unknown>)
+						: undefined,
 			});
 			session.workspaceRef = record.workspaceRef;
 			session.clonePath = record.clonePath;
@@ -2245,6 +2312,11 @@ class WorkspaceSessionManager {
 			requireReadBeforeWrite: session.requireReadBeforeWrite,
 			commandTimeoutMs: session.commandTimeoutMs,
 			createdAt: new Date(session.createdAt).toISOString(),
+			...(session.keepAfterRun !== undefined
+				? { keepAfterRun: session.keepAfterRun }
+				: {}),
+			...(session.ttlSeconds ? { ttlSeconds: session.ttlSeconds } : {}),
+			...(session.sandboxPolicy ? { sandboxPolicy: session.sandboxPolicy } : {}),
 			sandbox: this.buildSandboxMetadata(session),
 		};
 	}
@@ -2416,11 +2488,21 @@ class WorkspaceSessionManager {
 		session: WorkspaceSession,
 	): WorkspaceSandboxMetadata {
 		const workingDirectory = session.clonePath || session.rootPath;
+		const expiresAt =
+			session.keepAfterRun && session.ttlSeconds
+				? new Date(session.createdAt + session.ttlSeconds * 1000).toISOString()
+				: undefined;
 		return {
 			backend: session.backend,
 			rootPath: session.rootPath,
 			workingDirectory,
 			details: session.sandbox.getDebugInfo?.() ?? {},
+			...(session.sandboxPolicy ? { sandboxPolicy: session.sandboxPolicy } : {}),
+			...(session.keepAfterRun !== undefined
+				? { keepAfterRun: session.keepAfterRun }
+				: {}),
+			...(session.ttlSeconds ? { ttlSeconds: session.ttlSeconds } : {}),
+			...(expiresAt ? { expiresAt } : {}),
 		};
 	}
 
@@ -2456,7 +2538,12 @@ class WorkspaceSessionManager {
 	private async sweepExpired(): Promise<void> {
 		const now = Date.now();
 		for (const [workspaceRef, session] of this.sessions) {
-			if (now - session.lastAccessedAt <= SESSION_TTL_MS) continue;
+			const ttlMs =
+				session.keepAfterRun && session.ttlSeconds
+					? session.ttlSeconds * 1000
+					: SESSION_TTL_MS;
+			const referenceTime = session.keepAfterRun ? session.createdAt : session.lastAccessedAt;
+			if (now - referenceTime <= ttlMs) continue;
 			await this.cleanupByWorkspaceRef(workspaceRef);
 		}
 	}

@@ -13,6 +13,14 @@
 		sanitizeAgentName,
 		summarizeAgentGraph
 	} from '$lib/types/agent-graph';
+	import {
+		DEFAULT_SANDBOX_TEMPLATE,
+		DEFAULT_SANDBOX_TTL_SECONDS,
+		LEGACY_SHARED_SANDBOX_POLICY,
+		normalizeSandboxPolicy,
+		type SandboxPolicy,
+		type SandboxPolicyMode
+	} from '$lib/workflows/sandbox-policy';
 
 	interface Props {
 		data: Record<string, unknown>;
@@ -97,6 +105,9 @@
 	);
 	let body = $derived(getAgentTaskBody(taskConfig));
 	let agentConfig = $derived((body.agentConfig as Record<string, unknown>) || {});
+	let sandboxPolicy = $derived(
+		normalizeSandboxPolicy(body.sandboxPolicy, LEGACY_SHARED_SANDBOX_POLICY)
+	);
 	let memoryConfig = $derived(
 		((agentConfig.memory as Record<string, unknown> | undefined) || {}) as Record<string, unknown>
 	);
@@ -144,6 +155,24 @@
 				...updates
 			}
 		});
+	}
+
+	function updateSandboxPolicy(updates: Partial<SandboxPolicy>) {
+		const next = normalizeSandboxPolicy(
+			{
+				...sandboxPolicy,
+				...updates
+			},
+			LEGACY_SHARED_SANDBOX_POLICY
+		);
+		const bodyUpdates: Record<string, unknown> = { sandboxPolicy: next };
+		if (next.mode === 'provided') {
+			bodyUpdates.workspaceRef = next.workspaceRef ?? body.workspaceRef ?? '';
+		} else {
+			bodyUpdates.workspaceRef = '';
+			bodyUpdates.sandboxName = '';
+		}
+		updateBody(bodyUpdates);
 	}
 
 	function updateHotReload(updates: Record<string, unknown>) {
@@ -437,24 +466,6 @@
 			/>
 		</div>
 		<div class="space-y-1.5">
-			<Label for="agent-workspace-ref">Workspace Ref</Label>
-			<Input
-				id="agent-workspace-ref"
-				value={body.workspaceRef ?? ''}
-				oninput={(event) => updateBody({ workspaceRef: event.currentTarget.value })}
-				placeholder="Optional external workspaceRef"
-			/>
-		</div>
-		<div class="space-y-1.5">
-			<Label for="agent-sandbox-name">Sandbox Name</Label>
-			<Input
-				id="agent-sandbox-name"
-				value={body.sandboxName ?? ''}
-				oninput={(event) => updateBody({ sandboxName: event.currentTarget.value })}
-				placeholder="Optional external sandbox name"
-			/>
-		</div>
-		<div class="space-y-1.5">
 			<Label for="agent-cwd">Working Directory</Label>
 			<Input
 				id="agent-cwd"
@@ -529,6 +540,99 @@
 						timeoutMinutes: Number.parseInt(event.currentTarget.value, 10) || 120
 					})}
 			/>
+		</div>
+	</div>
+
+	<div class="space-y-3 rounded-md border p-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<p class="text-xs font-medium">Sandbox</p>
+				<p class="text-[11px] text-muted-foreground">
+					Controls how this agent receives an OpenShell workspace.
+				</p>
+			</div>
+			<Badge variant="outline">{sandboxPolicy.mode}</Badge>
+		</div>
+
+		<div class="grid grid-cols-2 gap-3">
+			<div class="space-y-1.5">
+				<Label for="agent-sandbox-mode">Mode</Label>
+				<NativeSelect
+					id="agent-sandbox-mode"
+					class="w-full"
+					value={sandboxPolicy.mode}
+					onchange={(event) =>
+						updateSandboxPolicy({ mode: event.currentTarget.value as SandboxPolicyMode })}
+				>
+					<option value="per-run">New sandbox per run</option>
+					<option value="per-node">New sandbox per node</option>
+					<option value="provided">Existing workspace</option>
+					<option value="shared-runtime">Shared runtime</option>
+				</NativeSelect>
+			</div>
+			<div class="space-y-1.5">
+				<Label for="agent-sandbox-template">Template</Label>
+				<NativeSelect
+					id="agent-sandbox-template"
+					class="w-full"
+					value={sandboxPolicy.template || DEFAULT_SANDBOX_TEMPLATE}
+					disabled={sandboxPolicy.mode === 'shared-runtime' || sandboxPolicy.mode === 'provided'}
+					onchange={(event) => updateSandboxPolicy({ template: event.currentTarget.value })}
+				>
+					<option value="dapr-agent">dapr-agent</option>
+					<option value="openshell-browser">openshell-browser</option>
+					<option value="dapr-agent-py-testing">dapr-agent-py-testing</option>
+				</NativeSelect>
+			</div>
+
+			{#if sandboxPolicy.mode === 'provided'}
+				<div class="col-span-2 space-y-1.5">
+					<Label for="agent-workspace-ref">Workspace Ref</Label>
+					<Input
+						id="agent-workspace-ref"
+						value={sandboxPolicy.workspaceRef ?? body.workspaceRef ?? ''}
+						oninput={(event) =>
+							updateSandboxPolicy({
+								workspaceRef: event.currentTarget.value
+							})}
+						placeholder="ws_existing_workspace"
+					/>
+				</div>
+			{/if}
+
+			{#if sandboxPolicy.mode === 'per-run' || sandboxPolicy.mode === 'per-node'}
+				<label class="col-span-2 flex items-center gap-2 text-sm">
+					<input
+						type="checkbox"
+						class="h-4 w-4 rounded border"
+						checked={sandboxPolicy.keepAfterRun}
+						onchange={(event) =>
+							updateSandboxPolicy({
+								keepAfterRun: event.currentTarget.checked,
+								ttlSeconds: sandboxPolicy.ttlSeconds ?? DEFAULT_SANDBOX_TTL_SECONDS
+							})}
+					/>
+					<span>Keep sandbox after run</span>
+				</label>
+
+				{#if sandboxPolicy.keepAfterRun}
+					<div class="col-span-2 space-y-1.5">
+						<Label for="agent-sandbox-ttl">TTL Seconds</Label>
+						<Input
+							id="agent-sandbox-ttl"
+							type="number"
+							min="60"
+							value={String(sandboxPolicy.ttlSeconds ?? DEFAULT_SANDBOX_TTL_SECONDS)}
+							oninput={(event) =>
+								updateSandboxPolicy({
+									ttlSeconds:
+										Number.parseInt(event.currentTarget.value, 10) ||
+										DEFAULT_SANDBOX_TTL_SECONDS
+								})}
+						/>
+					</div>
+				{/if}
+			{/if}
 		</div>
 	</div>
 

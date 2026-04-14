@@ -17,6 +17,7 @@
 	import JsonViewer from './execution/json-viewer.svelte';
 	import { updateTask as specUpdateTask } from '$lib/helpers/spec-mutations';
 	import { getTaskNameFromNodeId } from '$lib/helpers/workflow-action-spec';
+	import { compileSandboxPolicies } from '$lib/workflows/sandbox-policy';
 
 	interface Props {
 		mode?: 'properties' | 'code' | 'all';
@@ -31,7 +32,9 @@
 			if (key === 'taskConfig' && store.spec && value && typeof value === 'object' && !Array.isArray(value)) {
 				const taskName = getTaskNameFromNodeId(store.selectedNodeId);
 				if (taskName) {
-					store.spec = specUpdateTask(store.spec, taskName, value as Record<string, unknown>);
+					store.spec = compileSandboxPolicies(
+						specUpdateTask(store.spec, taskName, value as Record<string, unknown>)
+					);
 					store.isDirty = true;
 				}
 			}

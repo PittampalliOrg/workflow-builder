@@ -87,6 +87,14 @@ export function getDurableAgentUrl(): string {
   );
 }
 
+/** Get the workspace runtime base URL */
+export function getWorkspaceRuntimeUrl(): string {
+  return (
+    env.WORKSPACE_RUNTIME_URL ||
+    "http://workspace-runtime.workflow-builder.svc.cluster.local:8001"
+  );
+}
+
 /** Get the code runtime base URL */
 export function getCodeRuntimeUrl(): string {
   return (
@@ -142,6 +150,11 @@ export function getWorkflowCapableServices(): WorkflowServiceDescriptor[] {
     {
       id: "durable-agent",
       getBaseUrl: getDurableAgentUrl,
+      introspectPath: "/api/runtime/introspect",
+    },
+    {
+      id: "workspace-runtime",
+      getBaseUrl: getWorkspaceRuntimeUrl,
       introspectPath: "/api/runtime/introspect",
     },
     {

@@ -253,6 +253,14 @@
 	const primaryWorkspace = $derived.by(
 		() => workspaces.find((workspace) => workspace.status === 'active') ?? workspaces[0] ?? null
 	);
+	const primaryWorkspaceSandboxPolicy = $derived.by(() => {
+		const state = primaryWorkspace?.sandboxState;
+		if (!state || typeof state !== 'object' || Array.isArray(state)) return null;
+		const policy = (state as Record<string, unknown>).sandboxPolicy;
+		return policy && typeof policy === 'object' && !Array.isArray(policy)
+			? (policy as Record<string, unknown>)
+			: null;
+	});
 	const investigationSessionId = $derived(snapshot?.sessionId ?? null);
 	const browserArtifactError = $derived(executionState.error);
 	const isLoadingStatus = $derived(!snapshot && !executionState.error);
@@ -891,13 +899,17 @@
 								</p>
 							</div>
 
-							<div class="grid gap-2 text-sm sm:grid-cols-2">
-								<p><span class="font-medium text-foreground">Workspace Ref:</span> <code>{primaryWorkspace.workspaceRef}</code></p>
-								<p><span class="font-medium text-foreground">Backend:</span> <code>{primaryWorkspace.backend}</code></p>
-								<p><span class="font-medium text-foreground">Root Path:</span> <code>{primaryWorkspace.rootPath}</code></p>
-								<p><span class="font-medium text-foreground">Status:</span> <code>{primaryWorkspace.status}</code></p>
-								{#if primaryWorkspace.durableInstanceId}
-									<p class="sm:col-span-2"><span class="font-medium text-foreground">Durable Instance:</span> <code>{primaryWorkspace.durableInstanceId}</code></p>
+								<div class="grid gap-2 text-sm sm:grid-cols-2">
+									<p><span class="font-medium text-foreground">Workspace Ref:</span> <code>{primaryWorkspace.workspaceRef}</code></p>
+									<p><span class="font-medium text-foreground">Backend:</span> <code>{primaryWorkspace.backend}</code></p>
+									<p><span class="font-medium text-foreground">Root Path:</span> <code>{primaryWorkspace.rootPath}</code></p>
+									<p><span class="font-medium text-foreground">Status:</span> <code>{primaryWorkspace.status}</code></p>
+									{#if primaryWorkspaceSandboxPolicy}
+										<p><span class="font-medium text-foreground">Sandbox Mode:</span> <code>{String(primaryWorkspaceSandboxPolicy.mode ?? 'unknown')}</code></p>
+										<p><span class="font-medium text-foreground">Keep After Run:</span> <code>{String(primaryWorkspaceSandboxPolicy.keepAfterRun ?? false)}</code></p>
+									{/if}
+									{#if primaryWorkspace.durableInstanceId}
+										<p class="sm:col-span-2"><span class="font-medium text-foreground">Durable Instance:</span> <code>{primaryWorkspace.durableInstanceId}</code></p>
 								{/if}
 								{#if primaryWorkspace.enabledTools.length > 0}
 									<p class="sm:col-span-2">

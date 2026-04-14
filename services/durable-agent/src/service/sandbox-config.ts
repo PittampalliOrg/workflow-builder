@@ -166,6 +166,12 @@ export class OpenShellSandbox implements Sandbox {
 		private readonly commandTimeoutMs: number,
 		private readonly executionId?: string,
 		private readonly enabledTools?: string[],
+		private readonly options?: {
+			sandboxTemplate?: string;
+			keepAfterRun?: boolean;
+			ttlSeconds?: number;
+			sandboxPolicy?: Record<string, unknown>;
+		},
 	) {}
 
 	async start(): Promise<void> {
@@ -180,6 +186,14 @@ export class OpenShellSandbox implements Sandbox {
 			commandTimeoutMs: this.commandTimeoutMs,
 			...(this.executionId ? { executionId: this.executionId } : {}),
 			...(this.enabledTools?.length ? { enabledTools: this.enabledTools } : {}),
+			...(this.options?.sandboxTemplate
+				? { sandboxTemplate: this.options.sandboxTemplate }
+				: {}),
+			...(this.options?.keepAfterRun !== undefined
+				? { keepAfterRun: this.options.keepAfterRun }
+				: {}),
+			...(this.options?.ttlSeconds ? { ttlSeconds: this.options.ttlSeconds } : {}),
+			...(this.options?.sandboxPolicy ? { sandboxPolicy: this.options.sandboxPolicy } : {}),
 		});
 		this.latestProfileDetails =
 			profile?.sandbox?.details && typeof profile.sandbox.details === "object"

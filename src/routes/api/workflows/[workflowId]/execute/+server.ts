@@ -13,6 +13,7 @@ import {
 	buildWorkflowSessionId,
 	injectWorkflowSessionHeaders
 } from '$lib/server/observability/workflow-session';
+import { compileSandboxPolicies } from '$lib/workflows/sandbox-policy';
 
 /**
  * POST /api/workflows/[workflowId]/execute
@@ -60,11 +61,12 @@ export const POST: RequestHandler = async ({ params, request, locals }) => {
 
 	if (!workflow) return error(404, 'Workflow not found');
 
-	const spec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
+	const storedSpec = (workflow as Record<string, unknown>).spec as Record<string, unknown> | null;
 
-	if (!spec || !isSWWorkflow(spec)) {
+	if (!storedSpec || !isSWWorkflow(storedSpec)) {
 		return error(400, 'Workflow does not have a valid SW 1.0 spec. Save the workflow first to generate the spec from the canvas.');
 	}
+	const spec = compileSandboxPolicies(storedSpec);
 	const removedAgentCallsError = getRemovedSw10AgentCallsError(spec);
 	if (removedAgentCallsError) {
 		return error(400, removedAgentCallsError);

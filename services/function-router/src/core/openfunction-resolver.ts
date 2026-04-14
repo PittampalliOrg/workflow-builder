@@ -36,6 +36,9 @@ const STANDALONE_SERVICES: Record<string, string> = {
 	"openshell-agent-runtime":
 		process.env.OPENSHELL_AGENT_RUNTIME_URL ||
 		"http://openshell-agent-runtime.openshell.svc.cluster.local:8083",
+	"workspace-runtime":
+		process.env.WORKSPACE_RUNTIME_URL ||
+		"http://workspace-runtime.workflow-builder.svc.cluster.local:8001",
 	"dapr-agent-py":
 		process.env.DAPR_AGENT_PY_URL ||
 		"http://dapr-agent-py.openshell.svc.cluster.local:8002",

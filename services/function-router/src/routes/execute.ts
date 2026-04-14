@@ -1253,6 +1253,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
+          target.appId === "workspace-runtime" ||
           isDaprAgentPyAppId(target.appId) ||
           isDaprAgentPyTestingAppId(target.appId) ||
           target.appId === "openshell-agent-runtime";
@@ -1447,6 +1448,15 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               args.workspaceRef.trim().length > 0;
             const shouldWaitForAgentCompletion =
               isAgentRun && runMode === "execute_direct";
+            const workspaceRuntimeUrl =
+              isBrowserProfile ||
+              isBrowserClone ||
+              isBrowserCommand ||
+              isBrowserCleanup ||
+              isBrowserMaterializeChangeArtifact ||
+              isBrowserCaptureFlow
+                ? await resolveOpenFunctionUrl("workspace-runtime")
+                : undefined;
 
             if (isDaprAgentPyRun) {
               if (runMode !== "execute_direct") {
@@ -1674,6 +1684,11 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 requireReadBeforeWrite: args.requireReadBeforeWrite,
                 commandTimeoutMs: args.commandTimeoutMs,
                 sandboxTemplate: args.sandboxTemplate,
+                workspaceRef: args.workspaceRef,
+                reuseExecutionWorkspace: args.reuseExecutionWorkspace,
+                keepAfterRun: args.keepAfterRun,
+                ttlSeconds: args.ttlSeconds,
+                sandboxPolicy: args.sandboxPolicy,
                 workflowId: body.workflow_id,
                 nodeId: body.node_id,
                 nodeName: body.node_name,
@@ -1729,7 +1744,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 );
               }
 
-              targetUrl = `${functionUrl}/api/workspaces/clone`;
+              targetUrl = `${isBrowserClone ? (workspaceRuntimeUrl ?? functionUrl) : functionUrl}/api/workspaces/clone`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: body.db_execution_id ?? undefined,
@@ -1807,7 +1822,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: body.node_name,
               });
             } else if (isWorkspaceCommand || isBrowserCommand) {
-              targetUrl = `${functionUrl}/api/workspaces/command`;
+              targetUrl = `${isBrowserCommand ? (workspaceRuntimeUrl ?? functionUrl) : functionUrl}/api/workspaces/command`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: body.db_execution_id ?? undefined,
@@ -1840,7 +1855,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: body.node_name,
               });
             } else if (isWorkspaceCleanup || isBrowserCleanup) {
-              targetUrl = `${functionUrl}/api/workspaces/cleanup`;
+              targetUrl = `${isBrowserCleanup ? (workspaceRuntimeUrl ?? functionUrl) : functionUrl}/api/workspaces/cleanup`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: body.db_execution_id ?? undefined,
@@ -1850,7 +1865,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: body.node_name,
               });
             } else if (isBrowserProfile) {
-              targetUrl = `${functionUrl}/api/workspaces/profile`;
+              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/workspaces/profile`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: body.db_execution_id ?? undefined,
@@ -1865,7 +1880,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: body.node_name,
               });
             } else if (isBrowserMaterializeChangeArtifact) {
-              targetUrl = `${functionUrl}/api/browser/materialize-change-artifact`;
+              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/browser/materialize-change-artifact`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: browserDbExecutionId,
@@ -1878,7 +1893,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeName: browserNodeName,
               });
             } else if (isBrowserCaptureFlow) {
-              targetUrl = `${functionUrl}/api/browser/capture-flow`;
+              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/browser/capture-flow`;
               let steps = args.steps;
               if (typeof steps === "string") {
                 try {
@@ -1887,7 +1902,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   /* keep string for downstream validation */
                 }
               }
-              targetUrl = `${functionUrl}/api/browser/capture-flow`;
+              targetUrl = `${workspaceRuntimeUrl ?? functionUrl}/api/browser/capture-flow`;
               requestBody = JSON.stringify({
                 executionId: workspaceExecutionId,
                 dbExecutionId: browserDbExecutionId,

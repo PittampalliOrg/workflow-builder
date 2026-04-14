@@ -1,4 +1,10 @@
 import type { Edge, Node } from "@xyflow/svelte";
+import {
+  DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+  hasExplicitSandboxPolicy,
+  normalizeSandboxPolicy,
+  type SandboxPolicy,
+} from "$lib/workflows/sandbox-policy";
 
 export const AGENT_GRAPH_VERSION = "v1" as const;
 
@@ -45,6 +51,7 @@ export interface AgentTaskBody extends Record<string, unknown> {
   prompt: string;
   mode: "execute_direct";
   agentRuntime: string;
+  sandboxPolicy?: SandboxPolicy;
   workspaceRef?: string;
   sandboxName?: string;
   cwd?: string;
@@ -267,6 +274,11 @@ export function getAgentTaskBody(
   const withBlock = isRecord(taskConfig.with) ? taskConfig.with : {};
   const body = isRecord(withBlock.body) ? withBlock.body : {};
   const agentConfig = isRecord(body.agentConfig) ? body.agentConfig : {};
+  const rawSandboxPolicy = hasExplicitSandboxPolicy(body.sandboxPolicy)
+    ? body.sandboxPolicy
+    : hasExplicitSandboxPolicy(withBlock.sandboxPolicy)
+      ? withBlock.sandboxPolicy
+      : undefined;
 
   return {
     prompt: typeof body.prompt === "string" ? body.prompt : "",
@@ -275,6 +287,14 @@ export function getAgentTaskBody(
       typeof body.agentRuntime === "string" && body.agentRuntime.trim()
         ? body.agentRuntime.trim()
         : "dapr-agent-py",
+    ...(rawSandboxPolicy
+      ? {
+          sandboxPolicy: normalizeSandboxPolicy(
+            rawSandboxPolicy,
+            DEFAULT_NEW_AGENT_SANDBOX_POLICY,
+          ),
+        }
+      : {}),
     workspaceRef:
       typeof body.workspaceRef === "string"
         ? body.workspaceRef
@@ -322,6 +342,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
     prompt: "",
     mode: "execute_direct",
     agentRuntime: "dapr-agent-py",
+    sandboxPolicy: { ...DEFAULT_NEW_AGENT_SANDBOX_POLICY },
     workspaceRef: "",
     sandboxName: "",
     cwd: "/sandbox",
@@ -374,11 +395,18 @@ export function normalizeAgentTaskConfig(
   label = "Agent",
 ): Record<string, unknown> {
   const existing = isRecord(taskConfig) ? taskConfig : {};
+  const isNewTaskConfig = Object.keys(existing).length === 0;
   const withBlock = isRecord(existing.with) ? existing.with : {};
   const body = getAgentTaskBody(existing);
+  const sandboxPolicy = body.sandboxPolicy
+    ? normalizeSandboxPolicy(body.sandboxPolicy, DEFAULT_NEW_AGENT_SANDBOX_POLICY)
+    : isNewTaskConfig
+      ? { ...DEFAULT_NEW_AGENT_SANDBOX_POLICY }
+      : undefined;
   const normalizedBody = {
     ...createDefaultAgentTaskBody(label),
     ...body,
+    sandboxPolicy,
     agentGraph: normalizeAgentGraph(body.agentGraph),
     agentConfig: {
       ...((createDefaultAgentTaskBody(label).agentConfig as Record<
@@ -397,6 +425,9 @@ export function normalizeAgentTaskConfig(
       prompt: normalizedBody.prompt,
       mode: normalizedBody.mode,
       agentRuntime: normalizedBody.agentRuntime,
+      ...(normalizedBody.sandboxPolicy
+        ? { sandboxPolicy: normalizedBody.sandboxPolicy }
+        : {}),
       workspaceRef: normalizedBody.workspaceRef || "",
       sandboxName: normalizedBody.sandboxName || "",
       cwd: normalizedBody.cwd || "/sandbox",
@@ -414,7 +445,12 @@ export function normalizeAgentTaskConfig(
         : {}),
       agentGraph: normalizedBody.agentGraph,
       agentConfig: normalizedBody.agentConfig,
-      body: normalizedBody,
+      body: {
+        ...normalizedBody,
+        ...(normalizedBody.sandboxPolicy
+          ? { sandboxPolicy: normalizedBody.sandboxPolicy }
+          : {}),
+      },
     },
   };
 }

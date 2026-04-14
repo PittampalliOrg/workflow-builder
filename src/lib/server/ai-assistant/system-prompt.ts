@@ -88,7 +88,7 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 
 ### dapr-agent-py agent runs
 Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
-The default \`dapr-agent-py\` runtime is sandbox-hosted. Do not add a workspace/profile step or workspaceRef unless the user explicitly asks to bind an external OpenShell workspace.
+New agent workflows should use \`sandboxPolicy.mode: per-run\` by default so workflow-builder compiles one \`workspace/profile\` task and wires \`workspaceRef\` into each agent run. Use \`shared-runtime\` only when the user asks for the fastest shared runtime path, and use \`provided\` only when the user gives an external \`workspaceRef\`.
 Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
@@ -98,6 +98,10 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
       prompt: "Do the requested work."
       mode: execute_direct
       agentRuntime: dapr-agent-py
+      sandboxPolicy:
+        mode: per-run
+        template: dapr-agent
+        keepAfterRun: false
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py

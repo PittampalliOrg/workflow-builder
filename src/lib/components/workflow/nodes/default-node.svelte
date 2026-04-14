@@ -2,6 +2,7 @@
 	import { Handle, Position } from '@xyflow/svelte';
 	import { Circle, Boxes, Sparkles } from 'lucide-svelte';
 	import type { WorkflowNodeData } from '$lib/stores/workflow.svelte';
+	import { LEGACY_SHARED_SANDBOX_POLICY, normalizeSandboxPolicy } from '$lib/workflows/sandbox-policy';
 
 	interface Props {
 		data: WorkflowNodeData;
@@ -38,6 +39,17 @@
 			? 'text-primary'
 			: 'text-gray-600 dark:text-gray-400'
 	);
+	let sandboxMode = $derived.by(() => {
+		const taskConfig = data.taskConfig;
+		if (!taskConfig || typeof taskConfig !== 'object' || Array.isArray(taskConfig)) return null;
+		const withBlock = (taskConfig as Record<string, unknown>).with;
+		if (!withBlock || typeof withBlock !== 'object' || Array.isArray(withBlock)) return null;
+		const policy = normalizeSandboxPolicy(
+			(withBlock as Record<string, unknown>).sandboxPolicy,
+			LEGACY_SHARED_SANDBOX_POLICY
+		);
+		return policy.mode === 'shared-runtime' ? null : policy.mode;
+	});
 </script>
 
 <div
@@ -65,6 +77,11 @@
 				{#if isChildWorkflow}
 					<span class="rounded-full bg-primary/12 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-primary">
 						child
+					</span>
+				{/if}
+				{#if sandboxMode}
+					<span class="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-emerald-700 dark:text-emerald-300">
+						{sandboxMode}
 					</span>
 				{/if}
 			</div>

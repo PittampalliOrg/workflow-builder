@@ -2698,6 +2698,30 @@ app.post("/api/workspaces/profile", async (req, res) => {
         typeof req.body?.sandboxTemplate === "string"
           ? req.body.sandboxTemplate.trim()
           : undefined,
+      workspaceRef:
+        typeof req.body?.workspaceRef === "string"
+          ? req.body.workspaceRef.trim()
+          : undefined,
+      reuseExecutionWorkspace:
+        req.body?.reuseExecutionWorkspace === false ||
+        req.body?.reuseExecutionWorkspace === "false"
+          ? false
+          : undefined,
+      keepAfterRun:
+        req.body?.keepAfterRun === true || req.body?.keepAfterRun === "true",
+      ttlSeconds:
+        typeof req.body?.ttlSeconds === "number"
+          ? req.body.ttlSeconds
+          : typeof req.body?.ttlSeconds === "string" &&
+              req.body.ttlSeconds.trim()
+            ? parseInt(req.body.ttlSeconds, 10)
+            : undefined,
+      sandboxPolicy:
+        req.body?.sandboxPolicy &&
+        typeof req.body.sandboxPolicy === "object" &&
+        !Array.isArray(req.body.sandboxPolicy)
+          ? (req.body.sandboxPolicy as Record<string, unknown>)
+          : undefined,
     });
 
     res.json({ success: true, ...profile });

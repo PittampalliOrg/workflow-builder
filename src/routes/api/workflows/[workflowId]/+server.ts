@@ -4,6 +4,7 @@ import { db } from '$lib/server/db';
 import { workflows } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
 import { syncWorkflowConnectionRefs } from '$lib/server/workflow-connections';
+import { compileSandboxPolicies } from '$lib/workflows/sandbox-policy';
 
 export const GET: RequestHandler = async ({ params }) => {
 	if (!db) {
@@ -59,7 +60,10 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		updatedAt: new Date(),
 	};
 	if (body.spec !== undefined) {
-		updateData.spec = body.spec;
+		updateData.spec =
+			body.spec && typeof body.spec === 'object' && !Array.isArray(body.spec)
+				? compileSandboxPolicies(body.spec as Record<string, unknown>)
+				: body.spec;
 	}
 	const [updated] = await db
 		.update(workflows)
@@ -71,7 +75,7 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 		return error(404, 'Workflow not found');
 	}
 
-	await syncWorkflowConnectionRefs(params.workflowId, body.nodes, body.spec);
+	await syncWorkflowConnectionRefs(params.workflowId, body.nodes, updateData.spec);
 
 	return json(updated);
 };

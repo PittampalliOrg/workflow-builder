@@ -389,7 +389,7 @@ export async function findCorrelatedTraceIds(
 			FROM ${CLICKHOUSE_DB}.otel_traces
 			WHERE Timestamp >= '${startBuf}'
 			  AND Timestamp <= '${endBuf}'
-			  AND ServiceName IN ('dapr-swe', 'function-router', 'durable-agent')
+			  AND ServiceName IN ('dapr-swe', 'function-router', 'durable-agent', 'workspace-runtime')
 			  ${knownExclude}
 			ORDER BY TraceId
 		`);
