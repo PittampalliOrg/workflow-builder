@@ -35,6 +35,12 @@ import {
   type TimingBreakdown,
 } from "../core/execution-logger.js";
 import {
+  completeDaprAgentPyRun,
+  ensureDaprAgentPyRun,
+  trackDaprAgentPySnapshot,
+  type DaprAgentPyTrackingContext,
+} from "../core/dapr-agent-py-tracker.js";
+import {
   getResponseTimeAverage,
   recordResponseTime,
   resolveOpenFunctionUrl,
@@ -488,6 +494,7 @@ async function waitForDaprAgentPyResult(input: {
   functionUrl: string;
   instanceId: string;
   timeoutMs: number;
+  onSnapshot?: (snapshot: Record<string, unknown>) => Promise<void>;
 }): Promise<{
   success: boolean;
   status: string;
@@ -495,13 +502,21 @@ async function waitForDaprAgentPyResult(input: {
   error?: string;
 }> {
   const startedAt = Date.now();
+  const richStatusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}/rich`;
   const statusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}`;
   while (Date.now() - startedAt < input.timeoutMs) {
-    const response = await undiciFetch(statusUrl, {
+    let response = await undiciFetch(richStatusUrl, {
       method: "GET",
       headers: { Accept: "application/json" },
       dispatcher: longRunningAgent,
     });
+    if (response.status === 404) {
+      response = await undiciFetch(statusUrl, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        dispatcher: longRunningAgent,
+      });
+    }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       if (response.status === 404) {
@@ -522,6 +537,11 @@ async function waitForDaprAgentPyResult(input: {
         status: "failed",
         error: "dapr-agent-py status response was not a JSON object",
       };
+    }
+    if (input.onSnapshot) {
+      await input.onSnapshot(payload).catch((error) => {
+        console.warn("[Execute Route] Failed to persist dapr-agent-py snapshot:", error);
+      });
     }
 
     const status = normalizeDaprAgentPyStatus(payload);
@@ -2013,6 +2033,32 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   `durable/run did not return an instance_id: ${responseText.slice(0, 300)}`,
                 );
               }
+              const daprAgentPyTrackingContext: DaprAgentPyTrackingContext | undefined =
+                workspaceExecutionId && body.workflow_id && body.node_id
+                  ? {
+                      workflowExecutionId: workspaceExecutionId,
+                      workflowId: body.workflow_id,
+                      nodeId: body.node_id,
+                      nodeName: body.node_name,
+                      daprInstanceId: instanceId,
+                      parentExecutionId: body.execution_id,
+                      workspaceRef:
+                        typeof args.workspaceRef === "string"
+                          ? args.workspaceRef
+                          : undefined,
+                      sandboxName: daprAgentPySandboxName,
+                    }
+                  : undefined;
+              if (daprAgentPyTrackingContext) {
+                await ensureDaprAgentPyRun(daprAgentPyTrackingContext, "running").catch(
+                  (error) => {
+                    console.warn(
+                      "[Execute Route] Failed to persist dapr-agent-py run row:",
+                      error,
+                    );
+                  },
+                );
+              }
 
               if (shouldWaitForAgentCompletion) {
                 const timeoutMinutes = asNumber(args.timeoutMinutes) ?? 15;
@@ -2020,7 +2066,26 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                   functionUrl,
                   instanceId,
                   timeoutMs: Math.max(timeoutMinutes * 60_000, 90_000),
+                  onSnapshot: daprAgentPyTrackingContext
+                    ? (snapshot) =>
+                        trackDaprAgentPySnapshot(
+                          daprAgentPyTrackingContext,
+                          snapshot,
+                        )
+                    : undefined,
                 });
+                if (daprAgentPyTrackingContext) {
+                  await completeDaprAgentPyRun(daprAgentPyTrackingContext, {
+                    success: wait.success,
+                    result: wait.result,
+                    error: wait.error,
+                  }).catch((error) => {
+                    console.warn(
+                      "[Execute Route] Failed to complete dapr-agent-py run row:",
+                      error,
+                    );
+                  });
+                }
                 response = {
                   success: wait.success,
                   data: {

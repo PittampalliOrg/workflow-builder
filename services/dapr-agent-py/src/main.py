@@ -10,7 +10,7 @@ import urllib.request
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
@@ -84,6 +84,8 @@ from dapr_agents.agents.durable import DurableAgent
 from dapr_agents.storage.daprstores.stateservice import StateStoreService
 from dapr_agents.workflow.runners import AgentRunner
 
+from src.tools import ALL_TOOLS, bind_sandbox
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -136,12 +138,57 @@ registry_config = AgentRegistryConfig(
 # Agent instance
 # ---------------------------------------------------------------------------
 
+SVELTEKIT_INSTRUCTIONS = [
+    # --- Project scaffolding ---
+    "You build SvelteKit web applications. Manually scaffold every project — "
+    "NEVER use interactive generators (npm create, create-svelte, sv create).",
+    "Required files: package.json, svelte.config.js, vite.config.js, "
+    "src/app.html, src/routes/+page.svelte.",
+    "Keep it compact: at most 8 source/config files, each under 220 lines, no file over 12 KB.",
+
+    # --- Dependencies ---
+    "package.json must live at the repo root and include scripts: dev, build, preview, check.",
+    "Use these compatible dependency versions: "
+    "@sveltejs/adapter-auto ^6, @sveltejs/kit ^2, "
+    "@sveltejs/vite-plugin-svelte ^6, svelte ^5, "
+    "svelte-check ^4, typescript ^5, vite ^7.",
+    "vite.config.js must import sveltekit from '@sveltejs/kit/vite' "
+    "(NOT from '@sveltejs/vite-plugin-svelte').",
+
+    # --- Browser validation attributes (CRITICAL) ---
+    "Every app MUST include these three data-demo attributes for automated browser validation:",
+    '  1. data-demo="app-shell" on the outermost application container element.',
+    '  2. data-demo="primary-action" on a visible, clickable interactive control '
+    "(button, link, toggle, etc.).",
+    '  3. data-demo="demo-state" on a visible region that visually changes '
+    "after the primary-action is clicked.",
+    "These attributes are non-negotiable — the deployment pipeline uses them to verify the app works.",
+
+    # --- Build verification ---
+    "Before finishing, always run: npm install --no-audit --no-fund --loglevel=warn",
+    "Then run: npm run build",
+    "If the build fails, read only the concise error output and fix the smallest relevant file. "
+    "Do not retry more than twice.",
+
+    # --- Data & API ---
+    "If the prompt asks for live or real-world data, embed a small representative dataset. "
+    "Do NOT call external APIs, fetch remote data, or add runtime network dependencies.",
+
+    # --- Tool usage ---
+    "Keep all command and file-write payloads under 12 KB.",
+    "Prefer writing complete files over many small edits.",
+]
+
 agent = DurableAgent(
     name="dapr-agent-py",
-    role="General Assistant",
-    goal="Help users with tasks using available tools and knowledge",
-    instructions=["Think step by step", "Be concise and helpful"],
-    style_guidelines=["Be professional and direct"],
+    role="Expert SvelteKit Developer",
+    goal="Build polished, working SvelteKit web applications from user prompts",
+    instructions=SVELTEKIT_INSTRUCTIONS,
+    style_guidelines=[
+        "Write clean, idiomatic Svelte 5 code",
+        "Produce working apps on the first attempt — verify with build before finishing",
+    ],
+    tools=ALL_TOOLS,
     configuration=config,
     state=state_config,
     pubsub=pubsub_config,
@@ -184,6 +231,39 @@ app = FastAPI(
 # Wire agent pub/sub routes and HTTP endpoints onto the FastAPI app.
 # When app= is provided, serve() returns the app without starting uvicorn.
 runner.serve(agent, app=app, port=8002)
+
+
+# ---------------------------------------------------------------------------
+# Sandbox binding middleware — extracts workspaceRef/cwd from incoming
+# /agent/run requests and binds the global sandbox before the workflow starts.
+# ---------------------------------------------------------------------------
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
+
+class SandboxBindMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path == "/agent/run":
+            body_bytes = await request.body()
+            try:
+                payload = json.loads(body_bytes)
+                workspace_ref = payload.get("workspaceRef", "")
+                cwd = payload.get("cwd", "/sandbox")
+                sandbox_name = payload.get("sandboxName", "")
+                if workspace_ref:
+                    bind_sandbox(workspace_ref, cwd)
+                    logger.info(
+                        "Sandbox bound for run: ref=%s sandbox=%s cwd=%s",
+                        workspace_ref, sandbox_name, cwd,
+                    )
+            except Exception:
+                logger.warning("Failed to parse /agent/run body for sandbox binding")
+        return await call_next(request)
+
+
+app.add_middleware(SandboxBindMiddleware)
 
 # Instrument FastAPI with OTEL
 if _otel_ready:
@@ -335,6 +415,14 @@ def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
         "memory_key": memory_key,
         "memory": memory_state,
     }
+
+
+@app.get("/agent/instances/{instance_id}/rich")
+async def get_agent_instance_rich(instance_id: str) -> dict[str, Any]:
+    payload = _build_instance_payload(instance_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Agent instance not found")
+    return payload
 
 
 @app.get("/agent/instances")
