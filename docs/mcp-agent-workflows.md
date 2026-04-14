@@ -39,7 +39,7 @@ This is the currently validated production path. The workflow spec carries the M
 {
   "server_name": "piece_microsoft_onedrive",
   "displayName": "Microsoft OneDrive",
-  "sourceType": "activepieces_piece",
+  "sourceType": "nimble_piece",
   "pieceName": "microsoft-onedrive",
   "connectionExternalId": "conn_example",
   "transport": "streamable_http",
@@ -98,7 +98,7 @@ Use `workspace/profile` first, then `durable/run` with an explicit `workspaceRef
                 {
                   "server_name": "piece_microsoft_onedrive",
                   "displayName": "Microsoft OneDrive",
-                  "sourceType": "activepieces_piece",
+                  "sourceType": "nimble_piece",
                   "pieceName": "microsoft-onedrive",
                   "connectionExternalId": "conn_example",
                   "transport": "streamable_http",
