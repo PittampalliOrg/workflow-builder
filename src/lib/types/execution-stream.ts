@@ -7,6 +7,11 @@ export interface ExecutionTimelineEvent {
 	daprInstanceId?: string | null;
 	phase?: string | null;
 	toolName?: string | null;
+	executionId?: string | null;
+	runId?: string | null;
+	callId?: string | null;
+	source?: string | null;
+	sourceEventId?: string | null;
 }
 
 export interface ExecutionAgentRun {

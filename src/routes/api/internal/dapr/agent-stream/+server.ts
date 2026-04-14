@@ -27,6 +27,12 @@ export const POST: RequestHandler = async ({ request }) => {
 		const instanceId = eventData.instanceId ?? '';
 		const executionId = eventData.executionId ?? '';
 		const timestamp = eventData.timestamp ?? new Date().toISOString();
+		const sourceEventId = String(
+			eventData.sourceEventId ??
+			eventData.id ??
+			body.id ??
+			`${source}-${instanceId}-${eventType}-${timestamp}-${crypto.randomUUID().slice(0, 8)}`
+		);
 
 		// Skip non-agent events (sandbox events handled by sandbox-events handler)
 		if (!source || source === 'openshell-agent-runtime') {
@@ -94,6 +100,8 @@ export const POST: RequestHandler = async ({ request }) => {
 							type: eventType,
 							executionId: targetExecutionId,
 							instanceId,
+							daprInstanceId: instanceId,
+							sourceEventId,
 							data: eventData.data ?? eventData,
 							timestamp,
 						})
@@ -106,8 +114,6 @@ export const POST: RequestHandler = async ({ request }) => {
 
 		// Persist to DB (fire-and-forget — don't block Dapr ACK)
 		if (db && parentExecutionId && eventType) {
-			const sourceEventId = `${source}-${instanceId}-${eventType}-${timestamp}-${crypto.randomUUID().slice(0, 8)}`;
-
 			db.insert(workflowAgentEvents)
 				.values({
 					workflowExecutionId: parentExecutionId,

@@ -89,7 +89,10 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					return;
 				}
 
-				const serialized = serializeExecutionReadModel(model, { compact: model.status === 'running' });
+				const serialized = serializeExecutionReadModel(model, {
+					compact: model.status === 'running',
+					includeAgentEvents: true
+				});
 				send('snapshot', serialized);
 
 				// Check if execution is already terminal
@@ -219,7 +222,22 @@ export const GET: RequestHandler = async ({ params, request }) => {
 									executionId: data.executionId || data.data?.executionId,
 									runId: data.runId || data.data?.runId,
 									callId: data.callId || data.data?.callId,
-									source: data.source || data.data?.source
+									source: data.source || data.data?.source,
+									sourceEventId:
+										data.sourceEventId ||
+										data.data?.sourceEventId ||
+										data.data?.id ||
+										data.id,
+									workflowAgentRunId:
+										data.workflowAgentRunId ||
+										data.data?.workflowAgentRunId,
+									daprInstanceId:
+										data.daprInstanceId ||
+										data.data?.daprInstanceId ||
+										data.instanceId ||
+										data.data?.instanceId,
+									phase: data.phase || data.data?.phase,
+									toolName: data.toolName || data.data?.toolName || data.data?.name
 								}, seq);
 							} catch {
 								// Skip malformed messages

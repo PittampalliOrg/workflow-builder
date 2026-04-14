@@ -108,7 +108,11 @@ export const GET: RequestHandler = async ({ params }) => {
 	// Fetch agent events for this execution
 	const agentEvents = await db
 		.select({
+			id: workflowAgentEvents.eventId,
 			type: workflowAgentEvents.eventType,
+			sourceEventId: workflowAgentEvents.sourceEventId,
+			workflowAgentRunId: workflowAgentEvents.workflowAgentRunId,
+			daprInstanceId: workflowAgentEvents.daprInstanceId,
 			toolName: workflowAgentEvents.toolName,
 			phase: workflowAgentEvents.phase,
 			data: workflowAgentEvents.payload,
@@ -121,8 +125,13 @@ export const GET: RequestHandler = async ({ params }) => {
 	return json({
 		logs,
 		agentEvents: agentEvents.map(e => ({
+			id: e.id,
 			type: e.type,
+			sourceEventId: e.sourceEventId,
+			workflowAgentRunId: e.workflowAgentRunId,
+			daprInstanceId: e.daprInstanceId,
 			toolName: e.toolName,
+			phase: e.phase,
 			data: e.data ?? {},
 			timestamp: e.timestamp?.toISOString() ?? '',
 		})),

@@ -23,8 +23,10 @@
 		type ExecutionStreamState
 	} from '$lib/stores/execution-stream.svelte';
 	import type { ExecutionAgentRun } from '$lib/types/execution-stream';
+	import type { ExecutionTimelineEvent } from '$lib/types/execution-stream';
 	import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
+	import { mergeTimelineEvents } from '$lib/utils/execution-timeline';
 
 	interface Props {
 		embedded?: boolean;
@@ -59,7 +61,7 @@
 	let isLoadingList = $state(false);
 	let expandedIds = new SvelteSet<string>();
 	let executionLogs = new SvelteMap<string, StepLog[]>();
-	let executionAgentEvents = new SvelteMap<string, Array<{ type: string; data: Record<string, unknown>; timestamp: string; toolName?: string | null }>>();
+	let executionAgentEvents = new SvelteMap<string, ExecutionTimelineEvent[]>();
 	let loadingLogs = new SvelteSet<string>();
 	let executionStreams = new SvelteMap<string, ExecutionStreamStore>();
 	let executionStreamStates = new SvelteMap<string, ExecutionStreamState>();
@@ -232,6 +234,14 @@
 		return executionStreamStates.get(execId) ?? createInitialExecutionStreamState();
 	}
 
+	function mergedAgentEvents(execId: string, stream: ExecutionStreamState): ExecutionTimelineEvent[] {
+		return mergeTimelineEvents(executionAgentEvents.get(execId), stream.events);
+	}
+
+	function toolCallsLabel(value: unknown): string | null {
+		return Array.isArray(value) && value.length > 0 ? `Plan: call ${value.join(', ')}` : null;
+	}
+
 	async function fetchLogsForExecution(execId: string) {
 		if (executionLogs.has(execId) || loadingLogs.has(execId)) return;
 		loadingLogs.add(execId);
@@ -379,6 +389,7 @@
 					{@const execId = exec.id}
 					{@const isExpanded = expandedIds.has(execId)}
 					{@const stream = streamState(execId)}
+					{@const agentEvents = mergedAgentEvents(execId, stream)}
 					{@const liveSteps = stream.snapshot?.steps ?? null}
 					{@const agentRuns = stream.snapshot?.agentRuns ?? []}
 					{@const logs = liveSteps && liveSteps.length > 0 ? liveSteps : (executionLogs.get(execId) ?? null)}
@@ -449,7 +460,7 @@
 												<span class="font-medium">{activeStepLabel(stream)}</span>
 											</div>
 										{/if}
-										{#if !stream.currentPhase && !stream.activeToolName && stream.events.length === 0 && !stream.error}
+										{#if !stream.currentPhase && !stream.activeToolName && agentEvents.length === 0 && !stream.error}
 											<div class="flex items-center gap-2 py-2 text-xs text-muted-foreground">
 												<Loader2 size={12} class="animate-spin" />
 												<span>Live status is updating. No agent events have been emitted yet.</span>
@@ -463,9 +474,9 @@
 										{/if}
 
 										<!-- Agent stats bar -->
-										{#if stream.events.filter(e => e.type === 'llm_complete' || e.type === 'tool_call_start').length > 0}
-										{@const turnCount = stream.events.filter(e => e.type === 'llm_complete').length}
-										{@const toolCount = stream.events.filter(e => e.type === 'tool_call_start').length}
+										{#if agentEvents.filter(e => e.type === 'llm_complete' || e.type === 'tool_call_start').length > 0}
+										{@const turnCount = agentEvents.filter(e => e.type === 'llm_complete').length}
+										{@const toolCount = agentEvents.filter(e => e.type === 'tool_call_start').length}
 											<div class="flex items-center gap-3 rounded-lg bg-gradient-to-r from-blue-500/10 via-purple-500/10 to-emerald-500/10 px-3 py-2">
 												<div class="flex items-center gap-1.5">
 													<div class="flex h-5 w-5 items-center justify-center rounded-full bg-blue-500/20">
@@ -492,7 +503,7 @@
 														<Zap size={10} class="text-emerald-400" />
 													</div>
 													<div class="text-[10px]">
-														<span class="font-semibold text-emerald-400">{stream.events.length}</span>
+														<span class="font-semibold text-emerald-400">{agentEvents.length}</span>
 														<span class="text-muted-foreground"> events</span>
 													</div>
 												</div>
@@ -514,8 +525,8 @@
 										{/if}
 
 										<!-- Chain of thought event feed -->
-										{#if stream.events.length > 0}
-										{@const significantEvents = stream.events.filter(e => ['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(e.type))}
+										{#if agentEvents.length > 0}
+										{@const significantEvents = agentEvents.filter(e => ['llm_start', 'llm_complete', 'tool_call_start', 'tool_call_end', 'run_started', 'run_complete', 'run_error'].includes(e.type))}
 											<ChainOfThought defaultOpen={true}>
 												<ChainOfThoughtHeader>
 													Agent Activity ({significantEvents.length} steps)
@@ -532,7 +543,7 @@
 														{:else if event.type === 'llm_complete'}
 															<ChainOfThoughtStep
 																icon={MessageSquare}
-																label={event.data.toolCalls?.length ? `Plan: call ${event.data.toolCalls.join(', ')}` : 'Response'}
+																label={toolCallsLabel(event.data.toolCalls) ?? 'Response'}
 																description={event.data.content ? String(event.data.content).slice(0, 120) : undefined}
 																status="complete"
 															/>
@@ -600,7 +611,7 @@
 									</div>
 								{:else if logs && logs.length > 0}
 									<div class="p-3">
-										<StepTimeline steps={logs} agentEvents={stream.events.length > 0 ? stream.events : (executionAgentEvents.get(exec.id) ?? [])} />
+										<StepTimeline steps={logs} agentEvents={agentEvents} />
 									</div>
 								{:else if !isRunning(exec.status)}
 									<div class="py-6 text-center text-[10px] text-muted-foreground">

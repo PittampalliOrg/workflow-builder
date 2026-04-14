@@ -3,6 +3,7 @@ import type {
 	ExecutionReadModel,
 	ExecutionTimelineEvent
 } from '$lib/types/execution-stream';
+import { eventToolName, eventType, mergeTimelineEvents } from '$lib/utils/execution-timeline';
 
 export interface ExecutionStreamState {
 	isConnected: boolean;
@@ -64,17 +65,12 @@ export function createExecutionStream(executionId: string) {
 
 	function pushEvent(event: ExecutionTimelineEvent) {
 		patchState((state) => {
-			if (state.events.some((entry) => entry.id === event.id)) return state;
-
 			let activeToolName = state.activeToolName;
 			let isLlmStreaming = state.isLlmStreaming;
 			let llmTokenBuffer = state.llmTokenBuffer;
-			switch (event.type) {
+			switch (eventType(event)) {
 				case 'tool_call_start':
-					activeToolName =
-						(typeof event.data.toolName === 'string' && event.data.toolName) ||
-						(typeof event.data.name === 'string' && event.data.name) ||
-						activeToolName;
+					activeToolName = eventToolName(event) || activeToolName;
 					break;
 				case 'tool_call_end':
 				case 'tool_call_error':
@@ -104,7 +100,7 @@ export function createExecutionStream(executionId: string) {
 
 			return {
 				...state,
-				events: [...state.events, event].slice(-200),
+				events: mergeTimelineEvents(state.events, [event]).slice(-200),
 				activeToolName,
 				currentPhase,
 				isLlmStreaming,
@@ -132,7 +128,7 @@ export function createExecutionStream(executionId: string) {
 			return {
 				...state,
 				snapshot,
-				events: snapshot.agentEvents?.length ? snapshot.agentEvents : state.events,
+				events: mergeTimelineEvents(state.events, snapshot.agentEvents).slice(-200),
 				currentPhase: snapshot.phase ?? state.currentPhase
 			};
 		});

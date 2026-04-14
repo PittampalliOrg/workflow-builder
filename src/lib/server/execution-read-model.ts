@@ -151,6 +151,7 @@ function mapAgentEvent(row: typeof workflowAgentEvents.$inferSelect): ExecutionT
 		timestamp,
 		workflowAgentRunId: row.workflowAgentRunId,
 		daprInstanceId: row.daprInstanceId,
+		sourceEventId: row.sourceEventId,
 		phase: row.phase,
 		toolName: row.toolName
 	};
