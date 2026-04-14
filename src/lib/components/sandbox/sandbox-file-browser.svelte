@@ -38,7 +38,7 @@
 		error?: string | null;
 	}
 
-	let scope = $state<FileScope>('workspace');
+	let scope = $state<FileScope>('container');
 	let tree = $state.raw<FileEntry[]>([]);
 	let loading = $state(true);
 	let expandedDirs = $state<Set<string>>(new Set());
@@ -230,13 +230,13 @@
 					class="rounded px-2 py-1 {scope === 'workspace' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}"
 					onclick={() => selectScope('workspace')}
 				>
-					Workspace
+					Workspace files
 				</button>
 				<button
 					class="rounded px-2 py-1 {scope === 'container' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}"
 					onclick={() => selectScope('container')}
 				>
-					Container
+					Full tree
 				</button>
 			</div>
 			<div class="mt-2 flex items-center gap-1 font-mono text-[11px] text-muted-foreground">
