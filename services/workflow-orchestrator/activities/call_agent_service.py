@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+DAPR_AGENT_PY_APP_ID = config.DAPR_AGENT_PY_APP_ID
 DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
 CLAUDE_CODE_AGENT_APP_ID = config.CLAUDE_CODE_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
@@ -191,7 +192,10 @@ def _agent_runtime_from_payload(input_data: dict) -> str:
 
 
 def _durable_agent_app_id(input_data: dict) -> str:
-    if _agent_runtime_from_payload(input_data) == "dapr-agent-py-testing":
+    runtime = _agent_runtime_from_payload(input_data)
+    if runtime == "dapr-agent-py":
+        return DAPR_AGENT_PY_APP_ID
+    if runtime == "dapr-agent-py-testing":
         return DAPR_AGENT_PY_TESTING_APP_ID
     return DURABLE_AGENT_APP_ID
 
@@ -461,7 +465,10 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
     }
 
     with start_activity_span("activity.call_durable_agent_run", otel, attrs):
-        if not workspace_ref and agent_runtime != "dapr-agent-py-testing":
+        if not workspace_ref and agent_runtime not in {
+            "dapr-agent-py",
+            "dapr-agent-py-testing",
+        }:
             return {
                 "success": False,
                 "error": (

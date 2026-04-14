@@ -69,6 +69,7 @@ The ACTION_NAME must NOT include the piece name as a prefix.`);
 
 	parts.push(`## Agent Runtime
 The exposed agents are dapr-agent-py and dapr-agent-py-testing. Use \`call: durable/run\` for agent work. Do not generate \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+The default \`dapr-agent-py\` runtime is sandbox-hosted. Do not add a workspace/profile step or workspaceRef unless the user explicitly asks to bind an external OpenShell workspace.
 Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
@@ -78,8 +79,6 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
       prompt: "Do the requested work."
       mode: execute_direct
       agentRuntime: dapr-agent-py
-      workspaceRef: "\${ .workspaceProfile.workspaceRef }"
-      sandboxName: "\${ .workspaceProfile.sandboxName }"
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py
@@ -131,10 +130,12 @@ do:
 
 	// Available connections — IMPORTANT for execution
 	if (connections.length > 0) {
-		const connList = connections.map(c => {
-			const shortPiece = c.pieceName.replace('@activepieces/piece-', '').replace(/^@.*\//, '');
-			return `- **${shortPiece}**: \`${c.externalId}\` (${c.status})`;
-		}).join('\n');
+		const connList = connections
+			.map((c) => {
+				const shortPiece = c.pieceName.replace('@activepieces/piece-', '').replace(/^@.*\//, '');
+				return `- **${shortPiece}**: \`${c.externalId}\` (${c.status})`;
+			})
+			.join('\n');
 		parts.push(`## Available Connections
 IMPORTANT: For actions requiring auth, you MUST include \`connectionExternalId\` in the \`with\` block.
 
@@ -146,13 +147,13 @@ WARNING: No OAuth/API connections are configured. Actions requiring auth will fa
 
 	// Action catalog — only show actions with matching connections first, then others
 	if (actions.length > 0) {
-		const connectedPieces = new Set(connections.map(c =>
-			c.pieceName.replace('@activepieces/piece-', '').replace(/^@.*\//, ''),
-		));
+		const connectedPieces = new Set(
+			connections.map((c) => c.pieceName.replace('@activepieces/piece-', '').replace(/^@.*\//, '')),
+		);
 
 		// Split into connected (can execute) vs unconnected
-		const connected = actions.filter(a => connectedPieces.has(a.pieceName));
-		const unconnected = actions.filter(a => !connectedPieces.has(a.pieceName));
+		const connected = actions.filter((a) => connectedPieces.has(a.pieceName));
+		const unconnected = actions.filter((a) => !connectedPieces.has(a.pieceName));
 
 		const actionLines: string[] = [];
 
@@ -169,7 +170,9 @@ WARNING: No OAuth/API connections are configured. Actions requiring auth will fa
 
 					// Full input schema for connected actions
 					if (action.inputSchema) {
-						const props = (action.inputSchema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
+						const props = (action.inputSchema as Record<string, unknown>).properties as
+							| Record<string, Record<string, unknown>>
+							| undefined;
 						const required = (action.inputSchema as Record<string, unknown>).required as string[] | undefined;
 						if (props) {
 							const fields = Object.entries(props).map(([name, schema]) => {
@@ -190,7 +193,10 @@ WARNING: No OAuth/API connections are configured. Actions requiring auth will fa
 			actionLines.push('\n## Other Available Integrations (need connection setup)\n');
 			const byProvider = groupByProvider(unconnected);
 			for (const [provider, provActions] of Array.from(byProvider).slice(0, 30)) {
-				const names = provActions.slice(0, 5).map(a => cleanActionName(a.actionName, a.pieceName)).join(', ');
+				const names = provActions
+					.slice(0, 5)
+					.map((a) => cleanActionName(a.actionName, a.pieceName))
+					.join(', ');
 				const more = provActions.length > 5 ? ` (+${provActions.length - 5})` : '';
 				actionLines.push(`- **${provider}**: ${names}${more}`);
 			}
@@ -238,7 +244,14 @@ function groupByProvider(actions: ActionForPrompt[]): Map<string, ActionForPromp
 export function buildFixPrompt(
 	attempt: number,
 	maxAttempts: number,
-	stepResults: Array<{ name: string; status: string; error?: string | null; input?: unknown; output?: unknown; durationMs?: number }>,
+	stepResults: Array<{
+		name: string;
+		status: string;
+		error?: string | null;
+		input?: unknown;
+		output?: unknown;
+		durationMs?: number;
+	}>,
 	action?: ActionForPrompt,
 ): string {
 	const lines: string[] = [`## Execution Failed (Attempt ${attempt}/${maxAttempts})\n`];
@@ -250,11 +263,14 @@ export function buildFixPrompt(
 		lines.push(`${icon} **${step.name}**: ${step.status}${dur}`);
 		if (step.error) lines.push(`   Error: \`${step.error}\``);
 		if (step.input) lines.push(`   Input: \`${JSON.stringify(step.input).slice(0, 200)}\``);
-		if (step.output && step.status === 'success') lines.push(`   Output: \`${JSON.stringify(step.output).slice(0, 200)}\``);
+		if (step.output && step.status === 'success')
+			lines.push(`   Output: \`${JSON.stringify(step.output).slice(0, 200)}\``);
 	}
 
 	if (action?.inputSchema) {
-		const props = (action.inputSchema as Record<string, unknown>).properties as Record<string, Record<string, unknown>> | undefined;
+		const props = (action.inputSchema as Record<string, unknown>).properties as
+			| Record<string, Record<string, unknown>>
+			| undefined;
 		const required = (action.inputSchema as Record<string, unknown>).required as string[] | undefined;
 		if (props) {
 			lines.push('\n### Required Fields:');
@@ -265,7 +281,9 @@ export function buildFixPrompt(
 		}
 	}
 
-	lines.push('\n**Remember**: action name format is `piece/action` (e.g., `gmail/send_email`), NOT `piece/piece-action`.');
+	lines.push(
+		'\n**Remember**: action name format is `piece/action` (e.g., `gmail/send_email`), NOT `piece/piece-action`.',
+	);
 	lines.push('Fix the spec and return the COMPLETE corrected version in a ```yaml block.');
 
 	return lines.join('\n');

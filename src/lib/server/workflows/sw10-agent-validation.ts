@@ -47,7 +47,10 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
       typeof withRecord?.agentRuntime === "string"
         ? withRecord.agentRuntime.trim()
         : "";
-    if (!workspaceRef && runtime !== "dapr-agent-py-testing") {
+    if (
+      !workspaceRef &&
+      !["dapr-agent-py", "dapr-agent-py-testing"].includes(runtime)
+    ) {
       issues.push({
         code: "missing_workspace_ref",
         call,
@@ -107,7 +110,7 @@ export function getRemovedSw10AgentCallsError(spec: unknown): string | null {
       .map((issue) => issue.path)
       .slice(0, 5)
       .join(", ");
-    return `SW 1.0 durable/run steps require an explicit with.workspaceRef. Add a workspace/profile step and bind its workspaceRef before execution: ${details}`;
+    return `SW 1.0 durable/run steps require an explicit with.workspaceRef for non-local agent runtimes. Add a workspace/profile step and bind its workspaceRef before execution: ${details}`;
   }
 
   const runtimeIssues = issues.filter(

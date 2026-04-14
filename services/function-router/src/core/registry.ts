@@ -25,8 +25,8 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "durable-agent", type: "knative" },
-  "durable/run": { appId: "dapr-agent-py", type: "knative" },
-  "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
+  "durable/run": { appId: "dapr-agent-py.openshell", type: "knative" },
+  "dapr-agent-py/*": { appId: "dapr-agent-py.openshell", type: "knative" },
   "dapr-agent-py-testing/*": { appId: "dapr-agent-py-testing.openshell", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
   _default: { appId: "fn-activepieces", type: "knative" },
@@ -46,8 +46,8 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "browser/*": { appId: "openshell-agent-runtime", type: "knative" },
   "openshell/*": { appId: "openshell-agent-runtime", type: "knative" },
   "workspace/*": { appId: "durable-agent", type: "knative" },
-  "durable/run": { appId: "dapr-agent-py", type: "knative" },
-  "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
+  "durable/run": { appId: "dapr-agent-py.openshell", type: "knative" },
+  "dapr-agent-py/*": { appId: "dapr-agent-py.openshell", type: "knative" },
   "dapr-agent-py-testing/*": { appId: "dapr-agent-py-testing.openshell", type: "knative" },
 };
 

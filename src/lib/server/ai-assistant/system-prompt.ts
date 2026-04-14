@@ -15,7 +15,11 @@ interface WorkflowSnapshot {
 }
 
 export interface CatalogSummary {
-	providers: { name: string; displayName: string; actions: { name: string; displayName: string; args?: string[] }[] }[];
+	providers: {
+		name: string;
+		displayName: string;
+		actions: { name: string; displayName: string; args?: string[] }[];
+	}[];
 }
 
 const SW_RULES = `## CNCF Serverless Workflow 1.0
@@ -84,6 +88,7 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 
 ### dapr-agent-py agent runs
 Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+The default \`dapr-agent-py\` runtime is sandbox-hosted. Do not add a workspace/profile step or workspaceRef unless the user explicitly asks to bind an external OpenShell workspace.
 Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
@@ -93,8 +98,6 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
       prompt: "Do the requested work."
       mode: execute_direct
       agentRuntime: dapr-agent-py
-      workspaceRef: "\${ .workspaceProfile.workspaceRef }"
-      sandboxName: "\${ .workspaceProfile.sandboxName }"
       cwd: /sandbox
       agentConfig:
         runtime: dapr-agent-py
@@ -149,16 +152,13 @@ Rules:
 /**
  * Build the system prompt.
  */
-export function buildSystemPrompt(
-	workflow?: WorkflowSnapshot | null,
-	catalog?: CatalogSummary | null,
-): string {
+export function buildSystemPrompt(workflow?: WorkflowSnapshot | null, catalog?: CatalogSummary | null): string {
 	const parts: string[] = [];
 
 	parts.push(
 		'You are a workflow design assistant for a CNCF Serverless Workflow 1.0 visual builder. ' +
-		'You help users create and modify workflows by translating natural language into safe CRUD operations on the SW 1.0 spec. ' +
-		'Be concise and return only the structured operation plan.',
+			'You help users create and modify workflows by translating natural language into safe CRUD operations on the SW 1.0 spec. ' +
+			'Be concise and return only the structured operation plan.',
 	);
 
 	parts.push(`## Tools — ALWAYS use before returning action operations
@@ -233,7 +233,7 @@ function jsonToYaml(obj: unknown, indent: number = 0): string {
 		if (obj.length === 0) return '[]';
 		// Check if it's an array of simple values
 		if (obj.every((v) => typeof v !== 'object' || v === null)) {
-			return '[' + obj.map((v) => typeof v === 'string' ? JSON.stringify(v) : String(v)).join(', ') + ']';
+			return '[' + obj.map((v) => (typeof v === 'string' ? JSON.stringify(v) : String(v))).join(', ') + ']';
 		}
 		return obj
 			.map((item) => {
@@ -241,7 +241,11 @@ function jsonToYaml(obj: unknown, indent: number = 0): string {
 				if (typeof item === 'object' && item !== null && !Array.isArray(item)) {
 					// Object items in array: first key on same line as dash
 					const lines = itemYaml.split('\n');
-					return `${pad}- ${lines[0].trimStart()}\n${lines.slice(1).map(l => `${pad}  ${l.trimStart() ? l : ''}`).filter(Boolean).join('\n')}`;
+					return `${pad}- ${lines[0].trimStart()}\n${lines
+						.slice(1)
+						.map((l) => `${pad}  ${l.trimStart() ? l : ''}`)
+						.filter(Boolean)
+						.join('\n')}`;
 				}
 				return `${pad}- ${itemYaml}`;
 			})
@@ -256,7 +260,7 @@ function jsonToYaml(obj: unknown, indent: number = 0): string {
 				if (typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length > 0) {
 					return `${pad}${key}:\n${jsonToYaml(value, indent + 1)}`;
 				}
-				if (Array.isArray(value) && value.length > 0 && value.some(v => typeof v === 'object' && v !== null)) {
+				if (Array.isArray(value) && value.length > 0 && value.some((v) => typeof v === 'object' && v !== null)) {
 					return `${pad}${key}:\n${jsonToYaml(value, indent + 1)}`;
 				}
 				return `${pad}${key}: ${jsonToYaml(value, indent)}`;

@@ -442,7 +442,7 @@
 				id="agent-workspace-ref"
 				value={body.workspaceRef ?? ''}
 				oninput={(event) => updateBody({ workspaceRef: event.currentTarget.value })}
-				placeholder={'${ .workspaceProfile.workspaceRef }'}
+				placeholder="Optional external workspaceRef"
 			/>
 		</div>
 		<div class="space-y-1.5">
@@ -451,7 +451,7 @@
 				id="agent-sandbox-name"
 				value={body.sandboxName ?? ''}
 				oninput={(event) => updateBody({ sandboxName: event.currentTarget.value })}
-				placeholder={'${ .workspaceProfile.sandboxName }'}
+				placeholder="Optional external sandbox name"
 			/>
 		</div>
 		<div class="space-y-1.5">

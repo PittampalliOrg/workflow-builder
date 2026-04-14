@@ -514,7 +514,7 @@ _REMOVED_AGENT_ACTION_TYPES = {
 _NATIVE_DURABLE_AGENT_TARGETS = {
     "dapr-agent-py": {
         "workflow_name": config.DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME,
-        "app_id": config.DURABLE_AGENT_APP_ID,
+        "app_id": config.DAPR_AGENT_PY_APP_ID,
         "instance_prefix": "durable",
     },
     "durable-agent": {
@@ -777,7 +777,7 @@ def _run_native_durable_agent_child_workflow(
         and flattened_args.get("workspaceRef").strip()
         else None
     )
-    if not workspace_ref and agent_runtime == "dapr-agent-py-testing":
+    if not workspace_ref and agent_runtime in {"dapr-agent-py", "dapr-agent-py-testing"}:
         workspace_ref = "local"
     if not workspace_ref:
         raise RuntimeError(

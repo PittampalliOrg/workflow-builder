@@ -186,10 +186,10 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
     auth: null,
     fields: null,
     tags: ["dapr-agent-py", "durable-agent", "mcp"],
-    doc: "Requires a workspaceRef and should also pass sandboxName from workspace/profile.",
+    doc: "Runs inside the sandbox-hosted dapr-agent-py runtime by default. workspaceRef and sandboxName are optional compatibility fields for workflows that still provision an external workspace.",
     inputSchema: {
       type: "object",
-      required: ["prompt", "workspaceRef"],
+      required: ["prompt"],
       properties: {
         prompt: { type: "string" },
         workspaceRef: { type: "string" },
@@ -224,7 +224,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
       definition: taskConfig,
       taskConfig,
       warnings: [
-        "Set workspaceRef and sandboxName from the workspace/profile output before executing.",
+        "workspaceRef and sandboxName are optional for the sandbox-hosted dapr-agent-py runtime.",
       ],
     },
     runtime: buildRuntimeStatus(
