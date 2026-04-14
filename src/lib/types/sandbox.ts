@@ -16,6 +16,7 @@ export interface SandboxLogEntry {
 	source: string;
 	message: string;
 	timestamp: string;
+	eventType?: string;
 	fields?: Record<string, unknown>;
 }
 

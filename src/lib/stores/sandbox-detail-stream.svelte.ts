@@ -74,6 +74,7 @@ export function createSandboxDetailStream(name: string) {
 					source: data.source ?? '',
 					message: data.message ?? '',
 					timestamp: data.timestamp ?? new Date().toISOString(),
+					eventType: data.eventType,
 					fields: data.fields
 				});
 			} catch {

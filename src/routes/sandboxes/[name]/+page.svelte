@@ -22,11 +22,29 @@
 	let deleting = $state(false);
 	let activeTab = $state('logs');
 	let cloneDialogOpen = $state(false);
+	let logFilter = $state<'all' | 'agent' | 'openshell' | 'gateway' | 'sandbox'>('all');
+	const logFilters = ['all', 'agent', 'openshell', 'gateway', 'sandbox'] as const;
 
 	const cloneDefaults = $derived.by(() => ({
 		name: `${sandboxName}-clone-${Math.floor(Date.now() / 1000)}`,
 		providers: stream.status?.provider ? [stream.status.provider] : ['claude']
 	}));
+
+	const filteredLogs = $derived.by(() => {
+		if (logFilter === 'all') return stream.logs;
+		return stream.logs.filter((log) => {
+			const source = String(log.source ?? '').toLowerCase();
+			if (logFilter === 'agent') return !source.startsWith('openshell:');
+			if (logFilter === 'openshell') return source.startsWith('openshell:');
+			if (logFilter === 'gateway') return source === 'openshell:gateway';
+			if (logFilter === 'sandbox') return source === 'openshell:sandbox';
+			return true;
+		});
+	});
+
+	const hasActivityLogs = $derived(
+		filteredLogs.some((l) => ['tool_call_start', 'llm_start', 'run_started'].includes(l.eventType ?? l.source))
+	);
 
 	async function deleteSandbox() {
 		deleting = true;
@@ -159,11 +177,25 @@
 				</Tabs.List>
 
 				<Tabs.Content value="logs" class="flex-1 overflow-hidden p-6 pt-3">
-					{#if stream.logs.length > 0 && stream.logs.some((l) => ['tool_call_start', 'llm_start', 'run_started'].includes((l as unknown as Record<string, unknown>).eventType as string ?? l.source))}
-						<SandboxActivityLog logs={stream.logs} />
-					{:else}
-						<SandboxLogViewer logs={stream.logs} />
-					{/if}
+					<div class="flex h-full flex-col gap-2">
+						<div class="flex items-center gap-1">
+							{#each logFilters as value}
+								<button
+									class="rounded border border-border px-2 py-1 text-xs {logFilter === value ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}"
+									onclick={() => (logFilter = value)}
+								>
+									{value}
+								</button>
+							{/each}
+						</div>
+						<div class="min-h-0 flex-1">
+							{#if filteredLogs.length > 0 && hasActivityLogs}
+								<SandboxActivityLog logs={filteredLogs} />
+							{:else}
+								<SandboxLogViewer logs={filteredLogs} />
+							{/if}
+						</div>
+					</div>
 				</Tabs.Content>
 
 				<Tabs.Content value="events" class="flex-1 overflow-hidden p-6 pt-3">

@@ -17,8 +17,42 @@ interface AgentEvent {
 	timestamp: string;
 }
 
+interface RuntimeSseEvent {
+	event: string;
+	data: Record<string, unknown>;
+}
+
 function serializeSse(event: string, data: unknown): Uint8Array {
 	return encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function parseSseBlock(block: string): RuntimeSseEvent | null {
+	let event = 'message';
+	const dataLines: string[] = [];
+	for (const line of block.split('\n')) {
+		if (line.startsWith('event:')) {
+			event = line.slice('event:'.length).trim();
+		} else if (line.startsWith('data:')) {
+			dataLines.push(line.slice('data:'.length).trimStart());
+		}
+	}
+	if (dataLines.length === 0) return null;
+	try {
+		return { event, data: JSON.parse(dataLines.join('\n')) as Record<string, unknown> };
+	} catch {
+		return null;
+	}
+}
+
+function normalizeOpenShellLog(data: Record<string, unknown>) {
+	const rawSource = String(data.source ?? 'openshell').replace(/^openshell:/, '');
+	return {
+		level: String(data.level ?? 'INFO'),
+		source: `openshell:${rawSource || 'runtime'}`,
+		message: String(data.message ?? ''),
+		timestamp: String(data.timestamp ?? new Date().toISOString()),
+		fields: data
+	};
 }
 
 function formatAgentEventMessage(event: AgentEvent): string {
@@ -92,6 +126,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 			let statusTimer: ReturnType<typeof setTimeout> | null = null;
 			let eventsTimer: ReturnType<typeof setTimeout> | null = null;
 			let unsubscribe: (() => void) | null = null;
+			let openshellAbort: AbortController | null = null;
 			let lastStatusJson = '';
 			let lastAgentEventId = 0;
 
@@ -99,12 +134,22 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				if (closed) return;
 				closed = true;
 				unsubscribe?.();
+				openshellAbort?.abort();
 				if (statusTimer) clearTimeout(statusTimer);
 				if (eventsTimer) clearTimeout(eventsTimer);
 				try {
 					controller.close();
 				} catch {
 					// ignore
+				}
+			};
+
+			const enqueue = (event: string, data: unknown) => {
+				if (closed) return;
+				try {
+					controller.enqueue(serializeSse(event, data));
+				} catch {
+					close();
 				}
 			};
 
@@ -120,7 +165,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					if (sb) {
 						const json = JSON.stringify(sb);
 						if (json !== lastStatusJson) {
-							controller.enqueue(serializeSse('status', sb));
+							enqueue('status', sb);
 							lastStatusJson = json;
 						}
 					}
@@ -128,9 +173,9 @@ export const GET: RequestHandler = async ({ params, request }) => {
 						if (closed) return;
 						try {
 							if (event.sandbox?.name === name && (event.type === 'sandbox_changed' || event.type === 'sandbox_added')) {
-								controller.enqueue(serializeSse('status', event.sandbox));
+								enqueue('status', event.sandbox);
 							} else if (event.type === 'sandbox_removed' && event.name === name) {
-								controller.enqueue(serializeSse('not_found', { name, timestamp: new Date().toISOString() }));
+								enqueue('not_found', { name, timestamp: new Date().toISOString() });
 							}
 						} catch {
 							close();
@@ -142,15 +187,15 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				try {
 					const sandbox = await fetchSandboxByName(name);
 					if (!sandbox) {
-						controller.enqueue(serializeSse('not_found', { name, timestamp: new Date().toISOString() }));
+						enqueue('not_found', { name, timestamp: new Date().toISOString() });
 					} else {
 						const json = JSON.stringify(sandbox);
 						if (json !== lastStatusJson) {
-							controller.enqueue(serializeSse('status', sandbox));
+							enqueue('status', sandbox);
 							lastStatusJson = json;
 						}
 					}
-					controller.enqueue(serializeSse('heartbeat', { ts: Date.now() }));
+					enqueue('heartbeat', { ts: Date.now() });
 				} catch {
 					// skip cycle
 				}
@@ -168,16 +213,14 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					for (const event of events) {
 						if (closed) break;
 						lastAgentEventId = Math.max(lastAgentEventId, event.id);
-						controller.enqueue(
-							serializeSse('log', {
-								level: event.type.includes('error') ? 'ERROR' : 'INFO',
-								source: (event.data?.toolName as string) ?? event.type,
-								message: formatAgentEventMessage(event),
-								timestamp: event.timestamp,
-								eventType: event.type,
-								data: event.data
-							})
-						);
+						enqueue('log', {
+							level: event.type.includes('error') ? 'ERROR' : 'INFO',
+							source: (event.data?.toolName as string) ?? event.type,
+							message: formatAgentEventMessage(event),
+							timestamp: event.timestamp,
+							eventType: event.type,
+							data: event.data
+						});
 					}
 				} catch {
 					// DB query failed — skip cycle
@@ -187,9 +230,68 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				}
 			};
 
-			// Start both polling loops
+			const enqueueOpenShellLogBackfill = async () => {
+				try {
+					const res = await openshellRuntimeFetch(
+						`/api/v1/sandboxes/${encodeURIComponent(name)}/logs?limit=200&source=all&level=info`
+					);
+					if (!res.ok) return;
+					const data = await res.json();
+					for (const entry of (data.logs ?? []) as Record<string, unknown>[]) {
+						enqueue('log', normalizeOpenShellLog(entry));
+					}
+				} catch {
+					// OpenShell log backfill is best effort.
+				}
+			};
+
+			const streamOpenShellEvents = async () => {
+				openshellAbort = new AbortController();
+				try {
+					const res = await openshellRuntimeFetch(
+						`/api/v1/sandboxes/${encodeURIComponent(name)}/watch`,
+						{ signal: openshellAbort.signal }
+					);
+					if (!res.ok || !res.body) return;
+					const reader = res.body.getReader();
+					const decoder = new TextDecoder();
+					let buffer = '';
+					while (!closed) {
+						const { done, value } = await reader.read();
+						if (done) break;
+						buffer += decoder.decode(value, { stream: true });
+						const blocks = buffer.split('\n\n');
+						buffer = blocks.pop() ?? '';
+						for (const block of blocks) {
+							const parsed = parseSseBlock(block);
+							if (!parsed) continue;
+							if (parsed.event === 'log') {
+								enqueue('log', normalizeOpenShellLog(parsed.data));
+							} else if (parsed.event === 'k8s_event') {
+								enqueue('k8s_event', parsed.data);
+							} else if (parsed.event === 'warning') {
+								enqueue('log', {
+									level: 'WARN',
+									source: 'openshell:runtime',
+									message: String(parsed.data.message ?? ''),
+									timestamp: String(parsed.data.timestamp ?? new Date().toISOString()),
+									fields: parsed.data
+								});
+							} else if (parsed.event === 'status') {
+								enqueue('status', parsed.data);
+							}
+						}
+					}
+				} catch {
+					// The DB/event-bus polling paths remain the fallback stream.
+				}
+			};
+
+			// Start all streams
 			void pollStatus();
 			void pollAgentEvents();
+			void enqueueOpenShellLogBackfill();
+			void streamOpenShellEvents();
 		},
 		cancel() {
 			// no-op, abort listener handles cleanup
