@@ -93,12 +93,15 @@
 				{data.label || ''}
 			</div>
 			{#if agentProgress}
-				<div class="mt-1 flex items-center justify-center gap-2 text-[9px]">
+				<div class="mt-1 flex items-center justify-center gap-1.5 text-[9px]">
 					<span class="font-semibold text-blue-400">{agentProgress.turnCount}</span>
 					<span class="text-muted-foreground/60">turns</span>
 					<span class="text-muted-foreground/30">·</span>
 					<span class="font-semibold text-orange-400">{agentProgress.toolCount}</span>
 					<span class="text-muted-foreground/60">tools</span>
+					<span class="text-muted-foreground/30">·</span>
+					<span class="font-semibold text-emerald-400">{agentProgress.eventCount}</span>
+					<span class="text-muted-foreground/60">events</span>
 				</div>
 				{#if agentProgress.activeTool}
 					<div class="mt-0.5 truncate text-[8px] text-orange-400/80">
