@@ -198,7 +198,11 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
         agentConfig: {
           type: "object",
           properties: {
-            runtime: { type: "string", default: "dapr-agent-py" },
+            runtime: {
+              type: "string",
+              enum: ["dapr-agent-py", "dapr-agent-py-testing"],
+              default: "dapr-agent-py",
+            },
             mcpConnectionMode: {
               type: "string",
               enum: ["project", "explicit", "auto"],

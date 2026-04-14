@@ -68,7 +68,8 @@ Examples:
 The ACTION_NAME must NOT include the piece name as a prefix.`);
 
 	parts.push(`## Agent Runtime
-The only exposed agent is dapr-agent-py. Use \`call: durable/run\` for agent work. Do not generate \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+The exposed agents are dapr-agent-py and dapr-agent-py-testing. Use \`call: durable/run\` for agent work. Do not generate \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
 - run-agent:

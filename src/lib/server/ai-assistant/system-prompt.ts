@@ -84,6 +84,7 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 
 ### dapr-agent-py agent runs
 Use only \`call: durable/run\` for embedded agent execution. Do not use \`claude/run\`, \`openshell/run\`, or \`dapr-agent-py/run\`.
+Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks for the browser MCP testing profile.
 
 \`\`\`yaml
 - run-agent:

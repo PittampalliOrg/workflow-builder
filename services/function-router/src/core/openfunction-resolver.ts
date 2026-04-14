@@ -39,6 +39,9 @@ const STANDALONE_SERVICES: Record<string, string> = {
 	"dapr-agent-py":
 		process.env.DAPR_AGENT_PY_URL ||
 		"http://dapr-agent-py.workflow-builder.svc.cluster.local:8002",
+	"dapr-agent-py-testing":
+		process.env.DAPR_AGENT_PY_TESTING_URL ||
+		"http://dapr-agent-py-testing.workflow-builder.svc.cluster.local:8002",
 };
 
 /**

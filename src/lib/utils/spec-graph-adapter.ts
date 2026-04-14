@@ -3,7 +3,7 @@
  * using the official @serverlessworkflow/sdk buildGraph function.
  */
 
-import * as swSdk from "@serverlessworkflow/sdk";
+import { buildGraph, GraphNodeType } from "@serverlessworkflow/sdk/esm/index.esm.min.js";
 import type {
   Graph,
   GraphNode as SdkGraphNode,
@@ -11,9 +11,6 @@ import type {
 } from "@serverlessworkflow/sdk";
 import type { Node, Edge } from "@xyflow/svelte";
 import { isAgentTaskConfig } from "$lib/types/agent-graph";
-
-const sdk = ((swSdk as { default?: unknown }).default ?? swSdk) as typeof import("@serverlessworkflow/sdk");
-const { buildGraph, GraphNodeType } = sdk;
 
 /** Map SDK node types to our workflow node types */
 const NODE_TYPE_MAP: Record<string, string> = {

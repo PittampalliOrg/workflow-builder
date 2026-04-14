@@ -56,9 +56,12 @@ function walk(value: unknown, path: string, issues: ValidationIssue[]): void {
         : "";
     if (
       runtime &&
-      !["dapr-agent-py", "durable-agent", "openshell-durable-agent"].includes(
-        runtime,
-      )
+      ![
+        "dapr-agent-py",
+        "dapr-agent-py-testing",
+        "durable-agent",
+        "openshell-durable-agent",
+      ].includes(runtime)
     ) {
       issues.push({
         code: "invalid_agent_runtime",
@@ -115,7 +118,7 @@ export function getRemovedSw10AgentCallsError(spec: unknown): string | null {
       .map((issue) => `${issue.value} at ${issue.path}`)
       .slice(0, 5)
       .join(", ");
-    return `SW 1.0 durable/run only supports agentRuntime dapr-agent-py: ${details}`;
+    return `SW 1.0 durable/run only supports an approved agentRuntime: ${details}`;
   }
 
   return null;

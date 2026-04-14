@@ -95,6 +95,18 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+AGENT_SERVICE_NAME = os.environ.get("AGENT_SERVICE_NAME", "dapr-agent-py")
+AGENT_STATE_STORE = os.environ.get("AGENT_STATE_STORE", "dapr-agent-py-statestore")
+AGENT_STATE_KEY_PREFIX = os.environ.get(
+    "AGENT_STATE_KEY_PREFIX", f"{AGENT_SERVICE_NAME}:_workflow"
+)
+AGENT_MEMORY_KEY_PREFIX = os.environ.get(
+    "AGENT_MEMORY_KEY_PREFIX", f"{AGENT_SERVICE_NAME}:_memory"
+)
+AGENT_TOPIC = os.environ.get("AGENT_TOPIC", f"{AGENT_SERVICE_NAME}.requests")
+AGENT_BROADCAST_TOPIC = os.environ.get(
+    "AGENT_BROADCAST_TOPIC", f"{AGENT_SERVICE_NAME}.broadcast"
+)
 _base_tools = list(ALL_TOOLS)
 _mcp_lock = asyncio.Lock()
 _mcp_client: MCPClient | None = None
@@ -133,14 +145,12 @@ config = RuntimeSubscriptionConfig(
 # Infrastructure configs
 # ---------------------------------------------------------------------------
 
-state_config = AgentStateConfig(
-    store=StateStoreService(store_name="dapr-agent-py-statestore")
-)
+state_config = AgentStateConfig(store=StateStoreService(store_name=AGENT_STATE_STORE))
 
 pubsub_config = AgentPubSubConfig(
     pubsub_name="pubsub",
-    agent_topic="dapr-agent-py.requests",
-    broadcast_topic="dapr-agent-py.broadcast",
+    agent_topic=AGENT_TOPIC,
+    broadcast_topic=AGENT_BROADCAST_TOPIC,
 )
 
 registry_config = AgentRegistryConfig(
@@ -196,7 +206,7 @@ SVELTEKIT_INSTRUCTIONS = [
 ]
 
 agent = DurableAgent(
-    name="dapr-agent-py",
+    name=AGENT_SERVICE_NAME,
     role="Expert SvelteKit Developer",
     goal="Build polished, working SvelteKit web applications from user prompts",
     instructions=SVELTEKIT_INSTRUCTIONS,
@@ -211,15 +221,15 @@ agent = DurableAgent(
     pubsub=pubsub_config,
     registry=registry_config,
     agent_metadata={
-        "service": "dapr-agent-py",
-        "stateStore": "dapr-agent-py-statestore",
+        "service": AGENT_SERVICE_NAME,
+        "stateStore": AGENT_STATE_STORE,
         "stateSchema": "dapr-agents-durable-default",
-        "stateKeyPrefix": "dapr-agent-py:_workflow",
-        "memoryKeyPrefix": "dapr-agent-py:_memory",
+        "stateKeyPrefix": AGENT_STATE_KEY_PREFIX,
+        "memoryKeyPrefix": AGENT_MEMORY_KEY_PREFIX,
         "instancesEndpoint": "/agent/instances",
         "pubsub": "pubsub",
-        "agentTopic": "dapr-agent-py.requests",
-        "broadcastTopic": "dapr-agent-py.broadcast",
+        "agentTopic": AGENT_TOPIC,
+        "broadcastTopic": AGENT_BROADCAST_TOPIC,
     },
 )
 
@@ -232,14 +242,14 @@ runner = AgentRunner()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("dapr-agent-py starting")
+    logger.info("%s starting", AGENT_SERVICE_NAME)
     yield
-    logger.info("dapr-agent-py shutting down")
+    logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
 
 
 app = FastAPI(
-    title="dapr-agent-py",
+    title=AGENT_SERVICE_NAME,
     description="Minimal Python durable agent with hot-reload",
     version="0.1.0",
     lifespan=lifespan,
@@ -256,6 +266,41 @@ def _parse_agent_config(payload: dict[str, Any]) -> dict[str, Any]:
         parsed = _parse_json(value)
         return parsed if isinstance(parsed, dict) else {}
     return value if isinstance(value, dict) else {}
+
+
+def _parse_default_mcp_servers() -> list[dict[str, Any]]:
+    raw = os.environ.get("AGENT_DEFAULT_MCP_SERVERS_JSON", "").strip()
+    if not raw:
+        return []
+    parsed = _parse_json(raw)
+    if not isinstance(parsed, list):
+        logger.warning("AGENT_DEFAULT_MCP_SERVERS_JSON must be a JSON array")
+        return []
+    return [item for item in parsed if isinstance(item, dict)]
+
+
+def _mcp_server_key(server: dict[str, Any]) -> str:
+    return str(
+        server.get("server_name")
+        or server.get("serverName")
+        or server.get("name")
+        or server.get("url")
+        or server.get("command")
+        or ""
+    ).strip()
+
+
+def _merge_mcp_servers(request_servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for server in [*_parse_default_mcp_servers(), *request_servers]:
+        key = _mcp_server_key(server)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        merged.append(server)
+    return merged
 
 
 def _mcp_server_config(server: dict[str, Any]) -> dict[str, Any] | None:
@@ -302,9 +347,13 @@ async def _configure_mcp_tools(payload: dict[str, Any]) -> None:
     global _mcp_client, _mcp_config_signature
 
     agent_config = _parse_agent_config(payload)
-    servers = agent_config.get("mcpServers")
-    if not isinstance(servers, list):
-        return
+    configured_servers = agent_config.get("mcpServers")
+    request_servers = (
+        [item for item in configured_servers if isinstance(item, dict)]
+        if isinstance(configured_servers, list)
+        else []
+    )
+    servers = _merge_mcp_servers(request_servers)
 
     configs = [
         config
@@ -468,7 +517,7 @@ def _wrapped_string(value: Any) -> str | None:
 
 
 def _read_agent_state_key(key: str) -> Any:
-    store_name = "dapr-agent-py-statestore"
+    store_name = AGENT_STATE_STORE
     encoded_key = urllib.parse.quote(key, safe="")
     sidecar = (
         f"http://{os.environ.get('DAPR_HOST', '127.0.0.1')}:"
@@ -503,8 +552,8 @@ def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
     completed_at = _timestamp_iso(getattr(state, "completedTimestamp", None))
     input_payload = _parse_json(_wrapped_string(getattr(state, "input", None)))
     output_payload = _parse_json(_wrapped_string(getattr(state, "output", None)))
-    workflow_state_key = f"dapr-agent-py:_workflow_{instance_id}".lower()
-    memory_key = f"dapr-agent-py:_memory_{instance_id}".lower()
+    workflow_state_key = f"{AGENT_STATE_KEY_PREFIX}_{instance_id}".lower()
+    memory_key = f"{AGENT_MEMORY_KEY_PREFIX}_{instance_id}".lower()
     workflow_state = _read_agent_state_key(workflow_state_key)
     memory_state = _read_agent_state_key(memory_key)
     workflow_record = workflow_state if isinstance(workflow_state, dict) else {}
@@ -526,7 +575,7 @@ def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
         "workflow_instance_id": instance_id,
         "session_id": input_record.get("sessionId") or input_record.get("session_id"),
         "source": workflow_record.get("source") or "dapr-agents-default-state",
-        "workflow_name": "dapr-agent-py",
+        "workflow_name": AGENT_SERVICE_NAME,
         "error": workflow_record.get("error"),
         "state_key": workflow_state_key,
         "memory_key": memory_key,
@@ -552,10 +601,10 @@ async def list_agent_instances(limit: int = 100) -> dict[str, Any]:
             instances[instance_id] = payload
     return {
         "source": "dapr-agents-default-state",
-        "storeName": "dapr-agent-py-statestore",
-        "agentName": "dapr-agent-py",
-        "stateKey": "dapr-agent-py:_workflow_<instance_id>",
-        "memoryKey": "dapr-agent-py:_memory_<instance_id>",
+        "storeName": AGENT_STATE_STORE,
+        "agentName": AGENT_SERVICE_NAME,
+        "stateKey": f"{AGENT_STATE_KEY_PREFIX}_<instance_id>",
+        "memoryKey": f"{AGENT_MEMORY_KEY_PREFIX}_<instance_id>",
         "found": True,
         "instances": instances,
     }
@@ -563,9 +612,9 @@ async def list_agent_instances(limit: int = 100) -> dict[str, Any]:
 
 @app.get("/healthz")
 async def health_check() -> dict:
-    return {"status": "healthy", "service": "dapr-agent-py"}
+    return {"status": "healthy", "service": AGENT_SERVICE_NAME}
 
 
 @app.get("/readyz")
 async def readiness_check() -> dict:
-    return {"status": "ready", "service": "dapr-agent-py"}
+    return {"status": "ready", "service": AGENT_SERVICE_NAME}

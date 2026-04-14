@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 DAPR_HOST = config.DAPR_HOST
 DAPR_HTTP_PORT = config.DAPR_HTTP_PORT
 DURABLE_AGENT_APP_ID = config.DURABLE_AGENT_APP_ID
+DAPR_AGENT_PY_TESTING_APP_ID = config.DAPR_AGENT_PY_TESTING_APP_ID
 CLAUDE_CODE_AGENT_APP_ID = config.CLAUDE_CODE_AGENT_APP_ID
 OPENSHELL_AGENT_APP_ID = config.OPENSHELL_AGENT_APP_ID
 _SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] | None = None
@@ -170,6 +171,29 @@ def _verify_command_list(value: object) -> list[str]:
     if isinstance(value, str):
         return [line.strip() for line in value.splitlines() if line.strip()]
     return []
+
+
+def _agent_runtime_from_payload(input_data: dict) -> str:
+    agent_config = input_data.get("agentConfig")
+    if isinstance(input_data.get("agentRuntime"), str) and input_data["agentRuntime"].strip():
+        return input_data["agentRuntime"].strip()
+    if isinstance(input_data.get("runtime"), str) and input_data["runtime"].strip():
+        return input_data["runtime"].strip()
+    if isinstance(agent_config, dict):
+        if isinstance(agent_config.get("runtime"), str) and agent_config["runtime"].strip():
+            return agent_config["runtime"].strip()
+        if (
+            isinstance(agent_config.get("agentRuntime"), str)
+            and agent_config["agentRuntime"].strip()
+        ):
+            return agent_config["agentRuntime"].strip()
+    return "dapr-agent-py"
+
+
+def _durable_agent_app_id(input_data: dict) -> str:
+    if _agent_runtime_from_payload(input_data) == "dapr-agent-py-testing":
+        return DAPR_AGENT_PY_TESTING_APP_ID
+    return DURABLE_AGENT_APP_ID
 
 
 def _load_sandbox_profile_catalog() -> dict[str, dict[str, object]]:
@@ -446,7 +470,7 @@ def call_durable_agent_run(ctx, input_data: dict) -> dict:
             }
         try:
             return _dapr_invoke_or_raise(
-                DURABLE_AGENT_APP_ID,
+                _durable_agent_app_id(input_data),
                 run_route,
                 input_data,
                 timeout=30,
@@ -754,7 +778,7 @@ def terminate_durable_agent_run(ctx, input_data: dict) -> dict:
     with start_activity_span("activity.terminate_durable_agent_run", otel, attrs):
         try:
             return _dapr_invoke_or_raise(
-                DURABLE_AGENT_APP_ID,
+                _durable_agent_app_id(input_data),
                 f"api/run/{quote(agent_workflow_id)}/terminate",
                 payload,
                 timeout=20,

@@ -406,6 +406,7 @@
 					})}
 			>
 				<option value="dapr-agent-py">dapr-agent-py</option>
+				<option value="dapr-agent-py-testing">dapr-agent-py-testing (browser MCP)</option>
 			</NativeSelect>
 		</div>
 		<div class="space-y-1.5">

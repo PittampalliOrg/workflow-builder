@@ -27,6 +27,7 @@ const DEFAULT_REGISTRY: FunctionRegistry = {
   "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/run": { appId: "dapr-agent-py", type: "knative" },
   "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
+  "dapr-agent-py-testing/*": { appId: "dapr-agent-py-testing", type: "knative" },
   // Default fallback: all other slugs route to fn-activepieces
   _default: { appId: "fn-activepieces", type: "knative" },
 };
@@ -47,6 +48,7 @@ const BUILTIN_FALLBACK_REGISTRY: FunctionRegistry = {
   "workspace/*": { appId: "durable-agent", type: "knative" },
   "durable/run": { appId: "dapr-agent-py", type: "knative" },
   "dapr-agent-py/*": { appId: "dapr-agent-py", type: "knative" },
+  "dapr-agent-py-testing/*": { appId: "dapr-agent-py-testing", type: "knative" },
 };
 
 let cachedRegistry: FunctionRegistry | null = null;

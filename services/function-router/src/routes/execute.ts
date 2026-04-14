@@ -809,6 +809,47 @@ function parseDurableAgentConfig(
   return isPlainObject(input.agentConfig) ? input.agentConfig : undefined;
 }
 
+function parseDurableAgentRuntimeInput(
+  input: Record<string, unknown>,
+): string | undefined {
+  const candidate =
+    typeof input.agentRuntime === "string" && input.agentRuntime.trim()
+      ? input.agentRuntime.trim()
+      : typeof input.runtime === "string" && input.runtime.trim()
+        ? input.runtime.trim()
+        : undefined;
+  if (candidate) return candidate;
+
+  if (typeof input.argsJson === "string" && input.argsJson.trim()) {
+    try {
+      const parsed = JSON.parse(input.argsJson.trim()) as unknown;
+      if (isPlainObject(parsed)) {
+        return parseDurableAgentRuntimeInput(parsed);
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (isPlainObject(input.body)) {
+    const bodyRuntime = parseDurableAgentRuntimeInput(input.body);
+    if (bodyRuntime) return bodyRuntime;
+  }
+
+  const agentConfig = parseDurableAgentConfig(input);
+  if (!agentConfig) return undefined;
+  if (typeof agentConfig.runtime === "string" && agentConfig.runtime.trim()) {
+    return agentConfig.runtime.trim();
+  }
+  if (
+    typeof agentConfig.agentRuntime === "string" &&
+    agentConfig.agentRuntime.trim()
+  ) {
+    return agentConfig.agentRuntime.trim();
+  }
+  return undefined;
+}
+
 function parseDurableModelInput(
   input: Record<string, unknown>,
 ): string | undefined {
@@ -1156,7 +1197,16 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Step 1: Look up the target service
-    const target = await lookupFunction(functionSlug);
+    let target = await lookupFunction(functionSlug);
+    const requestedAgentRuntime = isPlainObject(body.input)
+      ? parseDurableAgentRuntimeInput(body.input as Record<string, unknown>)
+      : undefined;
+    if (
+      functionSlug === "durable/run" &&
+      requestedAgentRuntime === "dapr-agent-py-testing"
+    ) {
+      target = { ...target, appId: "dapr-agent-py-testing" };
+    }
     console.log(
       `[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`,
     );
@@ -1184,6 +1234,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
           target.appId === "dapr-agent-py" ||
+          target.appId === "dapr-agent-py-testing" ||
           target.appId === "openshell-agent-runtime";
 
         if (isBuiltinRuntime) {
@@ -1241,7 +1292,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
 
             const isAgentRun = toolId === "run";
             const isDaprAgentPyRun =
-              target.appId === "dapr-agent-py" && isAgentRun;
+              (target.appId === "dapr-agent-py" ||
+                target.appId === "dapr-agent-py-testing") &&
+              isAgentRun;
             const isPlan = toolId === "plan";
             const isClaudePlan = toolId === "claude-plan";
             const isMaterializePlan = toolId === "materialize-plan";

@@ -52,6 +52,7 @@ class OrchestratorConfig:
     # Service app IDs for Dapr service invocation
     FUNCTION_ROUTER_APP_ID: str = "function-router"
     DURABLE_AGENT_APP_ID: str = "durable-agent"
+    DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
@@ -91,6 +92,7 @@ class OrchestratorConfig:
             keys = [
                 "FUNCTION_ROUTER_APP_ID",
                 "DURABLE_AGENT_APP_ID",
+                "DAPR_AGENT_PY_TESTING_APP_ID",
                 "CLAUDE_CODE_AGENT_APP_ID",
                 "OPENSHELL_AGENT_APP_ID",
                 "DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW",
@@ -146,6 +148,10 @@ class OrchestratorConfig:
             # Note: FUNCTION_RUNNER_APP_ID env var maps to FUNCTION_ROUTER_APP_ID field
             "FUNCTION_ROUTER_APP_ID": ("FUNCTION_RUNNER_APP_ID", "function-router"),
             "DURABLE_AGENT_APP_ID": ("DURABLE_AGENT_APP_ID", "durable-agent"),
+            "DAPR_AGENT_PY_TESTING_APP_ID": (
+                "DAPR_AGENT_PY_TESTING_APP_ID",
+                "dapr-agent-py-testing",
+            ),
             "CLAUDE_CODE_AGENT_APP_ID": (
                 "CLAUDE_CODE_AGENT_APP_ID",
                 "claude-code-agent",
