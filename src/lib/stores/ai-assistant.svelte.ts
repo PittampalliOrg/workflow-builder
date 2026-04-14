@@ -4,12 +4,31 @@ export interface UIMessage {
 	id: string;
 	role: 'user' | 'assistant';
 	parts: Array<{ type: 'text'; text: string }>;
+	operationResult?: AiAssistantOperationResult;
+	status?: 'thinking' | 'complete';
 }
 
 export interface WorkflowContext {
 	workflowId: string | null;
 	workflowName: string;
 	spec: Record<string, unknown> | null;
+	selectedNodeId?: string | null;
+	selectedTaskName?: string | null;
+	selectedNodeLabel?: string | null;
+	selectedNodeType?: string | null;
+	selectedTask?: Record<string, unknown> | null;
+}
+
+export interface AiAssistantOperationResult {
+	operations: Array<Record<string, unknown>>;
+	proposedSpec: Record<string, unknown> | null;
+	validation: { valid: boolean; errors: string[] };
+	changedTaskNames: string[];
+	autoApply: boolean;
+	needsClarification: boolean;
+	toolCalls?: string[];
+	canvasApplyStatus?: 'pending' | 'applied' | 'failed';
+	canvasApplyErrors?: string[];
 }
 
 /**
@@ -67,28 +86,50 @@ export function createAiAssistantStore() {
 		if (!content.trim() || isStreaming) return;
 		error = null;
 
+		const existingMessages = messages;
 		const userMsg: UIMessage = {
 			id: crypto.randomUUID(),
 			role: 'user',
 			parts: [{ type: 'text', text: content }],
 		};
-		messages = [...messages, userMsg];
+		const requestMessages = [...existingMessages, userMsg]
+			.filter((m) => !(
+				m.role === 'assistant' &&
+				m.operationResult?.validation.valid === false &&
+				m.operationResult.operations.length === 0
+			))
+			.map((m) => ({
+				role: m.role,
+				content: getMessageText(m),
+			}))
+			.filter((m) => m.content.trim().length > 0);
+
+		messages = [...existingMessages, userMsg];
 		isStreaming = true;
 
 		abortController = new AbortController();
+		const assistantId = crypto.randomUUID();
+		messages = [...messages, {
+			id: assistantId,
+			role: 'assistant' as const,
+			parts: [{ type: 'text' as const, text: '' }],
+			status: 'thinking',
+		}];
 
 		try {
 			const body: Record<string, unknown> = {
-				messages: messages.map((m) => ({
-					role: m.role,
-					content: getMessageText(m),
-				})),
+				messages: requestMessages,
 			};
 			if (workflowContext) {
 				body.workflowContext = {
 					workflowId: workflowContext.workflowId,
 					workflowName: workflowContext.workflowName,
 					spec: workflowContext.spec,
+					selectedNodeId: workflowContext.selectedNodeId,
+					selectedTaskName: workflowContext.selectedTaskName,
+					selectedNodeLabel: workflowContext.selectedNodeLabel,
+					selectedNodeType: workflowContext.selectedNodeType,
+					selectedTask: workflowContext.selectedTask,
 				};
 			}
 
@@ -103,33 +144,50 @@ export function createAiAssistantStore() {
 				throw new Error(await response.text() || `Chat failed (${response.status})`);
 			}
 
-			const reader = response.body!.getReader();
-			const decoder = new TextDecoder();
-			const assistantId = crypto.randomUUID();
-			let fullText = '';
+			const result = await response.json() as {
+				message?: string;
+				operations?: Array<Record<string, unknown>>;
+				proposedSpec?: Record<string, unknown> | null;
+				validation?: { valid: boolean; errors: string[] };
+				changedTaskNames?: string[];
+				autoApply?: boolean;
+				needsClarification?: boolean;
+				toolCalls?: string[];
+			};
+			const operationResult: AiAssistantOperationResult = {
+				operations: result.operations ?? [],
+				proposedSpec: result.proposedSpec ?? null,
+				validation: result.validation ?? { valid: false, errors: [] },
+				changedTaskNames: result.changedTaskNames ?? [],
+				autoApply: Boolean(result.autoApply),
+				needsClarification: Boolean(result.needsClarification),
+				toolCalls: result.toolCalls ?? [],
+				canvasApplyStatus: result.autoApply ? 'pending' : undefined,
+			};
+			const shouldShowOperationResult =
+				operationResult.operations.length > 0 ||
+				operationResult.needsClarification ||
+				operationResult.validation.errors.length > 0;
 
-			messages = [...messages, {
-				id: assistantId,
-				role: 'assistant' as const,
-				parts: [{ type: 'text' as const, text: '' }],
-			}];
+			messages = messages.map((message) => message.id === assistantId
+				? {
+						...message,
+						parts: [{ type: 'text' as const, text: result.message || 'Done.' }],
+						status: 'complete' as const,
+						...(shouldShowOperationResult ? { operationResult } : {}),
+					}
+				: message);
 
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-
-				fullText += decoder.decode(value, { stream: true });
-				messages = messages.map((m) =>
-					m.id === assistantId
-						? { ...m, parts: [{ type: 'text' as const, text: fullText }] }
-						: m,
+			if (operationResult.autoApply && operationResult.proposedSpec) {
+				window.dispatchEvent(
+					new CustomEvent('ai-assistant:apply-spec', {
+						detail: {
+							spec: operationResult.proposedSpec,
+							messageId: assistantId,
+							changedTaskNames: operationResult.changedTaskNames,
+						},
+					}),
 				);
-			}
-
-			// Extract spec from the response
-			const spec = extractSpec(fullText);
-			if (spec) {
-				pendingSpec = spec;
 			}
 		} catch (err) {
 			if (err instanceof Error && err.name === 'AbortError') {
@@ -137,6 +195,22 @@ export function createAiAssistantStore() {
 			} else {
 				const msg = err instanceof Error ? err.message : 'Chat failed';
 				error = msg;
+				messages = messages.map((message) => message.id === assistantId
+					? {
+							...message,
+							parts: [{ type: 'text' as const, text: msg }],
+							status: 'complete' as const,
+							operationResult: {
+								operations: [],
+								proposedSpec: null,
+								validation: { valid: false, errors: [msg] },
+								changedTaskNames: [],
+								autoApply: false,
+								needsClarification: false,
+								toolCalls: [],
+							},
+						}
+					: message);
 			}
 		} finally {
 			isStreaming = false;
@@ -150,6 +224,30 @@ export function createAiAssistantStore() {
 
 	function markApplied(messageId: string) {
 		appliedMessageIds = new Set([...appliedMessageIds, messageId]);
+		messages = messages.map((message) => message.id === messageId && message.operationResult
+			? {
+					...message,
+					operationResult: {
+						...message.operationResult,
+						canvasApplyStatus: 'applied',
+						canvasApplyErrors: [],
+					},
+				}
+			: message);
+	}
+
+	function markApplyFailed(messageId: string, errors: string[]) {
+		messages = messages.map((message) => message.id === messageId && message.operationResult
+			? {
+					...message,
+					operationResult: {
+						...message.operationResult,
+						autoApply: false,
+						canvasApplyStatus: 'failed',
+						canvasApplyErrors: errors,
+					},
+				}
+			: message);
 	}
 
 	function isApplied(messageId: string): boolean {
@@ -194,6 +292,7 @@ export function createAiAssistantStore() {
 		sendMessage,
 		stop,
 		markApplied,
+		markApplyFailed,
 		dismissSpec,
 		setWorkflowContext,
 		clearWorkflowContext,

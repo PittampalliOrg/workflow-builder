@@ -3,15 +3,17 @@
  * using the official @serverlessworkflow/sdk buildGraph function.
  */
 
-import {
-  buildGraph,
-  type Graph,
-  type GraphNode as SdkGraphNode,
-  type GraphEdge as SdkGraphEdge,
-  GraphNodeType,
+import * as swSdk from "@serverlessworkflow/sdk";
+import type {
+  Graph,
+  GraphNode as SdkGraphNode,
+  GraphEdge as SdkGraphEdge,
 } from "@serverlessworkflow/sdk";
 import type { Node, Edge } from "@xyflow/svelte";
 import { isAgentTaskConfig } from "$lib/types/agent-graph";
+
+const sdk = ((swSdk as { default?: unknown }).default ?? swSdk) as typeof import("@serverlessworkflow/sdk");
+const { buildGraph, GraphNodeType } = sdk;
 
 /** Map SDK node types to our workflow node types */
 const NODE_TYPE_MAP: Record<string, string> = {
@@ -52,10 +54,17 @@ export function specToGraph(
 ): { nodes: Node[]; edges: Edge[] } | null {
   try {
     const graph = buildGraph(spec as Parameters<typeof buildGraph>[0]);
-    return convertGraph(graph, spec, metadata);
+    const converted = convertGraph(graph, spec, metadata);
+    const doArray = getDoArray(spec);
+    const renderedTaskCount = converted.nodes.filter((node) => node.type !== "start" && node.type !== "end").length;
+    if (doArray.length > 0 && renderedTaskCount === 0) {
+      return buildLinearGraphFromSpec(spec, metadata);
+    }
+    return converted;
   } catch (err) {
     console.warn("[spec-to-graph] Failed to build graph:", err);
-    return null;
+    const fallback = buildLinearGraphFromSpec(spec, metadata);
+    return fallback.nodes.length > 0 ? fallback : null;
   }
 }
 
@@ -67,7 +76,7 @@ function convertGraph(
   spec: Record<string, unknown>,
   metadata?: Record<string, Record<string, unknown>>,
 ): { nodes: Node[]; edges: Edge[] } {
-  const doArray = (spec.do || []) as Array<Record<string, unknown>>;
+  const doArray = getDoArray(spec);
   const taskMap = buildTaskMap(doArray);
 
   const nodes: Node[] = [];
@@ -150,6 +159,98 @@ function convertGraph(
       ...(sdkEdge.label ? { label: sdkEdge.label } : {}),
     });
   }
+
+  return { nodes, edges };
+}
+
+function getDoArray(spec: Record<string, unknown>): Array<Record<string, unknown>> {
+  return Array.isArray(spec.do) ? spec.do as Array<Record<string, unknown>> : [];
+}
+
+function inferNodeType(taskDef: Record<string, unknown> | undefined): string {
+  if (isAgentTaskConfig(taskDef)) return "agent";
+  if (!taskDef) return "call";
+  if (taskDef.call) return "call";
+  if (taskDef.set) return "set";
+  if (taskDef.switch) return "switch";
+  if (taskDef.wait) return "wait";
+  if (taskDef.emit) return "emit";
+  if (taskDef.listen) return "listen";
+  if (taskDef.for) return "for";
+  if (taskDef.fork) return "fork";
+  if (taskDef.try) return "try";
+  if (taskDef.do) return "do";
+  if (taskDef.run) return "run";
+  if (taskDef.raise) return "raise";
+  return "call";
+}
+
+function buildLinearGraphFromSpec(
+  spec: Record<string, unknown>,
+  metadata?: Record<string, Record<string, unknown>>,
+): { nodes: Node[]; edges: Edge[] } {
+  const doArray = getDoArray(spec);
+  if (doArray.length === 0) return { nodes: [], edges: [] };
+
+  const nodes: Node[] = [{
+    id: "__start__",
+    type: "start",
+    position: { x: 250, y: 50 },
+    data: {
+      label: "Start",
+      type: "start",
+      taskConfig: {},
+      status: "idle",
+      enabled: true,
+    },
+  }];
+  const edges: Edge[] = [];
+
+  let previousId = "__start__";
+  doArray.forEach((entry, index) => {
+    const taskName = Object.keys(entry)[0];
+    if (!taskName) return;
+    const taskDef = entry[taskName] as Record<string, unknown> | undefined;
+    const nodeType = inferNodeType(taskDef);
+    const nodeId = `/do/${index}/${taskName}`;
+    nodes.push({
+      id: nodeId,
+      type: nodeType,
+      position: { x: 250, y: 200 + (index * 150) },
+      data: {
+        label: taskName,
+        type: nodeType,
+        taskConfig: taskDef || {},
+        status: "idle",
+        enabled: true,
+        ...(metadata?.[taskName] || {}),
+      },
+    });
+    edges.push({
+      id: `${previousId}->${nodeId}`,
+      source: previousId,
+      target: nodeId,
+    });
+    previousId = nodeId;
+  });
+
+  nodes.push({
+    id: "__end__",
+    type: "end",
+    position: { x: 250, y: 200 + (doArray.length * 150) },
+    data: {
+      label: "End",
+      type: "end",
+      taskConfig: {},
+      status: "idle",
+      enabled: true,
+    },
+  });
+  edges.push({
+    id: `${previousId}->__end__`,
+    source: previousId,
+    target: "__end__",
+  });
 
   return { nodes, edges };
 }

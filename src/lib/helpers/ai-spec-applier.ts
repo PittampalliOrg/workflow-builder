@@ -8,6 +8,85 @@ import type { createWorkflowStore } from '$lib/stores/workflow.svelte';
 
 type WorkflowStore = ReturnType<typeof createWorkflowStore>;
 
+function getTaskCount(spec: Record<string, unknown> | null | undefined): number {
+	const doArray = spec?.do;
+	return Array.isArray(doArray) ? doArray.length : 0;
+}
+
+function getTaskEntries(spec: Record<string, unknown>): Array<Record<string, unknown>> {
+	return Array.isArray(spec.do) ? spec.do as Array<Record<string, unknown>> : [];
+}
+
+function taskNames(spec: Record<string, unknown>): string[] {
+	return getTaskEntries(spec).map((entry) => Object.keys(entry)[0]).filter(Boolean);
+}
+
+function inferNodeType(taskDef: Record<string, unknown> | undefined): string {
+	if (!taskDef) return 'call';
+	if (taskDef.call) return 'call';
+	if (taskDef.set) return 'set';
+	if (taskDef.switch) return 'switch';
+	if (taskDef.wait) return 'wait';
+	if (taskDef.emit) return 'emit';
+	if (taskDef.listen) return 'listen';
+	if (taskDef.for) return 'for';
+	if (taskDef.fork) return 'fork';
+	if (taskDef.try) return 'try';
+	if (taskDef.do) return 'do';
+	if (taskDef.run) return 'run';
+	if (taskDef.raise) return 'raise';
+	return 'call';
+}
+
+function buildLinearGraphFallback(spec: Record<string, unknown>): {
+	nodes: Array<Record<string, unknown>>;
+	edges: Array<Record<string, unknown>>;
+} {
+	const entries = getTaskEntries(spec);
+	if (entries.length === 0) return { nodes: [], edges: [] };
+
+	const nodes: Array<Record<string, unknown>> = [{
+		id: '__start__',
+		type: 'start',
+		position: { x: 250, y: 50 },
+		data: { label: 'Start', type: 'start', taskConfig: {}, status: 'idle', enabled: true },
+	}];
+	const edges: Array<Record<string, unknown>> = [];
+	let previousId = '__start__';
+
+	entries.forEach((entry, index) => {
+		const taskName = Object.keys(entry)[0];
+		if (!taskName) return;
+		const taskDef = entry[taskName] as Record<string, unknown> | undefined;
+		const nodeId = `/do/${index}/${taskName}`;
+		const nodeType = inferNodeType(taskDef);
+		nodes.push({
+			id: nodeId,
+			type: nodeType,
+			position: { x: 250, y: 200 + (index * 150) },
+			data: {
+				label: taskName,
+				type: nodeType,
+				taskConfig: taskDef || {},
+				status: 'idle',
+				enabled: true,
+			},
+		});
+		edges.push({ id: `${previousId}->${nodeId}`, source: previousId, target: nodeId });
+		previousId = nodeId;
+	});
+
+	nodes.push({
+		id: '__end__',
+		type: 'end',
+		position: { x: 250, y: 200 + (entries.length * 150) },
+		data: { label: 'End', type: 'end', taskConfig: {}, status: 'idle', enabled: true },
+	});
+	edges.push({ id: `${previousId}->__end__`, source: previousId, target: '__end__' });
+
+	return { nodes, edges };
+}
+
 /**
  * Apply a new spec to the workflow store.
  * Validates, rebuilds graph, enriches, layouts — all in one batch.
@@ -27,6 +106,19 @@ export async function applySpec(
 		delete (spec.document as Record<string, unknown>).do;
 	}
 
+	const currentTaskCount = getTaskCount(store.spec);
+	const nextTaskCount = getTaskCount(spec);
+	if (nextTaskCount === 0) {
+		return {
+			success: false,
+			errors: [
+				currentTaskCount > 0
+					? 'Refusing to apply an AI spec that would remove every existing task.'
+					: 'Refusing to apply an AI spec with no tasks.',
+			],
+		};
+	}
+
 	// 1. Validate with SDK (dynamic import for SSR compat)
 	try {
 		const { validateSpec } = await import('$lib/utils/spec-validator');
@@ -34,15 +126,13 @@ export async function applySpec(
 		if (!validation.valid) {
 			console.warn('[ai-spec-applier] Validation failed:', validation.errors);
 			errors.push(...validation.errors);
+			return { success: false, errors };
 		}
 	} catch (err) {
 		console.warn('[ai-spec-applier] Validation skipped:', err);
 	}
 
-	// 2. Set spec on store (but DON'T rebuild yet — we batch everything)
-	store.spec = spec;
-
-	// 3. Rebuild graph from spec (get nodes/edges without setting them on store yet)
+	// 2. Rebuild graph from spec (get nodes/edges without setting them on store yet)
 	let newNodes: typeof store.nodes = [];
 	let newEdges: typeof store.edges = [];
 	try {
@@ -56,10 +146,37 @@ export async function applySpec(
 		console.warn('[ai-spec-applier] Graph rebuild failed:', err);
 	}
 
-	// 4. Enrich call nodes with AP catalog metadata BEFORE setting on store
+	if (newNodes.length === 0 && nextTaskCount > 0) {
+		const fallback = buildLinearGraphFallback(spec);
+		newNodes = fallback.nodes as typeof store.nodes;
+		newEdges = fallback.edges as typeof store.edges;
+	}
+
+	if (newNodes.length === 0) {
+		return {
+			success: false,
+			errors: [`Refusing to apply an AI spec because it could not be rendered on the canvas. Task count: ${nextTaskCount}. Task names: ${taskNames(spec).join(', ') || '(none)'}.`],
+		};
+	}
+
+	const renderedTaskNodeCount = newNodes.filter((node) => node.type !== 'start' && node.type !== 'end').length;
+	if (renderedTaskNodeCount === 0 && nextTaskCount > 0) {
+		const fallback = buildLinearGraphFallback(spec);
+		newNodes = fallback.nodes as typeof store.nodes;
+		newEdges = fallback.edges as typeof store.edges;
+	}
+	const fallbackRenderedTaskNodeCount = newNodes.filter((node) => node.type !== 'start' && node.type !== 'end').length;
+	if (nextTaskCount > 0 && fallbackRenderedTaskNodeCount === 0) {
+		return {
+			success: false,
+			errors: [`Refusing to apply an AI spec because its tasks could not be rendered on the canvas. Task count: ${nextTaskCount}. Task names: ${taskNames(spec).join(', ') || '(none)'}. Rendered task nodes: ${fallbackRenderedTaskNodeCount}.`],
+		};
+	}
+
+	// 3. Enrich call nodes with AP catalog metadata BEFORE setting on store
 	const enrichedNodes = await enrichNodesOffline(spec, newNodes);
 
-	// 5. Auto-layout with ELK (on the enriched nodes, before setting on store)
+	// 4. Auto-layout with ELK (on the enriched nodes, before setting on store)
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	let layoutedNodes = enrichedNodes as any[];
 	try {
@@ -87,12 +204,13 @@ export async function applySpec(
 		console.warn('[ai-spec-applier] Auto-layout skipped:', err);
 	}
 
-	// 6. NOW set nodes/edges on store in one batch — single canvas render
+	// 5. NOW set spec/nodes/edges on store in one batch — single canvas render
+	store.spec = spec;
 	store.nodes = layoutedNodes as typeof store.nodes;
 	store.edges = newEdges as typeof store.edges;
 	store.isDirty = true;
 
-	// 7. Auto-save to DB
+	// 6. Auto-save to DB
 	if (store.workflowId) {
 		try {
 			await fetch(`/api/workflows/${store.workflowId}`, {

@@ -6,6 +6,7 @@
 	import { Input } from '$lib/components/ui/input';
 	import { Textarea } from '$lib/components/ui/textarea';
 	import * as Select from '$lib/components/ui/select';
+	import * as Tabs from '$lib/components/ui/tabs';
 	import { Alert, AlertDescription } from '$lib/components/ui/alert';
 	import {
 		Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter
@@ -73,6 +74,7 @@
 	interface SchemaProperty {
 		type: string;
 		description?: string;
+		default?: unknown;
 	}
 
 	let { open = $bindable(), onClose, onExecute }: Props = $props();
@@ -80,6 +82,7 @@
 	let isSubmitting = $state(false);
 	let errorMsg = $state<string | null>(null);
 	let rawJson = $state('{}');
+	let inputMode = $state<'form' | 'json'>('form');
 	let formValues = $state<Record<string, string>>({});
 	let initialized = false;
 	let scmValues = $state<ScmTriggerValues>({
@@ -179,6 +182,13 @@
 
 		if (!open) {
 			initialized = false;
+			inputMode = 'form';
+		}
+	});
+
+	$effect(() => {
+		if (open && effectiveInputSchema && inputMode === 'form') {
+			rawJson = JSON.stringify(buildInputFromSchema(), null, 2);
 		}
 	});
 
@@ -228,7 +238,15 @@
 		try {
 			let input: Record<string, unknown>;
 
-			if (effectiveInputSchema) {
+			if (inputMode === 'json' || !effectiveInputSchema) {
+				try {
+					input = JSON.parse(rawJson);
+				} catch {
+					errorMsg = 'Invalid JSON';
+					isSubmitting = false;
+					return;
+				}
+			} else {
 				input = buildInputFromSchema();
 				for (const reqKey of effectiveInputSchema.required) {
 					if (
@@ -243,14 +261,6 @@
 						isSubmitting = false;
 						return;
 					}
-				}
-			} else {
-				try {
-					input = JSON.parse(rawJson);
-				} catch {
-					errorMsg = 'Invalid JSON';
-					isSubmitting = false;
-					return;
 				}
 			}
 
@@ -279,99 +289,119 @@
 
 		<form onsubmit={(event) => { event.preventDefault(); handleSubmit(); }}>
 			{#if effectiveInputSchema}
-				<div class="space-y-3 max-h-[450px] overflow-y-auto pr-1">
-					{#if hasScmFields}
-						<ScmTriggerFields
-							enabled={open}
-							mode={isIssueWorkflow ? 'issue' : 'create'}
-							fieldKeys={Object.keys(effectiveInputSchema.properties)}
-							bind:values={scmValues}
-						/>
-					{/if}
-
-					{#if promptExpansionConfig}
-						<div class="space-y-1.5">
-							<Label for="input-{promptExpansionConfig.promptField}">
-								{promptExpansionConfig.promptLabel || 'Prompt'} <span class="text-destructive">*</span>
-							</Label>
-							<Textarea
-								id="input-{promptExpansionConfig.promptField}"
-								bind:value={formValues[promptExpansionConfig.promptField]}
-								rows={5}
-								placeholder={promptExpansionConfig.promptPlaceholder || 'Describe what you want to build.'}
-							/>
-						</div>
-					{/if}
-
-					{#each visibleSchemaEntries as [key, prop]}
-						{@const fieldConfig = workflowInputFieldConfigs[key]}
-						<div class="space-y-1.5">
-							<Label for="input-{key}">
-								{fieldConfig?.label || toFieldLabel(key)}
-								{#if effectiveInputSchema.required.includes(key)}
-									<span class="text-destructive">*</span>
-								{/if}
-							</Label>
-							{#if fieldConfig?.type === 'multiselect' && fieldConfig?.options?.length}
-								{@const selected = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean))}
-								<div class="flex flex-wrap gap-1.5">
-									{#each fieldConfig.options as option}
-										{@const isSelected = selected.has(option.value)}
-										<button
-											type="button"
-											class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors {isSelected ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}"
-											onclick={() => {
-												const current = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean));
-												if (current.has(option.value)) {
-													current.delete(option.value);
-												} else {
-													current.add(option.value);
-												}
-												formValues[key] = [...current].join(',');
-											}}
-										>
-											<span class="h-3 w-3 rounded-sm border {isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/40'}">
-												{#if isSelected}
-													<svg viewBox="0 0 12 12" class="h-3 w-3 text-primary-foreground"><path d="M3 6l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-												{/if}
-											</span>
-											{option.label}
-										</button>
-									{/each}
-								</div>
-							{:else if fieldConfig?.options?.length}
-								<Select.Root
-									type="single"
-									value={formValues[key] || fieldConfig.defaultValue || ''}
-									onValueChange={(value) => (formValues[key] = value)}
-								>
-									<Select.Trigger class="w-full">
-										{formValues[key] || fieldConfig.defaultValue || fieldConfig.description || toFieldLabel(key)}
-									</Select.Trigger>
-									<Select.Content>
-										{#each fieldConfig.options as option}
-											<Select.Item value={option.value}>{option.label}</Select.Item>
-										{/each}
-									</Select.Content>
-								</Select.Root>
-							{:else if fieldConfig?.type === 'textarea' || isLongTextField(key)}
-								<Textarea
-									id="input-{key}"
-									bind:value={formValues[key]}
-									rows={key === 'ui_brief' ? 4 : 3}
-									placeholder={fieldConfig?.description || prop.description || toFieldLabel(key)}
-								/>
-							{:else}
-								<Input
-									id="input-{key}"
-									type={prop.type === 'integer' || prop.type === 'number' ? 'number' : 'text'}
-									bind:value={formValues[key]}
-									placeholder={fieldConfig?.description || prop.description || toFieldLabel(key)}
+				<Tabs.Root bind:value={inputMode} class="min-h-0 gap-3">
+					<Tabs.List class="h-7 w-full">
+						<Tabs.Trigger value="form" class="text-xs">Form</Tabs.Trigger>
+						<Tabs.Trigger value="json" class="text-xs">JSON</Tabs.Trigger>
+					</Tabs.List>
+					<Tabs.Content value="form" class="mt-0">
+						<div class="space-y-3 max-h-[450px] overflow-y-auto pr-1">
+							{#if hasScmFields}
+								<ScmTriggerFields
+									enabled={open}
+									mode={isIssueWorkflow ? 'issue' : 'create'}
+									fieldKeys={Object.keys(effectiveInputSchema.properties)}
+									bind:values={scmValues}
 								/>
 							{/if}
+
+							{#if promptExpansionConfig}
+								<div class="space-y-1.5">
+									<Label for="input-{promptExpansionConfig.promptField}">
+										{promptExpansionConfig.promptLabel || 'Prompt'} <span class="text-destructive">*</span>
+									</Label>
+									<Textarea
+										id="input-{promptExpansionConfig.promptField}"
+										bind:value={formValues[promptExpansionConfig.promptField]}
+										rows={5}
+										placeholder={promptExpansionConfig.promptPlaceholder || 'Describe what you want to build.'}
+									/>
+								</div>
+							{/if}
+
+							{#each visibleSchemaEntries as [key, prop]}
+								{@const fieldConfig = workflowInputFieldConfigs[key]}
+								<div class="space-y-1.5">
+									<Label for="input-{key}">
+										{fieldConfig?.label || toFieldLabel(key)}
+										{#if effectiveInputSchema.required.includes(key)}
+											<span class="text-destructive">*</span>
+										{/if}
+									</Label>
+									{#if fieldConfig?.type === 'multiselect' && fieldConfig?.options?.length}
+										{@const selected = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean))}
+										<div class="flex flex-wrap gap-1.5">
+											{#each fieldConfig.options as option}
+												{@const isSelected = selected.has(option.value)}
+												<button
+													type="button"
+													class="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors {isSelected ? 'border-primary bg-primary/10 text-primary' : 'border-border bg-background text-muted-foreground hover:bg-muted'}"
+													onclick={() => {
+														const current = new Set((formValues[key] || fieldConfig.defaultValue || '').split(',').map((s: string) => s.trim()).filter(Boolean));
+														if (current.has(option.value)) {
+															current.delete(option.value);
+														} else {
+															current.add(option.value);
+														}
+														formValues[key] = [...current].join(',');
+													}}
+												>
+													<span class="h-3 w-3 rounded-sm border {isSelected ? 'border-primary bg-primary' : 'border-muted-foreground/40'}">
+														{#if isSelected}
+															<svg viewBox="0 0 12 12" class="h-3 w-3 text-primary-foreground"><path d="M3 6l2 2 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+														{/if}
+													</span>
+													{option.label}
+												</button>
+											{/each}
+										</div>
+									{:else if fieldConfig?.options?.length}
+										<Select.Root
+											type="single"
+											value={formValues[key] || fieldConfig.defaultValue || ''}
+											onValueChange={(value) => (formValues[key] = value)}
+										>
+											<Select.Trigger class="w-full">
+												{formValues[key] || fieldConfig.defaultValue || fieldConfig.description || toFieldLabel(key)}
+											</Select.Trigger>
+											<Select.Content>
+												{#each fieldConfig.options as option}
+													<Select.Item value={option.value}>{option.label}</Select.Item>
+												{/each}
+											</Select.Content>
+										</Select.Root>
+									{:else if fieldConfig?.type === 'textarea' || isLongTextField(key)}
+										<Textarea
+											id="input-{key}"
+											bind:value={formValues[key]}
+											rows={key === 'ui_brief' ? 4 : 3}
+											placeholder={fieldConfig?.description || prop.description || toFieldLabel(key)}
+										/>
+									{:else}
+										<Input
+											id="input-{key}"
+											type={prop.type === 'integer' || prop.type === 'number' ? 'number' : 'text'}
+											bind:value={formValues[key]}
+											placeholder={fieldConfig?.description || prop.description || toFieldLabel(key)}
+										/>
+									{/if}
+								</div>
+							{/each}
 						</div>
-					{/each}
-				</div>
+					</Tabs.Content>
+					<Tabs.Content value="json" class="mt-0">
+						<div class="space-y-1.5">
+							<Label for="raw-input">Input (JSON)</Label>
+							<Textarea
+								id="raw-input"
+								bind:value={rawJson}
+								rows={10}
+								class="font-mono"
+								placeholder={'{"key": "value"}'}
+							/>
+						</div>
+					</Tabs.Content>
+				</Tabs.Root>
 			{:else}
 				<div class="space-y-1.5">
 					<Label for="raw-input">Input (JSON)</Label>

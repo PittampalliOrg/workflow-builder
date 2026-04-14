@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { Bot, User } from 'lucide-svelte';
+	import { Message, MessageContent } from '$lib/components/ui/prompt-kit/message';
+	import { ThinkingBar } from '$lib/components/ui/prompt-kit/thinking-bar';
 	import type { UIMessage, createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 	import { extractSpec, stripSpecBlocks, getMessageText } from '$lib/stores/ai-assistant.svelte';
 	import AiOperationsPreview from './ai-operations-preview.svelte';
@@ -18,6 +20,8 @@
 	let spec = $derived(extractSpec(rawText));
 	let hasSpec = $derived(spec !== null);
 	let specApplied = $derived(assistant.isApplied(message.id));
+	let operationResult = $derived(message.operationResult);
+	let isThinking = $derived(message.status === 'thinking');
 
 	/**
 	 * Simple inline formatting: **bold**, `code`, - lists
@@ -33,7 +37,7 @@
 	}
 </script>
 
-<div class="flex gap-2 {isUser ? 'flex-row-reverse' : ''}">
+<Message class="gap-2 {isUser ? 'flex-row-reverse' : ''}">
 	<div class="shrink-0 mt-0.5">
 		{#if isUser}
 			<div class="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground">
@@ -51,9 +55,11 @@
 				? 'bg-primary text-primary-foreground'
 				: 'bg-muted text-foreground'}"
 		>
-			{#if displayContent}
+			{#if isThinking}
+				<ThinkingBar text="Thinking" class="border-0 bg-transparent px-0 py-0" />
+			{:else if displayContent}
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-				<div class="whitespace-pre-wrap break-words">{@html formatText(displayContent)}</div>
+				<MessageContent class="whitespace-pre-wrap break-words text-xs leading-relaxed prose-p:my-0 prose-ul:my-0 prose-li:my-0">{@html formatText(displayContent)}</MessageContent>
 			{:else if assistant.isStreaming && message.role === 'assistant'}
 				<div class="flex items-center gap-1.5 text-muted-foreground">
 					<div class="h-1.5 w-1.5 rounded-full bg-current animate-pulse"></div>
@@ -63,7 +69,9 @@
 			{/if}
 		</div>
 
-		{#if hasSpec && spec && !specApplied}
+		{#if operationResult && !isUser}
+			<AiOperationsPreview result={operationResult} messageId={message.id} />
+		{:else if hasSpec && spec && !specApplied}
 			<AiOperationsPreview spec={spec} messageId={message.id} />
 		{:else if hasSpec && specApplied}
 			<div class="text-[10px] text-muted-foreground italic {isUser ? 'text-right' : ''}">
@@ -71,4 +79,4 @@
 			</div>
 		{/if}
 	</div>
-</div>
+</Message>

@@ -20,16 +20,32 @@
 	import ActionConfigForm from './action-config-form.svelte';
 	import {
 		updateTask as specUpdateTask,
-		addTask as specAddTask,
 		getTask,
-		getTaskNames,
-		generateTaskName,
 	} from '$lib/helpers/spec-mutations';
+	import type { ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
+	import {
+		getNodeIdForTaskName,
+		insertActionTask,
+		replaceActionTask,
+	} from '$lib/helpers/workflow-action-spec';
 
 	const store = getContext<ReturnType<typeof createWorkflowStore>>('workflow');
 
 	// Current selected node
 	const node = $derived(store.selectedNode);
+
+	// Extract task name from node ID.
+	// SDK buildGraph() produces IDs like "/do/0/send-email" — task name is the last segment.
+	// For canvas-created nodes, ID is a UUID which won't match a task name.
+	const taskName = $derived.by(() => {
+		const id = node?.id || '';
+		if (id.startsWith('/do/')) {
+			// SDK node ID: "/do/0/send-email" → "send-email"
+			const parts = id.split('/');
+			return parts[parts.length - 1];
+		}
+		return id;
+	});
 
 	// Read task definition from the SPEC (source of truth), not from node data
 	const specTask = $derived.by(() => {
@@ -43,6 +59,20 @@
 	// Parse piece/action from call value (e.g., "gmail/send_email")
 	const pieceName = $derived(callValue.includes('/') ? callValue.split('/')[0] : '');
 	const actionName = $derived(callValue.includes('/') ? callValue.split('/')[1] : callValue);
+
+	function asRecord(value: unknown): Record<string, unknown> | null {
+		return value && typeof value === 'object' && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: null;
+	}
+
+	function unwrapSchema(value: unknown): Record<string, unknown> | null {
+		const record = asRecord(value);
+		if (!record) return null;
+		const document = asRecord(record.document);
+		if (document) return document;
+		return record;
+	}
 
 	// Extract input values from the spec task's with block
 	const inputValues = $derived.by(() => {
@@ -64,6 +94,10 @@
 	let connections = $state<Array<{ pieceName: string; externalId: string; displayName: string }>>([]);
 	let catalogLoaded = $state(false);
 	let showSelector = $state(false); // Toggle to show action selector instead of config form
+	let catalogAction = $state<CatalogAction | null>(null);
+	let catalogDetail = $state<Record<string, unknown> | null>(null);
+	let catalogDetailActionId = $state<string | null>(null);
+	let catalogDetailLoadingId = $state<string | null>(null);
 
 	// Fetch catalog + connections on mount (cached for the component lifetime)
 	onMount(async () => {
@@ -74,7 +108,7 @@
 			]);
 			if (catalogRes.ok) {
 				const data = await catalogRes.json();
-				allCatalogItems = (data.items || []).filter((i: CatalogAction) => i.insertable);
+				allCatalogItems = data.items || [];
 			}
 			if (connRes.ok) {
 				const connData = await connRes.json();
@@ -93,21 +127,119 @@
 		}
 	});
 
-	// Catalog action is ALWAYS derived from callValue + catalog items — never manually set
-	const catalogAction = $derived.by(() => {
-		if (!catalogLoaded || !callValue || allCatalogItems.length === 0) return null;
-		const [callPiece, callAction] = callValue.split('/');
-		return allCatalogItems.find((a) => {
-			if (`${a.pieceName}/${a.actionName}` === callValue) return true;
-			if (a.name === callValue) return true;
-			if (callPiece && callAction && a.pieceName === callPiece) {
-				const stripped = a.actionName.startsWith(a.pieceName + '-')
-					? a.actionName.slice(a.pieceName.length + 1)
-					: a.actionName;
+	function resolveCatalogAction(
+		items: CatalogAction[],
+		call: string,
+		providerHint: string,
+	): CatalogAction | null {
+		if (!call || items.length === 0) return null;
+		const nodeData = asRecord(node?.data);
+		const actionDefinition = asRecord(nodeData?.actionDefinition);
+		const actionCatalogDetail = asRecord(nodeData?.actionCatalogDetail);
+		const metadataActionId =
+			(typeof actionDefinition?.id === 'string' && actionDefinition.id) ||
+			(typeof actionCatalogDetail?.id === 'string' && actionCatalogDetail.id) ||
+			null;
+		if (metadataActionId) {
+			const metadataMatch = items.find((a) => a.id === metadataActionId);
+			if (metadataMatch) return metadataMatch;
+		}
+
+		const [callPiece, callAction] = call.split('/');
+		const matches = items.filter((a) => {
+			const piece = typeof a.pieceName === 'string' ? a.pieceName : '';
+			const action = typeof a.actionName === 'string' ? a.actionName : '';
+			const slug = typeof a.slug === 'string' ? a.slug : '';
+			const name = typeof a.name === 'string' ? a.name : '';
+			const taskConfigCall = asRecord(a.taskConfig)?.call;
+			const candidates = [
+				piece && action ? `${piece}/${action}` : null,
+				slug,
+				name,
+				typeof taskConfigCall === 'string' ? taskConfigCall : null,
+			].filter(Boolean);
+			if (candidates.includes(call)) return true;
+			if (callPiece && callAction && piece === callPiece && action) {
+				const stripped = action.startsWith(`${piece}/`)
+					? action.slice(piece.length + 1)
+					: action.startsWith(piece + '-')
+						? action.slice(piece.length + 1)
+						: action;
 				if (stripped === callAction) return true;
 			}
 			return false;
-		}) || null;
+		});
+		if (matches.length <= 1) return matches[0] || null;
+
+		const componentName = providerHint.toLowerCase();
+		if (componentName) {
+			const providerMatch = matches.find((a) => {
+				const haystack = `${a.id} ${a.name} ${a.displayName}`.toLowerCase();
+				return (
+					(componentName.includes('openai') && haystack.includes('openai')) ||
+					(componentName.includes('anthropic') && haystack.includes('anthropic'))
+				);
+			});
+			if (providerMatch) return providerMatch;
+		}
+
+		return matches[0] || null;
+	}
+
+	$effect(() => {
+		catalogAction = catalogLoaded
+			? resolveCatalogAction(allCatalogItems, callValue, String(inputValues.componentName ?? ''))
+			: null;
+	});
+
+	async function loadCatalogDetail(actionId: string) {
+		const requestId = actionId;
+		catalogDetailActionId = requestId;
+		catalogDetailLoadingId = requestId;
+		catalogDetail = null;
+		try {
+			const response = await fetch(`/api/action-catalog/${encodeURIComponent(actionId)}`);
+			if (!response.ok || catalogDetailActionId !== requestId) return;
+			const detail = await response.json();
+			if (catalogDetailActionId === requestId && detail && typeof detail === 'object' && !Array.isArray(detail)) {
+				catalogDetail = detail as Record<string, unknown>;
+			}
+		} catch {
+			if (catalogDetailActionId === requestId) catalogDetail = null;
+		} finally {
+			if (catalogDetailLoadingId === requestId) catalogDetailLoadingId = null;
+		}
+	}
+
+	$effect(() => {
+		const actionId = catalogAction?.id || null;
+		if (!actionId) {
+			catalogDetailActionId = null;
+			catalogDetailLoadingId = null;
+			catalogDetail = null;
+			return;
+		}
+		if (catalogDetailActionId === actionId && catalogDetail) return;
+		if (catalogDetailLoadingId === actionId) return;
+		void loadCatalogDetail(actionId);
+	});
+
+	const effectiveInputSchema = $derived.by(() => {
+		const nodeData = (node?.data || {}) as Record<string, unknown>;
+		const detail = asRecord(nodeData.actionCatalogDetail);
+		const loadedDetail = asRecord(catalogDetail);
+		const definition = asRecord(loadedDetail?.definition) || asRecord(detail?.definition);
+		const taskConfigValue = asRecord(nodeData.taskConfig) || specTask;
+
+		return (
+			unwrapSchema(catalogAction?.inputSchema) ||
+			unwrapSchema(loadedDetail?.inputSchema) ||
+			unwrapSchema(detail?.inputSchema) ||
+			unwrapSchema(asRecord(asRecord(definition?.input)?.schema)?.document) ||
+			unwrapSchema(asRecord(asRecord(loadedDetail?.taskConfig)?.input)?.schema) ||
+			unwrapSchema(asRecord(asRecord(taskConfigValue?.input)?.schema)?.document) ||
+			null
+		);
 	});
 
 	// Reset showSelector when switching to a different node
@@ -115,63 +247,27 @@
 		if (node?.id) showSelector = false;
 	});
 
-	// Extract task name from node ID.
-	// SDK buildGraph() produces IDs like "/do/0/send-email" — task name is the last segment.
-	// For canvas-created nodes, ID is a UUID which won't match a task name.
-	const taskName = $derived.by(() => {
-		const id = node?.id || '';
-		if (id.startsWith('/do/')) {
-			// SDK node ID: "/do/0/send-email" → "send-email"
-			const parts = id.split('/');
-			return parts[parts.length - 1];
-		}
-		return id;
-	});
-
-	// Strip action name prefix for the call value (gmail-send_email → send_email)
-	function cleanActionName(actionName: string, piece: string): string {
-		return actionName.startsWith(piece + '-') ? actionName.slice(piece.length + 1) : actionName;
-	}
-
 	// Update action when selected from catalog
-	function handleActionSelect(action: CatalogAction) {
-		if (!node || !store.spec) return;
+	async function handleActionSelect(action: CatalogAction) {
+		if (!node) return;
 
-		const piece = action.pieceName;
-		const cleanAct = cleanActionName(action.actionName, piece);
-		const newCall = `${piece}/${cleanAct}`;
+		try {
+			const response = await fetch(`/api/action-catalog/${encodeURIComponent(action.id)}`);
+			if (!response.ok) return;
+			const definition = await response.json();
+			const catalogAction = action as unknown as ActionCatalogItem;
+			const existing = store.spec ? getTask(store.spec, taskName) : null;
+			const projection = existing
+				? replaceActionTask(store.spec, store.workflowName, taskName, catalogAction, definition)
+				: insertActionTask(store.spec, store.workflowName, catalogAction, definition);
 
-		// Find matching connection
-		const conn = connections.find((c) => {
-			const shortName = c.pieceName.replace('@activepieces/piece-', '').replace(/^@.*\//, '');
-			return shortName === piece;
-		});
-
-		const newTaskDef = {
-			call: newCall,
-			with: {
-				...(conn ? { connectionExternalId: conn.externalId } : {}),
-				body: {
-					input: {},
-					metadata: { pieceName: piece, actionName: cleanAct },
-				},
-			},
-		};
-
-		// Check if this task exists in the spec
-		const existing = getTask(store.spec, taskName);
-		let newSpec: Record<string, unknown>;
-		if (existing) {
-			// Update existing task
-			newSpec = specUpdateTask(store.spec, taskName, newTaskDef);
-		} else {
-			// Task not in spec — generate a name and add it
-			const name = generateTaskName(action.displayName, getTaskNames(store.spec));
-			newSpec = specAddTask(store.spec, name, newTaskDef);
+			store.setTaskMetadata(projection.taskName, projection.metadata);
+			await store.applySpecAndRebuild(projection.spec);
+			store.selectedNodeId = getNodeIdForTaskName(store.nodes, projection.taskName);
+			showSelector = false; // Switch back to config form view
+		} catch (error) {
+			console.error('Failed to apply action selection:', error);
 		}
-
-		store.applySpecAndRebuild(newSpec);
-		showSelector = false; // Switch back to config form view
 	}
 
 	// Update input values — updates spec WITHOUT rebuilding graph (no structural change)
@@ -288,7 +384,7 @@
 
 		<!-- Config form from schema -->
 		<ActionConfigForm
-			schema={catalogAction?.inputSchema as Record<string, unknown> | null}
+			schema={effectiveInputSchema}
 			values={inputValues}
 			onChange={handleInputChange}
 			{connectionExternalId}

@@ -9,6 +9,11 @@ import {
   DEFAULT_LAYOUT_CONFIG,
   type WorkflowLayoutConfig,
 } from "$lib/utils/layout";
+import {
+  insertTaskAfter,
+  removeTask as removeSpecTask,
+  reorderLinearTasksFromEdges,
+} from "$lib/helpers/spec-mutations";
 
 // CNCF Serverless Workflow 1.0 node types (SW 1.0 only)
 export type WorkflowNodeType =
@@ -116,6 +121,15 @@ function buildDefaultNodeData(
   }
 
   return data;
+}
+
+function taskNameFromNodeId(nodeId: string): string | null {
+  if (!nodeId || nodeId === "__start__" || nodeId === "__end__") return null;
+  if (nodeId.startsWith("/do/")) {
+    const parts = nodeId.split("/");
+    return parts[parts.length - 1] || null;
+  }
+  return nodeId;
 }
 
 export function createWorkflowStore() {
@@ -280,8 +294,20 @@ export function createWorkflowStore() {
     return nextId;
   }
 
-  function removeNode(id: string) {
+  async function removeNode(id: string) {
     pushHistory();
+    const taskName = spec ? taskNameFromNodeId(id) : null;
+    const doArray = spec
+      ? (((spec as Record<string, unknown>).do || []) as Array<
+          Record<string, unknown>
+        >)
+      : [];
+    if (taskName && doArray.some((entry) => Object.keys(entry)[0] === taskName)) {
+      spec = removeSpecTask(spec!, taskName);
+      await rebuildGraphFromSpec();
+      if (selectedNodeId === id) selectedNodeId = null;
+      return;
+    }
     nodes = nodes.filter((n) => n.id !== id);
     edges = edges.filter((e) => e.source !== id && e.target !== id);
     if (selectedNodeId === id) selectedNodeId = null;
@@ -315,6 +341,9 @@ export function createWorkflowStore() {
     if (sourceHandle) newEdge.sourceHandle = sourceHandle;
     if (targetHandle) newEdge.targetHandle = targetHandle;
     edges = [...edges, newEdge];
+    if (spec) {
+      spec = reorderLinearTasksFromEdges(spec, edges);
+    }
   }
 
   function removeEdge(id: string) {
@@ -453,7 +482,7 @@ export function createWorkflowStore() {
   async function addTask(
     name: string,
     taskDef: Record<string, unknown>,
-    insertAfter?: string,
+    insertAfter?: string | null,
   ) {
     if (!spec) {
       spec = {
@@ -472,25 +501,7 @@ export function createWorkflowStore() {
       };
     }
     pushHistory();
-    const doArray = ((spec as Record<string, unknown>).do || []) as Array<
-      Record<string, unknown>
-    >;
-
-    if (insertAfter) {
-      // Insert after a specific task
-      const idx = doArray.findIndex(
-        (entry) => Object.keys(entry)[0] === insertAfter,
-      );
-      if (idx >= 0) {
-        doArray.splice(idx + 1, 0, { [name]: taskDef });
-      } else {
-        doArray.push({ [name]: taskDef });
-      }
-    } else {
-      doArray.push({ [name]: taskDef });
-    }
-
-    spec = { ...spec, do: doArray };
+    spec = insertTaskAfter(spec, name, taskDef, insertAfter);
     await rebuildGraphFromSpec();
     return name;
   }
@@ -499,9 +510,9 @@ export function createWorkflowStore() {
   async function updateTask(name: string, taskDef: Record<string, unknown>) {
     if (!spec) return;
     pushHistory();
-    const doArray = ((spec as Record<string, unknown>).do || []) as Array<
+    const doArray = [...(((spec as Record<string, unknown>).do || []) as Array<
       Record<string, unknown>
-    >;
+    >)];
     const idx = doArray.findIndex((entry) => Object.keys(entry)[0] === name);
     if (idx >= 0) {
       doArray[idx] = {
@@ -534,7 +545,7 @@ export function createWorkflowStore() {
     pushHistory();
     spec = newSpec;
     await rebuildGraphFromSpec();
-    isDirty = true;
+    _editVersion++;
   }
 
   function markSaved() {

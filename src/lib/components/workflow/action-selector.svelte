@@ -10,11 +10,20 @@
 	import { Button } from '$lib/components/ui/button';
 
 	export interface CatalogAction {
+		id: string;
+		slug: string;
 		name: string;
 		displayName: string;
 		description: string;
 		pieceName: string;
 		actionName: string;
+		service: string;
+		kind: string;
+		visibility: string;
+		sourceKind: string;
+		version: string | null;
+		language: 'typescript' | 'python' | null;
+		entrypoint: string | null;
 		providerId: string | null;
 		providerLabel: string | null;
 		providerIconUrl: string | null;
@@ -22,6 +31,7 @@
 		insertable: boolean;
 		auth: { required: boolean; authType?: string } | null;
 		inputSchema: Record<string, unknown> | null;
+		taskConfig?: Record<string, unknown> | null;
 	}
 
 	interface Props {

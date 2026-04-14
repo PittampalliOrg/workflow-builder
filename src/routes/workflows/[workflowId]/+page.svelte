@@ -5,6 +5,8 @@
 	import { applySpec } from '$lib/helpers/ai-spec-applier';
 	import type { createUiStore } from '$lib/stores/ui.svelte';
 	import type { createBuildWorkflowStore } from '$lib/stores/build-workflow.svelte';
+	import { getTask } from '$lib/helpers/spec-mutations';
+	import { getNodeIdForTaskName, getTaskNameFromNodeId } from '$lib/helpers/workflow-action-spec';
 	import WorkflowCanvas from '$lib/components/workflow/workflow-canvas.svelte';
 	import WorkflowToolbar from '$lib/components/workflow/workflow-toolbar.svelte';
 	import RightPanel from '$lib/components/workflow/right-panel.svelte';
@@ -74,10 +76,17 @@
 	// Sync workflow context (spec) to AI assistant store
 	$effect(() => {
 		if (store.workflowId) {
+			const selectedTaskName = getTaskNameFromNodeId(store.selectedNodeId);
+			const selectedTask = store.spec && selectedTaskName ? getTask(store.spec, selectedTaskName) : null;
 			aiAssistant.setWorkflowContext({
 				workflowId: store.workflowId,
 				workflowName: store.workflowName,
 				spec: store.spec,
+				selectedNodeId: store.selectedNodeId,
+				selectedTaskName,
+				selectedNodeLabel: (store.selectedNode?.data?.label as string | undefined) ?? null,
+				selectedNodeType: (store.selectedNode?.data?.type as string | undefined) ?? store.selectedNode?.type ?? null,
+				selectedTask,
 			});
 		}
 	});
@@ -94,11 +103,18 @@
 		const detail = (event as CustomEvent).detail as {
 			spec: Record<string, unknown>;
 			messageId: string;
+			changedTaskNames?: string[];
 		};
 		const result = await applySpec(store, detail.spec);
 		if (result.success) {
 			aiAssistant.markApplied(detail.messageId);
 			aiAssistant.dismissSpec();
+			const firstChangedTask = detail.changedTaskNames?.[0];
+			const changedNodeId = firstChangedTask ? getNodeIdForTaskName(store.nodes, firstChangedTask) : null;
+			if (changedNodeId) {
+				store.selectedNodeId = changedNodeId;
+				ui.openRightPanel('properties');
+			}
 			const { toast } = await import('svelte-sonner');
 			toast.success('Spec applied to canvas');
 		}
@@ -106,6 +122,7 @@
 			console.warn('AI spec apply warnings:', result.errors);
 		}
 		if (!result.success) {
+			aiAssistant.markApplyFailed(detail.messageId, result.errors);
 			const { toast } = await import('svelte-sonner');
 			toast.error('Failed to apply spec: ' + result.errors.join(', '));
 		}

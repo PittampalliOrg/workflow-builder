@@ -1,10 +1,91 @@
 import { type RequestHandler } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
-import { streamText } from 'ai';
+import { generateText, stepCountIs } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 import { openai } from '@ai-sdk/openai';
 import { buildSystemPrompt } from '$lib/server/ai-assistant/system-prompt';
-import { loadActionCatalogSnapshot } from '$lib/server/action-catalog';
+import { createWorkflowTools } from '$lib/server/ai-assistant/tools';
+import {
+	applyWorkflowSpecOperations,
+	parseWorkflowSpecOperationPlan,
+	type WorkflowSpecOperationPlan,
+	type WorkflowSpecOperationResult,
+} from '$lib/server/ai-assistant/spec-operations';
+
+const MAX_PLAN_ATTEMPTS = 3;
+
+function parseJsonPlanText(text: string): unknown {
+	const trimmed = text.trim();
+	const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+	if (fenced) return JSON.parse(fenced[1].trim());
+
+	try {
+		return JSON.parse(trimmed);
+	} catch {
+		const start = trimmed.indexOf('{');
+		const end = trimmed.lastIndexOf('}');
+		if (start >= 0 && end > start) {
+			return JSON.parse(trimmed.slice(start, end + 1));
+		}
+		throw new Error('Assistant response did not include a JSON operation plan.');
+	}
+}
+
+function assistantNoopResponse(message: string, errors: string[] = [], toolCalls: string[] = []) {
+	return Response.json({
+		message,
+		operations: [],
+		proposedSpec: null,
+		validation: { valid: errors.length === 0, errors },
+		changedTaskNames: [],
+		autoApply: false,
+		needsClarification: false,
+		toolCalls,
+	});
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function specTaskNames(spec: Record<string, unknown> | null | undefined): string[] {
+	const doArray = spec?.do;
+	if (!Array.isArray(doArray)) return [];
+	return doArray
+		.map((entry) => entry && typeof entry === 'object' ? Object.keys(entry as Record<string, unknown>)[0] : '')
+		.filter(Boolean);
+}
+
+type ToolTraceResult = {
+	text: string;
+	output: unknown;
+	steps: ReadonlyArray<{
+		toolResults: ReadonlyArray<{ toolName: string; output: unknown }>;
+		toolCalls: ReadonlyArray<{ toolName: string; input: unknown }>;
+	}>;
+};
+
+async function validateCanvasRenderable(spec: Record<string, unknown> | null): Promise<string[]> {
+	if (!spec) return ['No proposed spec was generated.'];
+	const taskNames = specTaskNames(spec);
+	if (taskNames.length === 0) return ['The proposed spec has no root do tasks to render on the canvas.'];
+
+	try {
+		const { specToGraph } = await import('$lib/utils/spec-graph-adapter');
+		const graph = specToGraph(spec, {});
+		const nodeCount = graph?.nodes.length ?? 0;
+		const renderedTaskCount = graph?.nodes.filter((node) => node.type !== 'start' && node.type !== 'end').length ?? 0;
+		if (!graph || nodeCount === 0) {
+			return [`The proposed spec could not be rendered on the canvas. Task names: ${taskNames.join(', ')}.`];
+		}
+		if (renderedTaskCount === 0) {
+			return [`The proposed spec rendered no task nodes on the canvas. Task names: ${taskNames.join(', ')}.`];
+		}
+		return [];
+	} catch (error) {
+		return [`Canvas render preflight failed: ${errorMessage(error)}`];
+	}
+}
 
 export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) => {
 	const body = await request.json();
@@ -14,6 +95,11 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 		workflowId: string | null;
 		workflowName: string;
 		spec: Record<string, unknown> | null;
+		selectedNodeId?: string | null;
+		selectedTaskName?: string | null;
+		selectedNodeLabel?: string | null;
+		selectedNodeType?: string | null;
+		selectedTask?: Record<string, unknown> | null;
 	} | undefined;
 
 	if (!messages || !Array.isArray(messages)) {
@@ -28,64 +114,6 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	}
 
 	const userId = locals.session?.userId;
-
-	// Load action catalog + connections for rich context
-	let catalogContext = '';
-	try {
-		const [catalogSnapshot, connectionsRes] = await Promise.all([
-			loadActionCatalogSnapshot(userId).catch(() => ({ items: [], services: [] })),
-			skFetch('/api/app-connections').then(r => r.json()).catch(() => []),
-		]);
-
-		const connections = (Array.isArray(connectionsRes) ? connectionsRes : connectionsRes.connections || [])
-			.filter((c: Record<string, unknown>) => c.status === 'ACTIVE')
-			.map((c: Record<string, unknown>) => ({
-				pieceName: ((c.pieceName as string) || '').replace('@activepieces/piece-', ''),
-				externalId: c.externalId as string,
-				displayName: (c.displayName || c.pieceName) as string,
-			}));
-
-		const connectedPieces = new Set(connections.map((c: { pieceName: string }) => c.pieceName));
-		const items = (catalogSnapshot.items || []).filter((i: Record<string, unknown>) => i.insertable);
-
-		// Build rich context: connected actions with schemas
-		const lines: string[] = [];
-		if (connections.length > 0) {
-			lines.push('## Available Connections');
-			for (const c of connections) {
-				lines.push(`- **${c.pieceName}**: \`${c.externalId}\``);
-			}
-			lines.push('');
-		}
-
-		// Show connected actions with full schemas
-		const connected = items.filter((i: Record<string, unknown>) => connectedPieces.has(i.pieceName as string));
-		if (connected.length > 0) {
-			lines.push('## Connected Actions (ready to use)');
-			for (const item of connected) {
-				const piece = item.pieceName as string;
-				const actionName = (item.actionName as string || '').replace(new RegExp(`^${piece}-`), '');
-				const callValue = `${piece}/${actionName}`;
-				lines.push(`### ${item.displayName} — \`${callValue}\``);
-				if (item.description) lines.push(`  ${(item.description as string).slice(0, 150)}`);
-
-				const schema = item.inputSchema as Record<string, unknown> | null;
-				if (schema) {
-					const props = (schema.properties || {}) as Record<string, Record<string, unknown>>;
-					const required = (schema.required || []) as string[];
-					for (const [name, def] of Object.entries(props)) {
-						const req = required.includes(name) ? ' **(required)**' : '';
-						lines.push(`  - \`${name}\`: ${def.type || 'string'}${req} — ${def.title || def.description || name}`);
-					}
-				}
-				lines.push('');
-			}
-		}
-
-		catalogContext = lines.join('\n');
-	} catch {
-		// Continue without catalog
-	}
 
 	// Progressive disclosure: compact execution summary (last 3 runs)
 	let executionContext = '';
@@ -136,9 +164,14 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 			workflowId: workflowContext.workflowId,
 			workflowName: workflowContext.workflowName,
 			spec: workflowContext.spec,
+			selectedNodeId: workflowContext.selectedNodeId,
+			selectedTaskName: workflowContext.selectedTaskName,
+			selectedNodeLabel: workflowContext.selectedNodeLabel,
+			selectedNodeType: workflowContext.selectedNodeType,
+			selectedTask: workflowContext.selectedTask,
 		} : null,
 		null,
-	) + (catalogContext ? '\n\n' + catalogContext : '') + (executionContext ? '\n\n' + executionContext : '');
+	) + (executionContext ? '\n\n' + executionContext : '');
 
 	const model = anthropicKey
 		? anthropic(env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514')
@@ -147,20 +180,149 @@ export const POST: RequestHandler = async ({ request, locals, fetch: skFetch }) 
 	const modelMessages = messages.map((m) => {
 		const content = typeof m.content === 'string'
 			? m.content
-			: m.content?.filter((p) => p.type === 'text').map((p) => p.text).join('') || '';
+			: m.content?.filter((p) => p.type === 'text' && p.text?.trim()).map((p) => p.text).join('') || '';
 		return {
 			role: m.role as 'user' | 'assistant',
 			content,
 		};
-	});
+	}).filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim().length > 0);
 
-	const result = streamText({
-		model,
-		system: systemPrompt,
-		messages: modelMessages,
-		maxOutputTokens: 8192,
-		abortSignal: request.signal,
-	});
+	if (modelMessages.length === 0) {
+		return assistantNoopResponse('Tell me what workflow change you want to make.', ['No non-empty messages were provided.']);
+	}
 
-	return result.toTextStreamResponse();
+	const latestUserMessage = [...modelMessages].reverse().find((m) => m.role === 'user')?.content ?? '';
+	const toolCalls: string[] = [];
+
+	async function generatePlan(attempt: number, feedback?: {
+		previousPlan?: WorkflowSpecOperationPlan | null;
+		errors: string[];
+	}): Promise<WorkflowSpecOperationPlan> {
+		const attemptSystem = feedback
+			? `${systemPrompt}
+
+You are in a ReAct correction loop. The previous operation plan failed validation or canvas render preflight.
+Reason about the failure by using the available tools again if needed, then return exactly one corrected JSON operation plan.
+Do not include Markdown fences, comments, ellipses, YAML, or explanatory prose.`
+			: systemPrompt;
+		const attemptMessages = feedback
+			? [{
+					role: 'user' as const,
+					content: `Original user request:
+${latestUserMessage}
+
+Previous operation plan:
+${JSON.stringify(feedback.previousPlan ?? null, null, 2)}
+
+Errors to correct:
+${feedback.errors.map((error) => `- ${error}`).join('\n')}
+
+Return the corrected JSON operation plan now.`,
+				}]
+			: modelMessages;
+
+		const result = await generateText({
+			model,
+			tools: {
+				...createWorkflowTools(userId ?? null, skFetch),
+			},
+			stopWhen: stepCountIs(feedback ? 6 : 8),
+			system: attemptSystem,
+			messages: attemptMessages,
+			maxOutputTokens: feedback ? 4096 : 8192,
+			abortSignal: request.signal,
+		}) as ToolTraceResult;
+		toolCalls.push(...result.steps.flatMap((step) => step.toolCalls.map((call) => call.toolName)));
+		if (attempt > 0) toolCalls.push(`repairOperationPlan:${attempt}`);
+
+		try {
+			return parseWorkflowSpecOperationPlan(parseJsonPlanText(result.text));
+		} catch (error) {
+			const message = errorMessage(error);
+			console.error('[ai-assistant/chat] operation plan parse failed:', {
+				error,
+				text: result.text.slice(0, 2000),
+			});
+			if (attempt >= MAX_PLAN_ATTEMPTS - 1) throw new Error(`${message}; invalid output: ${result.text.slice(0, 500)}`);
+			return generatePlan(attempt + 1, {
+				previousPlan: null,
+				errors: [
+					`Parser error: ${message}`,
+					`Invalid output: ${result.text.slice(0, 1000)}`,
+				],
+			});
+		}
+	}
+
+	let plan: WorkflowSpecOperationPlan;
+	let operationResult: WorkflowSpecOperationResult;
+	let renderErrors: string[] = [];
+	try {
+		plan = await generatePlan(0);
+		operationResult = applyWorkflowSpecOperations({
+			workflowName: workflowContext?.workflowName ?? 'Untitled Workflow',
+			spec: workflowContext?.spec ?? null,
+			operations: plan.operations,
+		});
+		renderErrors = operationResult.applied
+			? await validateCanvasRenderable(operationResult.proposedSpec)
+			: [];
+
+		for (let attempt = 1; attempt < MAX_PLAN_ATTEMPTS && !operationResult.needsClarification && (!operationResult.applied || renderErrors.length > 0); attempt++) {
+			const errors = [
+				...operationResult.validation.errors,
+				...renderErrors,
+			].filter(Boolean);
+			plan = await generatePlan(attempt, {
+				previousPlan: plan,
+				errors,
+			});
+			operationResult = applyWorkflowSpecOperations({
+				workflowName: workflowContext?.workflowName ?? 'Untitled Workflow',
+				spec: workflowContext?.spec ?? null,
+				operations: plan.operations,
+			});
+			renderErrors = operationResult.applied
+				? await validateCanvasRenderable(operationResult.proposedSpec)
+				: [];
+		}
+	} catch (error) {
+		const message = errorMessage(error);
+		console.error('[ai-assistant/chat] generation failed:', error);
+		return assistantNoopResponse(
+			`I could not update the workflow because the AI request failed: ${message}`,
+			[message],
+			toolCalls,
+		);
+	}
+
+	if (operationResult.applied && renderErrors.length > 0) {
+		return Response.json({
+			message: renderErrors.join('\n'),
+			operations: operationResult.operations,
+			proposedSpec: operationResult.proposedSpec,
+			validation: { valid: false, errors: renderErrors },
+			changedTaskNames: operationResult.changedTaskNames,
+			autoApply: false,
+			needsClarification: false,
+			toolCalls,
+		});
+	}
+
+	const message = operationResult.needsClarification
+		? operationResult.message
+		: operationResult.applied
+			? plan.message
+			: operationResult.validation.errors.join('\n') || plan.message;
+
+	return Response.json({
+		message,
+		operations: operationResult.operations,
+		proposedSpec: operationResult.proposedSpec,
+		validation: operationResult.validation,
+		changedTaskNames: operationResult.changedTaskNames,
+		autoApply: operationResult.applied,
+		needsClarification: operationResult.needsClarification,
+		toolCalls,
+	});
 };

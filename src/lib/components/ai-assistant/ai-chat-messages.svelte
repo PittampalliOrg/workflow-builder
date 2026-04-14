@@ -1,16 +1,16 @@
 <script lang="ts">
-	import { getContext, tick, onMount } from 'svelte';
+	import { getContext } from 'svelte';
 	import { Sparkles, Zap, GitBranch, Repeat, Shield } from 'lucide-svelte';
+	import { ChatContainerRoot, ChatContainerScrollAnchor } from '$lib/components/ui/prompt-kit/chat-container';
+	import { ScrollButton } from '$lib/components/ui/prompt-kit/scroll-button';
 	import type { createAiAssistantStore } from '$lib/stores/ai-assistant.svelte';
 	import AiMessageBubble from './ai-message-bubble.svelte';
 
 	const assistant = getContext<ReturnType<typeof createAiAssistantStore>>('ai-assistant');
 
-	let scrollContainer: HTMLDivElement | undefined = $state();
-	let userScrolledUp = $state(false);
-
 	const starterPrompts = [
 		{ icon: Zap, text: 'Build an API data pipeline with error handling' },
+		{ icon: Zap, text: 'Add an OpenAI structured output step after the selected node' },
 		{ icon: GitBranch, text: 'Create a workflow that checks a condition and branches' },
 		{ icon: Repeat, text: 'Add a loop that processes each item in a list' },
 		{ icon: Shield, text: 'Wrap the current steps in try/catch error handling' },
@@ -19,59 +19,9 @@
 	function sendStarter(text: string) {
 		assistant.sendMessage(text);
 	}
-
-	function scrollToBottom() {
-		if (!scrollContainer) return;
-		scrollContainer.scrollTop = scrollContainer.scrollHeight;
-		userScrolledUp = false;
-	}
-
-	function handleScroll() {
-		if (!scrollContainer) return;
-		// Detect if user has scrolled up (more than 50px from bottom)
-		const distFromBottom = scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight;
-		userScrolledUp = distFromBottom > 50;
-	}
-
-	// Auto-scroll when new messages arrive
-	$effect(() => {
-		const _ = assistant.messages.length;
-		if (!userScrolledUp) {
-			tick().then(scrollToBottom);
-		}
-	});
-
-	// Auto-scroll during streaming (content changes)
-	$effect(() => {
-		if (!assistant.isStreaming) return;
-		// Access the last message's parts to trigger on each update
-		const msgs = assistant.messages;
-		const last = msgs[msgs.length - 1];
-		const _ = last?.parts?.length;
-
-		if (!userScrolledUp) {
-			requestAnimationFrame(scrollToBottom);
-		}
-	});
-
-	// Also poll during streaming for continuous scroll
-	$effect(() => {
-		if (!assistant.isStreaming) return;
-		const interval = setInterval(() => {
-			if (!userScrolledUp && scrollContainer) {
-				scrollContainer.scrollTop = scrollContainer.scrollHeight;
-			}
-		}, 100);
-		return () => clearInterval(interval);
-	});
 </script>
 
-<div
-	bind:this={scrollContainer}
-	class="flex-1 overflow-y-auto px-3 py-3 space-y-3"
-	style="min-height: 0;"
-	onscroll={handleScroll}
->
+<ChatContainerRoot class="relative flex-1 px-3 py-3 space-y-3" style="min-height: 0;">
 	{#if assistant.messages.length === 0}
 		<div class="flex flex-col items-center justify-center h-full text-center text-muted-foreground gap-3 py-8">
 			<div class="rounded-full bg-amber-100 dark:bg-amber-900/30 p-3">
@@ -107,16 +57,7 @@
 			<AiMessageBubble {message} />
 		{/each}
 
-		<!-- Scroll anchor -->
-		<div class="h-1"></div>
+		<ChatContainerScrollAnchor />
+		<ScrollButton />
 	{/if}
-</div>
-
-{#if userScrolledUp && assistant.messages.length > 0}
-	<button
-		class="absolute bottom-16 left-1/2 -translate-x-1/2 rounded-full bg-primary px-3 py-1 text-[10px] text-primary-foreground shadow-lg hover:bg-primary/90 transition-colors z-10"
-		onclick={scrollToBottom}
-	>
-		↓ Scroll to bottom
-	</button>
-{/if}
+</ChatContainerRoot>

@@ -3,7 +3,10 @@
  * Returns validation result with errors if invalid.
  */
 
-import { validate } from '@serverlessworkflow/sdk';
+import * as swSdk from '@serverlessworkflow/sdk';
+
+const sdk = ((swSdk as { default?: unknown }).default ?? swSdk) as typeof import('@serverlessworkflow/sdk');
+const { validate } = sdk;
 
 export interface ValidationResult {
 	valid: boolean;

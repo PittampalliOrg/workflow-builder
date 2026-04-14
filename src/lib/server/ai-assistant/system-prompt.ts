@@ -7,6 +7,11 @@ interface WorkflowSnapshot {
 	workflowId: string | null;
 	workflowName: string;
 	spec: Record<string, unknown> | null;
+	selectedNodeId?: string | null;
+	selectedTaskName?: string | null;
+	selectedNodeLabel?: string | null;
+	selectedNodeType?: string | null;
+	selectedTask?: Record<string, unknown> | null;
 }
 
 export interface CatalogSummary {
@@ -15,7 +20,7 @@ export interface CatalogSummary {
 
 const SW_RULES = `## CNCF Serverless Workflow 1.0
 
-You edit workflows by returning a complete SW 1.0 spec in a \`\`\`yaml block.
+You edit workflows by producing CRUD operations against a SW 1.0 spec.
 
 ### Spec structure
 \`\`\`yaml
@@ -70,7 +75,7 @@ For provider integrations (Gmail, Slack, Discord, etc.), use this format:
 \`\`\`
 
 ### Rules
-- ALWAYS return the COMPLETE spec in a \`\`\`yaml block
+- ALWAYS return the structured operation plan described below
 - Keep existing tasks unchanged unless asked to modify them
 - Use kebab-case for task names
 - Task names must be unique within the do array
@@ -105,6 +110,41 @@ To expose MCP tools to the agent, add entries under \`with.agentConfig.mcpServer
 - If you need to pass data between steps, embed it directly in the next step's input fields (e.g., use a descriptive string rather than trying to programmatically extract data)
 - Keep workflows simple: each step should be a real integration action, not a made-up transformation`;
 
+const OPERATION_RULES = `## Output Contract
+
+Return a JSON object operation plan. Do not wrap it in Markdown, YAML, or prose.
+
+The plan must match this shape:
+
+{
+  "message": "Brief user-facing summary or clarification question.",
+  "operations": [
+    { "op": "add_task", "taskName": "send-email", "task": { "call": "gmail/send_email", "with": { "to": "person@example.com", "subject": "Hello" } }, "afterTaskName": "previous-task" }
+  ]
+}
+
+Supported operations:
+- create_workflow: { op, spec } for brand-new workflows or explicit full replacement requests only.
+- add_task: { op, taskName, task, afterTaskName? } inserts one SW 1.0 task.
+- update_task: { op, taskName, patch } for focused updates, or { op, taskName, task } to replace one full task.
+- remove_task: { op, taskName }.
+- rename_task: { op, taskName, newTaskName } only when explicitly requested.
+- move_task: { op, taskName, afterTaskName? } where null means move to the start.
+- update_document: { op, fields } for document metadata.
+- clarify: { op, question } when the target task, action, schema, or required value is ambiguous.
+
+Rules:
+- The existing SW 1.0 spec is the source of truth. Make the smallest operation set that satisfies the request.
+- If a node is selected and the user says "this node" or "the selected node", target the selected task.
+- If no selected task is provided and multiple tasks could match the request, return exactly one clarify operation.
+- Use kebab-case task names and keep names unique.
+- Do not invent integration action names, input fields, or connection IDs. Use searchActions, getActionDetail, and listConnections for action work.
+- Before returning action add/replace operations, use the action detail taskConfig when it is provided. Treat taskConfig as the exact SW task object and only modify user-facing inputs such as prompt, messages, model, and responseFormat.
+- For authenticated actions, include an active connectionExternalId when the action requires auth and a connection exists.
+- For structured-output requests like "yes or no", set responseFormat to a strict JSON Schema object with a required "answer" string enum of ["yes", "no"] and additionalProperties: false.
+- Do not use set tasks for JavaScript-style transformations unless the user explicitly asks for a SW set task.
+- Return exactly one operation plan.`;
+
 /**
  * Build the system prompt.
  */
@@ -116,11 +156,11 @@ export function buildSystemPrompt(
 
 	parts.push(
 		'You are a workflow design assistant for a CNCF Serverless Workflow 1.0 visual builder. ' +
-		'You help users create and modify workflows by editing the SW 1.0 spec directly. ' +
-		'Be concise — return the updated spec with a brief explanation.',
+		'You help users create and modify workflows by translating natural language into safe CRUD operations on the SW 1.0 spec. ' +
+		'Be concise and return only the structured operation plan.',
 	);
 
-	parts.push(`## Tools — ALWAYS use before generating a spec
+	parts.push(`## Tools — ALWAYS use before returning action operations
 
 You have tools to discover available actions and verify your work:
 - **searchActions(query)** — find actions matching a keyword. Returns action names, schemas, required fields.
@@ -131,6 +171,7 @@ You have tools to discover available actions and verify your work:
 **CRITICAL**: NEVER guess action names or field formats. ALWAYS call searchActions first to find the exact action, then getActionDetail to get the schema. Then call listConnections to find the right connectionExternalId.`);
 
 	parts.push(SW_RULES);
+	parts.push(OPERATION_RULES);
 
 	if (workflow?.spec) {
 		// Show the current spec as YAML
@@ -141,15 +182,29 @@ You have tools to discover available actions and verify your work:
 ${specYaml}
 \`\`\`
 
-Edit this spec to fulfill the user's request. Return the COMPLETE updated spec in a \`\`\`yaml block.`);
+Edit this spec to fulfill the user's request. Return the smallest valid operation plan.`);
+		if (workflow.selectedTaskName) {
+			parts.push(`## Selected Canvas Node
+
+- nodeId: ${workflow.selectedNodeId || ''}
+- taskName: ${workflow.selectedTaskName}
+- label: ${workflow.selectedNodeLabel || ''}
+- type: ${workflow.selectedNodeType || ''}
+- task:
+\`\`\`json
+${JSON.stringify(workflow.selectedTask || {}, null, 2)}
+\`\`\`
+
+When the user refers to "this node", "selected node", or an unnamed current step, target "${workflow.selectedTaskName}".`);
+		}
 	} else if (workflow) {
 		parts.push(`## New Workflow: "${workflow.workflowName}"
 
-No spec yet. Create one from scratch with the standard document header and a \`do:\` array.`);
+No spec yet. Use create_workflow or add_task operations against a new spec with the standard document header and a \`do:\` array.`);
 	} else {
 		parts.push(`## No Workflow Open
 
-Answer questions about workflow design. When asked to create a workflow, tell the user to open one first.`);
+Answer questions about workflow design. When asked to create a workflow, return a clarify operation asking the user to open or create a workflow first.`);
 	}
 
 	// Catalog is no longer dumped here — LLM discovers actions via tools (searchActions, getActionDetail)

@@ -10,6 +10,13 @@
 	} from 'lucide-svelte';
 	import { createActionCatalogStore, type ActionCatalogItem } from '$lib/stores/action-catalog.svelte';
 	import type { createWorkflowStore, WorkflowNodeType } from '$lib/stores/workflow.svelte';
+	import {
+		getInsertAfterTaskName,
+		getNodeIdForTaskName,
+		getTaskNameFromNodeId,
+		insertActionTask,
+		replaceActionTask,
+	} from '$lib/helpers/workflow-action-spec';
 
 	interface Props {
 		open: boolean;
@@ -116,19 +123,13 @@
 
 			if (replaceNodeId) {
 				// Replace existing node's action
-				replaceNode(replaceNodeId, action, definition);
+				await replaceNode(replaceNodeId, action, definition);
 			} else if (insertOnEdgeId) {
 				// Insert on edge with the selected action
-				const pos = getDefaultPosition();
-				const nodeId = store.insertNodeOnEdge(insertOnEdgeId, 'call', pos);
-				if (nodeId) {
-					applyActionToNode(nodeId, action, definition);
-				}
+				await insertActionOnEdge(insertOnEdgeId, action, definition);
 			} else {
 				// Add new node
-				const pos = getDefaultPosition();
-				const nodeId = store.addNode('call', pos, action.displayName);
-				applyActionToNode(nodeId, action, definition);
+				await appendAction(action, definition);
 			}
 		} catch (err) {
 			console.error('Failed to load action:', err);
@@ -136,39 +137,30 @@
 		onClose();
 	}
 
-	function applyActionToNode(nodeId: string, action: ActionCatalogItem, definition: Record<string, unknown>) {
-		const actionDefinition = {
-			id: action.id,
-			name: action.name,
-			displayName: action.displayName,
-			service: action.service,
-			kind: action.kind,
-			visibility: action.visibility,
-			sourceKind: action.sourceKind,
-			version: action.version,
-			language: action.language,
-			entrypoint: action.entrypoint,
-			insertable: action.visibility === 'public-callable',
-		};
-
-		const taskConfig = (definition.taskConfig || definition.definition || {}) as Record<string, unknown>;
-
-		store.updateNodeData(nodeId, {
-			label: action.displayName,
-			taskConfig,
-			actionDefinition,
-			catalogFunction: action.service === 'fn-activepieces' ? {
-				name: action.name,
-				displayName: action.displayName,
-				pieceName: action.providerId || action.pieceName,
-				actionName: action.actionName,
-			} : undefined,
-			actionCatalogDetail: definition,
-		});
+	async function appendAction(action: ActionCatalogItem, definition: Record<string, unknown>) {
+		const projection = insertActionTask(store.spec, store.workflowName, action, definition);
+		store.setTaskMetadata(projection.taskName, projection.metadata);
+		await store.applySpecAndRebuild(projection.spec);
+		store.selectedNodeId = getNodeIdForTaskName(store.nodes, projection.taskName);
 	}
 
-	function replaceNode(nodeId: string, action: ActionCatalogItem, definition: Record<string, unknown>) {
-		applyActionToNode(nodeId, action, definition);
+	async function insertActionOnEdge(edgeId: string, action: ActionCatalogItem, definition: Record<string, unknown>) {
+		const edge = store.edges.find((candidate) => candidate.id === edgeId);
+		const insertAfterTaskName = getInsertAfterTaskName(edge?.source);
+		const projection = insertActionTask(store.spec, store.workflowName, action, definition, insertAfterTaskName);
+		store.setTaskMetadata(projection.taskName, projection.metadata);
+		await store.applySpecAndRebuild(projection.spec);
+		store.selectedNodeId = getNodeIdForTaskName(store.nodes, projection.taskName);
+	}
+
+	async function replaceNode(nodeId: string, action: ActionCatalogItem, definition: Record<string, unknown>) {
+		const taskName = getTaskNameFromNodeId(nodeId);
+		const projection = taskName
+			? replaceActionTask(store.spec, store.workflowName, taskName, action, definition)
+			: insertActionTask(store.spec, store.workflowName, action, definition);
+		store.setTaskMetadata(projection.taskName, projection.metadata);
+		await store.applySpecAndRebuild(projection.spec);
+		store.selectedNodeId = getNodeIdForTaskName(store.nodes, projection.taskName);
 	}
 </script>
 

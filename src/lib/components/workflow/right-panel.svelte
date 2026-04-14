@@ -57,7 +57,7 @@
 	// Available tabs — Properties is conditional on node selection, Code/AI/Runs always visible
 	const tabs = $derived.by(() => {
 		const all: Array<{ id: RightPanelTab; label: string; icon: typeof Sparkles }> = [];
-		if (store.selectedNode) {
+		if (store.selectedNode || ui.rightPanelTab === 'properties') {
 			all.push({ id: 'properties', label: 'Properties', icon: Settings2 });
 		}
 		all.push({ id: 'code', label: 'Spec', icon: Code2 });
@@ -176,15 +176,19 @@
 			</TabsList>
 		</div>
 
-		{#if store.selectedNode}
-			<TabsContent value="properties" class="mt-0 flex-1 overflow-auto">
+		<TabsContent value="properties" class="mt-0 flex-1 overflow-auto">
+			{#if store.selectedNode}
 				{#if isCallNode}
 					<ActionProperties />
 				{:else}
 					<NodeConfigPanel mode="properties" />
 				{/if}
-			</TabsContent>
-		{/if}
+			{:else}
+				<div class="flex h-full items-center justify-center p-4 text-center text-xs text-muted-foreground">
+					Select a node to configure.
+				</div>
+			{/if}
+		</TabsContent>
 
 		<TabsContent value="code" class="mt-0 flex-1 overflow-hidden flex flex-col">
 			<SpecEditor />

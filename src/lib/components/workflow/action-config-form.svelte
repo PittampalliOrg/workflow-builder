@@ -10,6 +10,8 @@
 	import { Switch } from '$lib/components/ui/switch';
 	import * as Select from '$lib/components/ui/select';
 	import { Separator } from '$lib/components/ui/separator';
+	import JsonSchemaDataEditor from './json-schema-data-editor.svelte';
+	import StructuredOutputSchemaEditor from './structured-output-schema-editor.svelte';
 
 	interface Props {
 		schema: Record<string, unknown> | null;
@@ -47,6 +49,7 @@
 			default: fieldSchema.default,
 			enum: fieldSchema.enum as unknown[] | undefined,
 			format: fieldSchema.format as string | undefined,
+			schema: fieldSchema,
 		}));
 	});
 
@@ -62,6 +65,16 @@
 		onChange({ ...values, [name]: value });
 	}
 
+	function shouldUseGeneratedEditor(field: { name: string; type: string; schema?: Record<string, unknown> }): boolean {
+		if (field.name === 'responseFormat') return false;
+		if (field.type !== 'object') return false;
+		const properties = field.schema?.properties;
+		if (field.type === 'object' && properties && typeof properties === 'object' && !Array.isArray(properties)) {
+			return Object.keys(properties).length > 0;
+		}
+		return false;
+	}
+
 	function getFieldType(field: { type: string; enum?: unknown[]; format?: string }): string {
 		if (field.enum && field.enum.length > 0) return 'select';
 		if (field.type === 'boolean') return 'switch';
@@ -73,6 +86,10 @@
 			return 'text';
 		}
 		return 'text';
+	}
+
+	function fallbackValue(field: { type: string; default?: unknown }) {
+		return field.default ?? (field.type === 'array' ? [] : {});
 	}
 </script>
 
@@ -155,11 +172,29 @@
 					placeholder={field.description || field.name}
 				/>
 
+			{:else if field.name === 'responseFormat'}
+				<StructuredOutputSchemaEditor
+					value={(values[field.name] ?? field.default ?? {}) as Record<string, unknown>}
+					onChange={(nextValue: Record<string, unknown>) => updateField(field.name, nextValue)}
+					title={field.label}
+					description={field.description || 'JSON Schema for the model response.'}
+				/>
+
+			{:else if shouldUseGeneratedEditor(field)}
+				<JsonSchemaDataEditor
+					schema={field.schema}
+					value={values[field.name] ?? field.default ?? (field.type === 'array' ? [] : {})}
+					onChange={(nextValue: unknown) => updateField(field.name, nextValue)}
+					title={field.label}
+					description={field.description}
+					jsonRows={4}
+				/>
+
 			{:else if fieldType === 'json' || fieldType === 'array'}
 				<Textarea
 					value={typeof values[field.name] === 'string'
 						? values[field.name] as string
-						: JSON.stringify(values[field.name] ?? field.default ?? {}, null, 2)}
+						: JSON.stringify(values[field.name] ?? fallbackValue(field), null, 2)}
 					oninput={(e) => {
 						try {
 							updateField(field.name, JSON.parse(e.currentTarget.value));

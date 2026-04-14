@@ -6,6 +6,7 @@
 	import { Separator } from '$lib/components/ui/separator';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Textarea } from '$lib/components/ui/textarea';
+	import JsonSchemaDataEditor from '../json-schema-data-editor.svelte';
 
 	interface Props {
 		schema: Record<string, unknown> | null;
@@ -63,6 +64,13 @@
 		if (types.includes('object') || types.includes('array')) return 'json';
 		if (propSchema.items || propSchema.properties) return 'json';
 		return 'string';
+	}
+
+	function shouldUseGeneratedEditor(propSchema: JsonSchema): boolean {
+		const types = getTypes(propSchema).filter((type) => type !== 'null');
+		if (types.includes('object')) return Boolean(propSchema.properties);
+		if (types.includes('array')) return Boolean(propSchema.items);
+		return Boolean(propSchema.oneOf?.length || propSchema.properties || propSchema.items);
 	}
 
 	function collectFields(
@@ -255,14 +263,25 @@
 							{/each}
 						</NativeSelect>
 					{:else if kind === 'json'}
-						<Textarea
-							id={`sw-field-${field.path.join('-')}`}
-							value={serializeValue(currentValue)}
-							oninput={(event) => setValue(field.path, parseJsonValue(event.currentTarget.value))}
-							placeholder={field.schema.type === 'array' ? '[]' : '{}'}
-							rows={Math.max(3, Math.min(8, field.path.length + 2))}
-							class="font-mono text-[11px]"
-						/>
+						{#if shouldUseGeneratedEditor(field.schema)}
+							<JsonSchemaDataEditor
+								schema={field.schema as Record<string, unknown>}
+								value={currentValue ?? (getTypes(field.schema).includes('array') ? [] : {})}
+								onChange={(nextValue) => setValue(field.path, nextValue)}
+								title={field.label}
+								description={field.schema.description || null}
+								jsonRows={Math.max(3, Math.min(8, field.path.length + 2))}
+							/>
+						{:else}
+							<Textarea
+								id={`sw-field-${field.path.join('-')}`}
+								value={serializeValue(currentValue)}
+								oninput={(event) => setValue(field.path, parseJsonValue(event.currentTarget.value))}
+								placeholder={field.schema.type === 'array' ? '[]' : '{}'}
+								rows={Math.max(3, Math.min(8, field.path.length + 2))}
+								class="font-mono text-[11px]"
+							/>
+						{/if}
 					{:else}
 						<Input
 							id={`sw-field-${field.path.join('-')}`}

@@ -50,6 +50,15 @@ importers:
       '@serverlessworkflow/sdk':
         specifier: ^1.0.1
         version: 1.0.1
+      '@sjsf/ajv8-validator':
+        specifier: ^3.4.0
+        version: 3.4.0(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(ajv@8.18.0)
+      '@sjsf/form':
+        specifier: ^3.4.0
+        version: 3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1)
+      '@sjsf/shadcn4-theme':
+        specifier: ^3.4.0
+        version: 3.4.0(@internationalized/date@3.12.0)(@lucide/svelte@1.8.0(svelte@5.55.1))(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(bits-ui@2.16.5(@internationalized/date@3.12.0)(@sveltejs/kit@2.55.0(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.55.1)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1)(typescript@5.9.3)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1))(clsx@2.1.1)(svelte@5.55.1)(tailwind-merge@3.5.0)(tailwind-variants@3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.2))
       '@tanstack/svelte-table':
         specifier: 9.0.0-alpha.32
         version: 9.0.0-alpha.32(svelte@5.55.1)
@@ -57,8 +66,11 @@ importers:
         specifier: ^1.5.2
         version: 1.5.2(svelte@5.55.1)
       ai:
-        specifier: ^6.0.146
-        version: 6.0.146(zod@4.3.6)
+        specifier: ^6.0.158
+        version: 6.0.158(zod@4.3.6)
+      ajv:
+        specifier: ^8.18.0
+        version: 8.18.0
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -127,8 +139,8 @@ importers:
         specifier: ^3.12.0
         version: 3.12.0
       '@lucide/svelte':
-        specifier: ^1.7.0
-        version: 1.7.0(svelte@5.55.1)
+        specifier: ^1.8.0
+        version: 1.8.0(svelte@5.55.1)
       '@opentelemetry/api':
         specifier: ^1.9.0
         version: 1.9.1
@@ -222,6 +234,12 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/gateway@3.0.95':
+    resolution: {integrity: sha512-ZmUNNbZl3V42xwQzPaNUi+s8eqR2lnrxf0bvB6YbLXpLjHYv0k2Y78t12cNOfY0bxGeuVVTLyk856uLuQIuXEQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/openai@3.0.50':
     resolution: {integrity: sha512-7M7bklrS+gckzPdpQpC3iG5aN5aQPRJdAJQ5jt7sEgYCqDgUuef9x4Nd570+ghIfKTZvV6tSqeeTuD6De/bZig==}
     engines: {node: '>=18'}
@@ -230,6 +248,12 @@ packages:
 
   '@ai-sdk/provider-utils@4.0.22':
     resolution: {integrity: sha512-B2OTFcRw/Pdka9ZTjpXv6T6qZ6RruRuLokyb8HwW+aoW9ndJ3YasA3/mVswyJw7VMBF8ofXgqvcrCt9KYvFifg==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/provider-utils@4.0.23':
+    resolution: {integrity: sha512-z8GlDaCmRSDlqkMF2f4/RFgWxdarvIbyuk+m6WXT1LYgsnGiXRJGTD2Z1+SDl3LqtFuRtGX1aghYvQLoHL/9pg==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -788,8 +812,8 @@ packages:
   '@lezer/yaml@1.0.4':
     resolution: {integrity: sha512-2lrrHqxalACEbxIbsjhqGpSW8kWpUKuY6RHgnSAFZa6qK62wvnPxA8hGOwOoDbwHcOFs5M4o27mjGu+P7TvBmw==}
 
-  '@lucide/svelte@1.7.0':
-    resolution: {integrity: sha512-YytBKOUBGox7yWcykZnYxOkn5WpR5G1qYXLYXV/j1B79SOTTEKzB+s5yF5Rq9l9OkweDStNH2b4yTqfvhEhV8g==}
+  '@lucide/svelte@1.8.0':
+    resolution: {integrity: sha512-+zYQUKqEOVP5lxbGmxL1OVgGMQtRK91eIJ0bR+3Cr1ts4oQEsQfxyzzd5X47psJlblAuGFrl2xm4YuATjR9oaA==}
     peerDependencies:
       svelte: ^5
 
@@ -1673,6 +1697,52 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
+  '@sjsf/ajv8-validator@3.4.0':
+    resolution: {integrity: sha512-8TkG4tslCBrBUV+2SQarhCC6ygzVTWQQGK/2CkQdMaMrbOMsmaW/cvt3wLn6kHZcmO1XQYJtQnsySRxcM7sNAw==}
+    peerDependencies:
+      '@sjsf/form': ^3.4.0
+      ajv: ^8.17.0
+
+  '@sjsf/basic-theme@3.4.0':
+    resolution: {integrity: sha512-Y34ZZQQY5rvElc4m/EXvJ+/N9ApdlgCoh+egdEFFyKTNyTThsoL+vT2KgP/IyZLXlneDEWdMVQBwEbylpQQUGQ==}
+    peerDependencies:
+      '@sjsf/form': ^3.4.0
+      svelte: ^5.34.8
+
+  '@sjsf/form@3.4.0':
+    resolution: {integrity: sha512-9Y+kx5SmY6pkwlkBlX9Ef4mweRSEhE7gZ7H4UlYolP/86obPBNinItMXHF3FumF2XidLNEwVxrYPmnrHTuiQHg==}
+    peerDependencies:
+      '@standard-schema/spec': ^1.1.0
+      '@types/json-schema-merge-allof': ^0.6.0
+      esm-env: ^1.2.0
+      json-schema-merge-allof: ^0.8.0
+      json-schema-typed: ^8.0.0
+      svelte: ^5.34.8
+    peerDependenciesMeta:
+      '@standard-schema/spec':
+        optional: true
+      '@types/json-schema-merge-allof':
+        optional: true
+      json-schema-merge-allof:
+        optional: true
+      json-schema-typed:
+        optional: true
+
+  '@sjsf/shadcn4-theme@3.4.0':
+    resolution: {integrity: sha512-yKVFogI0Or6adEiBYufRKY+1fzYAM9U8EgErAYDMr1Opjslg4L2Dfxy61kRM9G2MYBIRXLjCy9d1zdvKgTe6qg==}
+    peerDependencies:
+      '@internationalized/date': ^3.10.0
+      '@lucide/svelte': '>=0.479.0 <1.0.0 || ^1.0.0'
+      '@sjsf/form': ^3.4.0
+      bits-ui: ^2.14.0
+      clsx: ^2.1.0
+      svelte: ^5.34.8
+      tailwind-merge: ^3.3.0
+      tailwind-variants: ^1.0.0 || ^2.0.0 || ^3.0.0
+    peerDependenciesMeta:
+      '@internationalized/date':
+        optional: true
+
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
@@ -1882,6 +1952,9 @@ packages:
   '@types/js-yaml@4.0.9':
     resolution: {integrity: sha512-k4MGaQl5TGo/iipqb2UDG2UwjXziSWkh0uysQelTlJpX1qGlpUZYm8PnO4DxG1qBomtJUdYJ6qR6xdIah10JLg==}
 
+  '@types/json-schema@7.0.15':
+    resolution: {integrity: sha512-5+fP8P8MFNC+AyZCDxrB2pkZFPGzqQWUzpSeuuVLvm8VMcorNYavBqoFcxK8bQz4Qsbn4oUEEem4wDLfcysGHA==}
+
   '@types/mdast@4.0.4':
     resolution: {integrity: sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==}
 
@@ -2015,6 +2088,12 @@ packages:
 
   ai@6.0.146:
     resolution: {integrity: sha512-70DE8k1rR0N3mXxyyfjYAx/FxRln/kQ5ym18lt1ys1eUklcPuoIXGbUBwdfCbmkt6YF3jCDZ5+OgkWieP/NGDw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  ai@6.0.158:
+    resolution: {integrity: sha512-gLTp1UXFtMqKUi3XHs33K7UFglbvojkxF/aq337TxnLGOhHIW9+GyP2jwW4hYX87f1es+wId3VQoPRRu9zEStQ==}
     engines: {node: '>=18'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -2462,6 +2541,10 @@ packages:
 
   json-schema@0.4.0:
     resolution: {integrity: sha512-es94M3nTIfsEPisRafak+HDLfHXnKBhV3vU5eqPcS3flIWqcxJWgXHXiey3YrpaNsanY5ei1VoYEbOzijuq9BA==}
+
+  jsonpointer@5.0.1:
+    resolution: {integrity: sha512-p/nXbhSEcu3pZRdkW1OfJhpsVtW1gd4Wa1fnQc9YLiTfAjn0312eMKimbdIQzuZl9aa9xUGaRlP9T/CJE/ditQ==}
+    engines: {node: '>=0.10.0'}
 
   kleur@4.1.5:
     resolution: {integrity: sha512-o+NO+8WrRiQEE4/7nwRJhN1HWpVmJm511pBHUxPLtp0BUISzlBplORYSmTclCnJvQq2tKu/sgl3xVpkc7ZWuQQ==}
@@ -3131,6 +3214,13 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.3.6
 
+  '@ai-sdk/gateway@3.0.95(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
+      '@vercel/oidc': 3.1.0
+      zod: 4.3.6
+
   '@ai-sdk/openai@3.0.50(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
@@ -3138,6 +3228,13 @@ snapshots:
       zod: 4.3.6
 
   '@ai-sdk/provider-utils@4.0.22(zod@4.3.6)':
+    dependencies:
+      '@ai-sdk/provider': 3.0.8
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.0.6
+      zod: 4.3.6
+
+  '@ai-sdk/provider-utils@4.0.23(zod@4.3.6)':
     dependencies:
       '@ai-sdk/provider': 3.0.8
       '@standard-schema/spec': 1.1.0
@@ -3538,7 +3635,7 @@ snapshots:
       '@lezer/highlight': 1.2.3
       '@lezer/lr': 1.4.8
 
-  '@lucide/svelte@1.7.0(svelte@5.55.1)':
+  '@lucide/svelte@1.8.0(svelte@5.55.1)':
     dependencies:
       svelte: 5.55.1
 
@@ -4665,6 +4762,38 @@ snapshots:
 
   '@shikijs/vscode-textmate@10.0.2': {}
 
+  '@sjsf/ajv8-validator@3.4.0(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(ajv@8.18.0)':
+    dependencies:
+      '@sjsf/form': 3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1)
+      ajv: 8.18.0
+
+  '@sjsf/basic-theme@3.4.0(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(svelte@5.55.1)':
+    dependencies:
+      '@sjsf/form': 3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1)
+      svelte: 5.55.1
+
+  '@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1)':
+    dependencies:
+      '@types/json-schema': 7.0.15
+      esm-env: 1.2.2
+      jsonpointer: 5.0.1
+      svelte: 5.55.1
+    optionalDependencies:
+      '@standard-schema/spec': 1.1.0
+
+  '@sjsf/shadcn4-theme@3.4.0(@internationalized/date@3.12.0)(@lucide/svelte@1.8.0(svelte@5.55.1))(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(bits-ui@2.16.5(@internationalized/date@3.12.0)(@sveltejs/kit@2.55.0(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.55.1)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1)(typescript@5.9.3)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1))(clsx@2.1.1)(svelte@5.55.1)(tailwind-merge@3.5.0)(tailwind-variants@3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.2))':
+    dependencies:
+      '@lucide/svelte': 1.8.0(svelte@5.55.1)
+      '@sjsf/basic-theme': 3.4.0(@sjsf/form@3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1))(svelte@5.55.1)
+      '@sjsf/form': 3.4.0(@standard-schema/spec@1.1.0)(esm-env@1.2.2)(svelte@5.55.1)
+      bits-ui: 2.16.5(@internationalized/date@3.12.0)(@sveltejs/kit@2.55.0(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@6.2.4(svelte@5.55.1)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1)(typescript@5.9.3)(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)))(svelte@5.55.1)
+      clsx: 2.1.1
+      svelte: 5.55.1
+      tailwind-merge: 3.5.0
+      tailwind-variants: 3.2.2(tailwind-merge@3.5.0)(tailwindcss@4.2.2)
+    optionalDependencies:
+      '@internationalized/date': 3.12.0
+
   '@standard-schema/spec@1.1.0': {}
 
   '@svelte-put/shortcut@4.1.0(svelte@5.55.1)':
@@ -4862,6 +4991,8 @@ snapshots:
 
   '@types/js-yaml@4.0.9': {}
 
+  '@types/json-schema@7.0.15': {}
+
   '@types/mdast@4.0.4':
     dependencies:
       '@types/unist': 3.0.3
@@ -5008,6 +5139,14 @@ snapshots:
       '@ai-sdk/gateway': 3.0.88(zod@4.3.6)
       '@ai-sdk/provider': 3.0.8
       '@ai-sdk/provider-utils': 4.0.22(zod@4.3.6)
+      '@opentelemetry/api': 1.9.0
+      zod: 4.3.6
+
+  ai@6.0.158(zod@4.3.6):
+    dependencies:
+      '@ai-sdk/gateway': 3.0.95(zod@4.3.6)
+      '@ai-sdk/provider': 3.0.8
+      '@ai-sdk/provider-utils': 4.0.23(zod@4.3.6)
       '@opentelemetry/api': 1.9.0
       zod: 4.3.6
 
@@ -5408,6 +5547,8 @@ snapshots:
   json-schema-traverse@1.0.0: {}
 
   json-schema@0.4.0: {}
+
+  jsonpointer@5.0.1: {}
 
   kleur@4.1.5: {}
 

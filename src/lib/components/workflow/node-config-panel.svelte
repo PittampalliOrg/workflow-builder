@@ -15,6 +15,8 @@
 	import SwRunConfig from './config/sw-run-config.svelte';
 	import SwGenericConfig from './config/sw-generic-config.svelte';
 	import JsonViewer from './execution/json-viewer.svelte';
+	import { updateTask as specUpdateTask } from '$lib/helpers/spec-mutations';
+	import { getTaskNameFromNodeId } from '$lib/helpers/workflow-action-spec';
 
 	interface Props {
 		mode?: 'properties' | 'code' | 'all';
@@ -26,6 +28,13 @@
 
 	function handleConfigUpdate(key: string, value: unknown) {
 		if (store.selectedNodeId) {
+			if (key === 'taskConfig' && store.spec && value && typeof value === 'object' && !Array.isArray(value)) {
+				const taskName = getTaskNameFromNodeId(store.selectedNodeId);
+				if (taskName) {
+					store.spec = specUpdateTask(store.spec, taskName, value as Record<string, unknown>);
+					store.isDirty = true;
+				}
+			}
 			store.updateNodeData(store.selectedNodeId, { [key]: value });
 		}
 	}

@@ -50,7 +50,8 @@
 		const ctx = assistant.workflowContext;
 		if (!ctx) return null;
 		const taskCount = ctx.spec ? ((ctx.spec as Record<string, unknown>).do as unknown[] || []).length : 0;
-		return `${ctx.workflowName}${taskCount > 0 ? ` (${taskCount} tasks)` : ''}`;
+		const selected = ctx.selectedTaskName ? `, selected: ${ctx.selectedTaskName}` : '';
+		return `${ctx.workflowName}${taskCount > 0 ? ` (${taskCount} tasks${selected})` : selected ? ` (${selected.slice(2)})` : ''}`;
 	});
 </script>
 
@@ -70,7 +71,7 @@
 			bind:value={input}
 			onkeydown={handleKeydown}
 			oninput={autoResize}
-			placeholder={hasContext ? 'Describe workflow changes...' : 'Ask about workflows...'}
+			placeholder={hasContext ? 'Describe a workflow or selected-node change...' : 'Ask about workflows...'}
 			rows={1}
 			disabled={assistant.isStreaming}
 			class="flex-1 resize-none rounded-md border border-input bg-transparent px-3 py-2 text-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"

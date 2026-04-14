@@ -535,7 +535,7 @@ function buildRemoteDetail(
         : serviceId),
     version: sanitizeText(raw.version) || null,
     language: sanitizeText(raw.language) || null,
-    entrypoint: sanitizeText(raw.entrypoint) || null,
+    entrypoint: sanitizeText(raw.entrypoint) || sanitizeText(raw.actionName) || null,
     sourceKind:
       raw.sourceKind === "code"
         ? "code"

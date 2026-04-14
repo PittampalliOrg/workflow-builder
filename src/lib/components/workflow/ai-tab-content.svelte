@@ -43,6 +43,8 @@
 		const doArray = (store.spec as Record<string, unknown>).do;
 		return Array.isArray(doArray) ? doArray.length : 0;
 	});
+
+	const selectedTaskName = $derived(assistant.workflowContext?.selectedTaskName);
 </script>
 
 <div class="flex flex-1 flex-col overflow-hidden">
@@ -59,6 +61,9 @@
 			<Info size={10} class="shrink-0" />
 			<span class="flex-1 text-left">
 				AI context: {connections.length} connection{connections.length !== 1 ? 's' : ''}, {actionCount} actions, {specTaskCount} task{specTaskCount !== 1 ? 's' : ''}
+				{#if selectedTaskName}
+					, selected {selectedTaskName}
+				{/if}
 			</span>
 			{#if contextExpanded}
 				<ChevronDown size={10} />
@@ -111,6 +116,12 @@
 			{:else}
 				<div class="text-[9px] text-muted-foreground/70">
 					No tasks yet — AI will create a new workflow
+				</div>
+			{/if}
+
+			{#if selectedTaskName}
+				<div class="text-[9px] text-muted-foreground/70">
+					Selected node requests will target <code>{selectedTaskName}</code>
 				</div>
 			{/if}
 		</div>

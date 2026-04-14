@@ -28,7 +28,7 @@ export function createWorkflowTools(userId: string | null, skFetch: typeof fetch
 	return {
 		searchActions: ({
 			description: 'Search available workflow actions by keyword. Returns matching actions with their input schemas, required fields, and connection requirements. Use this to find the right action before generating a spec.',
-			parameters: jsonSchema({ type: "object", properties: { query: { type: "string", description: "Search keyword, e.g. gmail send email" } }, required: ["query"] }),
+			inputSchema: jsonSchema({ type: "object", properties: { query: { type: "string", description: "Search keyword, e.g. gmail send email" } }, required: ["query"] }),
 			execute: async ({ query }: { query: string }) => {
 				const catalog = await getCatalog() as unknown as Record<string, unknown>;
 				const items = ((catalog?.items || []) as Array<Record<string, unknown>>).filter((i) => i.insertable);
@@ -76,7 +76,7 @@ export function createWorkflowTools(userId: string | null, skFetch: typeof fetch
 
 		getActionDetail: ({
 			description: 'Get complete details for a specific action including full input schema with all fields, types, defaults, and examples. Use the callValue from searchActions (e.g., "gmail/send_email").',
-			parameters: jsonSchema({ type: "object", properties: { callValue: { type: "string", description: "Action identifier e.g. gmail/send_email" } }, required: ["callValue"] }),
+			inputSchema: jsonSchema({ type: "object", properties: { callValue: { type: "string", description: "Action identifier e.g. gmail/send_email" } }, required: ["callValue"] }),
 			execute: async ({ callValue }: { callValue: string }) => {
 				const catalog = await getCatalog() as unknown as Record<string, unknown>;
 				const items = ((catalog?.items || []) as Array<Record<string, unknown>>);
@@ -117,6 +117,10 @@ export function createWorkflowTools(userId: string | null, skFetch: typeof fetch
 							format: def.format,
 						})),
 					},
+					taskConfig: match.taskConfig ?? null,
+					taskConfigGuidance: match.taskConfig
+						? 'Use taskConfig as the exact add_task.task object. Only change user-facing inputs such as prompt, messages, model, and responseFormat.'
+						: null,
 					specExample: buildSpecExample(callValue, piece, props, required),
 				};
 			},
@@ -124,7 +128,7 @@ export function createWorkflowTools(userId: string | null, skFetch: typeof fetch
 
 		listConnections: ({
 			description: 'List available OAuth/API connections. These are pre-configured integrations the user has set up. You MUST use an existing connection when an action requires auth.',
-			parameters: jsonSchema({ type: "object", properties: { pieceName: { type: "string", description: "Filter by piece name e.g. gmail. Empty string for all." } }, required: ["pieceName"] }),
+			inputSchema: jsonSchema({ type: "object", properties: { pieceName: { type: "string", description: "Filter by piece name e.g. gmail. Empty string for all." } }, required: ["pieceName"] }),
 			execute: async ({ pieceName }: { pieceName: string }) => {
 				try {
 					const res = await skFetch('/api/app-connections');
@@ -155,7 +159,7 @@ export function createWorkflowTools(userId: string | null, skFetch: typeof fetch
 
 		validateSpec: ({
 			description: 'Validate a CNCF Serverless Workflow 1.0 YAML spec. Returns validation errors or confirms the spec is valid. Use this before presenting the spec to the user.',
-			parameters: jsonSchema({ type: "object", properties: { yaml: { type: "string", description: "Complete SW 1.0 spec as YAML" } }, required: ["yaml"] }),
+			inputSchema: jsonSchema({ type: "object", properties: { yaml: { type: "string", description: "Complete SW 1.0 spec as YAML" } }, required: ["yaml"] }),
 			execute: async (params: { yaml: string }) => {
 				const yamlStr = params.yaml;
 				try {
