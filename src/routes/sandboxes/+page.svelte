@@ -57,6 +57,7 @@
 	let batchDeleteOpen = $state(false);
 	let batchDeleting = $state(false);
 	let quickCreating = $state(false);
+	let quickCreateError = $state<string | null>(null);
 
 	function generateSandboxName(): string {
 		const ts = Math.floor(Date.now() / 1000).toString(36);
@@ -65,15 +66,20 @@
 
 	async function quickCreate() {
 		quickCreating = true;
+		quickCreateError = null;
 		try {
 			const res = await fetch('/api/sandboxes', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ name: generateSandboxName(), provider: 'claude' })
 			});
-			if (res.ok) sandboxQuery.refresh();
-		} catch {
-			// ignore
+			const data = await res.json().catch(() => ({}));
+			if (!res.ok || data.ok === false) {
+				throw new Error(data.error ?? `Failed to create sandbox (${res.status})`);
+			}
+			sandboxQuery.refresh();
+		} catch (err) {
+			quickCreateError = err instanceof Error ? err.message : 'Failed to create sandbox';
 		} finally {
 			quickCreating = false;
 		}
@@ -308,6 +314,12 @@
 			</Button>
 		</div>
 	</header>
+
+	{#if quickCreateError}
+		<div class="border-b border-destructive/30 bg-destructive/10 px-6 py-2 text-xs text-destructive">
+			{quickCreateError}
+		</div>
+	{/if}
 
 	<div class="flex flex-1 flex-col overflow-auto p-6">
 		<svelte:boundary>

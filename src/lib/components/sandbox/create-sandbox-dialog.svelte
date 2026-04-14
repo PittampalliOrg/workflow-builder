@@ -161,7 +161,7 @@
 
 			<!-- Providers -->
 			<div class="flex flex-col gap-1.5">
-				<label class="text-sm font-medium">Providers</label>
+				<span class="text-sm font-medium">Providers</span>
 				<p class="text-xs text-muted-foreground">Select credential providers to inject into the sandbox.</p>
 				<div class="flex flex-wrap gap-2 mt-1">
 					{#each PROVIDERS as provider}
@@ -178,13 +178,14 @@
 			<!-- Image -->
 			<div class="flex flex-col gap-1.5">
 				<label for="sandbox-image" class="text-sm font-medium">Base Image</label>
-				<NativeSelect bind:value={image}>
+				<NativeSelect id="sandbox-image" bind:value={image}>
 					{#each IMAGES as img}
 						<option value={img.id}>{img.label}</option>
 					{/each}
 				</NativeSelect>
 				{#if image === 'custom'}
 					<input
+						aria-label="Custom sandbox image"
 						type="text"
 						bind:value={customImage}
 						placeholder="registry.example.com/my-sandbox:latest"
@@ -196,16 +197,16 @@
 			<!-- GPU -->
 			<div class="flex items-center justify-between">
 				<div>
-					<label class="text-sm font-medium">GPU Passthrough</label>
+					<label for="sandbox-gpu" class="text-sm font-medium">GPU Passthrough</label>
 					<p class="text-xs text-muted-foreground">Enable NVIDIA GPU access (experimental)</p>
 				</div>
-				<Switch bind:checked={gpuEnabled} />
+				<Switch id="sandbox-gpu" bind:checked={gpuEnabled} />
 			</div>
 
 			<!-- Environment Variables -->
 			<div class="flex flex-col gap-1.5">
 				<div class="flex items-center justify-between">
-					<label class="text-sm font-medium">Environment Variables</label>
+					<span class="text-sm font-medium">Environment Variables</span>
 					<Button variant="ghost" size="sm" class="h-6 text-xs" onclick={addEnvVar}>
 						<Plus class="mr-1 h-3 w-3" />
 						Add
@@ -213,14 +214,18 @@
 				</div>
 				{#each envVars as envVar, i}
 					<div class="flex items-center gap-2">
+						<label class="sr-only" for="sandbox-env-key-{i}">Environment variable key</label>
 						<input
+							id="sandbox-env-key-{i}"
 							type="text"
 							bind:value={envVar.key}
 							placeholder="KEY"
 							class="w-1/3 rounded border border-border bg-background px-2 py-1 font-mono text-xs outline-none focus:ring-1 focus:ring-ring"
 						/>
 						<span class="text-muted-foreground">=</span>
+						<label class="sr-only" for="sandbox-env-value-{i}">Environment variable value</label>
 						<input
+							id="sandbox-env-value-{i}"
 							type="text"
 							bind:value={envVar.value}
 							placeholder="value"
