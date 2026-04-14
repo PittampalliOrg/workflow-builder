@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any
+from urllib.parse import quote
 
 import psycopg2
 import requests
@@ -25,6 +27,7 @@ SECRET_STORE_NAME = "kubernetes-secrets"
 SECRET_NAME = "workflow-builder-secrets"
 
 _database_url: str | None = None
+_hosted_mcp_tokens: dict[str, str] = {}
 
 
 def _get_database_url() -> str:
@@ -93,6 +96,52 @@ def _allowed_tools_from_metadata(metadata: dict[str, Any]) -> list[str]:
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
+def _hosted_mcp_gateway_url(
+    project_id: str, metadata: dict[str, Any], fallback_url: str
+) -> str:
+    endpoint_path = str(
+        metadata.get("endpointPath") or "/api/v1/projects/:projectId/mcp-server/http"
+    )
+    path = endpoint_path.replace(":projectId", quote(project_id, safe=""))
+    host = os.environ.get("MCP_GATEWAY_SERVICE_HOST")
+    port = os.environ.get("MCP_GATEWAY_SERVICE_PORT_HTTP") or os.environ.get(
+        "MCP_GATEWAY_SERVICE_PORT"
+    )
+    if host and port:
+        return f"http://{host}:{port}{path}"
+    if fallback_url:
+        return fallback_url
+    return f"http://mcp-gateway:8080{path}"
+
+
+def _hosted_mcp_token(project_id: str) -> str:
+    if project_id in _hosted_mcp_tokens:
+        return _hosted_mcp_tokens[project_id]
+
+    workflow_builder_url = os.environ.get(
+        "WORKFLOW_BUILDER_URL",
+        "http://workflow-builder.workflow-builder.svc.cluster.local:3000",
+    ).rstrip("/")
+    internal_token = os.environ.get("INTERNAL_API_TOKEN", "")
+    if not internal_token:
+        raise RuntimeError("INTERNAL_API_TOKEN is not configured")
+
+    response = requests.get(
+        (
+            f"{workflow_builder_url}/api/internal/mcp/projects/"
+            f"{quote(project_id, safe='')}/server"
+        ),
+        headers={"X-Internal-Token": internal_token},
+        timeout=10,
+    )
+    response.raise_for_status()
+    token = str(response.json().get("token") or "").strip()
+    if not token:
+        raise RuntimeError(f"Hosted MCP token was empty for project {project_id}")
+    _hosted_mcp_tokens[project_id] = token
+    return token
+
+
 def _build_server_config(
     row: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, str | None]:
@@ -104,9 +153,31 @@ def _build_server_config(
     metadata = _json_obj(row.get("metadata"))
 
     if source_type == "hosted_workflow":
+        project_id = str(row.get("project_id") or "").strip()
+        if not project_id:
+            return (
+                None,
+                f"Skipped hosted MCP connection '{display_name}' because it has no project id.",
+            )
+        try:
+            token = _hosted_mcp_token(project_id)
+        except Exception as exc:
+            return (
+                None,
+                f"Skipped hosted MCP connection '{display_name}' because its bearer token could not be resolved: {exc}",
+            )
         return (
+            {
+                "server_name": _normalize_mcp_name(
+                    f"hosted_{server_key or display_name or row.get('id')}"
+                ),
+                "displayName": display_name,
+                "sourceType": source_type,
+                "transport": _transport_from_metadata(metadata),
+                "url": _hosted_mcp_gateway_url(project_id, metadata, server_url),
+                "headers": {"Authorization": f"Bearer {token}"},
+            },
             None,
-            f"Skipped hosted MCP connection '{display_name}' because it requires bearer-token transport auth.",
         )
 
     if not server_url:

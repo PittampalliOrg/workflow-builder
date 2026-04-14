@@ -109,6 +109,14 @@ def on_config_change(key: str, value):
     logger.info("[hot-reload] %s = %s", key, value)
 
 
+def _reset_mcp_tools() -> None:
+    global _mcp_client, _mcp_config_signature
+    _mcp_client = None
+    _mcp_config_signature = ""
+    agent.tools = list(_base_tools)
+    agent.tool_executor = AgentToolExecutor(tools=list(agent.tools))
+
+
 config = RuntimeSubscriptionConfig(
     store_name="runtime-config",
     keys=[
@@ -317,10 +325,7 @@ async def _configure_mcp_tools(payload: dict[str, Any]) -> None:
                 logger.warning("Failed to close previous MCP client: %s", exc)
 
         if not configs:
-            _mcp_client = None
-            _mcp_config_signature = ""
-            agent.tools = list(_base_tools)
-            agent.tool_executor = AgentToolExecutor(tools=list(agent.tools))
+            _reset_mcp_tools()
             return
 
         client = MCPClient()
@@ -330,10 +335,11 @@ async def _configure_mcp_tools(payload: dict[str, Any]) -> None:
         except Exception as exc:
             logger.warning("Failed to configure MCP tools: %s", exc)
             await client.close()
+            _reset_mcp_tools()
             return
 
         _mcp_client = client
-        _mcp_config_signature = signature
+        _mcp_config_signature = signature if mcp_tools else ""
         agent.tools = [*_base_tools, *mcp_tools]
         agent.tool_executor = AgentToolExecutor(tools=list(agent.tools))
         logger.info(

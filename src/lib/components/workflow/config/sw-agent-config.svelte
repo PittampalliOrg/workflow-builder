@@ -287,6 +287,29 @@
 		});
 	}
 
+	function toolNameFromUnknown(value: unknown): string | null {
+		if (typeof value === 'string') {
+			const trimmed = value.trim();
+			return trimmed || null;
+		}
+		if (value && typeof value === 'object') {
+			const record = value as Record<string, unknown>;
+			for (const key of ['name', 'toolName', 'id', 'title']) {
+				const candidate = record[key];
+				if (typeof candidate === 'string' && candidate.trim()) {
+					return candidate.trim();
+				}
+			}
+		}
+		return null;
+	}
+
+	function normalizeToolNames(value: unknown): string[] {
+		if (!Array.isArray(value)) return [];
+		const names = value.map(toolNameFromUnknown).filter((item): item is string => Boolean(item));
+		return Array.from(new Set(names));
+	}
+
 	function toolInventory(connection: McpConnection): string[] {
 		if (mcpToolInventories[connection.id]) {
 			return mcpToolInventories[connection.id];
@@ -295,7 +318,7 @@
 		const candidates = [metadata.toolNames, metadata.tools, metadata.allowedTools];
 		for (const candidate of candidates) {
 			if (Array.isArray(candidate)) {
-				return candidate.map((item) => String(item).trim()).filter(Boolean);
+				return normalizeToolNames(candidate);
 			}
 		}
 		return [];
@@ -307,9 +330,7 @@
 			const response = await fetch(`/api/mcp-connections/${encodeURIComponent(connection.id)}/tools`);
 			if (!response.ok) return;
 			const payload = await response.json();
-			const toolNames = Array.isArray(payload.toolNames)
-				? payload.toolNames.map((item: unknown) => String(item).trim()).filter(Boolean)
-				: [];
+			const toolNames = normalizeToolNames(payload.toolNames || payload.tools);
 			mcpToolInventories = {
 				...mcpToolInventories,
 				[connection.id]: toolNames

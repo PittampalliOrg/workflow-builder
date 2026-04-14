@@ -779,52 +779,60 @@ def _run_native_durable_agent_child_workflow(
             "with.workspaceRef into the durable/run task."
         )
 
+    existing_config = agent_config if isinstance(agent_config, dict) else {}
+    existing_mcp_servers = existing_config.get("mcpServers")
+    existing_mcp_server_list = [
+        item
+        for item in (
+            existing_mcp_servers if isinstance(existing_mcp_servers, list) else []
+        )
+        if isinstance(item, dict)
+    ]
+    mcp_connection_mode = (
+        str(existing_config.get("mcpConnectionMode") or "").strip().lower()
+    )
+    should_resolve_project_mcp = mcp_connection_mode in {
+        "project",
+        "auto",
+        "all",
+    } or (not mcp_connection_mode and not existing_mcp_server_list)
+
     resolved_mcp_servers: list[dict[str, Any]] = []
     resolved_mcp_warnings: list[str] = []
-    try:
-        from activities.resolve_mcp_config import resolve_agent_mcp_servers
+    if should_resolve_project_mcp:
+        try:
+            from activities.resolve_mcp_config import resolve_agent_mcp_servers
 
-        mcp_resolution = yield ctx.call_activity(
-            resolve_agent_mcp_servers,
-            input=_freeze(
-                {
-                    "workflowId": tc.workflow_id,
-                    "_otel": tc.otel_ctx,
-                }
-            ),
-        )
-        if isinstance(mcp_resolution, dict):
-            if isinstance(mcp_resolution.get("mcpServers"), list):
-                resolved_mcp_servers = [
-                    item
-                    for item in mcp_resolution["mcpServers"]
-                    if isinstance(item, dict)
-                ]
-            if isinstance(mcp_resolution.get("warnings"), list):
-                resolved_mcp_warnings = [
-                    str(item)
-                    for item in mcp_resolution["warnings"]
-                    if str(item).strip()
-                ]
-    except Exception as mcp_err:
-        logger.warning(
-            "[SW Workflow] Failed to resolve MCP connections for workflow %s: %s",
-            tc.workflow_id,
-            mcp_err,
-        )
+            mcp_resolution = yield ctx.call_activity(
+                resolve_agent_mcp_servers,
+                input=_freeze(
+                    {
+                        "workflowId": tc.workflow_id,
+                        "_otel": tc.otel_ctx,
+                    }
+                ),
+            )
+            if isinstance(mcp_resolution, dict):
+                if isinstance(mcp_resolution.get("mcpServers"), list):
+                    resolved_mcp_servers = [
+                        item
+                        for item in mcp_resolution["mcpServers"]
+                        if isinstance(item, dict)
+                    ]
+                if isinstance(mcp_resolution.get("warnings"), list):
+                    resolved_mcp_warnings = [
+                        str(item)
+                        for item in mcp_resolution["warnings"]
+                        if str(item).strip()
+                    ]
+        except Exception as mcp_err:
+            logger.warning(
+                "[SW Workflow] Failed to resolve MCP connections for workflow %s: %s",
+                tc.workflow_id,
+                mcp_err,
+            )
 
     if resolved_mcp_servers or resolved_mcp_warnings:
-        existing_config = agent_config if isinstance(agent_config, dict) else {}
-        existing_mcp_servers = existing_config.get("mcpServers")
-        existing_mcp_server_list = [
-            item
-            for item in (
-                existing_mcp_servers
-                if isinstance(existing_mcp_servers, list)
-                else []
-            )
-            if isinstance(item, dict)
-        ]
         seen_mcp_keys: set[str] = set()
         for item in existing_mcp_server_list:
             key = str(
