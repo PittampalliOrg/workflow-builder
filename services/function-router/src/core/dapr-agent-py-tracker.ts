@@ -248,19 +248,20 @@ export async function trackDaprAgentPySnapshot(
   await ensureDaprAgentPyRun(ctx, "running");
   const sql = getSql();
 
-  for (const event of buildSnapshotEvents(ctx, snapshot)) {
-    const [inserted] = await sql<{ event_id: number }[]>`
-      INSERT INTO workflow_agent_events (
-        workflow_execution_id, workflow_agent_run_id, parent_execution_id,
+	for (const event of buildSnapshotEvents(ctx, snapshot)) {
+		const eventTime = event.ts || new Date().toISOString();
+		const [inserted] = await sql<{ event_id: number }[]>`
+			INSERT INTO workflow_agent_events (
+				workflow_execution_id, workflow_agent_run_id, parent_execution_id,
         dapr_instance_id, source_event_id, event_type, phase, tool_name,
         sandbox_name, payload, ts
       ) VALUES (
-        ${ctx.workflowExecutionId}, ${ctx.daprInstanceId},
-        ${ctx.parentExecutionId || ctx.workflowExecutionId}, ${ctx.daprInstanceId},
-        ${event.sourceEventId}, ${event.eventType}, ${event.phase ?? null},
-        ${event.toolName ?? null}, ${ctx.sandboxName ?? null},
-        ${JSON.stringify(event.payload)}, ${event.ts ? new Date(event.ts) : new Date()}
-      )
+				${ctx.workflowExecutionId}, ${ctx.daprInstanceId},
+				${ctx.parentExecutionId || ctx.workflowExecutionId}, ${ctx.daprInstanceId},
+				${event.sourceEventId}, ${event.eventType}, ${event.phase ?? null},
+				${event.toolName ?? null}, ${ctx.sandboxName ?? null},
+				${JSON.stringify(event.payload)}, ${eventTime}::timestamp
+			)
       ON CONFLICT (workflow_execution_id, dapr_instance_id, source_event_id) DO NOTHING
       RETURNING event_id
     `;
