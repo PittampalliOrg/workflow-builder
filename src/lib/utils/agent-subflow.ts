@@ -304,12 +304,19 @@ function latestRunError(run: ExecutionAgentRun, events: ExecutionTimelineEvent[]
 	return shortText(run.error, 96);
 }
 
+function agentTurnCount(events: ExecutionTimelineEvent[]): number {
+	const explicitTurns = events.filter((event) => event.type === 'turn_started').length;
+	return explicitTurns > 0
+		? explicitTurns
+		: events.filter((event) => event.type === 'llm_complete').length;
+}
+
 function buildAgentLoopStateDiagram(
 	run: ExecutionAgentRun,
 	events: ExecutionTimelineEvent[]
 ): { nodes: AgentLoopNode[]; edges: AgentLoopEdge[] } {
 	const relevant = eventsForAgentRun(run, events);
-	const turnCount = relevant.filter((event) => event.type === 'turn_started').length;
+	const turnCount = agentTurnCount(relevant);
 	const toolStarts = relevant.filter((event) => event.type === 'tool_call_start');
 	const toolEnds = relevant.filter((event) => event.type === 'tool_call_end');
 	const toolErrors = relevant.filter((event) => event.type === 'tool_call_error');
@@ -507,7 +514,7 @@ export function buildAgentCanvasSubflows(
 
 		const relevant = eventsForAgentRun(run, events);
 		const toolCount = relevant.filter((e) => e.type === 'tool_call_start').length;
-		const turnCount = relevant.filter((e) => e.type === 'turn_started').length;
+		const turnCount = agentTurnCount(relevant);
 		const lastTool = latestToolName(relevant);
 		const runStatus = asWorkflowNodeStatus(nodeStatusForRun(run.status));
 		const taskConfig = (workflowNode.data as Record<string, unknown> | undefined)?.taskConfig;
