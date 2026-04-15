@@ -21,10 +21,10 @@ function rewriteHtmlBody(body: string, proxyBasePath: string): string {
 	const escapedBase = proxyBasePath.replace(/\/$/, '');
 	let rewritten = body;
 
-	// Rewrite quoted and parenthesized root-relative asset and fetch paths so the preview
-	// stays under the sandbox proxy rather than escaping to the main app origin.
+	// Rewrite root-relative asset and navigation attributes so the preview stays
+	// under the sandbox proxy rather than escaping to the main app origin.
 	rewritten = rewritten.replace(
-		/([("'=\s,:])\/(?!\/)/g,
+		/\b((?:href|src|action|poster|formaction|data-src|data-href)\s*=\s*["'])\/(?!\/)/gi,
 		(_, prefix: string) => `${prefix}${escapedBase}/`
 	);
 	rewritten = rewritten.replace(

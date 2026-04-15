@@ -12,6 +12,14 @@ type StartBody = {
 	timeoutSeconds?: number;
 };
 
+function publicOrigin(request: Request, fallback: URL): string {
+	const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+	const forwardedHost = request.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+	const host = forwardedHost || request.headers.get('host') || fallback.host;
+	const proto = forwardedProto || fallback.protocol.replace(/:$/, '') || 'https';
+	return `${proto}://${host}`;
+}
+
 export const POST: RequestHandler = async ({ params, request, url }) => {
 	const { executionId } = params;
 	const sandbox = await getExecutionSandboxPreviewInfo(executionId);
@@ -23,8 +31,13 @@ export const POST: RequestHandler = async ({ params, request, url }) => {
 	const previewId = (body.previewId?.trim() || executionId).trim();
 	const payload = {
 		workspaceRef: sandbox.workspaceRef,
+		executionId,
+		sandboxName: sandbox.sandboxName,
+		rootPath: sandbox.rootPath,
+		workingDir: sandbox.workingDir,
+		provider: sandbox.provider,
 		previewId,
-		repoPath: body.repoPath?.trim() || sandbox.workingDir,
+		repoPath: body.repoPath?.trim() || undefined,
 		installCommand: body.installCommand?.trim() || undefined,
 		devServerCommand: body.devServerCommand?.trim() || undefined,
 		baseUrl: body.baseUrl?.trim() || 'http://127.0.0.1:3009',
@@ -55,16 +68,19 @@ export const POST: RequestHandler = async ({ params, request, url }) => {
 
 	const proxyBasePath = `/api/workflows/executions/${encodeURIComponent(executionId)}/sandbox-preview/${encodeURIComponent(previewId)}`;
 	const pageBasePath = `/workflows/runtime-preview/${encodeURIComponent(executionId)}?previewId=${encodeURIComponent(previewId)}`;
+	const origin = publicOrigin(request, url);
 
 	return json({
 		success: true,
 		executionId,
 		previewId,
 		workspaceRef: sandbox.workspaceRef,
+		sandboxName: sandbox.sandboxName,
+		rootPath: sandbox.rootPath,
 		workingDir: sandbox.workingDir,
 		provider: sandbox.provider,
-		proxyUrl: `${url.origin}${proxyBasePath}/`,
-		pageUrl: `${url.origin}${pageBasePath}`,
+		proxyUrl: `${origin}${proxyBasePath}/`,
+		pageUrl: `${origin}${pageBasePath}`,
 		runtime: result
 	});
 };

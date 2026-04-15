@@ -1348,6 +1348,10 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               pluginId === "browser" && toolId === "capture-flow";
             const isBrowserValidate =
               pluginId === "browser" && toolId === "validate";
+            const isBrowserStartPreview =
+              pluginId === "browser" && toolId === "start-preview";
+            const isBrowserStopPreview =
+              pluginId === "browser" && toolId === "stop-preview";
             const isWorkspaceUtility =
               isWorkspaceProfile ||
               isWorkspaceClone ||
@@ -1363,7 +1367,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               isBrowserCleanup ||
               isBrowserMaterializeChangeArtifact ||
               isBrowserCaptureFlow ||
-              isBrowserValidate;
+              isBrowserValidate ||
+              isBrowserStartPreview ||
+              isBrowserStopPreview;
             requestTimeoutMs = isBuiltinRuntime
               ? isWorkspaceUtility || isBrowserUtility
                 ? resolveWorkspaceUtilityTimeoutMs({
@@ -1371,7 +1377,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                     timeoutMs: args.timeoutMs,
                     commandTimeoutMs: args.commandTimeoutMs,
                   }) +
-                  (isBrowserCaptureFlow || isBrowserValidate
+                  (isBrowserCaptureFlow ||
+                  isBrowserValidate ||
+                  isBrowserStartPreview
                     ? BROWSER_CAPTURE_OVERHEAD_MS
                     : 0)
                 : resolveAgentHttpTimeoutMs(args.timeoutMinutes)
@@ -1454,7 +1462,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               isBrowserCommand ||
               isBrowserCleanup ||
               isBrowserMaterializeChangeArtifact ||
-              isBrowserCaptureFlow
+              isBrowserCaptureFlow ||
+              isBrowserStartPreview ||
+              isBrowserStopPreview
                 ? await resolveOpenFunctionUrl("workspace-runtime")
                 : undefined;
 
@@ -1979,6 +1989,50 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 nodeId: browserNodeId,
                 nodeName: browserNodeName,
               });
+            } else if (isBrowserStartPreview) {
+              targetUrl = `${functionUrl}/api/workspaces/preview/start`;
+              const previewId =
+                typeof args.previewId === "string" &&
+                args.previewId.trim().length > 0
+                  ? args.previewId.trim()
+                  : browserNodeId && workspaceExecutionId
+                    ? `${workspaceExecutionId}-${browserNodeId}`
+                    : args.workspaceRef;
+              requestBody = JSON.stringify({
+                executionId: workspaceExecutionId,
+                dbExecutionId: browserDbExecutionId,
+                workspaceRef: args.workspaceRef,
+                sandboxName: args.sandboxName,
+                rootPath: args.rootPath,
+                workingDir: args.workingDir ?? args.workingDirectory,
+                provider: args.provider,
+                previewId,
+                repoPath: args.repoPath,
+                installCommand: args.installCommand,
+                devServerCommand: args.devServerCommand,
+                baseUrl: args.baseUrl,
+                timeoutSeconds: args.timeoutSeconds,
+                keepAlive: args.keepAlive,
+                workflowId: browserWorkflowId,
+                nodeId: browserNodeId,
+                nodeName: browserNodeName,
+              });
+            } else if (isBrowserStopPreview) {
+              targetUrl = `${functionUrl}/api/workspaces/preview/stop`;
+              const previewId =
+                typeof args.previewId === "string" &&
+                args.previewId.trim().length > 0
+                  ? args.previewId.trim()
+                  : browserNodeId && workspaceExecutionId
+                    ? `${workspaceExecutionId}-${browserNodeId}`
+                    : args.workspaceRef;
+              requestBody = JSON.stringify({
+                previewId,
+                workspaceRef: args.workspaceRef,
+                workflowId: browserWorkflowId,
+                nodeId: browserNodeId,
+                nodeName: browserNodeName,
+              });
             } else {
               targetUrl = `${functionUrl}/api/tools/${encodeURIComponent(toolId)}`;
               requestBody = JSON.stringify({ args });
@@ -2095,7 +2149,9 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 isBrowserCleanup ||
                 isBrowserMaterializeChangeArtifact ||
                 isBrowserCaptureFlow ||
-                isBrowserValidate)
+                isBrowserValidate ||
+                isBrowserStartPreview ||
+                isBrowserStopPreview)
             ) {
               resolvedMastra = {
                 success: true,

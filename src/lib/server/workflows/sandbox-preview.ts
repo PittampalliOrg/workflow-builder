@@ -5,6 +5,8 @@ import { desc, eq } from 'drizzle-orm';
 export interface ExecutionSandboxPreviewInfo {
 	executionId: string;
 	workspaceRef: string;
+	sandboxName: string;
+	rootPath: string;
 	workingDir: string;
 	provider: string;
 	kept: boolean;
@@ -70,11 +72,21 @@ export async function getExecutionSandboxPreviewInfo(
 		asString(workspace?.workspaceRef) ||
 		asString(workflowOutput?.sandboxWorkspaceRef) ||
 		asString(initializeData?.sandbox_id);
-	const workingDir =
+	const sandboxName =
+		asString(workspaceDetails?.sandboxName) ||
+		asString(workspaceDetails?.name) ||
+		asString(workflowOutput?.sandboxName) ||
+		asString(initializeData?.sandbox_name);
+	const rootPath =
 		asString(workspace?.rootPath) ||
+		asString(sandboxState?.rootPath) ||
+		asString(workflowOutput?.sandboxRootPath) ||
+		asString(initializeData?.root_path);
+	const workingDir =
 		asString(sandboxState?.workingDirectory) ||
 		asString(workflowOutput?.sandboxWorkingDir) ||
-		asString(initializeData?.working_dir);
+		asString(initializeData?.working_dir) ||
+		rootPath;
 	const provider =
 		asString(workspaceDetails?.provider) ||
 		asString(workflowOutput?.sandboxProvider) ||
@@ -92,6 +104,8 @@ export async function getExecutionSandboxPreviewInfo(
 	return {
 		executionId,
 		workspaceRef,
+		sandboxName,
+		rootPath,
 		workingDir,
 		provider,
 		kept

@@ -318,6 +318,254 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
   };
 }
 
+function buildBrowserPreviewDetails(): ActionCatalogDetail[] {
+  const startTaskConfig = {
+    call: "browser/start-preview",
+    with: {
+      body: {
+        input: {
+          workspaceRef: "",
+          previewId: "",
+          repoPath: "",
+          installCommand: "",
+          devServerCommand: "",
+          baseUrl: "http://127.0.0.1:3009",
+          timeoutSeconds: 240,
+          timeoutMs: 300000,
+          keepAlive: true,
+        },
+      },
+    },
+  };
+  const stopTaskConfig = {
+    call: "browser/stop-preview",
+    with: {
+      body: {
+        input: {
+          previewId: "",
+          workspaceRef: "",
+          timeoutMs: 30000,
+        },
+      },
+    },
+  };
+
+  const runtime = buildRuntimeStatus(
+    true,
+    ["openshell-agent-runtime", "generated-app-preview"],
+    [],
+  );
+
+  return [
+    {
+      id: buildActionId("builtin", "browser/start-preview"),
+      slug: "browser/start-preview",
+      name: "browser/start-preview",
+      displayName: "Start App Preview",
+      description:
+        "Start an interactive preview server for a generated app in a retained OpenShell sandbox.",
+      providerId: "browser",
+      providerLabel: "Browser",
+      providerIconUrl: null,
+      category: "preview",
+      serviceId: "openshell-agent-runtime",
+      kind: "dapr-activity",
+      visibility: "public-callable",
+      compatibility: "compatible",
+      group: "Browser",
+      version: "1.0.0",
+      language: "python",
+      entrypoint: "start-preview",
+      sourceKind: "activity",
+      insertable: true,
+      auth: null,
+      fields: null,
+      tags: ["browser", "preview", "openshell", "sandbox"],
+      doc:
+        "Snapshots the workspace from an OpenShell sandbox, auto-detects the app directory unless repoPath is set, installs dependencies, starts a local server, and returns preview metadata.",
+      inputSchema: {
+        type: "object",
+        required: ["workspaceRef"],
+        properties: {
+          workspaceRef: {
+            type: "string",
+            title: "Workspace Ref",
+            description:
+              "Workspace reference from a prior workspace/profile or durable/run step, for example ${ .workspace_profile.workspaceRef }.",
+          },
+          previewId: {
+            type: "string",
+            title: "Preview ID",
+            description:
+              "Optional stable preview identifier. Defaults to the workflow execution and node when omitted.",
+          },
+          sandboxName: {
+            type: "string",
+            title: "Sandbox Name",
+            description:
+              "Optional OpenShell sandbox name. Needed only when restarting a preview after runtime memory was lost.",
+          },
+          rootPath: {
+            type: "string",
+            title: "Sandbox Root Path",
+            default: "/sandbox",
+            description:
+              "Root path inside the sandbox. Defaults to /sandbox.",
+          },
+          workingDir: {
+            type: "string",
+            title: "Working Directory",
+            default: "/sandbox",
+            description:
+              "Working directory inside the sandbox. Usually /sandbox or the app root.",
+          },
+          repoPath: {
+            type: "string",
+            title: "App Path",
+            description:
+              "Optional app path inside the sandbox, such as /sandbox/my-app. Leave blank to auto-detect package.json or index.html.",
+          },
+          installCommand: {
+            type: "string",
+            title: "Install Command",
+            format: "textarea",
+            description:
+              "Optional dependency install command. Leave blank to infer from package manager files.",
+          },
+          devServerCommand: {
+            type: "string",
+            title: "Dev Server Command",
+            format: "textarea",
+            description:
+              "Optional server command. Supports {port}, $PORT, ${PORT}, and {baseUrl}; leave blank to infer.",
+          },
+          baseUrl: {
+            type: "string",
+            title: "Base URL",
+            default: "http://127.0.0.1:3009",
+            description:
+              "Requested local URL shape. The runtime will replace the port with an available internal port.",
+          },
+          timeoutSeconds: {
+            type: "integer",
+            title: "Readiness Timeout Seconds",
+            default: 240,
+            description:
+              "How long the runtime waits for the preview server to become ready.",
+          },
+          timeoutMs: {
+            type: "integer",
+            title: "Router Timeout Milliseconds",
+            default: 300000,
+            description:
+              "Function-router HTTP timeout for the preview start action.",
+          },
+          keepAlive: {
+            type: "boolean",
+            title: "Keep Preview Alive",
+            default: true,
+            description:
+              "Keep the preview server running after this action completes so the run detail page can link to it.",
+          },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          success: { type: "boolean" },
+          previewId: { type: "string" },
+          workspaceRef: { type: "string" },
+          proxyPath: { type: "string" },
+          baseUrl: { type: "string" },
+          workingDirectory: { type: "string" },
+          resolvedAppPath: { type: "string" },
+          appPathSource: { type: "string" },
+          sandbox: { type: "object" },
+        },
+      },
+      semanticModel: null,
+      sourceCode: null,
+      sourceHtml: null,
+      sw: {
+        functionName: "browser/start-preview",
+        definition: startTaskConfig,
+        taskConfig: startTaskConfig,
+        warnings: [],
+      },
+      runtime,
+      rendered: null,
+      raw: null,
+    },
+    {
+      id: buildActionId("builtin", "browser/stop-preview"),
+      slug: "browser/stop-preview",
+      name: "browser/stop-preview",
+      displayName: "Stop App Preview",
+      description: "Stop a running generated app preview server.",
+      providerId: "browser",
+      providerLabel: "Browser",
+      providerIconUrl: null,
+      category: "preview",
+      serviceId: "openshell-agent-runtime",
+      kind: "dapr-activity",
+      visibility: "public-callable",
+      compatibility: "compatible",
+      group: "Browser",
+      version: "1.0.0",
+      language: "python",
+      entrypoint: "stop-preview",
+      sourceKind: "activity",
+      insertable: true,
+      auth: null,
+      fields: null,
+      tags: ["browser", "preview", "openshell", "sandbox"],
+      doc: "Stops a preview session previously started with browser/start-preview.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          previewId: {
+            type: "string",
+            title: "Preview ID",
+            description:
+              "Preview identifier to stop. If omitted, workspaceRef is used.",
+          },
+          workspaceRef: {
+            type: "string",
+            title: "Workspace Ref",
+            description:
+              "Workspace reference used as a fallback preview identifier.",
+          },
+          timeoutMs: {
+            type: "integer",
+            title: "Router Timeout Milliseconds",
+            default: 30000,
+          },
+        },
+      },
+      outputSchema: {
+        type: "object",
+        properties: {
+          success: { type: "boolean" },
+          previewId: { type: "string" },
+          status: { type: "string" },
+        },
+      },
+      semanticModel: null,
+      sourceCode: null,
+      sourceHtml: null,
+      sw: {
+        functionName: "browser/stop-preview",
+        definition: stopTaskConfig,
+        taskConfig: stopTaskConfig,
+        warnings: [],
+      },
+      runtime,
+      rendered: null,
+      raw: null,
+    },
+  ];
+}
+
 const RETIRED_AGENT_ACTION_PREFIXES = new Set([
   "agent",
   "mastra",
@@ -1082,7 +1330,10 @@ async function loadRemoteActionCache(): Promise<ActionCatalogDetail[]> {
     REMOTE_SERVICES.map((service) => fetchRemoteService(service)),
   );
 
-  const actions: ActionCatalogDetail[] = [buildDaprAgentPyDetail()];
+  const actions: ActionCatalogDetail[] = [
+    buildDaprAgentPyDetail(),
+    ...buildBrowserPreviewDetails(),
+  ];
   const services: ActionCatalogServiceSnapshot[] = [];
   const partialErrors: { serviceId: string; error: string }[] = [];
   for (const result of settled) {
