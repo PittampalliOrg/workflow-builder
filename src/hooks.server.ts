@@ -6,7 +6,7 @@ const authHandle: Handle = async ({ event, resolve }) => {
 	const session = await getSession(event.request, event.cookies);
 
 	event.locals.session = session
-		? { userId: session.user.id, email: session.user.email }
+		? { userId: session.user.id, email: session.user.email, projectId: session.user.projectId }
 		: null;
 
 	return resolve(event);

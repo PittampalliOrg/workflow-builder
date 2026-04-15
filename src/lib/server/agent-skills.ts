@@ -1,14 +1,14 @@
 import { createHash } from 'node:crypto';
 import { posix as posixPath } from 'node:path';
 import yaml from 'js-yaml';
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import {
 	DEFAULT_CURATED_AGENT_SKILLS,
 	type AgentSkillConfig,
 	type AgentSkillRegistryEntry
 } from '$lib/agent-skill-presets';
 import { db } from '$lib/server/db';
-import { agentSkillRegistry, users } from '$lib/server/db/schema';
+import { agentSkillRegistry, projectMembers, users } from '$lib/server/db/schema';
 import { env } from '$env/dynamic/private';
 
 type SkillFrontmatter = Record<string, unknown>;
@@ -586,12 +586,28 @@ export async function setAgentSkillStatus(idOrSlug: string, status: 'ENABLED' | 
 	return rowToSkill(bySlug);
 }
 
-export async function canManageAgentSkills(userId: string): Promise<boolean> {
+export async function canManageAgentSkills(userId: string, projectId?: string): Promise<boolean> {
 	if (!db) return true;
 	const [user] = await db
 		.select({ platformRole: users.platformRole })
 		.from(users)
 		.where(eq(users.id, userId))
 		.limit(1);
-	return user?.platformRole === 'ADMIN';
+	if (user?.platformRole === 'ADMIN') return true;
+
+	if (projectId) {
+		const [member] = await db
+			.select({ role: projectMembers.role })
+			.from(projectMembers)
+			.where(and(eq(projectMembers.userId, userId), eq(projectMembers.projectId, projectId)))
+			.limit(1);
+		return member?.role === 'ADMIN';
+	}
+
+	const [adminMembership] = await db
+		.select({ role: projectMembers.role })
+		.from(projectMembers)
+		.where(and(eq(projectMembers.userId, userId), eq(projectMembers.role, 'ADMIN')))
+		.limit(1);
+	return adminMembership?.role === 'ADMIN';
 }

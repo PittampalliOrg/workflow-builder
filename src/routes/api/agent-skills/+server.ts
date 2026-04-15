@@ -6,6 +6,6 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
 	const includeDisabled = url.searchParams.get('includeDisabled') === 'true';
 	const skills = await listAgentSkills({ includeDisabled });
-	const canManage = await canManageAgentSkills(locals.session.userId);
+	const canManage = await canManageAgentSkills(locals.session.userId, locals.session.projectId);
 	return json({ skills, canManage });
 };

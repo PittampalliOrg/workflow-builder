@@ -9,6 +9,7 @@ declare global {
 			session: {
 				userId: string;
 				email: string;
+				projectId: string;
 			} | null;
 		}
 		// interface PageData {}

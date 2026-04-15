@@ -253,7 +253,8 @@
 						{#if !canManage}
 							<Alert>
 								<AlertDescription>
-									Only platform admins can import, enable, or disable global skills.
+									Only platform admins or admins of the active project can import, enable, or
+									disable global skills.
 								</AlertDescription>
 							</Alert>
 						{/if}

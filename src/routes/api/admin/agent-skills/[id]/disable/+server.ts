@@ -4,7 +4,7 @@ import { canManageAgentSkills, setAgentSkillStatus } from '$lib/server/agent-ski
 
 export const POST: RequestHandler = async ({ locals, params }) => {
 	if (!locals.session?.userId) return error(401, 'Unauthorized');
-	if (!(await canManageAgentSkills(locals.session.userId))) return error(403, 'Forbidden');
+	if (!(await canManageAgentSkills(locals.session.userId, locals.session.projectId))) return error(403, 'Forbidden');
 	try {
 		const skill = await setAgentSkillStatus(decodeURIComponent(params.id), 'DISABLED');
 		return json({ skill });
