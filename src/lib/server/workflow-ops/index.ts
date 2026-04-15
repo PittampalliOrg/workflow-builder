@@ -2,7 +2,7 @@ import { desc, eq, or } from 'drizzle-orm';
 import { error } from '@sveltejs/kit';
 import { db } from '$lib/server/db';
 import { workflowAgentRuns, workflowExecutions, workflows } from '$lib/server/db/schema';
-import { daprFetch, getDaprAgentPyUrl, getOrchestratorUrl } from '$lib/server/dapr-client';
+import { daprFetch, getDaprAgentPyUrls, getOrchestratorUrl } from '$lib/server/dapr-client';
 import {
 	getCodeCheckpoint,
 	listCodeCheckpointsForExecution
@@ -387,24 +387,26 @@ async function agentJson(
 ): Promise<{ runtime: string; body: unknown }> {
 	let lastError: unknown;
 	for (const runtime of candidateAgentRuntimes(agentRun)) {
-		let response: Response;
-		try {
-			response = await daprFetch(`${getDaprAgentPyUrl(runtime)}${path}`, {
-				...init,
-				signal: init.signal ?? AbortSignal.timeout(5000),
-				headers: {
-					...(init.body ? { 'Content-Type': 'application/json' } : {}),
-					...(init.headers ?? {})
-				}
-			});
-		} catch (err) {
-			lastError = err;
-			continue;
+		for (const baseUrl of getDaprAgentPyUrls(runtime)) {
+			let response: Response;
+			try {
+				response = await daprFetch(`${baseUrl}${path}`, {
+					...init,
+					signal: init.signal ?? AbortSignal.timeout(5000),
+					headers: {
+						...(init.body ? { 'Content-Type': 'application/json' } : {}),
+						...(init.headers ?? {})
+					}
+				});
+			} catch (err) {
+				lastError = err;
+				continue;
+			}
+			const body = await readJsonResponse(response);
+			if (response.ok) return { runtime, body };
+			lastError = { status: response.status, body };
+			if (response.status !== 404) break;
 		}
-		const body = await readJsonResponse(response);
-		if (response.ok) return { runtime, body };
-		lastError = { status: response.status, body };
-		if (response.status !== 404) break;
 	}
 	if (lastError instanceof Error) {
 		throw error(502, { message: lastError.message });
