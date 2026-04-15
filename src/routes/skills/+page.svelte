@@ -75,7 +75,8 @@
 		try {
 			const response = await fetch(`/api/agent-skills/search?q=${encodeURIComponent(searchQuery)}`);
 			if (!response.ok) {
-				errorMessage = `Search failed (${response.status})`;
+				const payload = await response.json().catch(() => null);
+				errorMessage = payload?.error || `Search failed (${response.status})`;
 				return;
 			}
 			const payload = await response.json();

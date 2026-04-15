@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { and, asc, eq } from 'drizzle-orm';
 import type {
@@ -11,6 +12,7 @@ import { agentSkillRegistry, projectMembers, users } from '$lib/server/db/schema
 const execFileAsync = promisify(execFile);
 const SKILLS_CLI_PACKAGE = 'skills@1.5.0';
 const DEFAULT_INSTALL_AGENT = 'universal';
+const SKILLS_CLI_HOME = `${tmpdir()}/workflow-builder-skills`;
 
 export type SkillMetadataInput = {
 	name?: string;
@@ -198,16 +200,21 @@ export type SkillSearchResult = AgentSkillRegistryEntry & {
 	installs?: string;
 };
 
-export async function searchSkills(query: string): Promise<SkillSearchResult[]> {
-	const q = query.trim();
-	if (!q) return [];
-	const { stdout, stderr } = await execFileAsync(
-		'npx',
-		['--yes', SKILLS_CLI_PACKAGE, 'find', q],
-		{ timeout: 30_000, maxBuffer: 1024 * 1024 }
-	);
-	const output = stripAnsi(`${stdout}\n${stderr}`);
-	const lines = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+export function skillsCliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const home = env.HOME && env.HOME !== '/' ? env.HOME : SKILLS_CLI_HOME;
+	const npmCache = env.NPM_CONFIG_CACHE || env.npm_config_cache || `${SKILLS_CLI_HOME}/.npm`;
+	return {
+		...env,
+		HOME: home,
+		XDG_CACHE_HOME: env.XDG_CACHE_HOME || `${SKILLS_CLI_HOME}/.cache`,
+		NPM_CONFIG_CACHE: npmCache,
+		npm_config_cache: npmCache
+	};
+}
+
+export function parseSkillSearchOutput(output: string): SkillSearchResult[] {
+	const normalizedOutput = stripAnsi(output);
+	const lines = normalizedOutput.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 	const results: SkillSearchResult[] = [];
 
 	for (let i = 0; i < lines.length; i += 1) {
@@ -239,6 +246,21 @@ export async function searchSkills(query: string): Promise<SkillSearchResult[]> 
 	}
 
 	return results;
+}
+
+export async function searchSkills(query: string): Promise<SkillSearchResult[]> {
+	const q = query.trim();
+	if (!q) return [];
+	const { stdout, stderr } = await execFileAsync(
+		'npx',
+		['--yes', SKILLS_CLI_PACKAGE, 'find', q],
+		{
+			timeout: 30_000,
+			maxBuffer: 1024 * 1024,
+			env: skillsCliEnv()
+		}
+	);
+	return parseSkillSearchOutput(`${stdout}\n${stderr}`);
 }
 
 export async function canManageAgentSkills(userId: string, projectId?: string): Promise<boolean> {
