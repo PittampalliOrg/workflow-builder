@@ -604,6 +604,118 @@ def _parse_optional_int(value: Any) -> int | None:
     return None
 
 
+def _tool_set(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {str(item).strip() for item in value if str(item).strip()}
+
+
+def _skill_key(item: dict[str, Any]) -> str:
+    return str(item.get("name") or "").strip().lower()
+
+
+def _skill_when_to_use(item: dict[str, Any]) -> str:
+    return str(item.get("whenToUse") or item.get("when_to_use") or "").strip()
+
+
+def _skill_argument_hint(item: dict[str, Any]) -> str:
+    return str(item.get("argumentHint") or item.get("argument_hint") or "").strip()
+
+
+def _skill_bool(
+    item: dict[str, Any],
+    camel_key: str,
+    snake_key: str,
+    default: bool,
+) -> bool:
+    value = item.get(camel_key, item.get(snake_key, default))
+    return bool(value)
+
+
+def _canonical_skill(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": _skill_key(item),
+        "description": str(item.get("description") or "").strip(),
+        "prompt": str(item.get("prompt") or "").strip(),
+        "whenToUse": _skill_when_to_use(item),
+        "allowedTools": sorted(
+            _tool_set(item.get("allowedTools") or item.get("allowed_tools"))
+        ),
+        "arguments": sorted(_tool_set(item.get("arguments"))),
+        "argumentHint": _skill_argument_hint(item),
+        "model": str(item.get("model") or "").strip(),
+        "userInvocable": _skill_bool(item, "userInvocable", "user_invocable", True),
+        "disableModelInvocation": _skill_bool(
+            item,
+            "disableModelInvocation",
+            "disable_model_invocation",
+            False,
+        ),
+    }
+
+
+def _validate_agent_skill_profile_policy(agent_config: Any) -> None:
+    if not isinstance(agent_config, dict) or not agent_config.get("profileRef"):
+        return
+    profile_snapshot = (
+        agent_config.get("profileSnapshot")
+        if isinstance(agent_config.get("profileSnapshot"), dict)
+        else {}
+    )
+    profile_policy = (
+        agent_config.get("runtimeOverridePolicy")
+        if isinstance(agent_config.get("runtimeOverridePolicy"), dict)
+        else profile_snapshot.get("runtimeOverridePolicy")
+        if isinstance(profile_snapshot.get("runtimeOverridePolicy"), dict)
+        else {}
+    )
+    skill_list = [
+        item
+        for item in (
+            agent_config.get("skills")
+            if isinstance(agent_config.get("skills"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ]
+    profile_skills = [
+        item
+        for item in (
+            profile_snapshot.get("skills")
+            if isinstance(profile_snapshot.get("skills"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ]
+    profile_skills_by_key = {
+        _skill_key(item): item for item in profile_skills if _skill_key(item)
+    }
+    for item in skill_list:
+        key = _skill_key(item)
+        profile_skill = profile_skills_by_key.get(key)
+        if profile_skill is None:
+            if profile_policy.get("allowSkillAdditions") is True:
+                continue
+            raise RuntimeError(
+                f"Skill '{key or 'unknown'}' is not allowed by the selected agent profile."
+            )
+        if (
+            profile_policy.get("allowSkillNarrowing") is False
+            and _canonical_skill(item) != _canonical_skill(profile_skill)
+        ):
+            raise RuntimeError(
+                f"Skill '{key}' cannot be modified by this selected agent profile."
+            )
+        requested_tools = _tool_set(item.get("allowedTools") or item.get("allowed_tools"))
+        profile_tools = _tool_set(
+            profile_skill.get("allowedTools") or profile_skill.get("allowed_tools")
+        )
+        if requested_tools and profile_tools and not requested_tools.issubset(profile_tools):
+            raise RuntimeError(
+                f"Skill '{key}' requested tools outside the selected agent profile."
+            )
+
+
 def _stop_condition_implies_file_changes(stop_condition: str) -> bool:
     normalized = stop_condition.lower()
     requires_change_terms = [
@@ -815,6 +927,72 @@ def _run_native_durable_agent_child_workflow(
         )
         if isinstance(item, dict)
     ]
+    profile_snapshot = (
+        existing_config.get("profileSnapshot")
+        if isinstance(existing_config.get("profileSnapshot"), dict)
+        else {}
+    )
+    profile_policy = (
+        existing_config.get("runtimeOverridePolicy")
+        if isinstance(existing_config.get("runtimeOverridePolicy"), dict)
+        else profile_snapshot.get("runtimeOverridePolicy")
+        if isinstance(profile_snapshot.get("runtimeOverridePolicy"), dict)
+        else {}
+    )
+
+    def _mcp_key(item: dict[str, Any]) -> str:
+        return str(
+            item.get("server_name")
+            or item.get("serverName")
+            or item.get("name")
+            or item.get("pieceName")
+            or item.get("displayName")
+            or item.get("url")
+            or item.get("serverUrl")
+            or item.get("command")
+            or ""
+        ).strip()
+
+    profile_mcp_servers = [
+        item
+        for item in (
+            profile_snapshot.get("mcpServers")
+            if isinstance(profile_snapshot.get("mcpServers"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ]
+    def _validate_mcp_profile_policy(server_list: list[dict[str, Any]]) -> None:
+        if not profile_mcp_servers or profile_policy.get("allowServerAdditions") is True:
+            return
+        profile_servers_by_key = {
+            _mcp_key(item): item for item in profile_mcp_servers if _mcp_key(item)
+        }
+        for item in server_list:
+            key = _mcp_key(item)
+            if key not in profile_servers_by_key:
+                raise RuntimeError(
+                    f"MCP server '{key or 'unknown'}' is not allowed by the selected agent profile."
+                )
+            requested_tools = _tool_set(item.get("allowedTools"))
+            profile_tools = _tool_set(profile_servers_by_key[key].get("allowedTools"))
+            if (
+                requested_tools
+                and profile_tools
+                and not requested_tools.issubset(profile_tools)
+            ):
+                raise RuntimeError(
+                    f"MCP server '{key}' requested tools outside the selected agent profile."
+                )
+
+    if profile_mcp_servers and profile_policy.get("allowServerAdditions") is not True:
+        _validate_mcp_profile_policy(existing_mcp_server_list)
+    elif existing_config.get("profileRef") and existing_mcp_server_list and not profile_mcp_servers:
+        raise RuntimeError(
+            "Selected agent profile did not include a profileSnapshot.mcpServers baseline."
+        )
+    _validate_agent_skill_profile_policy(existing_config)
+
     mcp_connection_mode = (
         str(existing_config.get("mcpConnectionMode") or "").strip().lower()
     )
@@ -822,11 +1000,18 @@ def _run_native_durable_agent_child_workflow(
         "project",
         "auto",
         "all",
-    } or (not mcp_connection_mode and not existing_mcp_server_list)
+    }
+    has_unresolved_mcp_servers = any(
+        not (
+            str(item.get("url") or item.get("serverUrl") or "").strip()
+            or str(item.get("command") or "").strip()
+        )
+        for item in existing_mcp_server_list
+    )
 
     resolved_mcp_servers: list[dict[str, Any]] = []
     resolved_mcp_warnings: list[str] = []
-    if should_resolve_project_mcp:
+    if existing_mcp_server_list or should_resolve_project_mcp or has_unresolved_mcp_servers:
         try:
             from activities.resolve_mcp_config import resolve_agent_mcp_servers
 
@@ -835,6 +1020,8 @@ def _run_native_durable_agent_child_workflow(
                 input=_freeze(
                     {
                         "workflowId": tc.workflow_id,
+                        "requestedServers": existing_mcp_server_list,
+                        "includeProjectConnections": should_resolve_project_mcp,
                         "_otel": tc.otel_ctx,
                     }
                 ),
@@ -860,39 +1047,9 @@ def _run_native_durable_agent_child_workflow(
             )
 
     if resolved_mcp_servers or resolved_mcp_warnings:
-        seen_mcp_keys: set[str] = set()
-        for item in existing_mcp_server_list:
-            key = str(
-                item.get("server_name")
-                or item.get("serverName")
-                or item.get("name")
-                or item.get("url")
-                or item.get("serverUrl")
-                or ""
-            ).strip()
-            if key:
-                seen_mcp_keys.add(key)
-        appended_mcp_servers = []
-        for item in resolved_mcp_servers:
-            key = str(
-                item.get("server_name")
-                or item.get("serverName")
-                or item.get("name")
-                or item.get("url")
-                or item.get("serverUrl")
-                or ""
-            ).strip()
-            if key and key in seen_mcp_keys:
-                continue
-            if key:
-                seen_mcp_keys.add(key)
-            appended_mcp_servers.append(item)
         agent_config = {
             **existing_config,
-            "mcpServers": [
-                *existing_mcp_server_list,
-                *appended_mcp_servers,
-            ],
+            "mcpServers": resolved_mcp_servers,
         }
         if resolved_mcp_warnings:
             existing_warnings = existing_config.get("mcpConnectionWarnings")
@@ -904,6 +1061,13 @@ def _run_native_durable_agent_child_workflow(
                 ),
                 *resolved_mcp_warnings,
             ]
+        _validate_mcp_profile_policy(
+            [
+                item
+                for item in agent_config.get("mcpServers", [])
+                if isinstance(item, dict)
+            ]
+        )
 
     child_input = {
         "task": run_prompt,
@@ -1147,6 +1311,11 @@ def _handle_call_task(
             raw_config["metadata"] = body_metadata
 
     resolved_config = raw_config
+    if action_type in _NATIVE_DURABLE_AGENT_ACTION_TYPES and isinstance(resolved_config, dict):
+        agent_config = resolved_config.get("agentConfig")
+        if not isinstance(agent_config, dict) and isinstance(resolved_config.get("body"), dict):
+            agent_config = resolved_config["body"].get("agentConfig")
+        _validate_agent_skill_profile_policy(agent_config)
 
     node_compat = {
         "id": task_name,

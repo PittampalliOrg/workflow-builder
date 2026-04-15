@@ -34,6 +34,8 @@
 	let mcpConnectionsLoading = $state(false);
 	let mcpToolInventories = $state<Record<string, string[]>>({});
 	let mcpToolLoadingId = $state<string | null>(null);
+	let agentProfiles = $state<AgentProfile[]>([]);
+	let agentProfilesLoading = $state(false);
 
 	type McpServerConfig = {
 		server_name?: string;
@@ -68,6 +70,54 @@
 		serverUrl: string | null;
 		status: string;
 		metadata: Record<string, unknown> | null;
+	};
+
+	type AgentSkillConfig = {
+		name: string;
+		description?: string;
+		prompt: string;
+		whenToUse?: string;
+		when_to_use?: string;
+		allowedTools?: string[];
+		allowed_tools?: string[];
+		arguments?: string[];
+		argumentHint?: string;
+		argument_hint?: string;
+		model?: string;
+		userInvocable?: boolean;
+		user_invocable?: boolean;
+		disableModelInvocation?: boolean;
+		disable_model_invocation?: boolean;
+		sourceType?: 'profile' | 'inline' | 'preset';
+	};
+
+	type AgentRuntimeOverridePolicy = {
+		allowToolNarrowing?: boolean;
+		allowServerAdditions?: boolean;
+		allowCredentialBinding?: boolean;
+		allowSkillAdditions?: boolean;
+		allowSkillNarrowing?: boolean;
+	};
+
+	type AgentProfile = {
+		id: string;
+		templateId: string;
+		slug: string;
+		name: string;
+		description: string | null;
+		category: string | null;
+		version: number;
+		source: string;
+		config: {
+			modelSpec?: string;
+			maxTurns?: number;
+			timeoutMinutes?: number;
+			builtinTools?: string[];
+			mcpConnectionMode?: string;
+			mcpServers?: McpServerConfig[];
+			skills?: AgentSkillConfig[];
+			runtimeOverridePolicy?: AgentRuntimeOverridePolicy;
+		};
 	};
 
 	const MCP_PRESETS: McpServerConfig[] = [
@@ -123,12 +173,27 @@
 	let mcpServers = $derived(
 		(Array.isArray(agentConfig.mcpServers) ? agentConfig.mcpServers : []) as McpServerConfig[]
 	);
+	let skills = $derived(
+		(Array.isArray(agentConfig.skills) ? agentConfig.skills : []) as AgentSkillConfig[]
+	);
 	let mcpConnectionMode = $derived(
-		typeof agentConfig.mcpConnectionMode === 'string' ? agentConfig.mcpConnectionMode : 'project'
+		typeof agentConfig.mcpConnectionMode === 'string' ? agentConfig.mcpConnectionMode : 'explicit'
+	);
+	let selectedProfileSlug = $derived(
+		((agentConfig.profileRef as Record<string, unknown> | undefined)?.slug as string | undefined) || ''
+	);
+	let selectedProfile = $derived(
+		agentProfiles.find((profile) => profile.slug === selectedProfileSlug) || null
+	);
+	let activeRuntimePolicy = $derived(
+		((agentConfig.runtimeOverridePolicy as AgentRuntimeOverridePolicy | undefined) ||
+			selectedProfile?.config.runtimeOverridePolicy ||
+			{}) as AgentRuntimeOverridePolicy
 	);
 
 	onMount(() => {
 		void loadMcpConnections();
+		void loadAgentProfiles();
 	});
 
 	function updateBody(updates: Record<string, unknown>) {
@@ -208,6 +273,21 @@
 		}
 	}
 
+	async function loadAgentProfiles() {
+		agentProfilesLoading = true;
+		try {
+			const response = await fetch('/api/agent-profiles');
+			if (response.ok) {
+				const payload = await response.json();
+				agentProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+			}
+		} catch {
+			agentProfiles = [];
+		} finally {
+			agentProfilesLoading = false;
+		}
+	}
+
 	function normalizeMcpName(value: unknown): string {
 		const normalized = String(value || '')
 			.trim()
@@ -244,6 +324,73 @@
 		return normalizeMcpName(base);
 	}
 
+	function serverAliasKeys(server: McpServerConfig): Set<string> {
+		const aliases = new Set<string>([serverKey(server)]);
+		for (const candidate of [
+			server.server_name,
+			server.serverName,
+			server.name,
+			server.pieceName,
+			server.displayName,
+			server.url,
+			server.serverUrl,
+			server.command
+		]) {
+			if (candidate) aliases.add(normalizeMcpName(candidate));
+		}
+		if (server.sourceType === 'nimble_piece' && server.pieceName) {
+			aliases.add(normalizeMcpName(`piece_${server.pieceName}`));
+		}
+		if (server.sourceType === 'nimble_shared' && server.pieceName) {
+			aliases.add(normalizeMcpName(`shared_${server.pieceName}`));
+		}
+		if (server.sourceType === 'custom_url' && (server.url || server.serverUrl)) {
+			aliases.add(normalizeMcpName(`custom_${server.url || server.serverUrl}`));
+		}
+		return aliases;
+	}
+
+	function connectionAliasKeys(connection: McpConnection): Set<string> {
+		const aliases = new Set<string>([connectionServerName(connection)]);
+		for (const candidate of [
+			connection.pieceName,
+			connection.serverKey,
+			connection.displayName,
+			connection.serverUrl,
+			connection.id
+		]) {
+			if (candidate) aliases.add(normalizeMcpName(candidate));
+		}
+		if (connection.sourceType === 'nimble_piece' && connection.pieceName) {
+			aliases.add(normalizeMcpName(`piece_${connection.pieceName}`));
+		}
+		if (connection.sourceType === 'nimble_shared' && connection.pieceName) {
+			aliases.add(normalizeMcpName(`shared_${connection.pieceName}`));
+		}
+		if (connection.sourceType === 'custom_url' && connection.serverUrl) {
+			aliases.add(normalizeMcpName(`custom_${connection.serverUrl}`));
+		}
+		return aliases;
+	}
+
+	function serverMatchesConnection(server: McpServerConfig, connection: McpConnection): boolean {
+		if (
+			server.connectionExternalId &&
+			connection.connectionExternalId &&
+			server.connectionExternalId === connection.connectionExternalId
+		) {
+			return true;
+		}
+		if ((server.url || server.serverUrl) && connection.serverUrl) {
+			if ((server.url || server.serverUrl) === connection.serverUrl) return true;
+		}
+		const connectionAliases = connectionAliasKeys(connection);
+		for (const alias of serverAliasKeys(server)) {
+			if (connectionAliases.has(alias)) return true;
+		}
+		return false;
+	}
+
 	function transportFromConnection(connection: McpConnection): string {
 		const metadata = metadataRecord(connection);
 		const raw = String(metadata.transport || metadata.transportType || 'streamable_http')
@@ -269,8 +416,23 @@
 		return mcpServers.find((server) => serverKey(server) === key) || null;
 	}
 
+	function selectedServerForConnection(connection: McpConnection): McpServerConfig | null {
+		return mcpServers.find((server) => serverMatchesConnection(server, connection)) || null;
+	}
+
+	function profileServerKeys(profile: AgentProfile | null): Set<string> {
+		return new Set((profile?.config.mcpServers || []).map((server) => serverKey(server)));
+	}
+
+	function canAddServer(server: McpServerConfig): boolean {
+		if (!selectedProfile) return true;
+		if (activeRuntimePolicy.allowServerAdditions === true) return true;
+		if (selectedServerByKey(serverKey(server))) return true;
+		return profileServerKeys(selectedProfile).has(serverKey(server));
+	}
+
 	function isConnectionSelected(connection: McpConnection): boolean {
-		return Boolean(selectedServerByKey(connectionServerName(connection)));
+		return Boolean(selectedServerForConnection(connection));
 	}
 
 	function isPresetSelected(preset: McpServerConfig): boolean {
@@ -283,7 +445,16 @@
 
 	function upsertMcpServer(server: McpServerConfig) {
 		const key = serverKey(server);
-		const next = mcpServers.filter((existing) => serverKey(existing) !== key);
+		const next = mcpServers.filter((existing) => {
+			if (
+				existing.connectionExternalId &&
+				server.connectionExternalId &&
+				existing.connectionExternalId === server.connectionExternalId
+			) {
+				return false;
+			}
+			return serverKey(existing) !== key;
+		});
 		setMcpServers([...next, server]);
 	}
 
@@ -291,13 +462,18 @@
 		setMcpServers(mcpServers.filter((server) => serverKey(server) !== key));
 	}
 
+	function removeConnectionServer(connection: McpConnection) {
+		setMcpServers(mcpServers.filter((server) => !serverMatchesConnection(server, connection)));
+	}
+
 	function toggleConnection(connection: McpConnection, checked: boolean) {
-		const key = connectionServerName(connection);
 		if (!checked) {
-			removeMcpServer(key);
+			removeConnectionServer(connection);
 			return;
 		}
-		upsertMcpServer(serverFromConnection(connection));
+		const server = serverFromConnection(connection);
+		if (!canAddServer(server)) return;
+		upsertMcpServer(server);
 	}
 
 	function togglePreset(preset: McpServerConfig, checked: boolean) {
@@ -305,7 +481,163 @@
 			removeMcpServer(serverKey(preset));
 			return;
 		}
+		if (!canAddServer(preset)) return;
 		upsertMcpServer(preset);
+	}
+
+	function applyProfile(profileSlug: string) {
+		const profile = agentProfiles.find((item) => item.slug === profileSlug);
+		if (!profile) {
+			updateAgentConfig({
+				profileRef: undefined,
+				profileSnapshot: undefined
+			});
+			return;
+		}
+		const profileConfig = profile.config || {};
+		const runtimeOverridePolicy = profileConfig.runtimeOverridePolicy || {
+			allowToolNarrowing: true,
+			allowServerAdditions: false,
+			allowCredentialBinding: true,
+			allowSkillAdditions: false,
+			allowSkillNarrowing: true
+		};
+		updateBody({
+			...(typeof profileConfig.maxTurns === 'number' ? { maxTurns: profileConfig.maxTurns } : {}),
+			...(typeof profileConfig.timeoutMinutes === 'number'
+				? { timeoutMinutes: profileConfig.timeoutMinutes }
+				: {}),
+			agentConfig: {
+				...agentConfig,
+				profileRef: {
+					templateId: profile.templateId,
+					templateVersion: profile.version,
+					slug: profile.slug,
+					source: profile.source
+				},
+				profileSnapshot: {
+					mcpServers: profileConfig.mcpServers || [],
+					skills: profileConfig.skills || [],
+					runtimeOverridePolicy
+				},
+				runtimeOverridePolicy,
+				...(profileConfig.modelSpec ? { modelSpec: profileConfig.modelSpec } : {}),
+				...(Array.isArray(profileConfig.builtinTools) ? { tools: profileConfig.builtinTools } : {}),
+				mcpConnectionMode: profileConfig.mcpConnectionMode || 'explicit',
+				mcpServers: profileConfig.mcpServers || [],
+				skills: profileConfig.skills || []
+			}
+		});
+	}
+
+	function normalizeSkillName(value: unknown): string {
+		return String(value || '')
+			.trim()
+			.toLowerCase()
+			.replace(/[^a-z0-9_-]+/g, '-')
+			.replace(/-+/g, '-')
+			.replace(/^-|-$/g, '');
+	}
+
+	function skillKey(skill: AgentSkillConfig): string {
+		return normalizeSkillName(skill.name);
+	}
+
+	function profileSkillKeys(profile: AgentProfile | null): Set<string> {
+		return new Set((profile?.config.skills || []).map((skill) => skillKey(skill)));
+	}
+
+	function isProfileSkill(skill: AgentSkillConfig): boolean {
+		return skill.sourceType === 'profile' || profileSkillKeys(selectedProfile).has(skillKey(skill));
+	}
+
+	function selectedSkillByKey(key: string): AgentSkillConfig | null {
+		return skills.find((skill) => skillKey(skill) === key) || null;
+	}
+
+	function canAddSkill(skill: AgentSkillConfig): boolean {
+		if (!selectedProfile) return true;
+		if (activeRuntimePolicy.allowSkillAdditions === true) return true;
+		if (selectedSkillByKey(skillKey(skill))) return true;
+		return profileSkillKeys(selectedProfile).has(skillKey(skill));
+	}
+
+	function canRemoveSkill(skill: AgentSkillConfig): boolean {
+		if (!isProfileSkill(skill)) return true;
+		return activeRuntimePolicy.allowSkillNarrowing !== false;
+	}
+
+	function setSkills(nextSkills: AgentSkillConfig[]) {
+		updateAgentConfig({ skills: nextSkills });
+	}
+
+	function upsertSkill(skill: AgentSkillConfig) {
+		const key = skillKey(skill);
+		if (!key || !canAddSkill(skill)) return;
+		const next = skills.filter((existing) => skillKey(existing) !== key);
+		setSkills([...next, skill]);
+	}
+
+	function removeSkill(skill: AgentSkillConfig) {
+		if (!canRemoveSkill(skill)) return;
+		setSkills(skills.filter((existing) => skillKey(existing) !== skillKey(skill)));
+	}
+
+	function addInlineSkill() {
+		const base = 'workflow-skill';
+		let index = skills.length + 1;
+		let name = `${base}-${index}`;
+		while (selectedSkillByKey(normalizeSkillName(name))) {
+			index += 1;
+			name = `${base}-${index}`;
+		}
+		upsertSkill({
+			name,
+			description: '',
+			prompt: '',
+			whenToUse: '',
+			allowedTools: [],
+			arguments: [],
+			argumentHint: '',
+			userInvocable: true,
+			disableModelInvocation: false,
+			sourceType: 'inline'
+		});
+	}
+
+	function restoreProfileSkill(skill: AgentSkillConfig) {
+		upsertSkill({ ...skill, sourceType: 'profile' });
+	}
+
+	function updateSkill(skill: AgentSkillConfig, updates: Partial<AgentSkillConfig>) {
+		const nextSkill = {
+			...skill,
+			...updates
+		};
+		const nextKey = skillKey(nextSkill);
+		if (!nextKey || !canAddSkill(nextSkill)) return;
+		const originalKey = skillKey(skill);
+		const next = skills.filter((existing) => {
+			const existingKey = skillKey(existing);
+			return existingKey !== originalKey && existingKey !== nextKey;
+		});
+		setSkills([...next, nextSkill]);
+	}
+
+	function csvItems(value: string): string[] {
+		return value
+			.split(',')
+			.map((item) => item.trim())
+			.filter(Boolean);
+	}
+
+	function updateSkillAllowedTools(skill: AgentSkillConfig, value: string) {
+		const allowedTools = csvItems(value);
+		updateSkill(skill, { allowedTools });
+	}
+
+	function updateSkillArguments(skill: AgentSkillConfig, value: string) {
+		updateSkill(skill, { arguments: csvItems(value) });
 	}
 
 	function updateServerAllowedTools(server: McpServerConfig, value: string) {
@@ -398,6 +730,51 @@
 			</p>
 		</div>
 		<Badge variant="outline">{summarizeAgentGraph(body.agentGraph)}</Badge>
+	</div>
+
+	<div class="rounded-md border p-3 space-y-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
+				<p class="text-xs font-medium">Agent Profile</p>
+				<p class="text-[11px] text-muted-foreground">
+					Global profiles are the source of truth for MCP servers, skills, and default tool access.
+				</p>
+			</div>
+			<Button variant="outline" size="sm" onclick={() => void loadAgentProfiles()}>
+				{agentProfilesLoading ? 'Loading' : 'Refresh'}
+			</Button>
+		</div>
+		<div class="space-y-1.5">
+			<Label for="agent-profile">Profile</Label>
+			<NativeSelect
+				id="agent-profile"
+				class="w-full"
+				value={selectedProfileSlug}
+				onchange={(event) => applyProfile(event.currentTarget.value)}
+			>
+				<option value="">Custom inline profile</option>
+				{#each agentProfiles as profile (profile.id)}
+					<option value={profile.slug}>{profile.name}</option>
+				{/each}
+			</NativeSelect>
+		</div>
+		{#if selectedProfile}
+			<div class="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+				<Badge variant="secondary">{selectedProfile.category || 'agent'}</Badge>
+				<Badge variant="outline">v{selectedProfile.version}</Badge>
+				<span>{selectedProfile.description}</span>
+			</div>
+			{#if activeRuntimePolicy.allowServerAdditions !== true}
+				<p class="text-[11px] text-muted-foreground">
+					This profile allows tool narrowing, but new MCP servers must be added through the
+					global profile definition.
+				</p>
+			{/if}
+		{:else if agentProfiles.length === 0 && !agentProfilesLoading}
+			<p class="text-[11px] text-muted-foreground">
+				No global profiles were returned. The node can still run with inline configuration.
+			</p>
+		{/if}
 	</div>
 
 	<div class="space-y-1.5">
@@ -740,6 +1117,194 @@
 	<div class="rounded-md border p-3 space-y-3">
 		<div class="flex items-center justify-between gap-3">
 			<div>
+				<p class="text-xs font-medium">Skills</p>
+				<p class="text-[11px] text-muted-foreground">
+					Expose reusable prompt skills to this agent run.
+				</p>
+			</div>
+			<Button
+				variant="outline"
+				size="sm"
+				disabled={Boolean(selectedProfile) && activeRuntimePolicy.allowSkillAdditions !== true}
+				onclick={addInlineSkill}
+			>
+				Add Skill
+			</Button>
+		</div>
+
+		{#if selectedProfile && activeRuntimePolicy.allowSkillAdditions !== true}
+			<p class="text-[11px] text-muted-foreground">
+				This profile only allows profile skills. You can narrow allowed tools or remove profile
+				skills when narrowing is enabled.
+			</p>
+		{/if}
+
+		{#if selectedProfile}
+			{@const missingProfileSkills = (selectedProfile.config.skills || []).filter((skill) => !selectedSkillByKey(skillKey(skill)))}
+			{#if missingProfileSkills.length > 0}
+				<div class="space-y-2">
+					<p class="text-[11px] font-medium text-muted-foreground">Available Profile Skills</p>
+					<div class="flex flex-wrap gap-2">
+						{#each missingProfileSkills as skill (skillKey(skill))}
+							<Button variant="outline" size="sm" onclick={() => restoreProfileSkill(skill)}>
+								Restore {skill.name}
+							</Button>
+						{/each}
+					</div>
+				</div>
+			{/if}
+		{/if}
+
+		{#if skills.length === 0}
+			<div class="rounded-md border border-dashed p-3 text-[11px] text-muted-foreground">
+				No skills configured. Add an inline skill or select a profile with skills.
+			</div>
+		{:else}
+			<div class="space-y-3">
+				{#each skills as skill (skillKey(skill) || skill.name)}
+					{@const profileSkill = isProfileSkill(skill)}
+					{@const definitionLocked = profileSkill}
+					{@const canNarrowSkill = activeRuntimePolicy.allowSkillNarrowing !== false}
+					<div class="rounded-md border p-3 space-y-3">
+						<div class="flex items-start justify-between gap-3">
+							<div class="min-w-0 flex-1">
+								<div class="flex flex-wrap items-center gap-2">
+									<p class="truncate text-xs font-medium">{skill.name || 'Unnamed skill'}</p>
+									<Badge variant={profileSkill ? 'secondary' : 'outline'}>
+										{profileSkill ? 'profile' : 'inline'}
+									</Badge>
+								</div>
+								{#if profileSkill}
+									<p class="mt-1 text-[11px] text-muted-foreground">
+										Profile skills keep their prompt definition from the selected profile.
+									</p>
+								{/if}
+							</div>
+							<Button
+								variant="outline"
+								size="sm"
+								disabled={!canRemoveSkill(skill)}
+								onclick={() => removeSkill(skill)}
+							>
+								Remove
+							</Button>
+						</div>
+
+						<div class="grid grid-cols-2 gap-3">
+							<div class="space-y-1.5">
+								<Label for={`skill-name-${skillKey(skill)}`}>Name</Label>
+								<Input
+									id={`skill-name-${skillKey(skill)}`}
+									value={skill.name}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { name: event.currentTarget.value })}
+									placeholder="review-plan"
+								/>
+							</div>
+							<div class="space-y-1.5">
+								<Label for={`skill-description-${skillKey(skill)}`}>Description</Label>
+								<Input
+									id={`skill-description-${skillKey(skill)}`}
+									value={skill.description || ''}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { description: event.currentTarget.value })}
+									placeholder="When this skill helps"
+								/>
+							</div>
+							<div class="col-span-2 space-y-1.5">
+								<Label for={`skill-when-${skillKey(skill)}`}>When To Use</Label>
+								<Input
+									id={`skill-when-${skillKey(skill)}`}
+									value={skill.whenToUse || skill.when_to_use || ''}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { whenToUse: event.currentTarget.value })}
+									placeholder="Use when the agent needs a repeatable workflow-specific behavior."
+								/>
+							</div>
+							<div class="space-y-1.5">
+								<Label for={`skill-tools-${skillKey(skill)}`}>Allowed Tools</Label>
+								<Input
+									id={`skill-tools-${skillKey(skill)}`}
+									value={Array.isArray(skill.allowedTools) ? skill.allowedTools.join(', ') : ''}
+									disabled={profileSkill && !canNarrowSkill}
+									oninput={(event) => updateSkillAllowedTools(skill, event.currentTarget.value)}
+									placeholder="All tools, or comma-separated tool names"
+								/>
+							</div>
+							<div class="space-y-1.5">
+								<Label for={`skill-args-${skillKey(skill)}`}>Arguments</Label>
+								<Input
+									id={`skill-args-${skillKey(skill)}`}
+									value={Array.isArray(skill.arguments) ? skill.arguments.join(', ') : ''}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkillArguments(skill, event.currentTarget.value)}
+									placeholder="subject, format"
+								/>
+							</div>
+							<div class="space-y-1.5">
+								<Label for={`skill-argument-hint-${skillKey(skill)}`}>Argument Hint</Label>
+								<Input
+									id={`skill-argument-hint-${skillKey(skill)}`}
+									value={skill.argumentHint || skill.argument_hint || ''}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { argumentHint: event.currentTarget.value })}
+									placeholder="Describe the argument format"
+								/>
+							</div>
+							<div class="space-y-1.5">
+								<Label for={`skill-model-${skillKey(skill)}`}>Model Override</Label>
+								<Input
+									id={`skill-model-${skillKey(skill)}`}
+									value={skill.model || ''}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { model: event.currentTarget.value })}
+									placeholder="optional"
+								/>
+							</div>
+							<div class="col-span-2 space-y-1.5">
+								<Label for={`skill-prompt-${skillKey(skill)}`}>Prompt</Label>
+								<Textarea
+									id={`skill-prompt-${skillKey(skill)}`}
+									rows={4}
+									value={skill.prompt}
+									disabled={definitionLocked}
+									oninput={(event) => updateSkill(skill, { prompt: event.currentTarget.value })}
+									placeholder={'Write the skill instructions. Use ${ARGUMENTS} when arguments should be inserted.'}
+								/>
+							</div>
+						</div>
+
+						<div class="flex flex-wrap gap-4 text-xs">
+							<label class="flex items-center gap-2">
+								<input
+									type="checkbox"
+									checked={skill.userInvocable ?? skill.user_invocable ?? true}
+									disabled={definitionLocked}
+									onchange={(event) =>
+										updateSkill(skill, { userInvocable: event.currentTarget.checked })}
+								/>
+								<span>User invocable</span>
+							</label>
+							<label class="flex items-center gap-2">
+								<input
+									type="checkbox"
+									checked={skill.disableModelInvocation ?? skill.disable_model_invocation ?? false}
+									disabled={definitionLocked}
+									onchange={(event) =>
+										updateSkill(skill, { disableModelInvocation: event.currentTarget.checked })}
+								/>
+								<span>Disable model invocation</span>
+							</label>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	</div>
+
+	<div class="rounded-md border p-3 space-y-3">
+		<div class="flex items-center justify-between gap-3">
+			<div>
 				<p class="text-xs font-medium">MCP Servers</p>
 				<p class="text-[11px] text-muted-foreground">
 					Expose project MCP connections or browser automation presets to this dapr-agent-py run.
@@ -763,14 +1328,14 @@
 					value={mcpConnectionMode}
 					onchange={(event) => updateAgentConfig({ mcpConnectionMode: event.currentTarget.value })}
 				>
-					<option value="project">Use project MCP connections</option>
-					<option value="explicit">Only selected MCP servers</option>
-					<option value="auto">Project connections when none selected</option>
+					<option value="explicit">Profile and selected MCP servers</option>
+					<option value="project">Legacy: all enabled project MCP connections</option>
+					<option value="auto">Legacy: project connections when none selected</option>
 				</NativeSelect>
 			</div>
 			<p class="self-end text-[11px] text-muted-foreground">
-				Project mode resolves enabled Settings MCP connections at runtime and appends any selected
-				servers below.
+				Profile mode is the default. Legacy project modes append enabled Settings MCP connections
+				at runtime.
 			</p>
 		</div>
 
@@ -785,7 +1350,9 @@
 			{:else}
 				<div class="space-y-2">
 					{#each mcpConnections as connection (connection.id)}
-						{@const selectedServer = selectedServerByKey(connectionServerName(connection))}
+						{@const selectedServer = selectedServerForConnection(connection)}
+						{@const connectionServer = serverFromConnection(connection)}
+						{@const addBlocked = !selectedServer && !canAddServer(connectionServer)}
 						{@const tools = toolInventory(connection)}
 						<div class="rounded-md border p-3 space-y-2">
 							<label class="flex items-start gap-2 text-xs">
@@ -793,7 +1360,7 @@
 									type="checkbox"
 									class="mt-0.5"
 									checked={Boolean(selectedServer)}
-									disabled={connection.status !== 'ENABLED' && !selectedServer}
+									disabled={(connection.status !== 'ENABLED' && !selectedServer) || addBlocked}
 									onchange={(event) => toggleConnection(connection, event.currentTarget.checked)}
 								/>
 								<span class="min-w-0 flex-1">
@@ -806,6 +1373,11 @@
 									</span>
 									{#if connection.serverUrl}
 										<code class="mt-1 block truncate text-[10px] text-muted-foreground">{connection.serverUrl}</code>
+									{/if}
+									{#if addBlocked}
+										<span class="mt-1 block text-[10px] text-muted-foreground">
+											Not included in the selected global profile.
+										</span>
 									{/if}
 								</span>
 							</label>
@@ -861,11 +1433,13 @@
 			<p class="text-[11px] font-medium text-muted-foreground">Browser MCP Presets</p>
 			<div class="grid grid-cols-1 gap-2 md:grid-cols-3">
 				{#each MCP_PRESETS as preset}
+					{@const presetBlocked = !isPresetSelected(preset) && !canAddServer(preset)}
 					<label class="rounded-md border p-3 text-xs">
 						<span class="flex items-center gap-2">
 							<input
 								type="checkbox"
 								checked={isPresetSelected(preset)}
+								disabled={presetBlocked}
 								onchange={(event) => togglePreset(preset, event.currentTarget.checked)}
 							/>
 							<span class="font-medium">{preset.displayName}</span>
@@ -873,6 +1447,11 @@
 						<code class="mt-2 block truncate text-[10px] text-muted-foreground">
 							{preset.command} {(preset.args || []).join(' ')}
 						</code>
+						{#if presetBlocked}
+							<span class="mt-2 block text-[10px] text-muted-foreground">
+								Not included in the selected global profile.
+							</span>
+						{/if}
 					</label>
 				{/each}
 			</div>

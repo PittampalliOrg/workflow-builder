@@ -562,7 +562,12 @@ def _extract_skill_configs(
             allowed_tools=allowed_tools,
             arguments=arguments,
             argument_hint=str(item.get("argument_hint") or item.get("argumentHint") or ""),
-            model_override=str(item.get("model") or ""),
+            model_override=str(
+                item.get("model")
+                or item.get("modelOverride")
+                or item.get("model_override")
+                or ""
+            ),
             user_invocable=bool(item.get("user_invocable", item.get("userInvocable", True))),
             disable_model_invocation=bool(
                 item.get("disable_model_invocation", item.get("disableModelInvocation", False))

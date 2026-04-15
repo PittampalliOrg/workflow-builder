@@ -5,6 +5,7 @@ import {
   getFnSystemUrl,
   getOrchestratorUrl,
 } from "$lib/server/dapr-client";
+import { CLAUDE_CODE_BUNDLED_SKILLS } from "$lib/agent-skill-presets";
 import {
   getCodeFunction,
   listCodeFunctions,
@@ -152,6 +153,36 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
       cwd: "/sandbox",
       maxTurns: 120,
       timeoutMinutes: 120,
+      agentConfig: {
+        runtime: "dapr-agent-py",
+        profileRef: {
+          templateId: "builtin:default-sandbox-agent",
+          templateVersion: 1,
+          slug: "default-sandbox-agent",
+          source: "builtin",
+        },
+        runtimeOverridePolicy: {
+          allowToolNarrowing: true,
+          allowServerAdditions: false,
+          allowCredentialBinding: true,
+          allowSkillAdditions: false,
+          allowSkillNarrowing: true,
+        },
+        profileSnapshot: {
+          mcpServers: [],
+          skills: CLAUDE_CODE_BUNDLED_SKILLS,
+          runtimeOverridePolicy: {
+            allowToolNarrowing: true,
+            allowServerAdditions: false,
+            allowCredentialBinding: true,
+            allowSkillAdditions: false,
+            allowSkillNarrowing: true,
+          },
+        },
+        mcpConnectionMode: "explicit",
+        mcpServers: [],
+        skills: CLAUDE_CODE_BUNDLED_SKILLS,
+      },
       body: {
         prompt: "",
         mode: "execute_direct",
@@ -162,6 +193,36 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
         cwd: "/sandbox",
         maxTurns: 120,
         timeoutMinutes: 120,
+        agentConfig: {
+          runtime: "dapr-agent-py",
+          profileRef: {
+            templateId: "builtin:default-sandbox-agent",
+            templateVersion: 1,
+            slug: "default-sandbox-agent",
+            source: "builtin",
+          },
+          runtimeOverridePolicy: {
+            allowToolNarrowing: true,
+            allowServerAdditions: false,
+            allowCredentialBinding: true,
+            allowSkillAdditions: false,
+            allowSkillNarrowing: true,
+          },
+          profileSnapshot: {
+            mcpServers: [],
+            skills: CLAUDE_CODE_BUNDLED_SKILLS,
+            runtimeOverridePolicy: {
+              allowToolNarrowing: true,
+              allowServerAdditions: false,
+              allowCredentialBinding: true,
+              allowSkillAdditions: false,
+              allowSkillNarrowing: true,
+            },
+          },
+          mcpConnectionMode: "explicit",
+          mcpServers: [],
+          skills: CLAUDE_CODE_BUNDLED_SKILLS,
+        },
       },
     },
   };
@@ -223,9 +284,13 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
             mcpConnectionMode: {
               type: "string",
               enum: ["project", "explicit", "auto"],
-              default: "project",
+              default: "explicit",
             },
+            profileRef: { type: "object" },
+            profileSnapshot: { type: "object" },
+            runtimeOverridePolicy: { type: "object" },
             mcpServers: { type: "array" },
+            skills: { type: "array" },
           },
         },
         maxTurns: { type: "integer", default: 120 },

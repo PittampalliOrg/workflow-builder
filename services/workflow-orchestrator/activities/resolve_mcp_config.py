@@ -7,7 +7,7 @@ import logging
 import os
 import re
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 import psycopg2
 import requests
@@ -94,6 +94,115 @@ def _allowed_tools_from_metadata(metadata: dict[str, Any]) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _allowed_tools_from_request(server: dict[str, Any]) -> list[str]:
+    raw = server.get("allowedTools") or server.get("allowed_tools")
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _server_identity_values(server: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for key in (
+        "server_name",
+        "serverName",
+        "name",
+        "pieceName",
+        "serverKey",
+        "displayName",
+        "sourceType",
+    ):
+        value = str(server.get(key) or "").strip()
+        if value:
+            values.add(value.lower())
+            values.add(_normalize_mcp_name(value))
+    piece_name = str(server.get("pieceName") or "").strip()
+    if piece_name:
+        values.add(_normalize_mcp_name(f"piece_{piece_name}"))
+    server_key = str(server.get("serverKey") or "").strip()
+    if server_key:
+        values.add(_normalize_mcp_name(f"custom_{server_key}"))
+        values.add(_normalize_mcp_name(f"shared_{server_key}"))
+    return values
+
+
+def _request_has_direct_endpoint(server: dict[str, Any]) -> bool:
+    return bool(
+        str(server.get("url") or server.get("serverUrl") or "").strip()
+        or str(server.get("command") or "").strip()
+    )
+
+
+def _is_short_k8s_host(hostname: str) -> bool:
+    if not hostname or "." in hostname:
+        return False
+    if hostname in {"localhost", "127.0.0.1", "::1"}:
+        return False
+    return bool(re.match(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", hostname))
+
+
+def _should_qualify_server_url(server: dict[str, Any]) -> bool:
+    source_type = str(server.get("sourceType") or server.get("source_type") or "")
+    if source_type in {"nimble_piece", "nimble_shared", "hosted_workflow"}:
+        return True
+    registry_ref = str(server.get("registryRef") or server.get("registry_ref") or "")
+    return registry_ref.startswith(("ap-", "nimble-", "shared-")) or registry_ref in {
+        "mcp-gateway",
+        "shared-workflow-mcp-server",
+    }
+
+
+def _qualify_mcp_server_url(server: dict[str, Any], url: str) -> str:
+    text = str(url or "").strip()
+    if not text or not _should_qualify_server_url(server):
+        return text
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return text
+    if not _is_short_k8s_host(parsed.hostname):
+        return text
+
+    namespace = str(
+        server.get("namespace")
+        or os.environ.get("MCP_CONNECTION_NAMESPACE")
+        or os.environ.get("WORKFLOW_BUILDER_NAMESPACE")
+        or "workflow-builder"
+    ).strip()
+    qualified_host = f"{parsed.hostname}.{namespace}.svc.cluster.local"
+    if parsed.port:
+        qualified_host = f"{qualified_host}:{parsed.port}"
+    return urlunparse(parsed._replace(netloc=qualified_host))
+
+
+def _sanitize_requested_server(server: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(server)
+    if sanitized.get("serverUrl") and not sanitized.get("url"):
+        sanitized["url"] = sanitized["serverUrl"]
+    if sanitized.get("url"):
+        sanitized["url"] = _qualify_mcp_server_url(sanitized, str(sanitized["url"]))
+    if sanitized.get("serverUrl"):
+        sanitized["serverUrl"] = _qualify_mcp_server_url(
+            sanitized, str(sanitized["serverUrl"])
+        )
+    allowed_tools = _allowed_tools_from_request(server)
+    if allowed_tools:
+        sanitized["allowedTools"] = allowed_tools
+    return sanitized
+
+
+def _merge_requested_over_resolved(
+    resolved: dict[str, Any], requested: dict[str, Any]
+) -> dict[str, Any]:
+    merged = {**resolved}
+    for key in ("displayName", "sourceType", "pieceName", "serverKey"):
+        if requested.get(key):
+            merged[key] = requested[key]
+    allowed_tools = _allowed_tools_from_request(requested)
+    if allowed_tools:
+        merged["allowedTools"] = allowed_tools
+    return merged
 
 
 def _hosted_mcp_gateway_url(
@@ -202,7 +311,13 @@ def _build_server_config(
         "pieceName": piece_name,
         "connectionExternalId": row.get("connection_external_id"),
         "transport": _transport_from_metadata(metadata),
-        "url": server_url,
+        "url": _qualify_mcp_server_url(
+            {
+                "sourceType": source_type,
+                "registryRef": row.get("registry_ref"),
+            },
+            server_url,
+        ),
     }
     allowed_tools = _allowed_tools_from_metadata(metadata)
     if allowed_tools:
@@ -214,8 +329,23 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
     """Return sanitized MCP server configs for an agent child workflow."""
     workflow_id = str(input_data.get("workflowId") or "").strip()
     project_id = str(input_data.get("projectId") or "").strip()
+    requested_servers = [
+        item
+        for item in (
+            input_data.get("requestedServers")
+            if isinstance(input_data.get("requestedServers"), list)
+            else []
+        )
+        if isinstance(item, dict)
+    ]
+    include_project_connections = bool(input_data.get("includeProjectConnections"))
     if not workflow_id and not project_id:
-        return {"mcpServers": [], "warnings": []}
+        direct_servers = [
+            _sanitize_requested_server(item)
+            for item in requested_servers
+            if _request_has_direct_endpoint(item)
+        ]
+        return {"mcpServers": direct_servers, "warnings": []}
 
     warnings: list[str] = []
     servers: list[dict[str, Any]] = []
@@ -252,6 +382,7 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                 """,
                 (project_id,),
             )
+            connection_configs: list[tuple[dict[str, Any], dict[str, Any]]] = []
             for row in cur.fetchall():
                 config, warning = _build_server_config(dict(row))
                 if warning:
@@ -259,6 +390,41 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                     continue
                 if not config:
                     continue
+                connection_configs.append((config, dict(row)))
+
+            for requested in requested_servers:
+                if _request_has_direct_endpoint(requested):
+                    config = _sanitize_requested_server(requested)
+                else:
+                    request_identities = _server_identity_values(requested)
+                    match = next(
+                        (
+                            config
+                            for config, row in connection_configs
+                            if request_identities
+                            & (
+                                _server_identity_values(config)
+                                | _server_identity_values(
+                                    {
+                                        "pieceName": row.get("piece_name"),
+                                        "serverKey": row.get("server_key"),
+                                        "displayName": row.get("display_name"),
+                                        "sourceType": row.get("source_type"),
+                                    }
+                                )
+                            )
+                        ),
+                        None,
+                    )
+                    if not match:
+                        warnings.append(
+                            "Skipped MCP profile server "
+                            f"'{requested.get('displayName') or requested.get('server_name') or requested.get('pieceName') or 'unknown'}' "
+                            "because no enabled project MCP connection matched it."
+                        )
+                        continue
+                    config = _merge_requested_over_resolved(match, requested)
+
                 base_name = config["server_name"]
                 server_name = base_name
                 suffix = 2
@@ -268,6 +434,15 @@ def resolve_agent_mcp_servers(ctx, input_data: dict[str, Any]) -> dict[str, Any]
                 config["server_name"] = server_name
                 seen_names.add(server_name)
                 servers.append(config)
+
+            if include_project_connections:
+                for config, _row in connection_configs:
+                    key = str(config.get("server_name") or "").strip()
+                    if key and key in seen_names:
+                        continue
+                    if key:
+                        seen_names.add(key)
+                    servers.append(config)
     finally:
         conn.close()
 

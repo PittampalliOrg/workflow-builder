@@ -13,7 +13,6 @@ import {
 import { db } from '$lib/server/db';
 import { workflowExecutionLogs } from '$lib/server/db/schema';
 import { eq } from 'drizzle-orm';
-import { AckPolicy, DeliverPolicy } from 'nats';
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const SNAPSHOT_INTERVAL_MS = 10_000;
@@ -115,7 +114,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 					jsm = await getJetStreamManager();
 				} catch (err) {
 					// NATS unavailable — send error so client falls back to DB polling
-					send('error', {
+					send('stream_unavailable', {
 						error: 'NATS unavailable',
 						fallback: true,
 						message: err instanceof Error ? err.message : 'Connection failed'
@@ -165,23 +164,26 @@ export const GET: RequestHandler = async ({ params, request }) => {
 
 				const consumerOpts = {
 					filter_subjects: filterSubjects,
-					ack_policy: AckPolicy.None,
+					ack_policy: 'none',
 					inactive_threshold: CONSUMER_INACTIVE_THRESHOLD_NS,
 					// Use DeliverNew — initial state comes from DB snapshot, NATS is for live events only
 					...(isReconnect
-						? { deliver_policy: DeliverPolicy.StartSequence, opt_start_seq: lastEventId + 1 }
-						: { deliver_policy: DeliverPolicy.New }
+						? { deliver_policy: 'by_start_sequence', opt_start_seq: lastEventId + 1 }
+						: { deliver_policy: 'new' }
 					)
 				};
 
 				let consumer;
 				try {
-					const info = await jsm.consumers.add(WORKFLOW_STREAM_NAME, consumerOpts);
+					const info = await jsm.consumers.add(
+						WORKFLOW_STREAM_NAME,
+						consumerOpts as Partial<import('nats').ConsumerConfig>
+					);
 					consumer = await js.consumers.get(WORKFLOW_STREAM_NAME, info.name);
 				} catch (err) {
 					// Consumer creation failed (stream may not exist or subjects not matched)
 					console.warn(`[nats-stream] Failed to create consumer for ${filterSubjects.join(', ')}:`, err);
-					send('error', {
+					send('stream_unavailable', {
 						error: 'Consumer creation failed',
 						fallback: true,
 						message: err instanceof Error ? err.message : 'Failed'
@@ -292,7 +294,7 @@ export const GET: RequestHandler = async ({ params, request }) => {
 				}
 			} catch (err) {
 				if (!cancelled) {
-					send('error', {
+					send('stream_unavailable', {
 						error: err instanceof Error ? err.message : 'Stream error'
 					});
 				}

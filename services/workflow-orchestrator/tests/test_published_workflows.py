@@ -404,3 +404,192 @@ def test_durable_run_routes_through_function_router():
 
     result = stop.value.value
     assert result["success"] is True
+
+
+def _durable_skill_policy_generator(agent_config):
+    workflow = types.SimpleNamespace(
+        use=None,
+        document=types.SimpleNamespace(name="test-workflow"),
+        model_dump=lambda **_kwargs: {
+            "document": {
+                "dsl": "1.0.0",
+                "namespace": "test",
+                "name": "test-workflow",
+                "version": "0.1.0",
+            }
+        },
+    )
+    tc = SW_WORKFLOW.TaskContext(
+        workflow=workflow,
+        workflow_id="test-workflow",
+        trigger_data={"prompt": "Use a configured skill"},
+        execution_id="exec_skill",
+        db_execution_id=None,
+        integrations=None,
+    )
+
+    class _FakeCtx:
+        instance_id = "parent-skill-wf-1"
+
+        def call_activity(self, activity, input=None):
+            return {
+                "kind": "call_activity",
+                "activity": getattr(activity, "__name__", str(activity)),
+                "input": input,
+            }
+
+    return SW_WORKFLOW._handle_call_task(
+        _FakeCtx(),
+        "skill_run",
+        {
+            "call": "durable/run",
+            "with": {
+                "prompt": "Use the configured skill",
+                "workspaceRef": "ws_test_skill",
+                "cwd": "/sandbox",
+                "agentRuntime": "dapr-agent-py",
+                "agentConfig": agent_config,
+            },
+        },
+        tc,
+    )
+
+
+def test_durable_run_allows_profile_skill_from_snapshot():
+    skill = {
+        "name": "answer-yes-no",
+        "description": "Answer as yes or no",
+        "prompt": "Answer the question with yes or no.",
+        "allowedTools": ["read_file"],
+        "sourceType": "profile",
+    }
+    workflow_gen = _durable_skill_policy_generator(
+        {
+            "profileRef": {"slug": "default-sandbox-agent"},
+            "profileSnapshot": {
+                "skills": [skill],
+                "runtimeOverridePolicy": {
+                    "allowSkillAdditions": False,
+                    "allowSkillNarrowing": True,
+                },
+            },
+            "runtimeOverridePolicy": {
+                "allowSkillAdditions": False,
+                "allowSkillNarrowing": True,
+            },
+            "skills": [{**skill, "allowedTools": ["read_file"]}],
+        }
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["kind"] == "call_activity"
+    agent_config = yielded["input"]["node"]["config"]["agentConfig"]
+    assert agent_config["skills"][0]["name"] == "answer-yes-no"
+
+
+def test_durable_run_rejects_inline_skill_when_profile_disallows_additions():
+    workflow_gen = _durable_skill_policy_generator(
+        {
+            "profileRef": {"slug": "default-sandbox-agent"},
+            "profileSnapshot": {
+                "skills": [],
+                "runtimeOverridePolicy": {
+                    "allowSkillAdditions": False,
+                    "allowSkillNarrowing": True,
+                },
+            },
+            "runtimeOverridePolicy": {
+                "allowSkillAdditions": False,
+                "allowSkillNarrowing": True,
+            },
+            "skills": [
+                {
+                    "name": "inline-review",
+                    "prompt": "Review the current task.",
+                    "sourceType": "inline",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="not allowed by the selected agent profile"):
+        next(workflow_gen)
+
+
+def test_durable_run_allows_inline_skill_without_profile():
+    workflow_gen = _durable_skill_policy_generator(
+        {
+            "name": "custom-agent",
+            "skills": [
+                {
+                    "name": "inline-review",
+                    "prompt": "Review the current task.",
+                    "sourceType": "inline",
+                }
+            ],
+        }
+    )
+
+    yielded = next(workflow_gen)
+    assert yielded["kind"] == "call_activity"
+    agent_config = yielded["input"]["node"]["config"]["agentConfig"]
+    assert agent_config["skills"][0]["name"] == "inline-review"
+
+
+def test_durable_run_rejects_profile_skill_tool_expansion():
+    profile_skill = {
+        "name": "bounded-skill",
+        "prompt": "Use only bounded tools.",
+        "allowedTools": ["read_file"],
+        "sourceType": "profile",
+    }
+    workflow_gen = _durable_skill_policy_generator(
+        {
+            "profileRef": {"slug": "default-sandbox-agent"},
+            "profileSnapshot": {
+                "skills": [profile_skill],
+                "runtimeOverridePolicy": {
+                    "allowSkillAdditions": False,
+                    "allowSkillNarrowing": True,
+                },
+            },
+            "runtimeOverridePolicy": {
+                "allowSkillAdditions": False,
+                "allowSkillNarrowing": True,
+            },
+            "skills": [{**profile_skill, "allowedTools": ["read_file", "write_file"]}],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="requested tools outside"):
+        next(workflow_gen)
+
+
+def test_durable_run_rejects_profile_skill_changes_when_narrowing_disabled():
+    profile_skill = {
+        "name": "locked-skill",
+        "description": "Locked",
+        "prompt": "Use the locked instructions.",
+        "allowedTools": ["read_file"],
+        "sourceType": "profile",
+    }
+    workflow_gen = _durable_skill_policy_generator(
+        {
+            "profileRef": {"slug": "default-sandbox-agent"},
+            "profileSnapshot": {
+                "skills": [profile_skill],
+                "runtimeOverridePolicy": {
+                    "allowSkillAdditions": False,
+                    "allowSkillNarrowing": False,
+                },
+            },
+            "runtimeOverridePolicy": {
+                "allowSkillAdditions": False,
+                "allowSkillNarrowing": False,
+            },
+            "skills": [{**profile_skill, "prompt": "Use changed instructions."}],
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be modified"):
+        next(workflow_gen)

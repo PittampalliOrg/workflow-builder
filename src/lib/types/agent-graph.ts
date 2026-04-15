@@ -1,4 +1,5 @@
 import type { Edge, Node } from "@xyflow/svelte";
+import { CLAUDE_CODE_BUNDLED_SKILLS } from "$lib/agent-skill-presets";
 import {
   DEFAULT_NEW_AGENT_SANDBOX_POLICY,
   hasExplicitSandboxPolicy,
@@ -273,7 +274,11 @@ export function getAgentTaskBody(
   }
   const withBlock = isRecord(taskConfig.with) ? taskConfig.with : {};
   const body = isRecord(withBlock.body) ? withBlock.body : {};
-  const agentConfig = isRecord(body.agentConfig) ? body.agentConfig : {};
+  const agentConfig = isRecord(body.agentConfig)
+    ? body.agentConfig
+    : isRecord(withBlock.agentConfig)
+      ? withBlock.agentConfig
+      : {};
   const rawSandboxPolicy = hasExplicitSandboxPolicy(body.sandboxPolicy)
     ? body.sandboxPolicy
     : hasExplicitSandboxPolicy(withBlock.sandboxPolicy)
@@ -281,12 +286,20 @@ export function getAgentTaskBody(
       : undefined;
 
   return {
-    prompt: typeof body.prompt === "string" ? body.prompt : "",
+    prompt:
+      typeof body.prompt === "string"
+        ? body.prompt
+        : typeof withBlock.prompt === "string"
+          ? withBlock.prompt
+          : "",
     mode: "execute_direct",
     agentRuntime:
       typeof body.agentRuntime === "string" && body.agentRuntime.trim()
         ? body.agentRuntime.trim()
-        : "dapr-agent-py",
+        : typeof withBlock.agentRuntime === "string" &&
+            withBlock.agentRuntime.trim()
+          ? withBlock.agentRuntime.trim()
+          : "dapr-agent-py",
     ...(rawSandboxPolicy
       ? {
           sandboxPolicy: normalizeSandboxPolicy(
@@ -318,20 +331,34 @@ export function getAgentTaskBody(
         ? body.maxTurns
         : typeof body.maxTurns === "string"
           ? Number.parseInt(body.maxTurns, 10) || undefined
-          : undefined,
+          : typeof withBlock.maxTurns === "number"
+            ? withBlock.maxTurns
+            : typeof withBlock.maxTurns === "string"
+              ? Number.parseInt(withBlock.maxTurns, 10) || undefined
+              : undefined,
     timeoutMinutes:
       typeof body.timeoutMinutes === "number"
         ? body.timeoutMinutes
         : typeof body.timeoutMinutes === "string"
           ? Number.parseInt(body.timeoutMinutes, 10) || undefined
-          : undefined,
+          : typeof withBlock.timeoutMinutes === "number"
+            ? withBlock.timeoutMinutes
+            : typeof withBlock.timeoutMinutes === "string"
+              ? Number.parseInt(withBlock.timeoutMinutes, 10) || undefined
+              : undefined,
     stopCondition:
-      typeof body.stopCondition === "string" ? body.stopCondition : undefined,
+      typeof body.stopCondition === "string"
+        ? body.stopCondition
+        : typeof withBlock.stopCondition === "string"
+          ? withBlock.stopCondition
+          : undefined,
     requireFileChanges:
       typeof body.requireFileChanges === "boolean"
         ? body.requireFileChanges
-        : undefined,
-    agentGraph: normalizeAgentGraph(body.agentGraph),
+        : typeof withBlock.requireFileChanges === "boolean"
+          ? withBlock.requireFileChanges
+          : undefined,
+    agentGraph: normalizeAgentGraph(body.agentGraph ?? withBlock.agentGraph),
     agentConfig,
   };
 }
@@ -355,8 +382,33 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
       modelSpec: "",
       tools: [],
       runtime: "dapr-agent-py",
-      mcpConnectionMode: "project",
+      profileRef: {
+        templateId: "builtin:default-sandbox-agent",
+        templateVersion: 1,
+        slug: "default-sandbox-agent",
+        source: "builtin",
+      },
+      runtimeOverridePolicy: {
+        allowToolNarrowing: true,
+        allowServerAdditions: false,
+        allowCredentialBinding: true,
+        allowSkillAdditions: false,
+        allowSkillNarrowing: true,
+      },
+      profileSnapshot: {
+        mcpServers: [],
+        skills: CLAUDE_CODE_BUNDLED_SKILLS,
+        runtimeOverridePolicy: {
+          allowToolNarrowing: true,
+          allowServerAdditions: false,
+          allowCredentialBinding: true,
+          allowSkillAdditions: false,
+          allowSkillNarrowing: true,
+        },
+      },
+      mcpConnectionMode: "explicit",
       mcpServers: [],
+      skills: CLAUDE_CODE_BUNDLED_SKILLS,
       loop: {
         strategy: "graph_v1",
       },

@@ -47,6 +47,10 @@ export function createExecutionStream(executionId: string) {
 			clearTimeout(reconnectTimer);
 			reconnectTimer = null;
 		}
+		if (pollingTimer) {
+			clearInterval(pollingTimer);
+			pollingTimer = null;
+		}
 		patchState((state) => ({
 			...state,
 			isConnected: false,
@@ -62,6 +66,7 @@ export function createExecutionStream(executionId: string) {
 	};
 	let es: EventSource | null = null;
 	let terminal = false;
+	let pollingTimer: ReturnType<typeof setInterval> | null = null;
 
 	function pushEvent(event: ExecutionTimelineEvent) {
 		patchState((state) => {
@@ -141,12 +146,43 @@ export function createExecutionStream(executionId: string) {
 		try {
 			const res = await fetch(`/api/workflows/executions/${executionId}/status?includeAgentEvents=true`);
 			if (res.ok) {
-				const data = await res.json();
+				const data = (await res.json()) as ExecutionReadModel;
 				mergeSnapshot(data);
+				if (['success', 'error', 'cancelled'].includes(data.status)) {
+					terminal = true;
+					if (pollingTimer) {
+						clearInterval(pollingTimer);
+						pollingTimer = null;
+					}
+					patchState((state) => ({
+						...state,
+						isConnected: false,
+						activeToolName: null,
+						isLlmStreaming: false,
+						llmTokenBuffer: ''
+					}));
+				}
 			}
 		} catch {
 			// Status endpoint also unavailable
 		}
+	}
+
+	function startPollingFallback(message = 'Live stream unavailable — polling execution status') {
+		es?.close();
+		es = null;
+		if (reconnectTimer) {
+			clearTimeout(reconnectTimer);
+			reconnectTimer = null;
+		}
+		if (pollingTimer || terminal) return;
+		patchState((state) => ({
+			...state,
+			isConnected: false,
+			error: message
+		}));
+		void fetchSnapshotFallback();
+		pollingTimer = setInterval(fetchSnapshotFallback, 5000);
 	}
 
 	function connect() {
@@ -180,6 +216,20 @@ export function createExecutionStream(executionId: string) {
 			// Retry SSE connection after 5s
 			reconnectTimer = setTimeout(connect, 5000);
 		};
+
+		es.addEventListener('stream_unavailable', (raw) => {
+			let message = 'Live stream unavailable — polling execution status';
+			try {
+				const payload = JSON.parse((raw as MessageEvent).data) as {
+					error?: string;
+					message?: string;
+				};
+				message = payload.message || payload.error || message;
+			} catch {
+				// Use the default fallback message.
+			}
+			startPollingFallback(message);
+		});
 
 		es.addEventListener('snapshot', (raw) => {
 			try {
