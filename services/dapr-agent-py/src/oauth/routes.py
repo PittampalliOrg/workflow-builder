@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import html
 import logging
-import os
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from .manager import SUCCESS_URL, oauth_manager
 
@@ -16,12 +16,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
 
+class OAuthCompleteRequest(BaseModel):
+    code: str
+    state: str | None = None
+
+
 @router.post("/login")
-async def oauth_login(request: Request) -> JSONResponse:
-    callback_base = os.environ.get("OAUTH_CALLBACK_BASE_URL")
-    if not callback_base:
-        callback_base = f"{request.url.scheme}://{request.url.netloc}"
-    return JSONResponse(oauth_manager.start_login(callback_base))
+async def oauth_login() -> JSONResponse:
+    return JSONResponse(oauth_manager.start_login())
+
+
+@router.post("/complete")
+async def oauth_complete(payload: OAuthCompleteRequest) -> JSONResponse:
+    try:
+        tokens = await oauth_manager.complete_login(payload.code, payload.state)
+        return JSONResponse({
+            "authenticated": True,
+            "subscription_type": tokens.subscription_type,
+            "email": tokens.email,
+            "expires_at": tokens.expires_at,
+            "scopes": tokens.scopes,
+        })
+    except Exception as exc:
+        logger.error("OAuth completion failed: %s", exc)
+        return JSONResponse({"message": str(exc)}, status_code=400)
 
 
 @router.get("/callback")

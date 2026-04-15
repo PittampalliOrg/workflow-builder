@@ -2,9 +2,9 @@ import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { getDaprAgentPyUrls } from '$lib/server/dapr-client';
 
-const OPERATIONS = new Set(['login', 'status', 'logout', 'refresh']);
+const OPERATIONS = new Set(['login', 'status', 'logout', 'refresh', 'complete']);
 
-async function proxyOAuth(operation: string, method: 'GET' | 'POST') {
+async function proxyOAuth(operation: string, method: 'GET' | 'POST', payload?: string) {
 	if (!OPERATIONS.has(operation)) throw error(404, 'Unknown OAuth operation');
 
 	let lastError = '';
@@ -12,7 +12,11 @@ async function proxyOAuth(operation: string, method: 'GET' | 'POST') {
 		try {
 			const response = await fetch(`${baseUrl.replace(/\/$/, '')}/oauth/${operation}`, {
 				method,
-				headers: { Accept: 'application/json' },
+				headers: {
+					Accept: 'application/json',
+					...(payload ? { 'Content-Type': 'application/json' } : {})
+				},
+				body: payload,
 				signal: AbortSignal.timeout(10_000)
 			});
 			const contentType = response.headers.get('content-type') ?? '';
@@ -34,10 +38,11 @@ export const GET: RequestHandler = async ({ locals, params }) => {
 	return proxyOAuth(params.operation, 'GET');
 };
 
-export const POST: RequestHandler = async ({ locals, params }) => {
+export const POST: RequestHandler = async ({ locals, params, request }) => {
 	if (!locals.session?.userId) throw error(401, 'Unauthorized');
-	if (!['login', 'logout', 'refresh'].includes(params.operation)) {
+	if (!['login', 'logout', 'refresh', 'complete'].includes(params.operation)) {
 		throw error(405, 'Method not allowed');
 	}
-	return proxyOAuth(params.operation, 'POST');
+	const body = params.operation === 'complete' ? await request.text() : undefined;
+	return proxyOAuth(params.operation, 'POST', body);
 };

@@ -8,9 +8,9 @@ import logging
 import os
 import time
 import urllib.request
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
-from .crypto import generate_code_challenge, generate_code_verifier, generate_state
+from .crypto import generate_code_challenge, generate_code_verifier
 from .types import OAuthLoginState, OAuthTokens
 
 logger = logging.getLogger(__name__)
@@ -19,22 +19,22 @@ CLIENT_ID = os.environ.get(
     "CLAUDE_CODE_OAUTH_CLIENT_ID",
     "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
 )
-AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
-TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
+AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
+DEFAULT_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 SUCCESS_URL = "https://platform.claude.com/oauth/code/success?app=claude-code"
 
 SCOPES = [
+    "org:create_api_key",
     "user:profile",
     "user:inference",
-    "user:sessions:claude_code",
-    "user:mcp_servers",
-    "user:file_upload",
 ]
 
 TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000
 TOKEN_EXCHANGE_TIMEOUT = 15
 PROFILE_FETCH_TIMEOUT = 10
+OAUTH_BETA_HEADER = "oauth-2025-04-20"
 
 STATE_KEY = "oauth:tokens"
 LOGIN_STATE_KEY = "oauth:login_state"
@@ -122,11 +122,13 @@ class OAuthManager:
             logger.warning("Failed to parse stored OAuth tokens")
             return None
 
-    def start_login(self, callback_base_url: str) -> dict:
+    def start_login(self) -> dict:
         verifier = generate_code_verifier()
         challenge = generate_code_challenge(verifier)
-        state = generate_state()
-        redirect_uri = f"{callback_base_url.rstrip('/')}/oauth/callback"
+        # Claude Code's public client returns CODE#STATE and expects STATE to be
+        # the PKCE verifier during token exchange.
+        state = verifier
+        redirect_uri = os.environ.get("CLAUDE_CODE_OAUTH_REDIRECT_URI", DEFAULT_REDIRECT_URI)
 
         login_state = OAuthLoginState(
             code_verifier=verifier,
@@ -147,7 +149,22 @@ class OAuthManager:
             "code_challenge_method": "S256",
             "state": state,
         })
-        return {"authorize_url": f"{AUTHORIZE_URL}?{params}", "state": state}
+        return {
+            "authorize_url": f"{AUTHORIZE_URL}?{params}",
+            "state": state,
+            "redirect_uri": redirect_uri,
+            "completion_mode": "manual_paste",
+        }
+
+    async def complete_login(self, callback_code: str, state: str | None = None) -> OAuthTokens:
+        code, parsed_state = self._parse_callback_code(callback_code)
+        callback_state = state or parsed_state
+        if callback_state is None:
+            raw = self._load_state(LOGIN_STATE_KEY)
+            if raw is None:
+                raise ValueError("No pending login state found; start login again")
+            callback_state = OAuthLoginState(**raw).state
+        return await self.handle_callback(code, callback_state)
 
     async def handle_callback(self, code: str, state: str) -> OAuthTokens:
         raw = self._load_state(LOGIN_STATE_KEY)
@@ -182,6 +199,37 @@ class OAuthManager:
         logger.info("OAuth login complete subscription=%s email=%s", tokens.subscription_type, tokens.email)
         return tokens
 
+    def _parse_callback_code(self, callback_code: str) -> tuple[str, str | None]:
+        value = unquote(callback_code.strip())
+        if not value:
+            raise ValueError("Authorization code is required")
+
+        if value.startswith("http://") or value.startswith("https://"):
+            parsed = urlparse(value)
+            query = parse_qs(parsed.query)
+            code = query.get("code", [""])[0]
+            state = query.get("state", [""])[0] or None
+            if not code and parsed.fragment:
+                fragment = parse_qs(parsed.fragment)
+                code = fragment.get("code", [""])[0]
+                state = state or fragment.get("state", [""])[0] or None
+            if code:
+                return code, state
+
+        if "code=" in value:
+            query_text = value.split("?", 1)[-1].lstrip("#")
+            query = parse_qs(query_text)
+            code = query.get("code", [""])[0]
+            state = query.get("state", [""])[0] or None
+            if code:
+                return code, state
+
+        if "#" in value:
+            code, parsed_state = value.split("#", 1)
+            return code.strip(), parsed_state.strip() or None
+
+        return value, None
+
     async def refresh_token(self) -> OAuthTokens | None:
         async with self._refresh_lock:
             tokens = self._load_tokens()
@@ -196,7 +244,10 @@ class OAuthManager:
             req = urllib.request.Request(
                 TOKEN_URL,
                 data=body,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "anthropic-beta": OAUTH_BETA_HEADER,
+                },
                 method="POST",
             )
             try:
@@ -298,7 +349,10 @@ class OAuthManager:
         req = urllib.request.Request(
             TOKEN_URL,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "anthropic-beta": OAUTH_BETA_HEADER,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=TOKEN_EXCHANGE_TIMEOUT) as resp:

@@ -131,6 +131,8 @@
 	let claudeOAuthLoading = $state(false);
 	let claudeOAuthBusy = $state(false);
 	let claudeOAuthError = $state<string | null>(null);
+	let claudeOAuthCode = $state('');
+	let claudeOAuthRedirectUri = $state<string | null>(null);
 
 	function formatOAuthExpiry(value: number | null | undefined): string {
 		if (!value) return 'Unknown';
@@ -160,30 +162,46 @@
 		}
 	}
 
-	async function pollClaudeOAuthStatus() {
-		for (let attempt = 0; attempt < 40; attempt += 1) {
-			await new Promise((resolve) => setTimeout(resolve, 3000));
-			await loadClaudeOAuthStatus({ quiet: true });
-			if (claudeOAuthStatus?.authenticated) {
-				toast.success('Claude OAuth connected');
-				return;
-			}
-		}
-		toast.info('Finish the Claude login, then refresh the status.');
-	}
-
 	async function connectClaudeOAuth() {
 		claudeOAuthBusy = true;
 		claudeOAuthError = null;
 		try {
 			const res = await fetch('/api/dapr-agent-py/oauth/login', { method: 'POST' });
 			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to start Claude OAuth'));
-			const body = await res.json() as { authorize_url?: string };
+			const body = await res.json() as { authorize_url?: string; redirect_uri?: string };
 			if (!body.authorize_url) throw new Error('Claude OAuth did not return an authorization URL');
+			claudeOAuthRedirectUri = body.redirect_uri ?? null;
 			window.open(body.authorize_url, 'claude-oauth', 'popup,width=960,height=720');
-			void pollClaudeOAuthStatus();
+			toast.info('Authorize Claude, then paste the callback URL or code here.');
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Failed to start Claude OAuth';
+			claudeOAuthError = message;
+			toast.error(message);
+		} finally {
+			claudeOAuthBusy = false;
+		}
+	}
+
+	async function completeClaudeOAuth() {
+		const code = claudeOAuthCode.trim();
+		if (!code) {
+			toast.error('Paste the Claude callback URL or authorization code first.');
+			return;
+		}
+		claudeOAuthBusy = true;
+		claudeOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/oauth/complete', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ code })
+			});
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to complete Claude OAuth'));
+			claudeOAuthStatus = await res.json();
+			claudeOAuthCode = '';
+			toast.success('Claude OAuth connected');
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to complete Claude OAuth';
 			claudeOAuthError = message;
 			toast.error(message);
 		} finally {
@@ -724,8 +742,30 @@
 									{/if}
 								</div>
 
+								{#if !claudeOAuthStatus?.authenticated}
+									<div class="space-y-2">
+										<Label for="claude-oauth-code">Callback URL or authorization code</Label>
+										<textarea
+											id="claude-oauth-code"
+											class="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+											placeholder="Paste the Claude callback URL or code after authorizing."
+											bind:value={claudeOAuthCode}
+										></textarea>
+										<div class="flex flex-wrap items-center gap-2">
+											<Button variant="outline" onclick={completeClaudeOAuth} disabled={claudeOAuthBusy || !claudeOAuthCode.trim()}>
+												Complete Connection
+											</Button>
+											{#if claudeOAuthRedirectUri}
+												<span class="text-xs text-muted-foreground">
+													Claude redirects to {claudeOAuthRedirectUri}
+												</span>
+											{/if}
+										</div>
+									</div>
+								{/if}
+
 								<p class="text-xs text-muted-foreground">
-									The browser authorizes at claude.com, then redirects to dapr-agent-py. Tokens are stored in the Dapr state store used by the agent runtime.
+									The browser authorizes at claude.ai, then Claude returns a code on its registered callback page. Paste that URL or code here so dapr-agent-py can store tokens in its Dapr state store.
 								</p>
 							</CardContent>
 						</Card>

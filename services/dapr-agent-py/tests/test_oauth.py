@@ -56,11 +56,37 @@ def test_oauth_tokens_round_trip() -> None:
 
 def test_start_login_persists_state() -> None:
     manager = _make_manager()
-    result = manager.start_login("https://example.test")
+    result = manager.start_login()
     raw = manager._load_state("oauth:login_state")
-    assert "claude.com" in result["authorize_url"]
+    assert "claude.ai" in result["authorize_url"]
+    assert result["completion_mode"] == "manual_paste"
     assert raw is not None
-    assert types_mod.OAuthLoginState(**raw).redirect_uri == "https://example.test/oauth/callback"
+    login_state = types_mod.OAuthLoginState(**raw)
+    assert login_state.redirect_uri == manager_mod.DEFAULT_REDIRECT_URI
+    assert login_state.state == login_state.code_verifier
+
+
+def test_parse_callback_code_from_url() -> None:
+    manager = _make_manager()
+    code, state = manager._parse_callback_code(
+        "https://console.anthropic.com/oauth/code/callback?code=abc123&state=state456"
+    )
+    assert code == "abc123"
+    assert state == "state456"
+
+
+def test_parse_callback_code_hash_delimited() -> None:
+    manager = _make_manager()
+    code, state = manager._parse_callback_code("abc123#state456")
+    assert code == "abc123"
+    assert state == "state456"
+
+
+def test_parse_callback_code_only() -> None:
+    manager = _make_manager()
+    code, state = manager._parse_callback_code("abc123")
+    assert code == "abc123"
+    assert state is None
 
 
 def test_auth_status_unauthenticated() -> None:
