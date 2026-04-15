@@ -36,6 +36,8 @@
 	let mcpToolLoadingId = $state<string | null>(null);
 	let agentProfiles = $state<AgentProfile[]>([]);
 	let agentProfilesLoading = $state(false);
+	let agentSkills = $state<AgentSkillConfig[]>([]);
+	let agentSkillsLoading = $state(false);
 
 	type McpServerConfig = {
 		server_name?: string;
@@ -73,6 +75,7 @@
 	};
 
 	type AgentSkillConfig = {
+		id?: string;
 		name: string;
 		description?: string;
 		prompt: string;
@@ -88,7 +91,18 @@
 		user_invocable?: boolean;
 		disableModelInvocation?: boolean;
 		disable_model_invocation?: boolean;
-		sourceType?: 'profile' | 'inline' | 'preset';
+		sourceType?: 'profile' | 'inline' | 'preset' | 'registry' | 'curated' | 'imported' | 'builtin';
+		registryId?: string;
+		slug?: string;
+		version?: string;
+		contentHash?: string;
+		sourceRepo?: string;
+		sourceRef?: string;
+		skillPath?: string;
+		license?: string;
+		compatibility?: Record<string, unknown>;
+		packageManifest?: Record<string, unknown>;
+		status?: string;
 	};
 
 	type AgentRuntimeOverridePolicy = {
@@ -190,10 +204,12 @@
 			selectedProfile?.config.runtimeOverridePolicy ||
 			{}) as AgentRuntimeOverridePolicy
 	);
+	let availableRegistrySkills = $derived.by(() => registrySkillsAvailable());
 
 	onMount(() => {
 		void loadMcpConnections();
 		void loadAgentProfiles();
+		void loadAgentSkills();
 	});
 
 	function updateBody(updates: Record<string, unknown>) {
@@ -285,6 +301,21 @@
 			agentProfiles = [];
 		} finally {
 			agentProfilesLoading = false;
+		}
+	}
+
+	async function loadAgentSkills() {
+		agentSkillsLoading = true;
+		try {
+			const response = await fetch('/api/agent-skills');
+			if (response.ok) {
+				const payload = await response.json();
+				agentSkills = Array.isArray(payload.skills) ? payload.skills : [];
+			}
+		} catch {
+			agentSkills = [];
+		} finally {
+			agentSkillsLoading = false;
 		}
 	}
 
@@ -540,7 +571,12 @@
 	}
 
 	function skillKey(skill: AgentSkillConfig): string {
-		return normalizeSkillName(skill.name);
+		return normalizeSkillName(skill.slug || skill.name);
+	}
+
+	function skillPackageFileCount(skill: AgentSkillConfig): number {
+		const files = skill.packageManifest?.files;
+		return Array.isArray(files) ? files.length : 0;
 	}
 
 	function profileSkillKeys(profile: AgentProfile | null): Set<string> {
@@ -560,6 +596,23 @@
 		if (activeRuntimePolicy.allowSkillAdditions === true) return true;
 		if (selectedSkillByKey(skillKey(skill))) return true;
 		return profileSkillKeys(selectedProfile).has(skillKey(skill));
+	}
+
+	function registrySkillsAvailable(): AgentSkillConfig[] {
+		return agentSkills.filter((skill) => {
+			const key = skillKey(skill);
+			if (!key || selectedSkillByKey(key)) return false;
+			return canAddSkill(skill);
+		});
+	}
+
+	function addRegistrySkill(skill: AgentSkillConfig) {
+		upsertSkill({
+			...skill,
+			sourceType: selectedProfile && profileSkillKeys(selectedProfile).has(skillKey(skill)) ? 'profile' : 'registry',
+			registryId: skill.registryId || (typeof skill.id === 'string' ? skill.id : undefined),
+			slug: skill.slug || skill.name
+		} as AgentSkillConfig);
 	}
 
 	function canRemoveSkill(skill: AgentSkillConfig): boolean {
@@ -1128,7 +1181,7 @@
 				disabled={Boolean(selectedProfile) && activeRuntimePolicy.allowSkillAdditions !== true}
 				onclick={addInlineSkill}
 			>
-				Add Skill
+				Add Inline
 			</Button>
 		</div>
 
@@ -1155,9 +1208,31 @@
 			{/if}
 		{/if}
 
+		<div class="space-y-2">
+			<div class="flex items-center justify-between gap-2">
+				<p class="text-[11px] font-medium text-muted-foreground">Approved Skill Registry</p>
+				<Button variant="outline" size="sm" onclick={() => void loadAgentSkills()}>
+					{agentSkillsLoading ? 'Loading' : 'Refresh'}
+				</Button>
+			</div>
+			{#if availableRegistrySkills.length > 0}
+				<div class="flex flex-wrap gap-2">
+					{#each availableRegistrySkills as skill (skillKey(skill))}
+						<Button variant="outline" size="sm" onclick={() => addRegistrySkill(skill)}>
+							Add {skill.name}
+						</Button>
+					{/each}
+				</div>
+			{:else}
+				<p class="text-[11px] text-muted-foreground">
+					No additional approved skills are available for this profile policy.
+				</p>
+			{/if}
+		</div>
+
 		{#if skills.length === 0}
 			<div class="rounded-md border border-dashed p-3 text-[11px] text-muted-foreground">
-				No skills configured. Add an inline skill or select a profile with skills.
+				No skills configured. Add an approved skill, add an inline skill, or select a profile with skills.
 			</div>
 		{:else}
 			<div class="space-y-3">
@@ -1171,12 +1246,23 @@
 								<div class="flex flex-wrap items-center gap-2">
 									<p class="truncate text-xs font-medium">{skill.name || 'Unnamed skill'}</p>
 									<Badge variant={profileSkill ? 'secondary' : 'outline'}>
-										{profileSkill ? 'profile' : 'inline'}
+										{profileSkill ? 'profile' : skill.sourceType === 'registry' || skill.registryId ? 'registry' : 'inline'}
 									</Badge>
+									{#if skill.version}
+										<Badge variant="outline">v{skill.version}</Badge>
+									{/if}
+									{#if skillPackageFileCount(skill) > 0}
+										<Badge variant="outline">{skillPackageFileCount(skill)} files</Badge>
+									{/if}
 								</div>
 								{#if profileSkill}
 									<p class="mt-1 text-[11px] text-muted-foreground">
 										Profile skills keep their prompt definition from the selected profile.
+									</p>
+								{/if}
+								{#if skill.sourceRepo}
+									<p class="mt-1 truncate text-[11px] text-muted-foreground">
+										{skill.sourceRepo}{skill.skillPath ? ` / ${skill.skillPath}` : ''}
 									</p>
 								{/if}
 							</div>

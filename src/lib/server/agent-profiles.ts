@@ -8,9 +8,11 @@ import {
 	agentToolPolicyFacetVersions
 } from '$lib/server/db/schema';
 import {
-	CLAUDE_CODE_BUNDLED_SKILLS,
+	DEFAULT_CURATED_AGENT_SKILLS,
+	profileSkillSnapshot,
 	type AgentSkillConfig
 } from '$lib/agent-skill-presets';
+import { listAgentSkills } from '$lib/server/agent-skills';
 
 export type McpServerProfileConfig = {
 	server_name?: string;
@@ -74,6 +76,8 @@ const DEFAULT_POLICY: AgentRuntimeOverridePolicy = {
 	allowSkillNarrowing: true
 };
 
+const DEFAULT_PROFILE_SKILLS = DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot);
+
 const BROWSER_MCP_SERVERS: McpServerProfileConfig[] = [
 	{
 		server_name: 'playwright',
@@ -101,7 +105,8 @@ const BROWSER_MCP_SERVERS: McpServerProfileConfig[] = [
 	}
 ];
 
-export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = [
+function builtinAgentProfiles(skills: AgentSkillConfig[] = DEFAULT_PROFILE_SKILLS): AgentProfileSummary[] {
+	return [
 	{
 		id: 'builtin:default-sandbox-agent',
 		templateId: 'builtin:default-sandbox-agent',
@@ -115,7 +120,7 @@ export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = [
 			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
 			mcpConnectionMode: 'explicit',
 			mcpServers: [],
-			skills: CLAUDE_CODE_BUNDLED_SKILLS,
+			skills,
 			runtimeOverridePolicy: DEFAULT_POLICY
 		}
 	},
@@ -141,7 +146,7 @@ export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = [
 					allowedTools: ['list_repositories', 'get_repository', 'search_repositories']
 				}
 			],
-			skills: CLAUDE_CODE_BUNDLED_SKILLS,
+			skills,
 			runtimeOverridePolicy: DEFAULT_POLICY
 		}
 	},
@@ -158,7 +163,7 @@ export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = [
 			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
 			mcpConnectionMode: 'explicit',
 			mcpServers: BROWSER_MCP_SERVERS,
-			skills: CLAUDE_CODE_BUNDLED_SKILLS,
+			skills,
 			runtimeOverridePolicy: DEFAULT_POLICY
 		}
 	},
@@ -175,11 +180,14 @@ export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = [
 			builtinTools: ['execute_command', 'read_file', 'write_file', 'list_files', 'edit_file'],
 			mcpConnectionMode: 'explicit',
 			mcpServers: BROWSER_MCP_SERVERS,
-			skills: CLAUDE_CODE_BUNDLED_SKILLS,
+			skills,
 			runtimeOverridePolicy: DEFAULT_POLICY
 		}
 	}
 ];
+}
+
+export const BUILTIN_AGENT_PROFILES: AgentProfileSummary[] = builtinAgentProfiles();
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -243,9 +251,25 @@ function normalizeSkillConfig(value: unknown): AgentSkillConfig | null {
 				: undefined;
 	const model = typeof value.model === 'string' ? value.model : undefined;
 	const sourceType =
-		value.sourceType === 'profile' || value.sourceType === 'inline' || value.sourceType === 'preset'
+		value.sourceType === 'profile' ||
+		value.sourceType === 'inline' ||
+		value.sourceType === 'preset' ||
+		value.sourceType === 'registry' ||
+		value.sourceType === 'curated' ||
+		value.sourceType === 'imported' ||
+		value.sourceType === 'builtin'
 			? value.sourceType
 			: 'profile';
+	const registryId = typeof value.registryId === 'string' ? value.registryId : undefined;
+	const slug = typeof value.slug === 'string' ? value.slug : undefined;
+	const version = typeof value.version === 'string' ? value.version : undefined;
+	const contentHash = typeof value.contentHash === 'string' ? value.contentHash : undefined;
+	const sourceRepo = typeof value.sourceRepo === 'string' ? value.sourceRepo : undefined;
+	const sourceRef = typeof value.sourceRef === 'string' ? value.sourceRef : undefined;
+	const skillPath = typeof value.skillPath === 'string' ? value.skillPath : undefined;
+	const license = typeof value.license === 'string' ? value.license : undefined;
+	const compatibility = isRecord(value.compatibility) ? value.compatibility : undefined;
+	const packageManifest = isRecord(value.packageManifest) ? value.packageManifest : undefined;
 	return {
 		name,
 		...(description ? { description } : {}),
@@ -267,7 +291,17 @@ function normalizeSkillConfig(value: unknown): AgentSkillConfig | null {
 				: typeof value.disable_model_invocation === 'boolean'
 					? value.disable_model_invocation
 					: false,
-		sourceType
+		sourceType,
+		...(registryId ? { registryId } : {}),
+		...(slug ? { slug } : {}),
+		...(version ? { version } : {}),
+		...(contentHash ? { contentHash } : {}),
+		...(sourceRepo ? { sourceRepo } : {}),
+		...(sourceRef ? { sourceRef } : {}),
+		...(skillPath ? { skillPath } : {}),
+		...(license ? { license } : {}),
+		...(compatibility ? { compatibility } : {}),
+		...(packageManifest ? { packageManifest } : {})
 	};
 }
 
@@ -307,7 +341,9 @@ function normalizeConfig(input: {
 }
 
 export async function listAgentProfiles(): Promise<AgentProfileSummary[]> {
-	if (!db) return BUILTIN_AGENT_PROFILES;
+	const registrySkills = (await listAgentSkills()).map(profileSkillSnapshot);
+	const builtInProfiles = builtinAgentProfiles(registrySkills);
+	if (!db) return builtInProfiles;
 	try {
 		const rows = await db
 			.select({
@@ -374,7 +410,7 @@ export async function listAgentProfiles(): Promise<AgentProfileSummary[]> {
 		}));
 
 		const merged = new Map<string, AgentProfileSummary>();
-		for (const profile of BUILTIN_AGENT_PROFILES) {
+		for (const profile of builtInProfiles) {
 			merged.set(profile.slug, profile);
 		}
 		for (const profile of dbProfiles) {
@@ -383,6 +419,6 @@ export async function listAgentProfiles(): Promise<AgentProfileSummary[]> {
 		return [...merged.values()];
 	} catch (err) {
 		console.warn('[agent-profiles] Failed loading DB profiles, using built-ins:', err);
-		return BUILTIN_AGENT_PROFILES;
+		return builtInProfiles;
 	}
 }

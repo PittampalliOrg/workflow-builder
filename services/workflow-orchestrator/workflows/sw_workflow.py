@@ -651,6 +651,14 @@ def _canonical_skill(item: dict[str, Any]) -> dict[str, Any]:
             "disable_model_invocation",
             False,
         ),
+        "registryId": str(item.get("registryId") or "").strip(),
+        "slug": str(item.get("slug") or "").strip(),
+        "sourceType": str(item.get("sourceType") or "").strip(),
+        "version": str(item.get("version") or "").strip(),
+        "contentHash": str(item.get("contentHash") or "").strip(),
+        "packageManifest": item.get("packageManifest")
+        if isinstance(item.get("packageManifest"), dict)
+        else None,
     }
 
 

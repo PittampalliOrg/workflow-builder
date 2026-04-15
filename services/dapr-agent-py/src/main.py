@@ -6,10 +6,12 @@ import logging
 import asyncio
 import json
 import os
+import posixpath
 import re
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Any
 
 from fastapi import FastAPI
@@ -553,6 +555,7 @@ def _extract_skill_configs(
         arguments = tuple(
             str(a).strip() for a in arguments_raw if str(a).strip()
         ) if isinstance(arguments_raw, list) else ()
+        package_files = _extract_skill_package_file_paths(item)
         skills.append(SkillDefinition(
             name=name,
             description=str(item.get("description") or ""),
@@ -572,8 +575,129 @@ def _extract_skill_configs(
             disable_model_invocation=bool(
                 item.get("disable_model_invocation", item.get("disableModelInvocation", False))
             ),
+            package_files=package_files,
         ))
     return skills
+
+
+def _extract_raw_skill_items(message: dict[str, Any]) -> list[dict[str, Any]]:
+    agent_config = message.get("agentConfig")
+    if isinstance(agent_config, str) and agent_config.strip():
+        try:
+            agent_config = json.loads(agent_config)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(agent_config, dict):
+        return []
+    raw_skills = agent_config.get("skills")
+    if not isinstance(raw_skills, list):
+        return []
+    return [item for item in raw_skills if isinstance(item, dict)]
+
+
+def _safe_skill_segment(value: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", value.strip()).strip(".-")
+    return normalized[:96] or "skill"
+
+
+def _safe_package_relative_path(value: Any) -> str | None:
+    raw = str(value or "").replace("\\", "/").strip()
+    if not raw:
+        return None
+    normalized = posixpath.normpath(raw).lstrip("/")
+    if normalized in {"", "."} or normalized.startswith("../"):
+        return None
+    return normalized
+
+
+def _extract_skill_package_entries(item: dict[str, Any]) -> list[dict[str, str]]:
+    manifest = item.get("packageManifest")
+    if not isinstance(manifest, dict):
+        return []
+    raw_files = manifest.get("files")
+    if not isinstance(raw_files, list):
+        return []
+    entries: list[dict[str, str]] = []
+    total_bytes = 0
+    for raw_file in raw_files:
+        if not isinstance(raw_file, dict):
+            continue
+        rel_path = _safe_package_relative_path(raw_file.get("path"))
+        content = raw_file.get("content")
+        if not rel_path or not isinstance(content, str):
+            continue
+        encoded_size = len(content.encode("utf-8"))
+        if encoded_size > 64 * 1024:
+            logger.warning("[skills] Skipping oversized package file %s", rel_path)
+            continue
+        if total_bytes + encoded_size > 256 * 1024:
+            logger.warning("[skills] Skipping package file %s because package limit was reached", rel_path)
+            continue
+        total_bytes += encoded_size
+        entries.append({"path": rel_path, "content": content})
+        if len(entries) >= 40:
+            break
+    return entries
+
+
+def _extract_skill_package_file_paths(item: dict[str, Any]) -> tuple[str, ...]:
+    return tuple(entry["path"] for entry in _extract_skill_package_entries(item))
+
+
+def _materialize_instance_skill_packages(
+    runtime,
+    skills: list[SkillDefinition],
+    instance_id: str,
+    raw_skill_items: list[dict[str, Any]],
+    *,
+    write_files: bool,
+) -> list[SkillDefinition]:
+    """Write imported skill package files into the active sandbox.
+
+    Imported skills may include references, scripts, or examples next to
+    SKILL.md. The agent receives those files through agentConfig rather than
+    through the image, so they need to be materialized into the current
+    OpenShell workspace before the Skill tool advertises them.
+    """
+    updated: list[SkillDefinition] = []
+    safe_instance = _safe_skill_segment(instance_id or "instance")
+    items_by_name = {
+        str(item.get("name") or "").strip(): item
+        for item in raw_skill_items
+        if isinstance(item, dict)
+    }
+    for skill in skills:
+        item = items_by_name.get(skill.name) or {}
+        package_entries = _extract_skill_package_entries(item)
+        if not package_entries:
+            updated.append(skill)
+            continue
+        package_dir = f"/sandbox/.workflow-builder/skills/{safe_instance}/{_safe_skill_segment(skill.name)}"
+        if write_files:
+            for entry in package_entries:
+                target_path = posixpath.join(package_dir, entry["path"])
+                result = runtime.write_text(target_path, entry["content"])
+                if not result.get("ok"):
+                    logger.warning(
+                        "[skills] Failed to materialize %s for skill %s: %s",
+                        entry["path"],
+                        skill.name,
+                        result.get("error") or result.get("output"),
+                    )
+            logger.info(
+                "[skills] Materialized %d package file(s) for skill %s at %s",
+                len(package_entries),
+                skill.name,
+                package_dir,
+            )
+        updated.append(
+            replace(
+                skill,
+                package_path=package_dir,
+                package_files=tuple(entry["path"] for entry in package_entries),
+            )
+        )
+    return updated
 
 
 class OpenShellDurableAgent(DurableAgent):
@@ -997,8 +1121,16 @@ class OpenShellDurableAgent(DurableAgent):
             )
         # Extract per-instance skill configs (parallel to MCP extraction)
         skill_registry = get_skill_registry()
+        raw_skill_items = _extract_raw_skill_items(message)
         instance_skill_defs = _extract_skill_configs(message)
         if instance_skill_defs:
+            instance_skill_defs = _materialize_instance_skill_packages(
+                runtime,
+                instance_skill_defs,
+                instance_id,
+                raw_skill_items,
+                write_files=not ctx.is_replaying,
+            )
             skill_registry.set_instance_skills(instance_skill_defs)
             logger.info(
                 "[skills] Registered %d instance skill(s) for instance %s",

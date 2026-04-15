@@ -1625,6 +1625,59 @@ export const agentProfileTemplateExamples = pgTable(
 	},
 );
 
+export type AgentSkillRegistryStatus = "ENABLED" | "DISABLED" | "DRAFT";
+export type AgentSkillRegistrySourceType =
+	| "curated"
+	| "imported"
+	| "builtin"
+	| "inline";
+
+export const agentSkillRegistry = pgTable(
+	"agent_skill_registry",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		slug: text("slug").notNull().unique(),
+		name: text("name").notNull(),
+		description: text("description"),
+		whenToUse: text("when_to_use"),
+		prompt: text("prompt").notNull(),
+		allowedTools: jsonb("allowed_tools").$type<string[]>(),
+		arguments: jsonb("arguments").$type<string[]>(),
+		argumentHint: text("argument_hint"),
+		model: text("model"),
+		userInvocable: boolean("user_invocable").notNull().default(true),
+		disableModelInvocation: boolean("disable_model_invocation").notNull().default(false),
+		sourceType: text("source_type")
+			.notNull()
+			.default("curated")
+			.$type<AgentSkillRegistrySourceType>(),
+		sourceRepo: text("source_repo"),
+		sourceRef: text("source_ref"),
+		skillPath: text("skill_path"),
+		version: text("version").notNull().default("1"),
+		contentHash: text("content_hash").notNull(),
+		license: text("license"),
+		compatibility: jsonb("compatibility").$type<Record<string, unknown>>(),
+		packageManifest: jsonb("package_manifest").$type<Record<string, unknown>>(),
+		status: text("status")
+			.notNull()
+			.default("ENABLED")
+			.$type<AgentSkillRegistryStatus>(),
+		createdByUserId: text("created_by_user_id").references(() => users.id),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+		updatedAt: timestamp("updated_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		statusIdx: index("idx_agent_skill_registry_status").on(table.status),
+		sourceIdx: index("idx_agent_skill_registry_source").on(
+			table.sourceRepo,
+			table.skillPath,
+		),
+	}),
+);
+
 export type PromptMode = "system" | "system+user";
 
 export const resourcePrompts = pgTable(
@@ -1960,6 +2013,8 @@ export type AgentProfileTemplateExample =
 	typeof agentProfileTemplateExamples.$inferSelect;
 export type NewAgentProfileTemplateExample =
 	typeof agentProfileTemplateExamples.$inferInsert;
+export type AgentSkillRegistry = typeof agentSkillRegistry.$inferSelect;
+export type NewAgentSkillRegistry = typeof agentSkillRegistry.$inferInsert;
 export type ResourcePrompt = typeof resourcePrompts.$inferSelect;
 export type NewResourcePrompt = typeof resourcePrompts.$inferInsert;
 export type ResourceSchema = typeof resourceSchemas.$inferSelect;

@@ -1,5 +1,5 @@
 import type { Edge, Node } from "@xyflow/svelte";
-import { CLAUDE_CODE_BUNDLED_SKILLS } from "$lib/agent-skill-presets";
+import { DEFAULT_CURATED_AGENT_SKILLS, profileSkillSnapshot } from "$lib/agent-skill-presets";
 import {
   DEFAULT_NEW_AGENT_SANDBOX_POLICY,
   hasExplicitSandboxPolicy,
@@ -397,7 +397,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
       },
       profileSnapshot: {
         mcpServers: [],
-        skills: CLAUDE_CODE_BUNDLED_SKILLS,
+        skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
         runtimeOverridePolicy: {
           allowToolNarrowing: true,
           allowServerAdditions: false,
@@ -408,7 +408,7 @@ export function createDefaultAgentTaskBody(label = "Agent"): AgentTaskBody {
       },
       mcpConnectionMode: "explicit",
       mcpServers: [],
-      skills: CLAUDE_CODE_BUNDLED_SKILLS,
+      skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
       loop: {
         strategy: "graph_v1",
       },

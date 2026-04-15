@@ -29,3 +29,5 @@ class SkillDefinition:
     model_override: str = ""  # Future: per-skill model routing
     user_invocable: bool = True
     disable_model_invocation: bool = False
+    package_path: str = ""  # Absolute sandbox path containing materialized package files
+    package_files: tuple[str, ...] = ()  # Relative file paths available under package_path

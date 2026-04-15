@@ -154,6 +154,18 @@ def run_skill(skill: str, args: str | None = None) -> str:
     prompt = skill_def.prompt.replace("${ARGUMENTS}", args or "")
 
     # Prepend allowed-tools directive for soft enforcement
+    if skill_def.package_path:
+        file_list = "\n".join(f"- {path}" for path in skill_def.package_files[:40])
+        package_block = (
+            f"<skill-package name=\"{skill_def.name}\">\n"
+            f"Directory: {skill_def.package_path}\n"
+            f"Files:\n{file_list or '- SKILL.md'}\n"
+            "Use the file tools with this absolute directory when the skill "
+            "refers to bundled references, scripts, examples, or assets.\n"
+            f"</skill-package>\n\n"
+        )
+        prompt = package_block + prompt
+
     if skill_def.allowed_tools:
         tools_list = ", ".join(skill_def.allowed_tools)
         header = (
