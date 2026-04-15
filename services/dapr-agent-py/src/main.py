@@ -648,6 +648,8 @@ def _install_runtime_skill_refs(runtime, instance_id: str, refs: list[dict[str, 
         command = (
             f"mkdir -p {shlex.quote(install_root)} && "
             f"cd {shlex.quote(install_root)} && "
+            "export SSL_CERT_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt} && "
+            "export GIT_SSL_CAINFO=${GIT_SSL_CAINFO:-$SSL_CERT_FILE} && "
             f"npx --yes skills@1.5.0 add {shlex.quote(source_arg)} "
             f"--agent {shlex.quote(ref['install_agent'])} --copy --yes"
         )
