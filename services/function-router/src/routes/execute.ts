@@ -2117,6 +2117,28 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               parsed && typeof parsed === "object"
                 ? (parsed as MastraToolResponse)
                 : undefined;
+            const parsedWithPreviewRequest =
+              isBrowserStartPreview && parsed && typeof parsed === "object"
+                ? {
+                    ...(parsed as Record<string, unknown>),
+                    requestedRepoPath:
+                      typeof args.repoPath === "string"
+                        ? args.repoPath.trim()
+                        : undefined,
+                    requestedBaseUrl:
+                      typeof args.baseUrl === "string"
+                        ? args.baseUrl.trim()
+                        : undefined,
+                    requestedDevServerCommand:
+                      typeof args.devServerCommand === "string"
+                        ? args.devServerCommand.trim()
+                        : undefined,
+                    requestedInstallCommand:
+                      typeof args.installCommand === "string"
+                        ? args.installCommand.trim()
+                        : undefined,
+                  }
+                : parsed;
             let resolvedMastra = parsedMastra;
             if (
               isAgentRun &&
@@ -2155,8 +2177,8 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             ) {
               resolvedMastra = {
                 success: true,
-                result: parsed,
-                ...(parsed as Record<string, unknown>),
+                result: parsedWithPreviewRequest,
+                ...(parsedWithPreviewRequest as Record<string, unknown>),
               } as MastraToolResponse;
             }
 
