@@ -267,6 +267,29 @@ CHECKPOINT_SCRIPT = dedent(
             raise RuntimeError((proc.stderr or proc.stdout or f"{args[0]} failed").strip())
         return proc
 
+    def git_lock_error(text):
+        lowered = str(text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "index.lock",
+                "another git process",
+                "could not lock",
+                "cannot lock ref",
+            )
+        )
+
+    def run_git_with_lock_retry(args, check=False, timeout=30):
+        proc = None
+        for attempt in range(10):
+            proc = run(args, timeout=timeout)
+            if proc.returncode == 0 or not git_lock_error(proc.stderr or proc.stdout):
+                break
+            time.sleep(0.5 * (attempt + 1))
+        if check and proc.returncode != 0:
+            raise RuntimeError((proc.stderr or proc.stdout or f"{args[0]} failed").strip())
+        return proc
+
     def emit(extra):
         result = {
             "checkpointKind": "tool_mutation",
@@ -305,16 +328,16 @@ CHECKPOINT_SCRIPT = dedent(
             headers["Authorization"] = basic_auth_header(auth["username"], auth["token"])
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            for attempt in range(5):
+            for attempt in range(6):
                 try:
                     with urllib.request.urlopen(req, timeout=10) as response:
                         return response.status, response.read().decode("utf-8", errors="replace")
                 except urllib.error.HTTPError:
                     raise
                 except urllib.error.URLError as exc:
-                    if attempt == 4:
+                    if attempt == 5:
                         raise
-                    time.sleep(0.5 * (attempt + 1))
+                    time.sleep(0.75 * (attempt + 1))
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", errors="replace")
 
@@ -349,7 +372,13 @@ CHECKPOINT_SCRIPT = dedent(
         base = str(remote["apiUrl"]).rstrip("/")
         owner = urllib.parse.quote(str(remote["owner"]), safe="")
         repo_name = urllib.parse.quote(str(remote["repo"]), safe="")
-        status, body = http_request(f"{base}/api/v1/repos/{owner}/{repo_name}", auth=auth)
+        try:
+            status, body = http_request(f"{base}/api/v1/repos/{owner}/{repo_name}", auth=auth)
+        except urllib.error.URLError:
+            # The repository is expected to exist in normal deployments. Treat
+            # lookup DNS/network failures as best-effort so git push can retry
+            # through its own transport instead of failing the checkpoint early.
+            return
         if status == 200:
             return
         if status != 404:
@@ -359,17 +388,20 @@ CHECKPOINT_SCRIPT = dedent(
             if remote.get("owner") == remote.get("username")
             else f"{base}/api/v1/orgs/{owner}/repos"
         )
-        status, body = http_request(
-            create_path,
-            method="POST",
-            auth=auth,
-            body={
-                "name": remote["repo"],
-                "private": True,
-                "auto_init": False,
-                "description": "Workflow Builder durable agent code checkpoints",
-            },
-        )
+        try:
+            status, body = http_request(
+                create_path,
+                method="POST",
+                auth=auth,
+                body={
+                    "name": remote["repo"],
+                    "private": True,
+                    "auto_init": False,
+                    "description": "Workflow Builder durable agent code checkpoints",
+                },
+            )
+        except urllib.error.URLError:
+            return
         if status not in {201, 409}:
             raise RuntimeError(f"Gitea repo create failed ({status}): {body[:300]}")
 
@@ -458,7 +490,7 @@ CHECKPOINT_SCRIPT = dedent(
 
         head = run(["git", "rev-parse", "--verify", "HEAD"], timeout=10)
         if head.returncode != 0:
-            run(["git", "commit", "--allow-empty", "-m", "checkpoint: initial empty workspace"], check=True, timeout=20)
+            run_git_with_lock_retry(["git", "commit", "--allow-empty", "-m", "checkpoint: initial empty workspace"], check=True, timeout=20)
 
         before = run(["git", "rev-parse", "HEAD"], check=True, timeout=10).stdout.strip()
         status = run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], timeout=20)
@@ -477,7 +509,7 @@ CHECKPOINT_SCRIPT = dedent(
             })
             raise SystemExit(0)
 
-        run(["git", "add", "-A"], check=True, timeout=60)
+        run_git_with_lock_retry(["git", "add", "-A"], check=True, timeout=60)
         staged = run(["git", "diff", "--cached", "--quiet"], timeout=30)
         if staged.returncode == 0:
             emit({
@@ -497,7 +529,7 @@ CHECKPOINT_SCRIPT = dedent(
         tool_name = str(payload.get("toolName") or "tool").strip()[:80]
         tool_call_id = str(payload.get("toolCallId") or "").strip()[:80]
         message = f"checkpoint: {tool_name} {tool_call_id}".strip()
-        run(["git", "commit", "-m", message], check=True, timeout=60)
+        run_git_with_lock_retry(["git", "commit", "-m", message], check=True, timeout=60)
         after = run(["git", "rev-parse", "HEAD"], check=True, timeout=10).stdout.strip()
 
         files = []
@@ -539,7 +571,7 @@ CHECKPOINT_SCRIPT = dedent(
         ref_name = None
         if payload.get("executionId") and payload.get("toolCallId"):
             ref_name = f"refs/workflow-builder/checkpoints/{payload['executionId']}/{payload['toolCallId']}"
-            run(["git", "update-ref", ref_name, after], timeout=10)
+            run_git_with_lock_retry(["git", "update-ref", ref_name, after], timeout=10)
 
         try:
             run(["git", "gc", "--auto"], timeout=5)
