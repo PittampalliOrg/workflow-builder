@@ -22,7 +22,7 @@ RUN npm install -g --force \
     chrome-devtools-mcp@latest
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock* ./
 RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev 2>/dev/null \
     || uv sync --python /usr/bin/python3 --no-python-downloads --no-dev
 COPY src/ src/

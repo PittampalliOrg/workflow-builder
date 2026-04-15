@@ -17,7 +17,7 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /app
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock* ./
 RUN uv sync --python /usr/bin/python3 --no-python-downloads --frozen --no-dev 2>/dev/null \
     || uv sync --python /usr/bin/python3 --no-python-downloads --no-dev
 COPY src/ src/
