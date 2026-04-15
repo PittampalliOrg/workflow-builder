@@ -734,6 +734,62 @@
 		return parts.join(' ');
 	}
 
+	function checkpointFileStatusLabel(file: CodeCheckpointFile): string {
+		const status = String(file.status ?? '').trim().toUpperCase();
+		if (!status) return file.binary ? 'BIN' : 'M';
+		if (status.startsWith('R')) return status;
+		if (status.startsWith('C')) return status;
+		return status.slice(0, 1);
+	}
+
+	function checkpointHasFileChanges(checkpoint: CodeCheckpoint): boolean {
+		return checkpoint.status === 'created' && checkpoint.fileCount > 0;
+	}
+
+	function checkpointGitChangeLabel(checkpoint: CodeCheckpoint): string | null {
+		if (!checkpointHasFileChanges(checkpoint)) return null;
+		const counts = new Map<string, number>();
+		for (const file of checkpoint.changedFiles) {
+			const status = checkpointFileStatusLabel(file);
+			counts.set(status, (counts.get(status) ?? 0) + 1);
+		}
+		if (counts.size === 0) return `M ${checkpoint.fileCount}`;
+		const order = ['A', 'M', 'D', 'R', 'C', 'T', 'U'];
+		return [...counts.entries()]
+			.sort(([left], [right]) => {
+				const leftIndex = order.findIndex((prefix) => left.startsWith(prefix));
+				const rightIndex = order.findIndex((prefix) => right.startsWith(prefix));
+				return (leftIndex === -1 ? order.length : leftIndex) - (rightIndex === -1 ? order.length : rightIndex);
+			})
+			.map(([status, count]) => `${status} ${count}`)
+			.join(' ');
+	}
+
+	function checkpointShaRange(checkpoint: CodeCheckpoint): string | null {
+		if (!checkpointHasFileChanges(checkpoint)) return null;
+		if (!checkpoint.beforeSha || !checkpoint.afterSha) return null;
+		return `${shortSha(checkpoint.beforeSha)}..${shortSha(checkpoint.afterSha)}`;
+	}
+
+	function checkpointGitRemoteLabel(checkpoint: CodeCheckpoint): string | null {
+		if (!checkpointHasFileChanges(checkpoint)) return null;
+		if (checkpointIsDurable(checkpoint)) return 'pushed';
+		if (checkpoint.remoteStatus === 'error') return 'push failed';
+		if (checkpoint.remoteRef) return 'local ref';
+		return null;
+	}
+
+	function checkpointShouldShowRemoteError(checkpoint: CodeCheckpoint): boolean {
+		if (!checkpoint.remoteError) return false;
+		if (
+			!checkpointHasFileChanges(checkpoint) &&
+			['no changes', 'no staged changes'].includes(checkpoint.remoteError.trim().toLowerCase())
+		) {
+			return false;
+		}
+		return true;
+	}
+
 	function checkpointIsDurable(checkpoint: CodeCheckpoint): boolean {
 		return checkpoint.remoteStatus === 'pushed' && !!checkpoint.remoteRef;
 	}
@@ -1510,29 +1566,39 @@
 				{:else}
 					<div class="grid min-h-0 flex-1 gap-4 lg:grid-cols-[24rem_minmax(0,1fr)]">
 						<div class="min-h-0 overflow-y-auto rounded-md border border-border">
-							{#each codeCheckpoints as checkpoint (checkpoint.id)}
-								<button
-									type="button"
-									class="block w-full border-b border-border px-3 py-3 text-left last:border-b-0 hover:bg-muted/70 {checkpoint.id === selectedCodeCheckpointId ? 'bg-muted' : ''}"
-									onclick={() => selectCodeCheckpoint(checkpoint.id)}
-								>
-									<div class="flex items-center justify-between gap-2">
-										<span class="truncate text-sm font-medium">{checkpoint.toolName}</span>
-										<Badge variant={checkpoint.status === 'error' ? 'destructive' : 'outline'} class="shrink-0 text-[10px]">
-											{checkpoint.status}
-										</Badge>
-									</div>
-									<div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-										<span>{checkpoint.fileCount} file{checkpoint.fileCount === 1 ? '' : 's'}</span>
-										<span>{shortSha(checkpoint.beforeSha)} → {shortSha(checkpoint.afterSha)}</span>
-										<span>{checkpointRemoteLabel(checkpoint)}</span>
-										{#if checkpoint.seq}
-											<span>#{checkpoint.seq}</span>
+								{#each codeCheckpoints as checkpoint (checkpoint.id)}
+									{@const gitChangeLabel = checkpointGitChangeLabel(checkpoint)}
+									{@const gitShaRange = checkpointShaRange(checkpoint)}
+									{@const gitRemoteLabel = checkpointGitRemoteLabel(checkpoint)}
+									<button
+										type="button"
+										class="block w-full border-b border-border px-3 py-3 text-left last:border-b-0 hover:bg-muted/70 {checkpoint.id === selectedCodeCheckpointId ? 'bg-muted' : ''}"
+										onclick={() => selectCodeCheckpoint(checkpoint.id)}
+									>
+										<div class="flex items-center justify-between gap-2">
+											<span class="truncate text-sm font-medium">{checkpoint.toolName}</span>
+											{#if checkpoint.status === 'error'}
+												<Badge variant="destructive" class="shrink-0 font-mono text-[10px]">!</Badge>
+											{:else if gitChangeLabel}
+												<Badge variant="outline" class="shrink-0 font-mono text-[10px]">{gitChangeLabel}</Badge>
+											{/if}
+										</div>
+										{#if gitShaRange || gitRemoteLabel || (checkpoint.seq && (gitChangeLabel || checkpoint.status === 'error'))}
+											<div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
+												{#if gitShaRange}
+													<span>{gitShaRange}</span>
+												{/if}
+												{#if gitRemoteLabel}
+													<span>{gitRemoteLabel}</span>
+												{/if}
+												{#if checkpoint.seq && (gitChangeLabel || checkpoint.status === 'error')}
+													<span>#{checkpoint.seq}</span>
+												{/if}
+											</div>
 										{/if}
-									</div>
-									{#if checkpoint.remoteError}
-										<p class="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-400">{checkpoint.remoteError}</p>
-									{/if}
+										{#if checkpointShouldShowRemoteError(checkpoint)}
+											<p class="mt-1 line-clamp-2 text-xs text-amber-600 dark:text-amber-400">{checkpoint.remoteError}</p>
+										{/if}
 									{#if checkpoint.error}
 										<p class="mt-1 line-clamp-2 text-xs text-red-600 dark:text-red-400">{checkpoint.error}</p>
 									{/if}
@@ -1569,17 +1635,18 @@
 													{restoreCheckpointPending ? 'Restoring...' : 'Restore to sandbox'}
 												</button>
 											{/if}
-											{#each selectedCodeCheckpoint.changedFiles as file (checkpointFilePath(file))}
-												{@const path = checkpointFilePath(file)}
-												{#if path}
-													<button
-														type="button"
-														class="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted {selectedCodePath === path ? 'bg-muted' : ''}"
-														onclick={() => selectCodeCheckpoint(selectedCodeCheckpoint.id, path)}
-													>
-														<span>{path}</span>
-														{#if checkpointFileSummary(file)}
-															<span class="ml-1 text-muted-foreground">{checkpointFileSummary(file)}</span>
+												{#each selectedCodeCheckpoint.changedFiles as file (checkpointFilePath(file))}
+													{@const path = checkpointFilePath(file)}
+													{#if path}
+														<button
+															type="button"
+															class="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted {selectedCodePath === path ? 'bg-muted' : ''}"
+															onclick={() => selectCodeCheckpoint(selectedCodeCheckpoint.id, path)}
+														>
+															<span class="font-mono text-muted-foreground">{checkpointFileStatusLabel(file)}</span>
+															<span>{path}</span>
+															{#if checkpointFileSummary(file)}
+																<span class="ml-1 text-muted-foreground">{checkpointFileSummary(file)}</span>
 														{/if}
 													</button>
 												{/if}
