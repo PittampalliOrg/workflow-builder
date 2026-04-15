@@ -1570,6 +1570,12 @@ runner = AgentRunner()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s starting", AGENT_SERVICE_NAME)
+    try:
+        from src.oauth.manager import oauth_manager
+
+        oauth_manager.start_refresh_task()
+    except Exception as exc:
+        logger.warning("OAuth refresh task start failed: %s", exc)
     yield
     logger.info("%s shutting down", AGENT_SERVICE_NAME)
     runner.shutdown(agent)
@@ -1585,6 +1591,14 @@ app = FastAPI(
 # Wire agent pub/sub routes and HTTP endpoints onto the FastAPI app.
 # When app= is provided, serve() returns the app without starting uvicorn.
 runner.serve(agent, app=app, port=8002)
+
+# Mount OAuth endpoints (/oauth/login, /oauth/callback, /oauth/status, etc.).
+try:
+    from src.oauth.routes import router as oauth_router
+
+    app.include_router(oauth_router)
+except Exception as exc:
+    logger.warning("OAuth routes not loaded: %s", exc)
 
 # Instrument FastAPI with OTEL
 if _otel_ready:

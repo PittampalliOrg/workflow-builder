@@ -155,11 +155,31 @@ def _call_anthropic_sdk(
     """
     import anthropic
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY environment variable not set")
+    auth_token = None
+    api_key = None
+    extra_headers: dict[str, str] = {}
+    try:
+        from src.oauth.manager import oauth_manager
 
-    client = anthropic.Anthropic(api_key=api_key)
+        token = oauth_manager.get_access_token()
+        if token:
+            auth_token = token
+            extra_headers["anthropic-beta"] = "oauth-2025-04-20"
+    except Exception:
+        pass
+
+    if not auth_token:
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise RuntimeError(
+                "No Anthropic authentication configured. Set ANTHROPIC_API_KEY or connect Claude OAuth."
+            )
+
+    client = anthropic.Anthropic(
+        api_key=api_key,
+        auth_token=auth_token,
+        default_headers=extra_headers or None,
+    )
     model = _get_anthropic_model(component)
     anthropic_tools = _convert_tools_for_anthropic(tools)
 

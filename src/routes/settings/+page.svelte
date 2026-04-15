@@ -118,6 +118,107 @@
 		}
 	}
 
+	type ClaudeOAuthStatus = {
+		authenticated: boolean;
+		subscription_type?: string | null;
+		email?: string | null;
+		expires_at?: number | null;
+		expired?: boolean;
+		scopes?: string[];
+	};
+
+	let claudeOAuthStatus = $state<ClaudeOAuthStatus | null>(null);
+	let claudeOAuthLoading = $state(false);
+	let claudeOAuthBusy = $state(false);
+	let claudeOAuthError = $state<string | null>(null);
+
+	function formatOAuthExpiry(value: number | null | undefined): string {
+		if (!value) return 'Unknown';
+		return new Date(value).toLocaleString();
+	}
+
+	async function readOAuthError(response: Response, fallback: string): Promise<string> {
+		const body = await response.json().catch(() => null);
+		if (body && typeof body.message === 'string') return body.message;
+		if (body && typeof body.error === 'string') return body.error;
+		return fallback;
+	}
+
+	async function loadClaudeOAuthStatus({ quiet = false }: { quiet?: boolean } = {}) {
+		if (!quiet) claudeOAuthLoading = true;
+		claudeOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/oauth/status');
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to load Claude OAuth status'));
+			claudeOAuthStatus = await res.json();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to load Claude OAuth status';
+			claudeOAuthError = message;
+			if (!quiet) toast.error(message);
+		} finally {
+			if (!quiet) claudeOAuthLoading = false;
+		}
+	}
+
+	async function pollClaudeOAuthStatus() {
+		for (let attempt = 0; attempt < 40; attempt += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 3000));
+			await loadClaudeOAuthStatus({ quiet: true });
+			if (claudeOAuthStatus?.authenticated) {
+				toast.success('Claude OAuth connected');
+				return;
+			}
+		}
+		toast.info('Finish the Claude login, then refresh the status.');
+	}
+
+	async function connectClaudeOAuth() {
+		claudeOAuthBusy = true;
+		claudeOAuthError = null;
+		try {
+			const res = await fetch('/api/dapr-agent-py/oauth/login', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to start Claude OAuth'));
+			const body = await res.json() as { authorize_url?: string };
+			if (!body.authorize_url) throw new Error('Claude OAuth did not return an authorization URL');
+			window.open(body.authorize_url, 'claude-oauth', 'popup,width=960,height=720');
+			void pollClaudeOAuthStatus();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : 'Failed to start Claude OAuth';
+			claudeOAuthError = message;
+			toast.error(message);
+		} finally {
+			claudeOAuthBusy = false;
+		}
+	}
+
+	async function refreshClaudeOAuth() {
+		claudeOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/oauth/refresh', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to refresh Claude OAuth token'));
+			await loadClaudeOAuthStatus({ quiet: true });
+			toast.success('Claude OAuth token refreshed');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to refresh Claude OAuth token');
+		} finally {
+			claudeOAuthBusy = false;
+		}
+	}
+
+	async function disconnectClaudeOAuth() {
+		claudeOAuthBusy = true;
+		try {
+			const res = await fetch('/api/dapr-agent-py/oauth/logout', { method: 'POST' });
+			if (!res.ok) throw new Error(await readOAuthError(res, 'Failed to disconnect Claude OAuth'));
+			await loadClaudeOAuthStatus({ quiet: true });
+			toast.success('Claude OAuth disconnected');
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : 'Failed to disconnect Claude OAuth');
+		} finally {
+			claudeOAuthBusy = false;
+		}
+	}
+
 	// MCP Connections
 	interface McpConnection {
 		id: string;
@@ -344,6 +445,9 @@
 		if (activeTab === 'api-keys') {
 			loadApiKeys();
 		}
+		if (activeTab === 'claude-oauth' && !claudeOAuthStatus && !claudeOAuthLoading) {
+			void loadClaudeOAuthStatus();
+		}
 	});
 </script>
 
@@ -357,6 +461,7 @@
 				<TabsList class="mb-6 h-9">
 					<TabsTrigger value="api-keys" class="text-xs px-3">API Keys</TabsTrigger>
 					<TabsTrigger value="profile" class="text-xs px-3">Profile</TabsTrigger>
+					<TabsTrigger value="claude-oauth" class="text-xs px-3">Claude OAuth</TabsTrigger>
 					<TabsTrigger value="oauth-apps" class="text-xs px-3">OAuth Apps</TabsTrigger>
 					<TabsTrigger value="mcp-connections" class="text-xs px-3">MCP Connections</TabsTrigger>
 				</TabsList>
@@ -529,6 +634,101 @@
 								</CardContent>
 							</Card>
 						{/if}
+					</div>
+				</TabsContent>
+
+				<!-- Claude OAuth Tab -->
+				<TabsContent value="claude-oauth">
+					<div class="space-y-6">
+						<div>
+							<h2 class="text-base font-semibold">Claude OAuth</h2>
+							<p class="text-sm text-muted-foreground">
+								Connect Claude subscription authentication for dapr-agent-py Anthropic calls.
+							</p>
+						</div>
+
+						{#if claudeOAuthError}
+							<Alert variant="destructive">
+								<CircleAlert class="size-4" />
+								<AlertDescription>{claudeOAuthError}</AlertDescription>
+							</Alert>
+						{/if}
+
+						<Card>
+							<CardHeader>
+								<CardTitle class="flex items-center gap-2 text-sm">
+									<Globe size={16} />
+									dapr-agent-py
+								</CardTitle>
+							</CardHeader>
+							<CardContent class="space-y-4">
+								{#if claudeOAuthLoading}
+									<div class="flex items-center gap-2 text-sm text-muted-foreground">
+										<Loader2 size={14} class="animate-spin" />
+										Loading Claude OAuth status...
+									</div>
+								{:else}
+									<div class="flex flex-wrap items-center gap-2">
+										{#if claudeOAuthStatus?.authenticated}
+											<Badge variant="default" class="gap-1">
+												<Lock size={11} />
+												Connected
+											</Badge>
+											{#if claudeOAuthStatus.expired}
+												<Badge variant="destructive">Expired</Badge>
+											{/if}
+										{:else}
+											<Badge variant="secondary" class="gap-1">
+												<LockOpen size={11} />
+												Not connected
+											</Badge>
+										{/if}
+									</div>
+
+									<div class="grid gap-3 rounded-md border border-border p-3 text-sm sm:grid-cols-2">
+										<div>
+											<p class="text-xs text-muted-foreground">Account</p>
+											<p class="truncate font-medium">{claudeOAuthStatus?.email || 'Not connected'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Subscription</p>
+											<p class="font-medium">{claudeOAuthStatus?.subscription_type || 'Unknown'}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Token Expires</p>
+											<p class="font-medium">{formatOAuthExpiry(claudeOAuthStatus?.expires_at)}</p>
+										</div>
+										<div>
+											<p class="text-xs text-muted-foreground">Scopes</p>
+											<p class="truncate font-mono text-xs">{claudeOAuthStatus?.scopes?.join(' ') || 'None'}</p>
+										</div>
+									</div>
+								{/if}
+
+								<div class="flex flex-wrap gap-2">
+									<Button onclick={connectClaudeOAuth} disabled={claudeOAuthBusy}>
+										{#if claudeOAuthBusy}<Loader2 size={12} class="animate-spin" />{/if}
+										{claudeOAuthStatus?.authenticated ? 'Reconnect Claude' : 'Connect Claude'}
+									</Button>
+									<Button variant="outline" onclick={() => loadClaudeOAuthStatus()} disabled={claudeOAuthLoading || claudeOAuthBusy}>
+										<RefreshCw size={12} />
+										Refresh Status
+									</Button>
+									{#if claudeOAuthStatus?.authenticated}
+										<Button variant="outline" onclick={refreshClaudeOAuth} disabled={claudeOAuthBusy}>
+											Refresh Token
+										</Button>
+										<Button variant="ghost" onclick={disconnectClaudeOAuth} disabled={claudeOAuthBusy}>
+											Disconnect
+										</Button>
+									{/if}
+								</div>
+
+								<p class="text-xs text-muted-foreground">
+									The browser authorizes at claude.com, then redirects to dapr-agent-py. Tokens are stored in the Dapr state store used by the agent runtime.
+								</p>
+							</CardContent>
+						</Card>
 					</div>
 				</TabsContent>
 
