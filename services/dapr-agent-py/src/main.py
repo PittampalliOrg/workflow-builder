@@ -15,7 +15,10 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.encoders import jsonable_encoder
+from google.protobuf import wrappers_pb2
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry initialization (must happen before FastAPI app creation)
@@ -83,6 +86,11 @@ from src.tools.skill_tool import get_registry as get_skill_registry, load_skills
 from src.tools.skill_tool.models import SkillDefinition
 from src.tools.skill_tool.prompt import format_skill_listings
 from src.openshell_runtime import DEFAULT_CWD, get_runtime
+from src.code_checkpoint import (
+    capture_code_checkpoint,
+    restore_code_checkpoint,
+    should_checkpoint_tool,
+)
 from src.event_publisher import (
     publish_event,
     publish_workflow_started,
@@ -291,6 +299,21 @@ def _parse_metadata(value: Any) -> dict[str, Any]:
         except json.JSONDecodeError:
             return {}
         return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_code_checkpoint_restore(
+    message: dict[str, Any],
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    for value in (
+        message.get("codeCheckpointRestore"),
+        metadata.get("codeCheckpointRestore"),
+        metadata.get("code_checkpoint_restore"),
+    ):
+        parsed = _parse_metadata(value)
+        if parsed:
+            return parsed
     return {}
 
 
@@ -852,6 +875,7 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
         self._mcp_allowed_tools_by_instance: dict[str, dict[str, set[str]]] = {}
         self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
+        self._workspace_ref_by_instance: dict[str, str] = {}
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1049,6 +1073,7 @@ class OpenShellDurableAgent(DurableAgent):
         exec_id = self._exec_id or ""
         inst_id = self._inst_id or payload.get("instance_id", "")
         tool_call = payload.get("tool_call", {})
+        tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
         func = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
         tool_name = func.get("name", "unknown") if isinstance(func, dict) else "unknown"
         tool_args = {}
@@ -1068,7 +1093,13 @@ class OpenShellDurableAgent(DurableAgent):
         if not isinstance(tool_args, dict):
             tool_args = {}
         try:
-            publish_tool_start(exec_id, inst_id, tool_name, tool_args=tool_args)
+            publish_tool_start(
+                exec_id,
+                inst_id,
+                tool_name,
+                tool_args=tool_args,
+                source_event_id=f"{tool_call_id}:start" if tool_call_id else None,
+            )
         except Exception:
             pass
         try:
@@ -1094,6 +1125,7 @@ class OpenShellDurableAgent(DurableAgent):
                             tool_name,
                             success=False,
                             error=error[:200],
+                            source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
                         )
                     except Exception:
                         pass
@@ -1123,7 +1155,14 @@ class OpenShellDurableAgent(DurableAgent):
                 result = super().run_tool(ctx, payload)
         except Exception as exc:
             try:
-                publish_tool_complete(exec_id, inst_id, tool_name, success=False, error=str(exc)[:200])
+                publish_tool_complete(
+                    exec_id,
+                    inst_id,
+                    tool_name,
+                    success=False,
+                    error=str(exc)[:200],
+                    source_event_id=f"{tool_call_id}:error" if tool_call_id else None,
+                )
             except Exception:
                 pass
             raise
@@ -1133,8 +1172,29 @@ class OpenShellDurableAgent(DurableAgent):
             raw = result.get("content", "")
             if isinstance(raw, str):
                 output = raw[:500]
+        checkpoint = None
+        if should_checkpoint_tool(tool_name):
+            try:
+                checkpoint = capture_code_checkpoint(
+                    get_runtime(),
+                    execution_id=exec_id,
+                    instance_id=inst_id,
+                    workspace_ref=self._workspace_ref_by_instance.get(inst_id),
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                )
+            except Exception as exc:
+                logger.warning("[checkpoint] failed after %s: %s", tool_name, exc)
         try:
-            publish_tool_complete(exec_id, inst_id, tool_name, success=True, output=output)
+            publish_tool_complete(
+                exec_id,
+                inst_id,
+                tool_name,
+                success=True,
+                output=output,
+                checkpoint=checkpoint,
+                source_event_id=f"{tool_call_id}:end" if tool_call_id else None,
+            )
         except Exception:
             pass
         return result
@@ -1156,6 +1216,42 @@ class OpenShellDurableAgent(DurableAgent):
         runtime = get_runtime()
         runtime.set_sandbox_name(sandbox_name)
         runtime.set_cwd(cwd or DEFAULT_CWD)
+        code_checkpoint_restore = _extract_code_checkpoint_restore(message, metadata)
+
+        if code_checkpoint_restore and not ctx.is_replaying:
+            restore_result = restore_code_checkpoint(runtime, code_checkpoint_restore)
+            try:
+                publish_event(
+                    "state_snapshot",
+                    {
+                        "phase": "code_checkpoint_restore",
+                        "success": bool(restore_result.get("ok")),
+                        "codeCheckpointRestore": {
+                            "checkpointId": code_checkpoint_restore.get("checkpointId"),
+                            "afterSha": code_checkpoint_restore.get("afterSha"),
+                            "remoteRef": code_checkpoint_restore.get("remoteRef"),
+                            "repoPath": code_checkpoint_restore.get("repoPath"),
+                        },
+                        "result": restore_result,
+                    },
+                    execution_id=str(
+                        message.get("dbExecutionId")
+                        or message.get("workflowExecutionId")
+                        or message.get("executionId")
+                        or ""
+                    ),
+                    instance_id=getattr(ctx, "instance_id", None) or "",
+                    source_event_id=f"restore:{code_checkpoint_restore.get('checkpointId') or code_checkpoint_restore.get('afterSha') or 'checkpoint'}",
+                )
+            except Exception:
+                pass
+            if not restore_result.get("ok"):
+                raise RuntimeError(
+                    f"Code checkpoint restore failed: {restore_result.get('error') or restore_result}"
+                )
+            restored_repo_path = str(code_checkpoint_restore.get("repoPath") or "").strip()
+            if restored_repo_path:
+                runtime.set_cwd(restored_repo_path)
 
         # Set system prompt dynamically with <env> block (mirrors prompts.ts)
         previous_system_prompt = self.profile.system_prompt
@@ -1256,6 +1352,14 @@ class OpenShellDurableAgent(DurableAgent):
         # Stash for activity overrides (call_llm, run_tool)
         self._exec_id = execution_id
         self._inst_id = instance_id
+        workspace_ref = str(
+            message.get("workspaceRef")
+            or metadata.get("workspaceRef")
+            or metadata.get("workspace_ref")
+            or ""
+        ).strip()
+        if workspace_ref:
+            self._workspace_ref_by_instance[instance_id] = workspace_ref
         mcp_configs, mcp_allowed_tools = _extract_mcp_server_configs(message)
         if mcp_configs:
             self._mcp_configs_by_instance[instance_id] = mcp_configs
@@ -1567,6 +1671,46 @@ def _wrapped_string(value: Any) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
+class AgentRunHistoryEventResponse(BaseModel):
+    eventId: int | None = None
+    eventType: str
+    timestamp: str | None = None
+    name: str | None = None
+    input: Any = None
+    output: Any = None
+    metadata: dict[str, Any] | None = None
+    raw: dict[str, Any] | None = None
+
+
+class AgentRunHistoryResponse(BaseModel):
+    instanceId: str
+    events: list[AgentRunHistoryEventResponse]
+
+
+class RerunAgentRunRequest(BaseModel):
+    fromEventId: int = Field(
+        default=0,
+        description="Durable history event ID to replay from. 0 replays from start.",
+    )
+    newInstanceId: str | None = Field(
+        default=None,
+        description="Optional explicit Dapr instance ID for the replay.",
+    )
+    input: Any = Field(
+        default=None,
+        description="Replacement input sent only when overwriteInput is true.",
+    )
+    overwriteInput: bool = Field(
+        default=False,
+        description="Pass replacement input to Dapr RerunWorkflowFromEvent.",
+    )
+    reason: str | None = None
+
+
+class TerminateAgentRunRequest(BaseModel):
+    reason: str | None = None
+
+
 def _read_agent_state_key(key: str) -> Any:
     store_name = AGENT_STATE_STORE
     encoded_key = urllib.parse.quote(key, safe="")
@@ -1634,6 +1778,146 @@ def _build_instance_payload(instance_id: str) -> dict[str, Any] | None:
     }
 
 
+def _normalize_history_event(event: Any) -> dict[str, Any]:
+    """Normalize a durabletask HistoryEvent protobuf object for Workflow Ops."""
+    from google.protobuf.json_format import MessageToDict
+
+    payload_name = "unknown"
+    payload = None
+    for field_descriptor, value in event.ListFields():
+        if field_descriptor.name in ("eventId", "timestamp", "router"):
+            continue
+        payload_name = field_descriptor.name
+        payload = value
+        break
+
+    payload_dict = (
+        MessageToDict(payload, preserving_proto_field_name=True)
+        if payload is not None
+        else {}
+    )
+
+    name_value = None
+    for key in ("name", "event_name", "instance_id", "task_execution_id", "task_scheduled_id"):
+        value = payload_dict.get(key)
+        if isinstance(value, (str, int)):
+            name_value = str(value)
+            break
+
+    input_value = payload_dict.get("input")
+    if isinstance(input_value, dict):
+        input_value = input_value.get("value", input_value)
+    output_value = payload_dict.get("result")
+    if isinstance(output_value, dict):
+        output_value = output_value.get("value", output_value)
+    if output_value is None and "failure_details" in payload_dict:
+        output_value = payload_dict.get("failure_details")
+
+    metadata: dict[str, Any] = {}
+    if "orchestration_status" in payload_dict:
+        metadata["status"] = _runtime_status_name(payload_dict["orchestration_status"])
+    task_id = payload_dict.get("task_scheduled_id") or payload_dict.get("task_execution_id")
+    if isinstance(task_id, (str, int)):
+        metadata["taskId"] = str(task_id)
+    failure_details = payload_dict.get("failure_details")
+    if isinstance(failure_details, dict):
+        error_message = failure_details.get("error_message")
+        if isinstance(error_message, str) and error_message:
+            metadata["error"] = error_message
+        stack_trace = failure_details.get("stack_trace")
+        if isinstance(stack_trace, dict):
+            stack_trace = stack_trace.get("value")
+        if isinstance(stack_trace, str) and stack_trace:
+            metadata["stackTrace"] = stack_trace
+    rerun_parent = payload_dict.get("rerun_parent_instance_info")
+    if isinstance(rerun_parent, dict):
+        source_instance_id = rerun_parent.get("instance_id")
+        if isinstance(source_instance_id, str) and source_instance_id:
+            metadata["rerunSourceInstanceId"] = source_instance_id
+    version_value = payload_dict.get("version")
+    if isinstance(version_value, dict):
+        version_value = version_value.get("value")
+    if isinstance(version_value, str) and version_value:
+        metadata["version"] = version_value
+
+    timestamp = None
+    if hasattr(event, "timestamp") and event.HasField("timestamp"):
+        timestamp = event.timestamp.ToDatetime().isoformat()
+
+    event_id = int(event.eventId) if getattr(event, "eventId", 0) > 0 else None
+    event_type = payload_name[0:1].upper() + payload_name[1:]
+
+    return {
+        "eventId": event_id,
+        "eventType": event_type,
+        "timestamp": timestamp,
+        "name": name_value,
+        "input": _parse_json(input_value),
+        "output": _parse_json(output_value),
+        "metadata": metadata or None,
+        "raw": payload_dict or None,
+    }
+
+
+def _get_instance_history(instance_id: str) -> list[dict[str, Any]]:
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    response = _taskhub_call(
+        "GetInstanceHistory",
+        pb.GetInstanceHistoryRequest(instanceId=instance_id),
+    )
+    return [_normalize_history_event(event) for event in response.events]
+
+
+def _build_agent_run_status_payload(instance_id: str) -> dict[str, Any] | None:
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    response = _taskhub_call(
+        "GetInstance",
+        pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=True),
+    )
+    if not getattr(response, "exists", False):
+        return None
+
+    state = response.orchestrationState
+    runtime_status = _runtime_status_name(getattr(state, "orchestrationStatus", None))
+    started_at = _timestamp_iso(getattr(state, "createdTimestamp", None))
+    last_updated_at = _timestamp_iso(getattr(state, "lastUpdatedTimestamp", None))
+    completed_at = _timestamp_iso(getattr(state, "completedTimestamp", None))
+    input_payload = _parse_json(_wrapped_string(getattr(state, "input", None)))
+    output_payload = _parse_json(_wrapped_string(getattr(state, "output", None)))
+    workflow_state_key = f"{AGENT_STATE_KEY_PREFIX}_{instance_id}".lower()
+    memory_key = f"{AGENT_MEMORY_KEY_PREFIX}_{instance_id}".lower()
+    workflow_state = _read_agent_state_key(workflow_state_key)
+    memory_state = _read_agent_state_key(memory_key)
+    workflow_record = workflow_state if isinstance(workflow_state, dict) else {}
+
+    error_value = None
+    if isinstance(workflow_record.get("error"), str):
+        error_value = workflow_record.get("error")
+    elif isinstance(output_payload, dict) and isinstance(output_payload.get("error"), str):
+        error_value = output_payload.get("error")
+
+    return {
+        "instanceId": instance_id,
+        "appId": AGENT_SERVICE_NAME,
+        "workflowId": "agent_workflow",
+        "workflowName": AGENT_SERVICE_NAME,
+        "runtimeStatus": runtime_status,
+        "phase": runtime_status.lower(),
+        "startedAt": started_at,
+        "completedAt": completed_at or (last_updated_at if _terminal_status(runtime_status) else None),
+        "input": input_payload,
+        "outputs": output_payload,
+        "error": error_value,
+        "messages": workflow_record.get("messages") or [],
+        "toolHistory": workflow_record.get("tool_history") or [],
+        "memory": memory_state,
+        "stateKey": workflow_state_key,
+        "memoryKey": memory_key,
+    }
+
+
 @app.get("/agent/instances")
 async def list_agent_instances(limit: int = 100) -> dict[str, Any]:
     normalized_limit = max(1, min(int(limit), 500))
@@ -1651,6 +1935,172 @@ async def list_agent_instances(limit: int = 100) -> dict[str, Any]:
         "found": True,
         "instances": instances,
     }
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/status")
+def get_agent_run_status(instance_id: str) -> dict[str, Any]:
+    try:
+        payload = _build_agent_run_status_payload(instance_id)
+        if payload is None:
+            raise HTTPException(status_code=404, detail="Agent run not found")
+        return payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to get status for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/api/v2/agent-runs/{instance_id}/history", response_model=AgentRunHistoryResponse)
+def get_agent_run_history(instance_id: str) -> AgentRunHistoryResponse:
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    try:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=False),
+        )
+        if not getattr(response, "exists", False):
+            raise HTTPException(status_code=404, detail="Agent run not found")
+        events = _get_instance_history(instance_id)
+        events.sort(key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+        return AgentRunHistoryResponse(
+            instanceId=instance_id,
+            events=[AgentRunHistoryEventResponse(**event) for event in events],
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to get history for %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/rerun")
+def rerun_agent_run(
+    instance_id: str,
+    request: RerunAgentRunRequest = RerunAgentRunRequest(),
+) -> dict[str, Any]:
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    try:
+        response = _taskhub_call(
+            "GetInstance",
+            pb.GetInstanceRequest(instanceId=instance_id, getInputsAndOutputs=False),
+        )
+        if not getattr(response, "exists", False):
+            raise HTTPException(status_code=404, detail="Agent run not found")
+
+        event_id = max(0, int(request.fromEventId))
+        rerun_request = pb.RerunWorkflowFromEventRequest(
+            sourceInstanceID=instance_id,
+            eventID=event_id,
+        )
+        new_instance_id = str(request.newInstanceId or "").strip()
+        if new_instance_id:
+            rerun_request.newInstanceID = new_instance_id
+        if request.overwriteInput:
+            rerun_request.overwriteInput = True
+            rerun_request.input.CopyFrom(
+                wrappers_pb2.StringValue(
+                    value=json.dumps(jsonable_encoder(request.input)),
+                )
+            )
+
+        rerun_response = _taskhub_call("RerunWorkflowFromEvent", rerun_request)
+        actual_new_instance_id = str(getattr(rerun_response, "newInstanceID", "") or "")
+        if not actual_new_instance_id:
+            raise RuntimeError("Rerun succeeded but no newInstanceID was returned")
+
+        logger.info(
+            "[agent-runs] Rerun scheduled: source=%s event_id=%s new=%s reason=%s",
+            instance_id,
+            event_id,
+            actual_new_instance_id,
+            request.reason,
+        )
+        return {
+            "success": True,
+            "sourceInstanceId": instance_id,
+            "fromEventId": event_id,
+            "newInstanceId": actual_new_instance_id,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to rerun %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/terminate")
+def terminate_agent_run(
+    instance_id: str,
+    request: TerminateAgentRunRequest = TerminateAgentRunRequest(),
+) -> dict[str, Any]:
+    try:
+        from dapr.ext.workflow import DaprWorkflowClient
+
+        DaprWorkflowClient().terminate_workflow(
+            instance_id=instance_id,
+            output=request.reason,
+        )
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to terminate %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/pause")
+def pause_agent_run(instance_id: str) -> dict[str, Any]:
+    try:
+        from dapr.ext.workflow import DaprWorkflowClient
+
+        DaprWorkflowClient().suspend_workflow(instance_id=instance_id)
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to pause %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/v2/agent-runs/{instance_id}/resume")
+def resume_agent_run(instance_id: str) -> dict[str, Any]:
+    try:
+        from dapr.ext.workflow import DaprWorkflowClient
+
+        DaprWorkflowClient().resume_workflow(instance_id=instance_id)
+        return {"success": True, "instanceId": instance_id}
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to resume %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/v2/agent-runs/{instance_id}")
+def purge_agent_run(
+    instance_id: str,
+    force: bool = False,
+    recursive: bool = False,
+) -> dict[str, Any]:
+    import durabletask.internal.orchestrator_service_pb2 as pb
+
+    try:
+        purge_response = _taskhub_call(
+            "PurgeInstances",
+            pb.PurgeInstancesRequest(
+                instanceId=instance_id,
+                recursive=recursive,
+                force=force,
+            ),
+        )
+        return {
+            "success": True,
+            "instanceId": instance_id,
+            "force": force,
+            "recursive": recursive,
+            "deletedInstanceCount": int(getattr(purge_response, "deletedInstanceCount", 0) or 0),
+            "isComplete": bool(getattr(getattr(purge_response, "isComplete", None), "value", True)),
+        }
+    except Exception as exc:
+        logger.error("[agent-runs] Failed to purge %s: %s", instance_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/plan/{execution_id}")

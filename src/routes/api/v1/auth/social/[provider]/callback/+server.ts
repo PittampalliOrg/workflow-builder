@@ -1,7 +1,7 @@
 import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE } from '$lib/server/auth';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, shouldUseSecureCookies } from '$lib/server/auth';
 import { signInSocial } from '$lib/server/auth-social';
 import { getAppUrl } from '$lib/server/app-url';
 
@@ -66,17 +66,18 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 	}
 
 	// Set session cookies on the Svelte domain (outside try/catch so redirect works)
+	const secure = shouldUseSecureCookies(request);
 	cookies.set(ACCESS_TOKEN_COOKIE, result.accessToken, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure,
 		sameSite: 'lax',
 		maxAge: 60 * 15
 	});
 	cookies.set(REFRESH_TOKEN_COOKIE, result.refreshToken, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure,
 		sameSite: 'lax',
 		maxAge: 60 * 60 * 24 * 7
 	});

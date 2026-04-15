@@ -3,7 +3,7 @@ import type { RequestHandler } from './$types';
 import { eq } from 'drizzle-orm';
 import { db } from '$lib/server/db';
 import { users, userIdentities, platforms, projects } from '$lib/server/db/schema';
-import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, generateTokens } from '$lib/server/auth';
+import { ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE, generateTokens, shouldUseSecureCookies } from '$lib/server/auth';
 
 export const POST: RequestHandler = async ({ request, cookies }) => {
 	const body = await request.json();
@@ -93,17 +93,18 @@ export const POST: RequestHandler = async ({ request, cookies }) => {
 	}
 
 	// Set cookies
+	const secure = shouldUseSecureCookies(request);
 	cookies.set(ACCESS_TOKEN_COOKIE, accessToken, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure,
 		sameSite: 'lax',
 		maxAge: 60 * 15
 	});
 	cookies.set(REFRESH_TOKEN_COOKIE, refreshToken, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure,
 		sameSite: 'lax',
 		maxAge: 60 * 60 * 24 * 7
 	});

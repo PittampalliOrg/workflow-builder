@@ -1098,6 +1098,14 @@ def _run_native_durable_agent_child_workflow(
         },
         "_otel_span_context": tc.otel_ctx,
     }
+    code_checkpoint_restore = tc.task_outputs.get("codeCheckpointRestore")
+    if isinstance(code_checkpoint_restore, dict) and isinstance(
+        code_checkpoint_restore.get("data"), dict
+    ):
+        child_input["codeCheckpointRestore"] = code_checkpoint_restore["data"]
+        child_input["_message_metadata"]["codeCheckpointRestore"] = code_checkpoint_restore[
+            "data"
+        ]
 
     if tc.db_execution_id:
         try:
@@ -1978,6 +1986,11 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     workflow_data = input_data.get("workflow", {})
     workflow_id = input_data.get("workflowId")
     trigger_data = input_data.get("triggerData", {})
+    code_checkpoint_restore = (
+        input_data.get("codeCheckpointRestore")
+        if isinstance(input_data.get("codeCheckpointRestore"), dict)
+        else None
+    )
     integrations = input_data.get("integrations")
     db_execution_id = input_data.get("dbExecutionId")
     otel_ctx = input_data.get("_otel") or {}
@@ -2015,6 +2028,12 @@ def sw_workflow(ctx: wf.DaprWorkflowContext, input_data: dict) -> dict:
     if not isinstance(tc.trigger_data, dict):
         tc.trigger_data = {"value": tc.trigger_data}
     tc.task_outputs["trigger"]["data"] = tc.trigger_data
+    if code_checkpoint_restore:
+        tc.task_outputs["codeCheckpointRestore"] = {
+            "label": "Code checkpoint restore",
+            "actionType": "code_checkpoint_restore",
+            "data": code_checkpoint_restore,
+        }
 
     # Unwrap the top-level task list
     tasks = workflow.unwrap_tasks()

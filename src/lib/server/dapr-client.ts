@@ -62,6 +62,21 @@ export function getOrchestratorUrl(): string {
   );
 }
 
+/** Get the dapr-agent-py base URL */
+export function getDaprAgentPyUrl(runtime: string | null | undefined = "dapr-agent-py"): string {
+  const normalized = runtime || "dapr-agent-py";
+  if (normalized === "dapr-agent-py-testing") {
+    return (
+      env.DAPR_AGENT_PY_TESTING_URL ||
+      "http://dapr-agent-py-testing.openshell.svc.cluster.local:8002"
+    );
+  }
+  return (
+    env.DAPR_AGENT_PY_URL ||
+    "http://dapr-agent-py.openshell.svc.cluster.local:8002"
+  );
+}
+
 /** Get the function router base URL */
 export function getFunctionRouterUrl(): string {
   const raw =

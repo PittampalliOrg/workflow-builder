@@ -14,6 +14,12 @@ import { env } from '$env/dynamic/private';
 export const ACCESS_TOKEN_COOKIE = 'wb_access_token';
 export const REFRESH_TOKEN_COOKIE = 'wb_refresh_token';
 
+export function shouldUseSecureCookies(request: Request): boolean {
+	const forwardedProto = request.headers.get('x-forwarded-proto')?.split(',')[0]?.trim();
+	const protocol = forwardedProto || new URL(request.url).protocol.replace(':', '');
+	return protocol === 'https';
+}
+
 export type TokenPayload = {
 	sub: string; // userId
 	email: string;
@@ -251,14 +257,14 @@ export async function getSession(
 			cookies.set(ACCESS_TOKEN_COOKIE, newTokens.accessToken, {
 				path: '/',
 				httpOnly: true,
-				secure: true,
+				secure: shouldUseSecureCookies(request),
 				sameSite: 'lax',
 				maxAge: 60 * 60 // 1 hour
 			});
 			cookies.set(REFRESH_TOKEN_COOKIE, newTokens.refreshToken, {
 				path: '/',
 				httpOnly: true,
-				secure: true,
+				secure: shouldUseSecureCookies(request),
 				sameSite: 'lax',
 				maxAge: 60 * 60 * 24 * 7 // 7 days
 			});

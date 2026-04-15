@@ -204,6 +204,20 @@
 			"when": 1776265200000,
 			"tag": "0028_skill_metadata_registry",
 			"breakpoints": true
+		},
+		{
+			"idx": 29,
+			"version": "7",
+			"when": 1776279300000,
+			"tag": "0029_workflow_code_checkpoints",
+			"breakpoints": true
+		},
+		{
+			"idx": 30,
+			"version": "7",
+			"when": 1776279600000,
+			"tag": "0030_workflow_code_checkpoint_remote",
+			"breakpoints": true
 		}
 	]
 }

@@ -12,7 +12,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json();
 	const orchestratorUrl = getOrchestratorUrl();
 
-	const response = await daprFetch(`${orchestratorUrl}/api/workflows`, {
+	const response = await daprFetch(`${orchestratorUrl}/api/v2/sw-workflows`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body)
@@ -37,7 +37,7 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = async ({ url }) => {
 	const orchestratorUrl = getOrchestratorUrl();
 	const queryString = url.searchParams.toString();
-	const fullUrl = `${orchestratorUrl}/api/workflows${queryString ? `?${queryString}` : ''}`;
+	const fullUrl = `${orchestratorUrl}/api/v2/workflows${queryString ? `?${queryString}` : ''}`;
 
 	const response = await daprFetch(fullUrl, { method: 'GET' });
 

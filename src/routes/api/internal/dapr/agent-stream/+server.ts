@@ -10,6 +10,7 @@ import {
 import { and, eq, max } from 'drizzle-orm';
 import { getNatsConnection, executionSubject } from '$lib/server/nats-client';
 import { daprEventStream } from '$lib/server/dapr-event-stream';
+import { persistCodeCheckpointFromAgentEvent } from '$lib/server/workflows/code-checkpoints';
 
 const ALLOWED_EVENT_TYPES = new Set<WorkflowAgentEventType>([
 	'run_started',
@@ -234,6 +235,20 @@ export const POST: RequestHandler = async ({ request }) => {
 					phase: workflowAgentEvents.phase
 				});
 			const latestInserted = inserted.at(-1);
+			if (isRecord(eventPayload.codeCheckpoint)) {
+				await persistCodeCheckpointFromAgentEvent({
+					workflowExecutionId: parentExecutionId,
+					workflowAgentRunId,
+					workflowAgentEventId: latestInserted?.eventId ?? null,
+					parentExecutionId: agentRunParentExecutionId,
+					daprInstanceId: instanceId || source,
+					sourceEventId,
+					seq,
+					toolName: toolName ?? eventType,
+					nodeId: stringValue(eventPayload.nodeId),
+					payload: eventPayload.codeCheckpoint
+				});
+			}
 			if (latestInserted) {
 				await db
 					.update(workflowExecutions)

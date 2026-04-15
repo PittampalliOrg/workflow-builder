@@ -32,6 +32,16 @@ function rewriteHtmlBody(body: string, proxyBasePath: string): string {
 		(_, prefix: string) => `${prefix}${escapedBase}/`
 	);
 
+	// SvelteKit normalizes `/previewId/` to `/previewId`, so browser-relative
+	// assets such as `styles.css` would otherwise escape the preview id segment.
+	const baseHref = `${escapedBase}/`;
+	const baseTag = `<base href="${baseHref}">`;
+	if (/<base\b/i.test(rewritten)) {
+		rewritten = rewritten.replace(/<base\b[^>]*>/i, baseTag);
+	} else if (/<head\b[^>]*>/i.test(rewritten)) {
+		rewritten = rewritten.replace(/<head\b[^>]*>/i, (match) => `${match}\n  ${baseTag}`);
+	}
+
 	return rewritten;
 }
 

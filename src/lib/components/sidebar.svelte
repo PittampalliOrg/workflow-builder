@@ -19,7 +19,8 @@
 		Server,
 		Container,
 		Network,
-		Puzzle
+		Puzzle,
+		RotateCcw
 	} from 'lucide-svelte';
 	import { Button } from '$lib/components/ui/button';
 	import { Separator } from '$lib/components/ui/separator';
@@ -40,6 +41,7 @@
 
 	const navItems = [
 		{ href: '/workflows', label: 'Workflows', icon: GitBranch },
+		{ href: '/workflow-ops/names', label: 'Workflow Ops', icon: RotateCcw },
 		{ href: '/connections', label: 'Connections', icon: Plug },
 		{ href: '/agents', label: 'Agents', icon: Bot },
 		{ href: '/skills', label: 'Skills', icon: Puzzle },
@@ -54,6 +56,7 @@
 	];
 
 	function isActive(href: string): boolean {
+		if (href === '/workflow-ops/names') return page.url.pathname.startsWith('/workflow-ops');
 		return page.url.pathname === href || page.url.pathname.startsWith(href + '/');
 	}
 

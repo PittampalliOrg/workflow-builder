@@ -2,6 +2,7 @@ import { redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { env } from '$env/dynamic/private';
 import { getAppUrl } from '$lib/server/app-url';
+import { shouldUseSecureCookies } from '$lib/server/auth';
 
 export const GET: RequestHandler = async ({ params, url, request, cookies }) => {
 	const { provider } = params;
@@ -17,7 +18,7 @@ export const GET: RequestHandler = async ({ params, url, request, cookies }) => 
 	cookies.set('oauth_state', state, {
 		path: '/',
 		httpOnly: true,
-		secure: true,
+		secure: shouldUseSecureCookies(request),
 		sameSite: 'lax',
 		maxAge: 60 * 10
 	});

@@ -758,6 +758,93 @@ export type NewWorkflowAgentEvent = InferInsertModel<
 	typeof workflowAgentEvents
 >;
 
+export type WorkflowCodeCheckpointStatus =
+	| "created"
+	| "no_changes"
+	| "skipped"
+	| "error";
+export type WorkflowCodeCheckpointKind = "tool_mutation";
+
+export const workflowCodeCheckpoints = pgTable(
+	"workflow_code_checkpoints",
+	{
+		id: text("id")
+			.primaryKey()
+			.$defaultFn(() => generateId()),
+		workflowExecutionId: text("workflow_execution_id")
+			.notNull()
+			.references(() => workflowExecutions.id, { onDelete: "cascade" }),
+		workflowAgentRunId: text("workflow_agent_run_id").references(
+			() => workflowAgentRuns.id,
+			{ onDelete: "set null" },
+		),
+		workflowAgentEventId: integer("workflow_agent_event_id").references(
+			() => workflowAgentEvents.eventId,
+			{ onDelete: "set null" },
+		),
+		parentExecutionId: text("parent_execution_id"),
+		daprInstanceId: text("dapr_instance_id").notNull(),
+		workspaceRef: text("workspace_ref"),
+		sandboxName: text("sandbox_name"),
+		repoPath: text("repo_path").notNull(),
+		nodeId: text("node_id"),
+		sourceEventId: text("source_event_id").notNull(),
+		seq: integer("seq"),
+		toolName: text("tool_name").notNull(),
+		checkpointKind: text("checkpoint_kind")
+			.notNull()
+			.default("tool_mutation")
+			.$type<WorkflowCodeCheckpointKind>(),
+		beforeSha: text("before_sha"),
+		afterSha: text("after_sha"),
+		remoteUrl: text("remote_url"),
+		remoteRef: text("remote_ref"),
+		remoteStatus: text("remote_status"),
+		remoteError: text("remote_error"),
+		remotePushedAt: timestamp("remote_pushed_at"),
+		changedFiles: jsonb("changed_files")
+			.notNull()
+			.$type<Array<Record<string, unknown>>>(),
+		fileCount: integer("file_count").notNull().default(0),
+		status: text("status").notNull().$type<WorkflowCodeCheckpointStatus>(),
+		error: text("error"),
+		metadata: jsonb("metadata").$type<Record<string, unknown> | null>(),
+		createdAt: timestamp("created_at").notNull().defaultNow(),
+	},
+	(table) => ({
+		eventUnique: unique("uq_workflow_code_checkpoints_event").on(
+			table.workflowExecutionId,
+			table.daprInstanceId,
+			table.sourceEventId,
+			table.checkpointKind,
+		),
+		executionSeqIdx: index("idx_workflow_code_checkpoints_execution_seq").on(
+			table.workflowExecutionId,
+			table.seq,
+		),
+		agentRunSeqIdx: index("idx_workflow_code_checkpoints_agent_run_seq").on(
+			table.workflowAgentRunId,
+			table.seq,
+		),
+		workspaceCreatedIdx: index(
+			"idx_workflow_code_checkpoints_workspace_created",
+		).on(table.workspaceRef, table.createdAt),
+		afterShaIdx: index("idx_workflow_code_checkpoints_after_sha").on(
+			table.afterSha,
+		),
+		remoteRefIdx: index("idx_workflow_code_checkpoints_remote_ref").on(
+			table.remoteRef,
+		),
+	}),
+);
+
+export type WorkflowCodeCheckpoint = InferSelectModel<
+	typeof workflowCodeCheckpoints
+>;
+export type NewWorkflowCodeCheckpoint = InferInsertModel<
+	typeof workflowCodeCheckpoints
+>;
+
 export type WorkflowAiMessageRole = "user" | "assistant" | "system";
 
 /**
@@ -1847,6 +1934,7 @@ export const workflowExecutionsRelations = relations(
 		planArtifacts: many(workflowPlanArtifacts),
 		browserArtifacts: many(workflowBrowserArtifacts),
 		agentEvents: many(workflowAgentEvents),
+		codeCheckpoints: many(workflowCodeCheckpoints),
 	}),
 );
 
@@ -1860,6 +1948,24 @@ export const workflowAgentEventsRelations = relations(
 		agentRun: one(workflowAgentRuns, {
 			fields: [workflowAgentEvents.workflowAgentRunId],
 			references: [workflowAgentRuns.id],
+		}),
+	}),
+);
+
+export const workflowCodeCheckpointsRelations = relations(
+	workflowCodeCheckpoints,
+	({ one }) => ({
+		workflowExecution: one(workflowExecutions, {
+			fields: [workflowCodeCheckpoints.workflowExecutionId],
+			references: [workflowExecutions.id],
+		}),
+		agentRun: one(workflowAgentRuns, {
+			fields: [workflowCodeCheckpoints.workflowAgentRunId],
+			references: [workflowAgentRuns.id],
+		}),
+		agentEvent: one(workflowAgentEvents, {
+			fields: [workflowCodeCheckpoints.workflowAgentEventId],
+			references: [workflowAgentEvents.eventId],
 		}),
 	}),
 );

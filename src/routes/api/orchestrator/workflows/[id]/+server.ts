@@ -11,7 +11,7 @@ export const GET: RequestHandler = async ({ params }) => {
 	const { id } = params;
 	const orchestratorUrl = getOrchestratorUrl();
 
-	const response = await daprFetch(`${orchestratorUrl}/api/workflows/${id}`, {
+	const response = await daprFetch(`${orchestratorUrl}/api/v2/workflows/${id}/status`, {
 		method: 'GET'
 	});
 
@@ -44,7 +44,7 @@ export const DELETE: RequestHandler = async ({ params, url }) => {
 	const query = queryParams.toString();
 
 	const response = await daprFetch(
-		`${orchestratorUrl}/api/workflows/${id}${query ? `?${query}` : ''}`,
+		`${orchestratorUrl}/api/v2/workflows/${id}${query ? `?${query}` : ''}`,
 		{ method: 'DELETE' }
 	);
 

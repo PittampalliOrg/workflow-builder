@@ -766,6 +766,24 @@ class RerunWorkflowRequest(BaseModel):
         default=0,
         description="History event ID to rerun from. 0 means from start.",
     )
+    newInstanceId: str | None = Field(
+        default=None,
+        description="Optional explicit Dapr instance ID for the rerun.",
+    )
+    input: Any = Field(
+        default=None,
+        description=(
+            "Optional replacement input for the rerun target. Only sent to "
+            "Dapr when overwriteInput is true."
+        ),
+    )
+    overwriteInput: bool = Field(
+        default=False,
+        description=(
+            "When true, pass input to Dapr's RerunWorkflowFromEvent request. "
+            "Leave false to match Dapr CLI's default history replay behavior."
+        ),
+    )
     reason: str | None = None
 
 
@@ -2337,6 +2355,16 @@ def rerun_workflow(instance_id: str, request: RerunWorkflowRequest = RerunWorkfl
             sourceInstanceID=instance_id,
             eventID=event_id,
         )
+        new_instance_id_requested = str(request.newInstanceId or "").strip()
+        if new_instance_id_requested:
+            rerun_request.newInstanceID = new_instance_id_requested
+        if request.overwriteInput:
+            rerun_request.overwriteInput = True
+            rerun_request.input.CopyFrom(
+                wrappers_pb2.StringValue(
+                    value=json.dumps(jsonable_encoder(request.input)),
+                )
+            )
         rerun_response = _taskhub_call("RerunWorkflowFromEvent", rerun_request)
         new_instance_id = str(getattr(rerun_response, "newInstanceID", "") or "")
         if not new_instance_id:

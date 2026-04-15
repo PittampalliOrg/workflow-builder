@@ -100,6 +100,7 @@ def publish_event(
     *,
     execution_id: str | None = None,
     instance_id: str | None = None,
+    source_event_id: str | None = None,
 ) -> None:
     """Publish an agent event to Dapr pub/sub (fire-and-forget, non-blocking)."""
     if not PUBLISH_ENABLED or _permanently_disabled:
@@ -111,6 +112,7 @@ def publish_event(
             "type": event_type,
             "executionId": execution_id or None,
             "instanceId": instance_id or None,
+            "sourceEventId": source_event_id or None,
             "data": data or {},
             "timestamp": _now_iso(),
         }
@@ -142,6 +144,7 @@ def publish_tool_start(
     instance_id: str,
     tool_name: str,
     tool_args: dict[str, Any] | None = None,
+    source_event_id: str | None = None,
 ) -> None:
     publish_event(
         "tool_call_start",
@@ -151,6 +154,7 @@ def publish_tool_start(
         },
         execution_id=execution_id,
         instance_id=instance_id,
+        source_event_id=source_event_id,
     )
 
 
@@ -161,17 +165,23 @@ def publish_tool_complete(
     success: bool = True,
     error: str | None = None,
     output: str | None = None,
+    checkpoint: dict[str, Any] | None = None,
+    source_event_id: str | None = None,
 ) -> None:
+    payload = {
+        "toolName": tool_name,
+        "success": success,
+        "error": error,
+        "output": (output or "")[:500],
+    }
+    if checkpoint is not None:
+        payload["codeCheckpoint"] = checkpoint
     publish_event(
         "tool_call_end" if success else "tool_call_error",
-        {
-            "toolName": tool_name,
-            "success": success,
-            "error": error,
-            "output": (output or "")[:500],
-        },
+        payload,
         execution_id=execution_id,
         instance_id=instance_id,
+        source_event_id=source_event_id,
     )
 
 

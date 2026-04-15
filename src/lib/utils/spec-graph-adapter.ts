@@ -131,7 +131,10 @@ function convertGraph(
         label:
           nodeType === "start" ? "Start" : nodeType === "end" ? "End" : label,
         type: nodeType,
-        taskConfig: taskDef || {},
+        taskConfig:
+          nodeType === "start" && spec.input
+            ? { input: spec.input }
+            : taskDef || {},
         status: "idle",
         enabled: true,
         // Apply cached catalog metadata (survives rebuilds)
@@ -196,7 +199,7 @@ function buildLinearGraphFromSpec(
     data: {
       label: "Start",
       type: "start",
-      taskConfig: {},
+      taskConfig: spec.input ? { input: spec.input } : {},
       status: "idle",
       enabled: true,
     },

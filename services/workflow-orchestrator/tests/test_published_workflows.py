@@ -42,11 +42,29 @@ if "durabletask.internal.orchestrator_service_pb2" not in sys.modules:
             self.input = kwargs.get("input")
             self.version = types.SimpleNamespace(CopyFrom=lambda *_args, **_kwargs: None)
 
+    class _FakeGetInstanceRequest:
+        def __init__(self, **kwargs):
+            self.instanceId = kwargs.get("instanceId")
+            self.getInputsAndOutputs = kwargs.get("getInputsAndOutputs")
+
+    class _FakeRerunWorkflowFromEventRequest:
+        def __init__(self, **kwargs):
+            self.sourceInstanceID = kwargs.get("sourceInstanceID")
+            self.eventID = kwargs.get("eventID")
+            self.newInstanceID = kwargs.get("newInstanceID", "")
+            self.overwriteInput = kwargs.get("overwriteInput", False)
+            self.input = types.SimpleNamespace(
+                value=None,
+                CopyFrom=lambda value: setattr(self.input, "value", value.value),
+            )
+
     class _FakeTaskHubSidecarServiceStub:
         def __init__(self, *_args, **_kwargs):
             return None
 
     pb_module.CreateInstanceRequest = _FakeCreateInstanceRequest
+    pb_module.GetInstanceRequest = _FakeGetInstanceRequest
+    pb_module.RerunWorkflowFromEventRequest = _FakeRerunWorkflowFromEventRequest
     pb_grpc_module.TaskHubSidecarServiceStub = _FakeTaskHubSidecarServiceStub
 
     sys.modules["durabletask"] = durabletask_module
@@ -286,6 +304,63 @@ def test_legacy_execution_routes_are_not_registered():
     assert not hasattr(APP, "start_workflow")
     assert not hasattr(APP, "execute_workflow_by_id")
     assert not hasattr(APP, "start_ap_workflow")
+
+
+def test_rerun_workflow_passes_new_instance_without_input_override(monkeypatch):
+    captured = {}
+
+    def fake_taskhub_call(method, request):
+        captured[method] = request
+        if method == "GetInstance":
+            return types.SimpleNamespace(exists=True)
+        if method == "RerunWorkflowFromEvent":
+            return types.SimpleNamespace(newInstanceID=request.newInstanceID)
+        raise AssertionError(f"unexpected TaskHub method {method}")
+
+    monkeypatch.setattr(APP, "_taskhub_call", fake_taskhub_call)
+
+    result = APP.rerun_workflow(
+        "source-instance",
+        APP.RerunWorkflowRequest(
+            fromEventId=5,
+            newInstanceId="rerun-instance",
+            reason="test rerun",
+        ),
+    )
+
+    request = captured["RerunWorkflowFromEvent"]
+    assert request.sourceInstanceID == "source-instance"
+    assert request.eventID == 5
+    assert request.newInstanceID == "rerun-instance"
+    assert not request.overwriteInput
+    assert result["newInstanceId"] == "rerun-instance"
+
+
+def test_rerun_workflow_only_sends_input_when_overwrite_requested(monkeypatch):
+    captured = {}
+
+    def fake_taskhub_call(method, request):
+        captured[method] = request
+        if method == "GetInstance":
+            return types.SimpleNamespace(exists=True)
+        if method == "RerunWorkflowFromEvent":
+            return types.SimpleNamespace(newInstanceID="generated-rerun")
+        raise AssertionError(f"unexpected TaskHub method {method}")
+
+    monkeypatch.setattr(APP, "_taskhub_call", fake_taskhub_call)
+
+    APP.rerun_workflow(
+        "source-instance",
+        APP.RerunWorkflowRequest(
+            fromEventId=0,
+            overwriteInput=True,
+            input={"dbExecutionId": "rerun-db-id"},
+        ),
+    )
+
+    request = captured["RerunWorkflowFromEvent"]
+    assert request.overwriteInput
+    assert request.input.value == '{"dbExecutionId": "rerun-db-id"}'
 
 
 def test_resolve_native_agent_args_renders_trigger_templates_before_child_workflow():

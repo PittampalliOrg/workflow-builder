@@ -11,6 +11,7 @@ import {
 	type WorkflowAgentEventType
 } from '$lib/server/db/schema';
 import { and, eq, max } from 'drizzle-orm';
+import { persistCodeCheckpointFromAgentEvent } from '$lib/server/workflows/code-checkpoints';
 
 type IncomingAgentEvent = {
 	id?: string;
@@ -38,6 +39,10 @@ const ALLOWED_EVENT_TYPES = new Set<WorkflowAgentEventType>([
 	'run_complete',
 	'run_error'
 ]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 function normalizeTimestamp(value: string | undefined): Date {
 	if (typeof value === 'string' && value.trim()) {
@@ -265,6 +270,21 @@ export const POST: RequestHandler = async ({ request, params }) => {
 				phase: nextPhase ?? undefined
 			})
 			.where(eq(workflowExecutions.id, executionId));
+	}
+
+	for (const event of normalized) {
+		if (!isRecord(event.payload.codeCheckpoint)) continue;
+		await persistCodeCheckpointFromAgentEvent({
+			workflowExecutionId: executionId,
+			workflowAgentRunId: event.workflowAgentRunId,
+			workflowAgentEventId: null,
+			parentExecutionId: event.parentExecutionId,
+			daprInstanceId: event.daprInstanceId,
+			sourceEventId: event.sourceEventId,
+			seq: event.seq,
+			toolName: event.toolName ?? event.eventType,
+			payload: event.payload.codeCheckpoint
+		});
 	}
 
 	// Bridge persisted events to NATS JetStream for real-time streaming
