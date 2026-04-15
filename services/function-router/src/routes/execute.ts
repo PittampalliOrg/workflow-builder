@@ -2139,7 +2139,12 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                         : undefined,
                   }
                 : parsed;
-            let resolvedMastra = parsedMastra;
+            let resolvedMastra =
+              isBrowserStartPreview &&
+              parsedWithPreviewRequest &&
+              typeof parsedWithPreviewRequest === "object"
+                ? (parsedWithPreviewRequest as MastraToolResponse)
+                : parsedMastra;
             if (
               isAgentRun &&
               resolvedMastra?.success === false &&
