@@ -459,7 +459,9 @@ def test_durable_run_allows_profile_skill_from_snapshot():
     skill = {
         "name": "answer-yes-no",
         "description": "Answer as yes or no",
-        "prompt": "Answer the question with yes or no.",
+        "installSource": "vercel-labs/agent-skills",
+        "skillName": "answer-yes-no",
+        "registryUrl": "https://skills.sh/vercel-labs/agent-skills/answer-yes-no",
         "allowedTools": ["read_file"],
         "sourceType": "profile",
     }
@@ -504,9 +506,10 @@ def test_durable_run_rejects_inline_skill_when_profile_disallows_additions():
             },
             "skills": [
                 {
-                    "name": "inline-review",
-                    "prompt": "Review the current task.",
-                    "sourceType": "inline",
+                    "name": "registry-review",
+                    "installSource": "vercel-labs/agent-skills",
+                    "skillName": "web-design-guidelines",
+                    "sourceType": "registry",
                 }
             ],
         }
@@ -516,15 +519,16 @@ def test_durable_run_rejects_inline_skill_when_profile_disallows_additions():
         next(workflow_gen)
 
 
-def test_durable_run_allows_inline_skill_without_profile():
+def test_durable_run_allows_registry_skill_without_profile():
     workflow_gen = _durable_skill_policy_generator(
         {
             "name": "custom-agent",
             "skills": [
                 {
-                    "name": "inline-review",
-                    "prompt": "Review the current task.",
-                    "sourceType": "inline",
+                    "name": "registry-review",
+                    "installSource": "vercel-labs/agent-skills",
+                    "skillName": "web-design-guidelines",
+                    "sourceType": "registry",
                 }
             ],
         }
@@ -533,13 +537,14 @@ def test_durable_run_allows_inline_skill_without_profile():
     yielded = next(workflow_gen)
     assert yielded["kind"] == "call_activity"
     agent_config = yielded["input"]["node"]["config"]["agentConfig"]
-    assert agent_config["skills"][0]["name"] == "inline-review"
+    assert agent_config["skills"][0]["skillName"] == "web-design-guidelines"
 
 
 def test_durable_run_rejects_profile_skill_tool_expansion():
     profile_skill = {
         "name": "bounded-skill",
-        "prompt": "Use only bounded tools.",
+        "installSource": "vercel-labs/agent-skills",
+        "skillName": "web-design-guidelines",
         "allowedTools": ["read_file"],
         "sourceType": "profile",
     }
@@ -569,7 +574,9 @@ def test_durable_run_rejects_profile_skill_changes_when_narrowing_disabled():
     profile_skill = {
         "name": "locked-skill",
         "description": "Locked",
-        "prompt": "Use the locked instructions.",
+        "installSource": "vercel-labs/agent-skills",
+        "skillName": "web-design-guidelines",
+        "registryUrl": "https://skills.sh/vercel-labs/agent-skills/web-design-guidelines",
         "allowedTools": ["read_file"],
         "sourceType": "profile",
     }
@@ -587,7 +594,7 @@ def test_durable_run_rejects_profile_skill_changes_when_narrowing_disabled():
                 "allowSkillAdditions": False,
                 "allowSkillNarrowing": False,
             },
-            "skills": [{**profile_skill, "prompt": "Use changed instructions."}],
+            "skills": [{**profile_skill, "skillName": "vercel-react-best-practices"}],
         }
     )
 

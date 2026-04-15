@@ -1627,10 +1627,8 @@ export const agentProfileTemplateExamples = pgTable(
 
 export type AgentSkillRegistryStatus = "ENABLED" | "DISABLED" | "DRAFT";
 export type AgentSkillRegistrySourceType =
-	| "curated"
-	| "imported"
-	| "builtin"
-	| "inline";
+	| "registry"
+	| "profile";
 
 export const agentSkillRegistry = pgTable(
 	"agent_skill_registry",
@@ -1656,6 +1654,10 @@ export const agentSkillRegistry = pgTable(
 		sourceRepo: text("source_repo"),
 		sourceRef: text("source_ref"),
 		skillPath: text("skill_path"),
+		registryUrl: text("registry_url"),
+		installSource: text("install_source"),
+		skillName: text("skill_name"),
+		installAgent: text("install_agent").notNull().default("universal"),
 		version: text("version").notNull().default("1"),
 		contentHash: text("content_hash").notNull(),
 		license: text("license"),

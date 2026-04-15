@@ -8,6 +8,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -78,7 +79,7 @@ _init_otel()
 # ---------------------------------------------------------------------------
 
 from src.tools import all_tools
-from src.tools.skill_tool import get_registry as get_skill_registry, load_skills_from_dir
+from src.tools.skill_tool import get_registry as get_skill_registry, load_skills_from_dir, parse_skill_md
 from src.tools.skill_tool.models import SkillDefinition
 from src.tools.skill_tool.prompt import format_skill_listings
 from src.openshell_runtime import DEFAULT_CWD, get_runtime
@@ -593,6 +594,116 @@ def _extract_raw_skill_items(message: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(raw_skills, list):
         return []
     return [item for item in raw_skills if isinstance(item, dict)]
+
+
+def _extract_runtime_skill_refs(message: dict[str, Any]) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for item in _extract_raw_skill_items(message):
+        source = str(
+            item.get("installSource")
+            or item.get("sourceRepo")
+            or item.get("source")
+            or ""
+        ).strip()
+        skill_name = str(item.get("skillName") or item.get("name") or "").strip()
+        if not source or not skill_name:
+            continue
+        source = re.sub(r"^https://github\.com/", "", source).strip("/")
+        source = re.sub(r"^https://skills\.sh/", "", source).strip("/")
+        if not re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", source):
+            logger.warning("[skills] Skipping skill with invalid install source: %s", source)
+            continue
+        if not re.match(r"^[A-Za-z0-9_. -]+$", skill_name):
+            logger.warning("[skills] Skipping skill with invalid skill name: %s", skill_name)
+            continue
+        install_agent = str(item.get("installAgent") or "universal").strip() or "universal"
+        allowed_tools_raw = item.get("allowedTools") or item.get("allowed_tools") or []
+        allowed_tools = ",".join(
+            str(tool).strip()
+            for tool in (allowed_tools_raw if isinstance(allowed_tools_raw, list) else [])
+            if str(tool).strip()
+        )
+        refs.append(
+            {
+                "source": source,
+                "skill": skill_name,
+                "install_agent": install_agent,
+                "allowed_tools": allowed_tools,
+            }
+        )
+    return refs
+
+
+def _runtime_skill_run_dir(instance_id: str) -> str:
+    return f"/sandbox/.workflow-builder/skill-runs/{_safe_skill_segment(instance_id or 'instance')}"
+
+
+def _install_runtime_skill_refs(runtime, instance_id: str, refs: list[dict[str, str]]) -> list[SkillDefinition]:
+    if not refs:
+        return []
+    install_root = _runtime_skill_run_dir(instance_id)
+    loaded: list[SkillDefinition] = []
+    for ref in refs:
+        source_arg = f"{ref['source']}@{ref['skill']}"
+        command = (
+            f"mkdir -p {shlex.quote(install_root)} && "
+            f"cd {shlex.quote(install_root)} && "
+            f"npx --yes skills@1.5.0 add {shlex.quote(source_arg)} "
+            f"--agent {shlex.quote(ref['install_agent'])} --copy --yes"
+        )
+        result = runtime.execute(command, timeout_seconds=180)
+        if not result.get("ok"):
+            raise RuntimeError(
+                f"Failed to install skill {source_arg}: "
+                f"{result.get('output') or result.get('error') or 'unknown error'}"
+            )
+        logger.info("[skills] Installed runtime skill %s into %s", source_arg, install_root)
+
+    scan = runtime.run_python(
+        """
+import json, pathlib, sys
+root = pathlib.Path(json.loads(sys.stdin.read())["root"])
+items = []
+for path in sorted(root.glob(".agents/skills/*/SKILL.md")):
+    try:
+        items.append({
+            "name": path.parent.name,
+            "path": str(path),
+            "package_path": str(path.parent),
+            "content": path.read_text(encoding="utf-8"),
+        })
+    except Exception as exc:
+        items.append({"name": path.parent.name, "path": str(path), "error": str(exc)})
+print(json.dumps({"ok": True, "items": items}))
+        """.strip(),
+        {"root": install_root},
+        timeout_seconds=60,
+    )
+    if not scan.get("ok"):
+        raise RuntimeError(f"Failed to scan installed skills: {scan.get('output') or scan.get('error')}")
+    try:
+        payload = json.loads(scan.get("stdout") or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Failed to parse installed skill scan: {exc}") from exc
+
+    allowed_by_name = {
+        ref["skill"]: tuple(part for part in ref.get("allowed_tools", "").split(",") if part)
+        for ref in refs
+    }
+    for item in payload.get("items") or []:
+        if not isinstance(item, dict) or not item.get("content"):
+            continue
+        skill = parse_skill_md(str(item["content"]), name=str(item.get("name") or "skill"), source="agentConfig")
+        allowed_tools = allowed_by_name.get(skill.name) or skill.allowed_tools
+        loaded.append(
+            replace(
+                skill,
+                allowed_tools=allowed_tools,
+                package_path=str(item.get("package_path") or ""),
+                package_files=("SKILL.md",),
+            )
+        )
+    return loaded
 
 
 def _safe_skill_segment(value: str) -> str:
@@ -1122,7 +1233,14 @@ class OpenShellDurableAgent(DurableAgent):
         # Extract per-instance skill configs (parallel to MCP extraction)
         skill_registry = get_skill_registry()
         raw_skill_items = _extract_raw_skill_items(message)
-        instance_skill_defs = _extract_skill_configs(message)
+        runtime_skill_refs = _extract_runtime_skill_refs(message)
+        instance_skill_defs = (
+            _install_runtime_skill_refs(runtime, instance_id, runtime_skill_refs)
+            if runtime_skill_refs and not ctx.is_replaying
+            else []
+        )
+        if not instance_skill_defs:
+            instance_skill_defs = _extract_skill_configs(message)
         if instance_skill_defs:
             instance_skill_defs = _materialize_instance_skill_packages(
                 runtime,

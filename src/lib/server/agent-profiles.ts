@@ -7,12 +7,7 @@ import {
 	agentProfileTemplates,
 	agentToolPolicyFacetVersions
 } from '$lib/server/db/schema';
-import {
-	DEFAULT_CURATED_AGENT_SKILLS,
-	profileSkillSnapshot,
-	type AgentSkillConfig
-} from '$lib/agent-skill-presets';
-import { listAgentSkills } from '$lib/server/agent-skills';
+import type { AgentSkillConfig } from '$lib/agent-skill-presets';
 
 export type McpServerProfileConfig = {
 	server_name?: string;
@@ -76,7 +71,7 @@ const DEFAULT_POLICY: AgentRuntimeOverridePolicy = {
 	allowSkillNarrowing: true
 };
 
-const DEFAULT_PROFILE_SKILLS = DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot);
+const DEFAULT_PROFILE_SKILLS: AgentSkillConfig[] = [];
 
 const BROWSER_MCP_SERVERS: McpServerProfileConfig[] = [
 	{
@@ -234,8 +229,7 @@ function runtimeOverridePolicy(value: unknown): AgentRuntimeOverridePolicy {
 function normalizeSkillConfig(value: unknown): AgentSkillConfig | null {
 	if (!isRecord(value)) return null;
 	const name = String(value.name || '').trim();
-	const prompt = String(value.prompt || '').trim();
-	if (!name || !prompt) return null;
+	if (!name) return null;
 	const description = typeof value.description === 'string' ? value.description : undefined;
 	const whenToUse =
 		typeof value.whenToUse === 'string'
@@ -243,65 +237,38 @@ function normalizeSkillConfig(value: unknown): AgentSkillConfig | null {
 			: typeof value.when_to_use === 'string'
 				? value.when_to_use
 				: undefined;
-	const argumentHint =
-		typeof value.argumentHint === 'string'
-			? value.argumentHint
-			: typeof value.argument_hint === 'string'
-				? value.argument_hint
-				: undefined;
-	const model = typeof value.model === 'string' ? value.model : undefined;
-	const sourceType =
-		value.sourceType === 'profile' ||
-		value.sourceType === 'inline' ||
-		value.sourceType === 'preset' ||
-		value.sourceType === 'registry' ||
-		value.sourceType === 'curated' ||
-		value.sourceType === 'imported' ||
-		value.sourceType === 'builtin'
-			? value.sourceType
-			: 'profile';
+	const sourceType = value.sourceType === 'registry' ? 'registry' : 'profile';
 	const registryId = typeof value.registryId === 'string' ? value.registryId : undefined;
 	const slug = typeof value.slug === 'string' ? value.slug : undefined;
 	const version = typeof value.version === 'string' ? value.version : undefined;
-	const contentHash = typeof value.contentHash === 'string' ? value.contentHash : undefined;
 	const sourceRepo = typeof value.sourceRepo === 'string' ? value.sourceRepo : undefined;
 	const sourceRef = typeof value.sourceRef === 'string' ? value.sourceRef : undefined;
 	const skillPath = typeof value.skillPath === 'string' ? value.skillPath : undefined;
-	const license = typeof value.license === 'string' ? value.license : undefined;
-	const compatibility = isRecord(value.compatibility) ? value.compatibility : undefined;
-	const packageManifest = isRecord(value.packageManifest) ? value.packageManifest : undefined;
+	const registryUrl = typeof value.registryUrl === 'string' ? value.registryUrl : undefined;
+	const installSource =
+		typeof value.installSource === 'string'
+			? value.installSource
+			: typeof value.sourceRepo === 'string'
+				? value.sourceRepo
+				: undefined;
+	const skillName = typeof value.skillName === 'string' ? value.skillName : name;
+	const installAgent = typeof value.installAgent === 'string' ? value.installAgent : 'universal';
 	return {
 		name,
 		...(description ? { description } : {}),
-		prompt,
 		...(whenToUse ? { whenToUse } : {}),
 		allowedTools: stringArray(value.allowedTools ?? value.allowed_tools),
-		arguments: stringArray(value.arguments),
-		...(argumentHint ? { argumentHint } : {}),
-		...(model ? { model } : {}),
-		userInvocable:
-			typeof value.userInvocable === 'boolean'
-				? value.userInvocable
-				: typeof value.user_invocable === 'boolean'
-					? value.user_invocable
-					: true,
-		disableModelInvocation:
-			typeof value.disableModelInvocation === 'boolean'
-				? value.disableModelInvocation
-				: typeof value.disable_model_invocation === 'boolean'
-					? value.disable_model_invocation
-					: false,
 		sourceType,
 		...(registryId ? { registryId } : {}),
 		...(slug ? { slug } : {}),
 		...(version ? { version } : {}),
-		...(contentHash ? { contentHash } : {}),
 		...(sourceRepo ? { sourceRepo } : {}),
 		...(sourceRef ? { sourceRef } : {}),
 		...(skillPath ? { skillPath } : {}),
-		...(license ? { license } : {}),
-		...(compatibility ? { compatibility } : {}),
-		...(packageManifest ? { packageManifest } : {})
+		...(registryUrl ? { registryUrl } : {}),
+		...(installSource ? { installSource } : {}),
+		skillName,
+		installAgent
 	};
 }
 
@@ -341,8 +308,7 @@ function normalizeConfig(input: {
 }
 
 export async function listAgentProfiles(): Promise<AgentProfileSummary[]> {
-	const registrySkills = (await listAgentSkills()).map(profileSkillSnapshot);
-	const builtInProfiles = builtinAgentProfiles(registrySkills);
+	const builtInProfiles = builtinAgentProfiles();
 	if (!db) return builtInProfiles;
 	try {
 		const rows = await db

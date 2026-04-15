@@ -118,17 +118,7 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
           allowSkillNarrowing: true
         profileSnapshot:
           mcpServers: []
-          skills:
-            - name: simplify
-              prompt: "Review the requested scope for unnecessary complexity, duplication, brittle logic, and avoidable indirection. User focus: \${ARGUMENTS}"
-            - name: debug
-              prompt: "Debug the reported issue by gathering concrete evidence before proposing a fix. Issue details: \${ARGUMENTS}"
-            - name: skillify
-              prompt: "Capture the process described by the user as a reusable workflow-builder skill configuration. Process to capture: \${ARGUMENTS}"
-            - name: remember
-              prompt: "Review memory-like project guidance and propose cleanup or promotion changes. Additional context: \${ARGUMENTS}"
-            - name: claude-api
-              prompt: "Help with Anthropic or Claude API implementation using current official documentation when available. Request: \${ARGUMENTS}"
+          skills: []
           runtimeOverridePolicy:
             allowToolNarrowing: true
             allowServerAdditions: false
@@ -137,21 +127,11 @@ Use \`agentRuntime: dapr-agent-py-testing\` only when the user explicitly asks f
             allowSkillNarrowing: true
         mcpConnectionMode: explicit
         mcpServers: []
-        skills:
-          - name: simplify
-            prompt: "Review the requested scope for unnecessary complexity, duplication, brittle logic, and avoidable indirection. User focus: \${ARGUMENTS}"
-          - name: debug
-            prompt: "Debug the reported issue by gathering concrete evidence before proposing a fix. Issue details: \${ARGUMENTS}"
-          - name: skillify
-            prompt: "Capture the process described by the user as a reusable workflow-builder skill configuration. Process to capture: \${ARGUMENTS}"
-          - name: remember
-            prompt: "Review memory-like project guidance and propose cleanup or promotion changes. Additional context: \${ARGUMENTS}"
-          - name: claude-api
-            prompt: "Help with Anthropic or Claude API implementation using current official documentation when available. Request: \${ARGUMENTS}"
+        skills: []
 \`\`\`
 
 Prefer global agent profiles for MCP access: \`default-sandbox-agent\`, \`github-mcp-agent\`, \`browser-testing-agent\`, and \`full-testing-agent\`. To expose MCP tools, select the matching profile and only narrow \`allowedTools\`; do not add arbitrary MCP servers unless the user explicitly asks for custom inline configuration.
-Skills are configured in \`agentConfig.skills\`. Prefer skills supplied by the selected global profile; add inline skills only when the user explicitly asks for a custom workflow-specific skill. Each skill must include \`name\` and non-empty \`prompt\`; optional fields are \`description\`, \`whenToUse\`, \`allowedTools\`, \`arguments\`, \`argumentHint\`, \`model\`, \`userInvocable\`, and \`disableModelInvocation\`.
+Skills are configured in \`agentConfig.skills\` as registry references only. Do not create inline skill prompts. Each selected skill should include \`name\`, \`installSource\` (for example \`vercel-labs/agent-skills\`), \`skillName\`, and optional \`registryUrl\`, \`version\`, \`installAgent\`, and \`allowedTools\`.
 
 ### CRITICAL: Only use real actions
 - Every task MUST use a \`call:\` with a real action from the available integrations (e.g., \`gmail/send_email\`)

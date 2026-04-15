@@ -78,30 +78,21 @@
 		id?: string;
 		name: string;
 		description?: string;
-		prompt: string;
 		whenToUse?: string;
 		when_to_use?: string;
 		allowedTools?: string[];
 		allowed_tools?: string[];
-		arguments?: string[];
-		argumentHint?: string;
-		argument_hint?: string;
-		model?: string;
-		userInvocable?: boolean;
-		user_invocable?: boolean;
-		disableModelInvocation?: boolean;
-		disable_model_invocation?: boolean;
-		sourceType?: 'profile' | 'inline' | 'preset' | 'registry' | 'curated' | 'imported' | 'builtin';
+		sourceType?: 'profile' | 'registry';
 		registryId?: string;
 		slug?: string;
 		version?: string;
-		contentHash?: string;
 		sourceRepo?: string;
 		sourceRef?: string;
 		skillPath?: string;
-		license?: string;
-		compatibility?: Record<string, unknown>;
-		packageManifest?: Record<string, unknown>;
+		registryUrl?: string;
+		installSource?: string;
+		skillName?: string;
+		installAgent?: string;
 		status?: string;
 	};
 
@@ -574,11 +565,6 @@
 		return normalizeSkillName(skill.slug || skill.name);
 	}
 
-	function skillPackageFileCount(skill: AgentSkillConfig): number {
-		const files = skill.packageManifest?.files;
-		return Array.isArray(files) ? files.length : 0;
-	}
-
 	function profileSkillKeys(profile: AgentProfile | null): Set<string> {
 		return new Set((profile?.config.skills || []).map((skill) => skillKey(skill)));
 	}
@@ -611,7 +597,10 @@
 			...skill,
 			sourceType: selectedProfile && profileSkillKeys(selectedProfile).has(skillKey(skill)) ? 'profile' : 'registry',
 			registryId: skill.registryId || (typeof skill.id === 'string' ? skill.id : undefined),
-			slug: skill.slug || skill.name
+			slug: skill.slug || skill.name,
+			installSource: skill.installSource || skill.sourceRepo || '',
+			skillName: skill.skillName || skill.name,
+			installAgent: skill.installAgent || 'universal'
 		} as AgentSkillConfig);
 	}
 
@@ -634,28 +623,6 @@
 	function removeSkill(skill: AgentSkillConfig) {
 		if (!canRemoveSkill(skill)) return;
 		setSkills(skills.filter((existing) => skillKey(existing) !== skillKey(skill)));
-	}
-
-	function addInlineSkill() {
-		const base = 'workflow-skill';
-		let index = skills.length + 1;
-		let name = `${base}-${index}`;
-		while (selectedSkillByKey(normalizeSkillName(name))) {
-			index += 1;
-			name = `${base}-${index}`;
-		}
-		upsertSkill({
-			name,
-			description: '',
-			prompt: '',
-			whenToUse: '',
-			allowedTools: [],
-			arguments: [],
-			argumentHint: '',
-			userInvocable: true,
-			disableModelInvocation: false,
-			sourceType: 'inline'
-		});
 	}
 
 	function restoreProfileSkill(skill: AgentSkillConfig) {
@@ -687,10 +654,6 @@
 	function updateSkillAllowedTools(skill: AgentSkillConfig, value: string) {
 		const allowedTools = csvItems(value);
 		updateSkill(skill, { allowedTools });
-	}
-
-	function updateSkillArguments(skill: AgentSkillConfig, value: string) {
-		updateSkill(skill, { arguments: csvItems(value) });
 	}
 
 	function updateServerAllowedTools(server: McpServerConfig, value: string) {
@@ -1172,17 +1135,9 @@
 			<div>
 				<p class="text-xs font-medium">Skills</p>
 				<p class="text-[11px] text-muted-foreground">
-					Expose reusable prompt skills to this agent run.
+					Expose runtime-installed skills to this agent run.
 				</p>
 			</div>
-			<Button
-				variant="outline"
-				size="sm"
-				disabled={Boolean(selectedProfile) && activeRuntimePolicy.allowSkillAdditions !== true}
-				onclick={addInlineSkill}
-			>
-				Add Inline
-			</Button>
 		</div>
 
 		{#if selectedProfile && activeRuntimePolicy.allowSkillAdditions !== true}
@@ -1232,13 +1187,12 @@
 
 		{#if skills.length === 0}
 			<div class="rounded-md border border-dashed p-3 text-[11px] text-muted-foreground">
-				No skills configured. Add an approved skill, add an inline skill, or select a profile with skills.
+				No skills configured. Add an approved registry skill or select a profile with skills.
 			</div>
 		{:else}
 			<div class="space-y-3">
 				{#each skills as skill (skillKey(skill) || skill.name)}
 					{@const profileSkill = isProfileSkill(skill)}
-					{@const definitionLocked = profileSkill}
 					{@const canNarrowSkill = activeRuntimePolicy.allowSkillNarrowing !== false}
 					<div class="rounded-md border p-3 space-y-3">
 						<div class="flex items-start justify-between gap-3">
@@ -1246,23 +1200,20 @@
 								<div class="flex flex-wrap items-center gap-2">
 									<p class="truncate text-xs font-medium">{skill.name || 'Unnamed skill'}</p>
 									<Badge variant={profileSkill ? 'secondary' : 'outline'}>
-										{profileSkill ? 'profile' : skill.sourceType === 'registry' || skill.registryId ? 'registry' : 'inline'}
+										{profileSkill ? 'profile' : 'registry'}
 									</Badge>
 									{#if skill.version}
 										<Badge variant="outline">v{skill.version}</Badge>
 									{/if}
-									{#if skillPackageFileCount(skill) > 0}
-										<Badge variant="outline">{skillPackageFileCount(skill)} files</Badge>
-									{/if}
 								</div>
 								{#if profileSkill}
 									<p class="mt-1 text-[11px] text-muted-foreground">
-										Profile skills keep their prompt definition from the selected profile.
+										Profile skills keep their install metadata from the selected profile.
 									</p>
 								{/if}
-								{#if skill.sourceRepo}
+								{#if skill.installSource || skill.sourceRepo}
 									<p class="mt-1 truncate text-[11px] text-muted-foreground">
-										{skill.sourceRepo}{skill.skillPath ? ` / ${skill.skillPath}` : ''}
+										{skill.installSource || skill.sourceRepo}@{skill.skillName || skill.name}
 									</p>
 								{/if}
 							</div>
@@ -1278,33 +1229,30 @@
 
 						<div class="grid grid-cols-2 gap-3">
 							<div class="space-y-1.5">
-								<Label for={`skill-name-${skillKey(skill)}`}>Name</Label>
+								<Label for={`skill-source-${skillKey(skill)}`}>Install Source</Label>
 								<Input
-									id={`skill-name-${skillKey(skill)}`}
-									value={skill.name}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { name: event.currentTarget.value })}
-									placeholder="review-plan"
+									id={`skill-source-${skillKey(skill)}`}
+									value={skill.installSource || skill.sourceRepo || ''}
+									disabled
+									placeholder="owner/repo"
 								/>
 							</div>
 							<div class="space-y-1.5">
-								<Label for={`skill-description-${skillKey(skill)}`}>Description</Label>
+								<Label for={`skill-name-${skillKey(skill)}`}>Skill Name</Label>
 								<Input
-									id={`skill-description-${skillKey(skill)}`}
-									value={skill.description || ''}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { description: event.currentTarget.value })}
-									placeholder="When this skill helps"
+									id={`skill-name-${skillKey(skill)}`}
+									value={skill.skillName || skill.name}
+									disabled
+									placeholder="skill-name"
 								/>
 							</div>
 							<div class="col-span-2 space-y-1.5">
-								<Label for={`skill-when-${skillKey(skill)}`}>When To Use</Label>
+								<Label for={`skill-registry-${skillKey(skill)}`}>Registry URL</Label>
 								<Input
-									id={`skill-when-${skillKey(skill)}`}
-									value={skill.whenToUse || skill.when_to_use || ''}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { whenToUse: event.currentTarget.value })}
-									placeholder="Use when the agent needs a repeatable workflow-specific behavior."
+									id={`skill-registry-${skillKey(skill)}`}
+									value={skill.registryUrl || ''}
+									disabled
+									placeholder="https://skills.sh/owner/repo/skill"
 								/>
 							</div>
 							<div class="space-y-1.5">
@@ -1318,69 +1266,13 @@
 								/>
 							</div>
 							<div class="space-y-1.5">
-								<Label for={`skill-args-${skillKey(skill)}`}>Arguments</Label>
+								<Label for={`skill-agent-${skillKey(skill)}`}>Install Agent</Label>
 								<Input
-									id={`skill-args-${skillKey(skill)}`}
-									value={Array.isArray(skill.arguments) ? skill.arguments.join(', ') : ''}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkillArguments(skill, event.currentTarget.value)}
-									placeholder="subject, format"
+									id={`skill-agent-${skillKey(skill)}`}
+									value={skill.installAgent || 'universal'}
+									disabled
 								/>
 							</div>
-							<div class="space-y-1.5">
-								<Label for={`skill-argument-hint-${skillKey(skill)}`}>Argument Hint</Label>
-								<Input
-									id={`skill-argument-hint-${skillKey(skill)}`}
-									value={skill.argumentHint || skill.argument_hint || ''}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { argumentHint: event.currentTarget.value })}
-									placeholder="Describe the argument format"
-								/>
-							</div>
-							<div class="space-y-1.5">
-								<Label for={`skill-model-${skillKey(skill)}`}>Model Override</Label>
-								<Input
-									id={`skill-model-${skillKey(skill)}`}
-									value={skill.model || ''}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { model: event.currentTarget.value })}
-									placeholder="optional"
-								/>
-							</div>
-							<div class="col-span-2 space-y-1.5">
-								<Label for={`skill-prompt-${skillKey(skill)}`}>Prompt</Label>
-								<Textarea
-									id={`skill-prompt-${skillKey(skill)}`}
-									rows={4}
-									value={skill.prompt}
-									disabled={definitionLocked}
-									oninput={(event) => updateSkill(skill, { prompt: event.currentTarget.value })}
-									placeholder={'Write the skill instructions. Use ${ARGUMENTS} when arguments should be inserted.'}
-								/>
-							</div>
-						</div>
-
-						<div class="flex flex-wrap gap-4 text-xs">
-							<label class="flex items-center gap-2">
-								<input
-									type="checkbox"
-									checked={skill.userInvocable ?? skill.user_invocable ?? true}
-									disabled={definitionLocked}
-									onchange={(event) =>
-										updateSkill(skill, { userInvocable: event.currentTarget.checked })}
-								/>
-								<span>User invocable</span>
-							</label>
-							<label class="flex items-center gap-2">
-								<input
-									type="checkbox"
-									checked={skill.disableModelInvocation ?? skill.disable_model_invocation ?? false}
-									disabled={definitionLocked}
-									onchange={(event) =>
-										updateSkill(skill, { disableModelInvocation: event.currentTarget.checked })}
-								/>
-								<span>Disable model invocation</span>
-							</label>
 						</div>
 					</div>
 				{/each}

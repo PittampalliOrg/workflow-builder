@@ -636,29 +636,18 @@ def _canonical_skill(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": _skill_key(item),
         "description": str(item.get("description") or "").strip(),
-        "prompt": str(item.get("prompt") or "").strip(),
         "whenToUse": _skill_when_to_use(item),
         "allowedTools": sorted(
             _tool_set(item.get("allowedTools") or item.get("allowed_tools"))
         ),
-        "arguments": sorted(_tool_set(item.get("arguments"))),
-        "argumentHint": _skill_argument_hint(item),
-        "model": str(item.get("model") or "").strip(),
-        "userInvocable": _skill_bool(item, "userInvocable", "user_invocable", True),
-        "disableModelInvocation": _skill_bool(
-            item,
-            "disableModelInvocation",
-            "disable_model_invocation",
-            False,
-        ),
         "registryId": str(item.get("registryId") or "").strip(),
         "slug": str(item.get("slug") or "").strip(),
         "sourceType": str(item.get("sourceType") or "").strip(),
+        "installSource": str(item.get("installSource") or item.get("sourceRepo") or "").strip(),
+        "skillName": str(item.get("skillName") or item.get("name") or "").strip(),
+        "registryUrl": str(item.get("registryUrl") or "").strip(),
+        "installAgent": str(item.get("installAgent") or "universal").strip(),
         "version": str(item.get("version") or "").strip(),
-        "contentHash": str(item.get("contentHash") or "").strip(),
-        "packageManifest": item.get("packageManifest")
-        if isinstance(item.get("packageManifest"), dict)
-        else None,
     }
 
 

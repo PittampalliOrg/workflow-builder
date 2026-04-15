@@ -5,7 +5,6 @@ import {
   getFnSystemUrl,
   getOrchestratorUrl,
 } from "$lib/server/dapr-client";
-import { DEFAULT_CURATED_AGENT_SKILLS, profileSkillSnapshot } from "$lib/agent-skill-presets";
 import {
   getCodeFunction,
   listCodeFunctions,
@@ -170,7 +169,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
         },
         profileSnapshot: {
           mcpServers: [],
-          skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
+          skills: [],
           runtimeOverridePolicy: {
             allowToolNarrowing: true,
             allowServerAdditions: false,
@@ -181,7 +180,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
         },
         mcpConnectionMode: "explicit",
         mcpServers: [],
-        skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
+        skills: [],
       },
       body: {
         prompt: "",
@@ -210,7 +209,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
           },
           profileSnapshot: {
             mcpServers: [],
-            skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
+            skills: [],
             runtimeOverridePolicy: {
               allowToolNarrowing: true,
               allowServerAdditions: false,
@@ -221,7 +220,7 @@ function buildDaprAgentPyDetail(): ActionCatalogDetail {
           },
           mcpConnectionMode: "explicit",
           mcpServers: [],
-          skills: DEFAULT_CURATED_AGENT_SKILLS.map(profileSkillSnapshot),
+          skills: [],
         },
       },
     },
