@@ -215,6 +215,7 @@ CHECKPOINT_SCRIPT = dedent(
     import pathlib
     import subprocess
     import sys
+    import time
     import urllib.error
     import urllib.parse
     import urllib.request
@@ -304,10 +305,32 @@ CHECKPOINT_SCRIPT = dedent(
             headers["Authorization"] = basic_auth_header(auth["username"], auth["token"])
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=10) as response:
-                return response.status, response.read().decode("utf-8", errors="replace")
+            for attempt in range(5):
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as response:
+                        return response.status, response.read().decode("utf-8", errors="replace")
+                except urllib.error.HTTPError:
+                    raise
+                except urllib.error.URLError as exc:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.5 * (attempt + 1))
         except urllib.error.HTTPError as exc:
             return exc.code, exc.read().decode("utf-8", errors="replace")
+
+    def transient_git_error(text):
+        lowered = str(text or "").lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "temporary failure in name resolution",
+                "could not resolve host",
+                "failed to connect",
+                "connection timed out",
+                "connection reset",
+                "tls handshake timeout",
+            )
+        )
 
     def authed_git_url(url, username, token):
         parsed = urllib.parse.urlparse(url)
@@ -374,7 +397,12 @@ CHECKPOINT_SCRIPT = dedent(
             remote_name,
             f"{after_sha}:{remote_ref}",
         ]
-        push = run(push_args, timeout=90)
+        push = None
+        for attempt in range(5):
+            push = run(push_args, timeout=90)
+            if push.returncode == 0 or not transient_git_error(push.stderr or push.stdout):
+                break
+            time.sleep(0.75 * (attempt + 1))
         if push.returncode != 0:
             raise RuntimeError((push.stderr or push.stdout or "git push failed").strip()[:1000])
         return {

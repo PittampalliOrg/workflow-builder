@@ -393,7 +393,7 @@
 		codeCheckpoints.filter((checkpoint) => checkpoint.status === 'created').length
 	);
 	const durableCheckpointCount = $derived(
-		codeCheckpoints.filter((checkpoint) => checkpoint.remoteStatus === 'pushed').length
+		codeCheckpoints.filter(checkpointIsDurable).length
 	);
 
 	async function loadPlanText(): Promise<void> {
@@ -455,7 +455,7 @@
 		codeCheckpointError = null;
 		try {
 			const res = await fetch(`/api/workflows/executions/${executionId}/code-checkpoints`);
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
 			const data = await res.json();
 			codeCheckpoints = data.checkpoints ?? [];
 			codeCheckpointsLoaded = true;
@@ -486,7 +486,7 @@
 			const res = await fetch(
 				`/api/workflows/executions/${executionId}/code-checkpoints/${checkpointId}/diff${pathQuery}`
 			);
-			if (!res.ok) throw new Error(await res.text());
+			if (!res.ok) throw new Error(await readApiError(res, 'Failed to load checkpoint diff'));
 			const data = await res.json();
 			codeDiff = typeof data.diff === 'string' ? data.diff : '';
 			if (data.error) codeDiffError = String(data.error);
@@ -525,7 +525,7 @@
 					})
 				}
 			);
-			if (!res.ok) throw new Error(await res.text());
+			if (!res.ok) throw new Error(await readApiError(res, 'Failed to restore checkpoint'));
 			const data = await res.json();
 			restoreCheckpointMessage = `Restored ${shortSha(data.afterSha)} into ${data.sandboxName}.`;
 		} catch (err) {
@@ -734,10 +734,26 @@
 		return parts.join(' ');
 	}
 
+	function checkpointIsDurable(checkpoint: CodeCheckpoint): boolean {
+		return checkpoint.remoteStatus === 'pushed' && !!checkpoint.remoteRef;
+	}
+
 	function checkpointRemoteLabel(checkpoint: CodeCheckpoint): string {
-		if (checkpoint.remoteStatus === 'pushed') return 'durable';
+		if (checkpointIsDurable(checkpoint)) return 'durable';
 		if (checkpoint.remoteStatus === 'error') return 'remote error';
+		if (checkpoint.remoteRef) return 'not pushed';
 		return 'local only';
+	}
+
+	async function readApiError(response: Response, fallback: string): Promise<string> {
+		const contentType = response.headers.get('content-type') ?? '';
+		if (contentType.includes('application/json')) {
+			const body = await response.json().catch(() => null);
+			if (body && typeof body.message === 'string') return body.message;
+			if (body && typeof body.error === 'string') return body.error;
+		}
+		const text = await response.text().catch(() => '');
+		return text.trim() || fallback;
 	}
 
 	function eventLabel(event: ExecutionTimelineEvent): string {
@@ -1543,7 +1559,7 @@
 											</p>
 										</div>
 										<div class="flex flex-wrap items-center gap-1">
-											{#if selectedCodeCheckpoint.remoteStatus === 'pushed'}
+											{#if checkpointIsDurable(selectedCodeCheckpoint)}
 												<button
 													type="button"
 													class="rounded-md border border-border px-2 py-1 text-xs hover:bg-muted disabled:cursor-progress disabled:opacity-60"

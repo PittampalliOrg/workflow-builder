@@ -1,4 +1,4 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { restoreCodeCheckpointToSandbox } from '$lib/server/workflows/code-checkpoints';
 
@@ -16,11 +16,14 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		});
 		if ('status' in result && 'error' in result) {
 			const status = typeof result.status === 'number' ? result.status : 500;
-			return error(status, result.error ?? 'Failed to restore code checkpoint');
+			return json(
+				{ message: result.error ?? 'Failed to restore code checkpoint' },
+				{ status }
+			);
 		}
 		return json(result);
 	} catch (err) {
 		console.error('[code-checkpoints] restore failed:', err);
-		return error(500, 'Failed to restore code checkpoint');
+		return json({ message: 'Failed to restore code checkpoint' }, { status: 500 });
 	}
 };

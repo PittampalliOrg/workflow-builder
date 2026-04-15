@@ -64,6 +64,67 @@ function safePathspec(path: string | null): string | null {
 	return path;
 }
 
+function compactMessage(value: string, maxLength = 260): string {
+	const grpcDetails = value.match(/details\s*=\s*"([^"]+)"/);
+	if (grpcDetails?.[1]) return grpcDetails[1];
+	const grpcMessage = value.match(/grpc_message:\s*"([^"]+)"/);
+	if (grpcMessage?.[1]) return grpcMessage[1];
+	const compacted = value.replace(/\s+/g, ' ').trim();
+	return compacted.length > maxLength
+		? `${compacted.slice(0, maxLength - 1)}...`
+		: compacted;
+}
+
+function checkpointHasDurableRemote(checkpoint: WorkflowCodeCheckpoint): boolean {
+	return (
+		checkpoint.remoteStatus === 'pushed' &&
+		!!checkpoint.remoteUrl &&
+		!!checkpoint.remoteRef
+	);
+}
+
+function checkpointUnavailableMessage(
+	checkpoint: WorkflowCodeCheckpoint,
+	sandboxError?: string | null
+): string {
+	const parts = [
+		checkpoint.sandboxName
+			? `Checkpoint sandbox '${checkpoint.sandboxName}' is unavailable`
+			: 'Checkpoint has no retained sandbox'
+	];
+	if (checkpoint.remoteStatus === 'error' && checkpoint.remoteError) {
+		parts.push(`durable Git push failed: ${compactMessage(checkpoint.remoteError)}`);
+	} else if (checkpoint.remoteStatus === 'skipped' && checkpoint.remoteError) {
+		parts.push(`durable Git push was skipped: ${compactMessage(checkpoint.remoteError)}`);
+	} else if (!checkpoint.remoteUrl || !checkpoint.remoteRef) {
+		parts.push('no durable Git ref was recorded');
+	} else if (checkpoint.remoteStatus !== 'pushed') {
+		parts.push(`durable Git ref is not usable (status: ${checkpoint.remoteStatus ?? 'unknown'})`);
+	}
+	if (sandboxError) parts.push(`sandbox diff failed: ${sandboxError}`);
+	return `${parts.join('; ')}.`;
+}
+
+async function sandboxHttpError(response: Response): Promise<string> {
+	const bodyText = await response.text().catch(() => '');
+	if (!bodyText.trim()) return `OpenShell returned ${response.status}`;
+	try {
+		const body = JSON.parse(bodyText) as unknown;
+		if (isRecord(body)) {
+			const message =
+				typeof body.error === 'string'
+					? body.error
+					: typeof body.message === 'string'
+						? body.message
+						: '';
+			if (message) return `OpenShell returned ${response.status}: ${compactMessage(message)}`;
+		}
+	} catch {
+		// Fall through to compact raw body.
+	}
+	return `OpenShell returned ${response.status}: ${compactMessage(bodyText)}`;
+}
+
 function parseTimestamp(value: unknown): Date | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const parsed = new Date(value);
@@ -332,6 +393,7 @@ export async function loadCodeCheckpointDiff(
 		return { error: 'Invalid file path', status: 400 as const };
 	}
 
+	let sandboxError: string | null = null;
 	if (checkpoint.sandboxName) {
 		const command = [
 			`cd ${shellQuote(checkpoint.repoPath)}`,
@@ -351,9 +413,12 @@ export async function loadCodeCheckpointDiff(
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ command, timeout: 30 })
 			}
-		);
+		).catch((err) => {
+			sandboxError = err instanceof Error ? err.message : 'request failed';
+			return null;
+		});
 
-		if (upstream.ok) {
+		if (upstream?.ok) {
 			const body = (await upstream.json().catch(() => ({}))) as Record<
 				string,
 				unknown
@@ -377,9 +442,7 @@ export async function loadCodeCheckpointDiff(
 			}
 
 			if (
-				(checkpoint.remoteStatus !== 'pushed' ||
-					!checkpoint.remoteUrl ||
-					!checkpoint.remoteRef) &&
+				!checkpointHasDurableRemote(checkpoint) &&
 				(exitCode !== 0 || diff.trim())
 			) {
 				return {
@@ -392,19 +455,17 @@ export async function loadCodeCheckpointDiff(
 						exitCode === 0 ? null : stderr || output || `git diff exited ${exitCode}`
 				};
 			}
+			if (exitCode !== 0) {
+				sandboxError = compactMessage(stderr || output || `git diff exited ${exitCode}`);
+			}
+		} else if (upstream) {
+			sandboxError = await sandboxHttpError(upstream);
 		}
 	}
 
-	if (
-		checkpoint.remoteStatus !== 'pushed' ||
-		!checkpoint.remoteUrl ||
-		!checkpoint.remoteRef
-	) {
+	if (!checkpointHasDurableRemote(checkpoint)) {
 		return {
-			error:
-				checkpoint.sandboxName
-					? 'Checkpoint sandbox is unavailable and no durable remote ref was recorded'
-					: 'Checkpoint has no retained sandbox or durable remote ref',
+			error: checkpointUnavailableMessage(checkpoint, sandboxError),
 			status: 409 as const
 		};
 	}
@@ -549,12 +610,14 @@ export async function restoreCodeCheckpointToSandbox(input: {
 	if (!checkpoint.afterSha) {
 		return { error: 'Checkpoint has no target SHA', status: 409 as const };
 	}
-	if (
-		checkpoint.remoteStatus !== 'pushed' ||
-		!checkpoint.remoteUrl ||
-		!checkpoint.remoteRef
-	) {
-		return { error: 'Checkpoint has no durable remote ref', status: 409 as const };
+	if (!checkpointHasDurableRemote(checkpoint)) {
+		return { error: checkpointUnavailableMessage(checkpoint), status: 409 as const };
+	}
+	const remoteUrl = checkpoint.remoteUrl;
+	const remoteRef = checkpoint.remoteRef;
+	const afterSha = checkpoint.afterSha;
+	if (!remoteUrl || !remoteRef || !afterSha) {
+		return { error: checkpointUnavailableMessage(checkpoint), status: 409 as const };
 	}
 	const sandboxName = input.sandboxName.trim();
 	if (!sandboxName) {
@@ -570,9 +633,9 @@ export async function restoreCodeCheckpointToSandbox(input: {
 		`cd ${shellQuote(repoPath)}`,
 		'git init -q',
 		`(git remote remove workflow-builder-checkpoints >/dev/null 2>&1 || true)`,
-		`git remote add workflow-builder-checkpoints ${shellQuote(checkpoint.remoteUrl)}`,
-		`GIT_TERMINAL_PROMPT=0 GIT_SSL_NO_VERIFY=true ${fetchPrefix} fetch --depth=2 workflow-builder-checkpoints ${shellQuote(checkpoint.remoteRef)}`,
-		`git reset --hard ${shellQuote(checkpoint.afterSha)}`,
+		`git remote add workflow-builder-checkpoints ${shellQuote(remoteUrl)}`,
+		`GIT_TERMINAL_PROMPT=0 GIT_SSL_NO_VERIFY=true ${fetchPrefix} fetch --depth=2 workflow-builder-checkpoints ${shellQuote(remoteRef)}`,
+		`git reset --hard ${shellQuote(afterSha)}`,
 		'git clean -fdx',
 		'git status --short'
 	].join(' && ');

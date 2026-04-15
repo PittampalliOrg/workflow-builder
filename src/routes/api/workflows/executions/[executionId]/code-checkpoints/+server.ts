@@ -1,4 +1,4 @@
-import { json, error } from '@sveltejs/kit';
+import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { listCodeCheckpointsForExecution } from '$lib/server/workflows/code-checkpoints';
 
@@ -10,6 +10,6 @@ export const GET: RequestHandler = async ({ params }) => {
 		return json({ checkpoints });
 	} catch (err) {
 		console.error('[code-checkpoints] list failed:', err);
-		return error(500, 'Failed to load code checkpoints');
+		return json({ message: 'Failed to load code checkpoints' }, { status: 500 });
 	}
 };
