@@ -638,35 +638,20 @@ def _runtime_skill_run_dir(instance_id: str) -> str:
     return f"/sandbox/.workflow-builder/skill-runs/{_safe_skill_segment(instance_id or 'instance')}"
 
 
-def _install_runtime_skill_refs(runtime, instance_id: str, refs: list[dict[str, str]]) -> list[SkillDefinition]:
-    if not refs:
-        return []
-    install_root = _runtime_skill_run_dir(instance_id)
-    loaded: list[SkillDefinition] = []
-    for ref in refs:
-        source_arg = f"{ref['source']}@{ref['skill']}"
-        command = (
-            f"mkdir -p {shlex.quote(install_root)} && "
-            f"cd {shlex.quote(install_root)} && "
-            "export SSL_CERT_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt} && "
-            "export GIT_SSL_CAINFO=${GIT_SSL_CAINFO:-$SSL_CERT_FILE} && "
-            f"npx --yes skills@1.5.0 add {shlex.quote(source_arg)} "
-            f"--agent {shlex.quote(ref['install_agent'])} --copy --yes"
-        )
-        result = runtime.execute(command, timeout_seconds=180)
-        if not result.get("ok"):
-            raise RuntimeError(
-                f"Failed to install skill {source_arg}: "
-                f"{result.get('output') or result.get('error') or 'unknown error'}"
-            )
-        logger.info("[skills] Installed runtime skill %s into %s", source_arg, install_root)
-
+def _scan_runtime_skill_install_root(
+    runtime,
+    install_root: str,
+    refs: list[dict[str, str]],
+) -> list[SkillDefinition]:
     scan = runtime.run_python(
         """
 import json, pathlib, sys
 root = pathlib.Path(json.loads(sys.stdin.read())["root"])
 items = []
-for path in sorted(root.glob(".agents/skills/*/SKILL.md")):
+for path in sorted(root.rglob("SKILL.md")):
+    parts = set(path.parts)
+    if "node_modules" in parts or ".git" in parts:
+        continue
     try:
         items.append({
             "name": path.parent.name,
@@ -692,11 +677,17 @@ print(json.dumps({"ok": True, "items": items}))
         ref["skill"]: tuple(part for part in ref.get("allowed_tools", "").split(",") if part)
         for ref in refs
     }
+    loaded: list[SkillDefinition] = []
     for item in payload.get("items") or []:
         if not isinstance(item, dict) or not item.get("content"):
             continue
-        skill = parse_skill_md(str(item["content"]), name=str(item.get("name") or "skill"), source="agentConfig")
-        allowed_tools = allowed_by_name.get(skill.name) or skill.allowed_tools
+        fallback_name = str(item.get("name") or "skill")
+        skill = parse_skill_md(str(item["content"]), name=fallback_name, source="agentConfig")
+        allowed_tools = (
+            allowed_by_name.get(skill.name)
+            or allowed_by_name.get(fallback_name)
+            or skill.allowed_tools
+        )
         loaded.append(
             replace(
                 skill,
@@ -704,6 +695,38 @@ print(json.dumps({"ok": True, "items": items}))
                 package_path=str(item.get("package_path") or ""),
                 package_files=("SKILL.md",),
             )
+        )
+    return loaded
+
+
+def _install_runtime_skill_refs(runtime, instance_id: str, refs: list[dict[str, str]]) -> list[SkillDefinition]:
+    if not refs:
+        return []
+    install_root = _runtime_skill_run_dir(instance_id)
+    for ref in refs:
+        source_arg = f"{ref['source']}@{ref['skill']}"
+        command = (
+            f"mkdir -p {shlex.quote(install_root)} && "
+            f"cd {shlex.quote(install_root)} && "
+            "export SSL_CERT_FILE=${SSL_CERT_FILE:-/etc/ssl/certs/ca-certificates.crt} && "
+            "export GIT_SSL_CAINFO=${GIT_SSL_CAINFO:-$SSL_CERT_FILE} && "
+            f"npx --yes skills@1.5.0 add {shlex.quote(source_arg)} "
+            f"--agent {shlex.quote(ref['install_agent'])} --copy --yes"
+        )
+        result = runtime.execute(command, timeout_seconds=180)
+        if not result.get("ok"):
+            raise RuntimeError(
+                f"Failed to install skill {source_arg}: "
+                f"{result.get('output') or result.get('error') or 'unknown error'}"
+            )
+        logger.info("[skills] Installed runtime skill %s into %s", source_arg, install_root)
+
+    loaded = _scan_runtime_skill_install_root(runtime, install_root, refs)
+    if not loaded:
+        requested = ", ".join(f"{ref['source']}@{ref['skill']}" for ref in refs)
+        raise RuntimeError(
+            f"Installed runtime skill reference(s), but no SKILL.md files were loaded from "
+            f"{install_root}: {requested}"
         )
     return loaded
 
@@ -828,6 +851,14 @@ class OpenShellDurableAgent(DurableAgent):
         self._mcp_config_hash_by_instance: dict[str, str] = {}
         self._mcp_tools_by_instance: dict[str, dict[str, Any]] = {}
         self._mcp_allowed_tools_by_instance: dict[str, dict[str, set[str]]] = {}
+        self._skills_by_instance: dict[str, list[SkillDefinition]] = {}
+
+    def _activate_instance_skills(self, instance_id: str) -> None:
+        if not instance_id:
+            return
+        skills = self._skills_by_instance.get(instance_id)
+        if skills:
+            get_skill_registry().set_instance_skills(skills)
 
     async def _close_mcp_client_async(self, instance_id: str) -> None:
         client = self._mcp_clients_by_instance.pop(instance_id, None)
@@ -961,6 +992,7 @@ class OpenShellDurableAgent(DurableAgent):
         exec_id = self._exec_id or ""
         inst_id = self._inst_id or payload.get("instance_id", "")
         component = getattr(self.llm, "_llm_component", None)
+        self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
 
         # Suppress tool_choice for Anthropic components — the Dapr langchaingo
@@ -1040,6 +1072,7 @@ class OpenShellDurableAgent(DurableAgent):
         except Exception:
             pass
         try:
+            self._activate_instance_skills(inst_id)
             if inst_id and not (self._mcp_tools_by_instance.get(inst_id) or {}):
                 self._ensure_mcp_client(inst_id)
             mcp_tool = (self._mcp_tools_by_instance.get(inst_id) or {}).get(
@@ -1251,12 +1284,38 @@ class OpenShellDurableAgent(DurableAgent):
                 raw_skill_items,
                 write_files=not ctx.is_replaying,
             )
+            self._skills_by_instance[instance_id] = instance_skill_defs
             skill_registry.set_instance_skills(instance_skill_defs)
             logger.info(
-                "[skills] Registered %d instance skill(s) for instance %s",
+                "[skills] Registered %d instance skill(s) for instance %s: %s",
                 len(instance_skill_defs),
                 instance_id,
+                ", ".join(skill.name for skill in instance_skill_defs),
             )
+        elif runtime_skill_refs and ctx.is_replaying:
+            cached_skill_defs = self._skills_by_instance.get(instance_id) or []
+            if not cached_skill_defs:
+                try:
+                    cached_skill_defs = _scan_runtime_skill_install_root(
+                        runtime,
+                        _runtime_skill_run_dir(instance_id),
+                        runtime_skill_refs,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[skills] Failed to re-scan runtime skills for replayed instance %s: %s",
+                        instance_id,
+                        exc,
+                    )
+            if cached_skill_defs:
+                self._skills_by_instance[instance_id] = cached_skill_defs
+                skill_registry.set_instance_skills(cached_skill_defs)
+                logger.info(
+                    "[skills] Re-activated %d cached skill(s) for replayed instance %s: %s",
+                    len(cached_skill_defs),
+                    instance_id,
+                    ", ".join(skill.name for skill in cached_skill_defs),
+                )
 
         # Append skill listings to system prompt so the model knows what's available
         available_skills = skill_registry.list_available()
