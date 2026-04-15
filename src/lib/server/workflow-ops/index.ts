@@ -278,6 +278,16 @@ function toIso(value: Date | string | null | undefined): string | null {
 function asErrorMessage(value: unknown): string {
 	if (value instanceof Error) return value.message;
 	if (typeof value === 'string') return value;
+	const payload =
+		value && typeof value === 'object'
+			? ((value as { body?: unknown }).body ?? value)
+			: null;
+	if (payload && typeof payload === 'object') {
+		const record = payload as Record<string, unknown>;
+		if (typeof record.message === 'string') return record.message;
+		if (typeof record.detail === 'string') return record.detail;
+		if (typeof record.error === 'string') return record.error;
+	}
 	return 'Unknown error';
 }
 

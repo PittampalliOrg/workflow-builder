@@ -68,12 +68,12 @@ export function getDaprAgentPyUrl(runtime: string | null | undefined = "dapr-age
   if (normalized === "dapr-agent-py-testing") {
     return (
       env.DAPR_AGENT_PY_TESTING_URL ||
-      "http://dapr-agent-py-testing.openshell.svc.cluster.local:8002"
+      "http://dapr-agent-py-testing.workflow-builder.svc.cluster.local:8002"
     );
   }
   return (
     env.DAPR_AGENT_PY_URL ||
-    "http://dapr-agent-py.openshell.svc.cluster.local:8002"
+    "http://dapr-agent-py.workflow-builder.svc.cluster.local:8002"
   );
 }
 

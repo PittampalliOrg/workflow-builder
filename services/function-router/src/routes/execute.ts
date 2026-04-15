@@ -64,7 +64,7 @@ import type {
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
 const DAPR_AGENT_PY_TESTING_APP_ID =
-  process.env.DAPR_AGENT_PY_TESTING_APP_ID || "dapr-agent-py-testing.openshell";
+  process.env.DAPR_AGENT_PY_TESTING_APP_ID || "dapr-agent-py-testing";
 const HTTP_TIMEOUT_MS = Number.parseInt(
   process.env.HTTP_TIMEOUT_MS || "60000",
   10,

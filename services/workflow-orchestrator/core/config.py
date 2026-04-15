@@ -54,7 +54,7 @@ class OrchestratorConfig:
     DURABLE_AGENT_APP_ID: str = "durable-agent"
     WORKSPACE_RUNTIME_APP_ID: str = "workspace-runtime"
     DAPR_AGENT_PY_APP_ID: str = "dapr-agent-py"
-    DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing.openshell"
+    DAPR_AGENT_PY_TESTING_APP_ID: str = "dapr-agent-py-testing"
     CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
@@ -160,7 +160,7 @@ class OrchestratorConfig:
             "DAPR_AGENT_PY_APP_ID": ("DAPR_AGENT_PY_APP_ID", "dapr-agent-py"),
             "DAPR_AGENT_PY_TESTING_APP_ID": (
                 "DAPR_AGENT_PY_TESTING_APP_ID",
-                "dapr-agent-py-testing.openshell",
+                "dapr-agent-py-testing",
             ),
             "CLAUDE_CODE_AGENT_APP_ID": (
                 "CLAUDE_CODE_AGENT_APP_ID",
