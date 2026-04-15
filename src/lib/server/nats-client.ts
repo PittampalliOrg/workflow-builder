@@ -8,7 +8,8 @@
  * Write path still goes through Dapr pub/sub (agents stay broker-agnostic).
  */
 
-import { connect, type NatsConnection, type JetStreamClient, type JetStreamManager } from 'nats';
+import { createRequire } from 'node:module';
+import type { NatsConnection, JetStreamClient, JetStreamManager } from 'nats';
 import { env } from '$env/dynamic/private';
 
 const NATS_URL = env.NATS_URL || 'nats://nats.nats.svc.cluster.local:4222';
@@ -16,6 +17,16 @@ const STREAM_NAME = env.NATS_STREAM_NAME || 'ORCHESTRATOR';
 
 let connectionPromise: Promise<NatsConnection> | null = null;
 let nc: NatsConnection | null = null;
+let natsModule: typeof import('nats') | null = null;
+
+const require = createRequire(import.meta.url);
+
+function loadNats(): typeof import('nats') {
+	if (!natsModule) {
+		natsModule = require('nats') as typeof import('nats');
+	}
+	return natsModule;
+}
 
 /**
  * Get a shared NATS connection. Lazy-connects on first call.
@@ -32,6 +43,7 @@ export async function getNatsConnection(): Promise<NatsConnection> {
 
 	connectionPromise = (async () => {
 		try {
+			const { connect } = loadNats();
 			const conn = await connect({
 				servers: NATS_URL,
 				name: 'workflow-builder',
