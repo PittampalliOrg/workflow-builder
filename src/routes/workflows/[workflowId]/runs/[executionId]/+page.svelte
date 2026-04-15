@@ -171,6 +171,14 @@
 			metadata?: Record<string, unknown> | null;
 		};
 	};
+	type PreviewActionResult = {
+		previewId: string;
+		url: string;
+		workspaceRef: string;
+		sandboxName: string;
+		workingDir: string;
+		provider: string;
+	};
 	let previewActionPending = $state(false);
 	let previewActionMessage = $state<string | null>(null);
 	let previewActionError = $state<string | null>(null);
@@ -712,6 +720,101 @@
 		return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 	}
 
+	function asText(value: unknown): string {
+		return typeof value === 'string' ? value.trim() : '';
+	}
+
+	function firstText(record: Record<string, unknown>, keys: string[]): string {
+		for (const key of keys) {
+			const value = asText(record[key]);
+			if (value) return value;
+		}
+		return '';
+	}
+
+	function previewActionCandidate(value: unknown, depth = 0): Record<string, unknown> | null {
+		if (depth > 8) return null;
+		const record = asRecord(value);
+		if (!record || Array.isArray(value)) return null;
+
+		if (firstText(record, ['previewId', 'proxyPath', 'proxyUrl', 'pageUrl'])) {
+			return record;
+		}
+
+		for (const key of ['result', 'data', 'output', 'body', 'response']) {
+			const nested = previewActionCandidate(record[key], depth + 1);
+			if (nested) return nested;
+		}
+		return null;
+	}
+
+	function previewActionUrl(result: Record<string, unknown>, previewId: string): string {
+		const pageUrl = firstText(result, ['pageUrl']);
+		if (pageUrl) return pageUrl;
+
+		const params = new URLSearchParams();
+		params.set('previewId', previewId);
+
+		const repoPath = firstText(result, ['requestedRepoPath', 'repoPath']);
+		const baseUrl = firstText(result, ['requestedBaseUrl', 'baseUrl']);
+		const devServerCommand = firstText(result, ['requestedDevServerCommand', 'devServerCommand']);
+		const installCommand = firstText(result, ['requestedInstallCommand', 'installCommand']);
+		if (repoPath) params.set('repoPath', repoPath);
+		if (baseUrl) params.set('baseUrl', baseUrl);
+		if (devServerCommand) params.set('devServerCommand', devServerCommand);
+		if (installCommand) params.set('installCommand', installCommand);
+		params.set('timeoutSeconds', '7200');
+
+		return `/workflows/runtime-preview/${encodeURIComponent(executionId)}?${params.toString()}`;
+	}
+
+	function findPreviewActionResult(value: unknown, depth = 0): PreviewActionResult | null {
+		if (depth > 8 || value == null) return null;
+
+		if (Array.isArray(value)) {
+			for (const item of value) {
+				const match = findPreviewActionResult(item, depth + 1);
+				if (match) return match;
+			}
+			return null;
+		}
+
+		const candidate = previewActionCandidate(value, depth);
+		if (candidate) {
+			const previewId = firstText(candidate, ['previewId']);
+			if (previewId) {
+				const sandbox = asRecord(candidate.sandbox);
+				return {
+					previewId,
+					url: previewActionUrl(candidate, previewId),
+					workspaceRef: firstText(candidate, ['workspaceRef']),
+					sandboxName: firstText(candidate, ['sandboxName']) || (sandbox ? firstText(sandbox, ['sandboxName']) : ''),
+					workingDir: firstText(candidate, ['workingDirectory', 'workingDir']),
+					provider: firstText(candidate, ['provider'])
+				};
+			}
+		}
+
+		const record = asRecord(value);
+		if (!record || Array.isArray(value)) return null;
+
+		const preferredEntries = Object.entries(record).filter(([key]) => {
+			const normalized = key.toLowerCase();
+			return normalized.includes('preview') || normalized === 'start_preview';
+		});
+		for (const [, nested] of preferredEntries) {
+			const match = findPreviewActionResult(nested, depth + 1);
+			if (match) return match;
+		}
+		for (const [, nested] of Object.entries(record)) {
+			const match = findPreviewActionResult(nested, depth + 1);
+			if (match) return match;
+		}
+		return null;
+	}
+
+	const previewActionResult = $derived.by(() => findPreviewActionResult(output));
+
 	const sandboxPreviewUrl = $derived.by(() => {
 		const root = asRecord(output);
 		const workflowOutput = asRecord(root?.workflowOutput);
@@ -727,6 +830,7 @@
 	});
 
 	const primaryAppPreviewUrl = $derived.by(() => {
+		if (previewActionResult?.url) return previewActionResult.url;
 		for (const artifact of browserArtifacts) {
 			const url = browserAppPreviewUrl(artifact);
 			if (url) return url;
@@ -735,6 +839,7 @@
 	});
 
 	const sandboxWorkspaceRef = $derived.by(() => {
+		if (previewActionResult?.workspaceRef) return previewActionResult.workspaceRef;
 		const root = asRecord(output);
 		const workflowOutput = asRecord(root?.workflowOutput);
 		const value = workflowOutput?.sandboxWorkspaceRef;
@@ -742,18 +847,34 @@
 	});
 
 	const sandboxWorkingDir = $derived.by(() => {
+		if (previewActionResult?.workingDir) return previewActionResult.workingDir;
 		const root = asRecord(output);
 		const workflowOutput = asRecord(root?.workflowOutput);
 		const value = workflowOutput?.sandboxWorkingDir;
 		return typeof value === 'string' ? value : '';
 	});
 
+	const activeWorkspaceSandboxName = $derived.by(() => {
+		if (previewActionResult?.sandboxName) return previewActionResult.sandboxName;
+		const details = asRecord(primaryWorkspace?.sandboxState?.details);
+		const detailName = details?.sandboxName ?? details?.name;
+		if (typeof detailName === 'string' && detailName.trim()) return detailName.trim();
+		const root = asRecord(output);
+		const workflowOutput = asRecord(root?.workflowOutput);
+		const value = workflowOutput?.sandboxName;
+		return typeof value === 'string' ? value : '';
+	});
+
 	const sandboxProvider = $derived.by(() => {
+		if (previewActionResult?.provider) return previewActionResult.provider;
 		const root = asRecord(output);
 		const workflowOutput = asRecord(root?.workflowOutput);
 		const value = workflowOutput?.sandboxProvider;
 		return typeof value === 'string' ? value : '';
 	});
+
+	const previewSandboxName = $derived(previewActionResult?.sandboxName || activeWorkspaceSandboxName);
+	const activePreviewId = $derived(previewActionResult?.previewId || executionId);
 
 	async function stopSandboxPreview() {
 		previewActionPending = true;
@@ -761,7 +882,7 @@
 		previewActionError = null;
 		try {
 			const response = await fetch(
-				`/api/workflows/executions/${executionId}/sandbox-preview?previewId=${encodeURIComponent(executionId)}`,
+				`/api/workflows/executions/${executionId}/sandbox-preview?previewId=${encodeURIComponent(activePreviewId)}`,
 				{ method: 'DELETE' }
 			);
 			const payload = await response.json().catch(() => ({}));
@@ -888,13 +1009,19 @@
 								</div>
 							</div>
 
-							<div class="grid gap-2 text-sm text-muted-foreground">
-								{#if sandboxWorkspaceRef}
-									<p><span class="font-medium text-foreground">Workspace:</span> <code>{sandboxWorkspaceRef}</code></p>
-								{/if}
-								{#if sandboxWorkingDir}
-									<p><span class="font-medium text-foreground">Working Dir:</span> <code>{sandboxWorkingDir}</code></p>
-								{/if}
+								<div class="grid gap-2 text-sm text-muted-foreground">
+									{#if sandboxWorkspaceRef}
+										<p><span class="font-medium text-foreground">Workspace:</span> <code>{sandboxWorkspaceRef}</code></p>
+									{/if}
+									{#if previewSandboxName}
+										<p><span class="font-medium text-foreground">Sandbox:</span> <code>{previewSandboxName}</code></p>
+									{/if}
+									{#if previewActionResult?.previewId}
+										<p><span class="font-medium text-foreground">Preview:</span> <code>{previewActionResult.previewId}</code></p>
+									{/if}
+									{#if sandboxWorkingDir}
+										<p><span class="font-medium text-foreground">Working Dir:</span> <code>{sandboxWorkingDir}</code></p>
+									{/if}
 								{#if sandboxProvider}
 									<p><span class="font-medium text-foreground">Provider:</span> <code>{sandboxProvider}</code></p>
 								{/if}
