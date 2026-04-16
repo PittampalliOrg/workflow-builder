@@ -588,7 +588,10 @@ def maybe_compact(
     for etag_attempt in range(3):
         try:
             entry.messages = new_messages
-            agent._infra.save_state(instance_id, entry=entry)
+            # In dapr_agents 0.13 the entry is a reference tracked by
+            # _infra.state; mutating entry.messages above is enough, and
+            # save_state() persists _infra.state to the store.
+            agent.save_state(instance_id)
             break
         except Exception as exc:  # noqa: BLE001
             logger.warning(
