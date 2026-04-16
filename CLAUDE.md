@@ -13,40 +13,45 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                          Kubernetes Cluster                               │
-│                                                                           │
-│  ┌─────────────────┐    ┌──────────────────────────────────────────────┐ │
-│  │  SvelteKit App  │    │  workflow-orchestrator (Python/Dapr)         │ │
-│  │  (Dapr sidecar) │───▶│  - Dynamic workflow interpreter              │ │
-│  │  Port 3000      │    │  - Topological node execution                │ │
-│  └─────────────────┘    │  - Routes to agents & function services     │ │
-│         │               └──────────┬──────────────┬───────────────────┘ │
-│         │                          │              │                      │
-│  OAuth2 PKCE +          Dapr svc invoke    Dapr svc invoke              │
-│  App Connections                   │              │                      │
-│         │               ┌─────────▼──┐    ┌──────▼──────────────┐      │
-│         │               │ function-  │    │  dapr-agent-py       │      │
-│         │               │ router     │    │  (Dapr Workflow       │      │
-│         │               │ (registry) │    │   agent runtime)     │      │
-│         │               └─────┬──────┘    └─────────────────────┘      │
-│         │          ┌──────────┼────────────────┐                       │
-│         │          ▼          ▼                ▼                        │
-│  ┌──────────────┐  ┌────────────┐  ┌──────────────┐                   │
-│  │ openshell-   │  │ fn-active  │  │  fn-system    │                   │
-│  │ agent-runtime│  │ -pieces    │  │  (http-req,   │                   │
-│  │ (sandbox I/O)│  │ (42 AP     │  │   db-query,   │                   │
-│  └──────────────┘  │  pieces)   │  │   condition)  │                   │
-│                    └────────────┘  └──────────────┘                   │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │ workflow-mcp │  │ piece-mcp-   │  │ mcp-gateway  │                  │
-│  │ -server      │  │ server       │  │ (hosted MCP) │                  │
-│  └──────────────┘  └──────────────┘  └──────────────┘                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                  │
-│  │    Redis     │  │  PostgreSQL  │  │ OTEL Collector│                  │
-│  └──────────────┘  └──────────────┘  └──────────────┘                  │
-└──────────────────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────────────┐
+│                          Kubernetes Cluster                                │
+│                                                                            │
+│  ┌─────────────────┐    ┌──────────────────────────────────────────────┐  │
+│  │  SvelteKit App  │    │  workflow-orchestrator (Python/Dapr)         │  │
+│  │  (Dapr sidecar) │───▶│  - SW 1.0 interpreter, topological execution │  │
+│  │  Port 3000      │    │  - durable/run → ctx.call_child_workflow     │  │
+│  └─────────────────┘    │  - other slugs → Dapr invoke → function-router│ │
+│                         └──────┬────────────────────────┬───────────────┘  │
+│                                │ Dapr child workflow    │ Dapr svc invoke  │
+│                                ▼                        ▼                  │
+│                    ┌─────────────────────┐  ┌──────────────────────────┐  │
+│                    │  dapr-agent-py      │  │  function-router         │  │
+│                    │  (@workflow_entry   │  │  - slug → service route  │  │
+│                    │   agent_workflow +  │  │  - credential broker     │  │
+│                    │   WorkflowRetryPolicy)│  │  - Knative response norm │  │
+│                    └─────────────────────┘  └──────────┬───────────────┘  │
+│                                             ┌──────────┼───────────────┐  │
+│                                             ▼          ▼               ▼  │
+│                                ┌──────────────┐ ┌────────────┐ ┌────────┐ │
+│                                │ openshell-   │ │ fn-active- │ │fn-sys  │ │
+│                                │ agent-runtime│ │ pieces     │ │tem     │ │
+│                                │ workspace-   │ │ code-      │ │        │ │
+│                                │ runtime      │ │ runtime    │ │        │ │
+│                                └──────────────┘ └────────────┘ └────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                     │
+│  │ workflow-mcp │  │ piece-mcp-   │  │ mcp-gateway  │                     │
+│  │ -server      │  │ server       │  │ (hosted MCP) │                     │
+│  └──────────────┘  └──────────────┘  └──────────────┘                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                     │
+│  │    Redis     │  │  PostgreSQL  │  │ OTEL Collector│                    │
+│  └──────────────┘  └──────────────┘  └──────────────┘                     │
+└───────────────────────────────────────────────────────────────────────────┘
 ```
+
+**Key dispatch invariants**
+- `durable/run` is a **Dapr child workflow**, not an HTTP call. The orchestrator calls `ctx.call_child_workflow("agent_workflow", app_id="dapr-agent-py", ...)`; retry resilience comes from `WorkflowRetryPolicy(max_attempts=8)` on the callee side.
+- Every other action goes `orchestrator → Dapr service invoke → function-router → {fn-system | fn-activepieces | workspace-runtime | openshell-agent-runtime | code-runtime}`. The orchestrator uses `activities/dapr_invoke.py` (no raw HTTP).
+- function-router owns credential decryption (AES-256-CBC from `app_connection`) + `credential_access_logs` audit. Orchestrator never holds plaintext secrets.
 
 ## Tech Stack
 
@@ -56,7 +61,8 @@ Visual workflow builder with Dapr workflow orchestration, durable AI agents, and
 - **Auth**: GitHub/Google OAuth2, JWT API keys (RS256)
 - **Workflow Engine**: Dapr Workflow SDK (Python) via workflow-orchestrator
 - **Durable AI Agent**: dapr-agent-py - native Python Dapr runtime for `durable/run`
-- **Function Execution**: function-router -> fn-system, fn-activepieces, openshell-agent-runtime, dapr-agent-py
+- **Function Execution**: function-router (Dapr invoke) → fn-system, fn-activepieces, workspace-runtime, openshell-agent-runtime, code-runtime
+- **Durable Agent Dispatch**: orchestrator → `ctx.call_child_workflow` → dapr-agent-py (native; bypasses function-router)
 - **MCP**: workflow-mcp-server, piece-mcp-server, mcp-gateway
 - **Activepieces**: 42 AP piece packages, OAuth2 PKCE, encrypted app connections
 - **Observability**: OpenTelemetry → OTEL Collector → Jaeger
@@ -81,7 +87,7 @@ pnpm test:e2e         # Run Playwright E2E tests
 |---------|------|------|
 | **workflow-orchestrator** | 8080 | Python Dapr workflow engine, topological node execution |
 | **dapr-agent-py** | n/a | Primary `durable/run` agent runtime with MCP client support |
-| **function-router** | 8080 | Routes actions to fn-system/fn-activepieces/openshell-agent-runtime/dapr-agent-py |
+| **function-router** | 8080 | Sync credential broker + Knative proxy. Receives Dapr invoke from orchestrator, decrypts credentials, routes to fn-system / fn-activepieces / workspace-runtime / openshell-agent-runtime / code-runtime. Does **not** route `durable/run` or any `dapr-agent-py/*` slug. |
 | **fn-system** | 8080 | System actions: http-request, database-query, condition |
 | **mcp-gateway** | 8080 | Hosted MCP endpoint for external AI clients |
 | **fn-activepieces** | 8080 | AP executor for default-routed piece actions in the current cluster runtime |
@@ -262,4 +268,4 @@ The `browser/validate` action captures screenshots of a deployed feature inside 
 ---
 
 **Last Updated**: 2026-04-16
-**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs with Claude Code-compatible hooks + plugins subsystem, and MCP-enabled agent workflows
+**Status**: Production-ready SvelteKit app with OpenTelemetry observability, OpenShell sandbox execution, `dapr-agent-py` durable agent runs (native Dapr child workflow dispatch + `WorkflowRetryPolicy` callee-side retry) with Claude Code-compatible hooks + plugins subsystem, MCP-enabled agent workflows, and function-router narrowed to sync credential broker + Knative proxy.

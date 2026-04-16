@@ -67,9 +67,10 @@ The expected live coding path is:
 
 1. `workflow-builder` starts a run
 2. `workflow-orchestrator` resolves draft or published execution target
-3. `function-router` routes OpenShell workspace, browser, and standard agent actions to `openshell-agent-runtime`
-4. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
-5. the UI reads persisted artifacts back through the BFF
+3. `durable/run` action nodes dispatch via `ctx.call_child_workflow` directly to `dapr-agent-py` (native Dapr child workflow, no function-router hop)
+4. `workspace/*`, `browser/*`, `openshell/*`, `system/*`, `code/*`, `_default` (AP pieces) dispatch via Dapr service invoke to `function-router`, which decrypts credentials and forwards to the target runtime
+5. `dapr-swe/*` actions route only when a workflow explicitly targets that separate runtime
+6. the UI reads persisted artifacts back through the BFF
 
 For `durable/run`, the deployed `dapr-agent-py` image is expected to include the
 OpenAI adapter. A workflow can select GPT-5.4 by setting:
@@ -124,7 +125,7 @@ After a real rollout, verify:
 
 1. Argo apps are `Synced` and `Healthy`
 2. all core pods are `Running` with healthy Dapr sidecars
-3. `function-router` routes `workspace/*`, `browser/*`, and `openshell/*` to the intended runtimes
+3. `function-router` (via Dapr invoke from orchestrator) routes `workspace/*`, `browser/*`, `openshell/*`, `code/*`, and `_default` AP pieces to the intended runtimes; `durable/run` is a native child workflow and bypasses function-router
 4. a fresh OpenShell-backed workflow run progresses through workspace creation and clone
 5. coding runs persist patch, change-set, and snapshot artifacts
 6. published workflows appear in runtime introspection and can execute by name/version

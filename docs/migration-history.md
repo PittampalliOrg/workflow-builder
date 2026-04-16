@@ -35,3 +35,21 @@ TypeScript orchestrator was archived and deleted. Python version is the active i
 ## Legacy Service Cleanup
 
 Removed `activity-executor/` (empty legacy service with no source code) and `workflow-orchestrator-ts-archived/` (replaced by Python orchestrator).
+
+## function-router Narrowed to Sync Credential Broker (2026-04-16)
+
+Three coordinated changes narrowed function-router's scope and switched the orchestrator hop to Dapr service invoke:
+
+- **Native `durable/run` dispatch**: re-enabled `_run_native_durable_agent_child_workflow` in `sw_workflow.py` by adding `durable/run` to `_AGENT_ACTION_TYPES`. Orchestrator now calls `ctx.call_child_workflow("agent_workflow", app_id="dapr-agent-py", ...)` directly; the `agent_workflow` name matches dapr-agent-py's `DurableAgent.register_workflow(self.agent_workflow)` (the prior `durableRunWorkflowV1` name was a placeholder nothing registered).
+- **Polling shim deleted**: removed `waitForDaprAgentPyResult`, `waitForDurableRunResult`, dispatch blocks, and the `dapr-agent-py-tracker` module from `services/function-router/src/routes/execute.ts` (~548 LOC). Retry resilience across the orchestrator→agent boundary now comes from `WorkflowRetryPolicy(max_attempts=8)` on the callee side, not hand-rolled HTTP polling retry.
+- **Orchestrator → function-router via Dapr invoke**: `execute_action.py` switched from `requests.post` to `DaprClient().invoke_method("function-router", "execute", ...)` via a shared `activities/dapr_invoke.py` helper, recovering mTLS, sidecar trace propagation, and native retry policy on the sync path.
+
+Slug deletions:
+
+- `dapr-agent-py/*` and `dapr-agent-py-testing/*` removed from the registry (ConfigMap + `BUILTIN_FALLBACK_REGISTRY`). The orchestrator had already been rejecting `dapr-agent-py/run` via `_REMOVED_AGENT_ACTION_TYPES`; the registry entries were dead fallback routes.
+- `durable/run` removed from the registry (native child-workflow only).
+- `_default → fn-activepieces` restored to both the ConfigMap and `BUILTIN_FALLBACK_REGISTRY` (defense-in-depth — the ConfigMap had been missing this fallback, which would have broken all AP piece routing after the cutover).
+
+DB migration `drizzle/0031_deprecate_dapr_agent_py_slug.sql` rewrites any lingering `dapr-agent-py/*` `actionType` in `workflows.nodes` JSONB to `durable/run` (idempotent; 0 rows affected at cutover). Rollback recipe in `drizzle/0032_rollback_dapr_agent_py_slug.sql` (manual-only; not in the journal).
+
+Result: function-router shrank from ~3017 to ~2469 LOC in `execute.ts` and became a coherent single-responsibility service. Dead manifests at `stacks/packages/components/workloads/workflow-builder/` were also removed.

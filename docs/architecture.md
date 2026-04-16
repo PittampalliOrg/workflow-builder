@@ -129,23 +129,30 @@ The UI should prefer persisted artifacts over live workspace state.
 
 ```text
 browser
-  -> workflow-builder
-  -> workflow-orchestrator
-     -> function-router
-        -> system/* handlers
-        -> workspace/* and browser/* -> openshell-agent-runtime
-        -> durable/run -> dapr-agent-py
-        -> dapr-swe/* -> dapr-swe
-        -> _default -> fn-activepieces
-
-workflow-orchestrator
-  -> dynamic_workflow for drafts
-  -> versioned registered workflows for published revisions
+  -> workflow-builder (SvelteKit BFF)
+  -> workflow-orchestrator (Dapr workflow interpreter)
+     -> durable/run  => ctx.call_child_workflow -> dapr-agent-py  (native; no function-router hop)
+     -> everything else => Dapr service invoke -> function-router
+        -> system/*      -> fn-system
+        -> workspace/*   -> workspace-runtime
+        -> browser/*     -> openshell-agent-runtime
+        -> openshell/*   -> openshell-agent-runtime
+        -> code/*        -> code-runtime
+        -> dapr-swe/*    -> dapr-swe
+        -> _default      -> fn-activepieces
 
 openshell-agent-runtime / dapr-agent-py / dapr-swe
   -> OpenShell sandboxes or dedicated coding workers
   -> PostgreSQL-backed review surfaces
 ```
+
+Dispatch is owned by `services/workflow-orchestrator/workflows/sw_workflow.py`:
+`_AGENT_ACTION_TYPES = {"durable/run"}` gates the native child-workflow branch,
+`_REMOVED_AGENT_ACTION_TYPES` rejects legacy slugs (`dapr-agent-py/run`,
+`claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph*`,
+`dapr-swe/run`, `durable/plan`, `mastra/*`, `agent/*`). Everything else funnels
+through `activities/execute_action.py` which calls function-router via
+`activities/dapr_invoke.py` (`DaprClient().invoke_method`).
 
 ## Core Request Paths
 
@@ -156,17 +163,19 @@ openshell-agent-runtime / dapr-agent-py / dapr-swe
 3. `workflow-orchestrator` resolves the execution target:
    - draft -> `dynamic_workflow`
    - published -> registered workflow name/version
-4. Action nodes are routed through `function-router`.
+4. Action nodes dispatch by slug:
+   - `durable/run` → `ctx.call_child_workflow(..., app_id="dapr-agent-py")`
+   - everything else → `activities/execute_action.py` → Dapr service invoke → `function-router`
 5. The parent workflow persists status and review data as the run progresses.
 
 ### Standard durable agent coding run
 
 1. A workflow node uses `durable/run`.
-2. `workflow-orchestrator` schedules the durable child workflow from the parent workflow.
-3. `function-router` serializes `agentConfig` and passes the exact `workspaceRef` and `sandboxName` to `dapr-agent-py`.
-4. `dapr-agent-py` resolves the model component from `agentConfig.modelSpec`, metadata, or top-level `model`.
-5. `dapr-agent-py` runs the agent loop.
-6. `dapr-agent-py` binds to the OpenShell workspace created or resolved earlier in the workflow.
+2. `workflow-orchestrator`'s `_run_native_durable_agent_child_workflow` helper builds the child input (prompt, workspaceRef, cwd, agentConfig, maxTurns, metadata) and calls `ctx.call_child_workflow("agent_workflow", input=..., instance_id="{parent}__durable__{task}__run__0", app_id=DAPR_AGENT_PY_APP_ID)`.
+3. `dapr-agent-py`'s `@workflow_entry def agent_workflow(self, ctx, message)` receives the input directly — no function-router hop, no HTTP polling.
+4. `WorkflowRetryPolicy(max_attempts=8, initial_backoff_seconds=4, ...)` on the callee side absorbs pod restarts, sidecar churn, and transient failures across the orchestrator→agent boundary.
+5. `dapr-agent-py` resolves the model component from `agentConfig.modelSpec`, metadata, or top-level `model`.
+6. `dapr-agent-py` runs the agent loop, binding to the OpenShell workspace created or resolved earlier in the workflow.
 7. Built-in workspace tools run against that OpenShell workspace.
 8. MCP tools are added from `agentConfig.mcpServers` or, when the deployed orchestrator image includes the resolver, from enabled project `mcp_connection` rows.
 9. Review artifacts are persisted to Postgres.
@@ -182,7 +191,7 @@ See `docs/mcp-agent-workflows.md` for the current UI-runnable MCP configuration 
 ### Browser validation
 
 1. Browser validation runs through `browser/*`.
-2. `function-router` routes that to `openshell-agent-runtime`.
+2. Orchestrator Dapr-invokes `function-router`, which routes to `openshell-agent-runtime`.
 3. The runtime materializes the persisted execute result into a browser workspace.
 4. The preview server and browser capture run against that materialized state.
 5. The resulting artifact is stored durably and exposed back to the UI.
@@ -218,17 +227,36 @@ Key areas:
 
 ### function-router
 
+A narrow sync service — credential broker + Knative response normalizer + slug-
+to-service dispatcher. Invoked by workflow-orchestrator via Dapr service invoke
+(`activities/dapr_invoke.py` → `DaprClient().invoke_method("function-router",
+"execute", ...)`), not raw HTTP.
+
 Provides:
 
-- route lookup by `actionType`
-- routing for `system/*`, `workspace/*`, `browser/*`
-- routing for `dapr-swe/*`
-- fallback routing to `fn-activepieces`
+- **Slug routing** by `actionType` prefix: `system/*`, `workspace/*`, `browser/*`,
+  `openshell/*`, `code/*`, `dapr-swe/*`, `_default` → `fn-activepieces`.
+  The registry is ConfigMap-driven (`/config/functions.json`) with a hardcoded
+  `BUILTIN_FALLBACK_REGISTRY` override for cross-cutting routes (including the
+  `_default` AP fallback) so misconfigured ConfigMaps can't break AP piece
+  dispatch.
+- **Credential broker**: AES-256-CBC decrypt from `app_connection` via the
+  workflow-builder WB API, mapped to env-var names per integration, with
+  `credential_access_logs` audit rows. It is the **only** service with access
+  to plaintext credentials; workflow-orchestrator never handles them.
+- **Knative response normalization**: flattens inconsistent Knative
+  `{success, data, error}` shapes across runtimes.
 
-`durable/run` is dispatched by workflow-orchestrator via native Dapr child
-workflow (`ctx.call_child_workflow`) directly against `dapr-agent-py` — it does
-not flow through function-router. `dapr-agent-py/*` slugs are rejected by the
-orchestrator via `_REMOVED_AGENT_ACTION_TYPES`.
+Non-responsibilities (deliberately removed):
+
+- `durable/run` dispatch is owned by workflow-orchestrator via
+  `ctx.call_child_workflow(..., app_id="dapr-agent-py")`. No HTTP polling, no
+  workflow-status shim, no transient-retry loop in function-router. Retry
+  resilience lives on the callee (`WorkflowRetryPolicy` in
+  `dapr-agent-py/src/main.py`).
+- `dapr-agent-py/*` and `dapr-agent-py-testing/*` slugs are removed from the
+  registry. The orchestrator rejects them via `_REMOVED_AGENT_ACTION_TYPES`
+  before any dispatch happens.
 
 ### dapr-agent-py
 

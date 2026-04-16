@@ -55,31 +55,33 @@ Python FastAPI service and Dapr workflow owner.
 
 ## function-router
 
-TypeScript action router.
+TypeScript sync credential broker + Knative routing proxy.
 
 - Port: `8080`
 - Dapr app-id: `function-router`
-- Key endpoint:
-  - `POST /execute`
+- Invoked by: workflow-orchestrator via `DaprClient().invoke_method("function-router", "execute", ...)` (see `services/workflow-orchestrator/activities/dapr_invoke.py`). Raw HTTP is no longer used on this path.
+- Key endpoint: `POST /execute`
 - Responsibilities:
-  - route built-in system and workspace actions
-  - route OpenShell-backed workspace and browser actions
-  - route native durable agent actions
-  - forward `agentConfig`, `workspaceRef`, and normalized OpenShell `sandboxName` values for `durable/run`
-  - route unclaimed plugin slugs to `fn-activepieces`
+  - **Credential broker**: the only service with Dapr secret store + WB decrypt API access. AES-256-CBC decrypts AP connection values, maps to env-var names per integration, writes `credential_access_logs` audit rows.
+  - **Slug-to-service routing**: ConfigMap-driven registry (`/config/functions.json`) with hardcoded `BUILTIN_FALLBACK_REGISTRY` override.
+  - **Knative response normalization**: flattens inconsistent `{success, data, error}` shapes.
 
-Current route contract:
+Current route contract (merged registry — ConfigMap + BUILTIN):
 
-- `workspace/*` -> `openshell-agent-runtime`
-- `browser/*` -> `openshell-agent-runtime`
-- `dapr-swe/*` -> `dapr-swe`
-- `_default` -> `fn-activepieces`
+- `workspace/*` → `workspace-runtime`
+- `browser/*` → `openshell-agent-runtime`
+- `openshell/*` → `openshell-agent-runtime`
+- `code/*` → `code-runtime`
+- `dapr-swe/*` → `dapr-swe`
+- `workflow-orchestrator/*` → `workflow-orchestrator`
+- `_default` → `fn-activepieces` (set in both ConfigMap and BUILTIN for defense-in-depth)
 
-`durable/run` is **not** routed through function-router. The workflow-orchestrator
-dispatches it directly via `ctx.call_child_workflow` against `dapr-agent-py`'s
-`@workflow_entry` (`services/workflow-orchestrator/workflows/sw_workflow.py:1164`).
+Not routed here (by design):
 
-The function-router image can also receive a mounted registry override from the cluster. Check the live ConfigMap when runtime routing and local code disagree.
+- `durable/run` — dispatched by workflow-orchestrator via `ctx.call_child_workflow(app_id="dapr-agent-py")`. Retry resilience is handled by `WorkflowRetryPolicy(max_attempts=8)` on the callee side in `dapr-agent-py`.
+- `dapr-agent-py/*`, `dapr-agent-py-testing/*`, `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph*/run`, `dapr-swe/run`, `durable/plan`, `mastra/*`, `agent/*` — rejected at the orchestrator via `_REMOVED_AGENT_ACTION_TYPES` with a clear error; never reach function-router.
+
+The image can also receive a mounted registry override from the cluster. The merge is `{ ...loadedConfigMap, ...BUILTIN_FALLBACK_REGISTRY }` — BUILTIN keys win, so core cross-cutting routes stay stable. Check the live ConfigMap + `src/core/registry.ts` when runtime routing and expectations disagree.
 
 ## dapr-agent-py
 
