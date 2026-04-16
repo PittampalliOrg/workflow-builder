@@ -1076,10 +1076,12 @@ class OpenShellDurableAgent(DurableAgent):
 
             cfg = self._compaction_cfg_by_instance.get(inst_id)
             logger.info(
-                "[compaction] call_llm entry inst_id=%s cfg_present=%s enabled=%s",
+                "[compaction] call_llm entry inst_id=%s cfg_present=%s enabled=%s counter_keys=%s counter_val=%s",
                 inst_id,
                 cfg is not None,
                 bool(cfg and cfg.enabled),
+                list(self._compaction_call_count_by_instance.keys()),
+                self._compaction_call_count_by_instance.get(inst_id, "KEY_MISSING"),
             )
             if cfg is not None and cfg.enabled:
                 turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
