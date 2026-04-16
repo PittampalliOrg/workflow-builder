@@ -1075,6 +1075,12 @@ class OpenShellDurableAgent(DurableAgent):
             from src.compaction import maybe_compact
 
             cfg = self._compaction_cfg_by_instance.get(inst_id)
+            logger.info(
+                "[compaction] call_llm entry inst_id=%s cfg_present=%s enabled=%s",
+                inst_id,
+                cfg is not None,
+                bool(cfg and cfg.enabled),
+            )
             if cfg is not None and cfg.enabled:
                 turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
                 self._compaction_call_count_by_instance[inst_id] = turn_index + 1
@@ -1095,6 +1101,13 @@ class OpenShellDurableAgent(DurableAgent):
                     turn_index=turn_index,
                     runtime=runtime_for_compact,
                 )
+                logger.info(
+                    "[compaction] result turn=%d compacted=%s pre=%d reason=%s",
+                    turn_index,
+                    result.compacted,
+                    result.pre_count,
+                    result.reason,
+                )
                 if result.compacted:
                     self._compaction_runs_by_instance[inst_id] = (
                         self._compaction_runs_by_instance.get(inst_id, 0) + 1
@@ -1106,7 +1119,7 @@ class OpenShellDurableAgent(DurableAgent):
                         result.messages_dropped,
                     )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[compaction] inline pass failed (continuing): %s", exc)
+            logger.warning("[compaction] inline pass failed (continuing): %s", exc, exc_info=True)
 
         # Suppress tool_choice for Anthropic components — the Dapr langchaingo
         # Anthropic adapter passes tool_choice as a string ("auto") but the
