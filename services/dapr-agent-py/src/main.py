@@ -911,6 +911,13 @@ class OpenShellDurableAgent(DurableAgent):
         self._base_hooks_snapshot: HooksSnapshot = empty_snapshot()
         self._hooks_snapshot_by_instance: dict[str, HooksSnapshot] = {}
         self._cwd_by_instance: dict[str, str] = {}
+        # Compaction: per-instance resolved config + monotonic call_llm counter
+        # used as the turn_index for idempotency markers.
+        from src.compaction import CompactionConfig
+
+        self._compaction_cfg_by_instance: dict[str, CompactionConfig] = {}
+        self._compaction_call_count_by_instance: dict[str, int] = {}
+        self._compaction_runs_by_instance: dict[str, int] = {}
 
     def _activate_instance_skills(self, instance_id: str) -> None:
         if not instance_id:
@@ -1058,6 +1065,48 @@ class OpenShellDurableAgent(DurableAgent):
         component = getattr(self.llm, "_llm_component", None)
         self._activate_instance_skills(inst_id)
         self._ensure_mcp_client(inst_id)
+
+        # ---- Context compaction (inline, same activity boundary) -----------
+        # Runs BEFORE the base call_llm. If compaction triggers it rewrites
+        # entry.messages via save_state; super().call_llm() will reload the
+        # compacted state. Failures are advisory and never block call_llm.
+        try:
+            from src.anthropic_adapter import _call_anthropic_sdk, _get_anthropic_model
+            from src.compaction import maybe_compact
+
+            cfg = self._compaction_cfg_by_instance.get(inst_id)
+            if cfg is not None and cfg.enabled:
+                turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
+                self._compaction_call_count_by_instance[inst_id] = turn_index + 1
+                model_id = (
+                    _get_anthropic_model(component)
+                    if component and "anthropic" in component
+                    else (component or None)
+                )
+                runtime_for_compact = get_runtime()
+                result = maybe_compact(
+                    self,
+                    instance_id=inst_id,
+                    execution_id=exec_id,
+                    config=cfg,
+                    model=model_id,
+                    component=component,
+                    caller=_call_anthropic_sdk,
+                    turn_index=turn_index,
+                    runtime=runtime_for_compact,
+                )
+                if result.compacted:
+                    self._compaction_runs_by_instance[inst_id] = (
+                        self._compaction_runs_by_instance.get(inst_id, 0) + 1
+                    )
+                    logger.info(
+                        "[compaction] inline pre-call_llm result: pre=%d post=%d dropped=%d",
+                        result.pre_count,
+                        result.post_count,
+                        result.messages_dropped,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[compaction] inline pass failed (continuing): %s", exc)
 
         # Suppress tool_choice for Anthropic components — the Dapr langchaingo
         # Anthropic adapter passes tool_choice as a string ("auto") but the
@@ -1572,6 +1621,20 @@ class OpenShellDurableAgent(DurableAgent):
             except Exception:
                 pass
 
+        # Resolve per-run compaction config from agentConfig.compaction and
+        # stash it on the agent so call_llm can pass it to maybe_compact.
+        # This runs inside the orchestrator body; config is deterministic
+        # for replay because it's derived from the trigger message which
+        # is itself replayed.
+        try:
+            from src.compaction import resolve_config as _resolve_compaction_cfg
+
+            self._compaction_cfg_by_instance[instance_id] = _resolve_compaction_cfg(message)
+            self._compaction_call_count_by_instance.setdefault(instance_id, 0)
+            self._compaction_runs_by_instance.setdefault(instance_id, 0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[compaction] config resolution failed: %s", exc)
+
         # Capture per-instance hooks snapshot (overlay per-run hooks/plugins
         # from agentConfig). Pure, deterministic — safe inside the workflow fn.
         if hooks_enabled():
@@ -1749,6 +1812,9 @@ class OpenShellDurableAgent(DurableAgent):
             skill_registry.clear_instance_skills()
             _clear_hook_snapshot(self, instance_id)
             self._cwd_by_instance.pop(instance_id, None)
+            self._compaction_cfg_by_instance.pop(instance_id, None)
+            self._compaction_call_count_by_instance.pop(instance_id, None)
+            self._compaction_runs_by_instance.pop(instance_id, None)
 
 
 # ---------------------------------------------------------------------------

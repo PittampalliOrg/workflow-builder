@@ -51,4 +51,6 @@ V1_EMITTED_EVENTS: frozenset[HookEvent] = frozenset({
     HookEvent.SessionEnd,
     HookEvent.Stop,
     HookEvent.Notification,
+    HookEvent.PreCompact,
+    HookEvent.PostCompact,
 })

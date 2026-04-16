@@ -251,6 +251,57 @@ def publish_llm_complete(
     )
 
 
+def publish_compaction_start(
+    execution_id: str,
+    instance_id: str,
+    pre_count: int,
+    threshold: int,
+    trigger: str = "auto",
+) -> None:
+    publish_event(
+        "compaction_start",
+        {
+            "preCount": pre_count,
+            "threshold": threshold,
+            "trigger": trigger,
+        },
+        execution_id=execution_id,
+        instance_id=instance_id,
+    )
+
+
+def publish_compaction_complete(
+    execution_id: str,
+    instance_id: str,
+    *,
+    pre_count: int,
+    post_count: int,
+    messages_dropped: int,
+    messages_preserved: int,
+    ptl_retries: int = 0,
+    trigger: str = "auto",
+    reason: str = "",
+    success: bool = True,
+    error: str | None = None,
+) -> None:
+    publish_event(
+        "compaction_complete" if success else "compaction_error",
+        {
+            "preCount": pre_count,
+            "postCount": post_count,
+            "messagesDropped": messages_dropped,
+            "messagesPreserved": messages_preserved,
+            "ptlRetries": ptl_retries,
+            "trigger": trigger,
+            "reason": reason,
+            "success": success,
+            "error": error,
+        },
+        execution_id=execution_id,
+        instance_id=instance_id,
+    )
+
+
 def publish_workflow_completed(
     execution_id: str,
     instance_id: str,

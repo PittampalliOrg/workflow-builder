@@ -267,6 +267,81 @@ def execute_stop_hooks(
     )
 
 
+def execute_pre_compact_hooks(
+    snapshot: HooksSnapshot,
+    *,
+    trigger: str,
+    custom_instructions: Optional[str],
+    session_id: str,
+    cwd: str,
+    project_dir: str,
+    pre_count: int,
+    message_count: int,
+) -> AggregatedHookResult:
+    """Fire PreCompact hooks before a compaction summary LLM call.
+
+    Hooks can return `customInstructions` (via additional_contexts or
+    `hook_specific_output.updatedInput`) to be merged into the prompt,
+    or block to abort compaction for this turn.
+    """
+    if not hooks_enabled():
+        return _empty(HookEvent.PreCompact)
+    payload = _base_input(HookEvent.PreCompact, session_id, cwd)
+    payload.update({
+        "trigger": trigger,
+        "customInstructions": custom_instructions,
+        "preCount": pre_count,
+        "messageCount": message_count,
+    })
+    return _run_coro(
+        execute_hooks(
+            HookEvent.PreCompact,
+            payload,
+            snapshot,
+            match_query=trigger,
+            runner_ctx=_make_ctx(project_dir),
+        )
+    )
+
+
+def execute_post_compact_hooks(
+    snapshot: HooksSnapshot,
+    *,
+    summary: str,
+    pre_count: int,
+    post_count: int,
+    attachments_preview: list[str],
+    session_id: str,
+    cwd: str,
+    project_dir: str,
+    trigger: str = "auto",
+) -> AggregatedHookResult:
+    """Fire PostCompact hooks after a successful compaction.
+
+    Hooks can inject additional context to append after the summary
+    (via `additional_contexts`). They cannot undo the compaction.
+    """
+    if not hooks_enabled():
+        return _empty(HookEvent.PostCompact)
+    payload = _base_input(HookEvent.PostCompact, session_id, cwd)
+    payload.update({
+        "summary": summary,
+        "preCount": pre_count,
+        "postCount": post_count,
+        "attachmentsPreview": attachments_preview,
+        "trigger": trigger,
+    })
+    return _run_coro(
+        execute_hooks(
+            HookEvent.PostCompact,
+            payload,
+            snapshot,
+            match_query=trigger,
+            runner_ctx=_make_ctx(project_dir),
+        )
+    )
+
+
 def execute_notification_hooks(
     snapshot: HooksSnapshot,
     *,
@@ -305,4 +380,6 @@ __all__ = [
     "execute_session_end_hooks",
     "execute_stop_hooks",
     "execute_notification_hooks",
+    "execute_pre_compact_hooks",
+    "execute_post_compact_hooks",
 ]

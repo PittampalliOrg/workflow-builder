@@ -11,8 +11,10 @@ from __future__ import annotations
 
 from .callers import (
     execute_notification_hooks,
+    execute_post_compact_hooks,
     execute_post_tool_hooks,
     execute_post_tool_use_failure_hooks,
+    execute_pre_compact_hooks,
     execute_pre_tool_hooks,
     execute_session_end_hooks,
     execute_session_start_hooks,
@@ -61,4 +63,6 @@ __all__ = [
     "execute_session_end_hooks",
     "execute_stop_hooks",
     "execute_notification_hooks",
+    "execute_pre_compact_hooks",
+    "execute_post_compact_hooks",
 ]
