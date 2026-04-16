@@ -35,12 +35,6 @@ import {
   type TimingBreakdown,
 } from "../core/execution-logger.js";
 import {
-  completeDaprAgentPyRun,
-  ensureDaprAgentPyRun,
-  trackDaprAgentPySnapshot,
-  type DaprAgentPyTrackingContext,
-} from "../core/dapr-agent-py-tracker.js";
-import {
   getResponseTimeAverage,
   recordResponseTime,
   resolveOpenFunctionUrl,
@@ -63,8 +57,6 @@ import type {
 
 const DAPR_HOST = process.env.DAPR_HOST || "localhost";
 const DAPR_HTTP_PORT = process.env.DAPR_HTTP_PORT || "3500";
-const DAPR_AGENT_PY_TESTING_APP_ID =
-  process.env.DAPR_AGENT_PY_TESTING_APP_ID || "dapr-agent-py-testing";
 const HTTP_TIMEOUT_MS = Number.parseInt(
   process.env.HTTP_TIMEOUT_MS || "60000",
   10,
@@ -88,14 +80,6 @@ function shouldUseDaprInvocation(appId: string): boolean {
 
 function daprInvocationBaseUrl(appId: string): string {
   return `http://${DAPR_HOST}:${DAPR_HTTP_PORT}/v1.0/invoke/${encodeURIComponent(appId)}/method`;
-}
-
-function isDaprAgentPyAppId(appId: string): boolean {
-  return appId === "dapr-agent-py" || appId.startsWith("dapr-agent-py.");
-}
-
-function isDaprAgentPyTestingAppId(appId: string): boolean {
-  return appId === "dapr-agent-py-testing" || appId.startsWith("dapr-agent-py-testing.");
 }
 
 // Request body schema using Zod
@@ -341,98 +325,6 @@ function parseJsonResponse(responseText: string): unknown {
   }
 }
 
-async function waitForDurableRunResult(input: {
-  functionUrl: string;
-  workflowId: string;
-  timeoutMs: number;
-}): Promise<{
-  success: boolean;
-  status: string;
-  result?: unknown;
-  error?: string;
-}> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < input.timeoutMs) {
-    // See waitForDaprAgentPyResult — same transient-error retry policy:
-    // pod restarts (rollouts, OOM, evictions) produce 5xx or connection
-    // errors briefly; polling through those windows is correct.
-    let response: Awaited<ReturnType<typeof fetch>> | null = null;
-    try {
-      response = await fetch(
-        `${input.functionUrl}/api/run/${encodeURIComponent(input.workflowId)}`,
-        {
-          method: "GET",
-          headers: { Accept: "application/json" },
-        },
-      );
-    } catch (fetchErr) {
-      console.warn(
-        "[Execute Route] durable run status fetch error; retrying:",
-        fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      continue;
-    }
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      if (response.status === 404 || response.status >= 500) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, response!.status >= 500 ? 2000 : 1500),
-        );
-        continue;
-      }
-      return {
-        success: false,
-        status: "failed",
-        error: `Failed polling durable run (${response.status}): ${body.slice(0, 300)}`,
-      };
-    }
-
-    const payload = parseJsonResponse(await response.text());
-    if (!isPlainObject(payload)) {
-      return {
-        success: false,
-        status: "failed",
-        error: "Durable run status response was not JSON object",
-      };
-    }
-
-    const status =
-      typeof payload.status === "string"
-        ? payload.status.toLowerCase()
-        : "running";
-    if (status === "running") {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      continue;
-    }
-
-    if (status === "completed") {
-      return {
-        success: payload.success === true,
-        status,
-        result: payload.result,
-        error: typeof payload.error === "string" ? payload.error : undefined,
-      };
-    }
-
-    return {
-      success: false,
-      status,
-      result: payload.result,
-      error:
-        typeof payload.error === "string"
-          ? payload.error
-          : `Durable run ended with status ${status}`,
-    };
-  }
-
-  return {
-    success: false,
-    status: "failed",
-    error: `Durable run timed out after ${input.timeoutMs}ms`,
-  };
-}
-
 function firstStringField(
   record: Record<string, unknown>,
   keys: string[],
@@ -444,31 +336,6 @@ function firstStringField(
     }
   }
   return undefined;
-}
-
-function resolveDaprAgentPyInstanceId(payload: unknown): string | undefined {
-  if (!isPlainObject(payload)) return undefined;
-  return (
-    firstStringField(payload, [
-      "instance_id",
-      "instanceId",
-      "workflow_id",
-      "workflowId",
-      "id",
-    ]) ?? resolveDaprAgentPyInstanceId(payload.result)
-  );
-}
-
-function deriveSandboxNameFromWorkspaceRef(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const workspaceRef = value.trim();
-  if (!workspaceRef.startsWith("ws_")) return undefined;
-  const slug = workspaceRef
-    .slice(3)
-    .replace(/_/g, "-")
-    .toLowerCase()
-    .replace(/^-+|-+$/g, "");
-  return slug ? `ws-${slug}` : undefined;
 }
 
 function resolveSandboxName(payload: unknown): string | undefined {
@@ -490,159 +357,6 @@ function resolveSandboxName(payload: unknown): string | undefined {
       : undefined) ??
     resolveSandboxName(payload.result)
   );
-}
-
-function normalizeDaprAgentPyStatus(payload: Record<string, unknown>): string {
-  return (
-    firstStringField(payload, [
-      "runtime_status",
-      "runtimeStatus",
-      "status",
-      "custom_status",
-      "customStatus",
-    ]) ?? "running"
-  ).toLowerCase();
-}
-
-function parseMaybeJson(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  const trimmed = value.trim();
-  if (!trimmed) return value;
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return value;
-  }
-}
-
-function extractDaprAgentPyResult(payload: Record<string, unknown>): unknown {
-  for (const key of [
-    "output",
-    "serialized_output",
-    "serializedOutput",
-    "result",
-    "response",
-    "final_output",
-    "finalOutput",
-  ]) {
-    if (Object.hasOwn(payload, key) && payload[key] !== undefined) {
-      return parseMaybeJson(payload[key]);
-    }
-  }
-  return payload;
-}
-
-async function waitForDaprAgentPyResult(input: {
-  functionUrl: string;
-  instanceId: string;
-  timeoutMs: number;
-  onSnapshot?: (snapshot: Record<string, unknown>) => Promise<void>;
-}): Promise<{
-  success: boolean;
-  status: string;
-  result?: unknown;
-  error?: string;
-}> {
-  const startedAt = Date.now();
-  const richStatusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}/rich`;
-  const statusUrl = `${input.functionUrl}/agent/instances/${encodeURIComponent(input.instanceId)}`;
-  while (Date.now() - startedAt < input.timeoutMs) {
-    // Transient-error retry: pod restarts (rollouts, OOM, evictions)
-    // briefly return 5xx or drop the connection entirely. We want to
-    // keep polling through those windows instead of erroring the
-    // parent workflow. Only 4xx non-404 responses are treated as
-    // unrecoverable client errors.
-    let response: Awaited<ReturnType<typeof undiciFetch>> | null = null;
-    try {
-      response = await undiciFetch(richStatusUrl, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        dispatcher: longRunningAgent,
-      });
-      if (response.status === 404) {
-        response = await undiciFetch(statusUrl, {
-          method: "GET",
-          headers: { Accept: "application/json" },
-          dispatcher: longRunningAgent,
-        });
-      }
-    } catch (fetchErr) {
-      // Network error (e.g. pod restarting, DNS blip). Back off and retry.
-      console.warn(
-        "[Execute Route] dapr-agent-py status fetch error; retrying:",
-        fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      continue;
-    }
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      if (response.status === 404 || response.status >= 500) {
-        // 404 = workflow not yet registered; 5xx = transient (pod
-        // restart, sidecar churn, gateway timeout). Back off and retry.
-        await new Promise((resolve) =>
-          setTimeout(resolve, response!.status >= 500 ? 2000 : 1500),
-        );
-        continue;
-      }
-      return {
-        success: false,
-        status: "failed",
-        error: `Failed polling dapr-agent-py (${response.status}): ${body.slice(0, 300)}`,
-      };
-    }
-
-    const payload = parseJsonResponse(await response.text());
-    if (!isPlainObject(payload)) {
-      return {
-        success: false,
-        status: "failed",
-        error: "dapr-agent-py status response was not a JSON object",
-      };
-    }
-    if (input.onSnapshot) {
-      await input.onSnapshot(payload).catch((error) => {
-        console.warn("[Execute Route] Failed to persist dapr-agent-py snapshot:", error);
-      });
-    }
-
-    const status = normalizeDaprAgentPyStatus(payload);
-    if (
-      status === "pending" ||
-      status === "running" ||
-      status === "continued_as_new" ||
-      status === "continuedasnew"
-    ) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      continue;
-    }
-
-    if (status === "completed") {
-      return {
-        success: true,
-        status,
-        result: extractDaprAgentPyResult(payload),
-      };
-    }
-
-    return {
-      success: false,
-      status,
-      result: extractDaprAgentPyResult(payload),
-      error:
-        typeof payload.failure_details === "string"
-          ? payload.failure_details
-          : typeof payload.error === "string"
-            ? payload.error
-            : `dapr-agent-py ended with status ${status}`,
-    };
-  }
-
-  return {
-    success: false,
-    status: "failed",
-    error: `dapr-agent-py timed out after ${input.timeoutMs}ms`,
-  };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -869,47 +583,6 @@ function parseDurableAgentConfig(
   input: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
   return isPlainObject(input.agentConfig) ? input.agentConfig : undefined;
-}
-
-function parseDurableAgentRuntimeInput(
-  input: Record<string, unknown>,
-): string | undefined {
-  const candidate =
-    typeof input.agentRuntime === "string" && input.agentRuntime.trim()
-      ? input.agentRuntime.trim()
-      : typeof input.runtime === "string" && input.runtime.trim()
-        ? input.runtime.trim()
-        : undefined;
-  if (candidate) return candidate;
-
-  if (typeof input.argsJson === "string" && input.argsJson.trim()) {
-    try {
-      const parsed = JSON.parse(input.argsJson.trim()) as unknown;
-      if (isPlainObject(parsed)) {
-        return parseDurableAgentRuntimeInput(parsed);
-      }
-    } catch {
-      return undefined;
-    }
-  }
-
-  if (isPlainObject(input.body)) {
-    const bodyRuntime = parseDurableAgentRuntimeInput(input.body);
-    if (bodyRuntime) return bodyRuntime;
-  }
-
-  const agentConfig = parseDurableAgentConfig(input);
-  if (!agentConfig) return undefined;
-  if (typeof agentConfig.runtime === "string" && agentConfig.runtime.trim()) {
-    return agentConfig.runtime.trim();
-  }
-  if (
-    typeof agentConfig.agentRuntime === "string" &&
-    agentConfig.agentRuntime.trim()
-  ) {
-    return agentConfig.agentRuntime.trim();
-  }
-  return undefined;
 }
 
 function parseDurableModelInput(
@@ -1259,16 +932,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // Step 1: Look up the target service
-    let target = await lookupFunction(functionSlug);
-    const requestedAgentRuntime = isPlainObject(body.input)
-      ? parseDurableAgentRuntimeInput(body.input as Record<string, unknown>)
-      : undefined;
-    if (
-      functionSlug === "durable/run" &&
-      requestedAgentRuntime === "dapr-agent-py-testing"
-    ) {
-      target = { ...target, appId: DAPR_AGENT_PY_TESTING_APP_ID };
-    }
+    const target = await lookupFunction(functionSlug);
     console.log(
       `[Execute Route] Routing ${functionSlug} to ${target.appId} (${target.type})`,
     );
@@ -1298,8 +962,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
         const isBuiltinRuntime =
           target.appId === "durable-agent" ||
           target.appId === "workspace-runtime" ||
-          isDaprAgentPyAppId(target.appId) ||
-          isDaprAgentPyTestingAppId(target.appId) ||
           target.appId === "openshell-agent-runtime";
 
         if (isBuiltinRuntime) {
@@ -1311,7 +973,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
           let executionStartTime = Date.now();
           let targetUrl = functionUrl;
           let requestBody = "";
-          let daprAgentPySandboxName: string | undefined;
 
           try {
             const { toolId, args } = parseMastraToolInput(
@@ -1356,10 +1017,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
             }
 
             const isAgentRun = toolId === "run";
-            const isDaprAgentPyRun =
-              (isDaprAgentPyAppId(target.appId) ||
-                isDaprAgentPyTestingAppId(target.appId)) &&
-              isAgentRun;
             const isPlan = toolId === "plan";
             const isClaudePlan = toolId === "claude-plan";
             const isMaterializePlan = toolId === "materialize-plan";
@@ -1512,78 +1169,7 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
                 ? await resolveOpenFunctionUrl("workspace-runtime")
                 : undefined;
 
-            if (isDaprAgentPyRun) {
-              if (runMode !== "execute_direct") {
-                throw new Error(
-                  "durable/run only supports mode execute_direct",
-                );
-              }
-
-              const bodyArgs = isPlainObject(args.body) ? args.body : {};
-              const agentArgs = { ...bodyArgs, ...args };
-              const prompt =
-                typeof agentArgs.prompt === "string"
-                  ? agentArgs.prompt
-                  : typeof agentArgs.task === "string"
-                    ? agentArgs.task
-                    : "";
-              targetUrl = `${functionUrl}/agent/run`;
-              const agentMessage: Record<string, string> = {
-                task:
-                  typeof agentArgs.task === "string" && agentArgs.task.trim()
-                    ? agentArgs.task
-                    : prompt,
-              };
-              if (prompt) agentMessage.prompt = prompt;
-              if (isPlainObject(agentConfig)) {
-                agentMessage.agentConfig = JSON.stringify(agentConfig);
-              }
-              const sandboxName =
-                typeof agentArgs.sandboxName === "string" &&
-                agentArgs.sandboxName.trim()
-                  ? agentArgs.sandboxName.trim()
-                  : deriveSandboxNameFromWorkspaceRef(agentArgs.workspaceRef);
-              daprAgentPySandboxName = sandboxName;
-              for (const key of [
-                "workspaceRef",
-                "sandboxName",
-                "cwd",
-                "mode",
-                "maxTurns",
-                "timeoutMinutes",
-                "stopCondition",
-              ]) {
-                if (key === "sandboxName" && sandboxName) {
-                  agentMessage[key] = sandboxName;
-                } else if (typeof agentArgs[key] === "string") {
-                  agentMessage[key] = agentArgs[key];
-                } else if (typeof agentArgs[key] === "number") {
-                  agentMessage[key] = String(agentArgs[key]);
-                }
-              }
-              agentMessage.metadata = JSON.stringify({
-                ...(isPlainObject(agentArgs.metadata)
-                  ? agentArgs.metadata
-                  : {}),
-                ...(isPlainObject(agentArgs._message_metadata)
-                  ? agentArgs._message_metadata
-                  : {}),
-                source: "workflow-builder",
-                workflow_id: body.workflow_id,
-                execution_id: body.execution_id,
-                db_execution_id: body.db_execution_id ?? undefined,
-                node_id: body.node_id,
-                node_name: body.node_name,
-                workspace_ref:
-                  typeof agentArgs.workspaceRef === "string"
-                    ? agentArgs.workspaceRef
-                    : undefined,
-                sandboxName,
-                cwd:
-                  typeof agentArgs.cwd === "string" ? agentArgs.cwd : undefined,
-              });
-              requestBody = JSON.stringify(agentMessage);
-            } else if (isAgentRun) {
+            if (isAgentRun) {
               if (runMode === "plan_mode") {
                 targetUrl = `${functionUrl}/api/plan`;
                 requestBody = JSON.stringify({
@@ -2241,140 +1827,6 @@ export async function executeRoutes(app: FastifyInstance): Promise<void> {
               );
             }
 
-            if (!response && isDaprAgentPyRun) {
-              const instanceId = resolveDaprAgentPyInstanceId(parsed);
-              if (!instanceId) {
-                throw new Error(
-                  `durable/run did not return an instance_id: ${responseText.slice(0, 300)}`,
-                );
-              }
-              const daprAgentPyTrackingContext: DaprAgentPyTrackingContext | undefined =
-                workspaceExecutionId && body.workflow_id && body.node_id
-                  ? {
-                      workflowExecutionId: workspaceExecutionId,
-                      workflowId: body.workflow_id,
-                      nodeId: body.node_id,
-                      nodeName: body.node_name,
-                      daprInstanceId: instanceId,
-                      parentExecutionId: body.execution_id,
-                      workspaceRef:
-                        typeof args.workspaceRef === "string"
-                          ? args.workspaceRef
-                          : undefined,
-                      sandboxName: daprAgentPySandboxName,
-                      cwd:
-                        typeof args.cwd === "string"
-                          ? args.cwd
-                          : undefined,
-                    }
-                  : undefined;
-              if (daprAgentPyTrackingContext) {
-                await ensureDaprAgentPyRun(daprAgentPyTrackingContext, "running").catch(
-                  (error) => {
-                    console.warn(
-                      "[Execute Route] Failed to persist dapr-agent-py run row:",
-                      error,
-                    );
-                  },
-                );
-              }
-
-              if (shouldWaitForAgentCompletion) {
-                const timeoutMinutes = asNumber(args.timeoutMinutes) ?? 15;
-                const wait = await waitForDaprAgentPyResult({
-                  functionUrl,
-                  instanceId,
-                  timeoutMs: Math.max(timeoutMinutes * 60_000, 90_000),
-                  onSnapshot: daprAgentPyTrackingContext
-                    ? (snapshot) =>
-                        trackDaprAgentPySnapshot(
-                          daprAgentPyTrackingContext,
-                          snapshot,
-                        )
-                    : undefined,
-                });
-                if (daprAgentPyTrackingContext) {
-                  await completeDaprAgentPyRun(daprAgentPyTrackingContext, {
-                    success: wait.success,
-                    result: wait.result,
-                    error: wait.error,
-                  }).catch((error) => {
-                    console.warn(
-                      "[Execute Route] Failed to complete dapr-agent-py run row:",
-                      error,
-                    );
-                  });
-                }
-                response = {
-                  success: wait.success,
-                  data: {
-                    toolId,
-                    instanceId,
-                    status: wait.status,
-                    sandboxName:
-                      resolveSandboxName(wait.result) ??
-                      resolveSandboxName(parsed) ??
-                      daprAgentPySandboxName,
-                    result: wait.result,
-                    ...(isPlainObject(wait.result) ? wait.result : {}),
-                  },
-                  error: wait.success ? undefined : wait.error,
-                  duration_ms: 0,
-                };
-              } else {
-                response = {
-                  success: true,
-                  data: {
-                    toolId,
-                    instanceId,
-                    sandboxName:
-                      resolveSandboxName(parsed) ?? daprAgentPySandboxName,
-                    result: parsed,
-                    ...(isPlainObject(parsed) ? parsed : {}),
-                  },
-                  duration_ms: 0,
-                };
-              }
-            }
-
-            if (
-              isAgentRun &&
-              runMode === "execute_direct" &&
-              shouldWaitForAgentCompletion &&
-              resolvedMastra?.success === true
-            ) {
-              const workflowId =
-                typeof resolvedMastra.workflow_id === "string"
-                  ? resolvedMastra.workflow_id
-                  : typeof resolvedMastra.workflowId === "string"
-                    ? resolvedMastra.workflowId
-                    : "";
-              if (workflowId) {
-                const timeoutMinutes = asNumber(args.timeoutMinutes) ?? 15;
-                const wait = await waitForDurableRunResult({
-                  functionUrl,
-                  workflowId,
-                  timeoutMs: Math.max(timeoutMinutes * 60_000, 90_000),
-                });
-                if (!wait.success) {
-                  response = {
-                    success: false,
-                    error: wait.error || `Durable run "${workflowId}" failed`,
-                    duration_ms: 0,
-                  };
-                } else {
-                  resolvedMastra = {
-                    ...resolvedMastra,
-                    success: true,
-                    status: wait.status,
-                    result:
-                      wait.result !== undefined
-                        ? wait.result
-                        : resolvedMastra.result,
-                  };
-                }
-              }
-            }
 
             if (!response && typeof resolvedMastra?.success === "boolean") {
               if (!resolvedMastra.success) {

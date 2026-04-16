@@ -16,31 +16,16 @@ import os
 import time
 from typing import Any
 
-import json as json_module
-
-import requests
 from pydantic import BaseModel
 
+from activities.dapr_invoke import dapr_invoke
 from core.config import config
 from core.template_resolver import resolve_templates, NodeOutputs
-from tracing import start_activity_span, extract_session_id
+from tracing import start_activity_span
 
 logger = logging.getLogger(__name__)
 
 FUNCTION_ROUTER_APP_ID = config.FUNCTION_ROUTER_APP_ID
-
-
-def _function_router_base_url() -> str:
-    explicit = os.environ.get("FUNCTION_ROUTER_HTTP_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-
-    service_host = os.environ.get("FUNCTION_ROUTER_SERVICE_HOST", "").strip()
-    service_port = os.environ.get("FUNCTION_ROUTER_SERVICE_PORT", "80").strip() or "80"
-    if service_host:
-        return f"http://{service_host}:{service_port}"
-
-    return f"http://{FUNCTION_ROUTER_APP_ID}:{os.environ.get('FUNCTION_ROUTER_SERVICE_PORT', '80')}"
 
 
 class ExecuteActionInput(BaseModel):
@@ -182,32 +167,39 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                         pass
                     break
             default_http_timeout = int(os.environ.get("EXECUTE_ACTION_TIMEOUT_SECONDS", "300"))
-            http_timeout = (node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
+            http_timeout = int(node_timeout_ms / 1000 + 30) if node_timeout_ms else default_http_timeout
             logger.info(
                 f"[Execute Action] http_timeout={http_timeout}s node_timeout_ms={node_timeout_ms} "
-                f"url={_function_router_base_url()}/execute "
+                f"dapr_app_id={FUNCTION_ROUTER_APP_ID} method=execute "
                 f"config_timeoutMs={config.get('timeoutMs') if isinstance(config, dict) else 'N/A'}"
             )
-            headers = {"Content-Type": "application/json"}
-            for trace_header in ("traceparent", "tracestate", "baggage"):
-                trace_value = otel.get(trace_header)
-                if isinstance(trace_value, str) and trace_value.strip():
-                    headers[trace_header] = trace_value.strip()
-            session_id = extract_session_id(otel)
-            if session_id:
-                headers["x-workflow-session-id"] = session_id
 
-            resp = requests.post(
-                f"{_function_router_base_url()}/execute",
-                data=json_module.dumps(request_payload),
-                headers=headers,
+            # Trace context (traceparent / baggage) flows automatically through
+            # the Dapr sidecar. function-router's sessionIdFromHeaders reads the
+            # Phoenix session attribute from baggage when the explicit
+            # x-workflow-session-id header isn't present.
+            status, result, resp_text = dapr_invoke(
+                FUNCTION_ROUTER_APP_ID,
+                "execute",
+                request_payload,
                 timeout=http_timeout,
             )
-            resp.raise_for_status()
+
+            if status >= 400:
+                duration_ms = int((time.time() - start_time) * 1000)
+                error_msg = (
+                    result.get("error")
+                    if isinstance(result, dict) and result.get("error")
+                    else f"Function execution failed (status={status}): {resp_text[:300]}"
+                )
+                logger.error(f"[Execute Action] {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "duration_ms": duration_ms,
+                }
 
             duration_ms = int((time.time() - start_time) * 1000)
-            resp_text = resp.text or ""
-            result = json_module.loads(resp_text) if resp_text else {}
 
             logger.info(
                 f"[Execute Action] Function {action_type} completed "
@@ -226,26 +218,6 @@ def execute_action(ctx, input_data: dict[str, Any]) -> dict[str, Any]:
                 activity_result["pause"] = result["pause"]
 
             return activity_result
-
-    except requests.Timeout:
-        duration_ms = int((time.time() - start_time) * 1000)
-        error_msg = f"Function execution timed out after {int(http_timeout)} seconds"
-        logger.error(f"[Execute Action] {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg,
-            "duration_ms": duration_ms,
-        }
-
-    except requests.RequestException as e:
-        duration_ms = int((time.time() - start_time) * 1000)
-        error_msg = f"Function execution failed: {str(e)}"
-        logger.error(f"[Execute Action] {error_msg}")
-        return {
-            "success": False,
-            "error": error_msg,
-            "duration_ms": duration_ms,
-        }
 
     except Exception as e:
         duration_ms = int((time.time() - start_time) * 1000)

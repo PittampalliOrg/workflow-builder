@@ -162,8 +162,7 @@ Actions are routed by `actionType` slug prefix:
 | `mastra/plan` | durable-agent legacy path | Sync | Legacy planning route |
 | `mastra/execute` | durable-agent legacy path | Async | Legacy plan execution route |
 | `agent/*` | durable-agent legacy path | Async | Legacy agent route |
-| `durable/run` | dapr-agent-py (native child workflow) | Async | Standard OpenShell-backed durable coding run |
-| `dapr-agent-py/*` | dapr-agent-py (via function-router) | Async | Direct agent runtime routes |
+| `durable/run` | dapr-agent-py (native Dapr child workflow) | Async | Standard OpenShell-backed durable coding run |
 | `workspace/*` | openshell-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
 | `browser/*` | openshell-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
 | `openshell/session-start` | openshell-agent-runtime (via function-router) | Async | Start a retained Claude session in an OpenShell sandbox |

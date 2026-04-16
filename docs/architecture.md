@@ -222,14 +222,13 @@ Provides:
 
 - route lookup by `actionType`
 - routing for `system/*`, `workspace/*`, `browser/*`
-- routing for `durable/run` and `dapr-agent-py/*`
 - routing for `dapr-swe/*`
 - fallback routing to `fn-activepieces`
 
-For `durable/run`, `function-router` forwards `agentConfig` as JSON and derives
-an OpenShell sandbox name from `workspaceRef` when one is not explicitly passed.
-The derivation strips leading and trailing hyphens so refs such as
-`ws_abc123_` resolve to `ws-abc123`, not `ws-abc123-`.
+`durable/run` is dispatched by workflow-orchestrator via native Dapr child
+workflow (`ctx.call_child_workflow`) directly against `dapr-agent-py` — it does
+not flow through function-router. `dapr-agent-py/*` slugs are rejected by the
+orchestrator via `_REMOVED_AGENT_ACTION_TYPES`.
 
 ### dapr-agent-py
 

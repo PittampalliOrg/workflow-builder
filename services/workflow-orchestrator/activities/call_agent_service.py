@@ -14,8 +14,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import httpx
-from dapr.clients import DaprClient
 
+from activities.dapr_invoke import dapr_invoke as _dapr_invoke, dapr_invoke_or_raise as _dapr_invoke_or_raise
 from core.config import config
 from tracing import start_activity_span
 
@@ -62,49 +62,6 @@ _DEFAULT_SANDBOX_PROFILE_CATALOG: dict[str, dict[str, object]] = {
         "sandboxImage": "ghcr.io/nvidia/openshell-community/sandboxes/base:latest",
     },
 }
-
-
-def _dapr_invoke(app_id: str, method_name: str, payload: dict, *, timeout: int = 300) -> tuple[int, dict, str]:
-    """Invoke a Dapr service method via SDK, returning (status_code, json_body, raw_text).
-
-    Mirrors the return signature of _post_json_with_details for easy migration.
-    """
-    try:
-        with DaprClient() as client:
-            response = client.invoke_method(
-                app_id=app_id,
-                method_name=method_name,
-                data=json.dumps(payload),
-                http_verb="POST",
-                timeout=timeout,
-            )
-            text = response.text() if hasattr(response, 'text') else response.data.decode('utf-8')
-            try:
-                body = json.loads(text) if text else {}
-            except (json.JSONDecodeError, ValueError):
-                body = {}
-            return 200, body, text
-    except Exception as exc:
-        error_msg = str(exc)
-        return 500, {"error": error_msg}, error_msg
-
-
-def _dapr_invoke_or_raise(app_id: str, method_name: str, payload: dict, *, timeout: int = 300, service_label: str = "") -> dict:
-    """Invoke a Dapr service method via SDK, returning the JSON body or raising RuntimeError.
-
-    Drop-in replacement for _post_json_with_details when used with Dapr service invocation URLs.
-    """
-    status, body, text = _dapr_invoke(app_id, method_name, payload, timeout=timeout)
-    if status >= 400:
-        body_preview = text[:1200] if text else "<empty>"
-        raise RuntimeError(
-            f"{service_label} failed with HTTP {status}: {body_preview}"
-        )
-    if not isinstance(body, dict):
-        raise RuntimeError(
-            f"{service_label} returned invalid response type: {type(body).__name__}"
-        )
-    return body
 
 
 def _post_json_with_details(

@@ -33,7 +33,7 @@ interface Props {
 
 function isAgentNode(actionType: string | null): boolean {
   if (!actionType) return false;
-  return actionType === "durable/run" || actionType === "dapr-agent-py/run";
+  return actionType === "durable/run";
 }
 
 function formatDuration(ms: string | null): string {

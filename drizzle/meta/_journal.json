@@ -218,6 +218,13 @@
 			"when": 1776279600000,
 			"tag": "0030_workflow_code_checkpoint_remote",
 			"breakpoints": true
+		},
+		{
+			"idx": 31,
+			"version": "7",
+			"when": 1776456000000,
+			"tag": "0031_deprecate_dapr_agent_py_slug",
+			"breakpoints": true
 		}
 	]
 }

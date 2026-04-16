@@ -72,18 +72,14 @@ Current route contract:
 
 - `workspace/*` -> `openshell-agent-runtime`
 - `browser/*` -> `openshell-agent-runtime`
-- `durable/run` -> `dapr-agent-py`
-- `dapr-agent-py/*` -> `dapr-agent-py`
 - `dapr-swe/*` -> `dapr-swe`
 - `_default` -> `fn-activepieces`
 
-The function-router image can also receive a mounted registry override from the cluster. Check the live ConfigMap when runtime routing and local code disagree.
+`durable/run` is **not** routed through function-router. The workflow-orchestrator
+dispatches it directly via `ctx.call_child_workflow` against `dapr-agent-py`'s
+`@workflow_entry` (`services/workflow-orchestrator/workflows/sw_workflow.py:1164`).
 
-For `durable/run`, `function-router` derives `sandboxName` from `workspaceRef`
-when a workflow does not pass the name explicitly. The derivation normalizes
-`ws_...` refs to OpenShell pod/sandbox names and strips accidental leading or
-trailing hyphens. This prevents refs such as `ws_abc_` from being sent to
-`dapr-agent-py` as a nonexistent sandbox named `ws-abc-`.
+The function-router image can also receive a mounted registry override from the cluster. Check the live ConfigMap when runtime routing and local code disagree.
 
 ## dapr-agent-py
 

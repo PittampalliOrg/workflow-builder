@@ -515,10 +515,11 @@ def _resolve_function_call(
     }
 
 
-# Embedded agent calls are normal SW 1.0 call tasks. The function-router exact
-# route for durable/run dispatches to dapr-agent-py, whose Dapr DurableAgent
-# runtime owns the multi-turn loop.
-_AGENT_ACTION_TYPES: set[str] = set()
+# Agent action types dispatched via native Dapr child workflows
+# (ctx.call_child_workflow -> dapr-agent-py @workflow_entry). The agent owns the
+# multi-turn loop; orchestrator relies on native retry policy configured on the
+# callee in dapr-agent-py/src/main.py.
+_AGENT_ACTION_TYPES: set[str] = {"durable/run"}
 _NATIVE_DURABLE_AGENT_ACTION_TYPES = {"durable/run"}
 _REMOVED_AGENT_ACTION_TYPES = {
     "claude/run",
