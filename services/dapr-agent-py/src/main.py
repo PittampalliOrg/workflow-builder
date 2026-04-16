@@ -1086,6 +1086,11 @@ class OpenShellDurableAgent(DurableAgent):
             if cfg is not None and cfg.enabled:
                 turn_index = self._compaction_call_count_by_instance.get(inst_id, 0)
                 self._compaction_call_count_by_instance[inst_id] = turn_index + 1
+                logger.info(
+                    "[compaction] post-increment counter_val=%s agent_id=%s",
+                    self._compaction_call_count_by_instance.get(inst_id),
+                    id(self),
+                )
                 model_id = (
                     _get_anthropic_model(component)
                     if component and "anthropic" in component
