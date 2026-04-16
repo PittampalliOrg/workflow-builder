@@ -1648,14 +1648,6 @@ class OpenShellDurableAgent(DurableAgent):
                     plugin_registry=getattr(self, "_plugin_registry", None),
                 )
                 _install_hook_snapshot(self, instance_id, per_run_snap)
-                if not ctx.is_replaying:
-                    ac = message.get("agentConfig") if isinstance(message, dict) else None
-                    has_hooks_key = isinstance(ac, dict) and "hooks" in ac
-                    logger.info(
-                        "[hooks] per-run snapshot: events=%s agentConfig.hooks_key_present=%s",
-                        list(per_run_snap.by_event.keys()),
-                        has_hooks_key,
-                    )
             except Exception as exc:
                 logger.warning("[hooks] failed to build per-instance snapshot: %s", exc)
 

@@ -110,13 +110,6 @@ def current_snapshot(agent: Any, instance_id: str) -> HooksSnapshot:
     cached = cache.get(instance_id)
     if cached is not None:
         return cached
-    logger.info(
-        "[hooks-debug] current_snapshot MISS instance=%s cache_keys=%s cache_id=%s agent_id=%s",
-        instance_id,
-        list(cache.keys()),
-        id(cache),
-        id(agent),
-    )
     base = getattr(agent, "_base_hooks_snapshot", None) or empty_snapshot()
     cache[instance_id] = base
     return base
@@ -132,13 +125,6 @@ def install_instance_snapshot(
         cache = {}
         agent._hooks_snapshot_by_instance = cache
     cache[instance_id] = snapshot
-    logger.info(
-        "[hooks-debug] install_instance_snapshot instance=%s events=%s cache_id=%s agent_id=%s",
-        instance_id,
-        list(snapshot.by_event.keys()),
-        id(cache),
-        id(agent),
-    )
 
 
 def clear_instance_snapshot(agent: Any, instance_id: str) -> None:
