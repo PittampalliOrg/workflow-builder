@@ -153,21 +153,19 @@ docs/                                  # Documentation
 
 ## Action Routing
 
-Actions are routed by `actionType` slug prefix:
+Actions are routed by `actionType` slug prefix. Orchestrator → function-router uses Dapr service invoke (`activities/dapr_invoke.py`); `durable/run` bypasses function-router entirely via `ctx.call_child_workflow`.
 
-| Prefix | Service | Sync/Async | Examples |
-|--------|---------|------------|----------|
-| `system/*` | fn-system (via function-router) | Sync | `system/http-request`, `system/database-query`, `system/condition` |
-| `mastra/clone` | durable-agent legacy path | Sync | Legacy clone route |
-| `mastra/plan` | durable-agent legacy path | Sync | Legacy planning route |
-| `mastra/execute` | durable-agent legacy path | Async | Legacy plan execution route |
-| `agent/*` | durable-agent legacy path | Async | Legacy agent route |
-| `durable/run` | dapr-agent-py (native Dapr child workflow) | Async | Standard OpenShell-backed durable coding run |
-| `workspace/*` | openshell-agent-runtime (via function-router) | Sync | Workspace profile, clone, command, file, cleanup |
-| `browser/*` | openshell-agent-runtime (via function-router) | Sync | Browser profile, clone, command, capture-flow, validate |
-| `openshell/session-start` | openshell-agent-runtime (via function-router) | Async | Start a retained Claude session in an OpenShell sandbox |
-| `openshell-langgraph-observable/run` | openshell-langgraph-observable (Dapr child workflow) | Async | OpenShell LangGraph plan/execute with sandbox |
-| `*` (default) | fn-activepieces (via function-router) | Sync | All AP piece actions |
+| Prefix | Service | Dispatch | Examples |
+|--------|---------|----------|----------|
+| `durable/run` | dapr-agent-py | Native Dapr child workflow | Embedded agent execution (OpenShell-backed) |
+| `system/*` | fn-system | Dapr invoke → function-router | `system/http-request`, `system/database-query`, `system/condition` |
+| `workspace/*` | workspace-runtime | Dapr invoke → function-router | Workspace profile, clone, command, file, cleanup |
+| `browser/*` | openshell-agent-runtime | Dapr invoke → function-router | Browser profile, clone, command, capture-flow, validate |
+| `openshell/*` | openshell-agent-runtime | Dapr invoke → function-router | OpenShell runtime helper routes |
+| `code/*` | code-runtime | Dapr invoke → function-router | Saved TS/Python code function execution |
+| `*` (default) | fn-activepieces | Dapr invoke → function-router | All AP piece actions (credential decrypt + audit via credential-service) |
+
+Rejected slugs (raise `Removed SW 1.0 agent action` at the orchestrator): `claude/run`, `openshell/run`, `openshell/session-start`, `openshell-langgraph/run`, `openshell-langgraph-observable/run`, `dapr-agent-py/run`, `dapr-swe/run`, `durable/plan`, and any `mastra/*` or `agent/*` legacy slug.
 
 ## Node Types
 
