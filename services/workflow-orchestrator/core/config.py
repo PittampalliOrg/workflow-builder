@@ -58,10 +58,13 @@ class OrchestratorConfig:
     CLAUDE_CODE_AGENT_APP_ID: str = "claude-code-agent"
     OPENSHELL_AGENT_APP_ID: str = "openshell-agent-runtime.openshell"
     DURABLE_AGENT_ENABLE_NATIVE_CHILD_WORKFLOW: str = "true"
-    DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "durableRunWorkflowV1"
+    # dapr-agent-py DurableAgent registers @workflow_entry under the Python
+    # function name (agent_workflow) via register_workflow with no alternate
+    # name override.
+    DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "agent_workflow"
     CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME: str = "claudeCodeRunWorkflowV1"
-    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "durablePlanWorkflowV1"
-    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "durableRunWorkflowV1"
+    DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME: str = "agent_workflow"
+    DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME: str = "agent_workflow"
 
     # Runtime feature gate and startup checks
     ENFORCE_MIN_DAPR_VERSION: str = "false"
@@ -176,7 +179,7 @@ class OrchestratorConfig:
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_RUN_NAME",
-                "durableRunWorkflowV1",
+                "agent_workflow",
             ),
             "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME": (
                 "CLAUDE_CODE_AGENT_CHILD_WORKFLOW_RUN_NAME",
@@ -184,11 +187,11 @@ class OrchestratorConfig:
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_PLAN_NAME",
-                "durablePlanWorkflowV1",
+                "agent_workflow",
             ),
             "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME": (
                 "DURABLE_AGENT_CHILD_WORKFLOW_EXEC_PLAN_NAME",
-                "durableRunWorkflowV1",
+                "agent_workflow",
             ),
             "ENFORCE_MIN_DAPR_VERSION": (
                 "ENFORCE_MIN_DAPR_VERSION",
