@@ -1105,40 +1105,6 @@ class OpenShellDurableAgent(DurableAgent):
         if not isinstance(tool_args, dict):
             tool_args = {}
         try:
-            from src.hooks import execute_pre_tool_hooks
-
-            pre_result = execute_pre_tool_hooks(
-                tool_name,
-                tool_call_id,
-                tool_args,
-                session_id=inst_id,
-                cwd=get_runtime().cwd,
-                project_root=get_runtime().cwd,
-            )
-            if pre_result.prevent_continuation:
-                reason = pre_result.stop_reason or "Blocked by hook"
-                tool_result = ToolMessage(
-                    content=f"Tool execution blocked: {reason}",
-                    role="tool",
-                    name=tool_name,
-                    tool_call_id=tool_call_id,
-                )
-                return tool_result.model_dump()
-            if pre_result.updated_input:
-                tool_args = pre_result.updated_input
-                if isinstance(tool_call, dict) and isinstance(func, dict):
-                    tool_call = {
-                        **tool_call,
-                        "function": {
-                            **func,
-                            "arguments": json.dumps(tool_args),
-                        },
-                    }
-                    payload = {**payload, "tool_call": tool_call}
-                    func = tool_call["function"]
-        except Exception:
-            logger.debug("PreToolUse hooks failed", exc_info=True)
-        try:
             publish_tool_start(
                 exec_id,
                 inst_id,
@@ -1243,20 +1209,6 @@ class OpenShellDurableAgent(DurableAgent):
             )
         except Exception:
             pass
-        try:
-            from src.hooks import execute_post_tool_hooks
-
-            execute_post_tool_hooks(
-                tool_name,
-                tool_call_id,
-                tool_args,
-                output,
-                session_id=inst_id,
-                cwd=get_runtime().cwd,
-                project_root=get_runtime().cwd,
-            )
-        except Exception:
-            logger.debug("PostToolUse hooks failed", exc_info=True)
         return result
 
     @workflow_entry
@@ -1502,17 +1454,6 @@ class OpenShellDurableAgent(DurableAgent):
                 )
             except Exception:
                 pass
-            try:
-                from src.hooks import execute_session_start_hooks
-
-                execute_session_start_hooks(
-                    source="startup",
-                    session_id=instance_id,
-                    cwd=runtime.cwd,
-                    project_root=runtime.cwd,
-                )
-            except Exception:
-                logger.debug("SessionStart hooks failed", exc_info=True)
 
         try:
             yield from super().agent_workflow(ctx, message)
@@ -1567,18 +1508,6 @@ class OpenShellDurableAgent(DurableAgent):
             self._close_mcp_client(instance_id)
             raise
         finally:
-            if not ctx.is_replaying:
-                try:
-                    from src.hooks import execute_session_end_hooks
-
-                    execute_session_end_hooks(
-                        reason="complete",
-                        session_id=instance_id,
-                        cwd=runtime.cwd,
-                        project_root=runtime.cwd,
-                    )
-                except Exception:
-                    logger.debug("SessionEnd hooks failed", exc_info=True)
             self.execution.max_iterations = previous_max_iterations
             self.llm._llm_component = previous_component
             self.profile.system_prompt = previous_system_prompt
@@ -1601,48 +1530,6 @@ for _skills_dir in _SKILL_SEARCH_DIRS:
         if _disk_skills:
             get_skill_registry().set_disk_skills(_disk_skills)
             logger.info("[skills] Loaded %d disk skill(s) from %s", len(_disk_skills), _abs_dir)
-
-# ---------------------------------------------------------------------------
-# Initialize plugins and hooks at startup
-# ---------------------------------------------------------------------------
-
-try:
-    from src.plugins import (
-        init_builtin_plugins,
-        load_all_plugins,
-        register_plugin_hooks,
-        register_plugin_skills,
-    )
-    from src.hooks.config import load_hooks_from_all_settings
-    from src.hooks.registry import get_hook_registry
-
-    hooks_settings = load_hooks_from_all_settings()
-    if hooks_settings:
-        get_hook_registry().load_from_settings(
-            {event.value: matchers for event, matchers in hooks_settings.items()}
-        )
-        logger.info("[hooks] Loaded hooks from settings")
-
-    init_builtin_plugins()
-    plugin_result = load_all_plugins(
-        session_plugin_dirs=[
-            item for item in os.environ.get("PLUGIN_DIRS", "").split(":") if item
-        ]
-        or None,
-    )
-    if plugin_result.enabled:
-        register_plugin_skills(get_skill_registry(), plugin_result.enabled)
-        register_plugin_hooks(plugin_result.enabled)
-        logger.info(
-            "[plugins] Initialized: %d enabled, %d disabled",
-            len(plugin_result.enabled),
-            len(plugin_result.disabled),
-        )
-    for error in plugin_result.errors:
-        logger.warning("[plugins] Error: %s - %s", error.source, error.message)
-except Exception as exc:
-    logger.warning("[plugins] Plugin/hook initialization failed: %s", exc)
-
 
 agent = OpenShellDurableAgent(
     name=AGENT_SERVICE_NAME,
