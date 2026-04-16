@@ -410,6 +410,12 @@ def maybe_compact(
             snap = _current_hook_snapshot(agent, instance_id)
             cwd_for_hooks = getattr(agent, "_cwd_by_instance", {}).get(instance_id, "") or ""
             project_dir = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+            pre_hook_count = len(snap.get_matching_hooks("PreCompact", "auto"))
+            logger.info(
+                "[compaction] PreCompact dispatch: %d matching hook(s) for instance=%s",
+                pre_hook_count,
+                instance_id,
+            )
             pre_agg = execute_pre_compact_hooks(
                 snap,
                 trigger="auto",
@@ -575,6 +581,12 @@ def maybe_compact(
             snap = _current_hook_snapshot(agent, instance_id)
             cwd_for_hooks = getattr(agent, "_cwd_by_instance", {}).get(instance_id, "") or ""
             project_dir = cwd_for_hooks or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+            post_hook_count = len(snap.get_matching_hooks("PostCompact", "auto"))
+            logger.info(
+                "[compaction] PostCompact dispatch: %d matching hook(s) for instance=%s",
+                post_hook_count,
+                instance_id,
+            )
             post_agg = execute_post_compact_hooks(
                 snap,
                 summary=summary_text,
